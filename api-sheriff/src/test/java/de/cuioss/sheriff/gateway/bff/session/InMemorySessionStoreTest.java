@@ -26,7 +26,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CyclicBarrier;
@@ -44,6 +46,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the D3 server-side session store: {@link SessionRecord} (credential redaction, TTL,
@@ -65,6 +68,10 @@ import org.junit.jupiter.params.provider.MethodSource;
  * of a step-up or a widening — the new handle resolves, the previous one resolves nothing, and the
  * session stays the same session. The {@code IdleTimeout} cases cover the second deadline: it moves
  * only on a recorded access, and recording one never replaces the stored record.
+ * <p>
+ * The {@code PerSubjectBound} cases cover the bound on one subject's sessions, and the
+ * {@code EndReports} cases what the store tells its listener: every ended session once, and nothing
+ * for a session that lives on.
  */
 class InMemorySessionStoreTest {
 
@@ -83,6 +90,13 @@ class InMemorySessionStoreTest {
     private static final Duration NO_IDLE_EFFECT = Duration.ofDays(1);
     private static final Duration IDLE_TIMEOUT = Duration.ofSeconds(600);
     private static final String REISSUED_HANDLE = "reissued-handle";
+    /**
+     * A per-subject bound no case here reaches, so the store-wide bound and the two deadlines are the
+     * only limits in play outside the {@code PerSubjectBound} cases.
+     */
+    private static final int NO_SUBJECT_BOUND = Integer.MAX_VALUE;
+    /** A listener that ignores every report, for the cases that do not look at what the store ends. */
+    private static final SessionEndListener NO_LISTENER = sessionId -> { };
     /** The three destruction paths, shared by the conditional-replace and the handle-re-issue cases. */
     private static final String DESTRUCTIONS =
             "de.cuioss.sheriff.gateway.bff.session.InMemorySessionStoreTest$ConditionalReplace#destructions";
@@ -122,7 +136,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should resolve a created session and drop it after destroy-by-id")
         void shouldCreateResolveDestroy() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", "sid1", FUTURE), T0);
 
             assertTrue(resolve(store, "s1", T0).isPresent());
@@ -133,14 +147,14 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should return empty for an unknown session id")
         void shouldReturnEmptyForUnknownId() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             assertTrue(resolve(store, "nope", T0).isEmpty());
         }
 
         @Test
         @DisplayName("Should treat destroy-by-id of an absent session as a no-op")
         void shouldNoOpDestroyAbsent() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             store.destroyById("absent");
             assertEquals(0, store.size());
         }
@@ -153,7 +167,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should evict an expired session lazily on resolve")
         void shouldEvictExpiredLazily() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, T0.plusSeconds(10)), T0);
 
             assertTrue(resolve(store, "s1", T0.plusSeconds(11)).isEmpty(), "an expired session is refused");
@@ -163,7 +177,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should treat the TTL boundary as expired (inclusive)")
         void shouldTreatBoundaryAsExpired() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             Instant expiry = T0.plusSeconds(10);
             create(store, session("s1", "sub1", null, expiry), T0);
 
@@ -173,7 +187,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should sweep every expired session and leave live ones untouched")
         void shouldSweepExpired() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("dead1", "sub1", null, T0.plusSeconds(5)), T0);
             create(store, session("dead2", "sub2", null, T0.plusSeconds(5)), T0);
             create(store, session("live", "sub3", null, FUTURE), T0);
@@ -193,7 +207,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should destroy every session carrying the given sid")
         void shouldDestroyBySid() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", "A", FUTURE), T0);
             create(store, session("s2", "sub2", "A", FUTURE), T0);
             create(store, session("s3", "sub3", "B", FUTURE), T0);
@@ -207,7 +221,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should destroy every session for the given subject")
         void shouldDestroyBySub() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "user-x", null, FUTURE), T0);
             create(store, session("s2", "user-x", null, FUTURE), T0);
             create(store, session("s3", "user-y", null, FUTURE), T0);
@@ -219,7 +233,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should report zero and clean the index when the sid is already gone")
         void shouldReturnZeroForUnknownSidAndCleanIndex() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", "A", FUTURE), T0);
 
             assertEquals(1, store.destroyBySid("A"));
@@ -230,7 +244,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should drop the previous subject's index entry when an upsert changes sub")
         void shouldRepairSubIndexOnUpsert() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "old-sub", null, FUTURE), T0);
 
             create(store, session("s1", "new-sub", null, FUTURE), T0);
@@ -245,7 +259,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should drop the previous sid's index entry when an upsert changes sid")
         void shouldRepairSidIndexOnUpsert() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", "old-sid", FUTURE), T0);
 
             create(store, session("s1", "sub1", "new-sid", FUTURE), T0);
@@ -264,7 +278,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should free capacity once expired sessions are swept")
         void shouldFreeCapacityAfterSweep() {
-            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, T0.plusSeconds(5)), T0);
             create(store, session("s2", "sub2", null, FUTURE), T0);
 
@@ -277,7 +291,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should reclaim an expired session's slot when a create reaches the bound")
         void shouldReclaimExpiredCapacityOnCreate() {
-            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, T0.plusSeconds(5)), T0);
             create(store, session("s2", "sub2", null, T0.plusSeconds(5)), T0);
 
@@ -293,7 +307,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should still refuse a create at the bound when every stored session is live")
         void shouldRefuseWhenBoundIsFullOfLiveSessions() {
-            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
             create(store, session("s2", "sub2", null, FUTURE), T0);
 
@@ -308,7 +322,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should admit an upsert of an already-stored session id at the bound")
         void shouldAdmitUpsertAtCapacity() {
-            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
             create(store, session("s2", "sub2", null, FUTURE), T0);
 
@@ -321,8 +335,10 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should reject a non-positive capacity bound")
         void shouldRejectNonPositiveCapacity() {
-            assertThrows(IllegalArgumentException.class, () -> new InMemorySessionStore(0, NO_IDLE_EFFECT));
-            assertThrows(IllegalArgumentException.class, () -> new InMemorySessionStore(-1, NO_IDLE_EFFECT));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new InMemorySessionStore(0, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new InMemorySessionStore(-1, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER));
         }
     }
 
@@ -440,7 +456,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should resolve the active scope set a stored session was created with")
         void shouldKeepActiveScopesAcrossStore() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             Set<String> scopes = Set.of("openid", "profile", "email", "orders:read");
             SessionRecord scoped = SessionRecord.builder()
                     .sessionId("s1").accessToken("at").idToken("it").sub("sub1").expiresAt(FUTURE)
@@ -454,7 +470,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should resolve the replaced active scope set after a replacement")
         void shouldReplaceActiveScopesOnReplacement() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
                     .expiresAt(FUTURE).activeScopes(Set.of("openid", "orders:read")).build(), T0);
 
@@ -469,7 +485,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should resolve the granted scope set a stored session was created with, and its replacement")
         void shouldKeepGrantedScopesAcrossStore() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             Set<String> granted = Set.of("openid", "orders:read");
             Set<String> widened = Set.of("openid", "orders:read", "orders:write");
             create(store, SessionRecord.builder().sessionId("s1").accessToken("at").idToken("it").sub("sub1")
@@ -498,7 +514,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should replace a stored record in place and report the replacement")
         void shouldReplaceStoredRecord() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             SessionRecord replacement = SessionRecord.builder().sessionId(SESSION_ID).accessToken("rotated-access")
                     .idToken("rotated-id").sub(OLD_SUB).sid(OLD_SID).expiresAt(FUTURE).build();
@@ -514,7 +530,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should refuse an id the store does not hold, report it and leave the store empty")
         void shouldRefuseAbsentId() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
 
             boolean replaced = store.replaceIfPresent(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE));
 
@@ -528,7 +544,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should find a replacement carrying another sid and sub under the new keys only")
         void shouldReindexWhenSidAndSubChange() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
 
             boolean replaced = store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
@@ -545,7 +561,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should destroy a replaced session through its new sub")
         void shouldDestroyReplacedSessionByNewSub() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             store.replaceIfPresent(session(SESSION_ID, NEW_SUB, NEW_SID, FUTURE));
 
@@ -568,7 +584,7 @@ class InMemorySessionStoreTest {
         @MethodSource("destructions")
         @DisplayName("Should not write a destroyed session back, however it was destroyed")
         void shouldNotRecreateDestroyedSession(String label, Consumer<InMemorySessionStore> destruction) {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             destruction.accept(store);
 
@@ -582,7 +598,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should replace at the max-session bound without sweeping and without refusing")
         void shouldReplaceAtTheBound() {
-            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             create(store, session("expired", "sub2", null, T0.plusSeconds(5)), T0);
 
@@ -596,7 +612,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should replace a lapsed record nothing has evicted yet, and keep refusing it on resolve")
         void shouldReplaceLapsedRecordWithoutRevivingIt() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             Instant expiry = T0.plusSeconds(5);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, expiry), T0);
 
@@ -610,7 +626,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should reject a null replacement")
         void shouldRejectNullReplacement() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
 
             assertThrows(NullPointerException.class, () -> store.replaceIfPresent(null));
         }
@@ -627,7 +643,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should resolve the session by its cookie handle and never by its session id")
         void shouldNotResolveBySessionId() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
 
             assertTrue(store.resolve(handleOf(SESSION_ID), T0).isPresent(), "the handle resolves the session");
@@ -638,7 +654,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should resolve the session from the new handle and nothing from the previous one")
         void shouldSwapTheHandle() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             SessionRecord widened = SessionRecord.builder().sessionId(SESSION_ID).accessToken("widened-access")
                     .idToken("widened-id").sub(OLD_SUB).sid(OLD_SID).expiresAt(FUTURE).build();
@@ -656,7 +672,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should keep the session id and the absolute expiry across a re-issue")
         void shouldKeepIdentityAndAbsoluteExpiry() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             Instant expiry = T0.plusSeconds(100);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, expiry), T0);
 
@@ -672,7 +688,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should still destroy a re-issued session through its sid")
         void shouldKeepSidIndexAcrossReissue() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             store.replaceAndReissueHandle(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), REISSUED_HANDLE);
 
@@ -685,7 +701,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should still destroy a re-issued session through its sub")
         void shouldKeepSubIndexAcrossReissue() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             store.replaceAndReissueHandle(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), REISSUED_HANDLE);
 
@@ -698,7 +714,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should store nothing and register no handle for an id the store does not hold")
         void shouldRefuseAbsentId() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
 
             boolean reissued = store.replaceAndReissueHandle(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE),
                     REISSUED_HANDLE);
@@ -717,7 +733,7 @@ class InMemorySessionStoreTest {
         @MethodSource(DESTRUCTIONS)
         @DisplayName("Should not write a destroyed session back through a re-issue, however it was destroyed")
         void shouldNotRecreateDestroyedSession(String label, Consumer<InMemorySessionStore> destruction) {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             destruction.accept(store);
 
@@ -733,7 +749,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should keep the re-issued handle when a replacement is written after the re-issue")
         void shouldKeepReissuedHandleOnLaterReplace() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             store.replaceAndReissueHandle(session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), REISSUED_HANDLE);
             SessionRecord rotated = SessionRecord.builder().sessionId(SESSION_ID).accessToken("rotated-access")
@@ -752,7 +768,7 @@ class InMemorySessionStoreTest {
         @MethodSource(DESTRUCTIONS)
         @DisplayName("Should remove the cookie handle together with the session, however it is destroyed")
         void shouldRemoveHandleWithSession(String label, Consumer<InMemorySessionStore> destruction) {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
 
             destruction.accept(store);
@@ -768,7 +784,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should remove the handle of a session evicted on resolve and of one swept")
         void shouldRemoveHandleOnEvictionAndSweep() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             Instant expiry = T0.plusSeconds(5);
             create(store, session("evicted", "sub1", null, expiry), T0);
             create(store, session("swept", "sub2", null, expiry), T0);
@@ -787,7 +803,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should admit a re-issue at the max-session bound without sweeping")
         void shouldReissueAtTheBound() {
-            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(2, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE), T0);
             create(store, session("expired", "sub2", null, T0.plusSeconds(5)), T0);
 
@@ -803,7 +819,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should refuse a handle that already resolves to another session, on create and on re-issue")
         void shouldRefuseHandleOfAnotherSession() {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
             create(store, session("s2", "sub2", null, FUTURE), T0);
             SessionRecord third = session("s3", "sub3", null, FUTURE);
@@ -821,7 +837,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should leave neither a session nor a handle behind when a re-issue races a destroy")
         void shouldLeaveNothingBehindWhenReissueRacesDestroy() throws Exception {
-            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            InMemorySessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, NO_LISTENER);
             SessionRecord contended = session(SESSION_ID, OLD_SUB, OLD_SID, FUTURE);
             SessionRecord probe = session("probe", "probe-sub", null, FUTURE);
             try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
@@ -861,7 +877,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should evict an idle session lazily on resolve, inclusive of the boundary")
         void shouldEvictIdleSessionOnResolve() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
             Instant idleDeadline = T0.plus(IDLE_TIMEOUT);
 
@@ -875,7 +891,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should sweep an idle session whose absolute lifetime has not lapsed")
         void shouldSweepIdleSession() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("idle", "sub1", null, FUTURE), T0);
             create(store, session("active", "sub2", null, FUTURE), T0);
             store.recordAccess("active", T0.plusSeconds(500));
@@ -890,7 +906,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should move the idle deadline when an access is recorded")
         void shouldMoveDeadlineOnRecordedAccess() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
             Instant access = T0.plusSeconds(300);
 
@@ -905,7 +921,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should not extend the idle deadline by resolving")
         void shouldNotExtendOnResolve() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
 
             assertTrue(resolve(store, "s1", T0.plus(IDLE_TIMEOUT).minusSeconds(1)).isPresent());
@@ -917,7 +933,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should leave the stored record untouched when an access is recorded")
         void shouldNotReplaceRecordOnRecordedAccess() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
             SessionRecord rotated = SessionRecord.builder().sessionId("s1").accessToken("rotated-access")
                     .refreshToken("rotated-refresh").idToken("rotated-id").sub("sub1").expiresAt(FUTURE).build();
@@ -932,7 +948,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should only move the last access forward")
         void shouldIgnoreAnEarlierAccess() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
             Instant later = T0.plusSeconds(300);
             store.recordAccess("s1", later);
@@ -946,7 +962,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should treat a recorded access for an id the store does not hold as a no-op")
         void shouldNoOpAccessForAbsentId() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
 
             store.recordAccess("absent", T0);
 
@@ -956,7 +972,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should not extend the absolute lifetime by a recorded access")
         void shouldNotExtendAbsoluteLifetime() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             Instant expiry = T0.plusSeconds(100);
             create(store, session("s1", "sub1", null, expiry), T0);
 
@@ -969,7 +985,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should carry the last access over a replacement and a re-issue — neither is an access")
         void shouldKeepLastAccessAcrossUpdatingWrites() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("s1", "sub1", null, FUTURE), T0);
 
             store.replaceIfPresent(session("s1", "sub1", null, FUTURE));
@@ -983,7 +999,7 @@ class InMemorySessionStoreTest {
         @Test
         @DisplayName("Should reclaim the slot of an idle session when a create reaches the bound")
         void shouldReclaimIdleCapacityOnCreate() {
-            InMemorySessionStore store = new InMemorySessionStore(1, IDLE_TIMEOUT);
+            InMemorySessionStore store = new InMemorySessionStore(1, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
             create(store, session("idle", "sub1", null, FUTURE), T0);
 
             create(store, session("s2", "sub2", null, FUTURE), T0.plus(IDLE_TIMEOUT));
@@ -997,9 +1013,405 @@ class InMemorySessionStoreTest {
         void shouldRejectNonPositiveIdleTimeout() {
             Duration negative = Duration.ofSeconds(-1);
 
-            assertThrows(IllegalArgumentException.class, () -> new InMemorySessionStore(16, Duration.ZERO));
-            assertThrows(IllegalArgumentException.class, () -> new InMemorySessionStore(16, negative));
-            assertThrows(NullPointerException.class, () -> new InMemorySessionStore(16, null));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new InMemorySessionStore(16, Duration.ZERO, NO_SUBJECT_BOUND, NO_LISTENER));
+            assertThrows(IllegalArgumentException.class,
+                    () -> new InMemorySessionStore(16, negative, NO_SUBJECT_BOUND, NO_LISTENER));
+            assertThrows(NullPointerException.class,
+                    () -> new InMemorySessionStore(16, null, NO_SUBJECT_BOUND, NO_LISTENER));
+        }
+    }
+
+    /**
+     * One subject holds a bounded number of live sessions; a creation beyond the bound ends that
+     * subject's oldest session — the one created first — and then stores the new one. Each case that
+     * ends a session also asserts the sessions that must survive, so a store that ended the wrong
+     * session, or every session of the subject, fails beside one that ended none.
+     */
+    @Nested
+    @DisplayName("Per-subject bound")
+    class PerSubjectBound {
+
+        private static final String SUB = "subject-a";
+        private static final String OTHER_SUB = "subject-b";
+
+        private final RecordingListener listener = new RecordingListener();
+
+        private InMemorySessionStore bounded(int maxSessions, int maxSessionsPerSubject) {
+            InMemorySessionStore store = new InMemorySessionStore(maxSessions, NO_IDLE_EFFECT,
+                    maxSessionsPerSubject, listener);
+            listener.observe(store);
+            return store;
+        }
+
+        @Test
+        @DisplayName("Should end the subject's first session when a third is created at a bound of two")
+        void shouldEndOldestAtTheBound() {
+            InMemorySessionStore store = bounded(16, 2);
+            create(store, session("s1", SUB, null, FUTURE), T0);
+            create(store, session("s2", SUB, null, FUTURE), T0.plusSeconds(1));
+
+            create(store, session("s3", SUB, null, FUTURE), T0.plusSeconds(2));
+
+            assertTrue(resolve(store, "s1", T0.plusSeconds(3)).isEmpty(), "the session created first is ended");
+            assertTrue(resolve(store, "s2", T0.plusSeconds(3)).isPresent());
+            assertTrue(resolve(store, "s3", T0.plusSeconds(3)).isPresent());
+            assertEquals(2, store.size());
+            assertEquals(List.of("s1"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should end the session created first even when it was used last")
+        void shouldChooseByCreationNotByLastAccess() {
+            InMemorySessionStore store = bounded(16, 2);
+            create(store, session("s1", SUB, null, FUTURE), T0);
+            create(store, session("s2", SUB, null, FUTURE), T0.plusSeconds(1));
+            store.recordAccess("s1", T0.plusSeconds(100));
+
+            create(store, session("s3", SUB, null, FUTURE), T0.plusSeconds(101));
+
+            assertTrue(resolve(store, "s1", T0.plusSeconds(102)).isEmpty(),
+                    "being active does not keep the oldest session");
+            assertTrue(resolve(store, "s2", T0.plusSeconds(102)).isPresent());
+        }
+
+        @Test
+        @DisplayName("Should keep a session's place in the order across a refresh and a handle re-issue")
+        void shouldKeepCreationOrderAcrossUpdates() {
+            InMemorySessionStore store = bounded(16, 2);
+            create(store, session("s1", SUB, null, FUTURE), T0);
+            create(store, session("s2", SUB, null, FUTURE), T0.plusSeconds(1));
+            assertTrue(store.replaceIfPresent(session("s1", SUB, null, FUTURE)));
+            assertTrue(store.replaceAndReissueHandle(session("s1", SUB, null, FUTURE), REISSUED_HANDLE));
+
+            create(store, session("s3", SUB, null, FUTURE), T0.plusSeconds(2));
+
+            assertTrue(store.resolve(REISSUED_HANDLE, T0.plusSeconds(3)).isEmpty(),
+                    "an updated session is still the one created first");
+            assertTrue(resolve(store, "s2", T0.plusSeconds(3)).isPresent());
+            assertEquals(List.of("s1"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should drop the subject's expired sessions first and not count them")
+        void shouldNotCountExpiredSessions() {
+            InMemorySessionStore store = bounded(16, 2);
+            create(store, session("s1", SUB, null, T0.plusSeconds(10)), T0);
+            create(store, session("s2", SUB, null, FUTURE), T0.plusSeconds(1));
+
+            create(store, session("s3", SUB, null, FUTURE), T0.plusSeconds(20));
+
+            assertTrue(resolve(store, "s2", T0.plusSeconds(21)).isPresent(),
+                    "the live session is not ended while an expired one filled the bound");
+            assertTrue(resolve(store, "s3", T0.plusSeconds(21)).isPresent());
+            assertEquals(2, store.size(), "the expired session was dropped");
+            assertEquals(List.of("s1"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should leave another subject's sessions alone")
+        void shouldLeaveOtherSubjectsAlone() {
+            InMemorySessionStore store = bounded(16, 1);
+            create(store, session("a1", SUB, null, FUTURE), T0);
+            create(store, session("b1", OTHER_SUB, null, FUTURE), T0);
+
+            create(store, session("a2", SUB, null, FUTURE), T0.plusSeconds(1));
+
+            assertTrue(resolve(store, "a1", T0.plusSeconds(2)).isEmpty());
+            assertTrue(resolve(store, "b1", T0.plusSeconds(2)).isPresent(), "the bound is per subject");
+            assertTrue(resolve(store, "a2", T0.plusSeconds(2)).isPresent());
+        }
+
+        @Test
+        @DisplayName("Should end nothing when a creation names a session the store already holds")
+        void shouldEndNothingForHeldId() {
+            InMemorySessionStore store = bounded(16, 1);
+            create(store, session("s1", SUB, null, FUTURE), T0);
+
+            create(store, session("s1", SUB, null, FUTURE), T0.plusSeconds(1));
+
+            assertTrue(resolve(store, "s1", T0.plusSeconds(2)).isPresent());
+            assertEquals(List.of(), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should store a session for a subject at its bound although the store is full")
+        void shouldNotRefuseSubjectAtItsBoundAtAFullStore() {
+            InMemorySessionStore store = bounded(2, 2);
+            create(store, session("s1", SUB, null, FUTURE), T0);
+            create(store, session("s2", SUB, null, FUTURE), T0.plusSeconds(1));
+
+            assertDoesNotThrow(() -> create(store, session("s3", SUB, null, FUTURE), T0.plusSeconds(2)));
+
+            assertTrue(resolve(store, "s1", T0.plusSeconds(3)).isEmpty());
+            assertTrue(resolve(store, "s3", T0.plusSeconds(3)).isPresent());
+            assertEquals(2, store.size());
+        }
+
+        @Test
+        @DisplayName("Should still refuse a subject below its bound at a full store, ending none of its sessions")
+        void shouldRefuseSubjectBelowItsBoundAtAFullStore() {
+            InMemorySessionStore store = bounded(2, 2);
+            create(store, session("a1", SUB, null, FUTURE), T0);
+            create(store, session("b1", OTHER_SUB, null, FUTURE), T0);
+            SessionRecord oneTooMany = session("a2", SUB, null, FUTURE);
+
+            assertThrows(IllegalStateException.class, () -> create(store, oneTooMany, T0.plusSeconds(1)));
+
+            assertTrue(resolve(store, "a1", T0.plusSeconds(2)).isPresent(),
+                    "the subject lost no session to a creation that was refused");
+            assertTrue(resolve(store, "b1", T0.plusSeconds(2)).isPresent());
+            assertEquals(List.of(), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should remove the ended session from the sid and sub indexes")
+        void shouldDeindexEndedSession() {
+            InMemorySessionStore store = bounded(16, 1);
+            create(store, session("s1", SUB, "sid-1", FUTURE), T0);
+
+            create(store, session("s2", SUB, "sid-2", FUTURE), T0.plusSeconds(1));
+
+            assertEquals(0, store.destroyBySid("sid-1"), "the ended session is no longer found by its sid");
+            assertEquals(1, store.destroyBySub(SUB), "and the subject holds exactly the new session");
+        }
+
+        @ParameterizedTest(name = "bound {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Should reject a per-subject bound that is not positive")
+        void shouldRejectNonPositiveBound(int maxSessionsPerSubject) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new InMemorySessionStore(16, NO_IDLE_EFFECT, maxSessionsPerSubject, NO_LISTENER));
+        }
+
+        @Test
+        @DisplayName("Should reject a missing listener")
+        void shouldRejectMissingListener() {
+            assertThrows(NullPointerException.class,
+                    () -> new InMemorySessionStore(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND, null));
+        }
+    }
+
+    /**
+     * Every path on which a session ends reports it once, with the session's identity, after the store
+     * has left its monitor. A write that keeps the session — a refresh, a handle re-issue, a creation
+     * over a held id, a recorded access — reports nothing: whatever was opened with the session stays
+     * open across it.
+     */
+    @Nested
+    @DisplayName("Reporting ended sessions")
+    class EndReports {
+
+        private final RecordingListener listener = new RecordingListener();
+        private InMemorySessionStore store;
+
+        private InMemorySessionStore reporting(int maxSessions, Duration idleTimeout, int maxSessionsPerSubject) {
+            store = new InMemorySessionStore(maxSessions, idleTimeout, maxSessionsPerSubject, listener);
+            listener.observe(store);
+            return store;
+        }
+
+        @Test
+        @DisplayName("Should report a session destroyed by id, once")
+        void shouldReportDestroyById() {
+            reporting(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND);
+            create(store, session("s1", "sub1", "sid1", FUTURE), T0);
+
+            store.destroyById("s1");
+            store.destroyById("s1");
+
+            assertEquals(List.of("s1"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should report every session destroyed by sid and by sub")
+        void shouldReportBackchannelDestruction() {
+            reporting(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND);
+            create(store, session("s1", "sub1", "sid1", FUTURE), T0);
+            create(store, session("s2", "sub2", "sid2", FUTURE), T0);
+            create(store, session("s3", "sub2", "sid3", FUTURE), T0);
+
+            store.destroyBySid("sid1");
+            store.destroyBySub("sub2");
+
+            assertEquals(Set.of("s1", "s2", "s3"), Set.copyOf(listener.ended()));
+            assertEquals(3, listener.ended().size(), "each session is reported once");
+        }
+
+        @Test
+        @DisplayName("Should report a session evicted on resolve past its absolute lifetime")
+        void shouldReportLazyEvictionAtAbsoluteExpiry() {
+            reporting(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND);
+            create(store, session("s1", "sub1", null, T0.plusSeconds(10)), T0);
+
+            assertTrue(resolve(store, "s1", T0.plusSeconds(10)).isEmpty());
+
+            assertEquals(List.of("s1"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should report a session evicted on resolve past its idle deadline")
+        void shouldReportLazyEvictionAtIdleDeadline() {
+            reporting(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND);
+            create(store, session("s1", "sub1", null, FUTURE), T0);
+
+            assertTrue(resolve(store, "s1", T0.plus(IDLE_TIMEOUT)).isEmpty());
+
+            assertEquals(List.of("s1"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should report the sessions the sweep removes and none it keeps")
+        void shouldReportSweep() {
+            reporting(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND);
+            create(store, session("expired", "sub1", null, T0.plusSeconds(10)), T0);
+            create(store, session("live", "sub2", null, FUTURE), T0);
+
+            assertEquals(1, store.sweepExpired(T0.plusSeconds(20)));
+
+            assertEquals(List.of("expired"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should report the session a creation sweeps away at the store-wide bound")
+        void shouldReportSweepAtTheBound() {
+            reporting(1, NO_IDLE_EFFECT, NO_SUBJECT_BOUND);
+            create(store, session("expired", "sub1", null, T0.plusSeconds(10)), T0);
+
+            create(store, session("new", "sub2", null, FUTURE), T0.plusSeconds(20));
+
+            assertEquals(List.of("expired"), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should report the expired and the oldest live session a creation ends under the per-subject bound")
+        void shouldReportPerSubjectEviction() {
+            reporting(16, NO_IDLE_EFFECT, 2);
+            create(store, session("expired", "sub1", null, T0.plusSeconds(10)), T0);
+            create(store, session("oldest", "sub1", null, FUTURE), T0.plusSeconds(1));
+
+            create(store, session("newer", "sub1", null, FUTURE), T0.plusSeconds(20));
+            List<String> afterExpiredWasDropped = listener.ended();
+            create(store, session("newest", "sub1", null, FUTURE), T0.plusSeconds(21));
+
+            assertEquals(List.of("expired"), afterExpiredWasDropped,
+                    "the expired session is dropped and reported, and no live one is ended for it");
+            assertEquals(List.of("expired", "oldest"), listener.ended(),
+                    "the next creation ends the oldest live session, reported once");
+            assertTrue(resolve(store, "newer", T0.plusSeconds(22)).isPresent());
+            assertTrue(resolve(store, "newest", T0.plusSeconds(22)).isPresent());
+        }
+
+        @Test
+        @DisplayName("Should report a session it ended for a creation that then fails, and still raise the failure")
+        void shouldReportEndsOfAFailedCreation() {
+            reporting(16, NO_IDLE_EFFECT, 1);
+            create(store, session("a1", "sub-a", null, FUTURE), T0);
+            create(store, session("b1", "sub-b", null, FUTURE), T0);
+            SessionRecord colliding = session("a2", "sub-a", null, FUTURE);
+            Instant later = T0.plusSeconds(1);
+
+            assertThrows(IllegalStateException.class, () -> store.create(colliding, handleOf("b1"), later),
+                    "a handle that resolves another session is refused");
+
+            assertEquals(List.of("a1"), listener.ended(), "the session ended on the way is still reported");
+        }
+
+        @Test
+        @DisplayName("Should report nothing for a refresh, a handle re-issue, a creation over a held id or an access")
+        void shouldReportNothingWhileTheSessionLivesOn() {
+            reporting(16, NO_IDLE_EFFECT, 1);
+            create(store, session("s1", "sub1", "sid1", FUTURE), T0);
+
+            store.replaceIfPresent(session("s1", "sub1", "sid1", FUTURE));
+            store.replaceAndReissueHandle(session("s1", "sub1", "sid1", FUTURE), REISSUED_HANDLE);
+            store.create(session("s1", "sub1", "sid1", FUTURE), REISSUED_HANDLE, T0.plusSeconds(1));
+            store.recordAccess("s1", T0.plusSeconds(2));
+
+            assertEquals(List.of(), listener.ended(), "the session lives on under the same identity");
+            assertTrue(store.resolve(REISSUED_HANDLE, T0.plusSeconds(3)).isPresent(),
+                    "precondition: the writes took effect");
+        }
+
+        @Test
+        @DisplayName("Should report nothing for a session the store does not hold")
+        void shouldReportNothingForUnknownSession() {
+            reporting(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND);
+
+            store.destroyById("unknown");
+            store.destroyBySid("unknown");
+            store.destroyBySub("unknown");
+            store.sweepExpired(T0);
+
+            assertEquals(List.of(), listener.ended());
+        }
+
+        @Test
+        @DisplayName("Should call the listener only after it has left its monitor, on every ending path")
+        void shouldReportOutsideTheMonitor() {
+            reporting(2, IDLE_TIMEOUT, 1);
+            create(store, session("by-id", "sub1", "sid1", FUTURE), T0);
+            store.destroyById("by-id");
+            create(store, session("by-sid", "sub2", "sid2", FUTURE), T0);
+            store.destroyBySid("sid2");
+            create(store, session("by-sub", "sub3", null, FUTURE), T0);
+            store.destroyBySub("sub3");
+            create(store, session("lazy", "sub4", null, FUTURE), T0);
+            resolve(store, "lazy", T0.plus(IDLE_TIMEOUT));
+            create(store, session("swept", "sub5", null, FUTURE), T0);
+            store.sweepExpired(T0.plus(IDLE_TIMEOUT));
+            create(store, session("older", "sub6", null, FUTURE), T0);
+            create(store, session("newer", "sub6", null, FUTURE), T0.plusSeconds(1));
+
+            assertEquals(List.of("by-id", "by-sid", "by-sub", "lazy", "swept", "older"), listener.ended(),
+                    "precondition: every ending path was taken");
+            assertEquals(0, listener.callsUnderMonitor(),
+                    "a listener called under the store's monitor could block or deadlock every store operation");
+        }
+
+        @Test
+        @DisplayName("Should hold a session until it is removed, and not after")
+        void shouldAnswerWhetherASessionIsHeld() {
+            reporting(16, NO_IDLE_EFFECT, NO_SUBJECT_BOUND);
+            create(store, session("s1", "sub1", null, T0.plusSeconds(10)), T0);
+
+            boolean heldBeforeTheSweep = store.isHeld("s1");
+            store.sweepExpired(T0.plusSeconds(20));
+
+            assertTrue(heldBeforeTheSweep, "a session is held until something removes it");
+            assertFalse(store.isHeld("s1"), "a swept session is no longer held");
+            assertFalse(store.isHeld("unknown"));
+        }
+    }
+
+    /**
+     * Records the sessions a store reports as ended and, for each report, whether the reporting thread
+     * held the store's monitor at that moment.
+     */
+    private static final class RecordingListener implements SessionEndListener {
+
+        private final List<String> ended = new ArrayList<>();
+        private @Nullable InMemorySessionStore observed;
+        private int callsUnderMonitor;
+
+        void observe(InMemorySessionStore store) {
+            observed = store;
+        }
+
+        @Override
+        public void sessionEnded(String sessionId) {
+            ended.add(sessionId);
+            if (observed != null && Thread.holdsLock(observed)) {
+                callsUnderMonitor++;
+            }
+        }
+
+        List<String> ended() {
+            return List.copyOf(ended);
+        }
+
+        int callsUnderMonitor() {
+            return callsUnderMonitor;
         }
     }
 }

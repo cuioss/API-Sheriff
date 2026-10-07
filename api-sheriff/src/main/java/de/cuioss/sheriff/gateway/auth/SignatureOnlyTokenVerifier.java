@@ -33,6 +33,7 @@ import de.cuioss.sheriff.token.validation.pipeline.TokenBuilder;
 import de.cuioss.sheriff.token.validation.pipeline.validator.TokenHeaderValidator;
 import de.cuioss.sheriff.token.validation.pipeline.validator.TokenSignatureValidator;
 import de.cuioss.tools.logging.CuiLogger;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Verifies that a JWT was <strong>signed by a configured issuer</strong>, and stops there — it applies
@@ -45,8 +46,8 @@ import de.cuioss.tools.logging.CuiLogger;
  * claims its own specification never required. The OIDC back-channel <em>logout token</em> is exactly
  * such a JWT — per
  * <a href="https://openid.net/specs/openid-connect-backchannel-1_0.html">OpenID Connect Back-Channel
- * Logout</a> §2.4 it carries {@code iss}, {@code aud}, {@code iat}, {@code jti} and {@code events}
- * plus {@code sub} <em>and/or</em> {@code sid}; it has no {@code exp}, need not carry {@code sub}, and
+ * Logout</a> §2.4 it carries {@code iss}, {@code aud}, {@code iat}, {@code exp}, {@code jti} and
+ * {@code events} plus {@code sub} <em>and/or</em> {@code sid}; it need not carry {@code sub}, and
  * {@code azp} is not part of its claim set. Validating it as an ID token rejected every spec-valid
  * {@code sid}-only logout token before the gateway's own claim residual was ever reached (BFF-11).
  * <p>
@@ -113,13 +114,14 @@ public final class SignatureOnlyTokenVerifier {
      * Signature-verifies a raw JWT against its configured issuer and returns its claims unvalidated.
      *
      * @param rawToken the raw compact-serialized JWT
-     * @return the signature-verified token content, carrying the mapped claims and no claim verdict
+     * @return the signature-verified token: the mapped claims, carrying no claim verdict, and the
+     *         {@code typ} value of the protected header, which the signature covers as well
      * @throws TokenValidationException when the token cannot be decoded, names no {@code iss}, names an
      *                                  issuer this gateway does not configure or has disabled, carries
      *                                  an unacceptable header, fails signature verification, or has an
      *                                  empty body
      */
-    public TokenContent verify(String rawToken) {
+    public VerifiedToken verify(String rawToken) {
         Objects.requireNonNull(rawToken, "rawToken");
         DecodedJwt decoded = parser.decode(rawToken);
         String issuerIdentifier = decoded.getIssuer().orElseThrow(() -> reject(
@@ -142,7 +144,26 @@ public final class SignatureOnlyTokenVerifier {
                 "Signature-verified token carries an empty body"));
         LOGGER.debug("Token signature verified against issuer %s — claim validation is the caller's",
                 sanitizeForLog(issuerIdentifier));
-        return verified;
+        return new VerifiedToken(verified, decoded.header().getTyp().orElse(null));
+    }
+
+    /**
+     * A token whose signature has been verified, with the one header value its caller may need to
+     * judge. Neither the claims nor the type have been judged here.
+     *
+     * @param content    the signature-verified claims
+     * @param headerType the {@code typ} header parameter, {@code null} when the header carries none
+     * @since 1.0
+     */
+    // cui-rewrite:disable AnnotationNewlineFormat
+    public record VerifiedToken(TokenContent content, @Nullable String headerType) {
+
+        /**
+         * @throws NullPointerException when {@code content} is {@code null}
+         */
+        public VerifiedToken {
+            Objects.requireNonNull(content, "content");
+        }
     }
 
     private TokenValidationException reject(SecurityEventCounter.EventType eventType, String detail) {

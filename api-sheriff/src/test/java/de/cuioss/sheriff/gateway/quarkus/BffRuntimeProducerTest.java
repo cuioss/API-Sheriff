@@ -125,6 +125,7 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
@@ -438,6 +439,254 @@ class BffRuntimeProducerTest {
         assertEquals(1, found.size(), "exactly one " + what + " is reachable from the assembled runtime — "
                 + "this test must never pass vacuously; if the producer's wiring moved, retarget the walk");
         return found.getFirst();
+    }
+
+    /**
+     * The produced runtime tracks a long-lived relay under its session. In server mode the session
+     * store the producer built reports every session it ends to the registry the runtime tracks in —
+     * the two are wired together by the producer and nowhere else, so these cases reach the store
+     * through the assembled object graph and end sessions on it directly.
+     */
+    @Nested
+    @DisplayName("Session relays — the produced store reports session ends to the produced registry")
+    class SessionRelays {
+
+        private SessionRecord newSession(String sid) {
+            return SessionRecord.builder().sessionId(SessionRecord.newSessionId())
+                    .accessToken(Generators.letterStrings(16, 32).next())
+                    .idToken(Generators.letterStrings(16, 32).next())
+                    .sub(SUBJECT).sid(sid).expiresAt(Instant.now().plusSeconds(3600)).build();
+        }
+
+        @Test
+        @DisplayName("server mode: a session the store destroys closes the relay tracked through the runtime")
+        void serverModeStoreEndClosesTrackedRelay() {
+            BffRuntime runtime = producer(serverModeOidc()).bffRuntime();
+            InMemorySessionStore store = single(reachableInstancesOf(runtime, InMemorySessionStore.class),
+                    "session store");
+            String sid = Generators.letterStrings(8, 16).next();
+            SessionRecord session = newSession(sid);
+            store.create(session, "handle-" + SessionRecord.newSessionId(), Instant.now());
+            AtomicInteger closes = new AtomicInteger();
+            SessionRelayRegistry.Tracked relay = runtime.trackSessionRelay(session.sessionId(), session.expiresAt())
+                    .orElseThrow();
+            relay.onSessionEnd(closes::incrementAndGet);
+            assertFalse(relay.sessionEnded(), "precondition: the runtime found the session held by the store");
+
+            int destroyed = store.destroyBySid(sid);
+
+            assertAll("the store's end reached the relay",
+                    () -> assertEquals(1, destroyed, "the store ended the session"),
+                    () -> assertEquals(1, closes.get(), "the relay's close action ran once"),
+                    () -> assertTrue(relay.sessionEnded()));
+        }
+
+        @Test
+        @DisplayName("server mode: the sweep removing an expired session closes the relay tracked through the runtime")
+        void serverModeSweepClosesTrackedRelay() {
+            BffRuntime runtime = producer(serverModeOidc()).bffRuntime();
+            InMemorySessionStore store = single(reachableInstancesOf(runtime, InMemorySessionStore.class),
+                    "session store");
+            SessionRecord session = newSession(Generators.letterStrings(8, 16).next());
+            store.create(session, "handle-" + SessionRecord.newSessionId(), Instant.now());
+            AtomicInteger closes = new AtomicInteger();
+            runtime.trackSessionRelay(session.sessionId(), session.expiresAt()).orElseThrow()
+                    .onSessionEnd(closes::incrementAndGet);
+
+            int swept = store.sweepExpired(session.expiresAt().plusSeconds(1));
+
+            assertEquals(1, swept, "precondition: the sweep removed the session");
+            assertEquals(1, closes.get(), "the relay's close action ran once");
+        }
+
+        @Test
+        @DisplayName("server mode: a relay tracked for a session the store does not hold is ended at once")
+        void serverModeLooksTheSessionUpInTheStore() {
+            BffRuntime runtime = producer(serverModeOidc()).bffRuntime();
+
+            SessionRelayRegistry.Tracked relay = runtime
+                    .trackSessionRelay(SessionRecord.newSessionId(), Instant.now().plusSeconds(3600)).orElseThrow();
+
+            assertTrue(relay.sessionEnded(), "the lookup after tracking asks the store, which holds no such session");
+        }
+
+        @Test
+        @DisplayName("cookie mode: no store exists to report an end; the relay carries the session's absolute expiry")
+        void cookieModeHasOnlyTheAbsoluteExpiry() {
+            BffRuntime runtime = producer(cookieModeOidc()).bffRuntime();
+
+            SessionRelayRegistry.Tracked relay = runtime
+                    .trackSessionRelay(SessionRecord.newSessionId(), Instant.now().plusSeconds(3600)).orElseThrow();
+            Duration untilExpiry = relay.untilAbsoluteExpiry().orElseThrow();
+
+            assertAll("a stateless session ends for a relay at its absolute expiry only",
+                    () -> assertEquals(List.of(), reachableInstancesOf(runtime, InMemorySessionStore.class),
+                            "no server-side store is wired (the server-mode cases above find theirs)"),
+                    () -> assertFalse(relay.sessionEnded(), "a session nothing holds server-side is not reported gone"),
+                    () -> assertTrue(untilExpiry.compareTo(Duration.ofSeconds(3600)) <= 0
+                                    && untilExpiry.compareTo(Duration.ofSeconds(3500)) > 0,
+                            "the time left is the session's own: " + untilExpiry));
+        }
+
+        @Test
+        @DisplayName("tracks at most 10 000 relays and hands back nothing for the next")
+        void boundsTheTrackedRelays() {
+            BffRuntime runtime = producer(cookieModeOidc()).bffRuntime();
+            Instant expiry = Instant.now().plusSeconds(3600);
+            for (int tracked = 0; tracked < 10_000; tracked++) {
+                assertTrue(runtime.trackSessionRelay("session-" + tracked, expiry).isPresent(),
+                        "relay " + tracked + " is inside the bound");
+            }
+
+            assertEquals(Optional.empty(), runtime.trackSessionRelay("session-beyond", expiry));
+        }
+    }
+
+    /**
+     * {@code oidc.session.max_sessions_per_subject} acts: the store the producer builds applies the
+     * declared bound, and the documented default when the key is omitted. Each case logs one subject in
+     * repeatedly on the store reached through the assembled runtime.
+     */
+    @Nested
+    @DisplayName("Per-subject session bound — oidc.session.max_sessions_per_subject reaches the produced store")
+    class PerSubjectSessionBound {
+
+        private InMemorySessionStore storeFor(OidcConfig.Session session) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer(ISSUER)
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(session)
+                    .build();
+            return single(reachableInstancesOf(producer(oidc).bffRuntime(), InMemorySessionStore.class),
+                    "session store");
+        }
+
+        /** Logs {@link #SUBJECT} in {@code logins} times and returns the session identities in login order. */
+        private List<String> logIn(InMemorySessionStore store, int logins) {
+            List<String> sessionIds = new ArrayList<>();
+            Instant login = Instant.now();
+            for (int index = 0; index < logins; index++) {
+                SessionRecord session = SessionRecord.builder().sessionId(SessionRecord.newSessionId())
+                        .accessToken(Generators.letterStrings(16, 32).next())
+                        .idToken(Generators.letterStrings(16, 32).next())
+                        .sub(SUBJECT).expiresAt(login.plusSeconds(3600)).build();
+                store.create(session, "handle-" + SessionRecord.newSessionId(), login);
+                sessionIds.add(session.sessionId());
+            }
+            return sessionIds;
+        }
+
+        private List<String> held(InMemorySessionStore store, List<String> sessionIds) {
+            return sessionIds.stream().filter(store::isHeld).toList();
+        }
+
+        @Test
+        @DisplayName("a declared bound of 1 ends the subject's first session at its second login")
+        void declaredBoundIsApplied() {
+            InMemorySessionStore store = storeFor(
+                    OidcConfig.Session.builder().mode("server").maxSessionsPerSubject(1).build());
+
+            List<String> sessions = logIn(store, 2);
+
+            assertEquals(List.of(sessions.get(1)), held(store, sessions),
+                    "only the newest session of the subject is held");
+        }
+
+        @Test
+        @DisplayName("an omitted key bounds a subject at 10: the eleventh login ends the first session")
+        void omittedKeyAppliesTheDefault() {
+            InMemorySessionStore store = storeFor(OidcConfig.Session.builder().mode("server").build());
+
+            List<String> ten = logIn(store, 10);
+            List<String> heldAfterTen = held(store, ten);
+            List<String> eleventh = logIn(store, 1);
+
+            assertAll("the default bound is ten sessions per subject",
+                    () -> assertEquals(ten, heldAfterTen, "ten logins of one subject are all held"),
+                    () -> assertEquals(ten.subList(1, 10), held(store, ten),
+                            "the eleventh login ended the first session and no other"),
+                    () -> assertTrue(store.isHeld(eleventh.getFirst()), "and the eleventh session is held"));
+        }
+
+        @Test
+        @DisplayName("an omitted key is capped at max_sessions: a subject filling a store of 3 is not refused")
+        void omittedKeyIsCappedAtMaxSessions() {
+            InMemorySessionStore store = storeFor(
+                    OidcConfig.Session.builder().mode("server").maxSessions(3).build());
+            List<String> three = logIn(store, 3);
+
+            List<String> fourth = assertDoesNotThrow(() -> logIn(store, 1),
+                    "the subject's own bound of 3 frees a slot before the store-wide bound is tested");
+
+            assertAll("the subject's oldest session made room",
+                    () -> assertEquals(three.subList(1, 3), held(store, three)),
+                    () -> assertTrue(store.isHeld(fourth.getFirst())),
+                    () -> assertEquals(3, store.size()));
+        }
+    }
+
+    /**
+     * The names the produced runtime hands the edge as the cookies no upstream response may set. The
+     * set is derived from the session binding the producer built, so it follows the session mode and a
+     * configured {@code cookie_name}.
+     */
+    @Nested
+    @DisplayName("Gateway cookie names — the cookies the produced runtime sets, by session mode and cookie_name")
+    class GatewayCookieNames {
+
+        private static final String BINDING_COOKIE = "__Host-sheriff-binding";
+        private static final String LOGOUT_STATE_COOKIE = "__Host-sheriff-logout";
+        private static final String CONFIGURED_NAME = "__Host-shop-session";
+
+        private Set<String> namesFor(OidcConfig.Session session) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer(ISSUER)
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(session)
+                    .build();
+            return producer(oidc).bffRuntime().gatewayCookieNames();
+        }
+
+        @Test
+        @DisplayName("server mode: the login-binding cookie, the logout-state cookie and the default session cookie")
+        void serverModeDefaultName() {
+            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, SessionCookieCodec.DEFAULT_COOKIE_NAME),
+                    namesFor(OidcConfig.Session.builder().mode("server").build()));
+        }
+
+        @Test
+        @DisplayName("server mode: a configured cookie_name replaces the default session cookie name")
+        void serverModeConfiguredName() {
+            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, CONFIGURED_NAME),
+                    namesFor(OidcConfig.Session.builder().mode("server").cookieName(CONFIGURED_NAME).build()));
+        }
+
+        @Test
+        @DisplayName("cookie mode: the activity cookie of the session cookie is owned as well")
+        void cookieModeDefaultName() {
+            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                            SessionCookieCodec.DEFAULT_COOKIE_NAME + "-activity"),
+                    namesFor(OidcConfig.Session.builder().mode("cookie").build()));
+        }
+
+        @Test
+        @DisplayName("cookie mode: a configured cookie_name names the session cookie and its activity cookie")
+        void cookieModeConfiguredName() {
+            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, CONFIGURED_NAME, CONFIGURED_NAME + "-activity"),
+                    namesFor(OidcConfig.Session.builder().mode("cookie").cookieName(CONFIGURED_NAME).build()));
+        }
+
+        @Test
+        @DisplayName("control: the inert runtime of a gateway without sessions owns no cookie")
+        void inertRuntimeOwnsNothing() {
+            assertEquals(Set.of(), BffRuntime.inert().gatewayCookieNames());
+        }
     }
 
     @Nested
@@ -1177,7 +1426,8 @@ class BffRuntimeProducerTest {
         private static final Set<String> GRANTED_SCOPES = Set.of(OPENID_SCOPE, "orders:read");
 
         /** The idle timeout equals the absolute lifetime, so it is not in play in these seam decisions. */
-        private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL);
+        private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE,
+                sessionId -> { });
         private final SessionBinding binding = new ServerSessionBinding(store,
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
 
@@ -4390,6 +4640,7 @@ class BffRuntimeProducerTest {
 
             Awaits.until(() -> store.size() == 1, "the periodic sweep to remove the expired session",
                     Awaits.TEARDOWN_CEILING_SECONDS);
+            assertEquals(1, store.size(), "the sweep removed the expired session and nothing else");
             assertTrue(store.resolve("live-handle", wallClock).isPresent(), "the live session is untouched");
         }
 

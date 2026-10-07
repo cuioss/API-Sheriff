@@ -44,6 +44,10 @@ import org.jspecify.annotations.Nullable;
  *       through only when the route enables {@code not_modified}; on a disabled route they are
  *       stripped so no validator ever reaches the client. A {@code 304} on an enabled route relays
  *       untouched.</li>
+ *   <li><strong>{@code Set-Cookie}</strong> lines of an upstream are relayed, each as its own line,
+ *       except a line naming a cookie only the gateway may set — the session cookie, its activity
+ *       cookie, the login-binding cookie and the logout-state cookie — which is dropped on both
+ *       relays (see {@link UpstreamSetCookieFilter}).</li>
  *   <li><strong>{@code Location}</strong> is relayed unchanged unless the route opts into
  *       {@code upstream.rewrite_location}: {@link #relay} then maps a value pointing inside the route
  *       upstream back onto the route's match key through the route's {@link LocationRewriter}, and
@@ -65,6 +69,26 @@ public final class ResponseStage {
     private static final Set<String> CONDITIONAL_RESPONSE_HEADERS = Set.of("etag", "last-modified");
 
     private static final String LOCATION_HEADER = "Location";
+
+    private final UpstreamSetCookieFilter upstreamSetCookies;
+
+    /**
+     * @param gatewayCookieNames the names of the cookies only the gateway may set — an upstream
+     *                           {@code Set-Cookie} line naming one of them is not relayed; empty on a
+     *                           gateway that sets no cookie, which then relays every line
+     */
+    public ResponseStage(Set<String> gatewayCookieNames) {
+        this.upstreamSetCookies = new UpstreamSetCookieFilter(gatewayCookieNames);
+    }
+
+    /**
+     * Whether an upstream response header crosses back to the client on this stage's relays: it must
+     * be {@linkplain #isForwardableResponseHeader forwardable}, and a {@code Set-Cookie} line must not
+     * name a cookie only the gateway may set.
+     */
+    private boolean relaysUpstreamHeader(String name, String value, boolean notModifiedEnabled) {
+        return isForwardableResponseHeader(name, notModifiedEnabled) && upstreamSetCookies.relays(name, value);
+    }
 
     /**
      * @param name               the upstream response-header name
@@ -108,7 +132,7 @@ public final class ResponseStage {
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
             String name = header.getKey();
-            if (isForwardableResponseHeader(name, notModifiedEnabled)) {
+            if (relaysUpstreamHeader(name, header.getValue(), notModifiedEnabled)) {
                 // add (not set) so multi-valued headers such as Set-Cookie are all preserved.
                 client.headers().add(name, relayedHeaderValue(name, header.getValue(), locationRewriter));
             }
@@ -178,7 +202,7 @@ public final class ResponseStage {
 
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
-            if (isForwardableResponseHeader(header.getKey(), notModifiedEnabled)) {
+            if (relaysUpstreamHeader(header.getKey(), header.getValue(), notModifiedEnabled)) {
                 client.headers().add(header.getKey(), header.getValue());
             }
         }

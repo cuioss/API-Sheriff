@@ -390,7 +390,7 @@ class PortalEndpointTest {
         @BeforeEach
         void createSession() {
             // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
-            sessionStore = new InMemorySessionStore(4, TTL);
+            sessionStore = new InMemorySessionStore(4, TTL, Integer.MAX_VALUE, sessionId -> { });
             sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, TTL);
             sessionStore.create(SessionRecord.builder()
                     .sessionId(SESSION_ID)

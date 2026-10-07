@@ -15,13 +15,16 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import java.time.Duration;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
@@ -66,6 +69,13 @@ import org.jspecify.annotations.Nullable;
  * reset by any frame in either direction (ping/pong counting as activity), closes both legs with
  * WebSocket close code {@code 1001} (Going Away) on expiry and meters
  * {@link EventType#WEBSOCKET_IDLE_TIMEOUT}.
+ * <p>
+ * <strong>A relay opened with a session ends with it.</strong> A relay whose request a session was let
+ * through with is closed, on both legs with close code {@code 1008} and the reason
+ * {@code session ended}, at the session's absolute expiry — a timer armed when the relay is wired —
+ * and earlier when the session runtime reports that the session was destroyed or evicted, which it can
+ * only where sessions are held server-side. Relayed frames do not move either deadline, and the
+ * session's idle deadline arms no timer here. A relay opened without a session is bound to neither.
  * <p>
  * <strong>Threading.</strong> Every socket operation is event-loop-bound, so the relay runs on the client
  * connection's context: {@code GatewayEdgeRoute.handle()} captures it on the connection's event loop
@@ -112,7 +122,8 @@ import org.jspecify.annotations.Nullable;
  * returning the permit. It is invoked on every teardown path and never at upgrade completion: releasing
  * on upgrade would under-count concurrent relays and re-open the exhaustion window the callback exists
  * to close. Two terminal paths carry it — the established relay's single idempotent
- * {@code RelaySession.closeBoth} funnel (graceful close, abrupt disconnect, idle reclaim, relay error),
+ * {@code RelaySession.closeBoth} funnel (graceful close, abrupt disconnect, idle reclaim, relay error,
+ * session end),
  * and the client-upgrade-failure branch of {@link #onUpstreamConnected}, which constructs no
  * {@code RelaySession} at all. The upstream-dial-failure path ({@link #onUpstreamFailure}) does not
  * invoke it: that path ends the HTTP response, so the edge's own end handler releases the permit
@@ -130,6 +141,15 @@ public final class WebSocketRelayStage {
     private static final int BAD_GATEWAY = 502;
     private static final short CLOSE_NORMAL = 1000;
     private static final short CLOSE_INTERNAL_ERROR = 1011;
+    /**
+     * The close code of a relay closed because its session ended: {@code 1008} (Policy Violation), on
+     * both legs. Whatever ended the session — its absolute expiry, a logout, a logout the identity
+     * provider sent, an eviction — the code and {@link #SESSION_ENDED_REASON} are the same, so the close
+     * frame tells the peer that the session is over and nothing about why.
+     */
+    private static final short CLOSE_SESSION_ENDED = 1008;
+    /** The one close reason sent with {@link #CLOSE_SESSION_ENDED}. */
+    private static final String SESSION_ENDED_REASON = "session ended";
 
     private final WebSocketClient webSocketClient;
     private final UpstreamFailureMapper failureMapper;
@@ -179,10 +199,18 @@ public final class WebSocketRelayStage {
      * @param releaseAdmission the edge's idempotent admission-release callback, invoked once at relay
      *                        teardown — on the established relay's {@code closeBoth} funnel and on the
      *                        client-upgrade-failure branch — and never at upgrade completion
+     * @param sessionRelay    the handle under which the relay is tracked with the session the request
+     *                        was let through with, or {@link SessionRelayRegistry#untracked()} for a
+     *                        request without one. The relay only reads it; the caller stops the tracking
+     *                        through {@code releaseAdmission}
      */
+    // Each parameter is one independent input of the hand-off from the edge; the last two are the two
+    // lifetimes the relay is bound to, the admission permit and the session.
+    @SuppressWarnings("java:S107")
     public void relay(RoutingContext ctx, Context clientContext, RouteRuntime route,
             Map<String, String> forwardHeaders, Map<String, String> securityHeaders, String requestUri,
-            Runnable releaseAdmission) {
+            Runnable releaseAdmission, SessionRelayRegistry.Tracked sessionRelay) {
+        Objects.requireNonNull(sessionRelay, "sessionRelay");
         Objects.requireNonNull(ctx, "ctx");
         Objects.requireNonNull(clientContext, "clientContext");
         Objects.requireNonNull(route, "route");
@@ -208,12 +236,25 @@ public final class WebSocketRelayStage {
         // context, or one the executor bound for its own purposes, and a hop onto either would run the
         // client upgrade's completion off the connection's event loop.
         clientContext.runOnContext(v -> webSocketClient.connect(options)
-                .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs, releaseAdmission))
+                .onSuccess(upstreamWs -> onUpstreamConnected(ctx, route, upstreamWs,
+                        new RelayLifetime(clientContext, releaseAdmission, sessionRelay)))
                 .onFailure(failure -> onUpstreamFailure(ctx, route, failure, retainedSecurityHeaders)));
     }
 
+    /**
+     * What an established relay is bound to beyond its two legs: the client connection's context every
+     * close has to run on, the admission permit it returns at teardown, and the session it ends with.
+     *
+     * @param clientContext    the client connection's own Vert.x context
+     * @param releaseAdmission the edge's idempotent admission-release callback
+     * @param sessionRelay     the handle the relay is tracked under with its session
+     */
+    private record RelayLifetime(Context clientContext, Runnable releaseAdmission,
+            SessionRelayRegistry.Tracked sessionRelay) {
+    }
+
     private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs,
-            Runnable releaseAdmission) {
+            RelayLifetime lifetime) {
         // Hold the upstream leg's inbound frames from the moment it is acquired: an upstream that speaks
         // first would otherwise reach a leg with no frame handler during the asynchronous client upgrade.
         // RelaySession.start() resumes it once every handler is installed.
@@ -222,7 +263,7 @@ public final class WebSocketRelayStage {
                 .onSuccess(clientWs -> {
                     // Likewise for the client leg: its first frame may already be in flight.
                     clientWs.pause();
-                    establishRelay(ctx, route, clientWs, upstreamWs, releaseAdmission);
+                    establishRelay(ctx, route, clientWs, upstreamWs, lifetime);
                 })
                 .onFailure(failure -> {
                     // The upstream is already upgraded but the client handshake could not complete;
@@ -232,7 +273,7 @@ public final class WebSocketRelayStage {
                     // HTTP end handler no longer has a response to fire on.
                     LOGGER.debug(failure, "WebSocket client upgrade failed on route '%s': %s", route.getId(),
                             failure.getMessage());
-                    releaseAdmission.run();
+                    lifetime.releaseAdmission().run();
                     closeQuietly(upstreamWs, CLOSE_INTERNAL_ERROR, "client upgrade failed");
                 });
     }
@@ -265,7 +306,7 @@ public final class WebSocketRelayStage {
     }
 
     private void establishRelay(RoutingContext ctx, RouteRuntime route, ServerWebSocket clientWs,
-            WebSocket upstreamWs, Runnable releaseAdmission) {
+            WebSocket upstreamWs, RelayLifetime lifetime) {
         Integer declaredIdleSeconds = route.getEffectiveWebSocketIdleTimeoutSeconds();
         int idleSeconds = declaredIdleSeconds == null ? DEFAULT_IDLE_TIMEOUT_SECONDS : declaredIdleSeconds;
         LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, route.getId());
@@ -273,7 +314,7 @@ public final class WebSocketRelayStage {
         // The admission permit stays held for the relay's whole lifetime — the session releases it from
         // its single teardown funnel, never here at upgrade completion.
         RelaySession session = new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds,
-                releaseAdmission);
+                lifetime);
         observer.beforeWiring(session::start);
     }
 
@@ -373,21 +414,26 @@ public final class WebSocketRelayStage {
         private final int idleSeconds;
         private final long idleMillis;
         private final Runnable releaseAdmission;
+        private final Context clientContext;
+        private final SessionRelayRegistry.Tracked sessionRelay;
         /** The directions whose first data frame has already been reported to the enclosing stage's observer. */
         private final Set<RelayObserver.Direction> reportedDirections =
                 EnumSet.noneOf(RelayObserver.Direction.class);
         private long idleTimerId = -1L;
+        private long sessionExpiryTimerId = -1L;
         private boolean closed;
 
         RelaySession(Vertx vertx, String routeId, ServerWebSocket clientWs, WebSocket upstreamWs, int idleSeconds,
-                Runnable releaseAdmission) {
+                RelayLifetime lifetime) {
             this.vertx = vertx;
             this.routeId = routeId;
             this.clientWs = clientWs;
             this.upstreamWs = upstreamWs;
             this.idleSeconds = idleSeconds;
             this.idleMillis = idleSeconds * 1000L;
-            this.releaseAdmission = releaseAdmission;
+            this.releaseAdmission = lifetime.releaseAdmission();
+            this.clientContext = lifetime.clientContext();
+            this.sessionRelay = lifetime.sessionRelay();
         }
 
         void start() {
@@ -399,6 +445,9 @@ public final class WebSocketRelayStage {
             clientWs.exceptionHandler(this::abort);
             upstreamWs.exceptionHandler(this::abort);
             resetIdle();
+            // Before the resume below: a relay whose session is already over closes here and relays
+            // nothing — the frames still buffered meet the closed latch.
+            bindToSession();
             // Reported before the resume below, so the wiring time precedes every relayed frame's.
             observer.wired(System.nanoTime());
             // Both legs were paused at acquisition; only now that every handler is installed may their
@@ -406,6 +455,39 @@ public final class WebSocketRelayStage {
             // applied from a relayed frame.
             clientWs.resume();
             upstreamWs.resume();
+        }
+
+        /**
+         * Binds the relay to the end of the session it was opened with: the session's absolute expiry,
+         * by a timer of the relay's own, and an earlier end the session runtime reports. A relay opened
+         * without a session is bound to neither.
+         * <p>
+         * The reported end arrives on whatever thread ended the session — a logout, a login, the
+         * session sweep — so the action registered here only hands the close over to the client
+         * connection's context, where every other relay callback runs.
+         */
+        private void bindToSession() {
+            sessionRelay.onSessionEnd(() -> clientContext.runOnContext(v -> closeForSessionEnd()));
+            Optional<Duration> untilExpiry = sessionRelay.untilAbsoluteExpiry();
+            if (untilExpiry.isEmpty()) {
+                return;
+            }
+            // The session may have ended while the upstream was being dialed. Closing here, and not only
+            // through the hand-over above, keeps even the first buffered frame from being relayed.
+            if (sessionRelay.sessionEnded() || !untilExpiry.get().isPositive()) {
+                closeForSessionEnd();
+                return;
+            }
+            sessionExpiryTimerId = vertx.setTimer(Math.max(1L, untilExpiry.get().toMillis()),
+                    id -> closeForSessionEnd());
+        }
+
+        private void closeForSessionEnd() {
+            if (closed) {
+                return;
+            }
+            LOGGER.debug("WebSocket relay on route '%s' closed because its session ended", routeId);
+            closeBoth(CLOSE_SESSION_ENDED, SESSION_ENDED_REASON);
         }
 
         private void wire(WebSocketBase source, WebSocketBase target, RelayObserver.Direction direction) {
@@ -501,6 +583,10 @@ public final class WebSocketRelayStage {
             if (idleTimerId != -1L) {
                 vertx.cancelTimer(idleTimerId);
                 idleTimerId = -1L;
+            }
+            if (sessionExpiryTimerId != -1L) {
+                vertx.cancelTimer(sessionExpiryTimerId);
+                sessionExpiryTimerId = -1L;
             }
             closeLeg(clientWs, code, reason);
             closeLeg(upstreamWs, code, reason);

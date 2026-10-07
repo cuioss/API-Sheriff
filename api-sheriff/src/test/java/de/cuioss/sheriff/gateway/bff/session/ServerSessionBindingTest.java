@@ -72,7 +72,7 @@ class ServerSessionBindingTest {
 
     @BeforeEach
     void setUp() {
-        store = new InMemorySessionStore(16, IDLE_TIMEOUT);
+        store = new InMemorySessionStore(16, IDLE_TIMEOUT, Integer.MAX_VALUE, sessionId -> { });
         cookieCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         binding = new ServerSessionBinding(store, cookieCodec);
     }

@@ -69,6 +69,10 @@ public interface SessionStore {
      * <em>live</em> sessions still refuses fail-closed — the bound caps concurrent live sessions,
      * never accumulated dead ones.
      * <p>
+     * A new id for a subject that already holds as many live sessions as the implementation allows one
+     * subject ends that subject's oldest session — the one created earliest — before the new one is
+     * stored, and before the max-session bound is tested.
+     * <p>
      * A session that already exists is updated through {@link #replaceIfPresent} or
      * {@link #replaceAndReissueHandle}, never through this method. An id the store already holds is
      * nevertheless accepted here: the stored record is replaced in place, {@code cookieHandle} replaces

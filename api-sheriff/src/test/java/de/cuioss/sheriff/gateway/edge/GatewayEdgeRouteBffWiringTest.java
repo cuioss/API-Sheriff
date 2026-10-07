@@ -40,6 +40,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import javax.crypto.spec.SecretKeySpec;
 
 
@@ -54,6 +55,7 @@ import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -78,6 +80,7 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -169,6 +172,27 @@ class GatewayEdgeRouteBffWiringTest {
      * absolute lifetime is the only deadline in play unless a case sets its own.
      */
     static final Duration NO_IDLE_EFFECT = Duration.ofHours(8);
+    /** The login-binding cookie, which the gateway owns beside the session and logout-state cookies. */
+    private static final String BINDING_COOKIE_NAME = "__Host-sheriff-binding";
+
+    /**
+     * A fixture store: sixteen sessions, no per-subject bound a fixture reaches, and nobody told of
+     * the sessions it ends. A case that looks at what ends with a session builds its own store.
+     */
+    static InMemorySessionStore newStore() {
+        return new InMemorySessionStore(16, NO_IDLE_EFFECT, Integer.MAX_VALUE, sessionId -> { });
+    }
+
+    /**
+     * The cookie names an active runtime over {@code binding} owns, derived as the session runtime
+     * derives them: every cookie the binding clears, the login-binding cookie and the logout-state
+     * cookie.
+     */
+    static Set<String> gatewayCookieNames(SessionBinding binding) {
+        List<String> names = new ArrayList<>(List.of(BINDING_COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME));
+        binding.clearingSetCookieHeaders().forEach(header -> names.add(header.substring(0, header.indexOf('='))));
+        return Set.copyOf(names);
+    }
 
     /** A cookie handle for a session a fixture stores directly — an opaque value, never the session id. */
     private static String newCookieHandle() {
@@ -241,7 +265,7 @@ class GatewayEdgeRouteBffWiringTest {
             // a request arrives. The observable that IS specific to the session-aware assembly is the
             // wired SessionAuthenticationStage's own login challenge on an unauthenticated navigation.
             HttpClientResponse challenged = serveUnauthenticatedNavigation(sessionTable,
-                    activeRuntime(serverBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT))));
+                    activeRuntime(serverBinding(newStore())));
             HttpClientResponse unwired = serveUnauthenticatedNavigation(sessionTable, BffRuntime.inert());
 
             assertEquals(302, challenged.statusCode(),
@@ -285,7 +309,7 @@ class GatewayEdgeRouteBffWiringTest {
         @Test
         @DisplayName("Should still register a single catch-all route with an active runtime")
         void shouldRegisterCatchAll() {
-            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(serverBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT))));
+            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(serverBinding(newStore())));
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             assertEquals(1, router.getRoutes().size());
@@ -328,7 +352,7 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(rejectEverythingRoute())),
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT))), EgressTrustProfiles.unconsulted(),
+                    activeRuntime(serverBinding(newStore())), EgressTrustProfiles.unconsulted(),
                     PortalEndpoint.inert(),
                     gatewayJson());
             Router router = Router.router(vertx);
@@ -436,7 +460,7 @@ class GatewayEdgeRouteBffWiringTest {
             // A live session makes login initiation take the already-authenticated short-circuit, whose
             // redirect Location IS the return URL the edge extracted — the cleanest observable for the
             // wire name, and one that never reaches the IdP engine.
-            SessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
             String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
@@ -535,7 +559,7 @@ class GatewayEdgeRouteBffWiringTest {
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
-            SessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
             String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
@@ -610,7 +634,7 @@ class GatewayEdgeRouteBffWiringTest {
     @DisplayName("BffRuntime.dispatch routes each reserved path to its handler (not NO_ROUTE_MATCHED)")
     class ReservedDispatch {
 
-        private final SessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+        private final SessionStore store = newStore();
         private final BffRuntime runtime = activeRuntime(serverBinding(store));
         private final Instant now = Instant.parse("2026-07-25T10:00:00Z");
 
@@ -769,7 +793,7 @@ class GatewayEdgeRouteBffWiringTest {
         void setUp() {
             pendingStore = new PendingAuthorizationStore.InMemory(16);
             bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-            sessionBinding = serverBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT));
+            sessionBinding = serverBinding(newStore());
 
             FlowContext flow = FlowContext.create(ORIGIN + CALLBACK_PATH);
             state = flow.state();
@@ -797,6 +821,21 @@ class GatewayEdgeRouteBffWiringTest {
             assertTrue(response.setCookieHeaders().stream()
                             .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
                     "the session cookie is set from the query-mode callback");
+        }
+
+        @Test
+        @DisplayName("The 302 that sets the session cookie carries Cache-Control: no-store and no other header")
+        void shouldMarkCompletedLoginUncacheable() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
+                    queryCallback("code=auth-code&state=" + state), now);
+
+            assertAll("the answer that hands the browser its session cookie",
+                    () -> assertEquals(302, response.status(), "precondition: the login completed"),
+                    () -> assertTrue(response.setCookieHeaders().stream()
+                                    .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
+                            "precondition: it sets the session cookie"),
+                    () -> assertEquals(Map.of("Cache-Control", "no-store"), response.headers(),
+                            "a response carrying a session cookie must not be stored"));
         }
 
         @Test
@@ -869,7 +908,8 @@ class GatewayEdgeRouteBffWiringTest {
                             rawToken -> {
                                 throw new AssertionError("engine verify must not be reached");
                             },
-                            new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding),
+                            new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding,
+                            new LogoutTokenReplayGuard(16)),
                     sessionBinding);
             UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionBinding,
                     new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
@@ -880,7 +920,8 @@ class GatewayEdgeRouteBffWiringTest {
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
                     () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
                     engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld(),
-                    gatewayJson());
+                    gatewayJson(), gatewayCookieNames(sessionBinding),
+                    new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true);
         }
     }
 
@@ -1060,7 +1101,7 @@ class GatewayEdgeRouteBffWiringTest {
                     GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT)), jwksEndpoint),
+                    activeRuntime(serverBinding(newStore()), jwksEndpoint),
                     EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
                     gatewayJson());
             Router router = Router.router(vertx);
@@ -1254,7 +1295,7 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(keysPrefixRoute(upstream.actualPort()))),
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT)),
+                    activeRuntime(serverBinding(newStore()),
                             new ClientJwksEndpoint(signingKey.publicJwk())),
                     EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
                     gatewayJson());
@@ -1359,7 +1400,7 @@ class GatewayEdgeRouteBffWiringTest {
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(tokenHolder.getIssuerConfig()).build();
 
-            SessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
             String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
@@ -1544,7 +1585,7 @@ class GatewayEdgeRouteBffWiringTest {
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
-            SessionStore store = new InMemorySessionStore(16, NO_IDLE_EFFECT);
+            SessionStore store = newStore();
             underScopedCookie = createSession(store, Set.of());
             coveringCookie = createSession(store, Set.of(NEEDED_SCOPE));
 
@@ -1926,6 +1967,16 @@ class GatewayEdgeRouteBffWiringTest {
      * form — for the tests that drive the client JWKS path through the edge.
      */
     private static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint) {
+        return activeRuntime(binding, clientJwksEndpoint, new SessionRelayRegistry(16, Clock.systemUTC()),
+                sessionId -> true);
+    }
+
+    /**
+     * The same engine-free active runtime over the relay registry and the session-presence lookup the
+     * caller supplies — the two seams a session-bound WebSocket relay is tracked through.
+     */
+    static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
+            SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(16);
         Duration ttl = Duration.ofHours(1);
@@ -1954,7 +2005,8 @@ class GatewayEdgeRouteBffWiringTest {
                 rawToken -> {
                     throw new AssertionError("engine verify must not be reached");
                 },
-                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), binding), binding);
+                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), binding,
+                new LogoutTokenReplayGuard(16)), binding);
 
         UserInfoEndpoint userInfo = new UserInfoEndpoint(binding,
                 new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
@@ -1964,7 +2016,8 @@ class GatewayEdgeRouteBffWiringTest {
                 engineFreeReturnTargetScopes());
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
-                userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson());
+                userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson(),
+                gatewayCookieNames(binding), sessionRelays, sessionHeld);
     }
 
     /**
@@ -2032,7 +2085,8 @@ class GatewayEdgeRouteBffWiringTest {
         EndSessionFlow endSessionFlow = new EndSessionFlow(
                 new PostLogoutRedirectValidator(Set.of(ORIGIN + LOGOUT_RETURN_PATH)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow, session -> {
-        }, "https://idp.example.com/logout", ORIGIN + LOGOUT_RETURN_PATH, "/", Duration.ofMinutes(1));
+        }, () -> Optional.of("https://idp.example.com/logout"), ORIGIN + LOGOUT_RETURN_PATH, "/",
+                Duration.ofMinutes(1));
         return new LogoutEndpoint(rpInitiatedLogout, binding);
     }
 

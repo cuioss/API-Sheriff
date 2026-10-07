@@ -175,7 +175,7 @@ class TokenRefreshCoordinatorTest {
     @BeforeEach
     void setUp() {
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
-        store = new InMemorySessionStore(16, SESSION_TTL);
+        store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { });
         binding = new ServerSessionBinding(store,
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
         revoked = new CopyOnWriteArrayList<>();
@@ -660,7 +660,8 @@ class TokenRefreshCoordinatorTest {
 
         @BeforeEach
         void setUpSaturation() {
-            saturationStore = new InMemorySessionStore(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + 16, SESSION_TTL);
+            saturationStore = new InMemorySessionStore(TokenRefreshCoordinator.MAX_BACKOFF_ENTRIES + 16, SESSION_TTL,
+                    Integer.MAX_VALUE, sessionId -> { });
             saturationBinding = new ServerSessionBinding(saturationStore,
                     new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
         }
@@ -1810,7 +1811,8 @@ class TokenRefreshCoordinatorTest {
         void shouldSkipRevocationBeyondInFlightBound() {
             TestLogLevel.DEBUG.addLogger(TokenRefreshCoordinator.class);
             InMemorySessionStore wideStore = new InMemorySessionStore(
-                    TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS + 8, SESSION_TTL);
+                    TokenRefreshCoordinator.MAX_CONCURRENT_REVOCATIONS + 8, SESSION_TTL, Integer.MAX_VALUE,
+                    sessionId -> { });
             SessionBinding wideBinding = new ServerSessionBinding(wideStore,
                     new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
             List<Runnable> parked = new CopyOnWriteArrayList<>();

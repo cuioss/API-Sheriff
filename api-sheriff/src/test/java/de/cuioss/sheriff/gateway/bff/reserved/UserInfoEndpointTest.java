@@ -80,7 +80,7 @@ class UserInfoEndpointTest {
     @BeforeEach
     void setUp() {
         // The idle timeout equals the absolute lifetime, so it is not in play outside the idle cases.
-        sessionStore = new InMemorySessionStore(16, TTL);
+        sessionStore = new InMemorySessionStore(16, TTL, Integer.MAX_VALUE, sessionId -> { });
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, TTL);
         claimFilter = new ClaimAllowlistFilter(List.of("sub", "name", "roles"), List.of("sub", "name", "roles"));
         endpoint = new UserInfoEndpoint(new ServerSessionBinding(sessionStore, sessionCodec), claimFilter,
@@ -116,7 +116,8 @@ class UserInfoEndpointTest {
 
         @BeforeEach
         void bindIdleStore() {
-            InMemorySessionStore idleStore = new InMemorySessionStore(16, IDLE_TIMEOUT);
+            InMemorySessionStore idleStore = new InMemorySessionStore(16, IDLE_TIMEOUT, Integer.MAX_VALUE,
+                    sessionId -> { });
             idleStore.create(session(), COOKIE_HANDLE, T0);
             idleEndpoint = new UserInfoEndpoint(new ServerSessionBinding(idleStore, sessionCodec), claimFilter,
                     validatedClaims());

@@ -36,16 +36,19 @@ import de.cuioss.tools.logging.CuiLogger;
  * {@code WARN} flood by posting to it without a {@code logout_token}, a session, or any credential.
  * <p>
  * <strong>The rule, decided rather than forgotten.</strong> The two cases are split by
- * {@link LogoutRejection#isSignatureVerified()}:
+ * {@link LogoutRejection#isRepeatable()}:
  * <ul>
- *   <li><strong>Signature-verified rejections</strong> ({@code issuer-mismatch},
- *       {@code audience-mismatch}, {@code iat-outside-window}, {@code events-missing},
- *       {@code nonce-present}, {@code no-sub-or-sid}) are reachable only by a token the configured
+ *   <li><strong>Rejections of a signed token, once per token</strong> ({@code type-mismatch},
+ *       {@code issuer-mismatch}, {@code audience-mismatch}, {@code iat-outside-window},
+ *       {@code expired}, {@code events-missing}, {@code nonce-present}, {@code no-sub-or-sid},
+ *       {@code jti-missing}, {@code replay-memory-full}) are reached only by a token the configured
  *       identity provider actually signed. An attacker cannot mint one, so there is no flood to
  *       bound: they are recorded at {@code WARN} on every occurrence.</li>
- *   <li><strong>Pre-signature rejections</strong> ({@code no-idp-destruction-capability},
- *       {@code missing-logout-token}, {@code signature-rejected}) are attacker-triggerable, so they
- *       are <em>latched</em>: the FIRST occurrence of each reason in a process is recorded at
+ *   <li><strong>Repeatable rejections</strong> — the pre-signature ones
+ *       ({@code no-idp-destruction-capability}, {@code missing-logout-token},
+ *       {@code signature-rejected}), which any caller can drive, and {@code replayed}, which the
+ *       holder of one captured signed token can drive until that token leaves its freshness window
+ *       — are <em>latched</em>: the FIRST occurrence of each reason in a process is recorded at
  *       {@code WARN} and every repeat drops to {@code DEBUG}. The flood is therefore bounded to at
  *       most one line per reason for the lifetime of the process, while the first real occurrence
  *       still reaches the default log level — which is the whole point.</li>
@@ -86,7 +89,7 @@ public final class LogoutRejectionLog {
      */
     public void recordRejection(LogoutRejection reason) {
         Objects.requireNonNull(reason, "reason");
-        if (reason.isSignatureVerified() || latched.add(reason)) {
+        if (!reason.isRepeatable() || latched.add(reason)) {
             logger.warn(BffLogMessages.WARN.LOGOUT_TOKEN_REJECTED, reason.token());
             return;
         }

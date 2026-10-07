@@ -113,6 +113,17 @@ import org.jspecify.annotations.Nullable;
  * now-consumed binding cookie (single-use), and redirects the browser to the record's
  * same-origin-validated return URL.
  * <p>
+ * <strong>A login replaces the session the browser already had.</strong> When the callback request
+ * still carries a cookie that resolves a live session, that session is destroyed through
+ * {@link SessionBinding#destroy} before the new one is bound — whether it belongs to the same subject
+ * or to another. A browser therefore holds at most one session of this gateway, and a session
+ * established before the login cannot outlive it. In server mode the earlier session is removed from
+ * the store; in cookie mode there is nothing held to remove, and the new cookie replaces the earlier
+ * one in the browser. A widening callback is the opposite case and keeps its session (below). If the
+ * new session then cannot be bound, the answer is the {@code 500} described above and carries no
+ * cookie: in server mode the browser is left without a session, in cookie mode it still holds the
+ * cookie it presented.
+ * <p>
  * <strong>Active scope set.</strong> The new session's active scope set {@code A} — the {@code scope}
  * every later near-expiry refresh grant sends — is the access token's granted {@code scope} claim, or
  * the scope set the authorization request asked for (recorded on the pending record) when the token
@@ -335,7 +346,7 @@ public final class CallbackEndpoint {
             return CallbackOutcome.error(BAD_REQUEST);
         }
         PendingAuthorizationRecord.Widening widening = pending.widening();
-        return widening == null ? completeLogin(result, pending, now)
+        return widening == null ? completeLogin(result, pending, cookieHeader, now)
                 : completeWidening(result, pending, widening, cookieHeader, now);
     }
 
@@ -450,8 +461,11 @@ public final class CallbackEndpoint {
         return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }
 
+    /**
+     * Completes a login: ends the session the request still carries, then binds the new one.
+     */
     private CallbackOutcome completeLogin(AuthorizationCodeFlow.AuthenticationResult result,
-            PendingAuthorizationRecord pending, Instant now) {
+            PendingAuthorizationRecord pending, @Nullable String cookieHeader, Instant now) {
         AccessTokenContent accessToken = result.accessToken();
         IdTokenContent idToken = result.idToken();
         Optional<String> subject = idToken.getSubject().or(accessToken::getSubject);
@@ -482,6 +496,14 @@ public final class CallbackEndpoint {
                 .activeScopes(loginScopes)
                 .grantedScopes(loginScopes)
                 .build();
+        // A login never leaves an earlier session behind: the session the request's cookie still
+        // resolves is ended before the new one is bound, whoever it belonged to. It is ended first, so
+        // a binding at its capacity bound regains that session's place for the new one.
+        Optional<SessionRecord> previous = sessionBinding.resolve(cookieHeader, now);
+        if (previous.isPresent()) {
+            sessionBinding.destroy(previous.get());
+            LOGGER.debug("OIDC callback ended the session the request carried before binding the new one");
+        }
         SessionBinding.BoundSession bound;
         try {
             bound = sessionBinding.bind(session, now);

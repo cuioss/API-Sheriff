@@ -114,7 +114,7 @@ class LoginInitiationEndpointTest {
         loginFlow = new LoginFlow(authorization, pendingStore, bindingCodec, GATEWAY_ORIGIN, CONFIGURED_DEFAULT);
 
         // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
-        sessionStore = new InMemorySessionStore(16, SESSION_TTL);
+        sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> { });
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         endpoint = new LoginInitiationEndpoint(loginFlow, new ServerSessionBinding(sessionStore, sessionCodec),
                 GATEWAY_ORIGIN, returnTargetScopes());

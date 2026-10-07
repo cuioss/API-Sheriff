@@ -161,6 +161,60 @@ class ConfigLoaderTest {
         assertTrue(loaded.endpoints().isEmpty());
     }
 
+    /** A server-mode {@code oidc} block whose {@code session} block ends with {@code sessionMember}. */
+    private static String gatewayWithSessionMember(String sessionMember) {
+        return """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  client_secret: "${OIDC_CLIENT_SECRET}"
+                  scopes: ["openid"]
+                  redirect_uri: "https://gw.example.com/callback"
+                  session:
+                    mode: "server"
+                    %s
+                """.formatted(sessionMember);
+    }
+
+    @Test
+    void bindsTheDeclaredPerSubjectSessionBound() throws Exception {
+        writeConfig("gateway.yaml", gatewayWithSessionMember("max_sessions_per_subject: 2"));
+
+        GatewayConfig gateway = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load(IGNORE_DEFAULTED).gateway();
+
+        assertEquals(2, gateway.oidc().session().maxSessionsPerSubject(),
+                "oidc.session.max_sessions_per_subject binds to the session model");
+        assertEquals(2, gateway.oidc().session().effectiveMaxSessionsPerSubject(),
+                "and is the bound the model resolves");
+    }
+
+    @Test
+    void leavesAnOmittedPerSubjectSessionBoundAbsentAndResolvesTheDefault() throws Exception {
+        writeConfig("gateway.yaml", gatewayWithSessionMember("max_sessions: 10000"));
+
+        GatewayConfig gateway = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load(IGNORE_DEFAULTED).gateway();
+
+        assertNull(gateway.oidc().session().maxSessionsPerSubject(),
+                "control: nothing is bound when the key is not declared");
+        assertEquals(10, gateway.oidc().session().effectiveMaxSessionsPerSubject(),
+                "the omitted key resolves to the default of ten");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"max_sessions_per_subject: 0", "max_sessions_per_subject: -1",
+            "max_sessions_per_subject: \"2\"", "max_sessions_per_subject: 1.5"})
+    void schemaRefusesAPerSubjectSessionBoundThatIsNotAPositiveInteger(String sessionMember) throws Exception {
+        writeConfig("gateway.yaml", gatewayWithSessionMember(sessionMember));
+
+        ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t"));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+        assertTrue(exception.errors().stream()
+                        .anyMatch(error -> error.pointer().contains("max_sessions_per_subject")),
+                () -> "expected an error pointing at the key, got: " + exception.errors());
+    }
+
     @Test
     void reportsMissingEnvSecretWithPointer() throws Exception {
         copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");

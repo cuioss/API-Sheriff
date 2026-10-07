@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.runtime;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -157,6 +158,90 @@ class SessionAuthenticationStageTest {
                             "the under-scoped session's token is never recorded for the upstream"),
                     () -> assertTrue(request.shortCircuitStatus().isEmpty(),
                             "an API call is refused, never redirected"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Admitting session — what a long-lived relay is tracked under")
+    class AdmittingSessionRecorded {
+
+        @Test
+        @DisplayName("records the session's identity and absolute expiry on a request it lets through")
+        void recordsIdentityAndExpiryOfTheSessionLetThrough() {
+            SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), identityRefresh(),
+                    redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
+
+            stage.process(request);
+
+            assertAll("the request names the session it was admitted with",
+                    () -> assertEquals(Optional.of(SESSION_ID),
+                            request.admittingSession().map(PipelineRequest.AdmittingSession::sessionId),
+                            "the stable session identity, never the cookie value"),
+                    () -> assertEquals(Optional.of(SESSION_EXPIRY),
+                            request.admittingSession().map(PipelineRequest.AdmittingSession::expiresAt)),
+                    () -> assertFalse(request.admittingSession().orElseThrow().toString().contains(SESSION_ID),
+                            "the identity is not printed"));
+        }
+
+        @Test
+        @DisplayName("records it with token_relay off too: the relay is opened with the session either way")
+        void recordsItWithoutTokenRelay() {
+            SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), identityRefresh(),
+                    redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders(), false);
+
+            stage.process(request);
+
+            assertEquals(Optional.of(SESSION_ID),
+                    request.admittingSession().map(PipelineRequest.AdmittingSession::sessionId));
+        }
+
+        @Test
+        @DisplayName("records none on a navigation it redirects into login")
+        void recordsNoneOnRedirect() {
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
+
+            stage.process(request);
+
+            assertEquals(Optional.of(302), request.shortCircuitStatus(), "precondition: the request was redirected");
+            assertEquals(Optional.empty(), request.admittingSession());
+        }
+
+        @Test
+        @DisplayName("records none on a request it challenges 401")
+        void recordsNoneOnChallenge() {
+            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertEquals(Optional.empty(), request.admittingSession());
+        }
+
+        @Test
+        @DisplayName("records none on a live session it refuses for a missing scope")
+        void recordsNoneOnScopeRefusal() {
+            SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), identityRefresh(),
+                    redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(NEEDED_SCOPE), xhrHeaders());
+
+            assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertEquals(Optional.empty(), request.admittingSession());
+        }
+
+        @Test
+        @DisplayName("records none when the refresh ended the session")
+        void recordsNoneWhenTheRefreshEndedTheSession() {
+            SessionAuthenticationStage stage = stage(bindingWith(session(MEDIATED_TOKEN)), sessionEndedRefresh(),
+                    redirectLogin());
+            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
+
+            assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertEquals(Optional.empty(), request.admittingSession());
         }
     }
 
@@ -989,7 +1074,8 @@ class SessionAuthenticationStageTest {
         @Test
         @DisplayName("answers a request still carrying a re-issued-away cookie value 401 without a clearing cookie, and serves the new value")
         void previousCookieValueIsUnauthenticatedOnce() {
-            ServerSessionBinding binding = new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT), CODEC);
+            ServerSessionBinding binding = new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT,
+                    Integer.MAX_VALUE, sessionId -> { }), CODEC);
             SessionRecord live = session(MEDIATED_TOKEN);
             String previousSetCookie = binding.bind(live, NOW).setCookieHeaders().getFirst();
             String reissuedSetCookie = binding.persistReissuingCookie(live, NOW).orElseThrow()
@@ -1079,7 +1165,8 @@ class SessionAuthenticationStageTest {
     }
 
     private static SessionBinding emptyBinding() {
-        return new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT), CODEC);
+        return new ServerSessionBinding(new InMemorySessionStore(16, NO_IDLE_EFFECT,
+                    Integer.MAX_VALUE, sessionId -> { }), CODEC);
     }
 
     static SessionBinding bindingWith(SessionRecord session) {
@@ -1088,7 +1175,7 @@ class SessionAuthenticationStageTest {
 
     /** A server-mode binding holding {@code session} under {@link #COOKIE_HANDLE}, created at {@link #NOW}. */
     private static SessionBinding bindingWith(SessionRecord session, Duration idleTimeout) {
-        InMemorySessionStore store = new InMemorySessionStore(16, idleTimeout);
+        InMemorySessionStore store = new InMemorySessionStore(16, idleTimeout, Integer.MAX_VALUE, sessionId -> { });
         store.create(session, COOKIE_HANDLE, NOW);
         return new ServerSessionBinding(store, CODEC);
     }

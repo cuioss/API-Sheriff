@@ -122,20 +122,36 @@ class LogoutRejectionLogTest {
     @DisplayName("Rejection classification")
     class Classification {
 
-        private static final Set<LogoutRejection> ATTACKER_REACHABLE = EnumSet.of(
+        /**
+         * The reasons a party other than the identity provider can cause as often as it likes: the
+         * three reached before the signature is verified, and the repeat of one captured token.
+         */
+        private static final Set<LogoutRejection> REPEATABLE = EnumSet.of(
                 LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY,
                 LogoutRejection.MISSING_LOGOUT_TOKEN,
-                LogoutRejection.SIGNATURE_REJECTED);
+                LogoutRejection.SIGNATURE_REJECTED,
+                LogoutRejection.REPLAYED);
 
         @Test
-        @DisplayName("Should classify exactly the pre-signature reasons as attacker-reachable")
+        @DisplayName("Should classify exactly the pre-signature reasons and the replay as repeatable")
         void shouldClassifyEveryReason() {
             for (LogoutRejection reason : LogoutRejection.values()) {
-                boolean expectedSignatureVerified = !ATTACKER_REACHABLE.contains(reason);
-                assertEquals(expectedSignatureVerified, reason.isSignatureVerified(),
+                assertEquals(REPEATABLE.contains(reason), reason.isRepeatable(),
                         "classification of " + reason + " decides whether it is latched — a reason "
-                                + "reachable before signature verification must never be unlatched");
+                                + "a caller can repeat at will must never be unlatched");
             }
+        }
+
+        @Test
+        @DisplayName("Should latch the replay and report a full replay memory on every occurrence")
+        void shouldLatchReplayButNotFullMemory() {
+            for (int occurrence = 0; occurrence < REPEATS; occurrence++) {
+                rejectionLog.recordRejection(LogoutRejection.REPLAYED);
+                rejectionLog.recordRejection(LogoutRejection.REPLAY_MEMORY_FULL);
+            }
+
+            assertEquals(1, warningsFor(LogoutRejection.REPLAYED));
+            assertEquals(REPEATS, warningsFor(LogoutRejection.REPLAY_MEMORY_FULL));
         }
 
         @Test

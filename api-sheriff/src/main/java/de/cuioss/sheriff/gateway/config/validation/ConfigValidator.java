@@ -195,7 +195,9 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The session idle-timeout rule adds one more: a declared {@code oidc.session.idle_timeout_seconds}
  * must be at least {@code 1} and at most the effective {@code ttl_seconds}. An omitted key is always
- * accepted, because it resolves to a value inside that range.
+ * accepted, because it resolves to a value inside that range. The per-subject session bound follows
+ * the same shape: a declared {@code oidc.session.max_sessions_per_subject} must be at least {@code 1}
+ * and at most the effective {@code max_sessions}, and is refused in cookie mode.
  * <p>
  * Pre-boot: the offline {@code --validate-config} check runs this validator before the framework
  * starts (ADR-0061, ADR-0062), so the rule set is supplied at construction and the validator carries
@@ -270,6 +272,8 @@ public final class ConfigValidator {
     private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
     private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
     private static final String OIDC_SESSION_IDLE_TIMEOUT_POINTER = "/oidc/session/idle_timeout_seconds";
+    private static final String OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER =
+            "/oidc/session/max_sessions_per_subject";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
     private static final String OIDC_CLIENT_SECRET_POINTER = "/oidc/client_secret";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
@@ -411,6 +415,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionIdleTimeout(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateSessionMaxSessionsPerSubject(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSessionCookieName(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateClientAuthentication(gateway, errors),
@@ -2244,6 +2249,52 @@ public final class ConfigValidator {
         if (max != null && max <= 0) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_POINTER,
                     "oidc session max_sessions must be a positive integer, but was %d".formatted(max)));
+        }
+    }
+
+    /**
+     * Rule: the bound on the live sessions of one subject (server mode). A <em>declared</em>
+     * {@code oidc.session.max_sessions_per_subject} must be at least {@code 1} and at most the
+     * effective {@code max_sessions}, and must not be declared in cookie mode.
+     * <p>
+     * A value below {@code 1} would leave no subject able to hold a session. A value above the
+     * effective {@code max_sessions} can never take effect — the store refuses a session at
+     * {@code max_sessions} first — so it states a bound the gateway does not enforce and is refused
+     * rather than silently capped. Cookie mode stores no sessions, so it can neither count a subject's
+     * sessions nor end one: the key would parse and do nothing there, and is refused for that reason.
+     * <p>
+     * The upper bound is the one the runtime resolves
+     * ({@link OidcConfig.Session#effectiveMaxSessions()}), so an omitted {@code max_sessions} is
+     * compared as its default. A no-op when the key is omitted:
+     * {@link OidcConfig.Session#effectiveMaxSessionsPerSubject()} then resolves a value inside the
+     * range by construction, and cookie mode never reads it. Every violation collects into the shared
+     * list; the rule never fails fast (ADR-0009).
+     */
+    private static void validateSessionMaxSessionsPerSubject(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig.Session session = oidcSession(gateway);
+        Integer declared = session == null ? null : session.maxSessionsPerSubject();
+        if (declared == null) {
+            return;
+        }
+        if (session.isCookieMode()) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER,
+                    "oidc session max_sessions_per_subject is declared in cookie session mode, which stores no "
+                            + "sessions and cannot bound them per subject — remove the key, or use server "
+                            + "session mode"));
+            return;
+        }
+        if (declared < 1) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER,
+                    "oidc session max_sessions_per_subject must be at least 1, but was %d".formatted(declared)));
+            return;
+        }
+        int effectiveMaxSessions = session.effectiveMaxSessions();
+        if (declared > effectiveMaxSessions) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER,
+                    ("oidc session max_sessions_per_subject %d exceeds the effective max_sessions %d; the store "
+                            + "refuses a session at max_sessions first, so a bound per subject above it never "
+                            + "takes effect — declare a value of at most max_sessions, or omit the key")
+                            .formatted(declared, effectiveMaxSessions)));
         }
     }
 

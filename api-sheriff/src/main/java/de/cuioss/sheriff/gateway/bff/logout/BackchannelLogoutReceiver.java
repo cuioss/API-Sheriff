@@ -22,7 +22,6 @@ import java.util.Objects;
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.token.commons.error.TokenSheriffException;
-import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
@@ -35,6 +34,13 @@ import de.cuioss.tools.logging.CuiLogger;
  * ADR-11); a test binds it to a hand-built token or a failing stub. Keeping the JWKS wiring behind
  * the seam decouples the receiver from the confidential-client configuration and makes both the
  * signature-failure and the claim-rejection paths unit-testable without a live IdP.
+ * <p>
+ * <strong>Each token is acted on once.</strong> A token that passed every claim check is handed to the
+ * {@link LogoutTokenReplayGuard}, which remembers its {@code jti} for as long as the token stays
+ * inside its freshness window. A second delivery of the same token in that time is rejected and
+ * destroys nothing — so a logout token cannot be used again to end a session the subject opened
+ * after the logout. A token the guard cannot remember, because its memory is at its bound, is
+ * rejected as well.
  * <p>
  * Destruction is fail-closed and precise: a token carrying a {@code sid} destroys exactly that IdP
  * session ({@link SessionBinding#destroyBySid}); a token carrying only a {@code sub} destroys every
@@ -63,20 +69,25 @@ public final class BackchannelLogoutReceiver {
     private final LogoutTokenVerifier verifier;
     private final LogoutTokenValidator validator;
     private final SessionBinding sessionBinding;
+    private final LogoutTokenReplayGuard replayGuard;
     private final LogoutRejectionLog rejectionLog = new LogoutRejectionLog(LOGGER);
 
     /**
-     * Assembles the receiver with the signature-verification seam, the claim residual, and the binding.
+     * Assembles the receiver with the signature-verification seam, the claim residual, the binding
+     * and the memory of accepted tokens.
      *
      * @param verifier       the engine signature-verification seam (bound to the JWKS token validation)
      * @param validator      the pure logout-token claim pipeline
      * @param sessionBinding the mode-neutral session binding the IdP-driven destruction runs through
+     * @param replayGuard    the memory of accepted {@code jti} values; a token it does not admit is
+     *                       refused
      */
     public BackchannelLogoutReceiver(LogoutTokenVerifier verifier, LogoutTokenValidator validator,
-            SessionBinding sessionBinding) {
+            SessionBinding sessionBinding, LogoutTokenReplayGuard replayGuard) {
         this.verifier = Objects.requireNonNull(verifier, "verifier");
         this.validator = Objects.requireNonNull(validator, "validator");
         this.sessionBinding = Objects.requireNonNull(sessionBinding, "sessionBinding");
+        this.replayGuard = Objects.requireNonNull(replayGuard, "replayGuard");
     }
 
     /**
@@ -96,7 +107,7 @@ public final class BackchannelLogoutReceiver {
             return BackchannelResult.rejected();
         }
 
-        TokenContent token;
+        VerifiedLogoutToken token;
         try {
             token = verifier.verify(rawLogoutToken);
         } catch (TokenSheriffException signatureFailure) {
@@ -112,7 +123,26 @@ public final class BackchannelLogoutReceiver {
                 rejectionLog.recordRejection(reason);
                 yield BackchannelResult.rejected();
             }
-            case LogoutTokenValidator.Verdict.Accepted(var subject) -> destroy(subject);
+            case LogoutTokenValidator.Verdict.Accepted accepted -> admitOnce(accepted, now);
+        };
+    }
+
+    /**
+     * Acts on a token that passed every claim check, unless it was acted on before. The token is
+     * remembered <em>before</em> any session is destroyed, so two deliveries of one token racing each
+     * other cannot both be acted on. A token that cannot be remembered is refused, never acted on.
+     */
+    private BackchannelResult admitOnce(LogoutTokenValidator.Verdict.Accepted accepted, Instant now) {
+        return switch (replayGuard.admit(accepted.jti(), accepted.acceptableUntil(), now)) {
+            case ADMITTED -> destroy(accepted.subject());
+            case REPLAYED -> {
+                rejectionLog.recordRejection(LogoutRejection.REPLAYED);
+                yield BackchannelResult.rejected();
+            }
+            case FULL -> {
+                rejectionLog.recordRejection(LogoutRejection.REPLAY_MEMORY_FULL);
+                yield BackchannelResult.rejected();
+            }
         };
     }
 
@@ -140,7 +170,7 @@ public final class BackchannelLogoutReceiver {
 
     /**
      * The engine signature-verification seam. The session runtime binds it to the engine's JWKS
-     * token validation; a test binds it to a hand-built {@link TokenContent} or a stub that throws.
+     * token validation; a test binds it to a hand-built {@link VerifiedLogoutToken} or a stub that throws.
      * Keeping the confidential-client/JWKS wiring behind the seam decouples the receiver from it and
      * makes the signature-failure path unit-testable without a live IdP.
      *
@@ -154,11 +184,11 @@ public final class BackchannelLogoutReceiver {
          * Signature-verifies (and structurally validates) a raw logout token via the JWKS infrastructure.
          *
          * @param rawLogoutToken the raw logout-token JWT
-         * @return the signature-verified token content
+         * @return the signature-verified claims together with the token's {@code typ} header
          * @throws de.cuioss.sheriff.token.commons.error.TokenSheriffException when the signature or
          *         structural validation fails
          */
-        TokenContent verify(String rawLogoutToken);
+        VerifiedLogoutToken verify(String rawLogoutToken);
     }
 
     /**

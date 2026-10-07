@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.quarkus;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -26,6 +27,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
@@ -45,8 +47,10 @@ import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
+import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
@@ -69,6 +73,7 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
@@ -248,8 +253,10 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Lazy discovery.</strong> The OIDC provider metadata is resolved through a memoized supplier
  * on first engine use, not at boot: a BFF gateway in either session mode therefore boots (and is
- * unit-testable) without a live IdP, and the discovery-dependent {@code end_session_endpoint} the
- * logout leg needs is materialized only when the first logout arrives.
+ * unit-testable) without a live IdP. The discovery-dependent {@code end_session_endpoint} is read
+ * by the logout leg per request, after the local session has been ended: a provider that publishes
+ * none, or metadata that cannot be obtained, leaves the logout a local one that lands on
+ * {@code final_redirect}.
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
@@ -272,7 +279,6 @@ public class BffRuntimeProducer {
 
     private static final CuiLogger LOGGER = new CuiLogger(BffRuntimeProducer.class);
 
-    private static final int DEFAULT_MAX_SESSIONS = 10_000;
     private static final int DEFAULT_MAX_PENDING = 10_000;
     private static final int DEFAULT_REFRESH_LEEWAY_SECONDS = 30;
     /**
@@ -291,6 +297,19 @@ public class BffRuntimeProducer {
     /** The value of {@link #sessionSweepTimer} while no sweep timer is registered; never a Vert.x timer id. */
     private static final long NO_SWEEP_TIMER = -1L;
     private static final Duration BACKCHANNEL_FRESHNESS_WINDOW = Duration.ofMinutes(2);
+    /**
+     * How many accepted back-channel logout tokens are remembered at once, each for the
+     * {@link #BACKCHANNEL_FRESHNESS_WINDOW} it could be accepted in. Fixed, not configurable: the
+     * bound is reached only when the identity provider delivers more distinct logout tokens than this
+     * inside one window, and a token beyond it is refused rather than acted on unremembered.
+     */
+    static final int LOGOUT_TOKEN_REPLAY_CAPACITY = 10_000;
+    /**
+     * How many long-lived relays opened with a session are tracked at once, so each can be closed when
+     * its session ends. Fixed, not configurable. A relay beyond it is refused before it is opened,
+     * never opened untracked; the edge's own WebSocket relay budget is a separate, earlier limit.
+     */
+    static final int SESSION_RELAY_CAPACITY = 10_000;
     private static final Duration LOGOUT_STATE_TTL = Duration.ofMinutes(1);
     private static final String DEFAULT_FINAL_REDIRECT = "/";
     /** The fallback return target when {@code oidc.login.default_return_url} is omitted. */
@@ -421,8 +440,8 @@ public class BffRuntimeProducer {
         String cookieName = declaredCookieName == null
                 ? SessionCookieCodec.DEFAULT_COOKIE_NAME
                 : declaredCookieName;
-        Integer declaredMaxSessions = session.maxSessions();
-        int maxSessions = declaredMaxSessions == null ? DEFAULT_MAX_SESSIONS : declaredMaxSessions;
+        // Both bounds are resolved through the methods boot validation shares.
+        int maxSessions = session.effectiveMaxSessions();
         OidcConfig.Refresh refresh = session.refresh();
         // refresh.enabled is the switch for the WHOLE transparent-refresh path, not a hint: it governs
         // both whether the refresh token is retained and whether the coordinator
@@ -489,11 +508,20 @@ public class BffRuntimeProducer {
         // binding of either mode: the store behind the server binding, or the cookie binding itself.
         Duration idleTimeout = Duration.ofSeconds(session.effectiveIdleTimeoutSeconds());
         Clock clock = Clock.systemUTC();
+        // The long-lived relays opened with a session, in both modes: each is closed at its session's
+        // absolute expiry. Only a server-mode store can additionally report a session that ended
+        // earlier, so only there is the registry wired as the store's end listener.
+        SessionRelayRegistry sessionRelays = new SessionRelayRegistry(SESSION_RELAY_CAPACITY, clock);
+        Predicate<String> sessionHeld;
         SessionBinding sessionBinding;
         if (session.isCookieMode()) {
             sessionBinding = cookieSessionBinding(session, cookieName, sessionTtl, idleTimeout);
+            // A stateless binding holds no session, so it has nothing to report as gone.
+            sessionHeld = sessionId -> true;
         } else {
-            SessionStore sessionStore = new InMemorySessionStore(maxSessions, idleTimeout);
+            InMemorySessionStore sessionStore = new InMemorySessionStore(maxSessions, idleTimeout,
+                    session.effectiveMaxSessionsPerSubject(), sessionRelays);
+            sessionHeld = sessionStore::isHeld;
             sessionBinding = new ServerSessionBinding(sessionStore, new SessionCookieCodec(cookieName, sessionTtl));
             // Server mode only: cookie mode holds no session to sweep.
             registerSessionSweep(sessionStore, clock);
@@ -646,23 +674,32 @@ public class BffRuntimeProducer {
         // capability, so a stateless binding answers a deliberate 404 on the reserved path rather than
         // letting that path fall through to the proxy route table.
         // The verifier seam is SignatureOnlyTokenVerifier and deliberately NOT idBridge::validateRefreshedIdToken:
-        // a back-channel logout token is not an ID token (no exp, sub optional, no azp), so the
+        // a back-channel logout token is not an ID token (sub optional, no azp), so the
         // ID-token pipeline rejected every spec-valid sid-only token before LogoutTokenValidator —
         // which already implements the full back-channel claim set — was ever reached (BFF-11).
-        // LogoutTokenValidator stays the SOLE claim authority on this path.
+        // LogoutTokenValidator stays the SOLE claim authority on this path; the verifier hands it the
+        // token's typ header beside the claims, and the replay guard lets each token act once.
+        SignatureOnlyTokenVerifier signatureVerifier = logoutTokenVerifier.get();
         BackchannelLogoutReceiver backchannelReceiver = new BackchannelLogoutReceiver(
-                logoutTokenVerifier.get()::verify,
+                rawLogoutToken -> {
+                    SignatureOnlyTokenVerifier.VerifiedToken verified = signatureVerifier.verify(rawLogoutToken);
+                    return new VerifiedLogoutToken(verified.content(), verified.headerType());
+                },
                 new LogoutTokenValidator(issuer, clientId, BACKCHANNEL_FRESHNESS_WINDOW),
-                sessionBinding);
+                sessionBinding,
+                new LogoutTokenReplayGuard(LOGOUT_TOKEN_REPLAY_CAPACITY));
         BackchannelLogoutEndpoint backchannelLogoutEndpoint =
                 new BackchannelLogoutEndpoint(backchannelReceiver, sessionBinding);
 
-        // D5 RP-initiated logout — lazy so the discovery-sourced end_session_endpoint is resolved on
-        // first logout, not at boot. buildLogoutEndpoint binds the token-revocation seam to a no-op, so
-        // no revocation request is sent on logout; the authoritative logout is the local session
-        // destruction the LogoutEndpoint performs.
+        // D5 RP-initiated logout. The discovery-sourced end_session_endpoint is handed over as the
+        // memoized metadata supplier itself, never as a resolved value: the logout asks for it per
+        // request and only after the local session is gone, so neither a provider without that
+        // endpoint nor a failed discovery can stand between a user and the end of their session.
+        // buildLogoutEndpoint binds the token-revocation seam to a no-op, so no revocation request is
+        // sent on logout; the authoritative logout is the local session destruction the
+        // LogoutEndpoint performs.
         Supplier<LogoutEndpoint> logoutEndpoint = memoize(() -> buildLogoutEndpoint(oidc, gatewayOrigin,
-                metadata.get(), sessionBinding));
+                metadata, sessionBinding));
 
         CsrfDefence csrfDefence = new CsrfDefence(trustedOrigins);
 
@@ -673,7 +710,33 @@ public class BffRuntimeProducer {
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint, stepUpEndpoint,
-                clientCredential.jwksEndpoint(), gatewayJson);
+                clientCredential.jwksEndpoint(), gatewayJson, gatewayCookieNames(sessionBinding), sessionRelays,
+                sessionHeld);
+    }
+
+    /**
+     * Names every cookie the assembled runtime sets, for the edge to keep an upstream response from
+     * setting one of them. The binding's own cookies are read off its clearing values — one per
+     * cookie it sets, by its contract — so the set follows the session mode without this producer
+     * knowing which cookies a mode uses.
+     *
+     * @param sessionBinding the assembled session binding
+     * @return the session binding's cookie names, the login-binding cookie name and the logout-state
+     *         cookie name
+     * @throws IllegalStateException when a clearing value of the binding names no cookie
+     */
+    static Set<String> gatewayCookieNames(SessionBinding sessionBinding) {
+        Set<String> names = new LinkedHashSet<>();
+        for (String clearing : sessionBinding.clearingSetCookieHeaders()) {
+            int separator = clearing.indexOf('=');
+            if (separator <= 0) {
+                throw new IllegalStateException("session binding returned a clearing cookie without a name");
+            }
+            names.add(clearing.substring(0, separator));
+        }
+        names.add(BindingCookieCodec.COOKIE_NAME);
+        names.add(RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME);
+        return Set.copyOf(names);
     }
 
     /**
@@ -1184,8 +1247,23 @@ public class BffRuntimeProducer {
                 keyMaterial.identitySalt(), keyMaterial.activityCodec(cookieName), idleTimeout);
     }
 
-    private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin, ProviderMetadata metadata,
-            SessionBinding sessionBinding) {
+    /**
+     * Assembles the RP-initiated logout endpoint.
+     * <p>
+     * <strong>The assembly reads no provider metadata.</strong> The discovery-sourced
+     * {@code end_session_endpoint} is bound as a seam the logout consults on each request, after it has
+     * ended the local session. A provider that publishes no such endpoint, and discovery that cannot be
+     * completed, therefore leave the logout endpoint available: the session is ended, the cookies are
+     * cleared, and the browser lands on {@code final_redirect}.
+     *
+     * @param oidc           the global {@code oidc} block
+     * @param gatewayOrigin  the gateway's own origin, the base of the default return leg
+     * @param metadata       the memoized provider metadata, resolved by the seam and not here
+     * @param sessionBinding the session binding the logout resolves, destroys and clears through
+     * @return the logout endpoint
+     */
+    private static LogoutEndpoint buildLogoutEndpoint(OidcConfig oidc, String gatewayOrigin,
+            Supplier<ProviderMetadata> metadata, SessionBinding sessionBinding) {
         OidcConfig.Logout logout = oidc.logout();
         String declaredPostLogoutRedirectUri = logout == null ? null : logout.postLogoutRedirectUri();
         String postLogoutRedirectUri = declaredPostLogoutRedirectUri == null
@@ -1195,16 +1273,14 @@ public class BffRuntimeProducer {
         String finalRedirect = declaredFinalRedirect == null
                 ? DEFAULT_FINAL_REDIRECT
                 : declaredFinalRedirect;
-        String endSessionEndpoint = metadata.getEndSessionEndpoint()
-                .orElseThrow(() -> new IllegalStateException(
-                        "OIDC provider metadata declares no end_session_endpoint — RP-initiated logout unavailable"));
         EndSessionFlow endSessionFlow = new EndSessionFlow(new PostLogoutRedirectValidator(Set.of(postLogoutRedirectUri)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow,
                 sessionRecord -> {
                     // A no-op binding: no revocation request is sent to the identity provider on
                     // logout. The authoritative logout is the local session destruction.
                 },
-                endSessionEndpoint, postLogoutRedirectUri, finalRedirect, LOGOUT_STATE_TTL);
+                () -> metadata.get().getEndSessionEndpoint(), postLogoutRedirectUri, finalRedirect,
+                LOGOUT_STATE_TTL);
         return new LogoutEndpoint(rpInitiatedLogout, sessionBinding);
     }
 

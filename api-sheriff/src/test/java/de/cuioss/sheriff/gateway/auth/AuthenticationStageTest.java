@@ -471,7 +471,8 @@ class AuthenticationStageTest {
      */
     private static SessionAuthenticationStage sessionStage(Set<String> sessionScopes) {
         // The idle timeout equals the session's lifetime, so it is not in play here.
-        InMemorySessionStore store = new InMemorySessionStore(16, Duration.ofHours(1));
+        InMemorySessionStore store = new InMemorySessionStore(16, Duration.ofHours(1), Integer.MAX_VALUE,
+                sessionId -> { });
         store.create(SessionRecord.builder()
                 .sessionId(SESSION_ID)
                 .accessToken(MEDIATED_TOKEN)

@@ -198,6 +198,11 @@ List<String> scopes,
      *                      when omitted. Read it through
      *                      {@link Session#effectiveIdleTimeoutSeconds()}, which resolves the
      *                      omitted case — never directly
+     * @param maxSessionsPerSubject the server-mode upper bound on the live sessions of one
+     *                      subject; a login beyond it ends that subject's oldest session.
+     *                      {@code null} when omitted. Read it through
+     *                      {@link Session#effectiveMaxSessionsPerSubject()}, which resolves the
+     *                      omitted case — never directly
      * @author API Sheriff Team
      * @since 1.0
      */
@@ -213,7 +218,8 @@ List<String> scopes,
     @Nullable Refresh refresh,
     @Nullable Integer maxSessions,
     @Nullable Integer maxCookieSize,
-    @Nullable Integer idleTimeoutSeconds) {
+    @Nullable Integer idleTimeoutSeconds,
+    @Nullable Integer maxSessionsPerSubject) {
 
         /** The stateless cookie session mode, in its one canonical spelling. */
         public static final String MODE_COOKIE = "cookie";
@@ -239,6 +245,21 @@ List<String> scopes,
          * timeout too (see {@link #effectiveIdleTimeoutSeconds()}).
          */
         public static final int DEFAULT_IDLE_TIMEOUT_SECONDS = 1800;
+
+        /**
+         * The server-mode bound on concurrently stored sessions applied when {@code max_sessions} is
+         * omitted. Declared here because the runtime producer and boot validation both resolve the
+         * omitted key (see {@link #effectiveMaxSessions()}).
+         */
+        public static final int DEFAULT_MAX_SESSIONS = 10_000;
+
+        /**
+         * The bound on the live sessions of one subject applied when
+         * {@code max_sessions_per_subject} is omitted — unless the effective {@code max_sessions} is
+         * lower, in which case that is the bound per subject too (see
+         * {@link #effectiveMaxSessionsPerSubject()}).
+         */
+        public static final int DEFAULT_MAX_SESSIONS_PER_SUBJECT = 10;
 
         /**
          * Canonical constructor canonicalizing {@link #mode()} to its lower-case, trimmed
@@ -308,6 +329,37 @@ List<String> scopes,
         }
 
         /**
+         * Resolves the server-mode bound on concurrently stored sessions — the one resolution boot
+         * validation and the runtime share.
+         *
+         * @return the declared {@code max_sessions}, or {@link #DEFAULT_MAX_SESSIONS} when omitted
+         */
+        public int effectiveMaxSessions() {
+            return maxSessions == null ? DEFAULT_MAX_SESSIONS : maxSessions;
+        }
+
+        /**
+         * Resolves the server-mode bound on the live sessions of one subject — the one resolution
+         * boot validation and the runtime share.
+         * <p>
+         * A declared {@code max_sessions_per_subject} is taken as declared; boot validation refuses
+         * a declared value below {@code 1} or above the effective {@code max_sessions}, and refuses
+         * the key in cookie mode, which holds no sessions to count. An omitted key resolves to the
+         * smaller of {@link #DEFAULT_MAX_SESSIONS_PER_SUBJECT} and the effective
+         * {@code max_sessions}, so a deployment whose {@code max_sessions} is below the default keeps
+         * booting. No value switches the bound off; declaring it equal to {@code max_sessions} has
+         * that effect.
+         *
+         * @return the bound per subject in force
+         */
+        public int effectiveMaxSessionsPerSubject() {
+            if (maxSessionsPerSubject != null) {
+                return maxSessionsPerSubject;
+            }
+            return Math.min(DEFAULT_MAX_SESSIONS_PER_SUBJECT, effectiveMaxSessions());
+        }
+
+        /**
          * Overridden to redact {@link #encryptionKey()}. The default record
          * {@code toString()} would otherwise print the resolved cookie-encryption key
          * value verbatim into any log line, exception message, or debugger view that
@@ -317,9 +369,9 @@ List<String> scopes,
          */
         @Override
         public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s, idleTimeoutSeconds=%s]"
+            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s, idleTimeoutSeconds=%s, maxSessionsPerSubject=%s]"
                     .formatted(mode, store, cookieName, redact(encryptionKey), ttlSeconds, csrf,
-                            refresh, maxSessions, maxCookieSize, idleTimeoutSeconds);
+                            refresh, maxSessions, maxCookieSize, idleTimeoutSeconds, maxSessionsPerSubject);
         }
     }
 

@@ -98,8 +98,14 @@ import org.jspecify.annotations.Nullable;
  * without a token by a refresh is not an access. The binding's {@code resolve} enforces the deadline,
  * so an idle-expired session reaches this stage as no session at all and is answered like any
  * unauthenticated request, with no clearing cookie. A long-lived response — a WebSocket, a stream —
- * counts as the one access at its start; it neither keeps the session alive afterwards nor is closed
- * when the session expires.
+ * counts as the one access at its start and does not keep the session alive afterwards.
+ * <p>
+ * <strong>A WebSocket relay ends with its session.</strong> The stage records the session a request was
+ * let through with ({@link PipelineRequest#admittingSession()}); the edge closes a WebSocket relay
+ * opened for that request at the session's absolute expiry and, where the session binding holds the
+ * session server-side, when the session is destroyed or evicted. The passing of the idle deadline
+ * closes nothing by itself: a relay is closed when the idle-expired session is evicted, which only a
+ * server-side store does. A streamed HTTP or gRPC response is not closed by a session end.
  * <p>
  * <strong>The mediated access token is DPoP-bound, and the binding ends at the gateway
  * (ADR-0058).</strong> Every access token the gateway obtains is bound to its DPoP proof key, so that
@@ -329,6 +335,8 @@ public final class SessionAuthenticationStage {
         if (route.getEffectiveAuth().effectiveTokenRelay()) {
             request.mediatedBearer(session.accessToken());
         }
+        // The edge ties a long-lived relay opened for this request to the session's end.
+        request.admittingSession(session.sessionId(), session.expiresAt());
         emitSetCookies(request, sessionBinding.recordAccess(session, cookieHeader, now));
     }
 

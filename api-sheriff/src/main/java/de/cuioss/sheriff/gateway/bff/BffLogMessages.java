@@ -147,7 +147,7 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127, 130-132 and 134).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127, 130-132, 134 and 135).
      */
     @UtilityClass
     public static final class WARN {
@@ -183,16 +183,18 @@ public final class BffLogMessages {
          * only — never the raw logout token, the subject, or the IdP {@code sid}. The accepted set of
          * dispositions is closed and enumerated by
          * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejection}: {@code no-idp-destruction-capability},
-         * {@code missing-logout-token}, {@code signature-rejected}, {@code issuer-mismatch},
-         * {@code audience-mismatch}, {@code iat-outside-window}, {@code events-missing},
-         * {@code nonce-present}, {@code no-sub-or-sid}.
+         * {@code missing-logout-token}, {@code signature-rejected}, {@code type-mismatch},
+         * {@code issuer-mismatch}, {@code audience-mismatch}, {@code iat-outside-window},
+         * {@code expired}, {@code events-missing}, {@code nonce-present}, {@code no-sub-or-sid},
+         * {@code jti-missing}, {@code replayed}, {@code replay-memory-full}.
          * <p>
-         * <strong>Latched for the attacker-reachable dispositions.</strong> The back-channel path is
+         * <strong>Latched for the repeatable dispositions.</strong> The back-channel path is
          * reserved and unauthenticated, so the three dispositions reachable <em>before</em> the token's
          * signature has been verified ({@code no-idp-destruction-capability}, {@code missing-logout-token},
-         * {@code signature-rejected}) are emitted only on their FIRST occurrence in a process and every
-         * repeat drops to {@code DEBUG}. The six that only a genuinely signed token can reach are
-         * emitted on every occurrence. Absence of a repeated {@code WARN} for a latched disposition
+         * {@code signature-rejected}) and {@code replayed} — which the holder of one captured token can
+         * repeat while that token is fresh — are emitted only on their FIRST occurrence in a process
+         * and every repeat drops to {@code DEBUG}. The others are reached once per token the identity
+         * provider signed and are emitted on every occurrence. Absence of a repeated {@code WARN} for a latched disposition
          * therefore says nothing about the rejection <em>rate</em>; read the DEBUG channel for that.
          * The rule and its rationale live on
          * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejectionLog}.
@@ -328,6 +330,29 @@ public final class BffLogMessages {
                 .prefix(PREFIX)
                 .identifier(132)
                 .template("Pushed authorization request refused: %s — no redirect to the identity provider was issued; further refusals with this reason stay at DEBUG")
+                .build();
+
+        /**
+         * An RP-initiated logout found that the identity provider publishes no usable
+         * {@code end_session_endpoint} — none at all, a blank one, or one that is not an absolute
+         * {@code http} or {@code https} URI. The gateway's own session was ended and its cookies
+         * were cleared, and the browser was sent to {@code final_redirect}; no end-session redirect
+         * was sent, so the session at the identity provider is still open. The template takes no
+         * substitution and therefore carries no value at all.
+         * <p>
+         * Provider metadata that could not be obtained is a different, transient condition and is
+         * not recorded here: that logout is completed locally in the same way and leaves a
+         * {@code DEBUG} line.
+         * <p>
+         * <strong>Latched.</strong> The condition is a property of the provider's metadata and
+         * repeats on every logout, so the record is emitted on its FIRST occurrence in a process
+         * and every repeat drops to {@code DEBUG} — see
+         * {@code de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout}.
+         */
+        public static final LogRecord NO_END_SESSION_ENDPOINT = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(135)
+                .template("The identity provider publishes no usable end_session_endpoint — logout ends the gateway session only and the session at the identity provider stays open; further occurrences stay at DEBUG")
                 .build();
     }
 }

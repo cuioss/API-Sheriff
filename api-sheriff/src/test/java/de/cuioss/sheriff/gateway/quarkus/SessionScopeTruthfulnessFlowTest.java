@@ -119,7 +119,8 @@ class SessionScopeTruthfulnessFlowTest {
     }
 
     /** The idle timeout equals the absolute lifetime, so it is not in play in these flows. */
-    private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL);
+    private final InMemorySessionStore store = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE,
+            sessionId -> { });
     private final SessionBinding binding = new ServerSessionBinding(store,
             new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL));
     private final PendingAuthorizationStore.InMemory pendingStore = new PendingAuthorizationStore.InMemory(8);

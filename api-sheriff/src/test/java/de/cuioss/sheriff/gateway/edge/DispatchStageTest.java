@@ -1459,7 +1459,7 @@ class DispatchStageTest {
                             .build())
                     .build();
             DispatchStage stage = new DispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
-            ResponseStage responseStage = new ResponseStage();
+            ResponseStage responseStage = new ResponseStage(java.util.Set.of());
             front = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
                 // As GatewayEdgeRoute does: pause the inbound request on its event loop, capture that
                 // loop's context, and run the dispatch on a virtual thread.

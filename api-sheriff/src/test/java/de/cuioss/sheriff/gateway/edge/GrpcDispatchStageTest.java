@@ -255,7 +255,7 @@ class GrpcDispatchStageTest {
             // Front server: relays the upstream response WITH its trailers exactly as the gRPC dispatch
             // path does (ResponseStage#relayWithTrailers), with X-Frame-Options and
             // Content-Security-Policy both in default mode.
-            ResponseStage responseStage = new ResponseStage();
+            ResponseStage responseStage = new ResponseStage(java.util.Set.of());
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
                     .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, LoopbackHost.ADDRESS,
                             "/svc.Service/Method")

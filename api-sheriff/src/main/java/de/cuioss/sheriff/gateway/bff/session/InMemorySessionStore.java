@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.bff.session;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -25,6 +26,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
+
+
+import de.cuioss.tools.logging.CuiLogger;
 
 /**
  * The single-node in-memory {@link SessionStore} — the only supported store for
@@ -67,6 +72,23 @@ import java.util.Set;
  * accumulated ones: a capacity-consuming creation sweeps once at the bound and re-tests it; only a
  * store still full of live sessions afterwards is refused, fail-closed.
  * <p>
+ * <strong>A bound per subject.</strong> One subject holds at most {@code maxSessionsPerSubject} live
+ * sessions. A {@link #create} that introduces a new session id for a subject already at that bound
+ * ends the subject's <em>oldest</em> session first — the one created earliest in this store, whatever
+ * its last access — and repeats until the new session fits. Expired sessions of the subject are
+ * dropped before the count is taken, so they neither count nor shield a live one. The subject is the
+ * record's {@code sub}; the store serves one issuer, so {@code sub} alone names it. This bound is
+ * applied before the store-wide one: ending a session of the same subject frees the slot the new
+ * session takes, so a subject at its own bound is never refused by a full store. Only a creation
+ * applies the bound; an updating write never ends another session.
+ * <p>
+ * <strong>Ended sessions are reported.</strong> Every path on which a session <em>ends</em> — the three
+ * destroy methods, the lazy eviction in {@link #resolve}, the sweep, and the per-subject eviction —
+ * reports the session's identity to the {@link SessionEndListener}, so that whatever was opened with
+ * the session can be closed with it. A write that replaces a session's record or re-issues its cookie
+ * handle reports nothing: the session lives on. The listener is called only after the monitor has been
+ * left, on the thread whose operation ended the session.
+ * <p>
  * <strong>Thread safety.</strong> Every operation is guarded by the instance monitor, so each one is
  * atomic with respect to every other. No operation is split across two calls.
  *
@@ -75,23 +97,42 @@ import java.util.Set;
  */
 public final class InMemorySessionStore implements SessionStore {
 
+    private static final CuiLogger LOGGER = new CuiLogger(InMemorySessionStore.class);
+
     private final int maxSessions;
     private final Duration idleTimeout;
+    private final int maxSessionsPerSubject;
     private final Map<String, HeldSession> byId = new HashMap<>();
     private final Map<String, String> idByHandle = new HashMap<>();
     private final Map<String, Set<String>> bySid = new HashMap<>();
     private final Map<String, Set<String>> bySub = new HashMap<>();
+    /** The creation order of the next new session; read and advanced under the instance monitor. */
+    private long nextCreationOrder;
+    private final SessionEndListener sessionEndListener;
+    /**
+     * The sessions the operation in progress has ended and not yet reported; filled and drained under
+     * the instance monitor, so it is empty whenever the monitor is free.
+     */
+    private final List<String> endedSessions = new ArrayList<>();
 
     /**
-     * Creates a store bounded to {@code maxSessions} live sessions, each ending after
-     * {@code idleTimeout} without a recorded access.
+     * Creates a store bounded to {@code maxSessions} live sessions and {@code maxSessionsPerSubject}
+     * live sessions of one subject, each session ending after {@code idleTimeout} without a recorded
+     * access.
      *
-     * @param maxSessions the hard capacity bound; must be positive
-     * @param idleTimeout how long a session may go without a recorded access before it is expired;
-     *                    must be positive
-     * @throws IllegalArgumentException when {@code maxSessions} or {@code idleTimeout} is not positive
+     * @param maxSessions           the hard capacity bound; must be positive
+     * @param idleTimeout           how long a session may go without a recorded access before it is
+     *                              expired; must be positive
+     * @param maxSessionsPerSubject how many live sessions one subject may hold before a new one ends
+     *                              its oldest; must be positive
+     * @param sessionEndListener    told of every session this store ends, after the store has left its
+     *                              monitor; it must not call back into this store and must not throw
+     * @throws IllegalArgumentException when {@code maxSessions}, {@code idleTimeout} or
+     *                                  {@code maxSessionsPerSubject} is not positive
      */
-    public InMemorySessionStore(int maxSessions, Duration idleTimeout) {
+    public InMemorySessionStore(int maxSessions, Duration idleTimeout, int maxSessionsPerSubject,
+            SessionEndListener sessionEndListener) {
+        this.sessionEndListener = Objects.requireNonNull(sessionEndListener, "sessionEndListener");
         if (maxSessions <= 0) {
             throw new IllegalArgumentException("maxSessions must be positive, but was " + maxSessions);
         }
@@ -99,28 +140,85 @@ public final class InMemorySessionStore implements SessionStore {
         if (idleTimeout.isZero() || idleTimeout.isNegative()) {
             throw new IllegalArgumentException("idleTimeout must be positive, but was " + idleTimeout);
         }
+        if (maxSessionsPerSubject <= 0) {
+            throw new IllegalArgumentException(
+                    "maxSessionsPerSubject must be positive, but was " + maxSessionsPerSubject);
+        }
         this.maxSessions = maxSessions;
         this.idleTimeout = idleTimeout;
+        this.maxSessionsPerSubject = maxSessionsPerSubject;
     }
 
     @Override
-    public synchronized void create(SessionRecord session, String cookieHandle, Instant now) {
+    public void create(SessionRecord session, String cookieHandle, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(cookieHandle, "cookieHandle");
         Objects.requireNonNull(now, "now");
-        // An id the store already holds names a record already counted against the bound, so storing
-        // it consumes no new capacity and is not refused at the ceiling. A rotated or widened session
-        // does not take this path — it is written through an updating write, which never creates.
-        if (!byId.containsKey(session.sessionId()) && byId.size() >= maxSessions) {
+        // A refused creation may already have ended sessions on its way to the bound; they are
+        // announced whether or not it throws.
+        announcingEnds(() -> {
+            createLocked(session, cookieHandle, now);
+            return Boolean.TRUE;
+        });
+    }
+
+    /** The creating write itself. Callers hold the instance monitor. */
+    private void createLocked(SessionRecord session, String cookieHandle, Instant now) {
+        HeldSession held = byId.get(session.sessionId());
+        if (held != null) {
+            // An id the store already holds names a record already counted against both bounds, so
+            // storing it consumes no new capacity, ends no other session and is not refused at the
+            // ceiling. A rotated or widened session does not take this path — it is written through
+            // an updating write, which never creates.
+            store(session, cookieHandle, now, held.creationOrder);
+            return;
+        }
+        // The subject's own bound first: a session of the same subject that is ended here frees the
+        // slot the new one takes, so the store-wide test below cannot refuse a subject at its bound.
+        endOldestSessionsOf(session.sub(), now);
+        if (byId.size() >= maxSessions) {
             // Sweep once, then re-test: expired sessions still hold their slots until something
             // reclaims them, and reaching the bound is the trigger. A store still at the bound after
             // the sweep is genuinely full of live sessions, and refusing it is the fail-closed guard.
-            sweepExpired(now);
+            sweepExpiredLocked(now);
             if (byId.size() >= maxSessions) {
                 throw new IllegalStateException("session store is at its max-session bound of " + maxSessions);
             }
         }
-        store(session, cookieHandle, now);
+        store(session, cookieHandle, now, nextCreationOrder++);
+    }
+
+    /**
+     * Makes room for one more session of {@code sub}: drops the subject's expired sessions, then ends
+     * its oldest live session — the one created earliest — until the subject holds fewer than
+     * {@code maxSessionsPerSubject}. Callers hold the instance monitor.
+     */
+    private void endOldestSessionsOf(String sub, Instant now) {
+        Set<String> sessionIds = bySub.get(sub);
+        if (sessionIds == null || sessionIds.size() < maxSessionsPerSubject) {
+            return;
+        }
+        List<HeldSession> live = new ArrayList<>();
+        for (String sessionId : List.copyOf(sessionIds)) {
+            HeldSession held = byId.get(sessionId);
+            if (held == null) {
+                continue;
+            }
+            if (isExpired(held, now)) {
+                endInternal(sessionId);
+            } else {
+                live.add(held);
+            }
+        }
+        live.sort(Comparator.comparingLong(held -> held.creationOrder));
+        int surplus = live.size() - maxSessionsPerSubject + 1;
+        for (int index = 0; index < surplus; index++) {
+            endInternal(live.get(index).session.sessionId());
+        }
+        if (surplus > 0) {
+            LOGGER.debug("Ended %s oldest session(s) of a subject at its per-subject bound of %s", surplus,
+                    maxSessionsPerSubject);
+        }
     }
 
     @Override
@@ -136,7 +234,7 @@ public final class InMemorySessionStore implements SessionStore {
         }
         // The handle is the one held NOW, read under the monitor: a re-issue that ran since the caller
         // resolved the session stays in force.
-        store(session, held.cookieHandle, held.lastAccess);
+        store(session, held.cookieHandle, held.lastAccess, held.creationOrder);
         return true;
     }
 
@@ -153,7 +251,7 @@ public final class InMemorySessionStore implements SessionStore {
         // store() drops the previous handle through removeInternal before it registers the new one, so
         // the previous cookie value resolves nothing from here on. Last access is carried over: a
         // re-issue is not an access.
-        store(session, newCookieHandle, held.lastAccess);
+        store(session, newCookieHandle, held.lastAccess, held.creationOrder);
         return true;
     }
 
@@ -170,13 +268,13 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     /**
-     * Stores {@code session} under its id with {@code cookieHandle} and {@code lastAccess} beside it,
-     * replacing any record — and dropping any handle — already held there, and brings both secondary
-     * indexes in line with it. Callers hold the instance monitor.
+     * Stores {@code session} under its id with {@code cookieHandle}, {@code lastAccess} and
+     * {@code creationOrder} beside it, replacing any record — and dropping any handle — already held
+     * there, and brings both secondary indexes in line with it. Callers hold the instance monitor.
      *
      * @throws IllegalStateException when {@code cookieHandle} resolves to a different session
      */
-    private void store(SessionRecord session, String cookieHandle, Instant lastAccess) {
+    private void store(SessionRecord session, String cookieHandle, Instant lastAccess, long creationOrder) {
         String sessionId = session.sessionId();
         String owner = idByHandle.get(cookieHandle);
         if (owner != null && !owner.equals(sessionId)) {
@@ -191,7 +289,7 @@ public final class InMemorySessionStore implements SessionStore {
         // would destroy the replacement and report a phantom deletion. The same seam drops the
         // previous handle.
         removeInternal(sessionId);
-        byId.put(sessionId, new HeldSession(session, cookieHandle, lastAccess));
+        byId.put(sessionId, new HeldSession(session, cookieHandle, lastAccess, creationOrder));
         idByHandle.put(cookieHandle, sessionId);
         index(bySub, session.sub(), sessionId);
         String sid = session.sid();
@@ -201,9 +299,14 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     @Override
-    public synchronized Optional<SessionRecord> resolve(String cookieHandle, Instant now) {
+    public Optional<SessionRecord> resolve(String cookieHandle, Instant now) {
         Objects.requireNonNull(cookieHandle, "cookieHandle");
         Objects.requireNonNull(now, "now");
+        return announcingEnds(() -> resolveLocked(cookieHandle, now));
+    }
+
+    /** The lookup itself, evicting an expired session. Callers hold the instance monitor. */
+    private Optional<SessionRecord> resolveLocked(String cookieHandle, Instant now) {
         String sessionId = idByHandle.get(cookieHandle);
         if (sessionId == null) {
             return Optional.empty();
@@ -213,40 +316,48 @@ public final class InMemorySessionStore implements SessionStore {
             return Optional.empty();
         }
         if (isExpired(held, now)) {
-            removeInternal(sessionId);
+            endInternal(sessionId);
             return Optional.empty();
         }
         return Optional.of(held.session);
     }
 
     @Override
-    public synchronized void destroyById(String sessionId) {
+    public void destroyById(String sessionId) {
         Objects.requireNonNull(sessionId, "sessionId");
-        removeInternal(sessionId);
+        announcingEnds(() -> {
+            endInternal(sessionId);
+            return Boolean.TRUE;
+        });
     }
 
     @Override
-    public synchronized int destroyBySid(String sid) {
+    public int destroyBySid(String sid) {
         Objects.requireNonNull(sid, "sid");
-        return removeAll(bySid.get(sid));
+        return announcingEnds(() -> removeAll(bySid.get(sid)));
     }
 
     @Override
-    public synchronized int destroyBySub(String sub) {
+    public int destroyBySub(String sub) {
         Objects.requireNonNull(sub, "sub");
-        return removeAll(bySub.get(sub));
+        return announcingEnds(() -> removeAll(bySub.get(sub)));
     }
 
     @Override
-    public synchronized int sweepExpired(Instant now) {
+    public int sweepExpired(Instant now) {
         Objects.requireNonNull(now, "now");
+        return announcingEnds(() -> sweepExpiredLocked(now));
+    }
+
+    /** The sweep itself. Callers hold the instance monitor. */
+    private int sweepExpiredLocked(Instant now) {
         List<String> expired = new ArrayList<>();
         for (Map.Entry<String, HeldSession> entry : byId.entrySet()) {
             if (isExpired(entry.getValue(), now)) {
                 expired.add(entry.getKey());
             }
         }
-        expired.forEach(this::removeInternal);
+        expired.forEach(this::endInternal);
         return expired.size();
     }
 
@@ -255,6 +366,41 @@ public final class InMemorySessionStore implements SessionStore {
      */
     public synchronized int size() {
         return byId.size();
+    }
+
+    /**
+     * Whether the store holds a session under {@code sessionId} at this moment. It reads the primary
+     * map only: an expired session that nothing has evicted yet is still held, and its eviction is
+     * reported to the {@link SessionEndListener} when it happens.
+     *
+     * @param sessionId the stable session identity
+     * @return {@code true} while the session is held
+     */
+    public synchronized boolean isHeld(String sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        return byId.containsKey(sessionId);
+    }
+
+    /**
+     * Runs {@code underMonitor} under the instance monitor and, after the monitor has been left,
+     * reports every session that operation ended to the {@link SessionEndListener} — also when the
+     * operation throws. The listener is never called with the monitor held, so nothing it does can
+     * block a store operation or deadlock with one.
+     */
+    private <T> T announcingEnds(Supplier<T> underMonitor) {
+        List<String> ended = new ArrayList<>();
+        try {
+            synchronized (this) {
+                try {
+                    return underMonitor.get();
+                } finally {
+                    ended.addAll(endedSessions);
+                    endedSessions.clear();
+                }
+            }
+        } finally {
+            ended.forEach(sessionEndListener::sessionEnded);
+        }
     }
 
     /**
@@ -273,10 +419,27 @@ public final class InMemorySessionStore implements SessionStore {
             return 0;
         }
         List<String> snapshot = new ArrayList<>(sessionIds);
-        snapshot.forEach(this::removeInternal);
+        snapshot.forEach(this::endInternal);
         return snapshot.size();
     }
 
+    /**
+     * Removes a session that has <em>ended</em> — destroyed, expired, or ended under a bound — and
+     * notes it for the {@link SessionEndListener}. A session the store does not hold is ignored.
+     * Callers hold the instance monitor; the listener is told by {@link #announcingEnds} afterwards.
+     */
+    private void endInternal(String sessionId) {
+        if (byId.containsKey(sessionId)) {
+            removeInternal(sessionId);
+            endedSessions.add(sessionId);
+        }
+    }
+
+    /**
+     * Removes a session's record, handle and index entries <em>without</em> noting an end. This is
+     * the seam {@link #store} uses for the record it replaces: the session lives on under the same
+     * identity — after a refresh, or with a re-issued cookie handle — so nothing has ended.
+     */
     private void removeInternal(String sessionId) {
         HeldSession held = byId.remove(sessionId);
         if (held == null) {
@@ -307,19 +470,23 @@ public final class InMemorySessionStore implements SessionStore {
     }
 
     /**
-     * One stored session: the record, plus the two pieces of store-side state that are deliberately
-     * not components of it. Read and written only under the store's monitor.
+     * One stored session: the record, plus the pieces of store-side state that are deliberately not
+     * components of it — the cookie handle, the last access, and the order in which the session was
+     * created in this store, which every later write to the session keeps. Read and written only
+     * under the store's monitor.
      */
     private static final class HeldSession {
 
         private final SessionRecord session;
         private final String cookieHandle;
+        private final long creationOrder;
         private Instant lastAccess;
 
-        HeldSession(SessionRecord session, String cookieHandle, Instant lastAccess) {
+        HeldSession(SessionRecord session, String cookieHandle, Instant lastAccess, long creationOrder) {
             this.session = session;
             this.cookieHandle = cookieHandle;
             this.lastAccess = lastAccess;
+            this.creationOrder = creationOrder;
         }
     }
 }

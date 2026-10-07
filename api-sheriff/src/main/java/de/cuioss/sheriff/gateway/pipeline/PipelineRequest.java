@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.pipeline;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,6 +51,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class PipelineRequest {
 
+    private static final String CACHE_CONTROL = "Cache-Control";
+    private static final String NO_STORE = "no-store";
+
     private final HttpMethod method;
     private final String requestPath;
     private final List<QueryParameter> queryParameters;
@@ -66,6 +70,7 @@ public final class PipelineRequest {
     private @Nullable RouteRuntime selectedRoute;
     private @Nullable Integer shortCircuitStatus;
     private @Nullable String mediatedBearer;
+    private @Nullable AdmittingSession admittingSession;
 
     private PipelineRequest(Builder builder) {
         this.method = Objects.requireNonNull(builder.method, "method");
@@ -301,11 +306,19 @@ public final class PipelineRequest {
     /**
      * Appends one {@code Set-Cookie} value to the response. Every appended value reaches the client
      * as its own header line — appending never replaces a previously appended value.
+     * <p>
+     * <strong>A response the gateway adds a cookie to is not cacheable.</strong> Appending a value also
+     * puts {@code Cache-Control: no-store} into the {@linkplain #responseHeaders() set-header map}, so
+     * every writer that applies that map marks the response uncacheable — and on a proxied response the
+     * set-mode entry replaces whatever {@code Cache-Control} the upstream sent. A cookie the gateway
+     * sets belongs to one browser; a cache that stored the response would hand it to another.
      *
      * @param setCookieHeader the fully-rendered {@code Set-Cookie} header value
      */
     public void addResponseSetCookie(String setCookieHeader) {
         responseSetCookies.add(Objects.requireNonNull(setCookieHeader, "setCookieHeader"));
+        responseDefaultHeaders.remove(CACHE_CONTROL);
+        responseHeaders.put(CACHE_CONTROL, NO_STORE);
     }
 
     /**
@@ -345,6 +358,55 @@ public final class PipelineRequest {
      */
     public void mediatedBearer(String mediatedBearer) {
         this.mediatedBearer = Objects.requireNonNull(mediatedBearer, "mediatedBearer");
+    }
+
+    /**
+     * @return the session the {@code require: session} stage-4 runtime let this request through with,
+     *         or empty when no session applied. The edge reads it to tie a long-lived relay to the
+     *         session's end.
+     */
+    public Optional<AdmittingSession> admittingSession() {
+        return Optional.ofNullable(admittingSession);
+    }
+
+    /**
+     * Records the session this request was let through with. The session stage is the only writer, at
+     * the one point it counts the request as an access.
+     *
+     * @param sessionId the session's stable identity — never the cookie value
+     * @param expiresAt the session's absolute expiry
+     */
+    public void admittingSession(String sessionId, Instant expiresAt) {
+        this.admittingSession = new AdmittingSession(sessionId, expiresAt);
+    }
+
+    /**
+     * The session a request was let through with: its stable identity and its absolute expiry.
+     *
+     * @param sessionId the session's stable identity — never the cookie value
+     * @param expiresAt the session's absolute expiry
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    public record AdmittingSession(String sessionId, Instant expiresAt) {
+
+        /**
+         * Canonical constructor rejecting an absent component.
+         */
+        public AdmittingSession {
+            Objects.requireNonNull(sessionId, "sessionId");
+            Objects.requireNonNull(expiresAt, "expiresAt");
+        }
+
+        /**
+         * Overridden so the session identity is never printed.
+         *
+         * @return the expiry only
+         */
+        @Override
+        public String toString() {
+            return "AdmittingSession[expiresAt=" + expiresAt + "]";
+        }
     }
 
     /**

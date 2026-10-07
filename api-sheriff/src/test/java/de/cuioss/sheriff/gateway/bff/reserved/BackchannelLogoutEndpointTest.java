@@ -24,9 +24,11 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -36,7 +38,9 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
+import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.gateway.bff.reserved.BackchannelLogoutEndpoint.BackchannelLogoutOutcome;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -44,10 +48,10 @@ import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
-import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -78,21 +82,46 @@ class BackchannelLogoutEndpointTest {
     private static final String COOKIE_NAME = "__Host-sheriff-session";
     private static final byte CURRENT_KEY_ID = 1;
 
-    private static TokenContent validLogoutToken() {
-        Map<String, ClaimValue> claims = Map.of(
+    private static Map<String, ClaimValue> validLogoutClaims() {
+        return new HashMap<>(Map.of(
                 "iss", ClaimValue.forPlainString(ISSUER),
                 "aud", ClaimValue.forList("aud", List.of(AUDIENCE)),
                 "iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)),
+                "exp", ClaimValue.forDateTime("exp", OffsetDateTime.ofInstant(NOW.plusSeconds(120), ZoneOffset.UTC)),
+                "jti", ClaimValue.forPlainString("logout-token-id-1"),
                 "events", ClaimValue.forPlainString(
                         "{\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\":{}}"),
-                "sub", ClaimValue.forPlainString("user-sub-1"));
-        return new IdTokenContent(claims, "raw-logout-token");
+                "sub", ClaimValue.forPlainString("user-sub-1")));
+    }
+
+    private static VerifiedLogoutToken validLogoutToken() {
+        return typed(validLogoutClaims(), LogoutTokenValidator.LOGOUT_TOKEN_TYPE);
+    }
+
+    private static VerifiedLogoutToken typed(Map<String, ClaimValue> claims, @Nullable String headerType) {
+        return new VerifiedLogoutToken(new IdTokenContent(claims, "raw-logout-token"), headerType);
     }
 
     /** The store-backed binding — {@code SUPPORTED} IdP destruction, so the gate stays open. */
     private static SessionBinding serverBinding() {
-        return new ServerSessionBinding(new InMemorySessionStore(16, Duration.ofHours(8)),
+        return new ServerSessionBinding(
+                new InMemorySessionStore(16, Duration.ofHours(8), Integer.MAX_VALUE, sessionId -> { }),
                 new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(8)));
+    }
+
+    /** An endpoint over the server-mode binding whose signature seam hands out {@code token}. */
+    private static BackchannelLogoutEndpoint endpointReceiving(VerifiedLogoutToken token, int replayCapacity) {
+        return endpointReceiving(() -> token, replayCapacity);
+    }
+
+    /** As {@link #endpointReceiving(VerifiedLogoutToken, int)}, asking {@code tokens} on every delivery. */
+    private static BackchannelLogoutEndpoint endpointReceiving(Supplier<VerifiedLogoutToken> tokens,
+            int replayCapacity) {
+        SessionBinding binding = serverBinding();
+        BackchannelLogoutReceiver receiver = new BackchannelLogoutReceiver(rawToken -> tokens.get(),
+                new LogoutTokenValidator(ISSUER, AUDIENCE, Duration.ofMinutes(2)), binding,
+                new LogoutTokenReplayGuard(replayCapacity));
+        return new BackchannelLogoutEndpoint(receiver, binding);
     }
 
     /** The stateless binding — {@code UNSUPPORTED} IdP destruction, so the gate closes the endpoint. */
@@ -120,8 +149,83 @@ class BackchannelLogoutEndpointTest {
         BackchannelLogoutReceiver receiver = new BackchannelLogoutReceiver(rawToken -> {
             verifierInvoked.set(true);
             return validLogoutToken();
-        }, validator, binding);
+        }, validator, binding, new LogoutTokenReplayGuard(16));
         return new BackchannelLogoutEndpoint(receiver, binding);
+    }
+
+    /**
+     * A logout token the identity provider signed and the gateway still does not act on. Each refusal
+     * answers {@code 400} and destroys nothing; the accepted delivery beside each one is what shows
+     * the endpoint is not refusing everything.
+     */
+    @Nested
+    @DisplayName("Signed tokens that are refused")
+    class RefusedSignedTokens {
+
+        private static final String BODY = "logout_token=abc.def.ghi";
+
+        private static void assertRefused(BackchannelLogoutOutcome outcome) {
+            assertEquals(400, outcome.status());
+            assertFalse(outcome.isAccepted());
+            assertEquals(0, outcome.destroyed());
+        }
+
+        @Test
+        @DisplayName("Should accept an untyped token and refuse a token typed as something else 400")
+        void shouldRefuseWrongType() {
+            assertTrue(endpointReceiving(typed(validLogoutClaims(), null), 16).receive(BODY, NOW).isAccepted(),
+                    "a token without a typ header is accepted");
+
+            assertRefused(endpointReceiving(typed(validLogoutClaims(), "JWT"), 16).receive(BODY, NOW));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    LogoutRejection.TYPE_MISMATCH.token());
+        }
+
+        @Test
+        @DisplayName("Should refuse a token without exp and a token whose exp has passed 400")
+        void shouldRefuseMissingOrPassedExpiry() {
+            Map<String, ClaimValue> withoutExp = validLogoutClaims();
+            withoutExp.remove("exp");
+            Map<String, ClaimValue> passedExp = validLogoutClaims();
+            passedExp.put("exp", ClaimValue.forDateTime("exp", OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)));
+
+            assertRefused(endpointReceiving(typed(withoutExp, null), 16).receive(BODY, NOW));
+            assertRefused(endpointReceiving(typed(passedExp, null), 16).receive(BODY, NOW));
+        }
+
+        @Test
+        @DisplayName("Should refuse a token without jti 400")
+        void shouldRefuseMissingJti() {
+            Map<String, ClaimValue> withoutJti = validLogoutClaims();
+            withoutJti.remove("jti");
+
+            assertRefused(endpointReceiving(typed(withoutJti, null), 16).receive(BODY, NOW));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    LogoutRejection.JTI_MISSING.token());
+        }
+
+        @Test
+        @DisplayName("Should accept a token once and refuse its second delivery 400")
+        void shouldRefuseSecondDelivery() {
+            BackchannelLogoutEndpoint endpoint = endpointReceiving(validLogoutToken(), 16);
+
+            assertEquals(200, endpoint.receive(BODY, NOW).status());
+            assertRefused(endpoint.receive(BODY, NOW.plusSeconds(5)));
+        }
+
+        @Test
+        @DisplayName("Should refuse a new token while the replay memory is full 400")
+        void shouldRefuseWhenReplayMemoryIsFull() {
+            Map<String, ClaimValue> claims = validLogoutClaims();
+            BackchannelLogoutEndpoint endpoint = endpointReceiving(() -> typed(claims, null), 1);
+
+            assertEquals(200, endpoint.receive(BODY, NOW).status());
+            claims.put("jti", ClaimValue.forPlainString("logout-token-id-2"));
+
+            assertRefused(endpoint.receive(BODY, NOW));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    LogoutRejection.REPLAY_MEMORY_FULL.token());
+        }
     }
 
     @Test

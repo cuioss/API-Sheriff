@@ -334,6 +334,77 @@ class ConfigValidatorTest {
     }
 
     @Nested
+    @DisplayName("oidc.session.max_sessions_per_subject — its range, and its refusal in cookie mode")
+    class SessionMaxSessionsPerSubject {
+
+        private static final String POINTER = "/oidc/session/max_sessions_per_subject";
+
+        /** The refusals recorded at the key's own pointer for a session block of the given shape. */
+        private List<ConfigError> refusals(String mode, @Nullable Integer maxSessions, @Nullable Integer perSubject) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer("https://idp.example")
+                    .clientId("gateway")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .redirectUri("https://gw.example.com/auth/callback")
+                    .session(OidcConfig.Session.builder().mode(mode).maxSessions(maxSessions)
+                            .maxSessionsPerSubject(perSubject).build())
+                    .build();
+            return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        @ParameterizedTest
+        @ValueSource(ints = {0, -1, Integer.MIN_VALUE})
+        @DisplayName("Should refuse a bound below one")
+        void shouldRefuseBoundBelowOne(int perSubject) {
+            assertEquals(1, refusals(OidcConfig.Session.MODE_SERVER, null, perSubject).size(),
+                    "a subject must be able to hold at least one session");
+        }
+
+        @Test
+        @DisplayName("Should refuse a bound above the declared max_sessions")
+        void shouldRefuseBoundAboveDeclaredMaxSessions() {
+            assertEquals(1, refusals(OidcConfig.Session.MODE_SERVER, 5, 6).size(),
+                    "a per-subject bound above the store bound could never take effect");
+        }
+
+        @Test
+        @DisplayName("Should refuse a bound above the default max_sessions when that key is omitted")
+        void shouldRefuseBoundAboveDefaultMaxSessions() {
+            assertAll("the upper bound is the effective store bound of 10 000",
+                    () -> assertEquals(1, refusals(OidcConfig.Session.MODE_SERVER, null, 10_001).size()),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, null, 10_000),
+                            "control: the store bound itself is accepted"));
+        }
+
+        @Test
+        @DisplayName("Should accept a bound from one up to max_sessions, and an omitted bound")
+        void shouldAcceptBoundInsideTheRange() {
+            assertAll("accepted in server mode",
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, null, 1)),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, 5, 5),
+                            "equal to max_sessions switches the bound off and is allowed"),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, 3, null),
+                            "omitted beside a small max_sessions"),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, null, null)));
+        }
+
+        @Test
+        @DisplayName("Should refuse the key in cookie mode, where no store exists to apply it")
+        void shouldRefuseTheKeyInCookieMode() {
+            assertAll("cookie mode",
+                    () -> assertEquals(1, refusals(OidcConfig.Session.MODE_COOKIE, null, 1).size(),
+                            "a declared bound that nothing would enforce is refused at boot"),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_COOKIE, null, null),
+                            "an omitted key leaves cookie mode as it was"),
+                    () -> assertEquals(List.of(), refusals(OidcConfig.Session.MODE_SERVER, null, 1),
+                            "control: the same value is accepted in server mode"));
+        }
+    }
+
+    @Nested
     @DisplayName("content_security_policy — header-injection refusal on the global and every anchor block")
     class ContentSecurityPolicyInjection {
 

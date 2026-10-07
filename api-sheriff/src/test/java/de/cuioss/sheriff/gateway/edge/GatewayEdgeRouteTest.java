@@ -432,7 +432,7 @@ class GatewayEdgeRouteTest {
                     .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
-                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, () -> new ResponseStage()
+                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, () -> new ResponseStage(java.util.Set.of())
                             .relay(ended, ctx.response(), false, null, Map.of(), Map.of()))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -1094,8 +1094,7 @@ class GatewayEdgeRouteTest {
 
         private BffRuntime activeCookieRuntime() {
             return GatewayEdgeRouteBffWiringTest.activeRuntime(
-                    GatewayEdgeRouteBffWiringTest.serverBinding(
-                            new InMemorySessionStore(16, GatewayEdgeRouteBffWiringTest.NO_IDLE_EFFECT)));
+                    GatewayEdgeRouteBffWiringTest.serverBinding(GatewayEdgeRouteBffWiringTest.newStore()));
         }
     }
 
@@ -1513,8 +1512,7 @@ class GatewayEdgeRouteTest {
             GatewayConfig withOidc = GatewayConfig.builder().version(1).oidc(oidc()).build();
             GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), withOidc,
                     GatewayEdgeRouteBffWiringTest.activeRuntime(
-                            GatewayEdgeRouteBffWiringTest.serverBinding(
-                                    new InMemorySessionStore(16, GatewayEdgeRouteBffWiringTest.NO_IDLE_EFFECT))),
+                            GatewayEdgeRouteBffWiringTest.serverBinding(GatewayEdgeRouteBffWiringTest.newStore())),
                     portal(USER_INFO_PATH));
 
             // Act
