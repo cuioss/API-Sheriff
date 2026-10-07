@@ -51,6 +51,12 @@ and the key cannot be shared across replicas — are unaffected.
 3. **Tests** for both modes: a provided key file is read and seals and unseals; a malformed,
    oversized or unreadable file fails the boot loudly; the generated mode is unchanged.
 
+3a. **Two key-file checks left open by `PLAN-V02-08` (#377).** Decide whether the boot refuses a
+    configuration in which the client-authentication key file and the DPoP proof key file name the
+    same file — the published client key would then also be the DPoP proof key — and implement the
+    answer in `ConfigValidator` with a test. Re-measure the sealed cookie size with the `cnf` claim
+    DPoP adds, against the cookie-size budget, and record the headroom.
+
 4. **Documentation** in the layers that describe the key today: `doc/user/bff-cookie.adoc` ("Key
    material"), `doc/configuration.adoc`, and `doc/user/environment-variable-overrides.adoc`.
 

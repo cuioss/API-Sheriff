@@ -63,7 +63,10 @@ they must land together. D5 and D7 stay together: the audit runs over the store 
    **OBSERVED**: a `public final class`, a pattern-matching switch writing into a `StringBuilder`,
    with call sites in `BffRuntime` and in `GatewayEdgeRoute.problemBody` (the problem+json body).
    The payloads are maps, collections, strings, numbers, booleans and null, which the Jackson already
-   on the classpath (`quarkus-resteasy-jackson`) serialises; note that `JsonWriter` maps NaN and
+   on the classpath (`quarkus-resteasy-jackson`) serialises. Two Jackson lines are now on the classpath:
+   Quarkus's Jackson 2, and Jackson 3 (`tools.jackson`) brought by `json-schema-validator`, with
+   `jackson-annotations` pinned in the root `pom.xml` to serve both (#397). Use Quarkus's Jackson 2
+   and do not add a dependency on the Jackson 3 line; note that `JsonWriter` maps NaN and
    infinity to `null` and unknown types through `String.valueOf`. Replace with the Quarkus-provided
    serializer.
    **⚠ DEPENDENCY APPROVAL REQUIRED**: the operator suggested **dsl-json** for fixed-DTO shapes.
@@ -189,7 +192,12 @@ they must land together. D5 and D7 stay together: the audit runs over the store 
      and post-logout URLs.
    - **Token lifecycle inside the session** — refresh-token theft and rotation-reuse handling,
      concurrent refresh races, a refused token response discarding instead of revoking, tokens kept
-     after the session ends.
+     after the session ends, and the engine's nonce-retry gaps — the last three left open by
+     `PLAN-V02-08` (#377).
+   - **Two answers `PLAN-V02-08` chose conservatively at its merge** — a refused push on the
+     interactive widening re-drive answers `502` (the alternative is the widening's terminal `403`),
+     and an unbound token on a widening callback answers `400` with ApiSheriff-134. Decide whether
+     each status leaks or hides something an attacker or a client needs, and record the verdict.
    - **Logout correctness** — back-channel logout token validation (`iss`, `aud`, `iat`, `jti`
      replay, `events`, no `nonce`), forged or replayed logout tokens, logout that misses a session,
      and races between logout and refresh or widening.

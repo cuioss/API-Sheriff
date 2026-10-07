@@ -133,6 +133,11 @@ Both advertise the same issuer string.
    path out of a namespace they need"*, and *"those namespaces proxied must relocate the reserved
    paths instead."*
 
+   **Give the relocated paths the canonical-form check the others have.** `oidc.login.path` and
+   `oidc.user_info.path` are accepted at boot without the canonical-form check the other reserved
+   paths get (left open by `PLAN-V02-08`, #377). Add it in `ConfigValidator` with a test while the
+   paths move.
+
 5. **Write the ADR, and reconcile the documents this plan invalidates.**
 
    **No ADR covers the IdP-addressing decision.** That is an asserted absence: re-establish it at
@@ -258,6 +263,7 @@ reserved-path namespace is a broken contract rather than a partial one.
   `doc/variants/02-bff-session.adoc`, `doc/variants/03-bff-cookie.adoc`,
   `demo-client/doc/integration-sample.adoc`, `demo-client/README.adoc`,
   `doc/development/integration-test-topology.adoc` — D5
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D4: the canonical-form check for `oidc.login.path` and `oidc.user_info.path`
 - OBSERVED: `doc/adr/` — one new record — and
   `doc/resources/diagrams/integration-test-topology.svg` if the topology changes — D5
 
