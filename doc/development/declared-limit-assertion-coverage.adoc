@@ -105,7 +105,6 @@ readiness gate would refuse it. It is a standalone, deliberately minimal documen
 beside exactly one shared endpoint file, `sheriff-config/endpoints/assets-secure.yaml`, and no
 `topology.properties`, so its route set is that single bearer-gated directory asset route.
 
-*No limit-shaped key lives outside this surface, except in the fixture named next.*
 `reserved-path-overlap/auth-overlap.yaml` sits beside the surface, in a directory no gateway instance
 mounts, and declares `allowed_methods`. `BffReservedPathPrecedenceIT` copies it into a configuration
 directory it assembles and asserts that list on the wire: a `GET` on the routed path is refused
