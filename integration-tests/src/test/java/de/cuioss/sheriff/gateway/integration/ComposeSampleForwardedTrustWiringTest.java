@@ -182,7 +182,9 @@ class ComposeSampleForwardedTrustWiringTest {
         List<String> expected = splitAndStrip(supplied);
 
         GatewayConfig gateway = new ConfigLoader(CONFIG_DIR, new EnvSecretResolver(environment::get))
-                .load().gateway();
+                .load(defaulted -> {
+                    // This test asserts the bound allow-list, not which placeholders fell back.
+                }).gateway();
 
         // Vacuity guard: an empty expectation would make the equality below assert nothing meaningful.
         assertFalse(expected.isEmpty(),

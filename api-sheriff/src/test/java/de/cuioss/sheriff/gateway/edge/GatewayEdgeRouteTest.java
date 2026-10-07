@@ -1125,7 +1125,9 @@ class GatewayEdgeRouteTest {
                     """);
             GatewayConfig loaded = new ConfigLoader(configDir, new EnvSecretResolver(
                     name -> "SHERIFF_TRUSTED_PROXIES".equals(name) ? trustedProxies : null))
-                    .load().gateway();
+                    .load(defaulted -> {
+                        // The document declares no ${VAR:-default}, so there is no fallback to observe.
+                    }).gateway();
 
             // Guard — without this, a substitution that silently produced an empty set would make both
             // legs agree (nothing is trusted) and the negative control would pass for the wrong reason.

@@ -70,17 +70,17 @@ import org.yaml.snakeyaml.nodes.Node;
 /**
  * Reads, validates, and binds the file-based API Sheriff configuration.
  * <p>
- * {@link #load()} runs the boot pipeline over the configuration directory: it reads
- * {@code gateway.yaml} and every {@code endpoints/*.yaml} file (sorted for
+ * {@link #load(Consumer)} is the one entry. It runs the boot pipeline over the configuration
+ * directory: it reads {@code gateway.yaml} and every {@code endpoints/*.yaml} file (sorted for
  * deterministic error output), verifies that secret-classified fields are bare
  * {@code ${VAR}} references, substitutes every {@code ${VAR}} / {@code ${VAR:-default}}
  * placeholder (D4) <em>before</em> validating each substituted document against the
  * bundled JSON Schemas, and binds the valid trees to the immutable
  * {@link de.cuioss.sheriff.gateway.config.model} records. Every problem is collected —
  * never fail on the first — and raised together as a {@link ConfigLoadException}.
- * {@link #load(Consumer)} runs the same pass and additionally reports every
- * {@code ${VAR:-default}} placeholder that fell back to its in-file default, as a
- * {@link DefaultedPlaceholder} naming the file, the JSON pointer and the variable — never a value.
+ * The same pass reports every {@code ${VAR:-default}} placeholder that fell back to its
+ * in-file default, as a {@link DefaultedPlaceholder} naming the file, the JSON pointer and
+ * the variable — never a value.
  * <p>
  * Every file is read <em>exactly once</em> into a snapshot bounded by
  * {@link #MAX_CONFIG_FILE_BYTES}; the expansion-bomb pre-pass and the bind both consume that one
@@ -103,10 +103,14 @@ import org.yaml.snakeyaml.nodes.Node;
  * layered on by later deliverables; this loader owns steps 1-4 (read,
  * schema-validate, secret-resolve, bind) and produces the bound model.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> The configuration directory
- * and the {@link EnvSecretResolver} are constructor-injected; the loader carries no
- * framework imports. Instances are stateless between {@link #load()} calls and safe
- * to reuse.
+ * <strong>Pre-boot path (ADR-0061, ADR-0062).</strong> The offline
+ * {@code --validate-config} check runs this loader before the framework starts, so the
+ * loader depends on no framework type and takes the configuration directory and the
+ * {@link EnvSecretResolver} through its constructor; {@code PreBootFrameworkFreeArchTest}
+ * enforces that for this package. Everything a platform library offers is taken from one:
+ * Jackson binds the YAML, the networknt validator checks the schemas, and a SnakeYAML
+ * compose pre-pass applies the expansion limits (ADR-0010). Instances are stateless
+ * between {@link #load(Consumer)} calls and safe to reuse.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -183,9 +187,6 @@ public final class ConfigLoader {
     private static final int MAX_SCHEMA_REF_HOPS = 10;
     private static final List<String> SECRET_POINTERS = List.of(
             "/oidc/client_secret", "/oidc/session/encryption_key");
-    private static final Consumer<DefaultedPlaceholder> IGNORE_DEFAULTED = defaulted -> {
-        // The plain load() overload does not report applied in-file defaults.
-    };
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;
@@ -218,19 +219,8 @@ public final class ConfigLoader {
     }
 
     /**
-     * Loads and binds the configuration.
-     *
-     * @return the bound gateway document and endpoints
-     * @throws ConfigLoadException aggregating every schema, secret, and binding
-     *                             error discovered in this pass
-     */
-    public LoadedConfig load() throws ConfigLoadException {
-        return load(IGNORE_DEFAULTED);
-    }
-
-    /**
-     * Loads and binds the configuration exactly as {@link #load()} does, and reports every
-     * {@code ${VAR:-default}} placeholder that fell back to its in-file default.
+     * Loads and binds the configuration, and reports every {@code ${VAR:-default}} placeholder
+     * that fell back to its in-file default.
      * <p>
      * Each fallback reaches {@code defaultedSink} as one {@link DefaultedPlaceholder} carrying the
      * same file and JSON pointer a {@link ConfigError} on that scalar would carry, plus the variable
@@ -958,7 +948,7 @@ public final class ConfigLoader {
     }
 
     /**
-     * The bound configuration produced by {@link #load()}.
+     * The bound configuration produced by {@link #load(Consumer)}.
      *
      * @param gateway   the bound global {@code gateway.yaml} document
      * @param endpoints the bound endpoint documents in deterministic (file-sorted)

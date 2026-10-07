@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 
@@ -63,6 +64,11 @@ import org.junit.jupiter.params.provider.MethodSource;
 @EnableGeneratorController
 class TopologyResolverTest {
 
+    /** The sink of a test that asserts the resolved topology or the errors, not the applied defaults. */
+    private static final Consumer<DefaultedPlaceholder> IGNORE_DEFAULTED = defaulted -> {
+        // Applied in-file defaults are not what these tests assert.
+    };
+
     @TempDir
     Path directory;
 
@@ -94,7 +100,7 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=https://orders.internal:8443/api\n");
 
         ResolvedTopology topology = resolverWith(Map.of())
-                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of(), IGNORE_DEFAULTED);
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("https", upstream.scheme());
@@ -108,7 +114,7 @@ class TopologyResolverTest {
         Path file = topologyFile("USERS=https://users.internal\nORDERS=http://orders.internal\n");
 
         ResolvedTopology topology = resolverWith(Map.of())
-                .resolve(file, List.of(endpointFor("USERS"), endpointFor("ORDERS")), List.of());
+                .resolve(file, List.of(endpointFor("USERS"), endpointFor("ORDERS")), List.of(), IGNORE_DEFAULTED);
 
         assertEquals(443, topology.lookup("USERS").orElseThrow().port());
         assertEquals(80, topology.lookup("ORDERS").orElseThrow().port());
@@ -121,7 +127,7 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=${ORDERS_URL}\n");
 
         ResolvedTopology topology = resolverWith(Map.of("ORDERS_URL", "https://env.host:2000/env"))
-                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of(), IGNORE_DEFAULTED);
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("env.host", upstream.host());
@@ -135,7 +141,7 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=${ORDERS_URL:-https://default.host:3000/def}\n");
 
         ResolvedTopology topology = resolverWith(Map.of())
-                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of(), IGNORE_DEFAULTED);
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("default.host", upstream.host());
@@ -151,7 +157,7 @@ class TopologyResolverTest {
         List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of()),
+                () -> resolver.resolve(file, endpoints, List.of(), IGNORE_DEFAULTED),
                 "an unresolved ${VAR} on an enabled endpoint alias must fail the boot");
 
         assertEquals(List.of(topologyError("ORDERS",
@@ -164,7 +170,7 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=  https://orders.internal:8443/api  \n");
 
         ResolvedTopology topology = resolverWith(Map.of())
-                .resolve(file, List.of(endpointFor("ORDERS")), List.of());
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of(), IGNORE_DEFAULTED);
 
         ResolvedUpstream upstream = topology.lookup("ORDERS").orElseThrow();
         assertEquals("orders.internal", upstream.host());
@@ -181,7 +187,7 @@ class TopologyResolverTest {
         List<EndpointConfig> endpoints = List.of(endpointFor(endpointAlias));
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of()));
+                () -> resolver.resolve(file, endpoints, List.of(), IGNORE_DEFAULTED));
 
         assertEquals(List.of(topologyError(endpointAlias, expectedMessage)), exception.errors(), scenario);
     }
@@ -204,7 +210,7 @@ class TopologyResolverTest {
         List<EndpointConfig> endpoints = List.of(endpointFor("ALPHA"), endpointFor("BETA"), endpointFor("GAMMA"));
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of()));
+                () -> resolver.resolve(file, endpoints, List.of(), IGNORE_DEFAULTED));
 
         assertEquals(List.of(
                         topologyError("ALPHA",
@@ -232,7 +238,7 @@ class TopologyResolverTest {
         List<String> additionalAliases = List.of("MISSING");
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, additionalAliases));
+                () -> resolver.resolve(file, endpoints, additionalAliases, IGNORE_DEFAULTED));
 
         assertEquals(1, exception.errors().size(), () -> "one refusal per alias, got " + exception.errors());
     }
@@ -246,7 +252,7 @@ class TopologyResolverTest {
         List<String> additionalAliases = List.of("ABSENT");
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, additionalAliases));
+                () -> resolver.resolve(file, endpoints, additionalAliases, IGNORE_DEFAULTED));
 
         assertEquals(List.of("ORDERS"), exception.errors().stream().map(ConfigError::pointer).toList(),
                 "only the enabled alias is refused; the absent additional alias is left to ConfigValidator");
@@ -261,7 +267,7 @@ class TopologyResolverTest {
         List<String> additionalAliases = List.of("SECURE");
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, additionalAliases));
+                () -> resolver.resolve(file, endpoints, additionalAliases, IGNORE_DEFAULTED));
 
         assertEquals(List.of(topologyError("SECURE",
                         "Topology URL for alias 'SECURE' must use an http or https scheme, but was 'ftp'")),
@@ -341,7 +347,7 @@ class TopologyResolverTest {
     void resolvesNothingWhenNoEnabledEndpointsAndToleratesAbsentFile() {
         Path absent = directory.resolve("does-not-exist.properties");
 
-        ResolvedTopology topology = resolverWith(Map.of()).resolve(absent, List.of(), List.of());
+        ResolvedTopology topology = resolverWith(Map.of()).resolve(absent, List.of(), List.of(), IGNORE_DEFAULTED);
 
         assertTrue(topology.aliases().isEmpty());
     }
@@ -351,7 +357,7 @@ class TopologyResolverTest {
         Path file = topologyFile("ORDERS=https://orders.internal\nSECURE=https://secure.internal:8443\n");
 
         ResolvedTopology topology = resolverWith(Map.of())
-                .resolve(file, List.of(endpointFor("ORDERS")), List.of("SECURE"));
+                .resolve(file, List.of(endpointFor("ORDERS")), List.of("SECURE"), IGNORE_DEFAULTED);
 
         ResolvedUpstream upstream = topology.lookup("SECURE").orElseThrow();
         assertEquals("secure.internal", upstream.host());
@@ -365,7 +371,7 @@ class TopologyResolverTest {
         List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
 
         ResolvedTopology topology = assertDoesNotThrow(
-                () -> resolver.resolve(file, endpoints, List.of("MISSING")),
+                () -> resolver.resolve(file, endpoints, List.of("MISSING"), IGNORE_DEFAULTED),
                 "an unresolvable additional alias must be skipped, not thrown");
 
         assertAll("the unresolvable additional alias is omitted, leaving ConfigValidator to report it",
@@ -381,7 +387,7 @@ class TopologyResolverTest {
         List<String> additionalAliases = List.of("SECURE");
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, additionalAliases),
+                () -> resolver.resolve(file, endpoints, additionalAliases, IGNORE_DEFAULTED),
                 "an unresolvable enabled-endpoint base_url alias must still fail the boot");
 
         assertEquals(List.of(topologyError("MISSING",
@@ -402,7 +408,7 @@ class TopologyResolverTest {
         List<EndpointConfig> endpoints = List.of(assetOnly, endpointFor("ORDERS"));
 
         ResolvedTopology topology = assertDoesNotThrow(
-                () -> resolver.resolve(file, endpoints, List.of()),
+                () -> resolver.resolve(file, endpoints, List.of(), IGNORE_DEFAULTED),
                 "an endpoint without base_url has no alias to resolve; the conditional rule is the validator's");
 
         assertEquals(Set.of("ORDERS"), topology.aliases().keySet(),
@@ -417,7 +423,7 @@ class TopologyResolverTest {
         List<EndpointConfig> endpoints = List.of(endpointFor("ORDERS"));
 
         TopologyResolutionException exception = assertThrows(TopologyResolutionException.class,
-                () -> resolver.resolve(file, endpoints, List.of()),
+                () -> resolver.resolve(file, endpoints, List.of(), IGNORE_DEFAULTED),
                 "a non-http(s) topology alias scheme must be rejected at boot");
 
         assertEquals(List.of(topologyError("ORDERS",
