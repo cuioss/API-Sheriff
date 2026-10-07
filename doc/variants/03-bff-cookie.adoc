@@ -89,7 +89,8 @@ position in link:../fapi_status.adoc[FAPI 2.0 Status].
 
 An API call carries the encrypted token cookie. The gateway:
 
-. Reads and *decrypts* the cookie (AES-256-GCM) to recover the tokens -- no store lookup.
+. Reads and *decrypts* the cookie (AES-256-GCM) to recover the tokens -- no store lookup. A session
+  past its absolute lifetime or its idle timeout is no session (see <<_session_lifetime>>).
 . If the token is near expiry, transparently refreshes it and re-seals the cookie.
 . Injects `Authorization: Bearer <token>` and forwards, applying the same
   link:01-base-gateway.adoc[base-gateway] filtering and per-route
@@ -153,7 +154,38 @@ and the gateway holds no per-user state.
   scopes, a leaner IdP token shape) or to run the link:02-bff-session.adoc[session-based variant];
   raising the budget past the browser-safe value only moves the failure into the browser, where
   nothing observes it. Oversized IdP tokens are a deployment consideration.
+
+| Activity cookie
+| A second, small cookie, `<session cookie name>-activity`, with the session cookie's attributes.
+  It carries the time of the last request, sealed under a key of its own and bound to the one
+  session it belongs to, and no token. It is what the idle timeout rests on (below).
 |===
+
+[[_session_lifetime]]
+== Session Lifetime
+
+A session has two deadlines and ends at the earlier one, as in the
+link:02-bff-session.adoc#_session_lifetime[session-based variant].
+
+* *Absolute.* `oidc.session.ttl_seconds`, counted from the login instant sealed into the cookie and
+  checked on every request. Nothing extends it; every re-seal carries the same deadline.
+* *Idle.* `oidc.session.idle_timeout_seconds` without a request the gateway let through on a session
+  route.
+
+A stateless gateway can keep the time of the last request only in the browser. It keeps it in the
+activity cookie and not in the sealed session, for three reasons: an access then never re-seals the
+tokens, it never races a token refresh for the session cookie, and the sealed session's field set
+and format version stay as they are, so no session ends at an upgrade on its account. The gateway
+writes the activity cookie at most once every 60 seconds for one session, so the idle deadline is
+exact to within that interval.
+
+The activity cookie can only shorten a session. One that is missing, unreadable or bound to
+another session is ignored, and the idle timeout is then measured from the login
+(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#idle-deadline[ADR-0018]).
+
+A WebSocket relayed on a session route is closed at the session's absolute expiry. Nothing in this
+variant observes an earlier end of a session, so a logout and the idle timeout close no open
+WebSocket; the session-based variant closes it at both.
 
 == Statelessness
 
@@ -184,7 +216,10 @@ granted, so a session that logged in on a scoped route keeps its endpoint scopes
 session's active scope set against the route's needed set on every request and refreshes, widens or
 refuses (link:02-bff-session.adoc#_scope_enforcement[Scope Enforcement]). Two things differ here,
 both consequences of the session being the cookie. A granted widening is persisted by re-sealing:
-the callback sets a new session cookie for the same derived session identity. And a request whose
+the callback sets a new session cookie for the same derived session identity. The cookie sealed
+before the widening still unseals: it stays usable at its earlier level, without the added scopes,
+until the session's absolute lifetime, because nothing held by the gateway could withdraw it. In
+the session-based variant the previous cookie value stops resolving at the merge. And a request whose
 near-expiry refresh has just re-sealed the session does not also start a scope-driven refresh,
 because its own `Cookie` header still names the refresh token that refresh rotated away; it is
 widened or refused instead, and the next request, carrying the new cookie, is refreshed normally.
@@ -241,7 +276,8 @@ residuals are stated plainly:
 == Logout
 
 Gateway-triggered logout works as in the
-link:02-bff-session.adoc[session-based variant]: `oidc.logout.path` expires the cookie and
+link:02-bff-session.adoc[session-based variant]: `oidc.logout.path` expires the session cookie and
+the activity cookie first -- whatever the IdP offers, as there -- and
 redirects to the `end_session_endpoint` with
 `id_token_hint`, the pre-registered gateway-owned `post_logout_redirect_uri`, and a
 session-bound `state` verified on return (carried across the round-trip in the short-lived
@@ -295,7 +331,8 @@ oidc:
     mode: cookie                 # encrypted cookie, no store (this variant)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # AES-256-GCM key; optional -- omit to generate on startup
-    ttl_seconds: 3600
+    ttl_seconds: 3600            # absolute lifetime from login
+    idle_timeout_seconds: 1800   # ends a session nobody uses (the default)
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
 ----
 
@@ -372,7 +409,9 @@ explicit gate before a cipher is ever constructed. The current version is *2*: t
 payload -- tokens, identity and session claims, the session's active scope set and its granted scope
 set `S` -- framed as length-prefixed raw UTF-8 and deflated before the seal. *The rule is to
 increment the version by one on every change to the sealed payload's field set*; a change that
-leaves the field set and its framing untouched keeps the version.
+leaves the field set and its framing untouched keeps the version. The idle timeout is such a
+change: the last access lives in the activity cookie, which has a format version of its own, and
+the sealed session is as it was.
 
 *Upgrade consequence*: existing cookie-mode sessions are invalidated on deploy and users must log
 in again, once. The numbering restarted at 1 with the change that added the active scope set, so

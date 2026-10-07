@@ -5,7 +5,7 @@
 
 A task-oriented guide for operators standing up the *server-session BFF* (Variant 2): API Sheriff
 as an OIDC confidential client that holds tokens server-side and hands the browser only an opaque
-session-id cookie. It tells you *how* to configure and run the variant; the field-by-field contract
+session cookie. It tells you *how* to configure and run the variant; the field-by-field contract
 lives in the link:../configuration.adoc#_oidc[Configuration Reference (`oidc`)] and the design
 rationale in link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based].
 
@@ -13,9 +13,9 @@ rationale in link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-base
 
 Choose the server-session BFF when server-side-only token custody is a hard requirement: the token
 never leaves the gateway, not even encrypted. It is *stateful* -- it keeps an in-memory session
-store -- so it fits single-node or sticky-session deployments. A multi-node non-sticky deployment,
-or one that must avoid server-side session state, is the
-link:../variants/03-bff-cookie.adoc[cookie-based variant]'s job instead.
+store -- so it fits a single node, or several replicas behind sticky sessions (see
+<<multi-replica>>). A multi-node non-sticky deployment, or one that must avoid server-side session
+state, is the link:../variants/03-bff-cookie.adoc[cookie-based variant]'s job instead.
 
 == Prerequisites
 
@@ -61,8 +61,10 @@ oidc:
     mode: server                              # server-side token store (this variant)
     store: memory                             # REQUIRED for server mode; only initial option
     max_sessions: 10000                       # DoS guard on the in-memory store
+    max_sessions_per_subject: 10              # optional: live sessions one user may hold
     cookie_name: __Host-sheriff
     ttl_seconds: 3600                         # absolute lifetime from login
+    idle_timeout_seconds: 1800                # optional: ends a session nobody uses
     csrf:
       trusted_origins: [https://app.example.com]   # SPA origins allowed on unsafe methods
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
@@ -718,6 +720,14 @@ the new tokens, and both its active set and its granted set become the scopes of
 scope of the earlier granted set that the IdP no longer returned is therefore gone from the session.
 The gateway logs `ApiSheriff-20`, naming only the scopes added.
 
+*The browser gets a new cookie value.* The callback of a granted widening sets the session cookie
+again with a new value, and the previous value stops working at once. The new cookie's `Max-Age` is
+the session's remaining lifetime, not a full `ttl_seconds`. A request that was already on its way
+with the previous value is answered once as unauthenticated -- `401` for an API call, the redirect
+into login for a navigation -- without a clearing cookie, and succeeds when it is sent again. A
+back-channel logout still finds the session. Because the value changes, nothing outside the
+gateway may treat it as a stable name for the session (see <<multi-replica>>).
+
 *A widening also moves the session to the IdP session that answered it.* The new tokens belong to
 the IdP session that issued the grant. That is usually the one the login used, but not always: if
 the IdP session ended and the user signed in again -- which is what the interactive attempt does --
@@ -846,7 +856,7 @@ you need:
 | `oidc.user_info.path` | Curated identity view served to the SPA (optional).
 | `oidc.logout.path` | RP-initiated logout.
 | `oidc.logout.post_logout_redirect_uri` (path) | Logout-return verification leg.
-| `oidc.logout.backchannel_path` | Back-channel logout receiver (server mode only). Every host.
+| `oidc.logout.backchannel_path` | Back-channel logout receiver (server mode only). Every host. See <<backchannel-logout>>.
 | `oidc.client_authentication.jwks_path` | The client JWKS endpoint; default `/auth/jwks`, reserved
   even when the key is not declared. Every host. Publishes the client-authentication public key; with
   `oidc.client_secret` configured it answers `404`.
@@ -934,14 +944,179 @@ routes every request of a session to one instance, so the duplicate does not ari
 itself; it would take two instances refreshing the same session. Allowing a reuse count or grace
 window buys that back at the cost of exactly the detection signal rotation provides.
 
+[[session-lifetime]]
+== How long a session lives
+
+A session has two deadlines, and it ends at whichever comes first.
+
+* *The absolute lifetime*, `oidc.session.ttl_seconds`, is counted from the login. Nothing extends
+  it: not a request, not a token refresh, not a widening.
+* *The idle timeout*, `oidc.session.idle_timeout_seconds`, ends a session that has gone that long
+  without a request the gateway let through on a session route. The default is `1800`, or
+  `ttl_seconds` when that is lower. A declared value below `1` or above `ttl_seconds` stops the boot.
+
+*What counts as a request.* Only a request that is let through to a `require: session` route, or to
+the session branch of a `session_fallback` route. A request the gateway refuses, challenges or
+redirects into a login or a widening does not count, and neither does a call to the user-info path
+or any other reserved path. A page that only polls `oidc.user_info.path` therefore does not keep
+its session alive.
+
+*What the user sees.* A request on a session past either deadline is answered like a request
+without a session: a navigation is redirected into login, an XHR or API call gets `401`.
+
+*Expired sessions leave the store within a minute.* The gateway removes a session past either
+deadline when its cookie is next presented, and otherwise in a sweep that runs once a minute. An
+expired session therefore does not hold one of the `max_sessions` slots until the store fills.
+
+[[websocket-sessions]]
+=== WebSockets and streamed responses
+
+A long-lived connection counts as *one* request, when it starts. The frames of an open WebSocket
+and the bytes of a streamed response do not move the idle deadline. A browser that holds a
+WebSocket and sends no other request to a session route lets its session go idle.
+
+*A WebSocket on a session route is closed when its session ends.* The gateway closes both legs with
+close code `1008` and the reason `session ended`. That happens:
+
+* at the session's absolute expiry;
+* at a logout through `oidc.logout.path`, and at a back-channel logout;
+* when a new login in the same browser replaces the session (see <<login-replaces>>);
+* when the session is ended by the per-user bound (see <<login-replaces>>);
+* when the sweep removes the session -- so also after the idle timeout, within a minute of it.
+
+It does *not* happen when a widening gives the browser a new cookie value: the session is the same
+session, and its WebSockets stay open.
+
+A client should treat `1008` with that reason as "authenticate again, then reconnect". It differs
+from the `1001` a route's own WebSocket idle timer sends.
+
+*Streamed HTTP and gRPC responses are not ended.* A response that is already streaming when its
+session ends runs until it finishes or a transport timeout ends it.
+
+*The gateway tracks at most 10 000 session-bound WebSockets per instance.* An upgrade beyond that is
+refused `503` before anything is opened, like an upgrade beyond the WebSocket relay budget (see
+link:protocol-routes.adoc[Protocol routes]). WebSockets on bearer routes and on
+`require: none` routes are not session-bound and do not count.
+
+[[login-replaces]]
+== A new login, and how many sessions a user may hold
+
+*A login ends the session the browser presents.* When a login completes in a browser that still
+carries a session cookie, the gateway ends that session before it creates the new one, whoever it
+belonged to. An earlier session does not live on beside the new one, and its cookie value stops
+working. A widening is not a login and keeps its session.
+
+*One user holds a bounded number of sessions.* `oidc.session.max_sessions_per_subject` bounds the
+live sessions of one subject (`sub`). The default is `10`, or `max_sessions` when that is lower.
+Each browser, browser profile and private window is a session of its own. A login beyond the bound
+ends the user's *oldest* session -- the one created first -- and is then admitted; that browser is
+answered as unauthenticated on its next request. Raise the key for an account that more than ten
+browsers use at once. The range is `1` to `max_sessions`, and a value outside it stops the boot.
+
+Neither event revokes tokens at the IdP, and neither is logged above `DEBUG`.
+
+[[logout]]
+== Logout
+
+A logout through `oidc.logout.path` *always ends the gateway session first*: the session is
+destroyed and its cookie cleared before anything is asked of the IdP. What follows depends on the
+IdP.
+
+* *The IdP publishes an end-session endpoint.* The browser is redirected there with
+  `id_token_hint`, `post_logout_redirect_uri` and `state`, comes back to
+  `oidc.logout.post_logout_redirect_uri`, and lands on `oidc.logout.final_redirect`. This is a
+  redirect, so the ID token travels in the URL of that one request. The response that carries it
+  has `Referrer-Policy: no-referrer`.
+* *The IdP publishes no usable end-session endpoint* -- none, or a value that is not an absolute
+  `http` or `https` URL. The browser lands on `oidc.logout.final_redirect` directly. The gateway
+  logs `WARN` `ApiSheriff-135` once; repeats stay at `DEBUG`. *The session at the IdP is not ended*:
+  a user who logs in again may be signed in without a prompt. If you see `ApiSheriff-135`, check
+  the IdP's discovery document for `end_session_endpoint`.
+* *Discovery fails at that moment*, or the session holds no ID token. The browser lands on
+  `oidc.logout.final_redirect` as well, and the IdP is asked again at the next logout.
+
+A logout without a live session answers the same redirect to `oidc.logout.final_redirect` and
+clears the cookie.
+
+[[backchannel-logout]]
+=== Back-channel logout: what the identity provider must send
+
+The IdP ends a gateway session by posting a logout token to `oidc.logout.backchannel_path`. The
+gateway acts on a token only when all of this holds:
+
+[cols="1,3", options="header"]
+|===
+| Part of the token | Requirement
+
+| Signature | Verifies against the IdP's JWKS.
+| `typ` header | Optional. When present it must be `logout+jwt` (`application/logout+jwt` is read as
+  the same). A token typed anything else, `JWT` included, is refused.
+| `iss`, `aud` | The configured `oidc.issuer` and `oidc.client_id`.
+| `iat` | Within two minutes of the gateway's clock.
+| `exp` | Required, and not yet passed. There is no clock-skew allowance on `exp`.
+| `jti` | Required.
+| `events` | Contains the back-channel logout event.
+| `nonce` | Absent.
+| `sub` or `sid` | At least one. `sid` ends the sessions of that IdP session, `sub` alone every
+  session of the user.
+|===
+
+*A token acts once.* The gateway remembers the `jti` of every token it acted on until the token's
+two-minute window has passed, and refuses a second delivery of the same token.
+
+*That memory is per gateway instance.* It is held in memory, is not shared between instances and
+does not survive a restart. It holds 10 000 tokens; when it is full of tokens still inside their
+window, a further token is refused until one leaves it, and the IdP's retry then succeeds.
+
+Every refused token is answered `400` and logged as `ApiSheriff-112` with the reason (see
+link:../LogMessages.adoc[Log Messages]). An IdP whose logout tokens carry no `exp` or no `jti`, or a
+`typ` other than `logout+jwt`, cannot end sessions on this gateway. Keycloak 26.5 sends `typ`
+`logout+jwt`, `exp` and `jti`.
+
+[[gateway-cookies]]
+== The gateway's cookies and your application
+
+*A response that carries a gateway cookie is not cacheable.* Whenever the gateway sets or clears
+one of its cookies on a response, that response is sent with `Cache-Control: no-store`, replacing
+the upstream's value. In this variant that is the login, logout and step-up answers and the answer
+that ends a session. Every other response keeps the cache policy the upstream sent.
+
+*An application behind the gateway cannot set a gateway cookie.* A `Set-Cookie` in an upstream
+response that names the session cookie, `+__Host-sheriff-binding+` or `+__Host-sheriff-logout+` is
+dropped; every other `Set-Cookie` is relayed unchanged. Nothing is logged. Do not use those names
+in the application. On a gRPC route the rule covers the leading headers; trailers are relayed as
+the upstream sent them.
+
+[[multi-replica]]
+== Running more than one replica
+
+The session store is in the memory of one gateway process. Several replicas work only with *sticky
+sessions*: the load balancer or ingress in front of them sends every request of one browser to the
+replica that holds its session.
+
+* *Base the affinity on a cookie of the load balancer or ingress itself.* Let it set its own
+  affinity cookie and route on that.
+* *Never derive the affinity from the gateway's session cookie.* Its value changes when a session
+  is widened (see <<scope-enforcement>>). A balancer that hashes that value sends the browser to
+  another replica after the change, where the session does not exist.
+* *The login leg needs the same affinity.* The pending login between the redirect to the IdP and
+  the callback is held by the replica that started it.
+* *A replica that restarts or fails over ends the sessions it held.* Those users log in again.
+  Nothing is replicated.
+* *Give every replica the same two signing key files* (see <<key-material>>).
+
+Where replicas must be interchangeable, use the
+link:../variants/03-bff-cookie.adoc[cookie-based variant]: once every replica shares the sealing key
+and the two signing keys, any replica serves any session.
+
 == Operate
 
 * *Sessions are in-memory.* A gateway restart drops all sessions and users re-authenticate. Size
   `max_sessions` for expected concurrency; it caps memory against a login flood. Expired sessions
-  release their slot when the bound is reached -- a login arriving at a full store sweeps the
-  expired entries first, so only genuinely live sessions hold the ceiling.
-* *Absolute TTL.* `ttl_seconds` is counted from login and is not extended by refresh; on expiry the
-  user re-authenticates.
+  are removed within a minute, so only live sessions hold the ceiling.
+* *Two deadlines.* `ttl_seconds` is counted from login and is not extended by refresh or by use;
+  `idle_timeout_seconds` ends a session nobody uses. On either the user re-authenticates. See
+  <<session-lifetime>>.
 * *Refresh failures do not all end the session.* If the IdP is unreachable or answers `5xx`, the
   session is *kept*: requests keep using the current access token until it expires, then are
   answered as unauthenticated without the session being destroyed, and the next refresh attempt

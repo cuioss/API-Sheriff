@@ -13,7 +13,9 @@ design rationale in link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie
 
 Choose the cookie-based BFF when you need a *stateless* gateway: multiple replicas with no shared
 session store and no sticky routing for ordinary traffic. Tokens still never reach the browser in
-readable form -- they are sealed with AES-256-GCM and the cookie is `HttpOnly`.
+readable form -- they are sealed with AES-256-GCM and the cookie is `HttpOnly`. It is the stateless
+alternative to sticky sessions: once every replica shares the sealing key and the two signing keys,
+any replica serves any session, and a replica that restarts takes no session with it.
 
 Choose the link:../variants/02-bff-session.adoc[server-session variant] instead when server-side-only
 token custody is a hard requirement (the token must never leave the gateway, not even encrypted), or
@@ -58,6 +60,7 @@ oidc:
     encryption_key: ${SHERIFF_SESSION_KEY}    # optional -- see "Key material" below
     max_cookie_size: 4019                     # seal-time VALUE budget; see "Cookie size budget"
     ttl_seconds: 3600                         # absolute lifetime from login
+    idle_timeout_seconds: 1800                # optional: ends a session nobody uses; see "Idle timeout"
     csrf:
       trusted_origins: [https://app.example.com]
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
@@ -107,6 +110,43 @@ cookie sealed under the withdrawn key carries a key id the gateway no longer hol
 
 Treat a key change as a scheduled forced re-login -- operationally the same event as the
 format-version change described under "Upgrading" below.
+
+[[key-rotation]]
+=== When to replace a passed key
+
+A passed key has to be replaced on a schedule. The schedule follows from how often the gateway
+seals with it.
+
+The gateway seals with AES-256-GCM and a random 96-bit nonce, and NIST SP 800-38D bounds one key
+used that way at 2^32^ (4 294 967 296) seals. The session cookie and the activity cookie (see
+<<idle-timeout>>) are sealed under separate keys, and both come from `session.encryption_key`. The
+activity key is the one that reaches the bound first, because it seals at most once a minute for
+every session in use -- up to 1 440 seals per session per day. The session key seals once per login,
+refresh and widening, which is far less often.
+
+The rule: *replace `session.encryption_key` before this many days have passed since the key was
+first used.*
+
+[source]
+----
+days = 4 294 967 296 / (1 440 x peak concurrent sessions)
+----
+
+[cols="1,1", options="header"]
+|===
+| Peak concurrent sessions | Replace the key at least every
+
+| 8 000 | year (the bound is 365 days at 8 171 sessions)
+| 10 000 | 298 days
+| 50 000 | 59 days
+| 100 000 | four weeks (the bound is 29.8 days, so a calendar month is too long)
+|===
+
+Compute your own figure from the formula with your peak, counted across all replicas that share the
+key. Replacing the key resets the count for both keys, and it ends every session, as described
+above. A *generated* key needs no
+schedule beyond this: it is replaced at every restart, so restart the gateway within the same
+interval.
 
 === Migrating from a configuration that declared `previous_key`
 
@@ -595,6 +635,71 @@ link:../development/bff-cookie.adoc[the contributor guide]. Note what the 4019 b
 every browser guarantees, not a limit measured in any particular browser.
 ====
 
+[[idle-timeout]]
+== Idle timeout and the activity cookie
+
+A session ends at its absolute lifetime (`session.ttl_seconds`) and, earlier, when
+`session.idle_timeout_seconds` have passed without a request the gateway let through on a session
+route. The default is `1800`, or `ttl_seconds` when that is lower; a declared value below `1` or
+above `ttl_seconds` stops the boot. What counts as a request is the same as in the server-session
+variant (see link:bff-session.adoc#session-lifetime[How long a session lives]).
+
+A stateless gateway has nowhere to keep the time of the last request but the browser. It keeps it
+in a second cookie, the *activity cookie*.
+
+[cols="1,3", options="header"]
+|===
+| Property | Value
+
+| Name
+| The session cookie's name followed by `-activity`: `+__Host-sheriff-session-activity+` under the
+  default name. There is no key for it.
+
+| Attributes
+| The session cookie's: `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, no `Domain`. Its `Max-Age`
+  is the session's remaining absolute lifetime.
+
+| Content
+| The time of the last request, sealed under a key of its own and bound to the one session it
+  belongs to. It carries no token. Its value is always 72 characters.
+
+| When it is set
+| On the response to a request let through on a session route, *at most once every 60 seconds* for
+  one session. It is first set 60 seconds or more after the login; until then the login itself is
+  the last request.
+
+| When it is cleared
+| At logout, and whenever the gateway ends the session: both cookies are cleared together.
+|===
+
+*The session cookie is not set again on a request.* Only a login, a token refresh and a widening
+write the session cookie. An ordinary response carries at most the small activity cookie.
+
+*The deadline is exact to within a minute.* Because the cookie is written at most once every 60
+seconds, the recorded time can be up to 60 seconds older than the latest request. With an idle
+timeout of 1800 seconds a session ends between 1740 and 1800 seconds after its last request.
+
+*The cookie can only shorten a session.* A missing, altered or unreadable activity cookie, and one
+that belongs to another session, is ignored, and the idle timeout is then measured from the login.
+A browser extension, proxy or client that drops the cookie therefore ends the session one idle
+period after login, whatever the user does. If sessions end after exactly `idle_timeout_seconds`
+despite activity, check that the second cookie reaches the browser and comes back.
+
+*A response that sets it is not cacheable.* Whenever the gateway sets or clears one of its cookies
+on a response, it sends that response with `Cache-Control: no-store`, replacing the upstream's
+value. In this variant that includes the session-route response that carries the activity cookie
+-- at most one response per session per minute -- and every response that re-seals the session
+cookie. All other responses keep the upstream's cache policy.
+
+*It shares the `Cookie` header headroom.* The inbound `Cookie` header cap is unchanged:
+`max_cookie_size` plus 512 bytes. The activity cookie takes 104 of those 512 bytes under the default
+name.
+
+*A WebSocket or a streamed response counts once, when it starts.* An open WebSocket does not keep
+the session alive. On a session route the gateway closes a WebSocket at the session's absolute
+expiry, with close code `1008` and the reason `session ended`; in this variant nothing closes it
+earlier (see <<_what_is_unavailable_in_this_variant>>).
+
 [[_configure_strict_refresh_token_rotation_at_the_idp]]
 == Configure strict refresh-token rotation at the IdP
 
@@ -638,6 +743,7 @@ is answered -- `reauthenticate` redirects navigations to login and answers API c
 answers `401` to everything. See link:../configuration.adoc#_refresh_failure_dispositions[the
 per-kind table].
 
+[[_what_is_unavailable_in_this_variant]]
 == What is unavailable in this variant
 
 A stateless gateway holds no session index and cannot reach another browser's cookie, so
@@ -667,6 +773,26 @@ when the session's next refresh is refused there. The window needs a request of 
 flight at the moment of the logout, and the mitigations are the two above. The server-session
 variant does not have this window: there a logout wins over a refresh or a widening that was in
 flight, and the session stays ended.
+
+*A cookie sealed before a widening stays usable as it was sealed.* A granted widening re-seals the
+session cookie with the new tokens and scopes. The cookie the browser held before still unseals: it
+resolves the session at its earlier level, without the scopes the widening added, until the
+session's absolute lifetime. It never gains the new scopes. The gateway keeps nothing that could
+withdraw it. In the server-session variant the previous cookie value stops working at the moment of
+the widening.
+
+*A new login does not withdraw the earlier cookie either.* The login's `Set-Cookie` replaces the
+earlier session cookie in the browser. A copy of the earlier cookie taken before that stays usable
+until its own lifetime ends.
+
+*A logout does not close an open WebSocket.* A WebSocket on a session route is closed at the
+session's absolute expiry and at no earlier session event: not at a logout, and not at the idle
+timeout. The route's own WebSocket idle timer and either peer can still close it. In the
+server-session variant a logout closes it (see
+link:bff-session.adoc#websocket-sessions[WebSockets and streamed responses]).
+
+*No per-user session bound.* `session.max_sessions_per_subject` counts sessions in a store, and
+this variant has none. Declaring the key in cookie mode stops the boot.
 
 == Session affinity for the login leg
 
@@ -699,6 +825,11 @@ different version byte, fails the explicit version gate *before* decryption (log
 are redirected to login and API calls answer `401`. Existing cookie sessions therefore log in again
 once after the upgrade.
 
+*The idle timeout did not change the format.* The time of the last request lives in the activity
+cookie, not in the sealed session, so the session cookie's field set and `FORMAT_VERSION` are as
+they were. The activity cookie has a format version of its own; a change to it would cost a session
+its recorded activity, never the session.
+
 The gate reads and compares the version byte before any cipher is constructed. The version an
 accepted cookie carries is authenticated in turn -- AES-GCM binds it into the associated data -- but
 that happens after the gate, not at it. So a retired format is never mis-parsed.
@@ -708,8 +839,20 @@ that happens after the gate, not at it. So a retired format is never mis-parsed.
 * *Absolute TTL.* `ttl_seconds` is counted from login and is never extended by a refresh; the
   deadline is recomputed from the original login on every re-seal, so an endlessly-refreshed session
   still dies on time.
+* *Idle timeout.* `idle_timeout_seconds` ends a session nobody uses. It rests on the activity cookie;
+  see <<idle-timeout>>.
 * *Refresh re-seals the cookie.* A transparent token refresh emits a new `Set-Cookie` -- that is the
   whole of "persisting" in this variant. A granted widening of the session re-seals it the same way.
+  An ordinary request does not: it sets at most the activity cookie.
+* *Logout clears two cookies.* The session cookie and the activity cookie are cleared together, at
+  logout and whenever the gateway ends a session. Logout itself behaves as in the server-session
+  variant: the cookies are cleared first, and an IdP without a usable end-session endpoint lands the
+  browser on `oidc.logout.final_redirect` with `ApiSheriff-135` logged once (see
+  link:bff-session.adoc#logout[Logout]).
+* *Replace a passed sealing key on schedule.* See <<key-rotation>>.
+* *The application cannot set the gateway's cookies.* An upstream `Set-Cookie` naming the session
+  cookie, the activity cookie, `+__Host-sheriff-binding+` or `+__Host-sheriff-logout+` is dropped
+  (see link:bff-session.adoc#gateway-cookies[The gateway's cookies and your application]).
 * *Scopes are enforced as in the server-session variant.* A session lacking a scope the route needs
   is refreshed, widened or refused `403` exactly as
   link:bff-session.adoc#scope-enforcement[the server-session guide] describes. One case is specific

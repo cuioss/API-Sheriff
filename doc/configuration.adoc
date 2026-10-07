@@ -2468,6 +2468,19 @@ See link:#_oidc_client_authentication[Client authentication].
   the return leg verifies against that cookie and clears it -- stateless, so it works
   identically in both session modes.
 
+  *The local session is always ended first.* The endpoint destroys the session and clears every
+  cookie of the session binding before it builds the redirect, so a logout never fails for a reason
+  that lies at the IdP. When the IdP publishes no usable `end_session_endpoint` -- none, a blank
+  one, or one that is not an absolute `http` or `https` URI with a host -- the answer is a `302` to
+  `logout.final_redirect` and the gateway logs `WARN` `ApiSheriff-135` once per process; repeats stay
+  at `DEBUG`. A discovery failure, a session without an ID token and any failure while the redirect
+  is built land on `logout.final_redirect` the same way, logged at `DEBUG`; discovery is tried again
+  at the next logout. In all of these the session at the IdP is not ended.
+
+  The redirect to the IdP stays a redirect: the ID token travels in its URL as `id_token_hint`.
+  That one response carries `Referrer-Policy: no-referrer`, whatever `security_headers` sets for
+  the name, and every logout answer is `Cache-Control: no-store`.
+
 | `logout.post_logout_redirect_uri`
 | The return leg from the IdP. It must be a *gateway-owned* path -- the gateway has to see the
   return to verify the session-bound `state` -- pre-registered at the IdP and compared by
@@ -2489,6 +2502,13 @@ See link:#_oidc_client_authentication[Client authentication].
   you registered as the client's back-channel logout URL, which in a container deployment is an
   internal service name. Register that address with the IdP with this path, and reserve the path
   somewhere no proxied namespace needs it on any host (ADR-0018, back-channel-host amendment).
+
+  The logout token must be signed by the IdP, name the configured issuer and client, carry an `iat`
+  within two minutes of the gateway's clock, an `exp` that has not passed, a `jti`, and `sub` or
+  `sid`. A `typ` header is optional; one that is present must be `logout+jwt`. A token acts once per
+  gateway instance. Any other token is answered `400` and logged as `ApiSheriff-112`. See
+  link:user/bff-session.adoc#backchannel-logout[Back-channel logout: what the identity provider must
+  send].
 
 | `session.csrf.trusted_origins`
 | The browser origins allowed to make *unsafe-method* (non-GET/HEAD/OPTIONS) calls to
@@ -2518,18 +2538,37 @@ See link:#_oidc_client_authentication[Client authentication].
 | `session.max_sessions`
 | *Server mode only.* Upper bound on the number of concurrently stored sessions -- a
   denial-of-service guard on the in-memory store, so an unbounded stream of logins cannot exhaust
-  node memory. Unused in `cookie` mode (there is no server-side store to bound). Optional; omit it
-  to leave the store unbounded.
+  node memory. Unused in `cookie` mode (there is no server-side store to bound). Optional integer;
+  *default `10000`*.
 
-  The bound counts *live* sessions, not accumulated ones. An expired session keeps its slot until
-  something reclaims it, and reaching the bound is that trigger: a login arriving at a full store
-  sweeps the sessions expired at that instant and is admitted if the sweep freed a slot. A store
-  still full afterwards is genuinely full of live sessions and the login is refused fail-closed.
-  Nothing schedules that sweep -- there is no scheduler, timer thread or periodic task, and no knob
-  configures one -- so size this against expected peak concurrency. Updating a session the store
-  already holds -- the write a token refresh or a widening makes -- replaces its record in place,
-  consumes no new capacity and is admitted at the bound without consulting it. That write never
-  creates a session: when a logout has destroyed the session meanwhile, nothing is stored.
+  The bound counts *live* sessions, not accumulated ones. A session past its absolute lifetime or
+  its idle timeout is removed when it is next looked up, and otherwise by a periodic sweep that runs
+  once a minute, so an expired session frees its slot within a minute. A login arriving at a full
+  store sweeps once more and is admitted if that freed a slot. A store still full afterwards is
+  genuinely full of live sessions and the login is refused fail-closed, so size this against
+  expected peak concurrency. The sweep interval is fixed; no key configures it. Updating a session
+  the store already holds -- the write a token refresh or a widening makes -- replaces its record in
+  place, consumes no new capacity and is admitted at the bound without consulting it. That write
+  never creates a session: when a logout has destroyed the session meanwhile, nothing is stored.
+
+| `session.max_sessions_per_subject`
+| *Server mode only.* Upper bound on the live sessions one subject (`sub`) holds at the same time.
+  Optional integer; *default `10`*, or `max_sessions` when that is lower. Range `1` to the effective
+  `max_sessions`; a declared value outside it is *refused at boot*. No value switches the bound
+  off; declaring it equal to `max_sessions` has that effect.
+
+  A login that would be the subject's next session beyond the bound ends that subject's *oldest*
+  session first -- the one created first, not the one used least recently -- and is then admitted.
+  The ended session's cookie resolves nothing from then on, so its browser is answered as
+  unauthenticated. Expired sessions of the subject do not count. The bound is applied before
+  `max_sessions`, so a subject at its own bound is never refused by a full store. A login in a
+  browser that already presents a session ends that session before the new one is counted (see
+  link:user/bff-session.adoc#login-replaces[A login ends the session the browser presents]).
+
+  Raise the key for an account that is used from more than ten browsers at once, a shared or
+  technical account for example. In `cookie` mode the key is *refused at boot* when declared: that
+  mode holds no sessions to count, and a declared bound that nothing enforces would read as a
+  control in force.
 
 | `session.cookie_name`
 | Name of the session cookie, in *both* session modes. Optional; omitted, it resolves to
@@ -2549,6 +2588,10 @@ See link:#_oidc_client_authentication[Client authentication].
   the offending value escaped before it is echoed. This refusal is the only guard: the BFF runtime
   consumes the name verbatim, and the schema declares the key an unrestricted string. A longer name
   also widens the header overhead `session.max_cookie_size` is measured against (see below).
+
+  In `cookie` mode the gateway sets a second cookie named after this one: the *activity cookie*,
+  `<cookie_name>-activity` -- `+__Host-sheriff-session-activity+` under the default name. It has no
+  key of its own. See `session.idle_timeout_seconds` below.
 
 | `session.encryption_key`
 | `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. Both key-material modes are
@@ -2606,6 +2649,12 @@ See link:#_oidc_client_authentication[Client authentication].
   previously made cookie mode unusable: the pre-route filter rejected every request carrying a live
   sealed cookie with `400` before any BFF logic ran.
 
+  The activity cookie shares that headroom; the cap itself is unchanged. Its value is always 72
+  characters, so under the default cookie name the pair `name=value` takes 104 of the 512 bytes.
+  Under the default configuration a full-budget session cookie, the login-binding cookie and the
+  activity cookie in one `Cookie` header leave at least 256 bytes of the headroom free for cookies
+  the application sets.
+
   The raised cap is scoped twice, and is *not* a general widening of inbound header validation:
 
   * *By mode* -- only a gateway that resolves an active cookie-mode BFF raises it. A bearer-only or
@@ -2629,10 +2678,37 @@ See link:#_oidc_client_authentication[Client authentication].
 | `session.ttl_seconds`
 | *Absolute* session lifetime, counted from a login timestamp stored inside the session record
   (server mode) or the encrypted cookie payload (cookie mode) -- enforcement is server-side,
-  since cookie attributes are client-advisory. It is not an idle timeout, and token refresh
-  does not extend it. On each `Set-Cookie` (including re-seals after refresh) the cookie
-  `Max-Age` is set to the *remaining* lifetime, so re-sealing never extends the session. On
-  expiry the user re-authenticates via the login flow.
+  since cookie attributes are client-advisory. Optional integer; *default `3600`*. It is not the
+  idle timeout -- that is `session.idle_timeout_seconds` -- and neither a token refresh nor a request
+  extends it. On each `Set-Cookie` (including re-seals after refresh, and the cookie value a
+  server-mode step-up or widening re-issues) the cookie `Max-Age` is set to the *remaining*
+  lifetime, so no later cookie extends the session. On expiry the user re-authenticates via the
+  login flow.
+
+| `session.idle_timeout_seconds`
+| *Idle* session lifetime, in *both* session modes: a session ends when this many seconds have
+  passed without a request that was let through on a session route. Optional integer; *default
+  `1800`*. Omitted, it resolves to the smaller of `1800` and the effective `ttl_seconds`, so a
+  deployment whose `ttl_seconds` is below 1800 keeps booting and keeps its lifetime. A declared
+  value is *refused at boot* in two cases: below `1`, and above the effective `ttl_seconds` (it
+  could never take effect). No value switches the idle timeout off; declaring it equal to
+  `ttl_seconds` has that effect.
+
+  Only a request the gateway lets through to a `require: session` route, or to the session branch
+  of a `session_fallback` route, counts as an access. A request that is refused, challenged or
+  redirected into a login or a widening does not, and neither does a call to a reserved path such
+  as `user_info.path`. A WebSocket upgrade or a streamed response counts once, when it starts. A
+  request on an idle-expired session gets the ordinary unauthenticated answer. `ttl_seconds` still
+  applies: activity never moves the absolute deadline.
+
+  *Server mode* keeps the last access in the session store. *Cookie mode* keeps it in the activity
+  cookie -- `<cookie_name>-activity`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, with `Max-Age`
+  set to the session's remaining absolute lifetime -- which the gateway sets on a session-route
+  response at most once every 60 seconds for one session. The recorded access can therefore be up to
+  60 seconds older than the latest request, and the idle deadline is exact to within that interval.
+  The session cookie itself is not set again on an access. Without a readable activity cookie the
+  idle timeout is measured from the login. See
+  link:user/bff-cookie.adoc#idle-timeout[Cookie-Based BFF -- Idle timeout and the activity cookie].
 
 | `session.refresh.enabled` / `leeway_seconds`
 | Transparent refresh: when the access token is within `leeway_seconds` of expiry, refresh it

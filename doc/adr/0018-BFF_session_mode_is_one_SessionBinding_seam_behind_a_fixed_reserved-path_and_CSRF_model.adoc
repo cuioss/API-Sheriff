@@ -7,8 +7,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie; amended so that the seam has one creating write (bind, the login) and one updating write (persist) that never creates a session, which keeps a server-mode session terminated when a logout overtakes an in-flight refresh or widening, while cookie mode cannot observe a termination and re-seals
-// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff, logout, session-termination
+// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie; amended so that the seam has one creating write (bind, the login) and one updating write (persist) that never creates a session, which keeps a server-mode session terminated when a logout overtakes an in-flight refresh or widening, while cookie mode cannot observe a termination and re-seals; amended so that the updating write has a second variant (persistReissuingCookie) that also re-issues the value the browser holds, which in server mode is a handle the store maps to the session and is separate from the session identity, so a step-up or a widening changes the cookie value and nothing else about the session; amended so that a session has an idle deadline beside its absolute one in both modes, which resolve enforces and never extends, kept in the store and removed by a periodic sweep in server mode and kept in a separate sealed activity cookie in cookie mode, with the sealed session payload and its format version unchanged
+// tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff, logout, session-termination, cookie-handle, idle-timeout, activity-cookie
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -371,7 +371,9 @@ after the user or the identity provider had ended it.
 
 === The amendment
 
-The seam has one creating write and one updating write, and they are not interchangeable.
+The seam has one creating write and one updating write, and they are not interchangeable. The
+updating write has a second variant, which <<cookie-reissue>> adds; what this section says of
+`persist` holds for both.
 
 * `bind` creates a session. It is the write a login makes.
 * `persist` updates a session that already exists, and never creates one. Its result says whether the
@@ -432,6 +434,144 @@ moment of the write: whether the record is there.
 *Give cookie mode a server-side list of logged-out sessions.* It would let the stateless binding
 report a termination too. Rejected because it is server-side session state in the variant that
 exists to have none, and it would have to be shared between instances to mean anything.
+
+[[cookie-reissue]]
+== Amendment: the updating write has a variant that re-issues the browser's handle
+
+*This record is amended, not superseded. Decision (iii) is unchanged: both session modes still sit
+behind the one `SessionBinding` seam. Decision (v) is unchanged: the cookie-mode nonce is minted once
+at login and is not re-minted on a step-up or a widening. The amendment above stands: no updating
+write creates a session.*
+
+=== A cookie value that outlives a change of privilege
+
+A step-up and a scope widening
+(link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057])
+change what a session is allowed to do while it stays the same session. Good practice for a session
+credential is to replace the value the browser holds whenever the privilege behind it changes, so a
+copy taken earlier does not carry the new privilege.
+
+In server mode that was not possible without ending the session. The cookie value was the session
+identity, and the identity is the key of everything that must survive the change: the store entry,
+the `sid` and `sub` indexes a back-channel logout uses, and the single-flight key of the refresh
+coordinator. Replacing the value meant minting a new identity and moving all of it.
+
+=== The amendment
+
+The seam has one creating write, `bind`, and two updating writes.
+
+* `persist` is the write a token refresh makes. It leaves the value the browser holds as it is in
+  server mode.
+* `persistReissuingCookie` is the write a step-up or a widening makes. It updates the session exactly
+  as `persist` does and also re-issues the value the browser holds.
+
+Neither creates a session, neither extends the absolute lifetime, and both report a session that is
+gone instead of writing.
+
+In server mode the value the browser holds is a *handle*. The store maps the handle to the session,
+and the handle is separate from the session identity. A re-issue mints a new handle and makes the
+previous one stop resolving in the same atomic step as the record's replacement, under the lock
+every destroy operation takes. The session's identity, its authentication time, its absolute expiry,
+its place in the `sid` and `sub` indexes and the refresh coordinator's single-flight key do not
+change. The session identity is not the cookie value in either mode, and it is never emitted.
+
+The re-issued cookie carries the session's remaining absolute lifetime as its `Max-Age`, so the
+browser drops it when the session ends. The cookie a login sets carries the full `ttl_seconds`.
+
+A request that was in flight with the previous handle resolves no session. It gets one "no session"
+answer -- `401` for an API call, the redirect into login for a navigation -- that carries no clearing
+`Set-Cookie`, so it cannot remove the cookie the re-issue has just set. The same single answer
+reaches a request that already carries the new handle but was coalesced behind a refresh whose
+leading request carried the previous one. The next attempt of either succeeds.
+
+In cookie mode the variant re-seals the session exactly as `persist` does. Every updating write of
+the stateless binding already produces a new sealed value, so there is nothing further to re-issue;
+the nonce and the derived identity stay as they are.
+
+=== Cookie mode cannot withdraw the earlier value
+
+A sealed cookie from before a step-up or a widening stays usable as it was sealed. It resolves a
+session at the earlier privilege, without the scopes the later grant added, until the session's
+absolute expiry. The stateless binding holds nothing that could make it stop resolving. This is a
+property of the stateless variant, of the same kind as the termination it cannot observe, and the
+threat model records it as an accepted residual under
+link:../security-threat-model.adoc#bff-21[BFF-21]. The earlier cookie never gains the new scopes.
+
+=== Alternatives considered for this amendment
+
+*Mint a new session identity at every step-up and widening.* It needs no handle beside the record.
+Rejected because the identity is the key the rest of the runtime holds: the `sid` and `sub` indexes
+would have to move in step, a refresh coalesced on the earlier identity would no longer exclude one
+on the new identity, and the authentication time and the absolute expiry would have to be carried
+across by hand. A session that keeps its identity and changes only its handle has none of these
+moving parts.
+
+*Re-mint the cookie-mode nonce on a step-up or a widening.* It would give the stateless variant a
+new derived identity at the same moments. Rejected because the identity is derived from the nonce
+(decision (v)): a re-minted nonce is a different session to everything keyed on the identity, and it
+withdraws nothing, because the earlier sealed cookie still unseals under the same key.
+
+[[idle-deadline]]
+== Amendment: a session has an idle deadline, and cookie mode tracks it outside the sealed session
+
+*This record is amended, not superseded. Decision (iii) is unchanged: the idle deadline is part of
+the one seam and both bindings implement it. Decision (v) and the sealed session format are
+unchanged: the sealed session payload gains no field.*
+
+=== A session with only an absolute lifetime
+
+A session ended at its absolute lifetime and at no other moment the gateway chose. A browser left
+open on a shared device held a usable session for the rest of `ttl_seconds`, however long nobody had
+used it.
+
+=== The amendment
+
+A session has two deadlines in both modes. It ends at its absolute lifetime, and earlier when
+`oidc.session.idle_timeout_seconds` have passed without a request that was let through on a session
+route.
+
+* `resolve` enforces both deadlines and extends neither. A caller that only reads a session -- a
+  reserved endpoint, the portal's identity lookup -- does not keep it alive.
+* `recordAccess` is the only operation that moves the idle deadline. The session stage calls it once
+  for each request it lets through. A request that is refused, challenged or redirected into a login
+  or a widening is not an access.
+* The absolute lifetime is not affected by an access.
+
+A session past its idle deadline is no session: the request gets the ordinary unauthenticated
+answer.
+
+*Server mode* keeps the last access in the store, beside the record. An expired session -- past
+either deadline -- is removed when it is next looked up, and otherwise by a periodic sweep, so it
+does not stay in memory until the store fills.
+
+*Cookie mode* keeps the last access in a separate *activity cookie*. The cookie is sealed under a
+key of its own and bound to the derived session identity, so it is valid for one session only. It
+carries the session cookie's attributes and the session's remaining absolute lifetime. The binding
+writes it at most once a minute for one session, so the recorded access can be up to a minute older
+than the latest request and the idle deadline is exact to within that interval. The session cookie
+itself is not written on an access.
+
+The sealed session payload gains no field. The Negative consequence "any change to the sealed
+payload's field set forces a format-version bump" is therefore not triggered, and no cookie-mode
+session ends at an upgrade because of the idle deadline.
+
+*The activity cookie fails closed.* A missing, stale, forged or unreadable activity cookie, and one
+that belongs to another session, never extends a session. Without a usable one the idle deadline is
+measured from the login. A browser or an intermediary that drops the cookie therefore ends the
+session one idle period after login; it cannot keep one alive.
+
+=== Alternatives considered for this amendment
+
+*Carry the last access as a field of the sealed session.* One cookie instead of two. Rejected for
+two reasons. The field changes the sealed payload, which forces the format-version bump and ends
+every cookie-mode session at the upgrade. And it makes every access a re-seal of the whole session:
+a full-size `Set-Cookie` carrying the tokens on ordinary responses, each one a write that races the
+refresh's own.
+
+*No idle timeout in cookie mode.* It keeps the stateless variant at one cookie. Rejected because
+the two modes would then differ in a property operators read as one feature, which is the drift
+decision (iii) exists to prevent, and because the capability is achievable without server-side
+state.
 
 == Consequences
 

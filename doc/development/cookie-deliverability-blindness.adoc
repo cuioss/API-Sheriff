@@ -225,14 +225,17 @@ legitimate scope -- the gateway's compliance with the `__Host-` contract is exac
 can be held to -- but it means the test is indifferent to whether any client accepts the result.
 
 `rpInitiatedLogoutClearsTheSealedCookie` is the sharper case. `LogoutEndpoint` answers a logout
-*without* a live session with a `302` to `final_redirect` carrying the same
-`clearingSetCookieHeader()` the authenticated branch emits
+*without* a live session with a `302` to `final_redirect` carrying the same clearing cookies the
+authenticated branch emits: every value of the binding's `clearingSetCookieHeaders()`
 (`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java`, the
-no-session branch of `logout` versus its last lines). That header is a fixed string --
+no-session branch of `logout` versus its last lines). In cookie mode that list has two entries, because
+the binding sets two cookies: the session cookie and its activity cookie. Each is a fixed string --
+for the session cookie
 `+__Host-sheriff-session=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax+` at
-`SealedSessionCookieCodec.toClearingSetCookieHeader()` -- so every one of the test's three assertions (a `Location`,
-`Max-Age=0`, an empty value) holds identically on both branches. The test cannot distinguish
-"logged out" from "was never logged in".
+`SealedSessionCookieCodec.toClearingSetCookieHeader()`, and the same form under the name
+`+__Host-sheriff-session-activity+` for the activity cookie -- so every one of the test's three
+assertions (a `Location`, `Max-Age=0`, an empty value) holds identically on both branches. The test
+cannot distinguish "logged out" from "was never logged in".
 ====
 
 *Of the four rows that go red at the fixture*, the redness is real but arrives at an
@@ -329,8 +332,10 @@ budget sits in the table alongside the other five rather than outside it.
 | Nowhere. The gateway sets three `__Host-` cookies --
   `+__Host-sheriff-binding+` (`BindingCookieCodec.COOKIE_NAME`),
   `+__Host-sheriff-session+` (`SessionCookieCodec.DEFAULT_COOKIE_NAME`) and
-  `+__Host-sheriff-logout+` (`RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME`) -- and a `HashMap` has no cap
-  to hit.
+  `+__Host-sheriff-logout+` (`RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME`) -- and in cookie mode a
+  fourth, the activity cookie named after the session cookie with
+  `SessionActivityCookieCodec.COOKIE_NAME_SUFFIX` (`+__Host-sheriff-session-activity+` by default). A
+  `HashMap` has no cap to hit.
 
 | Aggregate per-domain cookie size
 | The browser, by evicting or refusing once the domain's total is exceeded.
@@ -379,8 +384,9 @@ Coverage and enforcement are separate things here, and only the first one exists
 == Why `[session-server]` Was Unaffected
 
 The server-session variant never approaches the budget, because nothing large crosses to the browser.
-`ServerSessionBinding` keeps the token material in the store and hands the browser only the opaque
-`SessionRecord.sessionId()` in the hardened `__Host-` cookie
+`ServerSessionBinding` keeps the token material in the store and hands the browser only an opaque
+handle in the hardened `__Host-` cookie -- a random value the store maps to the session, which is not
+`SessionRecord.sessionId()`
 (`api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/session/ServerSessionBinding.java`, the
 class documentation, with the emission in `bind`). A handle is a handle whatever the claim set does, so the payload growth
 that moved the cookie-mode seal past 4096 moved nothing at all in server mode.

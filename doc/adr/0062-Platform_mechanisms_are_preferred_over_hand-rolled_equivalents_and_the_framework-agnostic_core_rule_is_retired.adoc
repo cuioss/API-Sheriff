@@ -183,10 +183,14 @@ the re-issue of the cookie value the browser holds, the idle deadline, the activ
 cookie mode and the periodic sweep -- is recorded as amendments of the two ADRs that own the
 session contract, and is not restated here:
 
-* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
-  -- the `SessionBinding` seam and the session-identity contract;
-* link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]
-  -- scope refresh and the widening of a live session.
+* ADR-0018, the `SessionBinding` seam and the session-identity contract --
+  link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#cookie-reissue[the
+  re-issue of the browser's handle] and
+  link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#idle-deadline[the
+  idle deadline, the activity cookie and the sweep];
+* ADR-0057, scope refresh and the widening of a live session --
+  link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc#widening-reissues-cookie[the
+  new cookie value a widening merge sets].
 
 === The ADR-0061 revisit: Quarkus command mode is not adopted
 

@@ -21,8 +21,8 @@ errors.
 
 When you add or change a reserved handler, drive an engine seam -- never hand-roll an OAuth request,
 a token exchange, or a JWKS fetch inside the gateway. If a capability seems to need a new OAuth leg,
-that leg belongs upstream in the engine, not here. This boundary is enforced by review and by the
-framework-agnostic package seam (below); keep it intact.
+that leg belongs upstream in the engine, not here. This boundary is enforced by review; keep it
+intact.
 
 == Where the code lives
 
@@ -33,8 +33,10 @@ All BFF code is in the `api-sheriff` module under `de.cuioss.sheriff.gateway`:
 | Package | Responsibility
 
 | `bff.session`
-| The session-resolution seam: `SessionRecord`, `SessionStore` (`InMemorySessionStore`), and
-  `SessionCookieCodec` (the opaque `__Host-` session cookie).
+| The session-resolution seam: `SessionBinding` and its server-mode implementation
+  `ServerSessionBinding`, `SessionRecord`, `SessionStore` (`InMemorySessionStore`),
+  `SessionCookieCodec` (the opaque `__Host-` session cookie), and `SessionEndListener` /
+  `SessionRelayRegistry` (what is closed when a session ends). See <<session-store>>.
 
 | `bff.pending`
 | The pre-session transaction: `PendingAuthorizationRecord`/`Store` and `BindingCookieCodec` -- the
@@ -61,18 +63,114 @@ All BFF code is in the `api-sheriff` module under `de.cuioss.sheriff.gateway`:
   RP-initiated / back-channel logout logic.
 
 | `bff.runtime`
-| `BffRuntime` (the single edge-facing collaborator) and `SessionAuthenticationStage`.
+| `BffRuntime` (the single edge-facing collaborator), `SessionAuthenticationStage`, and
+  `GatewayJson` -- the CDI bean that renders the JSON bodies the gateway authors through the
+  platform's Jackson serializer.
 
 | `quarkus.BffRuntimeProducer`
-| The CDI producer that assembles the active runtime and binds the engine seams -- the only
-  framework-coupled BFF class.
+| The CDI producer that assembles the active runtime and binds the engine seams.
 |===
 
-Every `bff.*` type is *framework-agnostic* (raw request pieces in, a rendered response out -- no
-JAX-RS/Vert.x coupling), so it is unit-testable without a container. The framework wiring is confined
-to `BffRuntimeProducer` and the edge (`gateway.edge`), which consults the `ReservedPathRegistry`
-before the proxy route table and dispatches a matched reserved path through `BffRuntime.dispatch(...)`.
-Keep new logic on the framework-agnostic side of that seam.
+The handlers and codecs under `bff.*` take raw request pieces and return a rendered response, so
+each is unit-testable without a container. That is a testing convenience, not a package rule: the
+`bff` packages are not framework-free and no gate checks them. Where the platform supplies a
+mechanism, use it; a hand-written component needs a recorded reason
+(link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]).
+`GatewayJson` is the example of the first, the session store of the second. The runtime is
+assembled by `BffRuntimeProducer`, and the edge (`gateway.edge`) consults the `ReservedPathRegistry`
+before the proxy route table and dispatches a matched reserved path through
+`BffRuntime.dispatch(...)`.
+
+[[session-store]]
+== The session store and the session binding
+
+`SessionBinding` is the contract; `ServerSessionBinding` implements it over a `SessionStore`. The
+decisions are in
+link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+and its amendments. The store is hand-written because no platform session mechanism has what the
+contract needs (ADR-0062), and the producer builds it, not the container, because a bearer-only
+gateway must not have one.
+
+=== One creating write, two updating writes
+
+[cols="1,1,3", options="header"]
+|===
+| `SessionBinding` | `InMemorySessionStore` | Used by
+
+| `bind`
+| `create`
+| `CallbackEndpoint.completeLogin`. Stores a new session under a new handle. It is the only write
+  that consumes capacity and the only one that applies the two bounds.
+
+| `persist`
+| `replaceIfPresent`
+| `TokenRefreshCoordinator`, on both refresh legs. Replaces the record and keeps the handle.
+
+| `persistReissuingCookie`
+| `replaceAndReissueHandle`
+| `CallbackEndpoint.completeWidening`. Replaces the record and swaps the handle.
+|===
+
+Neither updating write stores anything when the session identity is no longer held. Both return an
+empty result then, and the caller must treat the session as ended and must not hand out the new
+tokens. A new caller that updates a session picks one of the two by one question: does the
+privilege of the session change? If it does, re-issue.
+
+=== The handle beside the record
+
+The cookie value is a random handle, not `SessionRecord.sessionId()`. The store holds three things
+per session -- the record, its current handle and its last-access instant -- and a second map from
+handle to session identity. The handle is store-side state and not a component of the record. That
+matters for one interleaving: a refresh that resolved the session before a re-issue and replaces
+the record after it writes the record only, so it leaves the re-issued handle in place and cannot
+put the previous one back.
+
+Three rules follow for code that touches sessions:
+
+* Never use the session identity as a lookup key for a request, and never write it into a cookie, a
+  log record or a response. `SessionRecord.toString` redacts it.
+* Key per-session work -- the refresh coordinator's single-flight, the relay registry -- on the
+  session identity, never on the handle. The handle changes; the identity does not.
+* A request that still carries the previous handle resolves nothing. Answer it as "no session for
+  this request" (`TokenRefreshCoordinator`'s `NO_SESSION`, the stage's `RefreshResult.NoSession`)
+  and send *no* clearing cookie: the browser may already hold the re-issued one.
+
+=== Why every operation is one monitor-guarded method
+
+Every public method of `InMemorySessionStore` runs under the instance monitor, and no operation is
+split across two calls. The updating writes are the reason: "is the session still there" and "write
+it" must be one step under the lock `destroyById`, `destroyBySid` and `destroyBySub` take, or a
+logout between the two would be undone. Keep it that way when you add an operation: a
+check-then-act across two store calls reopens that window. Three consequences:
+
+* `recordAccess` writes the last-access instant alone, never the record, so it cannot overwrite
+  token material a concurrent refresh has just stored.
+* The `SessionEndListener` is called only after the monitor has been left. A listener must not call
+  back into the store and must not throw.
+* The store's monitor is never taken on an event loop. Callers run on a virtual thread.
+
+=== The two deadlines and where the sweep is scheduled
+
+A session is expired at the earlier of its absolute lifetime and its last access plus the idle
+timeout. `resolve` evicts an expired session as it is looked up and extends nothing. The only
+caller of `SessionBinding.recordAccess` is `SessionAuthenticationStage.relay`, for a request it
+lets through; a reserved endpoint must not call it.
+
+The store starts no thread and no timer. `BffRuntimeProducer.registerSessionSweep` registers a
+Vert.x periodic timer at 60 000 ms in server mode, whose handler runs `sweepExpired` off the event
+loop, and `cancelSessionSweep` cancels it at shutdown. A capacity-consuming `create` that finds the
+store at `max_sessions` sweeps once more before it refuses. The resolved idle timeout is handed to
+the store, not to the binding, because `resolve` and `sweepExpired` are store operations and the
+sweep runs without the binding.
+
+=== What ends with a session
+
+Every path on which the store *ends* a session -- the three destroy methods, the lazy eviction in
+`resolve`, the sweep and the per-subject eviction -- reports the session identity to the
+`SessionEndListener`. `SessionRelayRegistry` is that listener: it closes the WebSocket relays
+tracked under the identity. A write that replaces the record or re-issues the handle goes through
+a removal that reports nothing, so a refresh or a widening closes no relay. If you add a path that
+removes a session, decide which of the two it is.
 
 == The engine seams the producer wires
 
@@ -224,11 +322,16 @@ Two test-support types matter for this code:
 == How to extend
 
 * *A new reserved endpoint* -- add its kind to `ReservedPathRegistry.ReservedEndpoint`, register its
-  path in `ReservedPathRegistry.from(...)`, write a framework-agnostic handler in `bff.reserved`,
+  path in `ReservedPathRegistry.from(...)`, write a handler in `bff.reserved` that takes raw request
+  pieces and returns a rendered response,
   wire it in `BffRuntimeProducer`, and route its kind in `BffRuntime.dispatch(...)`. Document the new
   key in link:../configuration.adoc#_oidc[Configuration -- `oidc`] and grow the reserved-path list.
-* *A new session-runtime capability* -- keep it on the framework-agnostic side; drive any OAuth
-  interaction through an engine seam per the boundary rule above.
+  A handler that sets a cookie needs nothing further for caching: `BffRuntime.dispatch` sends every
+  reserved answer that carries a `Set-Cookie` with `Cache-Control: no-store`.
+* *A new session-runtime capability* -- write it against `SessionBinding`, so both session modes get
+  it; drive any OAuth interaction through an engine seam per the boundary rule above.
+* *A new gateway cookie* -- add its name to the set `BffRuntimeProducer.gatewayCookieNames` computes,
+  so an upstream `Set-Cookie` of that name is not relayed.
 
 == See also
 
