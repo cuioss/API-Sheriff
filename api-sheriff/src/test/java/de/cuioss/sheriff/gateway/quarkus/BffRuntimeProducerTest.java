@@ -112,6 +112,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -1961,7 +1962,8 @@ class BffRuntimeProducerTest {
                 SignatureOnlyTokenVerifier logoutTokenVerifier) {
             super(gatewayConfig, new RouteTable(List.of()), new SingletonInstance<>(tokenValidator),
                     new SingletonInstance<>(logoutTokenVerifier),
-                    new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR);
+                    new JwksTrustProfileResolver(TestTlsConfigurationRegistry.empty()), REVOCATION_EXECUTOR,
+                    new GatewayJson(new ObjectMapper()));
         }
 
         @Override
@@ -4141,7 +4143,7 @@ class BffRuntimeProducerTest {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
         return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(tokenValidator),
                 new SingletonInstance<>(logoutTokenVerifier), new JwksTrustProfileResolver(registry),
-                REVOCATION_EXECUTOR);
+                REVOCATION_EXECUTOR, new GatewayJson(new ObjectMapper()));
     }
 
     /**

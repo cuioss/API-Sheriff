@@ -147,7 +147,8 @@ class ReservedBodyCeilingTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
                 new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                GatewayEdgeRouteBffWiringTest.gatewayJson());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

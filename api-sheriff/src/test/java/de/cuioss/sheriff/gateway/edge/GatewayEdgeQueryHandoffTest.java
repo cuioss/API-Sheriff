@@ -125,7 +125,7 @@ class GatewayEdgeQueryHandoffTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, GatewayConfig.builder().version(1).build(),
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
                 new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), EgressTrustProfiles.unconsulted(),
-                PortalEndpoint.inert());
+                PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
 
         Router router = Router.router(vertx);
         // Registered before the edge's catch-all: records what the transport's decoded parameter view
