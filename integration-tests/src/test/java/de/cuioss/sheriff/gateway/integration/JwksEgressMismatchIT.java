@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.integration;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.RETRY_SCHEDULED_RECORD;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.SECURE_ASSET;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertReportsDown;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitLogRecord;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
@@ -108,6 +109,15 @@ import org.junit.jupiter.api.Test;
 @DisplayName("JWKS egress mismatch: an explicit allowlist naming another host keeps the key set refused")
 class JwksEgressMismatchIT {
 
+    /**
+     * The fixed host ports of the two gateways' application listeners, each published on every
+     * interface (see {@link OneOffGatewayContainers#applicationPortPublication(int)}). Two, because the
+     * control runs beside the refused instance. The compose stack publishes {@code 10443}–{@code 10455};
+     * the other one-off gateways take {@code 10459} and {@code 10462}–{@code 10466}.
+     */
+    private static final int MISMATCH_APPLICATION_PORT = 10467;
+    private static final int CONTROL_APPLICATION_PORT = 10468;
+
     private static final Path MISMATCH_GATEWAY =
             DOCKER.resolve(Path.of("sheriff-config-jwks-egress-mismatch", "gateway.yaml"));
 
@@ -153,9 +163,9 @@ class JwksEgressMismatchIT {
             // Arrange — a real token, and the mismatch gateway on the compose network
             String network = composeNetwork();
             String bearer = mintIntegrationRealmToken();
-            startGateway(mismatch, network, MISMATCH_GATEWAY);
+            startGateway(mismatch, network, MISMATCH_GATEWAY, MISMATCH_APPLICATION_PORT);
             String managementOrigin = "https://localhost:" + publishedPort(mismatch, 9000);
-            String applicationOrigin = "https://localhost:" + publishedPort(mismatch, 8443);
+            String applicationOrigin = "https://localhost:" + MISMATCH_APPLICATION_PORT;
 
             // Act + Assert (1) — DOWN at boot, without disclosure
             Response down = awaitReadiness(mismatch, managementOrigin, response -> true, BOOT_TIMEOUT_SECONDS,
@@ -168,6 +178,7 @@ class JwksEgressMismatchIT {
                             + "its retry, announced by WARN " + RETRY_SCHEDULED_RECORD);
             assertReportsDown(mismatch, awaitReadiness(mismatch, managementOrigin, response -> true,
                     BOOT_TIMEOUT_SECONDS, "the mismatch gateway's readiness after the failed attempt"), UNDISCLOSED);
+            assertApplicationPortAnswers(mismatch, applicationOrigin);
             assertEquals(401, securedAssetStatus(applicationOrigin, bearer), () -> "the explicit list names "
                     + "another host, so the key set must stay refused and the token must be rejected 401 on "
                     + SECURE_ASSET + ". A 200 here means the derived jwks.url host was merged into the list. "
@@ -175,9 +186,9 @@ class JwksEgressMismatchIT {
 
             // Arrange (3) — the control: the committed descriptor minus that one key
             writeControlDescriptor();
-            startGateway(control, network, CONTROL_GATEWAY);
+            startGateway(control, network, CONTROL_GATEWAY, CONTROL_APPLICATION_PORT);
             String controlManagementOrigin = "https://localhost:" + publishedPort(control, 9000);
-            String controlApplicationOrigin = "https://localhost:" + publishedPort(control, 8443);
+            String controlApplicationOrigin = "https://localhost:" + CONTROL_APPLICATION_PORT;
 
             // Act + Assert (3) — the same token passes once the list is absent
             Response up = awaitReadiness(control, controlManagementOrigin, response -> response.statusCode() == 200,
@@ -187,6 +198,7 @@ class JwksEgressMismatchIT {
                     () -> assertEquals("ready", readinessData(up, "jwks"), () -> up.asString()),
                     () -> assertEquals(1, ((Number) readinessData(up, "issuers_loaded")).intValue(),
                             () -> up.asString()));
+            assertApplicationPortAnswers(control, controlApplicationOrigin);
             assertEquals(200, securedAssetStatus(controlApplicationOrigin, bearer), () -> "matched control: the "
                     + "same token must be accepted once only the allowlist key is removed, or the refusal above "
                     + "is not attributable to the explicit list. " + gatewayLog(control));

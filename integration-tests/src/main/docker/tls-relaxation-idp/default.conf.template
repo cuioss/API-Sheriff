@@ -1,0 +1,43 @@
+# The identity provider of BffTlsRelaxationIT: a TLS proxy in front of the compose Keycloak, in the
+# pattern of late-idp/nginx.conf, which presents a certificate the test chooses.
+#
+# The test mounts this file as /etc/nginx/templates/default.conf.template of a one-off nginx
+# container. The nginx image renders every *.template below that directory into /etc/nginx/conf.d/
+# when it starts, substituting the environment variables that are DEFINED and nothing else, so the
+# result is /etc/nginx/conf.d/default.conf. Two variables are substituted:
+#
+#   TLS_RELAXATION_CERTIFICATE  the base name of the certificate pair the proxy presents, resolved
+#                               below the mounted certificates/ directory as <name>.crt and <name>.key.
+#                               `upstream-mismatch` is a certificate the gateway's trust store holds
+#                               but whose names do not cover `keycloak`; `localhost` is one whose names
+#                               cover `keycloak` but which that trust store does not hold.
+#   TLS_RELAXATION_UPSTREAM     the container name of the compose Keycloak — the name the proxy dials.
+#
+# Two networks, two names. On the test's dedicated network the container carries the alias `keycloak`,
+# the host every identity-provider URL of the fixture descriptor names, so the gateway under test
+# reaches this proxy and nothing else under that name. The container is also attached to the compose
+# network, where the real Keycloak lives. Because the proxy answers to `keycloak` itself, it must not
+# dial that name — it could resolve to the proxy — so it dials the Keycloak container by its own
+# container name, which no other container carries, and sends the Host header Keycloak expects.
+#
+# Every path is forwarded: the gateway reads the provider metadata, the key sets of two realms, and
+# calls the pushed-authorization-request, token and revocation endpoints through this proxy.
+server {
+    listen 8443 ssl;
+    server_name keycloak;
+
+    # Committed test material, mounted read-only from the certificates/ directory. No key material is
+    # minted for this fixture.
+    ssl_certificate     /etc/nginx/certificates/${TLS_RELAXATION_CERTIFICATE}.crt;
+    ssl_certificate_key /etc/nginx/certificates/${TLS_RELAXATION_CERTIFICATE}.key;
+
+    location / {
+        # Keycloak serves the stack's self-signed certificate; the upstream leg stays inside the
+        # test's own networks, and what the test asserts is the GATEWAY's decision on the proxy leg.
+        proxy_ssl_verify off;
+        # The realm pins its frontend URL to https://keycloak:8443, and Keycloak checks the request
+        # target of a DPoP proof against the host it was reached under.
+        proxy_set_header Host keycloak:8443;
+        proxy_pass https://${TLS_RELAXATION_UPSTREAM}:8443;
+    }
+}

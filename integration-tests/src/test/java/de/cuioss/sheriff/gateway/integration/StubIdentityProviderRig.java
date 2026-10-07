@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.CERTIFICATES;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.connectToNetwork;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.createNetwork;
@@ -109,19 +110,22 @@ import io.restassured.response.Response;
  * <h2>The topology</h2>
  *
  * <ul>
- *   <li>A dedicated docker network, {@value #NETWORK}.</li>
+ *   <li>A dedicated docker network, {@value #NETWORK}. The stub and the gateway join that network and
+ *       no other, and each publishes exactly one port on loopback — the shape
+ *       {@link OneOffGatewayContainers#assertLeavesNoDeadHostPort(String, List, int)} admits.</li>
  *   <li>The stub, {@value #STUB}, joins it under the alias {@value #IDENTITY_PROVIDER_ALIAS} and serves
  *       HTTPS on 8443 from a PKCS12 key store this class derives below {@code target/} from the
  *       committed {@code localhost.crt} and {@code localhost.key}. The subject alternative names of that
  *       certificate already cover the alias, so the gateway keeps
  *       {@code egress_tls.oidc_tls_profile: benchmark-idp}, keeps hostname verification on and needs no
- *       new trust material. Its plain-HTTP admin port is published on an ephemeral loopback port.</li>
+ *       new trust material. Its plain-HTTP admin port is its one published port, on a loopback port
+ *       docker assigns.</li>
  *   <li>The compose {@value #ECHO_SERVICE} container is connected to the network under its own name for
  *       the life of the rig, so the session route has its echo upstream, and disconnected on
  *       teardown.</li>
  *   <li>The gateway, {@value #GATEWAY}, joins that network only. Its descriptor is the committed
  *       {@code sheriff-config-refresh/gateway.yaml} with the gateway origin retargeted at the fixed
- *       loopback port {@value #APPLICATION_PORT}, written below {@code target/}; the signing-key
+ *       host port {@value #APPLICATION_PORT}, written below {@code target/}; the signing-key
  *       directory is mounted, because that descriptor names a DPoP proof key.</li>
  * </ul>
  *
@@ -178,10 +182,13 @@ final class StubIdentityProviderRig implements AutoCloseable {
             "wiremock/wiremock:3.13.1@sha256:d61e7720f89483fdef5366843b58d1dfd06bcce5828179c9f2f54de5c28354b0";
 
     /**
-     * The fixed loopback host port of the gateway's application listener. The compose stack publishes
-     * {@code 10443}–{@code 10455} and {@code BffGeneratedKeysIT} takes {@code 10456}.
+     * The fixed host port of the gateway's application listener, published on every interface (see
+     * {@link OneOffGatewayContainers#applicationPortPublication(int)}). The compose stack publishes
+     * {@code 10443}–{@code 10455}; the one-off gateways of the other suites take {@code 10459},
+     * {@code 10462}–{@code 10464} and {@code 10466}–{@code 10468}. {@code 10461}, the port this gateway
+     * had before, is a dead host port number and is retired; the topology note says why.
      */
-    static final int APPLICATION_PORT = 10457;
+    static final int APPLICATION_PORT = 10465;
 
     /** The browser-facing origin of the rig's gateway. */
     static final String ORIGIN = "https://localhost:" + APPLICATION_PORT;
@@ -196,6 +203,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
     static final String SUBJECT = "stub-identity-provider-user";
 
     private static final String NETWORK = "sheriff-stub-idp";
+
     private static final String STUB = "sheriff-stub-idp-wiremock";
 
     /** The name the descriptor's issuer and every {@code jwks.url} dial. */
@@ -305,11 +313,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
         createNetwork(NETWORK);
         String keyStoreSecret = UUID.randomUUID().toString();
         writeKeyStore(keyStoreSecret);
-        startAuxiliaryContainer(STUB, IMAGE,
-                List.of("--network", NETWORK,
-                        "--network-alias", IDENTITY_PROVIDER_ALIAS,
-                        "-p", "127.0.0.1::" + STUB_ADMIN_PORT,
-                        "-v", KEY_STORE_DIRECTORY.toAbsolutePath() + ":" + KEY_STORE_MOUNT + ":ro"),
+        startAuxiliaryContainer(STUB, IMAGE, stubRunOptions(),
                 List.of("--port", String.valueOf(STUB_ADMIN_PORT),
                         "--https-port", String.valueOf(STUB_TLS_PORT),
                         "--https-keystore", KEY_STORE_MOUNT + "/" + KEY_STORE_FILE,
@@ -335,6 +339,22 @@ final class StubIdentityProviderRig implements AutoCloseable {
         awaitReadiness(GATEWAY, "https://localhost:" + publishedPort(GATEWAY, 9000),
                 response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
                 "the gateway of the stub identity-provider rig to report readiness UP");
+        assertApplicationPortAnswers(GATEWAY, ORIGIN);
+    }
+
+    /**
+     * The {@code docker run} options of the stub: the rig's network alone, the identity provider's
+     * alias, the admin port as its one publication — on a loopback port docker assigns — and the key
+     * store mount. Package-private so the harness test can hold them to the publication rule without
+     * a docker daemon.
+     *
+     * @return the options placed before the stub image
+     */
+    static List<String> stubRunOptions() {
+        return List.of("--network", NETWORK,
+                "--network-alias", IDENTITY_PROVIDER_ALIAS,
+                "-p", "127.0.0.1::" + STUB_ADMIN_PORT,
+                "-v", KEY_STORE_DIRECTORY.toAbsolutePath() + ":" + KEY_STORE_MOUNT + ":ro");
     }
 
     /**
