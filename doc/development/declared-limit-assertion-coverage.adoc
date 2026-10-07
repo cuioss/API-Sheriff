@@ -105,7 +105,14 @@ readiness gate would refuse it. It is a standalone, deliberately minimal documen
 beside exactly one shared endpoint file, `sheriff-config/endpoints/assets-secure.yaml`, and no
 `topology.properties`, so its route set is that single bearer-gated directory asset route.
 
-*No limit-shaped key lives outside this surface.* The sweep is a key-name pattern, applied to
+*No limit-shaped key lives outside this surface, except in the fixture named next.*
+`reserved-path-overlap/auth-overlap.yaml` sits beside the surface, in a directory no gateway instance
+mounts, and declares `allowed_methods`. `BffReservedPathPrecedenceIT` copies it into a configuration
+directory it assembles and asserts that list on the wire: a `GET` on the routed path is refused
+`405`. `DescriptorInventoryWiringTest` sweeps the `sheriff-config*` directories only, so this file is
+outside its inventory by construction and is not counted in the twenty-eight.
+
+The sweep is a key-name pattern, applied to
 declared key names only -- never to raw file text, so the descriptors' extensive prose comments
 cannot manufacture a hit:
 
