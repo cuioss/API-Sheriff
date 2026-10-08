@@ -16,11 +16,12 @@ jobs:
   integration-tests:
     uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-integration-tests.yml@ae4ad6937ec755800c4a77d22e426aba679bf91c # v0.38.0
     with:
-      # This job's own history sits at ~16 minutes (15m33s - 16m39s over the last
-      # four green runs), against the reusable workflow's 20-minute default. ~20%
-      # headroom means ordinary variance in the native build or container pull
-      # cancels the job, which reads as a test failure rather than a timeout.
-      timeout-minutes: 35
+      # This job's own history reached 34m36s on its last green run under the
+      # previous 35-minute limit, and the first run of a tree with more suites was
+      # cancelled at 35 minutes with every finished suite green. A limit that close
+      # to the run time means ordinary variance in the native build or container
+      # pull cancels the job, which reads as a test failure rather than a timeout.
+      timeout-minutes: 60
       report-name: integration-tests
       maven-args-input: |
         verify -Pintegration-tests -pl integration-tests -am
