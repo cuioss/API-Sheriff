@@ -670,8 +670,8 @@ gateway that reaches Keycloak through that proxy only.
 
 | Proxy
 | `sheriff-tls-relaxation-idp`, running
-  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- an
-  exact release tag together with the digest of its multi-platform index -- and rendered from
+  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- a
+  release-line tag together with the digest of its multi-platform index -- and rendered from
   `tls-relaxation-idp/default.conf.template`. On the rig's network it carries the alias
   `keycloak`. It is attached to the Compose network as well, where it dials the Keycloak container by
   its container name, and it forwards every path with `Host: keycloak:8443`. It publishes no host
