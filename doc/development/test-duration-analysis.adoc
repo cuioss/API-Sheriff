@@ -1,0 +1,997 @@
+= Test-Cycle Duration -- Measured Baseline, Findings and Proposals
+:toc:
+:toclevels: 2
+:sectnums:
+
+Where the time of the test cycle goes in CI, why, and what can change without reducing what is
+proven. This page is an analysis and a ranked proposal list. It changes no test, POM or workflow;
+each proposal is implemented only after it has been picked.
+
+The constraint every proposal is held to: test quality stays the same or improves. No test is
+deleted or weakened unless another named test demonstrably proves the same behaviour, coverage does
+not drop, no real wait is shortened into a flake, and no gating test moves to a non-gating lane. A
+speed-up that works by running less is reported as a finding and marked as such, never presented as
+a fix.
+
+== Summary
+
+[cols="2,1,1"]
+|===
+| Required check (pull request) | Median | p90
+
+| `integration-tests/conclusion` -- trigger to conclusion
+| 34.7 min
+| 36.6 min
+
+| `build/conclusion` -- trigger to conclusion
+| 30.9 min
+| 32.7 min
+|===
+
+Five facts explain almost all of it:
+
+. *The unit suite runs four times per pull request.* `maven.yml` runs `verify` on Java 25, on Java
+  26 and a third time for Sonar; the integration-test lane runs it a fourth time because its
+  command carries `-am`. Each run is the same 5483 tests and costs about 790 s.
+. *The Sonar build is serial.* `sonar-build` declares `needs: build`, so the required
+  `build/conclusion` waits for two full `verify` runs back to back.
+. *Every test class gets its own JVM.* The root `pom.xml` sets `reuseForks=false`. Surefire reports
+  about 290 s of test time inside a 796 s plugin execution; the remainder is fork start-up and
+  per-JVM warm-up, paid about 160 times.
+. *Integration-test time is real waiting, run in sequence.* Twelve classes account for about 90% of
+  the failsafe run. They sleep on real token and session lifetimes, one class after another.
+. *A test fixture image costs two minutes per run.* The `grpc-echo` image runs Maven inside Docker
+  with an empty local repository, for one IT class with four tests.
+
+Duplicated assertions are *not* where the time goes: every genuine duplicate found is worth
+milliseconds. Runner queueing (2 s median) and job set-up (about 40 s per job) are negligible.
+
+With the first four proposals in <<proposals>> both required checks are expected to land at roughly
+15 minutes; with all of them, at roughly 10 to 12.
+
+== Measured baseline
+
+=== Population
+
+All numbers are from successful runs on `cuioss/API-Sheriff`, fetched with `gh` on 2026-10-08.
+
+[cols="2,1,1,2"]
+|===
+| Workflow | Event | Runs | Dates
+
+| `maven.yml` | pull_request | 20 | 2026-10-07 .. 10-08
+| `maven.yml` | merge_group | 13 | 2026-10-06 .. 10-08
+| `maven.yml` | push (`main`) | 11 | 2026-10-06 .. 10-08
+| `integration-tests.yml` | pull_request | 20 | 2026-10-07 .. 10-08
+| `integration-tests.yml` | merge_group | 20 | 2026-10-06 .. 10-08
+| `integration-tests.yml` | push (`main`) | 19 | 2026-10-06 .. 10-08
+| `demo-client-e2e.yml` | push (`main`) | 20 | 2026-10-06 .. 10-08
+| `config-validation.yml` | pull_request / push | 20 / 9 | 2026-10-06 .. 10-08
+| `benchmark.yml` | pull_request (closed) | 20 | 2026-10-03 .. 10-08
+|===
+
+Runs whose build was skipped (documentation-only change, or a push covered by a pull-request run)
+are excluded from job statistics; that is why some job rows show fewer runs than the table above.
+Only 11 successful `maven.yml` pushes to `main` existed in the last 80 successful runs, so that row
+is smaller than the requested 20. Plugin-level numbers come from the job logs of 8 `maven.yml` and
+10 `integration-tests.yml` pull-request runs; failsafe numbers come from the published report
+artifacts of 19 pull-request runs.
+
+=== Wall-clock per workflow and job
+
+Median / p90 in seconds. Queue time (job created to job started) is 2 s median for every job and
+at most 28 s at p90.
+
+[cols="3,1,1,1"]
+|===
+| Job | pull_request | merge_group | push `main`
+
+| `build / build (25)` | 890 / 927 | 800 / 892 | 716 / 848
+| `build / build (26)` | 897 / 928 | 848 / 886 | 782 / 857
+| `build / sonar-build` (after `build`) | 914 / 983 | not run | 986 / 1032
+| `build / quarkus-alignment` | 78 / 91 | 80 / 104 | 78 / 85
+| `build / deploy-snapshot` | not run | not run | 160 / 172
+| OpenRewrite dirty-tree report (non-gating) | 154 / 210 | 156 / 207 | 155 / 237
+| Supply-chain scan (non-gating) | 82 / 97 | 79 / 94 | 78 / 90
+| *`maven.yml` trigger to `build/conclusion`* | *1854 / 1962* | *888 / 942* | *1980 / 2070*
+| `integration-tests / test` | 2051 / 2096 | 1802 / 1962 | 1632 / 1853
+| *`integration-tests.yml` trigger to conclusion* | *2082 / 2196* | *1830 / 1998* | *1734 / 1878*
+| Demo SPA browser suite | not run | not run | 368 / 421
+| Offline configuration check | 74 / 105 | not run | 74 / 129
+| Run Integration Benchmarks (on PR close) | 1256 / 1300 | not run | not run
+|===
+
+=== Per step
+
+Every heavy job is one Maven step plus about 40 s of set-up (runner hardening 7 s, JDK 7 s, Maven
+cache restore 10 to 12 s, checkout and post-steps).
+
+[cols="3,3,1"]
+|===
+| Job | Step | Median / p90 (s)
+
+| `build (25)` | Build with Maven, Java 25 | 853 / 893
+| `build (26)` | Build with Maven, Java 26 | 861 / 898
+| `sonar-build` | Build and analyze | 867 / 945
+| `quarkus-alignment` | Check Quarkus / smallrye-config alignment | 41 / 49
+| `integration-tests / test` | Validate and run Maven commands | 2008 / 2058
+| Demo SPA browser suite | Build the native executable | 260 / 306
+| Demo SPA browser suite | Run the demo E2E suite | 84 / 90
+| Offline configuration check | Build the JVM runner | 34 / 70
+| Run Integration Benchmarks | Build api-sheriff | 48 / 63
+| Run Integration Benchmarks | Run Integration Benchmarks with k6 | 1171 / 1199
+| OpenRewrite report | Run the rewriting gate | 132 / 195
+|===
+
+=== The critical path
+
+A pull request can merge when both `build/conclusion` and `integration-tests/conclusion` are green.
+
+* On a pull request the integration-test lane decides, at 34.7 min, but the build lane follows at
+  30.9 min. Shortening only one of them moves the critical path to the other.
+* In the merge queue the integration-test lane decides alone: 30.5 min against 14.8 min, because
+  `sonar-build` does not run on `merge_group`.
+* A change therefore waits about 35 minutes for its pull-request checks and about 30 more in the
+  merge queue. The push to `main` then runs both lanes a third time on the tree the merge queue
+  just tested.
+
+=== Inside the Maven jobs
+
+`build (25)`, median of 8 runs, 866 s of Maven:
+
+[cols="2,3,1"]
+|===
+| Module | Plugin execution | Median / p90 (s)
+
+| api-sheriff | `surefire:test` (5483 tests) | 796 / 811
+| integration-tests | `surefire:test` (113 tests) | 30 / 31
+| api-sheriff | `compiler:testCompile` | 11 / 11
+| api-sheriff | `compiler:compile` | 8 / 10
+| api-sheriff | `quarkus:build` (JVM) | 4 / 4
+| benchmarks | `surefire:test` (202 tests) | 4 / 4
+|===
+
+Javadoc, OpenRewrite and the native build are not part of this job. `sonar-build` is the same
+reactor plus `sonar:sonar` at 50 s (p90 55); JaCoCo is already active in the plain build.
+
+`integration-tests / test`, median of 10 runs, 2036 s of Maven:
+
+[cols="3,1"]
+|===
+| Stage | Median (s)
+
+| Runner set-up, checkout, two Maven cache restores | 32
+| api-sheriff compile, test-compile, code generation | 22
+| *api-sheriff `surefire:test` -- the unit suite, pulled in by `-am`* | *785*
+| JaCoCo report, jar, JVM `quarkus:build`, integration-tests compile | 11
+| *Native build* (`build-native-if-needed.sh`: nested `clean package -Pnative`) | *256*
+| -- of which native-image generation | about 205
+| -- of which builder image pull | about 20
+| -- of which nested Maven start, `clean`, recompile | about 16
+| Distroless image build | 3
+| *Stack start* (`start-integration-container.sh`) | *168*
+| -- of which *`grpc-echo` image build* (Maven inside Docker, empty `~/.m2`) | *about 119*
+| -- of which Keycloak pull, start and realm import | about 22
+| -- of which other image pulls | about 5
+| -- of which containers up and healthy (12 gateways in parallel) | about 14
+| *`failsafe:integration-test`* | *768* (p90 935)
+| `verify-invalid-config-fails` (13 one-off containers) | 16
+| Log dump, `compose down`, report upload | 6
+|===
+
+The two newest runs in the sample, which carry every IT on `main` today, spent 929 s and 985 s in
+failsafe. The median understates the current state.
+
+NOTE: Nested Maven runs print their own plugin banners inside the outer `exec` steps. A parser keyed
+on those banners splits the stages wrongly; the stage boundaries above are taken from the script
+output instead.
+
+=== Per test class and method
+
+==== Integration tests (CI, failsafe reports of 19 pull-request runs)
+
+286 test cases at the median, 685 s of summed test-case time (p90 731 s).
+
+[cols="3,1,1"]
+|===
+| Class | Tests | Median / p90 (s)
+
+| `BffSessionIdleTimeoutIT` | 2 | 193.9 / 194.1
+| `BffRefreshReuseIT` | 3 | 92.6 / 92.9
+| `BffTokenRefreshIT` | 6 | 92.5 / 92.8
+| `BffCookieRefreshIT` | 4 | 69.6 / 70.0
+| `BffSessionAbsoluteTtlIT` | 1 | 46.5 / 46.7
+| `JwksLateIdpReadinessIT` | 1 | 33.8 / 34.8
+| `BffTlsRelaxationIT` | 3 | 32.5 / 32.8
+| `BffRefreshSingleFlightIT` | 1 | 29.7 / 30.1
+| `BffFapiControlsIT` | 6 | 25.8 / 26.1
+| `BffGeneratedKeysIT` | 1 | 25.7 / 26.0
+| `BffClientSecretModeIT` | 4 | 25.0 / 25.3
+| `BffRefreshTransientFailureIT` | 2 | 22.8 / 23.1
+| `WebSocketProxyIT` | 9 | 8.9 / 9.0
+| `BffSessionScopeParityIT` | 15 | 8.2 / 8.7
+| `BffRefreshScopeWireIT` | 1 | 6.4 / 6.8
+| `BffSessionFallbackIT` | 18 | 5.7 / 6.3
+| `BffSessionCookieControlsIT` | 4 | 5.7 / 6.1
+| `JwksEgressMismatchIT` | 1 | 4.9 / 5.0
+| `MtlsHandshakeIT` | 3 | 4.5 / 4.6
+| `BffCookieSessionIT` | 7 | 4.4 / 4.6
+| `NoCertificatePlainHttpOptInIT` | 11 | 3.7 / 3.9
+| `BffEndpointScopesIT` | 4 | 3.4 / 3.6
+| `LargeBodyIT` | 2 | 3.3 / 3.6
+| `HtmlErrorPageIT` | 8 | 3.2 / 70.0
+| `BffCookieStatelessnessIT` | 3 | 3.2 / 3.5
+| `BffSessionMediationIT` | 7 | 2.9 / 3.1
+| `BffSessionInstanceIsolationIT` | 1 | 2.9 / 3.0
+| `StrictQueryAcceptanceIT` | 19 | 2.6 / 2.9
+| `BffBackchannelLogoutIT` | 1 | 2.5 / 2.8
+| `BffUserInfoIT` | 4 | 2.5 / 2.9
+|===
+
+`HtmlErrorPageIT` is 70 s on current `main`: its `upstreamTimeout` test arrived during the sample
+window, which is why only the p90 shows it.
+
+Top methods (parameterised invocations summed):
+
+[cols="2,4,1"]
+|===
+| Class | Method | Median (s)
+
+| `BffSessionIdleTimeoutIT` | `cookieModeSessionEndsWhenIdleAndTheActivityCookieCarriesTheLastAccess` | 160.2
+| `HtmlErrorPageIT` | `upstreamTimeout` | 60.6
+| `BffSessionAbsoluteTtlIT` | `sessionEndsAtItsDeclaredLifetimeWhateverTheRefreshDid` | 46.5
+| `BffRefreshReuseIT` | `replayedCookieEndsItsSessionAndRevokesTheSuccessorGrantButNotTheUserSession` | 44.8
+| `JwksLateIdpReadinessIT` | `lateIdentityProviderTurnsReadinessUpAndItsTokensAreAccepted` | 33.8
+| `BffSessionIdleTimeoutIT` | `serverModeSessionEndsWhenIdleAndNotWhileUsed` | 33.8
+| `BffRefreshSingleFlightIT` | `concurrentRequestsShareOneRefresh` | 29.7
+| `BffGeneratedKeysIT` | `generatedKeysServeALoginAndARestartUnderALiveSession` | 25.7
+| `BffRefreshReuseIT` | `targetedGrantRevocationEndsOnlyThatServerSession` | 25.3
+| `BffTlsRelaxationIT` | `bothRelaxationsAdmitATrustedCertificateThatDoesNotNameTheHost` | 25.1
+| `BffTokenRefreshIT` | `refreshedOutcomeRotatesTheMediatedToken` | 24.5
+| `BffClientSecretModeIT` | `bothTokenLegsAreBoundToTheProofKeyInClientSecretMode` | 23.0
+| `BffTokenRefreshIT` | `failedOutcomeRedirectsNavigationAndClearsTheSession` | 22.5
+| `BffFapiControlsIT` | `rotatedTokenStaysBoundToTheRsaProofKey` | 22.5
+| `BffRefreshReuseIT` | `idpRevokedCookieSessionEndsOnTheNextRefresh` | 22.5
+| `BffTokenRefreshIT` | `failedOutcomeRejectsXhrAndClearsTheSession` | 22.4
+| `BffCookieRefreshIT` | `theResealedCookieStillResolvesOnASubsequentRequest` | 22.4
+| `BffTokenRefreshIT` | `refreshedOutcomeKeepsTheEndpointScope` | 22.4
+| `BffCookieRefreshIT` | `refreshedOutcomeRotatesTheBearerAndResealsTheCookie` | 22.3
+| `BffCookieRefreshIT` | `theResealDoesNotExtendTheSession` | 22.3
+| `BffRefreshTransientFailureIT` | `serviceUnavailableKeepsTheSessionAndRetriesAfterTheBackOff` | 12.5
+| `BffRefreshTransientFailureIT` | `connectionResetKeepsTheSessionAndRetriesAfterTheBackOff` | 10.2
+| `HtmlErrorPageIT` | `openCircuit` | 6.5
+| `BffRefreshScopeWireIT` | `refreshGrantsCarryTheSessionScopeOnTheWire` | 6.4
+| `JwksEgressMismatchIT` | `explicitAllowlistNamingAnotherHostKeepsTheKeySetRefused` | 4.9
+| `WebSocketProxyIT` | `heartbeatedRelaySurvivesIdleTimeout` | 4.8
+| `BffTlsRelaxationIT` | `neitherRelaxationReachesChainTrust` | 4.6
+| `BffSessionScopeParityIT` | `xhrIsRefusedWithAStepUpUrlAndRelayedAfterFollowingIt` | 3.8
+| `BffSessionCookieControlsIT` | `loginBeyondThePerSubjectBoundEndsTheFirstSession` | 2.9
+| `BffSessionInstanceIsolationIT` | `aSessionCookieIsNotASessionOnAnotherInstance` | 2.9
+|===
+
+==== Unit tests
+
+CI publishes no surefire reports for the unit run, and the job log names nested classes by display
+name, so no reliable per-class ranking can be taken from CI. The ranking below is a local
+reproduction (`test -pl api-sheriff -am` through the Maven executor, commit `b7f937d3`, macOS).
+
+[WARNING]
+====
+The reproduction is partial and distorted. The host was under heavy foreign load (load average
+above 40), and the executor's timeout ended the run after 853 s with 97 of about 160 classes
+reported (3261 of 5483 tests). Use it for ranking, never for absolute numbers. Classes that had not
+run by then are missing, among them most of `bff/**`.
+====
+
+Sum of test-case time per class, 97 classes, 227 s in total:
+
+[cols="3,1,1"]
+|===
+| Class | Tests | Seconds (local)
+
+| `edge.WebSocketRelayStageTest` | 32 | 19.9
+| `auth.RetryingJwksLoaderTest` | 19 | 17.7
+| `edge.GatewayEdgeErrorPageTest` | 18 | 13.9
+| `edge.GatewayEdgeSessionRelayTest` | 20 | 13.3
+| `edge.GatewayEdgeGatewayCookieTest` | 31 | 12.9
+| `edge.GatewayEdgeRouteTest` | 54 | 12.6
+| `edge.GatewayEdgePipelineTest` | 25 | 11.8
+| `edge.ReservedBodyCeilingTest` | 9 | 11.7
+| `quarkus.BffRuntimeProducerTest` | 175 | 11.2
+| `edge.GatewayEdgeRouteBffWiringTest` | 62 | 9.8
+| `edge.GatewayEdgeFramingCorpusTest` | 46 | 9.7
+| `edge.GatewayEdgeQueryHandoffTest` | 33 | 8.0
+| `edge.DispatchStageTest` | 53 | 6.6
+| `testsupport.AwaitsTest` | 10 | 6.0
+| `quarkus.ConfigValidationParityTest` | 11 | 5.7
+| `config.load.ConfigLoaderTest` | 159 | 5.2
+| `auth.AuthenticationStageTest` | 23 | 4.5
+| `quarkus.ConfigFailFastTest` | 5 | 4.2
+| `quarkus.ConfigProducerTest` | 23 | 2.8
+| `auth.TokenValidatorProducerTest` | 38 | 2.4
+| `quarkus.CookieModeBootTest` | 3 | 2.2
+| `config.boot.ConfigBootPipelineTest` | 12 | 2.0
+| `tls.DefaultTrustSourceAuditTest` | 9 | 1.8
+| `config.DocumentedSetsContractTest` | 28 | 1.8
+| `edge.ResponseStageTest` | 51 | 1.8
+| `ConfigValidationCommandTest` | 27 | 1.7
+| `tls.SniFrontListenerTest` | 5 | 1.6
+| `config.validation.ConfigValidatorTest` | 454 | 1.4
+| `auth.SignatureOnlyTokenVerifierTest` | 9 | 1.3
+| `config.validation.ConfigValidatorRouteDisjointnessTest` | 97 | 1.2
+|===
+
+Top methods (parameterised invocations summed):
+
+[cols="2,3,1"]
+|===
+| Class | Method | Seconds (local)
+
+| `auth.RetryingJwksLoaderTest$FileFirstLoad` | `fileSourceLoads` | 14.0
+| `edge.GatewayEdgeErrorPageTest` | `unreachableUpstream` | 12.8
+| `edge.GatewayEdgeGatewayCookieTest$ServerMode` | `upstreamOfOpenRouteCannotSetGatewayCookies` | 11.2
+| `edge.GatewayEdgePipelineTest` | `minimalRouteIsStillGovernedByThePreRouteFloor` | 10.0
+| `edge.GatewayEdgeRouteTest` | `bootsGrpcProtocol` | 9.5
+| `edge.ReservedBodyCeilingTest` | `doesNotApplyTheCeilingToTheBodylessCallback` | 9.3
+| `edge.GatewayEdgeSessionRelayTest$ServerMode` | `refreshLeavesTheRelayOpen` | 9.3
+| `edge.WebSocketRelayStageTest` | `relaysBidirectionalTextFrames` | 8.2
+| `edge.GatewayEdgeRouteBffWiringTest$SessionFallbackBranching` | `sessionBranchEnforcesCsrfDefence` | 7.6
+| `edge.GatewayEdgeFramingCorpusTest` | `zeroDeclaredLengthIsForwardedFramedAsZero` | 7.1
+| `edge.GatewayEdgeQueryHandoffTest` | `lenientStillRejectsDoubleEncoding` | 6.4
+| `testsupport.AwaitsTest` | `publicTierEntryPointsDelegateToTheInstrumentedCore` | 5.3
+| `quarkus.ConfigValidationParityTest` | `frameworkBodyLimitIsTheOnlyIntendedDifference` | 4.1
+| `auth.AuthenticationStageTest` | `rejectsSessionRouteWithoutWiredSessionRuntime` | 3.7
+| `edge.GatewayEdgeSessionRelayTest$CookieMode` | `absoluteExpiryClosesTheRelay` | 3.3
+| `edge.WebSocketRelayStageTest$SessionBoundRelay` | `deregistersRelayClosedByItsClient` | 2.6
+| `quarkus.ConfigFailFastTest` | `shouldLogEveryViolationAndTheAbort` | 2.5
+| `quarkus.CookieModeBootTest` | `shouldReportUnsupportedIdpDestruction` | 2.1
+| `edge.WebSocketRelayStageTest$SessionBoundRelay` | `closesAtAbsoluteExpiry` | 2.0
+| `quarkus.ConfigProducerTest` | `shouldResolvePlaceholdersThroughTheInjectedSecretResolver` | 1.9
+| `tls.DefaultTrustSourceAuditTest` | `reportsThroughTheRealStartupEventPath` | 1.7
+| `quarkus.ConfigValidationParityTest` | `bootAndOfflineReportTheSameViolations` | 1.7
+| `edge.DispatchStageTest$BreakerAttribution` | `capBreachKeepsContentTooLarge` | 1.5
+| `tls.SniFrontListenerTest` | `nonMatchingSniRelaysToTerminatedBackend` | 1.5
+| `config.boot.ConfigBootPipelineTest` | `loaderDefectStopsTheRun` | 1.4
+| `edge.ResponseStageTest$HeaderPrecedence` | `setModeOverwritesOriginValue` | 1.3
+| `edge.WebSocketRelayStageTest` | `heartbeatKeepsRelayOpen` | 1.3
+| `quarkus.BffRuntimeProducerTest$StubIdentityProviderRuntime` | `shouldPresentAClientAssertionInKeyMode` | 1.3
+| `edge.DispatchStageTest$DeferredRelay` | `relaysTinyBodyThatOutranTheDispatchingThread` | 1.2
+| `auth.SignatureOnlyTokenVerifierTest$SeamSwap` | `shouldReachAnAcceptedLogoutVerdict` | 1.2
+|===
+
+The method ranking shows the mechanism more than the methods. Almost every entry at the top is
+simply the *first* test its JVM ran: `bootsGrpcProtocol` is a constructor wrapped in
+`assertDoesNotThrow`, and `fileSourceLoads` reads a file. They carry the class's warm-up -- key
+material, Vert.x, the configuration stack -- which a fresh JVM pays again for every class. Only
+`AwaitsTest` and the `WebSocketRelayStageTest` expiry tests are slow for what they do.
+
+=== Fixed overhead against test time
+
+[cols="3,1,3"]
+|===
+| Job | Total (s) | Split
+
+| `build (25)`
+| 890
+| 40 set-up; 36 compile and packaging; about 290 of reported unit-test time; *about 500 of fork
+  start-up and per-JVM warm-up*
+
+| `integration-tests / test`
+| 2051
+| 32 set-up; 33 compile; *785 duplicated unit suite*; 256 native build; 168 stack start (119 of it
+  the `grpc-echo` image); 768 failsafe, of which *about 600 is `Thread.sleep`* and about 100 is
+  fork start-up and HTTP-client warm-up across 64 forks
+
+| Demo SPA browser suite
+| 368
+| 260 native build; 84 tests
+
+| Run Integration Benchmarks
+| 1256
+| 48 JVM build; 1171 in the k6 step, which itself contains a native build of about 210 s and the
+  same `grpc-echo` build of 90 to 113 s
+|===
+
+=== The Java 25 and 26 matrix
+
+Both legs run `./mvnw verify -Dmaven.compiler.release=<version>` on the matching JDK. The logs show
+identical work: 5483 + 113 + 202 tests on each leg, zero skipped. No test in the repository is
+conditional on the Java version (the only execution condition is one `@EnabledOnOs`).
+
+What the Java 26 leg proves that nothing else does: the sources compile with `--release 26` under
+`-Werror`, and the full suite passes on a Java 26 runtime. That is a real, distinct proof.
+
+What is duplicated: `sonar-build` is a third full `verify` on Java 25. It repeats the Java 25 leg
+test for test and adds only the 50 s `sonar:sonar` goal. Coverage data is already produced by the
+Java 25 leg, because JaCoCo is bound in the plain build.
+
+== Findings
+
+=== A -- Technical and architectural problems
+
+==== One JVM per test class
+
+`pom.xml:216-218` and `:237-238` set `useSystemClassLoader=false` and `reuseForks=false` for surefire
+and failsafe, under the comment "Fix for class loading issues". No `forkCount` is set and
+`.mvn/maven.config` pins `-T1`, so about 160 forks run one after another.
+
+* The setting arrived with commit `15850608` (2025-08-09) as scaffolding copied from another
+  project and was moved verbatim by `eb01ab27`. Neither commit states a reason, and no document or
+  ADR does.
+* It has since become load-bearing in two places.
+  `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/auth/SanMismatchedJwksServer.java:82-90`
+  swaps the JVM-global trust store and names fork isolation as its first line of defence.
+  `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffTokenRefreshIT.java:104-111`
+  relies on failsafe running classes strictly one at a time.
+* The same policy costs the `integration-tests` module 30 s for 113 tests that sum to under 7 s,
+  and the IT lane about 100 s across 64 forks.
+
+A global flip to `reuseForks=true` is not safe. Four sites block it:
+
+[cols="1,3,3"]
+|===
+| # | Site | Why
+
+| B1
+| `auth/SanMismatchedJwksServer.java:172-174`, used by `TokenValidatorProducerTest:735` and
+  `BffRuntimeProducerTest:1852`
+| Replaces `javax.net.ssl.trustStore*` for a whole nested-class lifetime.
+
+| B2
+| `edge/GatewayEdgeRoute.java:2557-2561` with `testsupport/UnreachablePort.java:108-117`
+| The circuit-breaker name is derived from host and port; `UnreachablePort.pick` is deterministic,
+  so four test classes would share one breaker name in one JVM.
+  `GatewayEdgeErrorPageTest.java:152-153` records that a reused name "was observed never to open".
+
+| B3
+| The nine `@QuarkusTest` classes
+| A live Quarkus application and its log manager would sit under the 29 `@EnableTestLogger`
+  classes. Inferred, not observed.
+
+| B4
+| `tls/DefaultTrustSourceAuditTest.java:162-269`
+| Sets and clears trust-store system properties; an issue only in combination with B3.
+|===
+
+Nothing else blocks it: there are no fixed listen ports (all 96 `listen` calls bind port 0 on
+loopback), no `Locale`, `TimeZone` or default-`SSLContext` mutation, and no class-loader
+manipulation in the test sources. In-JVM parallel execution is blocked more broadly, by the global
+test log handler shared by 29 classes.
+
+==== Nine Quarkus boots for four configurations
+
+There are nine `@QuarkusTest` classes, no `@QuarkusTestResource`, and three `@TestProfile` classes.
+That is four distinct boot configurations, booted nine times because each class has its own JVM. A
+boot-only class costs about 14 s of wall time in CI.
+
+[cols="3,2,3"]
+|===
+| Class | Profile | Needs the container
+
+| `quarkus/ContextPathDefaultsTest` | default | the effective-config half
+| `quarkus/ExtensionUnqualifiedBeanExclusionTest` | default | 2 of 3 tests
+| `quarkus/GatewayJsonWiringTest` | default | bean identity; the 70 corpus rows are `GatewayJsonTest`'s, replayed through the injected bean on purpose
+| `quarkus/DefaultProfileReadinessTest` | default | all 3
+| `tls/DefaultTrustSourceAuditTest` | default | 1 of 9; 8 build the audit by hand
+| `tls/ManagementPlainHttpAuditTest` | default | 1 of 7
+| `tls/TerminatedListenerTlsAuditTest` | `KeyLessMainListenerProfile` | 2 of 12
+| `quarkus/CookieModeBootTest` | `CookieBootProfile` | all 3
+| `auth/MountedTlsMapKeyTest` | `MountedTrustProfile` | 2 of 5
+|===
+
+About 27 unit-level cases ride on a Quarkus boot. Moving them out saves nothing while every class
+forks, because each class keeps at least one case that needs the container.
+
+==== The environments
+
+The compose stack is started once per failsafe run and never restarted or reconfigured. All twelve
+gateway instances start in parallel and are ready in 6 to 7 s. *Merging variants would save about
+nothing*, and the conflicting keys are process-wide (`tls.mtls.enabled`, `oidc.session.mode`, the
+admission caps, the matched `upstream_verify_hostname` pair, certificate present against absent).
+The variants are controls that differ in exactly one thing; that design should stay.
+
+* Seven instances serve a single IT class each; that is their purpose.
+* `api-sheriff-passthrough-empty` (port 10449) and `prometheus` are contacted by no IT. The first
+  is the benchmark arm; of the second only the configuration file is read. Removing them from the
+  IT lane saves memory, not time.
+* APISIX and the benchmark nginx live in overlay compose files the IT lane does not load.
+* Four configuration directories are not mounted by compose at all; ITs start one-off containers
+  from them (`sheriff-config-late-idp`, `-tls-relaxation`, `-jwks-egress-mismatch`,
+  `reserved-path-overlap`).
+* The one environment that costs real time is `grpc-echo`: its Dockerfile runs
+  `./mvnw ... -Pgrpc-echo clean package` inside the build container with an empty repository
+  (1419 artifact downloads in the inspected log), about 119 s, for `GrpcProxyIT` (4 tests, 1.2 s).
+  api-sheriff is compiled a third time in that step.
+
+==== Sleeps and waits
+
+In the integration tests the waiting is the test. About 600 s per run is `Thread.sleep` on real
+lifetimes:
+
+* The refresh suites sleep 22 s to reach the refresh window (access-token lifespan 45 s minus
+  leeway 30 s). That wait occurs about 15 times: `BffTokenRefreshIT` 4, `BffRefreshReuseIT` 4,
+  `BffCookieRefreshIT` 3, and once each in `BffFapiControlsIT`, `BffClientSecretModeIT`,
+  `BffTlsRelaxationIT` and `BffGeneratedKeysIT`.
+* `BffSessionIdleTimeoutIT` waits 29 s in server mode and 158 s in cookie mode
+  (`COOKIE_IDLE_SECONDS=90`).
+* `BffSessionAbsoluteTtlIT` waits 43 s; `JwksLateIdpReadinessIT` waits out the JWKS retry back-off.
+* `HtmlErrorPageIT.upstreamTimeout` sends two requests in sequence that each wait the gateway's
+  30 s upstream timeout.
+
+These prove that a declared limit acts on the native image, which is the point of
+link:declared-limit-assertion-coverage.adoc[the declared-limit rule]. None of them should be
+shortened. What is accidental is that they run one after another, and that several tests in one
+class wait separately for the same event.
+
+In the unit tests real waiting is about 25 s per run, of which 6 to 7 s is accidental:
+
+* `testsupport/AwaitsTest.java:459` waits a full 5 s ceiling to prove delegation, not the ceiling.
+* `auth/RetryingJwksLoaderTest.java:273` drains 4 x 250 ms where a sibling proves the same absence
+  with 4 x 50 ms; the class's constructor already accepts an injectable scheduler.
+* `bff/refresh/TokenRefreshCoordinatorTest` sleeps 100 ms at about 13 call sites marked "no
+  observable hook".
+
+Every other timeout in the unit tests is an upper bound that returns immediately on success.
+Session TTL and idle tests already use a fixed clock.
+
+==== Real sockets and TLS
+
+About 400 unit-test invocations create a fresh `Vertx` and usually two HTTP servers per test. The
+steady-state cost is 64 to 140 ms each, so this is tens of seconds, not minutes. Each socket-level
+class has an in-memory sibling for the pure logic (`pipeline/*StageTest` under
+`GatewayEdgePipelineTest`, `FramingGateTest` under the framing corpus, and so on) and adds the real
+parser, metrics and response rendering on top; that layering is deliberate.
+
+=== B -- Grouping and infrastructure restarts
+
+* *Quarkus restarts in the unit run:* nine, for four configurations (above).
+* *Compose stack:* started once, stopped once. Fourteen IT classes additionally start their own
+  one-off containers on fixed names and ports 10456 to 10470.
+  `BffRefreshScopeWireIT`, `BffRefreshSingleFlightIT` and `BffRefreshTransientFailureIT` share one
+  container name and port and start the rig per test: four rig boots for four tests.
+* *Native image:* built once per job and never shared between jobs. A merged pull request pays for
+  it in the IT lane on the pull request, again in the merge queue, again on the push to `main`,
+  once more for `demo-client-e2e` and once for the benchmark: five native builds of 200 to 260 s.
+  In CI it is always rebuilt, including for changes that touch only tests, compose files or
+  scripts. Locally `build-native-if-needed.sh:24-45` treats `api-sheriff/src/test` as an input, so
+  a unit-test-only change triggers a native rebuild.
+* *CI caching:* only `~/.m2`, restored twice per job. No Docker layer cache, no native-image cache.
+  Image pulls total about 45 s per run.
+* *Fork and parallelism settings:* `reuseForks=false`, default `forkCount` 1, no JUnit parallel
+  configuration, `-T1`.
+
+What prevents running IT classes concurrently today:
+
+[cols="2,3,3"]
+|===
+| Shared state | Mutated by | Affects
+
+| Keycloak sessions of `refresh-user`
+| `BffTokenRefreshIT:327, 352, 517-539` (realm-wide logout of that user); `BffRefreshReuseIT:304, 338`
+| every other suite that logs in as `refresh-user`
+
+| Log-record counts on `quarkus-refresh.log` and `quarkus-cookie-refresh.log`
+| `BffTokenRefreshIT:480-507`, `BffRefreshReuseIT:428-452`, `BffFapiControlsIT:452`,
+  `BffClientSecretModeIT`
+| a concurrent suite's record could satisfy another suite's "count rose" assertion -- a false green
+
+| Fixed container name and port of the stub identity-provider rig
+| the three `BffRefresh*` stub suites
+| each other
+
+| RestAssured global statics
+| `BaseIntegrationTest:57-69` and three helpers
+| any in-JVM concurrency or fork reuse
+
+| Tight timing margins
+| `MtlsHandshakeIT:108`, `WebSocketProxyIT:110, 227`, `BffRefreshTransientFailureIT:150`,
+  `BffRefreshSingleFlightIT:97-103`
+| flake risk under CPU contention
+|===
+
+Class order already varies between runs, so nothing depends on ordering.
+
+=== C -- Duplicates and overlap
+
+The behaviour-to-test maps for the five heavy areas show one pattern throughout: stage test in
+memory, live-edge test over a real socket, integration test on the native image. Each level adds a
+distinct proof, and the repository's own documents
+(link:declared-limit-assertion-coverage.adoc[declared limits],
+link:test-corpus-integrity.adoc[corpus integrity],
+link:cookie-deliverability-blindness.adoc[cookie deliverability]) state why.
+
+*Genuine duplicates exist, and they are worth less than a second in total.* They are listed for
+hygiene, not as a speed-up. Each row names the redundant test and the test that covers it.
+
+[cols="3,3,1"]
+|===
+| Redundant | Covered by | Level
+
+| `PipelineVerbIT#disallowedMethodRejectedWithoutForward`
+| `ErrorContractIT#disallowedMethodProblemJson` -- same `PATCH /proxy/get`, 405, plus problem type
+| IT
+
+| `GracefulShutdownIT#readinessUp`
+| `ConfigLoadedIntegrationIT#managementHealthReportsUp` -- identical request and assertions
+| IT
+
+| `RoutingAndResponseHeadersIT#baseUrlFreeAssetEndpointServes`
+| `DirectoryAssetServingIT#getServesGovernedFile` -- same GET, 200 plus content
+| IT
+
+| `ApiSheriffIntegrationIT#metricsEndpoint`
+| `MetricsIT#metricsEndpointServesPrometheusFormat` -- asserts 200 plus the format
+| IT
+
+| `BffSessionLoginIT#loginEstablishesUsableSession`
+| `BffSessionMediationIT#mediatedSessionStaysUsableAcrossRequests` -- same login and GET, asserted twice
+| IT
+
+| `GatewayEdgePipelineTest#rejectsUnmatchedPath`
+| `GatewayEdgeRouteTest#unroutedPathAnswersRoutingProblem` -- 404, problem and metric at the same seam
+| unit
+
+| `ConfigFailFastTest#shouldFailStartupOnBrokenConfig`
+| `ConfigValidationParityTest#bootAndOfflineReportTheSameViolations`, row `/config/broken`
+| unit
+
+| `SealedSessionCookieCodecTest#shouldRejectUnknownVersion`
+| `#shouldRejectForeignFormatVersions` -- covers that value among 255 and adds the WARN assertion
+| unit
+
+| `InMemorySessionStoreTest#shouldNotExtendOnResolve`
+| `#shouldEvictIdleSessionOnResolve` -- identical resolves plus the size assertion
+| unit
+
+| `CookieSessionBindingTest#shouldNotExtendOnResolve`
+| `#shouldMeasureFromLoginWithoutActivityCookie` -- identical call sequence
+| unit
+
+| `TokenRefreshCoordinatorTest#shouldRetryUntrackedSessionAfterOverflowWindow`
+| `#shouldReleaseProbeClaimWhenProbeIsTracked` -- identical arrange and first act; the only unit
+  duplicate with a real cost (one 10,000-refresh saturation)
+| unit
+
+| `TokenRefreshCoordinatorTest#shouldRequestActiveScopes`
+| `#shouldRequestNarrowedScopesNext` -- asserts the same first scope set and the next
+| unit
+
+| `SessionAuthenticationStageTest#xhrRaises401WithNoShortCircuit`, `#navigationLeavesShortCircuitAndNoBearer`
+| `#challengesXhrWith401`, `#redirectsNavigationIntoLogin` -- identical arrange and assertions
+| unit
+|===
+
+A further handful inside `CallbackEndpointTest`, `ServerTlsDeclarationGateTest`,
+`TlsServerCustomizerTest` and `PushedAuthorizationRequestsTest` was reported by a second reading
+and is not listed here because both tests of each pair were not re-read.
+
+*Deliberate defence in depth -- keep:* the strict-query matrix replayed at IT level
+(`StrictQueryAcceptanceIT`, whose Javadoc states the mirror contract), `FramingGateTest` against
+the raw-socket corpus, cookie attributes pinned per codec, in `GatewayCookieContractTest` and in
+`BffCookieSessionIT`, the duplicate `code`/`state` check at endpoint and edge, tamper tests on
+origin and peer instance, and the repeated `GET /proxy/get` positive controls that the
+corpus-integrity standard requires per class.
+
+*Different level, different proof -- keep:* every refresh, idle and TTL integration test (the key
+acts on the native image, not merely parses), `MtlsHandshakeIT` (the only real handshake proof),
+`UpstreamHostnameVerificationIT` (the unit side only captures options), `BffUserInfoIT`
+(byte-exact JSON under native reflection registration), `NoCertificatePlainHttpOptInIT`, and the
+nine `verify-invalid-config-fails` cases that repeat unit-pinned validator rules at the boot-refusal
+seam of the real executable.
+
+*The framing corpus is not replayed at IT level.* The smuggling corpus exists only at unit level,
+in two layers. The integration lane spends four raw round trips on framing and the Host guard.
+
+*Parameterised tests are not a cost.* About 2780 parameterised invocations total about 2 s. The
+largest set is `SealedSessionCookieCodecTest.java:333` with 255 invocations in 0.26 s. No
+`@GeneratorsSource` count exceeds 20.
+
+*Tests that assert little* (read before classifying):
+
+* `edge/GatewayEdgeRouteTest.java:175, 201, 215, 228, 241` -- five `boots*` tests that are only
+  `assertDoesNotThrow` around a constructor, each paying a `Vertx` start.
+* `edge/GrpcDispatchStageTest.java:95` -- `assertDoesNotThrow` around a constructor.
+* `quarkus/BffRuntimeProducerTest.java:262` -- `isActive()` plus three `assertNotNull`.
+* `pipeline/FramingGateTest#rejectsBodyOnHead`, `#rejectsTrustHeaderStrip` -- exception type only,
+  where siblings assert the event type.
+* `ServerSessionBindingTest#shouldNotDropTheSessionWhilePersisting` -- single-threaded, so it does
+  not prove the concurrent resolve its message describes.
+
+These are quality observations. Strengthening them is an improvement independent of duration.
+
+*Behaviour proven only at IT level although a cheap lower-level test could also prove it* --
+candidates for an additional test, not a removal: the mTLS handshake refusal, the
+`upstream_verify_hostname` real dial, the mediated bearer written as upstream `Authorization`, a
+valid logout token driven through `BackchannelLogoutEndpoint`. ALPN and the minimum protocol
+version are proven at a handshake nowhere (rows G8 and G11 of the declared-limit matrix still
+stand).
+
+=== D -- Hotspots
+
+Integration tests: the cost of the top twelve classes is inherent in what they prove and accidental
+in how it is scheduled.
+
+[cols="2,3,2"]
+|===
+| Class | Why it is slow | Inherent or accidental
+
+| `BffSessionIdleTimeoutIT`
+| 29 s and 158 s idle windows on two one-off gateways, run in sequence
+| waits inherent; the sequence is accidental
+
+| `BffTokenRefreshIT`
+| four 22 s waits, one per test
+| two pairs of tests observe the same kind of refresh and could share a wait
+
+| `BffRefreshReuseIT`
+| four 22 s waits; tests 2 and 3 use different instances and independent sessions
+| partly accidental
+
+| `BffCookieRefreshIT`
+| three tests each wait 22 s for one refresh after one login
+| accidental: one wait serves all three assertions
+
+| `HtmlErrorPageIT`
+| two 30 s upstream timeouts in sequence
+| timeouts inherent; the sequence is accidental
+
+| `BffSessionAbsoluteTtlIT`, `JwksLateIdpReadinessIT`
+| one declared lifetime or back-off each
+| inherent
+
+| `BffTlsRelaxationIT`
+| three rig boots and one 22 s wait
+| mostly inherent
+
+| the three stub-rig suites
+| a rig boot per test
+| accidental: one rig with a journal reset would do
+|===
+
+Unit tests: the hotspot is not a class but the per-JVM warm-up every class pays.
+
+* *Key material.* The `token-sheriff-validation` generators initialise key pairs for all ten
+  algorithms in a static initialiser, about 3 to 4.5 s per JVM, and 15 test classes pay it. Most of
+  the edge classes among them never validate a token; they only need an issuer configuration to
+  construct a validator.
+* *Quarkus boot*, nine times (above).
+* *ArchUnit import*, in five classes, each importing production classes again in its own JVM.
+* *Configuration stack first use* (YAML and schema validator), 1 to 2 s in about ten classes.
+* *Uncached RSA-2048 generation* in `bff/client/TestSigningKeys.java:222`, about eight calls plus
+  parameterised uses.
+* *Per-instance fields that could be static* in `BffRuntimeProducerTest.java:241-244`, created 175
+  times.
+
+Keycloak logins are not a hotspot: a login is well under a second, and no suite is dominated by
+them. Keycloak start and realm import is about 15 s per run.
+
+=== E -- Other ideas, evaluated
+
+[cols="2,4,1"]
+|===
+| Idea | Evaluation | Verdict
+
+| CI caching of the Maven repository
+| Already in place, restored in 10 to 12 s (twice in the IT job).
+| nothing to gain
+
+| Caching Docker layers or image pulls
+| All pulls together are about 45 s; a cache restore costs a similar amount.
+| not worth it
+
+| Caching the native executable for pull requests that do not touch `api-sheriff/src/main`
+| About 256 s on those pull requests. A wrong cache key means testing a stale binary, and the
+  release lane must never use it. The reusable workflow is organisation-owned.
+| possible, risky, later
+
+| One native image shared across jobs
+| The IT lane, `demo-client-e2e` and the benchmark each build it. They run on different triggers,
+  so sharing needs an artifact hand-off between workflows. Only the IT lane is on the critical path.
+| off the critical path
+
+| Splitting jobs to run in parallel
+| Worth it exactly once: `sonar-build` waits for `build` without consuming anything from it.
+| see <<proposals>>
+
+| Sharding the IT suite across runners
+| Each shard needs the native binary and the full stack (about 7 minutes of fixed cost) and the
+  same shared-state preconditions as concurrency within one runner.
+| concurrency within the runner first
+
+| Skipping lanes by changed paths
+| Already done for documentation-only changes. Skipping the native build for test-only changes is
+  the caching idea above. No further class of change exists that a lane provably cannot observe.
+| nothing further
+
+| JVM-mode ITs with a smaller native smoke set
+| The native run uniquely proves reflection registration, included resources, run-time
+  initialisation, the distroless read-only image and the fail-fast exit of the real executable, and
+  it proves them for every IT implicitly: a missing registration surfaces in whichever test
+  exercises that path. No smoke set can be shown to keep that covered.
+| not recommended
+
+| Keycloak start-up
+| About 15 s per run in dev mode with realm import.
+| not a lever
+
+| Merging configuration variants
+| Saves about nothing and destroys the single-difference controls.
+| not recommended
+
+| Flaky tests costing reruns
+| In the last 200 runs per workflow: 4 re-run attempts in 93 pull-request IT runs, none in
+  `maven.yml`; 4 to 5 failed pull-request runs per workflow. Not attributed to flakes or real
+  failures.
+| not a dominant cost; not investigated
+|===
+
+[#proposals]
+== Ranked proposals
+
+Savings are CI seconds per run on the pull-request path. "Measured" means the stage was timed in
+the logs; "estimated" means derived.
+
+[cols="1,4,2,1,2"]
+|===
+| # | Change | Expected saving | Effort | Risk
+
+| 1
+| *Run `sonar-build` in parallel with the matrix* instead of after it (drop `build` from its
+  `needs`), or fold the Sonar goal into the Java 25 leg.
+| build lane 30.9 min to about 16 min (measured stage). Folding also removes one full `verify` of
+  runner time.
+| S, but in the organisation-owned reusable workflow
+| low
+
+| 2
+| *Do not re-run the unit suite inside the integration-test lane.* An opt-in property set only by
+  `integration-tests.yml`; the release lane keeps its current command.
+| IT lane minus 785 s (measured), on pull request, merge queue and push
+| S
+| low -- but see the note below
+
+| 3
+| *Build the `grpc-echo` fixture jar on the host* with the warm repository and let its Dockerfile
+  only copy it.
+| IT lane minus about 105 s (measured stage); the same in the benchmark lane
+| S to M
+| low
+
+| 4
+| *Run the sleep-bound IT classes concurrently*, in a separate failsafe execution, after giving
+  each destructive suite its own Keycloak user and its own log to count on.
+| IT lane minus 400 to 500 s (estimated; bounded by the longest class at about 195 s)
+| M
+| medium
+
+| 5
+| *Share one wait between tests that observe the same event*: `BffCookieRefreshIT` (66 s to 22 s),
+  `BffTokenRefreshIT` (88 s to 44 s), `BffRefreshReuseIT` tests 2 and 3, the two requests of
+  `HtmlErrorPageIT.upstreamTimeout`, the two legs of `BffSessionIdleTimeoutIT`, one stub rig per
+  class.
+| IT lane minus about 190 s sequentially (estimated from the wait constants); less if 4 is done
+| M
+| low to medium
+
+| 6
+| *Split the unit run into two surefire executions*: a reused fork for pure unit classes, and the
+  current one-JVM-per-class policy for Quarkus, socket-edge, trust-store-swapping and architecture
+  tests. A guard test fails the build when a class is in neither group.
+| each `verify` minus 250 to 350 s (estimated), in every leg and locally
+| M
+| medium
+
+| 7
+| *Remove the accidental unit waits and fixtures*: `AwaitsTest:459`, the injectable scheduler in
+  `RetryingJwksLoaderTest`, a cached RSA pair in `TestSigningKeys`, static fields in
+  `BffRuntimeProducerTest`.
+| each `verify` minus 10 to 15 s (estimated)
+| S
+| low
+
+| 8
+| *One reused fork for the nine `@QuarkusTest` classes*: four boots instead of nine.
+| each `verify` minus 50 to 70 s (estimated)
+| M
+| medium
+
+| 9
+| *Hygiene*: remove the genuine duplicates listed under C, strengthen the weak assertions, correct
+  the stale texts listed below.
+| under 1 s
+| S
+| low
+|===
+
+Expected end state: proposals 1 to 3 bring both required checks to about 16 to 20 minutes;
+adding 4 or 5 brings the IT lane to about 12 to 15; adding 6 brings the build lane to about 10.
+
+=== Why test quality is unchanged or better
+
+. *Parallel Sonar build.* The same three `verify` runs and the same Sonar analysis execute; only
+  their order changes. The quality gate still blocks `build/conclusion`. If the Sonar goal is
+  folded into the Java 25 leg instead, the analysis consumes the coverage of that very run, and the
+  duplicate third run disappears. Nothing proven is lost, because that third run repeats the Java
+  25 leg test for test.
+. *No unit suite in the IT lane.* This one *does* work by running less, and is listed for that
+  reason as a finding to decide on, not as a neutral fix. What makes it defensible: the removed run
+  executes the same 5483 tests, on the same commit, on the same Java 25, as `build (25)`, whose
+  result gates the same merge through the required `build/conclusion` -- on the pull request, in
+  the merge queue and on the push. What is lost is one of four identical executions, which today
+  acts as an unintended flake detector. Coverage is unaffected: the nested native build runs
+  `clean` on `api-sheriff/target`, so the IT lane's unit coverage data is discarded today.
+. *Host-built fixture jar.* `grpc-echo` is an upstream fixture, not the system under test. The same
+  profile builds the same jar; only the place of the build changes. `GrpcProxyIT` is untouched.
+. *Concurrent sleep-bound classes.* Every class, method and assertion stays. Quality *improves* if
+  the preconditions are done properly, because each destructive suite then owns its Keycloak user
+  and its log, which removes the cross-suite coupling that today is only held off by sequential
+  execution. Done without the preconditions it would produce false reds (revoked sessions) and
+  false greens (foreign log records); that is the stated risk.
+. *Shared waits.* Every assertion is kept and still observes a real refresh, timeout or expiry of
+  the declared length. No wait is shortened. The cost is coarser failure granularity where two
+  test methods become two assertion groups behind one wait; that can be kept by holding two
+  sessions through one wait in a class-level fixture and leaving the methods separate.
+. *Two surefire executions.* The same tests run with the same assertions. The classes that need
+  isolation keep it, and for the first time the need is declared in the build and enforced by a
+  guard, where today it is an undocumented side effect two source files quietly rely on. The
+  breaker-name collision (B2) must be removed first, which also removes a latent trap.
+. *Accidental waits and fixtures.* Each test still proves the same behaviour: `AwaitsTest:459`
+  proves delegation with any ceiling; `RetryingJwksLoaderTest` proves the absence of a retry
+  deterministically instead of by elapsed time, which is a stronger proof.
+. *Shared Quarkus fork.* Same tests, same assertions; four boots are the number of distinct
+  configurations.
+. *Hygiene.* A duplicate is removed only where the table under C names the surviving test and the
+  assertion that covers it.
+
+=== Findings that are not proposals
+
+These would save time by running less. They are recorded, not recommended.
+
+* *The push to `main` re-tests the tree the merge queue just tested.* Both lanes run a third time
+  on the merge commit. Removing that would save about 30 minutes of runner time per merge and no
+  merge latency.
+* *The Java 26 leg* costs one full `verify`. It proves compilation at `--release 26` and the suite
+  on a Java 26 runtime. With proposal 1 it is off the critical path.
+* *Shortening `COOKIE_IDLE_SECONDS` from 90* would cut about 85 s. The schema allows it, but it
+  shrinks the margins of a timing test on slow runners.
+* *`reuseForks=true` globally* or *in-JVM parallel execution* -- blocked by B1 to B4 and by the
+  global test log handler.
+
+== Not measured, not verified
+
+Stated separately from what was measured and found fine.
+
+* *No per-class unit timings from CI.* The build job publishes no surefire reports, and the log
+  prints display names of nested classes, which cannot be mapped to classes reliably. The unit
+  ranking above is a local reproduction that timed out after 97 of about 160 classes on a loaded
+  host. It ranks only, and it is incomplete.
+* *The split of the 500 s unit overhead* into fork start-up, class loading and fixture warm-up is
+  inferred from local reports and from the gap between plugin time and reported time. No CI run
+  with a different fork policy exists.
+* *Every saving marked "estimated"*, in particular proposals 4, 6 and 8, has not been tried. The
+  blocking sites B2 (a JVM-global breaker registry) and B3 are inferred from source, not observed
+  failing.
+* *Reading coverage.* The fork-policy, IT-infrastructure and BFF/TLS readings covered their
+  files. The routing, configuration and framing reading covered the framing and configuration-boot
+  tests and 17 ITs in full and the remaining unit classes of `edge`, `pipeline`, `config` and
+  `auth` by outline (method names, display names, parameter sources). The overlap table for those
+  areas is verified only where it names two tests; further duplicates there cannot be excluded.
+  About 45 acceptance tests consisting of a single `assertDoesNotThrow` were flagged by a scan and
+  not read individually.
+* *Flakes.* Failed and re-run runs were counted, not attributed.
+* *The release lane.* `release.yml` runs the same IT command. Whether its called release workflow
+  runs the unit suite independently was not checked; proposal 2 therefore leaves the release
+  command unchanged.
+* *The key sizes* behind the 3 to 4.5 s key-material initialisation were not confirmed in the
+  library source.
+* *SonarCloud coverage numbers* were not read; no proposal changes which tests run in the build
+  that feeds Sonar.
+
+Stale texts noticed on the way:
+
+* link:declared-limit-assertion-coverage.adoc[The declared-limit matrix] row G9 says no test exists
+  because it "would need a one-hour wait"; `BffSessionAbsoluteTtlIT` now covers it.
+* `BffLogoutIT` Javadoc (lines 40-44) calls a real Keycloak logout token "out of reach";
+  `BffBackchannelLogoutIT` uses one.
+* `pom.xml:203` points `java.util.logging.config.file` at a `logging.properties` that does not
+  exist in the test resources.
