@@ -181,7 +181,9 @@ provider's login form, a flood request that starts no login -- is aborted as a w
 evaluates the `count==1` threshold on that counter, reports it crossed with `count=0` and exits 99,
 and an aborted run exits 108 and still calls its summary handler. A last check asserts
 that the gateway still answers its readiness probe. Each phase has to finish inside the five-minute
-lifetime of a pending login, which the script checks for phase B before it reads the refusal.
+lifetime of a pending login. The script checks that for phase B: it measures the age of the first
+login from before the request that starts it until its completion has returned, and that age has to
+be below 270 seconds.
 
 What it reports: nothing worth a trend. The request mix is a flood of unfinished logins, so the
 run's rate and latency say nothing about a gateway hot path. Its summary document,

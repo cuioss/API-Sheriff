@@ -51,7 +51,10 @@
  *
  * The pending record lives five minutes. Each phase must finish inside that, or its first login
  * expires instead of being kept or dropped. Phase A then fails on its own expectation. Phase B would
- * pass for the wrong reason, so it checks the age of its first login before it reads the refusal.
+ * pass for the wrong reason, so it measures the age of its first login from before the request that
+ * starts that login until the completion of that login has returned, and checks that this age is
+ * below the lifetime. The measured span contains the whole life of the pending record up to the
+ * callback that reads it.
  *
  * The aspect has no counterpart on another gateway and is not part of the comparison lane.
  */
@@ -77,8 +80,10 @@ const FLOOD_DROPPING_THE_FIRST = PENDING_LOGIN_CAPACITY;
 const FLOOD_BATCH = 25;
 
 /**
- * The oldest a phase's first login may be when it is completed, in milliseconds: the five-minute
- * lifetime of a pending record, less a margin for the completion itself.
+ * The oldest the first login of phase B may be once its completion has returned, in milliseconds,
+ * counted from before the request that started it. The span contains the completion, so the limit
+ * only has to be below the five-minute lifetime of a pending record: an age below it shows that the
+ * record had not expired when the callback read it.
  */
 const MAX_FIRST_LOGIN_AGE_MS = 270000;
 
@@ -150,6 +155,8 @@ export const options = {
  */
 function openLogin(which) {
     const jar = new http.CookieJar();
+    // Taken before the request: the gateway stores the pending record while it answers it.
+    const openedAt = Date.now();
     const loginPage = http.get(LOGIN_URL, { jar: jar, redirects: 10, tags: { step: 'open' } });
     if (loginPage.status !== 200) {
         exec.test.abort(`${which}: ${LOGIN_URL} did not reach a login form: HTTP ${loginPage.status}`);
@@ -158,7 +165,7 @@ function openLogin(which) {
     if (!formAction) {
         exec.test.abort(`${which}: the login form at ${loginPage.url} carried no form action`);
     }
-    return { jar: jar, formAction: formAction, openedAt: Date.now() };
+    return { jar: jar, formAction: formAction, openedAt: openedAt };
 }
 
 /**
@@ -292,8 +299,8 @@ export default function () {
     const newest = openLogin('phase B, the newest login of the flood');
     floodDroppingStarted.add(1);
 
-    const firstLoginAge = Date.now() - droppedFirst.openedAt;
     const refused = completeLogin(droppedFirst);
+    const firstLoginAge = Date.now() - droppedFirst.openedAt;
     const dropped = check(refused, {
         'the dropped login was completed inside the lifetime of a pending record':
             () => firstLoginAge < MAX_FIRST_LOGIN_AGE_MS,
