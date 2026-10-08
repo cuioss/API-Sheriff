@@ -663,8 +663,10 @@ gateway that reaches Keycloak through that proxy only.
 | A dedicated docker network, `sheriff-tls-relaxation`.
 
 | Proxy
-| `sheriff-tls-relaxation-idp`, the `nginx:1.27-alpine` image the stack's other TLS fixtures run,
-  rendered from `tls-relaxation-idp/default.conf.template`. On the rig's network it carries the alias
+| `sheriff-tls-relaxation-idp`, running
+  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- an
+  exact release tag together with the digest of its multi-platform index -- and rendered from
+  `tls-relaxation-idp/default.conf.template`. On the rig's network it carries the alias
   `keycloak`. It is attached to the Compose network as well, where it dials the Keycloak container by
   its container name, and it forwards every path with `Host: keycloak:8443`. It publishes no host
   port.
@@ -727,6 +729,11 @@ metadata to a client that verifies nothing, so a refusal that follows is the gat
 certificate. The proxy is on two networks and therefore publishes no port
 (<<test-started-host-ports>>), so that client is `curl` in a one-shot container of the proxy's own
 image on the rig's network, which dials the proxy under the name the gateway dials it under.
+
+*What guards the proxy image.* `StubIdentityProviderWiringTest` holds the proxy's reference to the
+shape `name:tag@sha256:<64 hex>`, beside the stub image of <<stub-idp-rig>> and with the same
+control. The shape is all it holds: that the pinned reference pulls is shown by this suite starting
+the proxy.
 
 *The JSSE arguments, and the exemption that covers them.* This is the one launch of the gateway
 image in the module that passes JSSE trust-store system properties. The gateway refuses a hostname

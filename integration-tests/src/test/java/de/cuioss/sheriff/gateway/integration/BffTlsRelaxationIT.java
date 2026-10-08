@@ -153,8 +153,15 @@ import org.junit.jupiter.api.Test;
  */
 class BffTlsRelaxationIT {
 
-    /** The proxy's image — the same pinned nginx the stack's other TLS fixtures run. */
-    private static final String PROXY_IMAGE = "nginx:1.27-alpine";
+    /**
+     * The proxy's image, pinned by release tag <em>and</em> by the digest of its multi-platform index.
+     * The container it names is handed the certificates directory, fronts every identity-provider call
+     * of the gateway under test and runs the serving control's client, so a tag that is moved to
+     * another image must not change what runs. {@code StubIdentityProviderWiringTest} holds the shape
+     * of the reference, which is why the constant is visible to the package.
+     */
+    static final String PROXY_IMAGE =
+            "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10";
 
     /**
      * The fixed host port of the gateway's application listener, published on every interface (see

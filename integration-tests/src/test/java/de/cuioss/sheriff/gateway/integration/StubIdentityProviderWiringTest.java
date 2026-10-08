@@ -33,25 +33,32 @@ import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /**
  * Fast, no-Docker <em>surefire</em> guard over the one container image the integration tests start
  * that the compose stack does not: the stub identity provider of {@link StubIdentityProviderRig}.
  * <p>
- * It holds two properties of {@link StubIdentityProviderRig#IMAGE}:
+ * It holds two properties:
  * <ul>
  *   <li><strong>The reference is pinned.</strong> It has the shape
  *       {@code name:tag@sha256:<64 hex>} — an exact release tag <em>and</em> the digest. A tag alone
- *       can be moved to another image, so a reference that loses its digest fails here.</li>
- *   <li><strong>The image stays a test fixture.</strong> Its name appears in neither
+ *       can be moved to another image, so a reference that loses its digest fails here. This property
+ *       is held for two references: {@link StubIdentityProviderRig#IMAGE} and the identity-provider
+ *       proxy of the TLS-relaxation rig, {@link BffTlsRelaxationIT#PROXY_IMAGE}.</li>
+ *   <li><strong>The stub image stays a test fixture.</strong> Its name appears in neither
  *       {@code integration-tests/docker-compose.yml}, nor {@code api-sheriff/pom.xml}, nor any file
  *       below {@code api-sheriff/src/main/docker/} — so it can reach neither the stack every other
  *       suite runs against, nor the {@code api-sheriff} classpath, nor the production image, without
- *       this guard failing.</li>
+ *       this guard failing. This property is the stub's alone.</li>
  * </ul>
  * <p>
- * <strong>Anti-vacuity.</strong> The shape pattern is shown to refuse a reference without a digest,
- * with a shortened digest and without a tag, so a pattern loosened to accept anything fails. The
+ * <strong>What the shape does not prove.</strong> A well-formed digest is not an existing one. That
+ * the pinned reference pulls is proven by the suite that starts the image, not here.
+ * <p>
+ * <strong>Anti-vacuity.</strong> The shape pattern is shown to refuse, for every pinned reference, the
+ * same reference without its digest, with a shortened digest and without a tag, so a pattern loosened
+ * to accept anything fails; the set of pinned references is asserted to be non-empty first. The
  * absence scan is shown to find the name in the rig's own source with the very predicate it applies
  * to the production inputs, and each production input must exist and be non-empty, so a scan that
  * reads nothing fails instead of reporting absence.
@@ -72,6 +79,11 @@ class StubIdentityProviderWiringTest {
 
     private static final String DIGEST_SEPARATOR = "@sha256:";
 
+    /** The image references held to the pinned shape, each with the constant that declares it. */
+    private static final List<PinnedImage> PINNED_IMAGES = List.of(
+            new PinnedImage("StubIdentityProviderRig.IMAGE", StubIdentityProviderRig.IMAGE),
+            new PinnedImage("BffTlsRelaxationIT.PROXY_IMAGE", BffTlsRelaxationIT.PROXY_IMAGE));
+
     /** The rig's own source, relative to the module: the one file that has to name the image. */
     private static final Path RIG_SOURCE = Path.of("src", "test", "java", "de", "cuioss", "sheriff", "gateway",
             "integration", "StubIdentityProviderRig.java");
@@ -85,33 +97,38 @@ class StubIdentityProviderWiringTest {
     private static final Path PRODUCTION_DOCKER = Path.of("api-sheriff", "src", "main", "docker");
 
     @Test
-    @DisplayName("the stub image reference is an exact tag together with a sha256 digest")
-    void imageReferenceIsPinnedByTagAndDigest() {
-        String reference = StubIdentityProviderRig.IMAGE;
+    @DisplayName("every pinned image reference is an exact tag together with a sha256 digest")
+    void imageReferencesArePinnedByTagAndDigest() {
+        assertFalse(PINNED_IMAGES.isEmpty(), "no image reference is held to the pinned shape");
 
-        boolean pinned = PINNED_REFERENCE.matcher(reference).matches();
-
-        assertTrue(pinned, () -> "StubIdentityProviderRig.IMAGE must have the shape name:tag@sha256:<64 hex>, "
-                + "so a moved tag cannot change what the suite runs; found " + reference);
+        assertAll("image references pinned by tag and digest", PINNED_IMAGES.stream()
+                .<Executable>map(image -> () -> assertTrue(PINNED_REFERENCE.matcher(image.reference()).matches(),
+                        () -> image.declaredIn() + " must have the shape name:tag@sha256:<64 hex>, so a "
+                                + "moved tag cannot change what the suite runs; found " + image.reference())));
     }
 
     @Test
     @DisplayName("control: a reference without its digest, with a shortened digest or without a tag is refused")
     void unpinnedReferencesAreRefused() {
-        String reference = StubIdentityProviderRig.IMAGE;
-        int digestAt = reference.indexOf(DIGEST_SEPARATOR);
-        assertTrue(digestAt > 0, () -> "the reference under test carries no digest: " + reference);
-        String withoutDigest = reference.substring(0, digestAt);
-        String shortenedDigest = reference.substring(0, reference.length() - 1);
-        String withoutTag = imageName() + reference.substring(digestAt);
+        assertFalse(PINNED_IMAGES.isEmpty(), "no image reference is held to the pinned shape");
 
-        assertAll("references that are not pinned by tag and digest",
-                () -> assertFalse(PINNED_REFERENCE.matcher(withoutDigest).matches(),
-                        "a reference without its digest must be refused: " + withoutDigest),
-                () -> assertFalse(PINNED_REFERENCE.matcher(shortenedDigest).matches(),
-                        "a digest shorter than 64 hex digits must be refused: " + shortenedDigest),
-                () -> assertFalse(PINNED_REFERENCE.matcher(withoutTag).matches(),
-                        "a reference without a tag must be refused: " + withoutTag));
+        for (PinnedImage image : PINNED_IMAGES) {
+            String reference = image.reference();
+            int digestAt = reference.indexOf(DIGEST_SEPARATOR);
+            assertTrue(digestAt > 0,
+                    () -> image.declaredIn() + ": the reference under test carries no digest: " + reference);
+            String withoutDigest = reference.substring(0, digestAt);
+            String shortenedDigest = reference.substring(0, reference.length() - 1);
+            String withoutTag = imageName(reference) + reference.substring(digestAt);
+
+            assertAll(image.declaredIn() + ": references that are not pinned by tag and digest",
+                    () -> assertFalse(PINNED_REFERENCE.matcher(withoutDigest).matches(),
+                            "a reference without its digest must be refused: " + withoutDigest),
+                    () -> assertFalse(PINNED_REFERENCE.matcher(shortenedDigest).matches(),
+                            "a digest shorter than 64 hex digits must be refused: " + shortenedDigest),
+                    () -> assertFalse(PINNED_REFERENCE.matcher(withoutTag).matches(),
+                            "a reference without a tag must be refused: " + withoutTag));
+        }
     }
 
     @Test
@@ -183,19 +200,27 @@ class StubIdentityProviderWiringTest {
         return content.toLowerCase(Locale.ROOT).contains(imageToken());
     }
 
-    /** The image name: the reference up to its tag. */
-    private static String imageName() {
-        String reference = StubIdentityProviderRig.IMAGE;
+    /** The image name of a reference: the reference up to its tag. */
+    private static String imageName(String reference) {
         int tagAt = reference.indexOf(':');
         assertTrue(tagAt > 0, () -> "the reference carries no image name before a tag: " + reference);
         return reference.substring(0, tagAt);
     }
 
-    /** The last path segment of the image name, lower-cased. */
+    /** The last path segment of the stub image's name, lower-cased. */
     private static String imageToken() {
-        String name = imageName();
+        String name = imageName(StubIdentityProviderRig.IMAGE);
         String token = name.substring(name.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
         assertFalse(token.isBlank(), () -> "the image name " + name + " has no last segment to search for");
         return token;
+    }
+
+    /**
+     * An image reference held to the pinned shape.
+     *
+     * @param declaredIn the constant that declares the reference, as a failure message names it
+     * @param reference  the reference itself
+     */
+    private record PinnedImage(String declaredIn, String reference) {
     }
 }
