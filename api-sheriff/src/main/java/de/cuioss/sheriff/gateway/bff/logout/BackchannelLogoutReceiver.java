@@ -195,7 +195,8 @@ public final class BackchannelLogoutReceiver {
      * The framework-agnostic outcome of a back-channel logout: whether the token was accepted and, if
      * so, how many server-side sessions were destroyed. A rejected result destroys nothing.
      *
-     * @param accepted  whether the logout token passed signature and claim validation
+     * @param accepted  whether the logout token passed signature and claim validation and was
+     *                  admitted by the replay guard
      * @param destroyed the number of sessions destroyed, always {@code 0} for a rejected result
      * @author API Sheriff Team
      * @since 1.0
