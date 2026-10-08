@@ -141,8 +141,9 @@ class BffSessionCookieControlsIT {
 
         String laterCookie = later.gatewayCookies().get(SESSION_COOKIE);
         assertNotNull(laterCookie, "the later login must set " + SESSION_COOKIE);
-        // Compared on a boolean, so neither cookie value reaches a failure message.
-        assertFalse(earlierCookie.equals(laterCookie), "the later login must establish a session of its own");
+        // Compared into a boolean first, so neither cookie value reaches a failure message.
+        boolean sameCookie = earlierCookie.equals(laterCookie);
+        assertFalse(sameCookie, "the later login must establish a session of its own");
         assertAll("the two sessions after the later login",
                 () -> assertEquals(UNAUTHENTICATED, status(earlier),
                         "the session whose cookie the callback presented must be ended by the login"),

@@ -617,7 +617,9 @@ class BffSessionScopeParityIT {
         BffKeycloakLoginFlow.absorbSetCookies(afterWidening, widening.callback());
         String reissued = afterWidening.get(SESSION_COOKIE);
         assertNotNull(reissued, "a granted widening must set " + SESSION_COOKIE + " on its callback");
-        assertFalse(previous.equals(reissued),
+        // Compared into a boolean first, so neither cookie value reaches a failure message.
+        boolean sameCookie = previous.equals(reissued);
+        assertFalse(sameCookie,
                 "a granted widening must re-issue the session cookie with a value that differs from the previous one");
         assertEquals(401, xhr(session.gatewayCookies(), PLAIN_SESSION_PATH).statusCode(),
                 "the session cookie value from before the widening must be answered as unauthenticated");

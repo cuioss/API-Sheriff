@@ -137,10 +137,10 @@ class BffSessionWebSocketIT {
         Session session = BffKeycloakLoginFlow.login("/bff-session/get");
 
         ExecutionException thrown = assertThrows(ExecutionException.class, () -> httpClient.newWebSocketBuilder()
-                .header("Origin", FOREIGN_ORIGIN)
-                .header("Cookie", cookieHeader(session.gatewayCookies()))
-                .buildAsync(URI.create(WEBSOCKET_URI), new RecordingListener())
-                .get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+                        .header("Origin", FOREIGN_ORIGIN)
+                        .header("Cookie", cookieHeader(session.gatewayCookies()))
+                        .buildAsync(URI.create(WEBSOCKET_URI), new RecordingListener())
+                        .get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS),
                 "a handshake from an Origin the route does not allow-list must fail");
 
         WebSocketHandshakeException refused = assertInstanceOf(WebSocketHandshakeException.class, thrown.getCause(),
