@@ -120,22 +120,32 @@ seals with it.
 The gateway seals with AES-256-GCM and a random 96-bit nonce, and NIST SP 800-38D bounds one key
 used that way at 2^32^ (4 294 967 296) seals. The session cookie and the activity cookie (see
 <<idle-timeout>>) are sealed under separate keys, and both come from `session.encryption_key`. The
-activity key is the one that reaches the bound first, because it seals at most once per interval for
-every session in use -- up to 1 440 seals per session per day at an interval of 60 seconds. The
-session key seals once per login,
-refresh and widening, which is far less often.
+activity key is the one that reaches the bound first, because it seals once per interval for every
+session in use -- 1 440 seals per session per day at an interval of 60 seconds, for a client that
+sends its requests one after another. The session key seals once per login, refresh and widening,
+which is far less often.
+
+A client that sends requests in parallel raises that figure. The gateway keeps no state per
+session in cookie mode, so every request that arrives with the same activity cookie, once that
+cookie is one interval old, is answered with a newly sealed one. The seals in one interval are
+therefore bounded by the
+number of requests one session has in flight at the same time, not by one.
 
 The rule: *replace `session.encryption_key` before this many days have passed since the key was
 first used.*
 
 [source]
 ----
-days = 4 294 967 296 / (1 440 x peak concurrent sessions)
+days = 4 294 967 296 / (1 440 x parallel requests per session x peak concurrent sessions)
 ----
+
+The table gives the result for one request at a time. Divide its figure by the number of requests
+your client sends in parallel: a browser typically opens up to six connections to one origin over
+HTTP/1.1, and more streams than that over HTTP/2.
 
 [cols="1,1", options="header"]
 |===
-| Peak concurrent sessions | Replace the key at least every
+| Peak concurrent sessions | Replace the key at least every (one request at a time)
 
 | 8 000 | year (the bound is 365 days at 8 171 sessions)
 | 10 000 | 298 days
@@ -146,10 +156,10 @@ days = 4 294 967 296 / (1 440 x peak concurrent sessions)
 Compute your own figure from the formula with your peak, counted across all replicas that share the
 key. The 1 440 holds for an `idle_timeout_seconds` of 120 or more, the default included. Below 120
 the gateway seals the activity cookie once every half idle timeout, so use
-`172 800 / idle_timeout_seconds` in its place: 5 760 seals per session per day at 30 seconds. Replacing the key resets the count for both keys, and it ends every session, as described
-above. A *generated* key needs no
-schedule beyond this: it is replaced at every restart, so restart the gateway within the same
-interval.
+`172 800 / idle_timeout_seconds` in its place: 5 760 seals per session per day at 30 seconds.
+Replacing the key resets the count for both keys, and it ends every session, as described above. A
+*generated* key needs no schedule beyond this: it is replaced at every restart, so restart the
+gateway within the same interval.
 
 === Migrating from a configuration that declared `previous_key`
 
@@ -667,9 +677,11 @@ in a second cookie, the *activity cookie*.
   belongs to. It carries no token. Its value is always 72 characters.
 
 | When it is set
-| On the response to a request let through on a session route, *at most once per interval* for one
-  session. The interval is 60 seconds, or half the idle timeout where that is shorter. The cookie is
-  first set one interval or more after the login; until then the login itself is the last request.
+| On the response to a request let through on a session route, once the recorded last request is
+  *one interval old*. The interval is 60 seconds, or half the idle timeout where that is shorter.
+  Requests that arrive in parallel with the same activity cookie each receive a new one. The cookie
+  is first set one interval or more after the login; until then the login itself is the last
+  request.
 
 | When it is cleared
 | At logout, and whenever the gateway ends the session: both cookies are cleared together.
