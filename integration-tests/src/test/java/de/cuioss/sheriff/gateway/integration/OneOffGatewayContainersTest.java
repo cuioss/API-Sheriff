@@ -210,6 +210,27 @@ class OneOffGatewayContainersTest {
             assertEquals(List.of(publication), loopback);
         }
 
+        @ParameterizedTest(name = "recognises {0}")
+        @ValueSource(strings = {"-p" + FIRST_LOOPBACK, "-p=" + FIRST_LOOPBACK, "--publish=" + FIRST_LOOPBACK})
+        @DisplayName("counts a loopback publication whose value is joined to the option")
+        void shouldRecogniseAJoinedLoopbackPublication(String joined) {
+            List<String> options = List.of("--network", "one", joined, "-p", SECOND_LOOPBACK);
+
+            assertAll("a joined publish option",
+                    () -> assertEquals(List.of(FIRST_LOOPBACK, SECOND_LOOPBACK),
+                            OneOffGatewayContainers.loopbackPublications(options)),
+                    () -> assertThrows(AssertionError.class,
+                            () -> OneOffGatewayContainers.assertLeavesNoDeadHostPort(CONTAINER, options, 0)));
+        }
+
+        @Test
+        @DisplayName("reads no publication from a publish option without a value or from another long option")
+        void shouldReadNoPublicationWhereThereIsNone() {
+            List<String> options = List.of("--privileged", "--pull", "always", "-p");
+
+            assertEquals(List.of(), OneOffGatewayContainers.loopbackPublications(options));
+        }
+
         @Test
         @DisplayName("admits one loopback publication beside publications on every interface, on one network")
         void shouldAdmitOneLoopbackPublicationOnOneNetwork() {

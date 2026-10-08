@@ -36,6 +36,7 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
@@ -140,6 +141,7 @@ final class OneOffGatewayContainers {
     private static final String KEYCLOAK_SERVICE = "keycloak";
 
     private static final String PUBLISH_OPTION = "-p";
+    private static final String LONG_PUBLISH_OPTION = "--publish";
     private static final String NETWORK_OPTION = "--network";
 
     /** The management port of a one-off gateway: on loopback, on a host port docker assigns. */
@@ -440,9 +442,9 @@ final class OneOffGatewayContainers {
      * containers; {@code doc/development/integration-test-topology.adoc} records the measurement and
      * the port numbers it cost.
      * <p>
-     * It reads the options as given — {@value #PUBLISH_OPTION} and {@code --publish} with their value
-     * as the next argument, and one network per {@value #NETWORK_OPTION} — and contacts no daemon, so
-     * it can be exercised from a Surefire test.
+     * It reads the options as given — {@value #PUBLISH_OPTION} and {@value #LONG_PUBLISH_OPTION} with
+     * their value as the next argument or joined to the option, and one network per
+     * {@value #NETWORK_OPTION} — and contacts no daemon, so it can be exercised from a Surefire test.
      *
      * @param container       the container name, for the failure message
      * @param options         the {@code docker run} or {@code docker create} options of the container
@@ -463,22 +465,38 @@ final class OneOffGatewayContainers {
 
     /**
      * The loopback publications among a container's options: the value of every
-     * {@value #PUBLISH_OPTION} or {@code --publish} option that names a loopback host address.
+     * {@value #PUBLISH_OPTION} or {@value #LONG_PUBLISH_OPTION} option that names a loopback host
+     * address. The value is read in every spelling docker accepts: as the next argument, or joined to
+     * the option ({@code -p127.0.0.1::9000}, {@code -p=127.0.0.1::9000},
+     * {@code --publish=127.0.0.1::9000}).
      *
      * @param options the {@code docker run} or {@code docker create} options
      * @return the loopback publications, in the order given
      */
     static List<String> loopbackPublications(List<String> options) {
         List<String> publications = new ArrayList<>();
-        for (int index = 0; index < options.size() - 1; index++) {
-            String option = options.get(index);
-            String value = options.get(index + 1);
-            if ((PUBLISH_OPTION.equals(option) || "--publish".equals(option))
-                    && LOOPBACK_HOSTS.stream().anyMatch(value::startsWith)) {
-                publications.add(value);
-            }
+        for (int index = 0; index < options.size(); index++) {
+            publicationValue(options, index)
+                    .filter(value -> LOOPBACK_HOSTS.stream().anyMatch(value::startsWith))
+                    .ifPresent(publications::add);
         }
         return publications;
+    }
+
+    /** The value of the publish option at {@code index}, or empty when that argument is not one. */
+    private static Optional<String> publicationValue(List<String> options, int index) {
+        String option = options.get(index);
+        if (PUBLISH_OPTION.equals(option) || LONG_PUBLISH_OPTION.equals(option)) {
+            return index + 1 < options.size() ? Optional.of(options.get(index + 1)) : Optional.empty();
+        }
+        if (option.startsWith(LONG_PUBLISH_OPTION + "=")) {
+            return Optional.of(option.substring(LONG_PUBLISH_OPTION.length() + 1));
+        }
+        if (option.startsWith(PUBLISH_OPTION) && !option.startsWith("--")) {
+            String joined = option.substring(PUBLISH_OPTION.length());
+            return Optional.of(joined.startsWith("=") ? joined.substring(1) : joined);
+        }
+        return Optional.empty();
     }
 
     /**
