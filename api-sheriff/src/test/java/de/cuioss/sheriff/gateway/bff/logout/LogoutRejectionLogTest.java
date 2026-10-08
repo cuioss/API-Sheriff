@@ -20,9 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.EnumSet;
 import java.util.Locale;
-import java.util.Set;
 
 
 import de.cuioss.test.juli.TestLogLevel;
@@ -32,17 +30,17 @@ import de.cuioss.tools.logging.CuiLogger;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * Covers the flood policy {@link LogoutRejectionLog} implements and the classification
+ * Covers the emission rule {@link LogoutRejectionLog} implements over the vocabulary
  * {@link LogoutRejection} carries, which together decide how loudly the back-channel logout path
  * reports a refusal.
  * <p>
- * Both halves of the policy are asserted by <strong>exact occurrence count</strong> rather than by
- * mere presence or absence, because each half has a distinct failure mode and a presence-only
- * assertion is blind to one of them: a latched reason that stopped latching floods a reserved,
- * unauthenticated path, and an unlatched reason that started latching hides every repeat of a genuine
- * identity-provider misconfiguration after the first.
+ * The rule is asserted by <strong>exact occurrence count</strong> rather than by mere presence or
+ * absence: a presence-only assertion cannot tell a reason that is reported once from one that is
+ * reported on every occurrence.
  */
 @EnableTestLogger
 class LogoutRejectionLogTest {
@@ -61,27 +59,19 @@ class LogoutRejectionLogTest {
     @DisplayName("Emission policy")
     class EmissionPolicy {
 
-        @Test
-        @DisplayName("Should report an attacker-reachable reason once, however many times it recurs")
-        void shouldLatchAttackerReachableReason() {
+        /**
+         * Exhaustive over the vocabulary, so a reason added later is covered without being named here.
+         */
+        @ParameterizedTest(name = "{0} is reported once")
+        @EnumSource(LogoutRejection.class)
+        @DisplayName("Should report every reason once, however many times it recurs")
+        void shouldLatchEveryReason(LogoutRejection reason) {
             for (int occurrence = 0; occurrence < REPEATS; occurrence++) {
-                rejectionLog.recordRejection(LogoutRejection.SIGNATURE_REJECTED);
+                rejectionLog.recordRejection(reason);
             }
 
-            assertEquals(1, warningsFor(LogoutRejection.SIGNATURE_REJECTED),
-                    "the reserved, unauthenticated path must not let a caller drive an unbounded WARN flood");
-        }
-
-        @Test
-        @DisplayName("Should report a signature-verified reason on every occurrence")
-        void shouldNotLatchSignatureVerifiedReason() {
-            for (int occurrence = 0; occurrence < REPEATS; occurrence++) {
-                rejectionLog.recordRejection(LogoutRejection.EVENTS_MISSING);
-            }
-
-            assertEquals(REPEATS, warningsFor(LogoutRejection.EVENTS_MISSING),
-                    "only a genuinely signed token reaches this reason, so there is no flood to bound "
-                            + "and every occurrence is operationally interesting");
+            assertEquals(1, warningsFor(reason),
+                    reason + " must be reported at WARN on its first occurrence and never again");
         }
 
         @Test
@@ -113,46 +103,9 @@ class LogoutRejectionLogTest {
         }
     }
 
-    /**
-     * The classification table itself. It is asserted exhaustively — every member is named on exactly
-     * one side — so adding a reason without deciding whether an unauthenticated caller can drive it
-     * fails here rather than silently defaulting into a flood vector.
-     */
     @Nested
-    @DisplayName("Rejection classification")
-    class Classification {
-
-        /**
-         * The reasons a party other than the identity provider can cause as often as it likes: the
-         * three reached before the signature is verified, and the repeat of one captured token.
-         */
-        private static final Set<LogoutRejection> REPEATABLE = EnumSet.of(
-                LogoutRejection.NO_IDP_DESTRUCTION_CAPABILITY,
-                LogoutRejection.MISSING_LOGOUT_TOKEN,
-                LogoutRejection.SIGNATURE_REJECTED,
-                LogoutRejection.REPLAYED);
-
-        @Test
-        @DisplayName("Should classify exactly the pre-signature reasons and the replay as repeatable")
-        void shouldClassifyEveryReason() {
-            for (LogoutRejection reason : LogoutRejection.values()) {
-                assertEquals(REPEATABLE.contains(reason), reason.isRepeatable(),
-                        "classification of " + reason + " decides whether it is latched — a reason "
-                                + "a caller can repeat at will must never be unlatched");
-            }
-        }
-
-        @Test
-        @DisplayName("Should latch the replay and report a full replay memory on every occurrence")
-        void shouldLatchReplayButNotFullMemory() {
-            for (int occurrence = 0; occurrence < REPEATS; occurrence++) {
-                rejectionLog.recordRejection(LogoutRejection.REPLAYED);
-                rejectionLog.recordRejection(LogoutRejection.REPLAY_MEMORY_FULL);
-            }
-
-            assertEquals(1, warningsFor(LogoutRejection.REPLAYED));
-            assertEquals(REPEATS, warningsFor(LogoutRejection.REPLAY_MEMORY_FULL));
-        }
+    @DisplayName("Rejection vocabulary")
+    class Vocabulary {
 
         @Test
         @DisplayName("Should carry a bounded, non-sensitive lower-case token for every reason")

@@ -56,7 +56,7 @@ import de.cuioss.tools.logging.CuiLogger;
  * validation both succeeded while the {@code sid} the session is indexed under — the one recorded at
  * login, or the one a later widening took from its grant's ID token — did not match the one the
  * logout token carried. A rejection is recorded as {@code ApiSheriff-112} with a bounded
- * {@link LogoutRejection} reason under the flood policy {@link LogoutRejectionLog} documents. Neither
+ * {@link LogoutRejection} reason under the emission rule {@link LogoutRejectionLog} documents. Neither
  * record carries token material, {@code sub}, or {@code sid} (BFF-10).
  *
  * @author API Sheriff Team
@@ -195,7 +195,8 @@ public final class BackchannelLogoutReceiver {
      * The framework-agnostic outcome of a back-channel logout: whether the token was accepted and, if
      * so, how many server-side sessions were destroyed. A rejected result destroys nothing.
      *
-     * @param accepted  whether the logout token passed signature and claim validation
+     * @param accepted  whether the logout token passed signature and claim validation and was
+     *                  admitted by the replay guard
      * @param destroyed the number of sessions destroyed, always {@code 0} for a rejected result
      * @author API Sheriff Team
      * @since 1.0

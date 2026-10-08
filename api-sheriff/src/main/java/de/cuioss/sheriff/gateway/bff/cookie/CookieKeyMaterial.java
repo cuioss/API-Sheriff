@@ -72,7 +72,8 @@ public final class CookieKeyMaterial {
     private static final String DIGEST_ALGORITHM = "SHA-256";
     private static final String IDENTITY_SALT_LABEL = "api-sheriff:cookie-session-identity:v1";
     private static final String KEY_ID_LABEL = "api-sheriff:cookie-key-id:v1";
-    private static final String ACTIVITY_KEY_LABEL = "api-sheriff:cookie-session-activity-key:v1";
+    private static final String ACTIVITY_KEY_LABEL = "api-sheriff:cookie-session-activity-mac-key:v1";
+    private static final String ACTIVITY_KEY_ALGORITHM = "HmacSHA256";
     private static final String ENCRYPTION_KEY_FIELD = "session.encryption_key";
 
     private final Mode mode;
@@ -123,18 +124,16 @@ public final class CookieKeyMaterial {
      * Builds the codec of the activity cookie that accompanies the named session cookie, over a key
      * that exists for that cookie alone.
      * <p>
-     * <strong>Why not the sealing key.</strong> AES-GCM with random 96-bit nonces is bounded in the
-     * number of seals one key may make before a nonce collision becomes likely (NIST SP 800-38D). The
-     * session cookie is sealed at login, refresh and widening; the activity cookie up to once per
-     * re-issue interval per session — a minute, or half the idle timeout where that is shorter. Sealing both under one key would add that cadence to the count of the key that
-     * protects tokens. The activity key is therefore derived from the sealing key under a fixed label,
-     * the way the identity salt and the key id are, and a nonce collision under it can at worst allow
-     * a forged activity cookie, never the disclosure of a token.
+     * <strong>Why not the sealing key.</strong> The activity cookie is authenticated with
+     * HMAC-SHA-256, the session cookie is sealed with AES-GCM, and one key is used for one algorithm
+     * only. The activity key is therefore derived from the sealing key under a fixed label, the way
+     * the identity salt and the key id are. How often the activity cookie is written is decided by
+     * the client, so the key that protects tokens takes no part in it.
      * <p>
      * The derived key bytes never leave this type: they go straight into the codec.
      *
      * @param cookieName the session-cookie name; the activity cookie is named after it
-     * @return the codec sealing and unsealing the activity cookie under the derived activity key
+     * @return the codec signing and verifying the activity cookie under the derived activity key
      */
     public SessionActivityCookieCodec activityCodec(String cookieName) {
         SecretKey activityKey = activityKey();
@@ -142,7 +141,7 @@ public final class CookieKeyMaterial {
     }
 
     /**
-     * Derives the AES-256 key of the activity cookie: the SHA-256 digest of a fixed label and the
+     * Derives the HMAC-SHA-256 key of the activity cookie: the SHA-256 digest of a fixed label and the
      * sealing key. The same sealing key always yields the same activity key, and the digest cannot be
      * turned back into the sealing key.
      */
@@ -150,7 +149,7 @@ public final class CookieKeyMaterial {
         try {
             MessageDigest digest = MessageDigest.getInstance(DIGEST_ALGORITHM);
             digest.update(ACTIVITY_KEY_LABEL.getBytes(StandardCharsets.UTF_8));
-            return new SecretKeySpec(digest.digest(currentKey.getEncoded()), ALGORITHM);
+            return new SecretKeySpec(digest.digest(currentKey.getEncoded()), ACTIVITY_KEY_ALGORITHM);
         } catch (NoSuchAlgorithmException unavailable) {
             throw new IllegalStateException(
                     DIGEST_ALGORITHM + " is required to derive the cookie-mode activity key", unavailable);

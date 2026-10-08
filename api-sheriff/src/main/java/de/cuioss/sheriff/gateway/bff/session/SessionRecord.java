@@ -200,13 +200,13 @@ Set<String> grantedScopes) {
     }
 
     /**
-     * Overridden to redact every credential — the session id, all three tokens, and the session
-     * nonce that keys the cookie-mode derived identity. The default
+     * Overridden to redact the credentials — all three tokens — together with the internal session
+     * id and the session nonce that keys the cookie-mode derived identity. The default
      * record {@code toString()} would otherwise print the internal session id and the raw token
      * material into any log line, exception message, or debugger view. The active and granted scope
      * names are not credentials and are printed as-is.
      *
-     * @return a string representation with all credential-bearing fields redacted
+     * @return a string representation with the tokens, the session id and the session nonce redacted
      */
     @Override
     public String toString() {

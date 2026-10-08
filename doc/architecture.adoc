@@ -597,9 +597,10 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
 
 * *Session-resolution seam.* Every collaborator binds to `SessionBinding`, never to a store; the
   configured `session.mode` selects only which implementation is assembled (ADR-0018). In
-  *server* mode a `SessionCookieCodec` reads an opaque session id out of the request `Cookie`
+  *server* mode a `SessionCookieCodec` reads an opaque handle out of the request `Cookie`
   header and a `SessionStore` (the in-memory `InMemorySessionStore`, bounded by
-  `oidc.session.max_sessions`) resolves it to the server-held `SessionRecord` carrying the tokens;
+  `oidc.session.max_sessions`) resolves it to the server-held `SessionRecord` carrying the tokens
+  (see <<_bff_session_store>>);
   in *cookie* mode the sealed cookie itself carries that state and is unsealed per request, with no
   *session* store at all -- the in-memory `PendingAuthorizationStore` that holds the login leg
   between redirect and callback is assembled in *both* modes
@@ -648,6 +649,83 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   Both modes drive the same wiring and both reach the engine; the mode selects only which
   `SessionBinding` is assembled. Provider-metadata
   discovery is resolved lazily on first engine use, so a BFF gateway boots without a live IdP.
+
+*Gateway-authored JSON bodies.* The bodies the gateway writes itself -- the user-info view, the
+step-up `401` problem, the client JWKS document and the RFC 9457 problem body of the edge -- are
+rendered by `GatewayJson`, a CDI bean over the Jackson serializer the platform ships
+(link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]).
+It works on a private copy of the Quarkus-managed mapper, so no deployment setting of the shared
+mapper changes these bodies.
+
+[[_bff_session_store]]
+==== Session store, writes and lifetime
+
+The session contract is the `SessionBinding` seam; what follows is how the two bindings meet it
+(ADR-0018, with its amendments on
+link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[the
+updating write],
+link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#cookie-reissue[the
+re-issue of the browser's handle] and
+link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#idle-deadline[the
+idle deadline]). The store stays hand-written: neither platform session mechanism offers a size
+bound, an absolute lifetime, a lookup by `sid` or `sub`, or a write that never creates (ADR-0062).
+
+*One creating write, two updating writes.*
+
+[cols="1,2,3", options="header"]
+|===
+| Seam operation | Caller | What it does
+
+| `bind`
+| The login callback.
+| Creates the session. Refused at the store's capacity bound.
+
+| `persist`
+| A token refresh, near-expiry or scope-driven.
+| Replaces the record of a session that still exists. Never creates one; reports a session that is
+  gone. Server mode leaves the browser's cookie as it is; cookie mode re-seals.
+
+| `persistReissuingCookie`
+| A widening merge.
+| As `persist`, and re-issues the value the browser holds.
+|===
+
+*The cookie handle (server mode).* The value in the session cookie is a random handle, not the
+session identity. `InMemorySessionStore` keeps the handle beside the record and resolves a request
+by it. A re-issue mints a new handle and drops the previous one in the same step that replaces the
+record, so the session's identity, its `sid` and `sub` index entries, its authentication time, its
+absolute expiry and the refresh coordinator's single-flight key do not move. The session identity
+is never sent to the browser in either mode.
+
+*Two deadlines.* A session ends at its absolute expiry and, earlier, when
+`oidc.session.idle_timeout_seconds` have passed since the last request the session stage let
+through on a session route. `resolve` enforces both and extends neither. `recordAccess`, called by
+`SessionAuthenticationStage` once per request it lets through, is the only operation that moves
+the idle deadline.
+
+*The periodic sweep (server mode).* `BffRuntimeProducer` registers a Vert.x periodic timer that
+fires once a minute and runs `SessionStore.sweepExpired` off the event loop; it cancels the timer
+at shutdown. A session past either deadline is therefore removed within a minute, and also when it
+is next looked up. No timer is registered outside server mode.
+
+*The bounds (server mode).* `oidc.session.max_sessions` bounds the store, and
+`oidc.session.max_sessions_per_subject` bounds the live sessions of one `sub`: a create beyond it
+ends that subject's oldest session first. Every session the store ends -- by a destroy, the sweep,
+the lazy removal in `resolve` or the per-subject bound -- is reported to a `SessionRelayRegistry`,
+which closes the WebSocket relays opened under that session. A replacement of the record, a
+re-issued handle included, reports nothing.
+
+*The activity cookie (cookie mode).* The stateless binding keeps the last access in a second
+cookie, `<session cookie name>-activity`, authenticated by `SessionActivityCookieCodec` with
+HMAC-SHA-256 under a key of its own and bound to the derived session identity. The value is not
+encrypted, and writing it consumes no per-key budget, however often a client causes it. `CookieSessionBinding.recordAccess` writes it once
+the recorded access is one interval old -- 60 seconds, or half the idle timeout where that is
+shorter; requests that arrive in parallel with the same activity cookie each receive a new one, and
+the session cookie is not written on an access. An
+activity cookie that is missing, unreadable or bound to another session is ignored, and the idle
+deadline is then measured from the login. The sealed session payload and its format version are
+unchanged. The contributor view is in link:development/bff-cookie.adoc[the cookie-mode guide] and
+link:development/bff-session.adoc[the server-mode guide].
 
 [[_bff_client_controls]]
 ==== Client authentication, pushed requests and the sender constraint

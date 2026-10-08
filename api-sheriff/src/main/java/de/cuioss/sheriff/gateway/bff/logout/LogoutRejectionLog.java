@@ -19,44 +19,31 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
- * The single emission point for {@code ApiSheriff-112} ({@code LOGOUT_TOKEN_REJECTED}), carrying the
- * flood policy the reserved, unauthenticated back-channel path requires.
+ * The emitter of {@code ApiSheriff-112} ({@code LOGOUT_TOKEN_REJECTED}), carrying the emission rule
+ * of the reserved, unauthenticated back-channel path.
  * <p>
  * <strong>Why this exists rather than a bare {@code LOGGER.warn}.</strong> Every rejection on the
  * back-channel path used to be recorded at {@code DEBUG}, which made the whole path invisible at the
  * default log level: a delivery that never arrived and a delivery that arrived and was rejected
  * produced byte-identical silence, and neither could be told apart without a {@code DEBUG} re-run
- * (BFF-2). Recording every rejection at {@code WARN} instead is not an option either — the path is
- * reserved and unauthenticated, so any caller who can reach the gateway could drive an unbounded
- * {@code WARN} flood by posting to it without a {@code logout_token}, a session, or any credential.
+ * (BFF-2). Recording every rejection at {@code WARN} instead would make the number of {@code WARN}
+ * lines follow the number of requests on a path that needs no credential.
  * <p>
- * <strong>The rule, decided rather than forgotten.</strong> The two cases are split by
- * {@link LogoutRejection#isRepeatable()}:
- * <ul>
- *   <li><strong>Rejections of a signed token, once per token</strong> ({@code type-mismatch},
- *       {@code issuer-mismatch}, {@code audience-mismatch}, {@code iat-outside-window},
- *       {@code expired}, {@code events-missing}, {@code nonce-present}, {@code no-sub-or-sid},
- *       {@code jti-missing}, {@code replay-memory-full}) are reached only by a token the configured
- *       identity provider actually signed. An attacker cannot mint one, so there is no flood to
- *       bound: they are recorded at {@code WARN} on every occurrence.</li>
- *   <li><strong>Repeatable rejections</strong> — the pre-signature ones
- *       ({@code no-idp-destruction-capability}, {@code missing-logout-token},
- *       {@code signature-rejected}), which any caller can drive, and {@code replayed}, which the
- *       holder of one captured signed token can drive until that token leaves its freshness window
- *       — are <em>latched</em>: the FIRST occurrence of each reason in a process is recorded at
- *       {@code WARN} and every repeat drops to {@code DEBUG}. The flood is therefore bounded to at
- *       most one line per reason for the lifetime of the process, while the first real occurrence
- *       still reaches the default log level — which is the whole point.</li>
- * </ul>
+ * <strong>The rule.</strong> Every {@link LogoutRejection} reason is <em>latched</em>: the FIRST
+ * occurrence of each reason an emitter records is at {@code WARN} and every repeat drops to
+ * {@code DEBUG}. The record is therefore bounded to at most one line per reason per emitter, while
+ * the first occurrence still reaches the default log level. No reason is exempt,
+ * because a rejected request can be presented again whichever check refused it — only an accepted
+ * token is remembered by {@link LogoutTokenReplayGuard}.
+ * <p>
  * The latch follows the same shape as {@code SealedSessionCookieCodec}'s per-disposition latch, and it
  * carries the same caveat: absence of a repeated {@code WARN} says nothing about the rejection
- * <em>rate</em>, and an attacker who consumes a reason's latch early makes a later genuine occurrence
- * of that same reason {@code DEBUG}-only. Read the {@code DEBUG} channel for either question.
+ * <em>rate</em>, and once a reason's latch is consumed every later occurrence of that same reason is
+ * {@code DEBUG}-only. Read the {@code DEBUG} channel for either question.
  * <p>
  * Instances are owned by the component whose {@link CuiLogger} they emit through, so the record is
  * attributed to the class that actually rejected the request. The latch is per instance, which means
@@ -83,13 +70,13 @@ public final class LogoutRejectionLog {
     }
 
     /**
-     * Records one back-channel logout rejection under the flood policy documented on this type.
+     * Records one back-channel logout rejection under the emission rule documented on this type.
      *
      * @param reason the bounded, non-sensitive rejection reason
      */
     public void recordRejection(LogoutRejection reason) {
         Objects.requireNonNull(reason, "reason");
-        if (!reason.isRepeatable() || latched.add(reason)) {
+        if (latched.add(reason)) {
             logger.warn(BffLogMessages.WARN.LOGOUT_TOKEN_REJECTED, reason.token());
             return;
         }

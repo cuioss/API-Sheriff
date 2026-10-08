@@ -1968,8 +1968,8 @@ taken before any session is destroyed, so two deliveries arriving together canno
 10 000 entries per gateway instance and is not shared between instances; an entry leaves only when
 its window has closed, and a token that finds the memory full of live entries is refused rather than
 acted on unremembered. Every refusal is the `400` of a rejected logout token, served `no-store`, with
-`ApiSheriff-112` naming the reason. A repeated token is recorded at `WARN` once per process and at
-`DEBUG` afterwards, because the holder of one captured token can repeat it at will.
+`ApiSheriff-112` naming the reason. Each component that can refuse a token records each reason at
+`WARN` once and at `DEBUG` afterwards, because a refused token can be presented again at will.
 
 *An RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
 endpoint destroys the session and clears its cookies first and builds the redirect to the provider's
@@ -2885,16 +2885,22 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   extend a session. A declared idle timeout below 1 or above the effective lifetime is refused at
   boot.
 * *Cookie mode keeps the last access in a cookie of its own.* The activity cookie
-  (`<session cookie name>-activity`) is sealed with AES-256-GCM under a key that exists for it
-  alone, derived from the sealing key. It carries the identity of the session it belongs to. An
-  activity cookie that is missing, tampered with, sealed under another key or for another cookie
-  name, or bound to another session counts as absent, and the session is then measured from its
+  (`<session cookie name>-activity`) is authenticated with HMAC-SHA-256 under a key that exists
+  for it alone, derived from the sealing key. The value is the time of the last access and is not
+  encrypted; the identity of the session it belongs to is part of what the tag authenticates and is
+  not in the value. An activity cookie that is missing, tampered with, signed under another key or
+  for another cookie name, or bound to another session counts as absent, and the session is then measured from its
   login. Withholding or swapping the cookie can therefore only end a session sooner. No activity
   cookie extends the absolute lifetime, and an instant later than the gateway's clock counts as
-  now. A new activity cookie is written only when the last access is at least one re-issue interval
+  now, so replicas whose clocks differ can lengthen the idle deadline by at most that difference. A new activity cookie is written only when the last access is at least one re-issue interval
   old -- the smaller of 60 seconds and half the idle timeout, so an access can be recorded before
   every idle deadline -- and writing it never rewrites the session cookie. A session therefore ends
-  no later than the idle timeout after its last access, and at most one interval earlier.
+  no later than the idle timeout after its last access, and at most one interval earlier. The
+  gateway keeps no state per session in this mode, so the client decides how often the cookie is
+  written: parallel requests, or requests that present an older activity cookie again, each receive
+  a new one. Writing it consumes no key budget, because a message authentication code has no limit
+  on the number of values one key may protect, and the same session and instant always give the
+  same value.
 * *An expired server-mode session leaves memory.* A periodic task removes expired and idle sessions
   every 60 seconds whether or not anything looks them up.
 * *A cookie is cleared with the attributes it was set with.* Every clearing `Set-Cookie` the
@@ -2976,9 +2982,10 @@ user-info endpoint and the session-identity lookup do not (`InMemorySessionStore
 `IdleTimeout`, `TtlEviction`; `ServerSessionBindingTest`, `IdleDeadline`; `CookieSessionBindingTest`,
 `IdleDeadline`; `SessionAuthenticationStageTest`, `IdleTimeout`; `UserInfoEndpointTest`,
 `IdleTimeout`). An idle timeout outside its range fails the boot (`ConfigValidatorTest`,
-`SessionIdleTimeout`). An activity cookie that is missing, tampered with, sealed under another key,
+`SessionIdleTimeout`). An activity cookie that is missing, tampered with, signed under another key,
 bound to another session, or that is a session cookie value never extends a session; a sealed
-session value and a sealed activity value are each refused by the other codec; an access inside the
+session value and a signed activity value are each refused by the other codec; the activity value
+is the same for the same session and instant and does not contain the session identity; an access inside the
 re-issue interval writes no cookie, an idle timeout below 60 seconds is kept alive by accesses and
 ends without them, and an access never writes a session cookie
 (`SessionActivityCookieCodecTest`; `CookieKeyMaterialTest`, `ActivityKey`;
@@ -3285,7 +3292,7 @@ outstanding hardening work (next section).
 | <<bff-18>> | `private_key_jwt` by default, algorithm derived from the key; key files read by the gateway and refused at boot on any defect, generated keys in process memory only; `oidc.client_secret` an operator choice announced at every boot and refused together with a client-authentication key file | Engine `PrivateKeyJwtAuth` + gateway `ClientSigningKey` / `BffRuntimeProducer` + configuration validator -- ADR-0058 | COVERED (key mode) / accepted residual (client-secret mode: the profile's client-authentication requirement is not met)
 | <<bff-19>> | Client key set published without a credential on every host: one public key, no input read, `GET` only; `404` and still reserved in client-secret mode; a colliding `jwks_path` refused at boot | Gateway (`ClientJwksEndpoint`, `ReservedPathRegistry`) + configuration validator -- ADR-0058 | COVERED (TLS on the path, the registered URL and a generated key behind several replicas are deployment residuals, accepted)
 | <<bff-20>> | Every authorization request pushed -- login, session widening and RFC 9470 step-up re-drive; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login or the widening `502` before any state is stored, recorded once per reason | Engine `ParClient` + gateway `PushedAuthorizationRequests` -- ADR-0058 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap, accepted)
-| <<bff-21>> | Cookie value is a random handle, never the session id; a login adopts no presented value; server-mode handle re-issued on a widening; absolute and idle deadline enforced at resolution in both modes, extended only by a request let through to a session route; cookie-mode last access in a separately keyed sealed cookie bound to its session; expired sessions swept; cookies cleared with the attributes they were set with; no gateway cookie reaches an upstream; bounded work per presented cookie; a login ends the presented session; a bound of sessions per subject; `no-store` on every response the gateway sets a cookie on; no upstream `Set-Cookie` for a gateway cookie; a WebSocket relay closed with its session | Gateway (`ServerSessionBinding`, `InMemorySessionStore`, `SessionCookieCodec`, `CookieSessionBinding`, `SessionActivityCookieCodec`, `CookieKeyMaterial`, `SessionAuthenticationStage`, `CallbackEndpoint`, `LogoutEndpoint`, `BffRuntimeProducer`, `ConnectionHeaders`, `PipelineRequest`, `UpstreamSetCookieFilter`, `ResponseStage`, `SessionRelayRegistry`, `WebSocketRelayStage`) + configuration validator -- ADR-0018 | COVERED (not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie, which no page does today, and that a WebSocket upgrade relays no upstream `Set-Cookie`; cookie mode: a cookie sealed before a step-up or a widening stays usable at its earlier level, accepted)
+| <<bff-21>> | Cookie value is a random handle, never the session id; a login adopts no presented value; server-mode handle re-issued on a widening; absolute and idle deadline enforced at resolution in both modes, extended only by a request let through to a session route; cookie-mode last access in a separately keyed authenticated cookie bound to its session; expired sessions swept; cookies cleared with the attributes they were set with; no gateway cookie reaches an upstream; bounded work per presented cookie; a login ends the presented session; a bound of sessions per subject; `no-store` on every response the gateway sets a cookie on; no upstream `Set-Cookie` for a gateway cookie; a WebSocket relay closed with its session | Gateway (`ServerSessionBinding`, `InMemorySessionStore`, `SessionCookieCodec`, `CookieSessionBinding`, `SessionActivityCookieCodec`, `CookieKeyMaterial`, `SessionAuthenticationStage`, `CallbackEndpoint`, `LogoutEndpoint`, `BffRuntimeProducer`, `ConnectionHeaders`, `PipelineRequest`, `UpstreamSetCookieFilter`, `ResponseStage`, `SessionRelayRegistry`, `WebSocketRelayStage`) + configuration validator -- ADR-0018 | COVERED (not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie, which no page does today, and that a WebSocket upgrade relays no upstream `Set-Cookie`; cookie mode: a cookie sealed before a step-up or a widening stays usable at its earlier level, accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED

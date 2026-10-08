@@ -333,13 +333,7 @@ class GatewayEdgeGatewayCookieTest {
         }
 
         private String login(String idToken) {
-            String handle = "handle-" + SessionRecord.newSessionId();
-            store.create(SessionRecord.builder().sessionId(SessionRecord.newSessionId())
-                    .accessToken(Generators.letterStrings(16, 32).next())
-                    .idToken(idToken)
-                    .sub(Generators.letterStrings(8, 16).next())
-                    .expiresAt(Instant.now().plus(SESSION_TTL)).build(), handle, Instant.now());
-            return SESSION_COOKIE_NAME + "=" + handle;
+            return storedSessionCookie(store, idToken, Instant.now());
         }
 
         private String login() {
@@ -479,13 +473,7 @@ class GatewayEdgeGatewayCookieTest {
         }
 
         private String login() {
-            String handle = "handle-" + SessionRecord.newSessionId();
-            store.create(SessionRecord.builder().sessionId(SessionRecord.newSessionId())
-                    .accessToken(Generators.letterStrings(16, 32).next())
-                    .idToken(Generators.letterStrings(16, 32).next())
-                    .sub(Generators.letterStrings(8, 16).next())
-                    .expiresAt(Instant.now().plus(SESSION_TTL)).build(), handle, Instant.now());
-            return SESSION_COOKIE_NAME + "=" + handle;
+            return storedSessionCookie(store, Generators.letterStrings(16, 32).next(), Instant.now());
         }
 
         /**
@@ -613,13 +601,7 @@ class GatewayEdgeGatewayCookieTest {
                 GatewayEdgeRouteBffWiringTest.serverBinding(store));
 
         private String login(String idToken) {
-            String handle = "handle-" + SessionRecord.newSessionId();
-            store.create(SessionRecord.builder().sessionId(SessionRecord.newSessionId())
-                    .accessToken(Generators.letterStrings(16, 32).next())
-                    .idToken(idToken)
-                    .sub(Generators.letterStrings(8, 16).next())
-                    .expiresAt(now.plus(SESSION_TTL)).build(), handle, now);
-            return SESSION_COOKIE_NAME + "=" + handle;
+            return storedSessionCookie(store, idToken, now);
         }
 
         private BffRuntime.ReservedHttpResponse dispatch(ReservedEndpoint kind, @Nullable String cookie,
@@ -715,6 +697,17 @@ class GatewayEdgeGatewayCookieTest {
                 .map(line -> line.substring(line.indexOf('=') + 1, line.indexOf(';')))
                 .filter(value -> !value.isEmpty())
                 .toList();
+    }
+
+    /** Stores a session holding {@code idToken}, created at {@code now}, and returns its request cookie. */
+    private static String storedSessionCookie(InMemorySessionStore store, String idToken, Instant now) {
+        String handle = "handle-" + SessionRecord.newSessionId();
+        store.create(SessionRecord.builder().sessionId(SessionRecord.newSessionId())
+                .accessToken(Generators.letterStrings(16, 32).next())
+                .idToken(idToken)
+                .sub(Generators.letterStrings(8, 16).next())
+                .expiresAt(now.plus(SESSION_TTL)).build(), handle, now);
+        return SESSION_COOKIE_NAME + "=" + handle;
     }
 
     private List<ResolvedRoute> allRoutes() {

@@ -10,9 +10,14 @@ link:../configuration.adoc#_tls[Configuration Reference `tls` section]; the thre
 closes is link:../security-threat-model.adoc#gw-06[GW-06] in the threat model.
 
 The whole edge lives under `de.cuioss.sheriff.gateway.tls` plus one pipeline stage
-(`de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage`). It is framework-agnostic at the
-seam (link:../adr/0005-module-structure.adoc[ADR-0005]) apart from `TlsEdgeProducer`, which is the
-single CDI-bound boot component.
+(`de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage`). The package is bound to the
+platform: it uses Vert.x, the Quarkus TLS registry and CDI types directly. Its review against
+link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+changed no class. A class of the package is an `@ApplicationScoped` bean where the container has to
+find it or call it; the annotations on the classes are the record of which ones those are, and the
+package documentation (`tls/package-info.java`) states the rule. `ClientHelloSniParser` is the one
+hand-written component and stays: no platform API yields the SNI of a connection that must not be
+terminated.
 
 == Front Listener (Vert.x `NetServer`)
 
@@ -112,8 +117,11 @@ This runtime guard is distinct from its two boot-time and framing siblings:
   when a route's `match.host` equals a passthrough SNI; and
 * the framing / anti-smuggling `FramingGate`, which is orthogonal request-framing hygiene.
 
-The stage is inert when `passthrough_sni` is empty and consumes only the agnostic `PipelineRequest`,
-so it stays framework-agnostic (link:../adr/0005-module-structure.adoc[ADR-0005]).
+The stage is inert when `passthrough_sni` is empty and consumes only the `PipelineRequest`. It needs
+no platform type, and nothing requires it to stay that way: `pipeline` is no longer a
+framework-free package
+(link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[ADR-0062,
+the narrowed pre-boot rule]).
 
 [#_fail_closed_gw_06]
 == Fail-Closed Selection (GW-06)

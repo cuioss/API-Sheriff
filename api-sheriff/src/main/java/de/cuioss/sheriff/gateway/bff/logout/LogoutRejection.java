@@ -25,16 +25,10 @@ import java.util.Objects;
  * enumerated here, so {@code ApiSheriff-112} can never widen into a free-text sink — the only thing
  * a caller may put into that record's single placeholder is one of these tokens.
  * <p>
- * <strong>{@link #isRepeatable()} is the log-level discriminator.</strong> The back-channel path is
- * reserved and <em>unauthenticated</em>. A rejection is <em>repeatable</em> when a party other than
- * the configured identity provider can drive it as often as it likes: every rejection reached
- * <em>before</em> the logout token's signature has been verified — anyone who can reach the gateway
- * can cause it, without a credential, a session, or even a {@code logout_token} — and the replay
- * rejection, which anyone holding one captured, genuinely signed token can cause again and again
- * until that token leaves its freshness window. Those members are recorded through the latch in
- * {@link LogoutRejectionLog} (one {@code WARN} per member per process, {@code DEBUG} afterwards). Every
- * other member is reached once per token the identity provider actually signed, so it is recorded at
- * {@code WARN} on every occurrence.
+ * <strong>Every member is recorded the same way.</strong> A rejected request can be presented again,
+ * whichever check refused it — only an <em>accepted</em> token is remembered by
+ * {@link LogoutTokenReplayGuard}. Each member is therefore recorded through the latch in
+ * {@link LogoutRejectionLog}: one {@code WARN} per member per emitter, {@code DEBUG} afterwards.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -42,56 +36,54 @@ import java.util.Objects;
 public enum LogoutRejection {
 
     /** The active session binding holds no server-side index and cannot honour sid/sub destruction. */
-    NO_IDP_DESTRUCTION_CAPABILITY("no-idp-destruction-capability", true),
+    NO_IDP_DESTRUCTION_CAPABILITY("no-idp-destruction-capability"),
 
     /** The request body carried no usable {@code logout_token} form parameter. */
-    MISSING_LOGOUT_TOKEN("missing-logout-token", true),
+    MISSING_LOGOUT_TOKEN("missing-logout-token"),
 
     /** The logout token failed signature or structural verification at the engine seam. */
-    SIGNATURE_REJECTED("signature-rejected", true),
+    SIGNATURE_REJECTED("signature-rejected"),
 
     /** The token carries a {@code typ} header that is not {@code logout+jwt}. */
-    TYPE_MISMATCH("type-mismatch", false),
+    TYPE_MISMATCH("type-mismatch"),
 
     /** The token's {@code iss} is not the configured issuer. */
-    ISSUER_MISMATCH("issuer-mismatch", false),
+    ISSUER_MISMATCH("issuer-mismatch"),
 
     /** The token's {@code aud} does not contain the configured client id. */
-    AUDIENCE_MISMATCH("audience-mismatch", false),
+    AUDIENCE_MISMATCH("audience-mismatch"),
 
     /** The token's {@code iat} is absent, or outside the symmetric freshness window. */
-    IAT_OUTSIDE_WINDOW("iat-outside-window", false),
+    IAT_OUTSIDE_WINDOW("iat-outside-window"),
 
     /** The token's {@code exp} is absent, or the token has expired. */
-    EXPIRED("expired", false),
+    EXPIRED("expired"),
 
     /** The token's {@code events} claim does not carry the back-channel-logout member key. */
-    EVENTS_MISSING("events-missing", false),
+    EVENTS_MISSING("events-missing"),
 
     /** The token carries a {@code nonce}, which is prohibited in a logout token. */
-    NONCE_PRESENT("nonce-present", false),
+    NONCE_PRESENT("nonce-present"),
 
     /** The token carries neither {@code sub} nor {@code sid}, so nothing can be destroyed. */
-    NO_SUB_OR_SID("no-sub-or-sid", false),
+    NO_SUB_OR_SID("no-sub-or-sid"),
 
     /** The token carries no {@code jti}, so a repeat of it could not be recognised. */
-    JTI_MISSING("jti-missing", false),
+    JTI_MISSING("jti-missing"),
 
     /** A token with the same {@code jti} was already accepted inside its freshness window. */
-    REPLAYED("replayed", true),
+    REPLAYED("replayed"),
 
     /**
      * The memory of accepted {@code jti} values is at its bound and holds no expired entry, so the
      * token cannot be remembered — and a token that cannot be remembered is not acted on.
      */
-    REPLAY_MEMORY_FULL("replay-memory-full", false);
+    REPLAY_MEMORY_FULL("replay-memory-full");
 
     private final String token;
-    private final boolean repeatable;
 
-    LogoutRejection(String token, boolean repeatable) {
+    LogoutRejection(String token) {
         this.token = Objects.requireNonNull(token, "token");
-        this.repeatable = repeatable;
     }
 
     /**
@@ -101,17 +93,5 @@ public enum LogoutRejection {
      */
     public String token() {
         return token;
-    }
-
-    /**
-     * Whether a party other than the configured identity provider can cause this rejection
-     * repeatedly: a rejection that precedes signature verification, or the replay of a captured
-     * token.
-     *
-     * @return {@code true} when the rejection is recorded through the per-process latch,
-     *         {@code false} when it is recorded at {@code WARN} on every occurrence
-     */
-    public boolean isRepeatable() {
-        return repeatable;
     }
 }

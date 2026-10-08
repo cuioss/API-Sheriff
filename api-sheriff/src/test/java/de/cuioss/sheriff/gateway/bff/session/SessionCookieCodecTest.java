@@ -32,7 +32,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link SessionCookieCodec}: the {@code __Host-} hardening of the opaque session
  * cookie, its clearing form, the operator-configurable cookie name, and the request-header parse
- * that reads back the opaque session id (never any token material).
+ * that reads back the opaque cookie handle (never any token material).
  */
 class SessionCookieCodecTest {
 
@@ -44,11 +44,11 @@ class SessionCookieCodecTest {
     class SetCookie {
 
         @Test
-        @DisplayName("Should emit a __Host- prefixed, Secure, HttpOnly, SameSite=Lax, Path=/ cookie carrying only the id")
+        @DisplayName("Should emit a __Host- prefixed, Secure, HttpOnly, SameSite=Lax, Path=/ cookie carrying only the handle")
         void shouldEmitHardenedCookie() {
-            String header = codec.toSetCookieHeader("opaque-id");
+            String header = codec.toSetCookieHeader("opaque-handle");
 
-            assertTrue(header.startsWith("__Host-sheriff-session=opaque-id"), header);
+            assertTrue(header.startsWith("__Host-sheriff-session=opaque-handle"), header);
             assertTrue(header.contains("; Path=/"), header);
             assertTrue(header.contains("; Secure"), header);
             assertTrue(header.contains("; HttpOnly"), header);
@@ -59,19 +59,19 @@ class SessionCookieCodecTest {
         @Test
         @DisplayName("Should give a re-issued cookie the remaining lifetime as Max-Age, otherwise the same header")
         void shouldEmitRemainingLifetimeOnReissue() {
-            String header = codec.toSetCookieHeader("opaque-id", Duration.ofSeconds(1234));
+            String header = codec.toSetCookieHeader("opaque-handle", Duration.ofSeconds(1234));
 
-            assertEquals("__Host-sheriff-session=opaque-id; Max-Age=1234; Path=/; Secure; HttpOnly; SameSite=Lax",
+            assertEquals("__Host-sheriff-session=opaque-handle; Max-Age=1234; Path=/; Secure; HttpOnly; SameSite=Lax",
                     header);
-            assertEquals(codec.toSetCookieHeader("opaque-id"),
-                    codec.toSetCookieHeader("opaque-id", Duration.ofHours(1)),
+            assertEquals(codec.toSetCookieHeader("opaque-handle"),
+                    codec.toSetCookieHeader("opaque-handle", Duration.ofHours(1)),
                     "the login form is the re-issue form at the codec's full lifetime");
         }
 
         @Test
         @DisplayName("Should write a negative remaining lifetime as Max-Age=0")
         void shouldClampNegativeRemainingLifetime() {
-            String header = codec.toSetCookieHeader("opaque-id", Duration.ofSeconds(-5));
+            String header = codec.toSetCookieHeader("opaque-handle", Duration.ofSeconds(-5));
 
             assertTrue(header.contains("; Max-Age=0;"), header);
         }
@@ -97,17 +97,17 @@ class SessionCookieCodecTest {
     }
 
     @Nested
-    @DisplayName("Reading the session id")
-    class ReadSessionId {
+    @DisplayName("Reading the cookie handle")
+    class ReadCookieHandle {
 
         @Test
-        @DisplayName("Should read the session id from a Cookie header carrying the session cookie among others")
-        void shouldReadSessionIdFromCookieHeader() {
-            String cookieHeader = "csrf=1; __Host-sheriff-session=opaque-id; last=z";
-            assertEquals(Optional.of("opaque-id"), codec.readCookieHandle(cookieHeader));
+        @DisplayName("Should read the cookie handle from a Cookie header carrying the session cookie among others")
+        void shouldReadCookieHandleFromCookieHeader() {
+            String cookieHeader = "csrf=1; __Host-sheriff-session=opaque-handle; last=z";
+            assertEquals(Optional.of("opaque-handle"), codec.readCookieHandle(cookieHeader));
         }
 
-        @ParameterizedTest(name = "cookie header \"{0}\" yields no session id")
+        @ParameterizedTest(name = "cookie header \"{0}\" yields no cookie handle")
         @ValueSource(strings = {"", "   ", "other=abc", "__Host-sheriff-session="})
         @DisplayName("Should return empty when the session cookie is absent or empty-valued")
         void shouldReturnEmptyWhenAbsentOrEmpty(String cookieHeader) {

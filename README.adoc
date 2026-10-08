@@ -204,22 +204,15 @@ Terminate such fingerprinting at the upstream, or in front of the gateway, if it
 The server-mode session store is single-node and in-memory::
 `InMemorySessionStore` is the only implementation of the `SessionStore` seam, and `session.store`
 accepts exactly one value, `memory`. There is no distributed or persistent option. A server-mode
-BFF deployment is therefore single-node or sticky-session, and every session is lost on restart.
-Capacity is reclaimed at the ceiling rather than continuously: an expired session is removed when
-its own id is next looked up, and otherwise keeps its slot until a new login finds the store at
-its `oidc.session.max_sessions` bound, which sweeps the expired entries and admits the login if
-that freed a slot. No scheduler, timer thread or periodic sweep is involved. Size `max_sessions`
-against expected peak concurrency -- the ceiling refuses new logins fail-closed only when that
-many sessions are genuinely still live.
+BFF deployment is therefore single-node, or several replicas behind sticky sessions in the
+orchestration layer, and a replica that restarts or fails over ends the sessions it held. A session
+ends at its absolute lifetime (`oidc.session.ttl_seconds`) and, earlier, at its idle timeout
+(`oidc.session.idle_timeout_seconds`). An expired session is removed by a periodic sweep within a
+minute of expiring, so it does not hold a slot until the store fills. Size
+`oidc.session.max_sessions` against expected peak concurrency -- at the ceiling a new login is
+refused fail-closed, and that happens only when that many sessions are still live. See
+link:doc/user/bff-session.adoc#multi-replica[Running more than one replica].
 Cookie mode is the stateless alternative by design.
-
-The cookie-mode BFF has had no systematic threat-model pass::
-The threat model covers the cookie-mode surface (`SealedSessionCookieCodec`,
-`CookieSessionBinding`) through individual catalogue entries (the AES-GCM sealing posture, the
-login-cookie replay window, refresh-token replay rejected by the identity provider's strict
-rotation), but no dedicated
-end-to-end review of the cookie variant has been performed. The entries that exist
-are sound; the *coverage* is not claimed to be exhaustive.
 
 Cookie-mode refresh fits the cookie budget for a measured claim set, not for any claim set::
 A cookie-mode session that refreshes seals a live access, refresh and ID token into one cookie.

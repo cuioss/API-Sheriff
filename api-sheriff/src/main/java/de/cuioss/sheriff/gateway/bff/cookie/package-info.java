@@ -33,9 +33,10 @@
  *       implementation over the codec. It reports
  *       {@link de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction#UNSUPPORTED}
  *       because a stateless gateway holds no index to destroy another browser's session through.</li>
- *   <li>{@link de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec} seals the
- *       <em>activity cookie</em>: the session's derived identity and the instant of its last access,
- *       under a key that exists for this cookie alone, with a format version of its own.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec} signs the
+ *       <em>activity cookie</em> with HMAC-SHA-256: the instant of the session's last access, bound
+ *       to the session's derived identity, under a key that exists for this cookie alone, with a
+ *       format version of its own. The value is authenticated and not encrypted.</li>
  * </ul>
  * <strong>Idle timeout.</strong> A session ends at its absolute lifetime and, earlier, when it has not
  * been accessed for {@code oidc.session.idle_timeout_seconds}. A stateless gateway can remember the

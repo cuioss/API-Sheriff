@@ -142,7 +142,9 @@ for a *present-but-disallowed* claim) stands.
 
 Against CLAUDE.md's "@GeneratorsSource preferred", it appears in only 4 files (10 occurrences:
 `RouteTableBuilderTest`, `ConfigValidatorTest`, `ConfigValidatorRouteDisjointnessTest`,
-`JsonWriterTest`). Where used, it is used well: `@EnableGeneratorController` present in 13
+`GatewayJsonTest`). `GatewayJsonTest` asserts the exact bytes `GatewayJson` renders over a mapper the
+test constructs itself; `GatewayJsonWiringTest`, a `@QuarkusTest`, asserts the same corpus against
+the injected bean and that the platform mapper keeps its own rendering. Where used, it is used well: `@EnableGeneratorController` present in 13
 generator-touching files (seed reproducibility), and `RouteTableBuilderTest:1020-1102` proves
 prefix-ordering/disjointness laws generically over generated segments. Auth tests use the CUI
 `TestTokenGenerators` (real generated tokens over offline JWKS). One deviation:

@@ -188,13 +188,9 @@ public final class BffLogMessages {
          * {@code expired}, {@code events-missing}, {@code nonce-present}, {@code no-sub-or-sid},
          * {@code jti-missing}, {@code replayed}, {@code replay-memory-full}.
          * <p>
-         * <strong>Latched for the repeatable dispositions.</strong> The back-channel path is
-         * reserved and unauthenticated, so the three dispositions reachable <em>before</em> the token's
-         * signature has been verified ({@code no-idp-destruction-capability}, {@code missing-logout-token},
-         * {@code signature-rejected}) and {@code replayed} — which the holder of one captured token can
-         * repeat while that token is fresh — are emitted only on their FIRST occurrence in a process
-         * and every repeat drops to {@code DEBUG}. The others are reached once per token the identity
-         * provider signed and are emitted on every occurrence. Absence of a repeated {@code WARN} for a latched disposition
+         * <strong>Latched per disposition.</strong> The back-channel path is reserved and
+         * unauthenticated, so the record is emitted only on the FIRST occurrence of each disposition
+         * per emitter and every repeat drops to {@code DEBUG}. Absence of a repeated {@code WARN}
          * therefore says nothing about the rejection <em>rate</em>; read the DEBUG channel for that.
          * The rule and its rationale live on
          * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejectionLog}.
