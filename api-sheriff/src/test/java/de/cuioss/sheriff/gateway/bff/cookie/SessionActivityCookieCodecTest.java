@@ -172,7 +172,7 @@ class SessionActivityCookieCodecTest {
             String signedAhead = codec.sign(SESSION_IDENTITY, NOW.plus(Duration.ofHours(1)));
 
             assertEquals(Optional.of(NOW), codec.verify(signedAhead, SESSION_IDENTITY, NOW),
-                    "a clock running ahead cannot buy idle time");
+                    "a value from a clock running ahead is worth no more than an access now");
         }
 
         @Test

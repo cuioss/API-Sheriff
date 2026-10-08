@@ -2892,7 +2892,7 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   for another cookie name, or bound to another session counts as absent, and the session is then measured from its
   login. Withholding or swapping the cookie can therefore only end a session sooner. No activity
   cookie extends the absolute lifetime, and an instant later than the gateway's clock counts as
-  now. A new activity cookie is written only when the last access is at least one re-issue interval
+  now, so replicas whose clocks differ can lengthen the idle deadline by at most that difference. A new activity cookie is written only when the last access is at least one re-issue interval
   old -- the smaller of 60 seconds and half the idle timeout, so an access can be recorded before
   every idle deadline -- and writing it never rewrites the session cookie. A session therefore ends
   no later than the idle timeout after its last access, and at most one interval earlier. The

@@ -691,7 +691,8 @@ write the session cookie. An ordinary response carries at most the small activit
 recorded time is one interval old, that time can be up to one interval older than the latest request. With an idle
 timeout of 1800 seconds the interval is 60 seconds and a session ends between 1740 and 1800 seconds
 after its last request. With an idle timeout of 30 seconds the interval is 15 seconds and a session
-ends between 15 and 30 seconds after its last request.
+ends between 15 and 30 seconds after its last request. Where several replicas share the key, their
+clock difference adds to that range, so keep the replicas' clocks synchronised.
 
 *The cookie can only shorten a session.* A missing, altered or unreadable activity cookie, and one
 that belongs to another session, is ignored, and the idle timeout is then measured from the login.
@@ -841,8 +842,11 @@ once after the upgrade.
 
 *The idle timeout did not change the format.* The time of the last request lives in the activity
 cookie, not in the sealed session, so the session cookie's field set and `FORMAT_VERSION` are as
-they were. The activity cookie has a format version of its own; a change to it would cost a session
-its recorded activity, never the session.
+they were. The activity cookie has a format version of its own. A change to it makes the gateway
+ignore every activity cookie written before, and the idle timeout of those sessions is then
+measured from their login. A session whose login is older than `idle_timeout_seconds` at the
+upgrade therefore ends at its next request and the user logs in again; a younger session
+continues. The current activity cookie format is version *2*.
 
 The gate reads and compares the version byte before any cipher is constructed. The version an
 accepted cookie carries is authenticated in turn -- AES-GCM binds it into the associated data -- but

@@ -146,7 +146,11 @@ value that is malformed, truncated, of another version, signed under another key
 cookie name or for another session, or tampered with. The binding then takes the session's *login instant* as the last access.
 An activity cookie can therefore only extend a session up to the idle timeout past a real access,
 and its absence can only shorten the session. A last access in the future is clamped to the
-reference instant, so a gateway whose clock runs ahead cannot hand out idle time. Every rejection
+reference instant, so a value from a gateway whose clock runs ahead is never worth more than an
+access at this very moment. It is not rejected: replicas differ by some clock offset in every
+deployment, and a rejection would fall back to the login instant and end sessions that are in use.
+The idle deadline is therefore exact to within the clock difference between the replicas, in
+addition to the re-issue interval. Every rejection
 is logged at `DEBUG` only: any client can send a junk activity cookie on any request.
 
 *The re-issue interval.* `CookieSessionBinding.recordAccess` returns a new activity cookie only when
@@ -164,7 +168,8 @@ a session or logs out emits the whole list.
 When you change this code:
 
 * A change to the activity cookie's layout increments `SessionActivityCookieCodec.FORMAT_VERSION`,
-  not the sealed session's. It costs sessions their recorded activity, not the session.
+  not the sealed session's. Activity cookies of the earlier version are then ignored, so a session
+  whose login is older than the idle timeout ends at its next request; a younger one continues.
 * Do not move the last access into `SealedSessionPayload`. That is a field-set change, which forces
   a `FORMAT_VERSION` bump of the sealed session and ends every cookie-mode session at the upgrade.
 * A response on which the stage adds the activity cookie is sent `Cache-Control: no-store`

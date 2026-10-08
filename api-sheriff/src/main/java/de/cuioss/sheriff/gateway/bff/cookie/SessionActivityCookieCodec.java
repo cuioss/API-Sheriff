@@ -73,7 +73,11 @@ import org.jspecify.annotations.Nullable;
  * {@code DEBUG} here would be an unauthenticated log-amplification lever.
  * <p>
  * <strong>A last access in the future counts as now.</strong> {@link #verify} clamps the instant to
- * the reference instant, so a value signed by a gateway whose clock runs ahead cannot buy idle time.
+ * the reference instant, so a value signed by a gateway whose clock runs ahead is never worth more
+ * than an access at the reference instant. Such a value is deliberately not rejected: replicas differ
+ * by some clock offset in every deployment, and a rejection would fall back to the login instant and
+ * end sessions that are in use. The idle deadline is therefore exact to within the clock difference
+ * between the replicas that share the key.
  * <p>
  * The codec holds only immutable configuration, creates a fresh {@link Mac} per operation, and is
  * safe for concurrent use.

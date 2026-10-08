@@ -412,7 +412,8 @@ set `S` -- framed as length-prefixed raw UTF-8 and deflated before the seal. *Th
 increment the version by one on every change to the sealed payload's field set*; a change that
 leaves the field set and its framing untouched keeps the version. The idle timeout is such a
 change: the last access lives in the activity cookie, which has a format version of its own, and
-the sealed session is as it was.
+the sealed session is as it was. A change to the activity cookie's version ends only the sessions
+whose login is older than the idle timeout.
 
 *Upgrade consequence*: existing cookie-mode sessions are invalidated on deploy and users must log
 in again, once. The numbering restarted at 1 with the change that added the active scope set, so
