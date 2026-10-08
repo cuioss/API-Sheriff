@@ -650,7 +650,9 @@ know:
   `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
   10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
 . *Coverage*: the lane grew from three wired executions to twelve *declared* goals, all of which
-  execute and are expected to produce a CI result. Two of them reached that state late: `websocketEcho`
+  execute and are expected to produce a CI result. A thirteenth declared goal, the pending-login
+  flood, was added since; it executes as well and publishes no result (see
+  <<_the_pending_login_flood>>). Two of the twelve reached that state late: `websocketEcho`
   once its blocking edge admission-permit leak was fixed, and `uploadLarge` once the framework
   body-size floor was declared under the `upload` anchor's `max_body_bytes`. `bearer`
   is genuinely new CI coverage — the wrk-era bearer runner existed on disk but was registered in no
@@ -671,9 +673,11 @@ incomparable, the k6 series starts fresh rather than continuing the wrk series:
   (see the `latency_ms.stdev` limit above).
 * Every benchmark that writes a summary document for the first time begins with *no history* and
   needs ten runs before its trend series is meaningful. That was most of the lane: eight of the
-  twelve declared goals had never executed in CI, and all eight started their series empty — six
-  when the fail-fast truncation was repaired, `websocketEcho` once its blocking permit leak was
-  fixed, and `uploadLarge` once the framework body-size floor was declared. The workflow's
+  twelve goals the swap left declared had never executed in CI, and all eight started their series
+  empty — six when the fail-fast truncation was repaired, `websocketEcho` once its blocking permit
+  leak was fixed, and `uploadLarge` once the framework body-size floor was declared. The
+  pending-login flood, declared since, is not one of them: its summary document is not published,
+  so it starts no series at all. The workflow's
   end-of-job coverage step (`.github/workflows/benchmark.yml`) is the record of which goals produced
   a result in a given run. A flat or short trend line on a name that *did* run is an absence of
   history, not a regression.
