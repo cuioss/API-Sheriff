@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emission point from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether a caller without a credential of its own can make that reason occur again: a reason such a caller can repeat is latched to one WARN per reason per process and DEBUG thereafter, and only a reason that consumes a single-use credential the identity provider issued is recorded at WARN unconditionally. A signature that verifies does not make a reason unrepeatable, so every back-channel logout rejection is latched.
+// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emission point from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether a caller without a credential of its own can make that reason occur again: a reason such a caller can repeat is latched to one WARN per reason per process and DEBUG thereafter, and only a reason whose repeat needs a fresh credential from the identity provider is recorded at WARN unconditionally. A signature that verifies does not make a reason unrepeatable, so every back-channel logout rejection is latched.
 // tags: security, logging, secure-logging, log-flooding, denial-of-service, bff, back-channel-logout, unauthenticated-surface, observability, closed-vocabulary
 // affects: api-sheriff
 // supersedes:
@@ -55,8 +55,8 @@ reason, and it is decided by exactly one thing: whether the request that produce
 presented again. The position of the signature check does not decide it. A token the configured
 issuer signed is not scarce — every ID token and access token of the same issuer verifies — and a
 refused token is not remembered, so a reason reached after verification can be produced again by
-whoever holds one such token. A reason is unrepeatable only when reaching it consumes a credential
-the identity provider issues once, such as an authorization code.
+whoever holds one such token. A reason is unrepeatable only when a repeat needs a fresh credential
+from the identity provider, such as a new authorization code.
 
 == Decision
 
@@ -88,9 +88,10 @@ again. It is answered once per emission point, for the whole vocabulary that poi
   reason. A request without a token or with an unverifiable one is repeatable by anyone. A token whose
   signature verifies and whose claims are then refused is repeatable too: it is not remembered, and
   any token of the same issuer reaches the same checks.
-* *A reason is recorded at `WARN` on every occurrence* only when reaching it consumes a single-use
-  credential the identity provider issued, so a repeat needs a fresh one. The refusal of a token
-  response on the code-exchange or refresh leg is the example.
+* *A reason is recorded at `WARN` on every occurrence* only when a repeat needs a fresh credential
+  from the identity provider. The refusal of a token response is the example: on the code-exchange
+  leg it is reached by redeeming an authorization code, which is single-use, and on the refresh leg
+  the refusal ends the session whose refresh token reached it, so a repeat needs a new login.
 
 === (3) The flood bound is a per-reason, per-process latch
 
@@ -124,8 +125,8 @@ this happen at all*, and the `DEBUG` channel answers *how often* and *is it stil
   a token missing the protocol's own required claims.
 * Adding a rejection reason to a latched emission point needs no classification: the new reason is
   latched like the others.
-* Every rejection flows through one emission point, so the emission rule is stated once and cannot be
-  partially applied.
+* Every rejection of the vocabulary flows through one emission point, so the emission rule is stated
+  once and cannot be partially applied.
 
 === Negative
 
@@ -153,8 +154,8 @@ this happen at all*, and the `DEBUG` channel answers *how often* and *is it stil
 * *Mis-classification of an emission point.* An emission point wrongly judged unrepeatable records
   `WARN` without bound. The judgement is made where the emission point is written, and nothing
   computes it from the code path.
-* *A verified signature being read as unrepeatable.* It is not: what makes a reason unrepeatable is a
-  credential that is consumed, and a signed token is not consumed by being refused.
+* *A verified signature being read as unrepeatable.* It is not: what makes a reason unrepeatable is
+  that a repeat needs a fresh credential, and a signed token is not used up by being refused.
 
 == Alternatives Considered
 
