@@ -15,6 +15,9 @@
 #     mtls, passthrough-empty, refresh, ws-admission): integration-tests/docker-compose.yml mounts the
 #     shared sheriff-config directory and overlays ONLY gateway.yaml with the variant's document, so
 #     each is assembled as a copy of the shared directory with the variant gateway.yaml on top.
+#   * the tls-relaxation variant: no compose service runs it. BffTlsRelaxationIT mounts the shared
+#     sheriff-config directory of a one-off gateway and overlays ONLY gateway.yaml, exactly as a
+#     compose-mounted variant is mounted, so it is assembled the same way.
 #   * the two standalone sets (late-idp, jwks-egress-mismatch): no compose service runs them.
 #     OneOffGatewayContainers.startGateway mounts the set's own gateway.yaml plus ONLY
 #     sheriff-config/endpoints/assets-secure.yaml, with no topology.properties and none of the other
@@ -146,7 +149,7 @@ jobs:
           base="$docker_dir/sheriff-config"
           sets="$RUNNER_TEMP/config-sets"
           mkdir -p "$sets"
-          for variant in cookie cookie-refresh egress-verify-off egress-verify-on mtls passthrough-empty refresh ws-admission; do
+          for variant in cookie cookie-refresh egress-verify-off egress-verify-on mtls passthrough-empty refresh tls-relaxation ws-admission; do
             cp -R "$base" "$sets/$variant"
             cp "$docker_dir/sheriff-config-$variant/gateway.yaml" "$sets/$variant/gateway.yaml"
           done
@@ -222,6 +225,13 @@ jobs:
           OIDC_CLIENT_SECRET: refresh-secret
           OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-rsa.pem
         run: '"$RUNNER_TEMP/validate-set.sh" refresh "$RUNNER_TEMP/config-sets/refresh"'
+
+      # BffTlsRelaxationIT's one-off gateway, which takes the refresh service's placeholder values.
+      - name: Validate the tls-relaxation variant
+        env:
+          OIDC_CLIENT_SECRET: refresh-secret
+          OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-rsa.pem
+        run: '"$RUNNER_TEMP/validate-set.sh" tls-relaxation "$RUNNER_TEMP/config-sets/tls-relaxation"'
 
       # Service api-sheriff-ws-admission.
       - name: Validate the ws-admission variant
