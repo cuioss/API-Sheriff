@@ -169,7 +169,7 @@ public final class SessionActivityCookieCodec {
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, nonce));
-            cipher.updateAAD(associatedData(FORMAT_VERSION, keyId));
+            cipher.updateAAD(associatedData());
             sealed = cipher.doFinal(plaintext);
         } catch (GeneralSecurityException sealingFailure) {
             // A misconfigured key is an operator error the gateway cannot serve around.
@@ -201,8 +201,7 @@ public final class SessionActivityCookieCodec {
         if (raw.length != SEALED_BYTES) {
             return reject("malformed");
         }
-        byte version = raw[0];
-        if (version != FORMAT_VERSION) {
+        if (raw[0] != FORMAT_VERSION) {
             return reject("unknown-version");
         }
         // Deterministic check against the one stamped id — never a try-every-key decrypt.
@@ -213,7 +212,9 @@ public final class SessionActivityCookieCodec {
         try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(TAG_BITS, raw, 2, NONCE_BYTES));
-            cipher.updateAAD(associatedData(version, keyId));
+            // Both header bytes were just checked against this codec's own, so the data is the same
+            // on both sides.
+            cipher.updateAAD(associatedData());
             plaintext = cipher.doFinal(raw, HEADER_BYTES, raw.length - HEADER_BYTES);
         } catch (GeneralSecurityException _) {
             // A tampered value, or one sealed for another cookie name or under another key.
@@ -280,9 +281,9 @@ public final class SessionActivityCookieCodec {
         return cookieName + "=" + MAX_AGE_ATTRIBUTE + "0" + HARDENING_ATTRIBUTES;
     }
 
-    private byte[] associatedData(byte version, byte boundKeyId) {
+    private byte[] associatedData() {
         byte[] name = cookieName.getBytes(StandardCharsets.UTF_8);
-        return ByteBuffer.allocate(name.length + 2).put(name).put(version).put(boundKeyId).array();
+        return ByteBuffer.allocate(name.length + 2).put(name).put(FORMAT_VERSION).put(keyId).array();
     }
 
     /**

@@ -4520,11 +4520,6 @@ class BffRuntimeProducerTest {
                     .build();
         }
 
-        private static <T> T theOne(List<T> found, String what) {
-            assertEquals(1, found.size(), "exactly one " + what + " must be reachable from the assembled runtime");
-            return found.getFirst();
-        }
-
         /** The three ways the idle timeout is resolved: declared, omitted under a long ttl, omitted under a short one. */
         static Stream<Arguments> idleTimeouts() {
             return Stream.of(
@@ -4539,7 +4534,7 @@ class BffRuntimeProducerTest {
         void shouldHandIdleTimeoutToTheServerModeStore(String label, int ttlSeconds, @Nullable Integer declared,
                 int expectedIdleSeconds) {
             BffRuntime runtime = producerFor(oidc("server", ttlSeconds, declared)).bffRuntime();
-            InMemorySessionStore store = theOne(reachableInstancesOf(runtime, InMemorySessionStore.class),
+            InMemorySessionStore store = single(reachableInstancesOf(runtime, InMemorySessionStore.class),
                     "session store");
             // The absolute expiry lies far beyond every idle deadline here, so only the idle timeout decides.
             store.create(sessionExpiringAt(LOGIN.plus(Duration.ofDays(1))), "cookie-handle", LOGIN);
@@ -4558,7 +4553,7 @@ class BffRuntimeProducerTest {
         void shouldHandIdleTimeoutToTheCookieModeBinding(String label, int ttlSeconds, @Nullable Integer declared,
                 int expectedIdleSeconds) {
             BffRuntime runtime = producerFor(oidc("cookie", ttlSeconds, declared)).bffRuntime();
-            CookieSessionBinding binding = theOne(reachableInstancesOf(runtime, CookieSessionBinding.class),
+            CookieSessionBinding binding = single(reachableInstancesOf(runtime, CookieSessionBinding.class),
                     "cookie-mode binding");
             String setCookie = binding.bind(sessionExpiringAt(LOGIN.plusSeconds(ttlSeconds)), LOGIN)
                     .setCookieHeaders().getFirst();
@@ -4629,7 +4624,7 @@ class BffRuntimeProducerTest {
         @DisplayName("Should remove an expired session through the periodic task alone, without any lookup")
         void shouldSweepAnExpiredSessionWithoutALookup() throws Exception {
             BffRuntime runtime = producerFor(oidc("server", 3600, null)).bffRuntime();
-            InMemorySessionStore store = theOne(reachableInstancesOf(runtime, InMemorySessionStore.class),
+            InMemorySessionStore store = single(reachableInstancesOf(runtime, InMemorySessionStore.class),
                     "session store");
             Instant wallClock = Instant.now();
             store.create(sessionExpiringAt(wallClock.minusSeconds(1)), "expired-handle", wallClock.minusSeconds(120));
