@@ -28,7 +28,7 @@ import java.util.Objects;
  * <strong>Every member is recorded the same way.</strong> A rejected request can be presented again,
  * whichever check refused it — only an <em>accepted</em> token is remembered by
  * {@link LogoutTokenReplayGuard}. Each member is therefore recorded through the latch in
- * {@link LogoutRejectionLog}: one {@code WARN} per member per process, {@code DEBUG} afterwards.
+ * {@link LogoutRejectionLog}: one {@code WARN} per member per emitter, {@code DEBUG} afterwards.
  *
  * @author API Sheriff Team
  * @since 1.0

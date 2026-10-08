@@ -21,7 +21,6 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutRejectionLog;
@@ -58,8 +57,8 @@ import org.jspecify.annotations.Nullable;
  * {@link LogoutRejection} reason — never token material. Because the path is reserved and
  * <em>unauthenticated</em>, both rejections this class can raise ({@code no-idp-destruction-capability}
  * and {@code missing-logout-token}) are attacker-triggerable, so both are <em>latched</em>: the first
- * occurrence of each reason in a process is recorded at {@code WARN} and every repeat drops to
- * {@code DEBUG}. That bounds an attacker to at most two {@code WARN} lines for the life of the process
+ * occurrence of each reason this endpoint records is at {@code WARN} and every repeat drops to
+ * {@code DEBUG}. That bounds an attacker to at most two {@code WARN} lines from this endpoint
  * while still surfacing a genuine first occurrence at the default log level — the earlier
  * unconditional-{@code DEBUG} rule bounded the flood too, but at the price of making a delivery that
  * arrived and was refused indistinguishable from one that never arrived at all. See

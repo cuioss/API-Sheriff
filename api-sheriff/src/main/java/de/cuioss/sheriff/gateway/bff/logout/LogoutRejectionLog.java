@@ -19,13 +19,12 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
 
 /**
- * The single emission point for {@code ApiSheriff-112} ({@code LOGOUT_TOKEN_REJECTED}), carrying the
- * emission rule of the reserved, unauthenticated back-channel path.
+ * The emitter of {@code ApiSheriff-112} ({@code LOGOUT_TOKEN_REJECTED}), carrying the emission rule
+ * of the reserved, unauthenticated back-channel path.
  * <p>
  * <strong>Why this exists rather than a bare {@code LOGGER.warn}.</strong> Every rejection on the
  * back-channel path used to be recorded at {@code DEBUG}, which made the whole path invisible at the
@@ -35,9 +34,9 @@ import de.cuioss.tools.logging.CuiLogger;
  * lines follow the number of requests on a path that needs no credential.
  * <p>
  * <strong>The rule.</strong> Every {@link LogoutRejection} reason is <em>latched</em>: the FIRST
- * occurrence of each reason in a process is recorded at {@code WARN} and every repeat drops to
- * {@code DEBUG}. The record is therefore bounded to at most one line per reason for the lifetime of
- * the process, while the first occurrence still reaches the default log level. No reason is exempt,
+ * occurrence of each reason an emitter records is at {@code WARN} and every repeat drops to
+ * {@code DEBUG}. The record is therefore bounded to at most one line per reason per emitter, while
+ * the first occurrence still reaches the default log level. No reason is exempt,
  * because a rejected request can be presented again whichever check refused it — only an accepted
  * token is remembered by {@link LogoutTokenReplayGuard}.
  * <p>

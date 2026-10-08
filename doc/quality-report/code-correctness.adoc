@@ -420,7 +420,7 @@ vocabulary. That closes the diagnostic hole this finding described at its worst:
 path at DEBUG, a logout that was never delivered, one that was delivered and refused, and one
 that was accepted but matched no session were byte-identical silence in a production log — and
 no re-run of a failing integration test could tell them apart. Every disposition is latched to
-one WARN per process (see ApiSheriff-112 in link:../LogMessages.adoc[LogMessages]) so the reserved
+one WARN per emitter (see ApiSheriff-112 in link:../LogMessages.adoc[LogMessages]) so the reserved
 path is not a log-amplification lever; every repeat is a DEBUG diagnostic.
 
 === BFF-3 — Back-channel logout "replay guard" is freshness-window-only

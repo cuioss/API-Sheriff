@@ -547,9 +547,10 @@ does not stay in memory until the store fills.
 *Cookie mode* keeps the last access in a separate *activity cookie*. The cookie is sealed under a
 key of its own and bound to the derived session identity, so it is valid for one session only. It
 carries the session cookie's attributes and the session's remaining absolute lifetime. The binding
-writes it at most once a minute for one session, so the recorded access can be up to a minute older
-than the latest request and the idle deadline is exact to within that interval. The session cookie
-itself is not written on an access.
+writes it at most once per interval for one session -- 60 seconds, or half the idle timeout where
+that is shorter -- so the recorded access can be up to one interval older than the latest request
+and the idle deadline is exact to within that interval. The session cookie itself is not written on
+an access.
 
 The sealed session payload gains no field. The Negative consequence "any change to the sealed
 payload's field set forces a format-version bump" is therefore not triggered, and no cookie-mode

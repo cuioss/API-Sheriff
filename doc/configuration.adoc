@@ -450,7 +450,7 @@ oidc:                              # only used by the BFF variants (2 and 3)
     max_sessions: 10000            # server mode only: upper bound on concurrently stored
                                    #   sessions -- a DoS guard on the in-memory store. Reaching
                                    #   the bound sweeps the expired sessions and admits the login
-                                   #   if that freed a slot; no scheduler or periodic sweep exists
+                                   #   if that freed a slot
     cookie_name: __Host-sheriff    # OPTIONAL, both modes; default __Host-sheriff-session. REFUSED AT
                                    #   BOOT unless a __Host--prefixed RFC 9110 token distinct from
                                    #   the gateway-owned __Host-sheriff-binding / -logout cookies

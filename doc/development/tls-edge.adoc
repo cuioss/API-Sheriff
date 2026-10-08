@@ -13,14 +13,11 @@ The whole edge lives under `de.cuioss.sheriff.gateway.tls` plus one pipeline sta
 (`de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage`). The package is bound to the
 platform: it uses Vert.x, the Quarkus TLS registry and CDI types directly. Its review against
 link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
-changed no class. Eight classes are `@ApplicationScoped` beans, each because the container has to
-find it or call it: `TlsServerCustomizer`, `MtlsServerCustomizer`, `ServerTlsDeclarationGate`,
-`TerminatedListenerTlsAudit`, `ManagementPlainHttpAudit`, `DefaultTrustSourceAudit`,
-`TlsEdgeProducer` and `EgressTrustProfileResolver`. Four are not: `SniFrontListener`,
-`PassthroughRelay` and `ClientHelloSniParser` exist only when `tls.passthrough_sni` is non-empty, and
-`ResolvedServerTlsMaterial` is a static utility. `ClientHelloSniParser` is the one hand-written
-component and stays: no platform API yields the SNI of a connection that must not be terminated.
-The package documentation (`tls/package-info.java`) carries the same list with each reason.
+changed no class. A class of the package is an `@ApplicationScoped` bean where the container has to
+find it or call it; the annotations on the classes are the record of which ones those are, and the
+package documentation (`tls/package-info.java`) states the rule. `ClientHelloSniParser` is the one
+hand-written component and stays: no platform API yields the SNI of a connection that must not be
+terminated.
 
 == Front Listener (Vert.x `NetServer`)
 

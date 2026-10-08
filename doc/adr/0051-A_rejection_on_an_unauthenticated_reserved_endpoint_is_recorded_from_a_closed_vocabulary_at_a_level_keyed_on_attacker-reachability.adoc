@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emission point from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether a caller without a credential of its own can make that reason occur again: a reason such a caller can repeat is latched to one WARN per reason per process and DEBUG thereafter, and only a reason whose repeat needs a fresh credential from the identity provider is recorded at WARN unconditionally. A signature that verifies does not make a reason unrepeatable, so every back-channel logout rejection is latched.
+// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emitter type from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether a caller without a credential of its own can make that reason occur again: a reason such a caller can repeat is latched to one WARN per reason per emitter and DEBUG thereafter, and only a reason whose repeat needs a fresh credential from the identity provider is recorded at WARN unconditionally. A signature that verifies does not make a reason unrepeatable, so every back-channel logout rejection is latched.
 // tags: security, logging, secure-logging, log-flooding, denial-of-service, bff, back-channel-logout, unauthenticated-surface, observability, closed-vocabulary
 // affects: api-sheriff
 // supersedes:
@@ -60,8 +60,8 @@ from the identity provider, such as a new authorization code.
 
 == Decision
 
-*A rejection on a reserved endpoint reachable without a credential is recorded through one emission
-point, from a closed enumerated vocabulary, at a level keyed on whether a caller without a credential
+*A rejection on a reserved endpoint reachable without a credential is recorded through one emitter
+type, from a closed enumerated vocabulary, at a level keyed on whether a caller without a credential
 of its own can make that reason occur again.*
 
 Three coupled mechanisms realise it.
@@ -83,7 +83,7 @@ someone needs one more detail, and the parameter admits it.
 The discriminator is whether a caller without a credential of its own can make the reason occur
 again. It is answered once per emission point, for the whole vocabulary that point records.
 
-* *A reason such a caller can repeat is latched*: the first occurrence of each reason in a process is
+* *A reason such a caller can repeat is latched*: the first occurrence of each reason per emitter is
   recorded at `WARN`, and every repeat drops to `DEBUG`. On the back-channel logout path this is every
   reason. A request without a token or with an unverifiable one is repeatable by anyone. A token whose
   signature verifies and whose claims are then refused is repeatable too: it is not remembered, and
@@ -93,9 +93,9 @@ again. It is answered once per emission point, for the whole vocabulary that poi
   leg it is reached by redeeming an authorization code, which is single-use, and on the refresh leg
   the refusal ends the session whose refresh token reached it, so a repeat needs a new login.
 
-=== (3) The flood bound is a per-reason, per-process latch
+=== (3) The flood bound is a per-reason, per-emitter latch
 
-The latch bounds the flood to at most one line per reason for the lifetime of the process, while the
+The latch bounds the flood to at most one line per reason per emitter, while the
 first real occurrence of each reason still reaches the default log level — which is the point. The
 operator learns *that* the condition occurred without the volume being attacker-controlled.
 
@@ -117,7 +117,7 @@ this happen at all*, and the `DEBUG` channel answers *how often* and *is it stil
 * The unauthenticated path is no longer invisible. An operator at the default log level can tell a
   delivery that never arrived from one that arrived and was refused — and which refusal it was.
 * The log-volume surface an anonymous caller can drive is bounded by construction, at one line per
-  reason per process, rather than by the caller's restraint.
+  reason per emitter, rather than by the caller's restraint.
 * The rejection record cannot leak identity-bearing or attacker-supplied data, because there is no
   parameter that could carry it. Secure logging is a property of the type, not of each call site.
 * The first occurrence of every reason reaches the default log level, including the reasons that
@@ -125,8 +125,8 @@ this happen at all*, and the `DEBUG` channel answers *how often* and *is it stil
   a token missing the protocol's own required claims.
 * Adding a rejection reason to a latched emission point needs no classification: the new reason is
   latched like the others.
-* Every rejection of the vocabulary flows through one emission point, so the emission rule is stated
-  once and cannot be partially applied.
+* The emission rule is stated once, in the emitter type. On the back-channel logout path the endpoint
+  and the receiver each hold an emitter, and both apply that rule.
 
 === Negative
 
@@ -208,7 +208,7 @@ the two rejection classes differ. The other keeps the distinction but grounds it
 weaker than repeatability: network origin, the position of the signature check, caller discipline,
 or per-site judgement. The chosen position derives the discriminator from the one fact that actually
 decides attacker-reachability, carries the reason vocabulary in the type system, and applies the
-level at one emission point so neither can be partially applied.
+level in one emitter type so neither can be partially applied.
 
 == References
 

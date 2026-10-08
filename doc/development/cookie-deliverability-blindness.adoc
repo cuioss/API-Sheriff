@@ -329,13 +329,8 @@ budget sits in the table alongside the other five rather than outside it.
 | Per-domain cookie count
 | The browser, by evicting cookies past its per-domain cap.
 | *Not covered*
-| Nowhere. The gateway sets three `__Host-` cookies --
-  `+__Host-sheriff-binding+` (`BindingCookieCodec.COOKIE_NAME`),
-  `+__Host-sheriff-session+` (`SessionCookieCodec.DEFAULT_COOKIE_NAME`) and
-  `+__Host-sheriff-logout+` (`RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME`) -- and in cookie mode a
-  fourth, the activity cookie named after the session cookie with
-  `SessionActivityCookieCodec.COOKIE_NAME_SUFFIX` (`+__Host-sheriff-session-activity+` by default). A
-  `HashMap` has no cap to hit.
+| Nowhere. The gateway sets several `__Host-` cookies on one origin
+  (`BffRuntime.gatewayCookieNames()` returns their names), and a `HashMap` has no cap to hit.
 
 | Aggregate per-domain cookie size
 | The browser, by evicting or refusing once the domain's total is exceeded.

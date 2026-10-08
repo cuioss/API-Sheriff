@@ -190,7 +190,7 @@ public final class BffLogMessages {
          * <p>
          * <strong>Latched per disposition.</strong> The back-channel path is reserved and
          * unauthenticated, so the record is emitted only on the FIRST occurrence of each disposition
-         * in a process and every repeat drops to {@code DEBUG}. Absence of a repeated {@code WARN}
+         * per emitter and every repeat drops to {@code DEBUG}. Absence of a repeated {@code WARN}
          * therefore says nothing about the rejection <em>rate</em>; read the DEBUG channel for that.
          * The rule and its rationale live on
          * {@code de.cuioss.sheriff.gateway.bff.logout.LogoutRejectionLog}.

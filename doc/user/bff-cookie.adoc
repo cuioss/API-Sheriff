@@ -120,8 +120,9 @@ seals with it.
 The gateway seals with AES-256-GCM and a random 96-bit nonce, and NIST SP 800-38D bounds one key
 used that way at 2^32^ (4 294 967 296) seals. The session cookie and the activity cookie (see
 <<idle-timeout>>) are sealed under separate keys, and both come from `session.encryption_key`. The
-activity key is the one that reaches the bound first, because it seals at most once a minute for
-every session in use -- up to 1 440 seals per session per day. The session key seals once per login,
+activity key is the one that reaches the bound first, because it seals at most once per interval for
+every session in use -- up to 1 440 seals per session per day at an interval of 60 seconds. The
+session key seals once per login,
 refresh and widening, which is far less often.
 
 The rule: *replace `session.encryption_key` before this many days have passed since the key was
@@ -692,7 +693,7 @@ despite activity, check that the second cookie reaches the browser and comes bac
 *A response that sets it is not cacheable.* Whenever the gateway sets or clears one of its cookies
 on a response, it sends that response with `Cache-Control: no-store`, replacing the upstream's
 value. In this variant that includes the session-route response that carries the activity cookie
--- at most one response per session per minute -- and every response that re-seals the session
+-- at most one response per session per interval -- and every response that re-seals the session
 cookie. All other responses keep the upstream's cache policy.
 
 *It shares the `Cookie` header headroom.* The inbound `Cookie` header cap is unchanged:
