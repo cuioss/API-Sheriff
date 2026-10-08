@@ -315,6 +315,26 @@ public final class SocketSnapshot {
     }
 
     /**
+     * Reports whether this host's {@code netstat} lists any TCP socket at all.
+     *
+     * <p>{@link #available()} proves only that the binary is executable. Some hosts ship a
+     * {@code netstat} that runs, exits zero and prints no TCP row under any flags — observed on
+     * macOS 27 — so the netstat half of a capture is empty there whatever this class asks for.
+     *
+     * <p>The probe uses the plain {@code -an} form rather than {@link #netstatArgs()} on purpose. It
+     * has to stay independent of the capture's own argv: on a host whose {@code netstat} does list
+     * TCP sockets, a capture that names no port is then still a defect of this class and not a
+     * property of the machine.
+     *
+     * @return {@code true} when a plain {@code netstat -an} prints at least one TCP row
+     */
+    public static boolean netstatEnumeratesTcp() {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(COMMAND_TIMEOUT_SECONDS);
+        return run(deadline, NETSTAT_BINARIES, "netstat", "-an").lines()
+                .anyMatch(line -> line.startsWith("tcp"));
+    }
+
+    /**
      * Runs one capture command with its output redirected to a file.
      *
      * <p>The redirect is not incidental. Reading a child's pipe only after {@code waitFor} deadlocks

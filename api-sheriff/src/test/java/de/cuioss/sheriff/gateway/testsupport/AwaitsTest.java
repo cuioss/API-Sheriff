@@ -50,6 +50,7 @@ import io.vertx.core.http.UpgradeRejectedException;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 /**
  * The matched control for {@link Awaits}. Every other test in this module merely consumes the
@@ -256,6 +257,12 @@ class AwaitsTest {
      * went red on a runner without them would be reporting the wrong thing. The abstention is the
      * honest reading — this probe proves the capture works where it can run, and says nothing where
      * it cannot.
+     *
+     * <p>The same holds one step further in. A {@code netstat} that is executable can still list no
+     * TCP socket at all, under any flags; {@link SocketSnapshot#netstatEnumeratesTcp()} asks the host
+     * that question with an argv independent of the capture's. Where the answer is no, the
+     * {@code lsof} half is still asserted and the test then aborts instead of failing on the half the
+     * machine cannot supply.
      */
     @Test
     @DisplayName("the OS socket snapshot enumerates a loopback socket this JVM actually holds")
@@ -272,13 +279,20 @@ class AwaitsTest {
             String section = snapshotSectionOf(failure.getMessage());
             int port = listener.getLocalPort();
 
+            Executable lsofHalf = () -> assertTrue(portAppearsAsAnAddressIn(lsofRowsOf(section), port),
+                    "the lsof half does not name the port. Asserted on its own rows rather "
+                            + "than on the whole section: available() proves only that both "
+                            + "binaries are executable, so a section-wide match lets either "
+                            + "tool's output stand in for the other's and the probe would "
+                            + "pass on a half-degraded capture.");
+            if (!SocketSnapshot.netstatEnumeratesTcp()) {
+                assertAll("lsof names the port of a socket this JVM holds", lsofHalf);
+                Assumptions.abort("this host's netstat lists no TCP socket even as a plain 'netstat -an', "
+                        + "so the netstat half has nothing to name the port with; the lsof half was "
+                        + "asserted and holds");
+            }
             assertAll("both capture tools name the port of a socket this JVM holds",
-                    () -> assertTrue(portAppearsAsAnAddressIn(lsofRowsOf(section), port),
-                            "the lsof half does not name the port. Asserted on its own rows rather "
-                                    + "than on the whole section: available() proves only that both "
-                                    + "binaries are executable, so a section-wide match lets either "
-                                    + "tool's output stand in for the other's and the probe would "
-                                    + "pass on a half-degraded capture."),
+                    lsofHalf,
                     () -> assertTrue(portAppearsAsAnAddressIn(netstatRowsOf(section), port),
                             "the netstat half does not name the port. netstat is filtered to the "
                                     + "ports lsof reported, so this failing while lsof passes means "
