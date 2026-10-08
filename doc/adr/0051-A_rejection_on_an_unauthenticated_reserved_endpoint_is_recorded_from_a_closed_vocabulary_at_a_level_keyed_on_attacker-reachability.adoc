@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emission point from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether an unauthenticated caller can reach that reason: a pre-verification reason is latched to one WARN per reason per process and DEBUG thereafter, while a reason reachable only after the credential has been cryptographically verified is recorded at WARN unconditionally.
+// summary: A rejection on a reserved endpoint that is reachable without a credential is recorded through one emission point from a CLOSED enumerated vocabulary of non-sensitive reason tokens — never a free-text sink — and its log level is chosen by whether a caller without a credential of its own can make that reason occur again: a reason such a caller can repeat is latched to one WARN per reason per process and DEBUG thereafter, and only a reason that consumes a single-use credential the identity provider issued is recorded at WARN unconditionally. A signature that verifies does not make a reason unrepeatable, so every back-channel logout rejection is latched.
 // tags: security, logging, secure-logging, log-flooding, denial-of-service, bff, back-channel-logout, unauthenticated-surface, observability, closed-vocabulary
 // affects: api-sheriff
 // supersedes:
@@ -51,15 +51,18 @@ structural stops the next caller from filling it.
 
 The two questions are not independent, and that is the structural observation. *Which* rejections an
 anonymous caller can drive is not a property of the endpoint — it is a property of each individual
-reason, and it is decided by exactly one thing: whether that reason sits before or after the
-signature check. A reason reachable only after verification cannot be reached by an attacker at all,
-because an attacker cannot mint a token the configured issuer signed.
+reason, and it is decided by exactly one thing: whether the request that produced the reason can be
+presented again. The position of the signature check does not decide it. A token the configured
+issuer signed is not scarce — every ID token and access token of the same issuer verifies — and a
+refused token is not remembered, so a reason reached after verification can be produced again by
+whoever holds one such token. A reason is unrepeatable only when reaching it consumes a credential
+the identity provider issues once, such as an authorization code.
 
 == Decision
 
 *A rejection on a reserved endpoint reachable without a credential is recorded through one emission
-point, from a closed enumerated vocabulary, at a level keyed on whether an unauthenticated caller can
-reach that reason.*
+point, from a closed enumerated vocabulary, at a level keyed on whether a caller without a credential
+of its own can make that reason occur again.*
 
 Three coupled mechanisms realise it.
 
@@ -75,19 +78,19 @@ The closure is the load-bearing half. A bounded-but-open vocabulary — a string
 keep short and non-sensitive — has exactly the failure mode the closed one removes: it works until
 someone needs one more detail, and the parameter admits it.
 
-=== (2) The level discriminator is attacker-reachability, carried by the vocabulary itself
+=== (2) The level discriminator is attacker-reachability, decided per emission point
 
-Each member declares whether it is reachable only *after* the credential has been cryptographically
-verified. That one fact is the level discriminator, and it lives on the member rather than at the
-call sites, so adding a reason forces the question to be answered once, at the point the reason is
-defined.
+The discriminator is whether a caller without a credential of its own can make the reason occur
+again. It is answered once per emission point, for the whole vocabulary that point records.
 
-* *Post-verification reasons* are reachable only by a token the configured identity provider actually
-  signed. An attacker cannot mint one, so there is no flood to bound: they are recorded at `WARN` on
-  every occurrence. These are the reasons that carry real operator signal — a misconfigured audience,
-  a clock outside the replay window, a token missing the protocol's own required claims.
-* *Pre-verification reasons* are attacker-triggerable, so they are *latched*: the first occurrence of
-  each reason in a process is recorded at `WARN`, and every repeat drops to `DEBUG`.
+* *A reason such a caller can repeat is latched*: the first occurrence of each reason in a process is
+  recorded at `WARN`, and every repeat drops to `DEBUG`. On the back-channel logout path this is every
+  reason. A request without a token or with an unverifiable one is repeatable by anyone. A token whose
+  signature verifies and whose claims are then refused is repeatable too: it is not remembered, and
+  any token of the same issuer reaches the same checks.
+* *A reason is recorded at `WARN` on every occurrence* only when reaching it consumes a single-use
+  credential the identity provider issued, so a repeat needs a fresh one. The refusal of a token
+  response on the code-exchange or refresh leg is the example.
 
 === (3) The flood bound is a per-reason, per-process latch
 
@@ -116,12 +119,12 @@ this happen at all*, and the `DEBUG` channel answers *how often* and *is it stil
   reason per process, rather than by the caller's restraint.
 * The rejection record cannot leak identity-bearing or attacker-supplied data, because there is no
   parameter that could carry it. Secure logging is a property of the type, not of each call site.
-* The reasons that carry the most operator signal are the ones recorded unconditionally. Level
-  follows value, and the correlation is not a coincidence: the reasons only a genuinely signed token
-  reaches are exactly the ones describing a real integration problem.
-* Adding a rejection reason forces its reachability to be classified at the point of definition. The
-  question cannot be skipped, because the enumeration member does not compile without an answer.
-* Every rejection flows through one emission point, so the flood policy is stated once and cannot be
+* The first occurrence of every reason reaches the default log level, including the reasons that
+  describe a real integration problem — a misconfigured audience, a clock outside the replay window,
+  a token missing the protocol's own required claims.
+* Adding a rejection reason to a latched emission point needs no classification: the new reason is
+  latched like the others.
+* Every rejection flows through one emission point, so the emission rule is stated once and cannot be
   partially applied.
 
 === Negative
@@ -147,11 +150,11 @@ this happen at all*, and the `DEBUG` channel answers *how often* and *is it stil
 * *Erosion of the closed vocabulary.* Each future request to add "just this one value" to the record
   is individually plausible and collectively reconstructs the free-text sink. The closure is the
   limit, not a starting point.
-* *Mis-classification of a reason's reachability.* A reason wrongly marked post-verification
-  reinstates the unbounded flood for that reason. The declaration sits on the member where it is
-  reviewable, but nothing computes it from the code path.
-* *The discriminator drifting from the pipeline.* If a check moves from after the signature stage to
-  before it, its reason's classification must move with it, and no mechanism enforces that coupling.
+* *Mis-classification of an emission point.* An emission point wrongly judged unrepeatable records
+  `WARN` without bound. The judgement is made where the emission point is written, and nothing
+  computes it from the code path.
+* *A verified signature being read as unrepeatable.* It is not: what makes a reason unrepeatable is a
+  credential that is consumed, and a signed token is not consumed by being refused.
 
 == Alternatives Considered
 
@@ -177,10 +180,15 @@ rate-fidelity promise it only approximately keeps.
 *Discriminate on request origin — trusted source address, mTLS peer — instead of on
 attacker-reachability.* This is the intuitive reading of "can an attacker drive this". Rejected
 because it makes the log policy depend on deployment-supplied network trust, which is exactly the
-input a reserved unauthenticated endpoint must not rely on for a security property. The signature
-check is the boundary the protocol itself defines; deriving the discriminator from it keeps the
-policy correct under every network topology, including the one where the gateway is directly
-reachable.
+input a reserved unauthenticated endpoint must not rely on for a security property. Whether a request
+can be presented again is a property of the protocol exchange itself; deriving the discriminator from
+it keeps the policy correct under every network topology, including the one where the gateway is
+directly reachable.
+
+*Discriminate on the position of the signature check — latch what precedes it, record what follows it
+unconditionally.* This was the first form of this decision. Rejected because a verified signature
+shows who issued a token, not that the request is scarce: the issuer's other tokens verify as well,
+and a refused token can be presented again.
 
 *Keep a free-text reason parameter with a documented "no sensitive values" rule.* This preserves
 full diagnostic detail and costs nothing to implement. Rejected because it relocates a structural
@@ -196,15 +204,15 @@ bound for the whole endpoint, and nothing would surface that it had.
 The rejected alternatives divide cleanly. One group picks a single global level — all `DEBUG` or all
 `WARN` — and so must sacrifice either observability or the volume bound, because it refuses to let
 the two rejection classes differ. The other keeps the distinction but grounds it in something
-weaker than the protocol's own trust boundary: network origin, caller discipline, or per-site
-judgement. The chosen position derives the discriminator from the one fact that actually decides
-attacker-reachability, and carries both it and the reason vocabulary in the type system so neither
-can be partially applied.
+weaker than repeatability: network origin, the position of the signature check, caller discipline,
+or per-site judgement. The chosen position derives the discriminator from the one fact that actually
+decides attacker-reachability, carries the reason vocabulary in the type system, and applies the
+level at one emission point so neither can be partially applied.
 
 == References
 
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode is one SessionBinding seam behind a fixed reserved-path model] -- establishes the reserved, mode-neutral path model the unauthenticated endpoint this record governs is mounted under. Not superseded.
 * link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved BFF paths bypass the url-parameter value pipeline] -- the companion record on what a reserved path's exposure is, and the blast-radius reasoning this record's flood bound extends to the log surface. Not superseded.
-* link:0050-A_JWT_whose_type_the_engine_exposes_no_entry_point_for_is_verified_signature-only_and_its_claim_set_is_the_callers_authority.adoc[ADR-0050 -- A JWT of an unexposed type is verified signature-only] -- defines the signature stage whose position this record's level discriminator is derived from, and the caller-owned claim checks that produce the post-verification reasons. Not superseded.
+* link:0050-A_JWT_whose_type_the_engine_exposes_no_entry_point_for_is_verified_signature-only_and_its_claim_set_is_the_callers_authority.adoc[ADR-0050 -- A JWT of an unexposed type is verified signature-only] -- defines the signature stage and the caller-owned claim checks that follow it, whose rejections this record latches like those that precede it. Not superseded.
 * link:../LogMessages.adoc[Log Messages] -- the structured log-record catalogue the rejection record is registered in, including its identifier and range.
 * link:../security-threat-model.adoc[Security Threat Model] -- the unauthenticated-surface and resource-exhaustion classes this record's flood bound answers.
