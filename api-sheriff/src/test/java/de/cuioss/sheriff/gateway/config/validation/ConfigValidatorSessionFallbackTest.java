@@ -25,7 +25,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;

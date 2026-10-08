@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.database.AttackTestCase;
 import de.cuioss.http.security.database.OWASPTop10AttackDatabase;

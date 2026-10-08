@@ -19,7 +19,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.boot.ConfigBootPipeline;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;

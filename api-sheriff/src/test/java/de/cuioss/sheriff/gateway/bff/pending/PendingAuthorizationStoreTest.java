@@ -30,7 +30,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord.Widening;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import org.junit.jupiter.api.DisplayName;

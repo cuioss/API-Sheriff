@@ -24,7 +24,6 @@ import java.util.Collection;
 import java.util.Objects;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;

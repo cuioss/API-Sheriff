@@ -29,7 +29,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.DefaultedPlaceholder;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;

@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.tls;
 
 import java.util.Objects;
 
-
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.core.buffer.Buffer;

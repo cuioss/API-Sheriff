@@ -31,7 +31,6 @@ import java.util.stream.Collectors;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 
-
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.tools.logging.CuiLogger;

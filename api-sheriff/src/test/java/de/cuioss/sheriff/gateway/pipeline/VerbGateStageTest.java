@@ -25,7 +25,6 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;

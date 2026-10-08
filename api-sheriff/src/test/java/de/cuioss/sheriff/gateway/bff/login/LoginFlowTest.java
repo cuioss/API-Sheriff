@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
-
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.AuthorizationInitiation;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;

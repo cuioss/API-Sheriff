@@ -35,7 +35,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
-
 import de.cuioss.http.client.adapter.RetryConfig;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
 import de.cuioss.sheriff.gateway.events.EventType;

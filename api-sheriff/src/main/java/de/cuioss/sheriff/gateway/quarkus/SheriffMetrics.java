@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.quarkus;
 import java.time.Duration;
 import java.util.Objects;
 
-
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;

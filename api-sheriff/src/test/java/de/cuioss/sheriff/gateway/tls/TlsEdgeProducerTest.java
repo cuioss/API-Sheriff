@@ -28,7 +28,6 @@ import java.net.Socket;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
-
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
