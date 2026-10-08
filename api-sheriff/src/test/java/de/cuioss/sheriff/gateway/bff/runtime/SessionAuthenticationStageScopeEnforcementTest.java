@@ -292,8 +292,25 @@ class SessionAuthenticationStageScopeEnforcementTest {
 
             assertAll("an ended session is answered exactly as on the near-expiry leg",
                     () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType(), "the request is unauthenticated"),
-                    () -> assertEquals(List.of(binding.clearingSetCookieHeader()), request.responseSetCookies(),
+                    () -> assertEquals(binding.clearingSetCookieHeaders(), request.responseSetCookies(),
                             "the destroyed session's cookie is cleared"),
+                    () -> assertTrue(request.mediatedBearer().isEmpty(), "no bearer is recorded"));
+        }
+
+        @Test
+        @DisplayName("a scope refresh that found no session for the request challenges 401 without clearing the cookie")
+        void noSessionChallengesWithoutClearing() {
+            SessionBinding binding = bindingWith(session(SESSION_TOKEN, Set.of(OPENID), NEEDED));
+            RecordingScopeRefresh scopeRefresh =
+                    new RecordingScopeRefresh((kept, requestedScopes) -> RefreshResult.noSession());
+            SessionAuthenticationStage stage = stage(binding, scopeRefresh, unreachableWidening());
+            PipelineRequest request = sessionRequest(NEEDED, xhrHeaders(), null);
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll("nothing was destroyed, so nothing is cleared — exactly as on the near-expiry leg",
+                    () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType(), "the request is unauthenticated"),
+                    () -> assertTrue(request.responseSetCookies().isEmpty(), "no clearing cookie is emitted"),
                     () -> assertTrue(request.mediatedBearer().isEmpty(), "no bearer is recorded"));
         }
 

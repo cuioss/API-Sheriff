@@ -25,8 +25,10 @@ import org.jspecify.annotations.Nullable;
 /**
  * Encodes and reads the opaque server-session cookie (D3).
  * <p>
- * The cookie carries <strong>only</strong> the opaque {@link SessionRecord#sessionId()} — never
- * any token material, which stays server-side. It is hardened by construction: the
+ * The cookie carries <strong>only</strong> an opaque cookie handle — never any token material, which
+ * stays server-side, and never {@link SessionRecord#sessionId()}: the session id is the stable
+ * internal identity, and the handle is a separate random value the store resolves to it and can
+ * re-issue. The codec treats the handle as an opaque string. It is hardened by construction: the
  * {@code __Host-} prefix (browser-honoured only with {@code Secure} + {@code Path=/} + no
  * {@code Domain}), {@code HttpOnly} (no script access), and {@code SameSite=Lax} (survives a
  * top-level navigation while blocking cross-site sends). The cookie name is operator-configurable
@@ -59,15 +61,33 @@ public final class SessionCookieCodec {
     }
 
     /**
-     * Builds the {@code Set-Cookie} header value carrying the opaque {@code sessionId}.
+     * Builds the login {@code Set-Cookie} header value carrying the opaque {@code cookieHandle}, with
+     * the codec's full lifetime as {@code Max-Age} — at login the session's whole lifetime is ahead.
      *
-     * @param sessionId the opaque session id
+     * @param cookieHandle the opaque cookie handle
      * @return the hardened {@code Set-Cookie} header value
      */
-    public String toSetCookieHeader(String sessionId) {
-        Objects.requireNonNull(sessionId, "sessionId");
+    public String toSetCookieHeader(String cookieHandle) {
+        return toSetCookieHeader(cookieHandle, maxAge);
+    }
+
+    /**
+     * Builds the {@code Set-Cookie} header value carrying the opaque {@code cookieHandle} for a session
+     * that is already under way — the cookie a re-issue sets. Its {@code Max-Age} is the session's
+     * <em>remaining</em> lifetime, so the browser drops the cookie when the session ends rather than a
+     * full lifetime after the re-issue.
+     *
+     * @param cookieHandle      the opaque cookie handle
+     * @param remainingLifetime the time left until the session's absolute expiry; a negative value is
+     *                          written as {@code 0}
+     * @return the hardened {@code Set-Cookie} header value
+     */
+    public String toSetCookieHeader(String cookieHandle, Duration remainingLifetime) {
+        Objects.requireNonNull(cookieHandle, "cookieHandle");
+        Objects.requireNonNull(remainingLifetime, "remainingLifetime");
+        long seconds = Math.max(0L, remainingLifetime.toSeconds());
         return "%s=%s; Max-Age=%d; Path=/; Secure; HttpOnly; SameSite=Lax"
-                .formatted(cookieName, sessionId, maxAge.toSeconds());
+                .formatted(cookieName, cookieHandle, seconds);
     }
 
     /**
@@ -80,12 +100,13 @@ public final class SessionCookieCodec {
     }
 
     /**
-     * Reads the opaque session id out of a request {@code Cookie} header value.
+     * Reads the opaque cookie handle out of a request {@code Cookie} header value.
      *
      * @param cookieHeader the raw {@code Cookie} header value (may be absent/blank)
-     * @return the session id when the session cookie is present with a non-empty value; empty otherwise
+     * @return the cookie handle when the session cookie is present with a non-empty value; empty
+     *         otherwise
      */
-    public Optional<String> readSessionId(@Nullable String cookieHeader) {
+    public Optional<String> readCookieHandle(@Nullable String cookieHeader) {
         if (cookieHeader == null || cookieHeader.isBlank()) {
             return Optional.empty();
         }

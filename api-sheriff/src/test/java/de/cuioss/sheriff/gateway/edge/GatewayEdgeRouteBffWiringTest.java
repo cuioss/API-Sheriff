@@ -26,6 +26,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -34,19 +35,26 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-
+import java.util.function.Predicate;
+import javax.crypto.spec.SecretKeySpec;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow;
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -71,6 +79,7 @@ import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -103,12 +112,17 @@ import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.vertx.core.Context;
+import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.SocketAddress;
@@ -152,6 +166,37 @@ class GatewayEdgeRouteBffWiringTest {
     private static final String LOGIN_CHALLENGE_LOCATION = "/login";
     /** Where the engine-free session stage redirects a navigation whose session needs widening. */
     private static final String WIDENING_CHALLENGE_LOCATION = "/widen";
+    /**
+     * The idle timeout of the fixture stores. It is longer than any fixture session lives, so the
+     * absolute lifetime is the only deadline in play unless a case sets its own.
+     */
+    static final Duration NO_IDLE_EFFECT = Duration.ofHours(8);
+
+    /**
+     * A fixture store: sixteen sessions, no per-subject bound a fixture reaches, and nobody told of
+     * the sessions it ends. A case that looks at what ends with a session builds its own store.
+     */
+    static InMemorySessionStore newStore() {
+        return new InMemorySessionStore(16, NO_IDLE_EFFECT, Integer.MAX_VALUE, sessionId -> {
+        });
+    }
+
+    /**
+     * The cookie names an active runtime over {@code binding} owns, derived as the session runtime
+     * derives them: every cookie the binding clears, the login-binding cookie and the logout-state
+     * cookie.
+     */
+    static Set<String> gatewayCookieNames(SessionBinding binding) {
+        List<String> names = new ArrayList<>(
+                List.of(BindingCookieCodec.COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME));
+        binding.clearingSetCookieHeaders().forEach(header -> names.add(header.substring(0, header.indexOf('='))));
+        return Set.copyOf(names);
+    }
+
+    /** A cookie handle for a session a fixture stores directly — an opaque value, never the session id. */
+    private static String newCookieHandle() {
+        return "handle-" + SessionRecord.newSessionId();
+    }
 
     @Nested
     @DisplayName("ReservedPathRegistry registers the user_info, login and step-up folds")
@@ -219,7 +264,7 @@ class GatewayEdgeRouteBffWiringTest {
             // a request arrives. The observable that IS specific to the session-aware assembly is the
             // wired SessionAuthenticationStage's own login challenge on an unauthenticated navigation.
             HttpClientResponse challenged = serveUnauthenticatedNavigation(sessionTable,
-                    activeRuntime(serverBinding(new InMemorySessionStore(16))));
+                    activeRuntime(serverBinding(newStore())));
             HttpClientResponse unwired = serveUnauthenticatedNavigation(sessionTable, BffRuntime.inert());
 
             assertEquals(302, challenged.statusCode(),
@@ -263,7 +308,7 @@ class GatewayEdgeRouteBffWiringTest {
         @Test
         @DisplayName("Should still register a single catch-all route with an active runtime")
         void shouldRegisterCatchAll() {
-            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(serverBinding(new InMemorySessionStore(16))));
+            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(serverBinding(newStore())));
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             assertEquals(1, router.getRoutes().size());
@@ -306,7 +351,7 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(rejectEverythingRoute())),
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(new InMemorySessionStore(16))), EgressTrustProfiles.unconsulted(),
+                    activeRuntime(serverBinding(newStore())), EgressTrustProfiles.unconsulted(),
                     PortalEndpoint.inert(),
                     gatewayJson());
             Router router = Router.router(vertx);
@@ -414,11 +459,12 @@ class GatewayEdgeRouteBffWiringTest {
             // A live session makes login initiation take the already-authenticated short-circuit, whose
             // redirect Location IS the return URL the edge extracted — the cleanest observable for the
             // wire name, and one that never reaches the IdP engine.
-            SessionStore store = new InMemorySessionStore(16);
+            SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
+            String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
-                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), Instant.now());
-            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), cookieHandle, Instant.now());
+            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
@@ -512,11 +558,12 @@ class GatewayEdgeRouteBffWiringTest {
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
-            SessionStore store = new InMemorySessionStore(16);
+            SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
+            String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
-                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), Instant.now());
-            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), cookieHandle, Instant.now());
+            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
@@ -586,7 +633,7 @@ class GatewayEdgeRouteBffWiringTest {
     @DisplayName("BffRuntime.dispatch routes each reserved path to its handler (not NO_ROUTE_MATCHED)")
     class ReservedDispatch {
 
-        private final SessionStore store = new InMemorySessionStore(16);
+        private final SessionStore store = newStore();
         private final BffRuntime runtime = activeRuntime(serverBinding(store));
         private final Instant now = Instant.parse("2026-07-25T10:00:00Z");
 
@@ -635,9 +682,10 @@ class GatewayEdgeRouteBffWiringTest {
         @DisplayName("LOGIN with a live session short-circuits (302) to the validated return URL")
         void shouldDispatchLogin() {
             String sessionId = SessionRecord.newSessionId();
+            String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
-                    .expiresAt(now.plus(Duration.ofHours(1))).build(), now);
-            String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+                    .expiresAt(now.plus(Duration.ofHours(1))).build(), cookieHandle, now);
+            String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.LOGIN,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
             BffRuntime.ReservedHttpResponse crossOrigin = runtime.dispatch(ReservedEndpoint.LOGIN,
@@ -687,9 +735,10 @@ class GatewayEdgeRouteBffWiringTest {
         @DisplayName("STEP_UP with a live session redirects (302) to the validated return URL")
         void shouldDispatchStepUpWithSession() {
             String sessionId = SessionRecord.newSessionId();
+            String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
-                    .expiresAt(now.plus(Duration.ofHours(1))).build(), now);
-            String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+                    .expiresAt(now.plus(Duration.ofHours(1))).build(), cookieHandle, now);
+            String cookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.STEP_UP,
                     new BffRuntime.ReservedHttpRequest("", cookie, null, "/home", null, null, "GET"), now);
@@ -743,7 +792,7 @@ class GatewayEdgeRouteBffWiringTest {
         void setUp() {
             pendingStore = new PendingAuthorizationStore.InMemory(16);
             bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-            sessionBinding = serverBinding(new InMemorySessionStore(16));
+            sessionBinding = serverBinding(newStore());
 
             FlowContext flow = FlowContext.create(ORIGIN + CALLBACK_PATH);
             state = flow.state();
@@ -771,6 +820,21 @@ class GatewayEdgeRouteBffWiringTest {
             assertTrue(response.setCookieHeaders().stream()
                             .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
                     "the session cookie is set from the query-mode callback");
+        }
+
+        @Test
+        @DisplayName("The 302 that sets the session cookie carries Cache-Control: no-store and no other header")
+        void shouldMarkCompletedLoginUncacheable() {
+            BffRuntime.ReservedHttpResponse response = runtime.dispatch(ReservedEndpoint.CALLBACK,
+                    queryCallback("code=auth-code&state=" + state), now);
+
+            assertAll("the answer that hands the browser its session cookie",
+                    () -> assertEquals(302, response.status(), "precondition: the login completed"),
+                    () -> assertTrue(response.setCookieHeaders().stream()
+                                    .anyMatch(cookie -> cookie.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
+                            "precondition: it sets the session cookie"),
+                    () -> assertEquals(Map.of("Cache-Control", "no-store"), response.headers(),
+                            "a response carrying a session cookie must not be stored"));
         }
 
         @Test
@@ -843,7 +907,8 @@ class GatewayEdgeRouteBffWiringTest {
                             rawToken -> {
                                 throw new AssertionError("engine verify must not be reached");
                             },
-                            new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding),
+                            new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), sessionBinding,
+                            new LogoutTokenReplayGuard(16)),
                     sessionBinding);
             UserInfoEndpoint userInfo = new UserInfoEndpoint(sessionBinding,
                     new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
@@ -854,7 +919,8 @@ class GatewayEdgeRouteBffWiringTest {
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
                     () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
                     engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld(),
-                    gatewayJson());
+                    gatewayJson(), gatewayCookieNames(sessionBinding),
+                    new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true);
         }
     }
 
@@ -1034,7 +1100,7 @@ class GatewayEdgeRouteBffWiringTest {
                     GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(new InMemorySessionStore(16)), jwksEndpoint),
+                    activeRuntime(serverBinding(newStore()), jwksEndpoint),
                     EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
                     gatewayJson());
             Router router = Router.router(vertx);
@@ -1228,7 +1294,7 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(keysPrefixRoute(upstream.actualPort()))),
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(new InMemorySessionStore(16)),
+                    activeRuntime(serverBinding(newStore()),
                             new ClientJwksEndpoint(signingKey.publicJwk())),
                     EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
                     gatewayJson());
@@ -1333,11 +1399,12 @@ class GatewayEdgeRouteBffWiringTest {
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(tokenHolder.getIssuerConfig()).build();
 
-            SessionStore store = new InMemorySessionStore(16);
+            SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
+            String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
-                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), Instant.now());
-            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+                    .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), cookieHandle, Instant.now());
+            sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             int upstreamPort = upstream.actualPort();
             RouteTable table = new RouteTable(List.of(
@@ -1517,7 +1584,7 @@ class GatewayEdgeRouteBffWiringTest {
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
-            SessionStore store = new InMemorySessionStore(16);
+            SessionStore store = newStore();
             underScopedCookie = createSession(store, Set.of());
             coveringCookie = createSession(store, Set.of(NEEDED_SCOPE));
 
@@ -1596,10 +1663,11 @@ class GatewayEdgeRouteBffWiringTest {
         /** Creates a live session whose active and granted scope sets are {@code scopes}; returns its cookie. */
         private static String createSession(SessionStore store, Set<String> scopes) {
             String sessionId = SessionRecord.newSessionId();
+            String cookieHandle = newCookieHandle();
             store.create(SessionRecord.builder().sessionId(sessionId).accessToken("a").idToken("i").sub("sub")
                     .expiresAt(Instant.now().plus(Duration.ofHours(1)))
-                    .activeScopes(scopes).grantedScopes(scopes).build(), Instant.now());
-            return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + sessionId;
+                    .activeScopes(scopes).grantedScopes(scopes).build(), cookieHandle, Instant.now());
+            return SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
         }
 
         private EdgeAnswer get(String uri, String cookie, String accept) throws Exception {
@@ -1618,6 +1686,238 @@ class GatewayEdgeRouteBffWiringTest {
         /** The parts of an edge response these tests assert, read off the wire in one step. */
         private record EdgeAnswer(int status, @Nullable String contentType, @Nullable String wwwAuthenticate,
         @Nullable String location, String body) {
+        }
+    }
+
+    /**
+     * Cookie mode over a live Vert.x server against a stub upstream: the activity cookie the session
+     * stage hands to the response cookies is on the head of the proxied response, and the request the
+     * upstream receives carries no {@code Cookie} header.
+     * <p>
+     * The stub upstream answers its head and a first body chunk and then holds the rest of the body
+     * until the test releases it. The client therefore reads the activity cookie off a response whose
+     * body is still open, which is what shows the cookie travels on the head and that the edge does not
+     * wait for the upstream body to end before it writes it.
+     */
+    @Nested
+    @DisplayName("cookie mode: the activity cookie is on the head of a proxied response and no Cookie reaches the upstream")
+    class CookieModeActivityCookie {
+
+        private static final String ACTIVITY_COOKIE_PREFIX = SessionCookieCodec.DEFAULT_COOKIE_NAME + "-activity=";
+        private static final Duration SESSION_TTL = Duration.ofHours(1);
+        private static final Duration IDLE_TIMEOUT = Duration.ofMinutes(30);
+        /** The path prefix of the {@code protocol: grpc} session route. */
+        private static final String GRPC_PREFIX = "/orders.OrderService";
+
+        /** The {@code Cookie} header values the stub upstream received, one entry per request; empty string for none. */
+        private final List<String> upstreamCookieHeaders = new CopyOnWriteArrayList<>();
+        /** Completed by the test to let the stub upstream finish the response body it is holding open. */
+        private final CompletableFuture<Void> releaseUpstreamBody = new CompletableFuture<>();
+
+        private Vertx vertx;
+        private ExecutorService virtualThreadExecutor;
+        private HttpServer upstream;
+        private HttpServer front;
+        private HttpClient client;
+        private CookieSessionBinding binding;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
+                String cookie = request.getHeader("Cookie");
+                upstreamCookieHeaders.add(cookie == null ? "" : cookie);
+                request.response().setChunked(true);
+                request.response().write("first-");
+                // The rest of the body is written on this connection's own context: the release arrives
+                // on the test thread, and a response must not be written from a foreign thread.
+                Context connectionContext = Vertx.currentContext();
+                releaseUpstreamBody.whenComplete((released, failure) ->
+                        connectionContext.runOnContext(ignored -> request.response().end("second")));
+            }).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+
+            byte[] key = new byte[32];
+            Arrays.fill(key, (byte) 0x11);
+            byte[] salt = new byte[32];
+            Arrays.fill(salt, (byte) 0x22);
+            byte[] activityKey = new byte[32];
+            Arrays.fill(activityKey, (byte) 0x44);
+            binding = new CookieSessionBinding(
+                    new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                            SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"),
+                            (byte) 1),
+                    salt,
+                    new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                            new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                    IDLE_TIMEOUT);
+
+            ResolvedRoute sessionRoute = ResolvedRoute.builder()
+                    .id("cookie-session")
+                    .protocol(Protocol.HTTP)
+                    .match(MatchConfig.builder().pathPrefix("/app").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .build();
+            ResolvedRoute grpcSessionRoute = ResolvedRoute.builder()
+                    .id("cookie-session-grpc")
+                    .protocol(Protocol.GRPC)
+                    .match(MatchConfig.builder().pathPrefix(GRPC_PREFIX).build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                    .effectiveAllowedMethods(List.of(HttpMethod.POST))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
+                    .build();
+            OidcConfig cookieModeOidc = OidcConfig.builder()
+                    .redirectUri(ORIGIN + CALLBACK_PATH)
+                    .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE).build())
+                    .build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(sessionRoute, grpcSessionRoute)),
+                    GatewayConfig.builder().version(1).oidc(cookieModeOidc).build(),
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    activeRuntime(binding), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                    gatewayJson());
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the edge front server to start listening");
+            client = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            releaseUpstreamBody.complete(null);
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(front.close(), "the edge front server to close");
+            Awaits.teardown(upstream.close(), "the stub upstream server to close");
+            virtualThreadExecutor.close();
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        /** Binds a session whose login lies {@code secondsAgo} in the past and returns its request cookie. */
+        private String sessionBoundSecondsAgo(long secondsAgo) {
+            Instant login = Instant.now().minusSeconds(secondsAgo);
+            String setCookie = binding.bind(SessionRecord.builder().sessionId(SessionRecord.newSessionId())
+                    .accessToken("a").idToken("i").sub("sub").expiresAt(login.plus(SESSION_TTL)).build(), login)
+                    .setCookieHeaders().getFirst();
+            return setCookie.substring(0, setCookie.indexOf(';'));
+        }
+
+        /**
+         * A proxied response as the client saw it: the head as it arrived, whether the upstream was still
+         * holding the body open at that moment, and the body read afterwards.
+         */
+        private record Proxied(int status, List<String> setCookies, boolean headArrivedWhileBodyHeld, String body) {
+
+            List<String> activityCookies() {
+                return setCookies.stream().filter(header -> header.startsWith(ACTIVITY_COOKIE_PREFIX)).toList();
+            }
+        }
+
+        /**
+         * Sends one request and observes the response head in the client's own response callback — the
+         * moment the head arrives. The body handler is attached in that same callback, before the upstream
+         * is released, so no chunk that follows the head is lost and the head is provably read while the
+         * upstream still holds the body open.
+         */
+        private Proxied proxied(HttpClient via, RequestOptions options, Map<String, String> headers,
+                @Nullable Buffer requestBody) throws Exception {
+            return Awaits.connect(via.request(options)
+                    .compose(request -> {
+                        headers.forEach(request::putHeader);
+                        return requestBody == null ? request.send() : request.send(requestBody);
+                    })
+                    .compose(response -> {
+                        int status = response.statusCode();
+                        List<String> setCookies = List.copyOf(response.headers().getAll("Set-Cookie"));
+                        boolean bodyHeld = !releaseUpstreamBody.isDone();
+                        Future<Buffer> body = response.body();
+                        releaseUpstreamBody.complete(null);
+                        return body.map(buffer -> new Proxied(status, setCookies, bodyHeld, buffer.toString()));
+                    }), "the proxied response to " + options.getMethod() + " " + options.getURI());
+        }
+
+        private RequestOptions to(io.vertx.core.http.HttpMethod method, String uri) {
+            return new RequestOptions()
+                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setMethod(method).setURI(uri);
+        }
+
+        private Proxied proxiedGet(String sessionCookie) throws Exception {
+            return proxied(client, to(io.vertx.core.http.HttpMethod.GET, "/app/orders"),
+                    Map.of("Cookie", sessionCookie, "Accept", "application/json"), null);
+        }
+
+        @Test
+        @DisplayName("the activity cookie is on the response head while the upstream still holds the body open")
+        void activityCookieIsOnTheResponseHeadBeforeTheBodyEnds() throws Exception {
+            Proxied answer = proxiedGet(sessionBoundSecondsAgo(120));
+
+            assertAll("the stage's cookie for the access rides on the proxied response head",
+                    () -> assertEquals(200, answer.status(), "the session request is proxied"),
+                    () -> assertTrue(answer.headArrivedWhileBodyHeld(),
+                            "the head arrived while the upstream body was held open"),
+                    () -> assertEquals(1, answer.activityCookies().size(),
+                            "exactly one activity cookie: " + answer.setCookies()),
+                    () -> assertTrue(answer.activityCookies().getFirst()
+                                    .endsWith("; Path=/; Secure; HttpOnly; SameSite=Lax"),
+                            answer.activityCookies().toString()),
+                    () -> assertTrue(answer.setCookies().stream()
+                                    .noneMatch(header -> header.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=")),
+                            "the session cookie is not rewritten on access"),
+                    () -> assertEquals("first-second", answer.body(), "the body is relayed whole after the head"));
+        }
+
+        @Test
+        @DisplayName("the request the upstream receives carries no Cookie header")
+        void upstreamReceivesNoCookieHeader() throws Exception {
+            Proxied answer = proxiedGet(sessionBoundSecondsAgo(120));
+
+            assertEquals(200, answer.status(), "precondition: the session request reached the upstream");
+            assertEquals(List.of(""), upstreamCookieHeaders,
+                    "the session cookie and every other cookie stop at the gateway");
+        }
+
+        @Test
+        @DisplayName("a gRPC session route carries the activity cookie on its response head too, and no Cookie reaches the upstream")
+        void grpcRouteCarriesTheActivityCookieOnTheResponseHead() throws Exception {
+            String sessionCookie = sessionBoundSecondsAgo(120);
+            HttpClient http2Client = vertx.createHttpClient(new HttpClientOptions()
+                    .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
+            try {
+                Proxied answer = proxied(http2Client,
+                        to(io.vertx.core.http.HttpMethod.POST, GRPC_PREFIX + "/List"),
+                        Map.of("Cookie", sessionCookie, "Origin", ORIGIN, "Content-Type", "application/grpc",
+                                "TE", "trailers"),
+                        Buffer.buffer(new byte[5]));
+
+                assertAll("the gRPC dispatch writes the stage's cookie on the response head as the HTTP one does",
+                        () -> assertEquals(200, answer.status(), "the session call is proxied"),
+                        () -> assertTrue(answer.headArrivedWhileBodyHeld(),
+                                "the head arrived while the upstream body was held open"),
+                        () -> assertEquals(1, answer.activityCookies().size(),
+                                "exactly one activity cookie: " + answer.setCookies()),
+                        () -> assertEquals(List.of(""), upstreamCookieHeaders,
+                                "the upstream received no Cookie header"));
+            } finally {
+                Awaits.teardown(http2Client.close(), "the HTTP/2 client to close");
+            }
+        }
+
+        @Test
+        @DisplayName("control: a session accessed less than 60 seconds ago is proxied with no activity cookie")
+        void recentSessionGetsNoActivityCookie() throws Exception {
+            Proxied answer = proxiedGet(sessionBoundSecondsAgo(5));
+
+            assertAll("the cookie above is the access notification's, issued at most once per interval",
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertTrue(answer.activityCookies().isEmpty(),
+                            "no activity cookie inside the interval: " + answer.setCookies()));
         }
     }
 
@@ -1666,6 +1966,16 @@ class GatewayEdgeRouteBffWiringTest {
      * form — for the tests that drive the client JWKS path through the edge.
      */
     private static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint) {
+        return activeRuntime(binding, clientJwksEndpoint, new SessionRelayRegistry(16, Clock.systemUTC()),
+                sessionId -> true);
+    }
+
+    /**
+     * The same engine-free active runtime over the relay registry and the session-presence lookup the
+     * caller supplies — the two seams a session-bound WebSocket relay is tracked through.
+     */
+    static BffRuntime activeRuntime(SessionBinding binding, ClientJwksEndpoint clientJwksEndpoint,
+            SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
         BindingCookieCodec bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
         PendingAuthorizationStore pendingStore = new PendingAuthorizationStore.InMemory(16);
         Duration ttl = Duration.ofHours(1);
@@ -1694,7 +2004,8 @@ class GatewayEdgeRouteBffWiringTest {
                 rawToken -> {
                     throw new AssertionError("engine verify must not be reached");
                 },
-                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), binding), binding);
+                new LogoutTokenValidator(ORIGIN, "client", Duration.ofMinutes(2)), binding,
+                new LogoutTokenReplayGuard(16)), binding);
 
         UserInfoEndpoint userInfo = new UserInfoEndpoint(binding,
                 new ClaimAllowlistFilter(List.of("sub"), List.of("sub")),
@@ -1704,7 +2015,8 @@ class GatewayEdgeRouteBffWiringTest {
                 engineFreeReturnTargetScopes());
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
-                userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson());
+                userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson(),
+                gatewayCookieNames(binding), sessionRelays, sessionHeld);
     }
 
     /**
@@ -1772,7 +2084,8 @@ class GatewayEdgeRouteBffWiringTest {
         EndSessionFlow endSessionFlow = new EndSessionFlow(
                 new PostLogoutRedirectValidator(Set.of(ORIGIN + LOGOUT_RETURN_PATH)));
         RpInitiatedLogout rpInitiatedLogout = new RpInitiatedLogout(endSessionFlow, session -> {
-        }, "https://idp.example.com/logout", ORIGIN + LOGOUT_RETURN_PATH, "/", Duration.ofMinutes(1));
+                }, () -> Optional.of("https://idp.example.com/logout"), ORIGIN + LOGOUT_RETURN_PATH, "/",
+                Duration.ofMinutes(1));
         return new LogoutEndpoint(rpInitiatedLogout, binding);
     }
 

@@ -151,6 +151,31 @@ have to exist, or be replaced by an inert form, on a gateway that has no session
 of this ADR prefers the platform mechanism where it is equivalent. Here it changes when a component
 is created and whether it is created, so the producer keeps building both.
 
+=== How far CDI is adopted
+
+The count was taken at commit `90a89a5d`, the base of this change. 16 production files carry a CDI
+annotation that defines a bean, a producer, an injection point or an observer, and 8 of them are in
+the `tls` package. Two further files import a CDI type without being a bean: `GatewayValidator`
+declares a qualifier, and `AuthenticationStage` takes a `jakarta.inject.Provider`.
+
+This change adds one bean, `GatewayJson`, the serializer that replaces the hand-rolled JSON writer.
+Nothing else is converted. The session store and the session binding stay producer-built for the
+reason above, and the pre-boot configuration path stays hand-built for the reason in the table.
+
+The `tls` package was reviewed class by class and no class in it was changed. Its package
+documentation lists the eight beans and the four classes that are not beans, each with its reason.
+The review confirmed the `ClientHelloSniParser` entry of the table from the code:
+`SniFrontListener` is a plain-TCP `NetServer` that terminates nothing, it passes the buffered bytes
+to the parser before any handshake, and Vert.x reports a server name only on a connection whose TLS
+handshake it has completed itself.
+
+=== Not adopted: the `RouteRuntimeAssembler` cleanup
+
+`RouteRuntimeAssembler` builds one `HttpClient` per upstream target and one `Guard` per resilience
+shape for every route that has an upstream, whatever the route's protocol. A WebSocket route
+therefore gets both. Dropping that allocation for WebSocket routes is a known cleanup. It is not
+part of this change, because nothing here touches that class, and it has no owner yet.
+
 === Where the session decisions are recorded
 
 This ADR settles that the session store stays hand-rolled. What the store and the binding do --

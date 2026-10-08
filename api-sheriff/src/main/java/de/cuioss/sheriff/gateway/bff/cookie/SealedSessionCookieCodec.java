@@ -104,10 +104,11 @@ import org.jspecify.annotations.Nullable;
  * <em>remaining</em> lifetime computed from the payload's login instant, so a re-seal after a token
  * refresh never extends the session. The header reuses the landed hardening: {@code Secure},
  * {@code HttpOnly}, {@code SameSite=Lax} and {@code Path=/} are emitted unconditionally from
- * {@code HARDENING_ATTRIBUTES}. The {@code __Host-} prefix is <em>not</em> in that set — it belongs
- * to the DEFAULT {@code session.cookie_name}, and a deployment that configures another name loses
- * it, along with the host-binding a browser enforces on the prefix. Nothing currently validates
- * that.
+ * {@code HARDENING_ATTRIBUTES}. The {@code __Host-} prefix is <em>not</em> in that set — it is part
+ * of the cookie <em>name</em>. The default {@code session.cookie_name} carries it, and boot
+ * validation ({@code ConfigValidator}, the session-cookie name rule) refuses a configured name that
+ * does not start with it, so every name this codec is built with keeps the host-binding a browser
+ * enforces on the prefix. The codec itself does not re-check the name.
  * <p>
  * The codec is framework-agnostic and safe for concurrent use — it holds only immutable
  * configuration and a thread-safe {@link SecureRandom}, and creates a fresh {@link Cipher} per

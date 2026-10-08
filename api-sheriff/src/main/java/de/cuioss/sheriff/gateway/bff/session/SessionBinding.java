@@ -34,18 +34,29 @@ import org.jspecify.annotations.Nullable;
  * opaque handle, while a stateless implementation seals the record into the cookie itself. Login,
  * CSRF, step-up, scope enforcement, and logout orchestration stay single-sourced above this seam.
  * <p>
- * <strong>One creating write, one updating write.</strong> {@link #bind} creates a session and is the
- * login's write. {@link #persist} updates a session that already exists and <em>never creates
- * one</em>: an implementation that can observe that the session was destroyed since the caller
- * resolved it reports that instead of writing, so a refresh or a widening that was in flight during a
- * logout cannot bring the session back. Whether an implementation can observe it is a property of
- * the mode — a server-mode binding can, a stateless one holds nothing to observe it with — and is
- * stated on {@link #persist}.
+ * <strong>One creating write, two updating writes.</strong> {@link #bind} creates a session and is the
+ * login's write. {@link #persist} and {@link #persistReissuingCookie} update a session that already
+ * exists and <em>never create one</em>: an implementation that can observe that the session was
+ * destroyed since the caller resolved it reports that instead of writing, so a refresh or a widening
+ * that was in flight during a logout cannot bring the session back. Whether an implementation can
+ * observe it is a property of the mode — a server-mode binding can, a stateless one holds nothing to
+ * observe it with — and is stated on {@link #persist}. The two updating writes differ in one point
+ * only: {@link #persistReissuingCookie} additionally replaces the cookie value the browser holds, and
+ * is the write a step-up or a scope widening makes; {@link #persist} is the refresh's write.
  * <p>
  * <strong>Session identity.</strong> Every implementation populates {@link SessionRecord#sessionId()}
  * with a stable per-session identity, so callers that need to key per-session work — notably the
  * single-flight coalescing in the refresh coordinator — use that component directly. The seam
- * therefore carries <em>no</em> identity accessor.
+ * therefore carries <em>no</em> identity accessor. <strong>The session identity is never the cookie
+ * value, in either mode.</strong> A server-mode binding hands the browser an opaque handle that
+ * resolves to the session and can be re-issued while the identity stays; a stateless binding derives
+ * the identity from the sealed payload and never emits it.
+ * <p>
+ * <strong>Two deadlines.</strong> A session ends at its absolute lifetime
+ * ({@link SessionRecord#expiresAt()}) and, earlier, when it has not been accessed for the idle
+ * timeout. {@link #resolve} enforces both and extends neither. Only {@link #recordAccess} moves the
+ * idle deadline, and the one caller that may invoke it is the session stage, for a request it lets
+ * through to a session-protected route.
  * <p>
  * <strong>IdP-driven destruction.</strong> {@link #destroyBySid(String)} and
  * {@link #destroyBySub(String)} serve OIDC back-channel logout. A stateless implementation holds no
@@ -74,12 +85,18 @@ public interface SessionBinding {
     BoundSession bind(SessionRecord session, Instant now);
 
     /**
-     * Resolves the live session a request carries, enforcing the absolute TTL: an expired or
-     * unreadable binding is reported as absent.
+     * Resolves the live session a request carries, enforcing the absolute TTL and the idle timeout: a
+     * binding that is unreadable, past its absolute lifetime or idle for longer than the idle timeout
+     * is reported as absent.
+     * <p>
+     * Resolving <strong>never extends</strong> either deadline. A caller that only reads the session —
+     * a reserved endpoint, the portal identity — therefore does not keep it alive; see
+     * {@link #recordAccess}.
      *
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
-     * @param now          the reference instant for the TTL check
-     * @return the live session; empty when the request carries none, or it is unreadable or expired
+     * @param now          the reference instant for both deadline checks
+     * @return the live session; empty when the request carries none, or it is unreadable, expired or
+     *         idle past the idle timeout
      */
     Optional<SessionRecord> resolve(@Nullable String cookieHeader, Instant now);
 
@@ -108,6 +125,49 @@ public interface SessionBinding {
      *         stateless implementation whose sealed representation exceeds the cookie size budget
      */
     Optional<BoundSession> persist(SessionRecord updated, Instant now);
+
+    /**
+     * Updates a session that already exists exactly as {@link #persist} does and additionally
+     * <strong>re-issues the cookie value the browser holds</strong> — the write a step-up or a scope
+     * widening makes.
+     * <p>
+     * Like {@link #persist} it never creates a session, never extends the absolute lifetime and reports
+     * the session gone instead of writing when the implementation can observe that it was destroyed.
+     * The session keeps its identity ({@link SessionRecord#sessionId()}): only the browser-facing value
+     * changes.
+     * <p>
+     * How the value is re-issued is a property of the mode and is stated on each implementation.
+     * <p>
+     * Thread-safe, like every operation of this seam.
+     *
+     * @param updated the session carrying the new token material; it keeps the identity and the
+     *                absolute expiry of the session it updates
+     * @param now     the reference instant
+     * @return the updated session and the {@code Set-Cookie} header value(s) carrying the re-issued
+     *         cookie; empty when the implementation observed that the session no longer exists
+     * @throws IllegalStateException when the binding cannot hold the updated session — for example a
+     *         stateless implementation whose sealed representation exceeds the cookie size budget
+     */
+    Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now);
+
+    /**
+     * Records that a request carrying {@code session} was let through to a session-protected route —
+     * the one event that moves the session's idle deadline.
+     * <p>
+     * The caller is the session stage, once per request it lets through. A request that is refused,
+     * redirected into a login or a widening, or left without a token by a refresh is not an access and
+     * must not be reported here, and no reserved endpoint reports one.
+     * <p>
+     * The absolute lifetime is not affected.
+     *
+     * @param session      the live session the request was let through with
+     * @param cookieHeader the raw request {@code Cookie} header value the session was resolved from,
+     *                     may be absent
+     * @param now          the reference instant, recorded as the access
+     * @return the {@code Set-Cookie} header value(s) the binding needs the caller to emit so the access
+     *         is remembered, possibly none; never a cookie carrying token material
+     */
+    List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now);
 
     /**
      * Destroys the given session (RP-initiated logout or a failed refresh). A no-op when the
@@ -141,12 +201,13 @@ public interface SessionBinding {
     IdpDestruction idpDestruction();
 
     /**
-     * Builds the {@code Set-Cookie} header value that clears the browser's session binding. Needed
-     * on logout even when no live session resolved, so a stale binding cookie is cleared too.
+     * Builds every {@code Set-Cookie} header value that clears a cookie this binding sets. Needed on
+     * logout even when no live session resolved, so a stale cookie is cleared too. A binding that sets
+     * more than one cookie returns one clearing value per cookie, and the caller emits all of them.
      *
-     * @return the clearing {@code Set-Cookie} header value
+     * @return the clearing {@code Set-Cookie} header values, never empty
      */
-    String clearingSetCookieHeader();
+    List<String> clearingSetCookieHeaders();
 
     /**
      * Whether a binding can honour the IdP-driven {@code sid}/{@code sub} destruction of OIDC

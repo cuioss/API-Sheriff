@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.bff.logout;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -36,23 +37,32 @@ import org.jspecify.annotations.Nullable;
  * <strong>sole</strong> authority over a logout token's claims — the seam ahead of it verifies the
  * signature and nothing else, deliberately, because the
  * <a href="https://openid.net/specs/openid-connect-backchannel-1_0.html">OpenID Connect Back-Channel
- * Logout</a> claim set is not the ID-token claim set (no {@code exp}, no mandatory {@code sub}, no
- * {@code azp}). The pipeline applies the full back-channel validation on the already-signature-verified
- * token:
+ * Logout</a> claim set is not the ID-token claim set (no mandatory {@code sub}, no {@code azp}, a
+ * {@code jti} and an {@code events} claim of its own). The pipeline applies the full back-channel
+ * validation on the already-signature-verified token:
  * <ol>
+ *   <li>a {@code typ} header, when the token carries one, is {@value #LOGOUT_TOKEN_TYPE} (compared
+ *       without regard to case, with or without the {@code application/} prefix) — a token that
+ *       carries no {@code typ} passes this check, a token typed as anything else is refused,</li>
  *   <li>{@code iss} equals the expected issuer,</li>
  *   <li>{@code aud} contains the expected audience (the confidential client id),</li>
- *   <li>{@code iat} is present and within a short freshness window (the replay guard, BFF-09),</li>
+ *   <li>{@code iat} is present and within a short freshness window (BFF-09),</li>
+ *   <li>{@code exp} is present and lies after the reference instant — the specification lists
+ *       {@code exp} among the required claims and validates it as for an ID token,</li>
  *   <li>{@code events} contains the {@value #BACKCHANNEL_LOGOUT_EVENT} member,</li>
  *   <li>{@code nonce} is <strong>absent</strong> (a nonce is prohibited in a logout token),</li>
  *   <li>at least one of {@code sub} / {@code sid} is present — {@code sid} alone is the shape
- *       {@code backchannel.logout.session.required=true} produces and is fully supported.</li>
+ *       {@code backchannel.logout.session.required=true} produces and is fully supported,</li>
+ *   <li>{@code jti} is present — it is what lets the caller recognise a repeat of this token.</li>
  * </ol>
  * Any failure yields a {@link Verdict.Rejected} fail-closed — the token is rejected and no session is
  * touched. The verdict names the failing check as a bounded {@link LogoutRejection}, so the caller can
  * record <em>which</em> check refused without this validator deciding how loudly to say it. On success
- * the resolved {@code sub}/{@code sid} back the O(1) secondary-index destruction. The validator is
- * framework-agnostic and stateless, so every negative case is unit-testable without a live IdP.
+ * the resolved {@code sub}/{@code sid} back the O(1) secondary-index destruction, and the verdict
+ * carries the {@code jti} with the last instant at which this token would still pass the freshness
+ * check — what {@link LogoutTokenReplayGuard} needs to refuse a repeat. The validator is
+ * framework-agnostic and stateless, so every negative case is unit-testable without a live IdP;
+ * whether a token was seen before is not its question.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -69,6 +79,14 @@ public final class LogoutTokenValidator {
     private static final String CLAIM_IAT = "iat";
     private static final String CLAIM_EVENTS = "events";
     private static final String CLAIM_NONCE = "nonce";
+    private static final String CLAIM_EXP = "exp";
+    private static final String CLAIM_JTI = "jti";
+
+    /** The explicit type a logout token's {@code typ} header carries. */
+    public static final String LOGOUT_TOKEN_TYPE = "logout+jwt";
+
+    /** The media-type prefix RFC 7515 allows a {@code typ} value to omit. */
+    private static final String APPLICATION_PREFIX = "application/";
 
     private final String expectedIssuer;
     private final String expectedAudience;
@@ -91,15 +109,19 @@ public final class LogoutTokenValidator {
     /**
      * Runs the full logout-token check pipeline over an already-signature-verified token.
      *
-     * @param logoutToken the signature-verified logout token
-     * @param now         the reference instant for the {@code iat} freshness check
-     * @return {@link Verdict.Accepted} carrying the resolved {@code sub}/{@code sid} to destroy by,
-     *         or {@link Verdict.Rejected} naming the failing check
+     * @param verified the signature-verified logout token with its {@code typ} header
+     * @param now      the reference instant for the {@code iat} freshness and the {@code exp} check
+     * @return {@link Verdict.Accepted} carrying the resolved {@code sub}/{@code sid} to destroy by
+     *         and the token's {@code jti}, or {@link Verdict.Rejected} naming the failing check
      */
-    public Verdict validate(TokenContent logoutToken, Instant now) {
-        Objects.requireNonNull(logoutToken, "logoutToken");
+    public Verdict validate(VerifiedLogoutToken verified, Instant now) {
+        Objects.requireNonNull(verified, "verified");
         Objects.requireNonNull(now, "now");
 
+        if (!isLogoutTokenType(verified.headerType())) {
+            return new Verdict.Rejected(LogoutRejection.TYPE_MISMATCH);
+        }
+        TokenContent logoutToken = verified.content();
         Optional<String> issuer = claim(logoutToken, CLAIM_ISS);
         if (issuer.isEmpty() || !expectedIssuer.equals(issuer.get())) {
             return new Verdict.Rejected(LogoutRejection.ISSUER_MISMATCH);
@@ -107,8 +129,13 @@ public final class LogoutTokenValidator {
         if (!audience(logoutToken).contains(expectedAudience)) {
             return new Verdict.Rejected(LogoutRejection.AUDIENCE_MISMATCH);
         }
-        if (!isFresh(logoutToken, now)) {
+        Optional<Instant> issuedAt = instantClaim(logoutToken, CLAIM_IAT).filter(iat -> isFresh(iat, now));
+        if (issuedAt.isEmpty()) {
             return new Verdict.Rejected(LogoutRejection.IAT_OUTSIDE_WINDOW);
+        }
+        // The reference instant must lie before exp; an absent exp is refused like a passed one.
+        if (instantClaim(logoutToken, CLAIM_EXP).filter(now::isBefore).isEmpty()) {
+            return new Verdict.Rejected(LogoutRejection.EXPIRED);
         }
         if (claim(logoutToken, CLAIM_EVENTS).filter(LogoutTokenValidator::hasBackchannelLogoutEventMember).isEmpty()) {
             return new Verdict.Rejected(LogoutRejection.EVENTS_MISSING);
@@ -121,7 +148,29 @@ public final class LogoutTokenValidator {
         if (sub == null && sid == null) {
             return new Verdict.Rejected(LogoutRejection.NO_SUB_OR_SID);
         }
-        return new Verdict.Accepted(new LogoutSubject(sub, sid));
+        Optional<String> jti = claim(logoutToken, CLAIM_JTI);
+        if (jti.isEmpty()) {
+            return new Verdict.Rejected(LogoutRejection.JTI_MISSING);
+        }
+        return new Verdict.Accepted(new LogoutSubject(sub, sid), jti.get(), issuedAt.get().plus(freshnessWindow));
+    }
+
+    /**
+     * Whether a token's {@code typ} header admits it as a logout token. A token without the header
+     * is admitted: the specification recommends the explicit type and does not require it. A header
+     * that is present must name a logout token — RFC 7515 §4.1.9 compares the value as a media type,
+     * without regard to case, and lets the {@code application/} prefix be omitted. A header that is
+     * present and blank names no logout token and is refused.
+     */
+    private static boolean isLogoutTokenType(@Nullable String headerType) {
+        if (headerType == null) {
+            return true;
+        }
+        String type = headerType.strip();
+        if (type.regionMatches(true, 0, APPLICATION_PREFIX, 0, APPLICATION_PREFIX.length())) {
+            type = type.substring(APPLICATION_PREFIX.length());
+        }
+        return LOGOUT_TOKEN_TYPE.equalsIgnoreCase(type);
     }
 
     private static List<String> audience(TokenContent token) {
@@ -136,13 +185,18 @@ public final class LogoutTokenValidator {
         return original == null || original.isBlank() ? List.of() : List.of(original);
     }
 
-    private boolean isFresh(TokenContent token, Instant now) {
-        ClaimValue iat = token.getClaims().get(CLAIM_IAT);
-        if (iat == null || iat.isNotPresentForClaimValueType()) {
-            return false;
-        }
-        Instant issuedAt = iat.getDateTime().toInstant();
+    private boolean isFresh(Instant issuedAt, Instant now) {
         return !issuedAt.isBefore(now.minus(freshnessWindow)) && !issuedAt.isAfter(now.plus(freshnessWindow));
+    }
+
+    /** Reads a date-typed claim; empty when the claim is absent or carries no date. */
+    private static Optional<Instant> instantClaim(TokenContent token, String name) {
+        ClaimValue value = token.getClaims().get(name);
+        if (value == null || value.isNotPresentForClaimValueType()) {
+            return Optional.empty();
+        }
+        OffsetDateTime dateTime = value.getDateTime();
+        return dateTime == null ? Optional.empty() : Optional.of(dateTime.toInstant());
     }
 
     /**
@@ -250,9 +304,12 @@ public final class LogoutTokenValidator {
         /**
          * The token passed every check.
          *
-         * @param subject the resolved {@code sub}/{@code sid} to destroy by
+         * @param subject         the resolved {@code sub}/{@code sid} to destroy by
+         * @param jti             the token's {@code jti}
+         * @param acceptableUntil the last instant at which this token would still pass the
+         *                        {@code iat} freshness check — its {@code iat} plus the window
          */
-        record Accepted(LogoutSubject subject) implements Verdict {
+        record Accepted(LogoutSubject subject, String jti, Instant acceptableUntil) implements Verdict {
         }
 
         /**

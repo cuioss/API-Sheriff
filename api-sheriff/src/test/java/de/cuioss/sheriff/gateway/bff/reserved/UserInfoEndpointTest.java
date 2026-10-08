@@ -30,7 +30,6 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.ClaimSource;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint.UserInfoOutcome;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
@@ -60,7 +59,9 @@ class UserInfoEndpointTest {
 
     private static final Instant T0 = Instant.parse("2026-07-23T10:00:00Z");
     private static final Duration TTL = Duration.ofHours(8);
-    private static final String SESSION_ID = "opaque-session-1";
+    private static final String SESSION_ID = "internal-session-1";
+    /** The opaque value the session cookie carries — never the session id. */
+    private static final String COOKIE_HANDLE = "opaque-cookie-handle-1";
     private static final String SUBJECT = "user-sub-1";
     private static final String NAME = "Alice Example";
     private static final String EMAIL = "alice@example.com";
@@ -77,13 +78,20 @@ class UserInfoEndpointTest {
 
     @BeforeEach
     void setUp() {
-        sessionStore = new InMemorySessionStore(16);
+        // The idle timeout equals the absolute lifetime, so it is not in play outside the idle cases.
+        sessionStore = new InMemorySessionStore(16, TTL, Integer.MAX_VALUE, sessionId -> {
+        });
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, TTL);
         claimFilter = new ClaimAllowlistFilter(List.of("sub", "name", "roles"), List.of("sub", "name", "roles"));
         endpoint = new UserInfoEndpoint(new ServerSessionBinding(sessionStore, sessionCodec), claimFilter,
                 validatedClaims());
 
-        SessionRecord session = SessionRecord.builder()
+        sessionStore.create(session(), COOKIE_HANDLE, T0);
+        cookieHeader = sessionCodec.toSetCookieHeader(COOKIE_HANDLE).split(";", 2)[0];
+    }
+
+    private static SessionRecord session() {
+        return SessionRecord.builder()
                 .sessionId(SESSION_ID)
                 .accessToken(RAW_ACCESS_TOKEN)
                 .idToken(RAW_ID_TOKEN)
@@ -92,8 +100,53 @@ class UserInfoEndpointTest {
                 .acr(ACR)
                 .authTime(AUTH_TIME)
                 .build();
-        sessionStore.create(session, T0);
-        cookieHeader = sessionCodec.toSetCookieHeader(SESSION_ID).split(";", 2)[0];
+    }
+
+    /**
+     * The user-info endpoint and the portal identity read the session; they are not an access. A
+     * session that is only ever probed therefore still ends at its idle deadline.
+     */
+    @Nested
+    @DisplayName("Idle timeout (enforced, never extended)")
+    class IdleTimeout {
+
+        private static final Duration IDLE_TIMEOUT = Duration.ofSeconds(600);
+
+        private UserInfoEndpoint idleEndpoint;
+
+        @BeforeEach
+        void bindIdleStore() {
+            InMemorySessionStore idleStore = new InMemorySessionStore(16, IDLE_TIMEOUT, Integer.MAX_VALUE,
+                    sessionId -> {
+                    });
+            idleStore.create(session(), COOKIE_HANDLE, T0);
+            idleEndpoint = new UserInfoEndpoint(new ServerSessionBinding(idleStore, sessionCodec), claimFilter,
+                    validatedClaims());
+        }
+
+        @Test
+        @DisplayName("A user-info request does not extend the idle deadline")
+        void shouldNotExtendIdleDeadline() {
+            UserInfoOutcome beforeDeadline = idleEndpoint.handle(cookieHeader, null, T0.plusSeconds(500));
+
+            UserInfoOutcome atDeadline = idleEndpoint.handle(cookieHeader, null, T0.plus(IDLE_TIMEOUT));
+
+            assertEquals(200, beforeDeadline.status(), "the session is live before its idle deadline");
+            assertEquals(401, atDeadline.status(),
+                    "the probe at 500 s was no access: the session ended one idle timeout after its creation");
+            assertFalse(atDeadline.isDisclosed());
+        }
+
+        @Test
+        @DisplayName("A session-identity lookup does not extend the idle deadline")
+        void shouldNotExtendIdleDeadlineThroughSessionIdentity() {
+            SessionIdentity beforeDeadline = idleEndpoint.sessionIdentity(cookieHeader, T0.plusSeconds(500));
+
+            SessionIdentity atDeadline = idleEndpoint.sessionIdentity(cookieHeader, T0.plus(IDLE_TIMEOUT));
+
+            assertEquals(new SessionIdentity(true, null), beforeDeadline);
+            assertEquals(SessionIdentity.anonymous(), atDeadline, "an idle session yields the anonymous identity");
+        }
     }
 
     /** A validated-ID-token claim map carrying an allowlisted subset plus a non-allowlisted email. */

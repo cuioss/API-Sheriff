@@ -57,6 +57,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
@@ -213,8 +214,10 @@ public class GatewayEdgeRoute {
     /**
      * Headroom added to the configured sealed-cookie budget when deriving the pre-route
      * {@code Cookie} header-value cap. The header value carries {@code <name>=<value>} and may carry
-     * co-resident cookies (the short-lived binding cookie) alongside the session cookie, so the cap
-     * cannot be the bare value budget. The sum stays far below the gateway's 16 KiB inbound
+     * co-resident cookies alongside the session cookie — the short-lived binding cookie and, in cookie
+     * mode, the activity cookie that remembers the session's last access — so the cap cannot be the
+     * bare value budget. The headroom is shared by every cookie the browser sends beside the session
+     * cookie, the proxied applications' own included. The sum stays far below the gateway's 16 KiB inbound
      * header-block limit ({@link EdgeHardeningOptions}) even at the configurable budget ceiling.
      */
     private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
@@ -273,6 +276,11 @@ public class GatewayEdgeRoute {
      * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
      * release site knows there is no sub-permit to return. */
     private static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
+    /** Holds the {@link SessionRelayRegistry.Tracked} handle of a WebSocket upgrade a session was let
+     * through with. Present ONLY once {@link #dispatchWebSocket} has tracked the relay; every site that
+     * returns the admission permit stops the tracking through it (see {@link #releaseAdmission}), so a
+     * tracked relay is released exactly where its permit is. */
+    private static final String SESSION_RELAY_KEY = "sheriff.sessionrelay";
     /** Set once a framing rejection — the framing gate's, or a body the dispatch refused on its framing
      * — has fallen on an HTTP/1.x request: the writer that answers it then retires the connection the
      * answer is written on (see {@link #markFramingRejection}). The virtual-thread hop carries only the
@@ -544,7 +552,9 @@ public class GatewayEdgeRoute {
                 ? new AuthenticationStage(tokenValidator, bffRuntime.sessionStage())
                 : new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
-        this.responseStage = new ResponseStage();
+        // The names of the cookies the session runtime sets; empty for a bearer-only gateway. An
+        // upstream Set-Cookie line naming one of them is not relayed.
+        this.responseStage = new ResponseStage(bffRuntime.gatewayCookieNames());
         this.redirectStage = new RedirectStage();
         this.originValidationStage = new OriginValidationStage();
         // One WebSocketClient for the whole edge: HttpClient.webSocket(...) is deprecated in favour of
@@ -962,8 +972,17 @@ public class GatewayEdgeRoute {
      * general permit is released by a different site than the relay callback (the upstream-dial
      * failure ends the HTTP response, so the end handler gets there first). Both are therefore
      * released here, each behind its own idempotence latch.
+     * <p>
+     * A WebSocket relay tracked with its session stops being tracked here too, for the same reason: the
+     * registry entry then leaves on every path the permit does — the relay's teardown, a failed client
+     * upgrade, a failed upstream dial, a refused relay budget — and cannot outlive the relay.
      */
     private void releaseAdmission(RoutingContext ctx, AtomicBoolean released) {
+        SessionRelayRegistry.Tracked sessionRelay = ctx.get(SESSION_RELAY_KEY);
+        if (sessionRelay != null) {
+            // Idempotent, and a no-op once the session itself has ended.
+            sessionRelay.release();
+        }
         releaseWebSocketRelayPermit(ctx);
         if (released.compareAndSet(false, true)) {
             admission.release();
@@ -1266,6 +1285,11 @@ public class GatewayEdgeRoute {
             portal.headers().forEach((name, value) -> response.putHeader(name, VARY_HEADER.equalsIgnoreCase(name)
                     ? SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), List.of(value))
                     : value));
+            // A page that sets a cookie is never cacheable, whatever the envelope declared: written
+            // after the envelope headers so it wins the name.
+            if (!stageSetCookies.isEmpty() || !extraSetCookies.isEmpty()) {
+                response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
+            }
             retireMarkedConnection(ctx);
             endMarkedStreamOnceWritten(ctx, response.end(portal.body()));
         });
@@ -1531,6 +1555,13 @@ public class GatewayEdgeRoute {
      * pool. An upgrade beyond that cap is refused {@code 503}, releasing the general permit through
      * the shared guard on the way out so a refusal strands nothing.
      * <p>
+     * <strong>Session-bound relays.</strong> An upgrade a session was let through with is tracked in
+     * the session runtime's relay registry before the upstream is dialed, and the relay is closed at
+     * the session's absolute expiry and — where sessions are held server-side — when the session is
+     * destroyed or evicted. A registry at its capacity refuses the upgrade {@code 503}, exactly like
+     * an exhausted relay sub-budget; no session-bound relay is ever opened untracked. A relay on a
+     * route without a session is not tracked.
+     * <p>
      * <strong>Client connection context.</strong> This method runs on a virtual thread, whose Vert.x
      * context is whatever the executor bound to it — the client connection's own context only when the
      * executor propagates it. The relay is therefore handed the context {@link #handle} captured on the
@@ -1551,6 +1582,25 @@ public class GatewayEdgeRoute {
                 "admission guard missing — handle() must stash it before dispatch");
         Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
                 "client connection context missing — handle() must capture it before dispatch");
+        // A relay opened for a request a session was let through with is tracked under that session, so
+        // it is closed when the session ends. Tracked here, on the virtual thread and before the
+        // upstream is dialed: the tracking looks the session up again, which must not run on an event
+        // loop, and a relay the registry cannot take is refused before anything is opened.
+        SessionRelayRegistry.Tracked sessionRelay = SessionRelayRegistry.untracked();
+        Optional<PipelineRequest.AdmittingSession> admittingSession = request.admittingSession();
+        if (admittingSession.isPresent()) {
+            Optional<SessionRelayRegistry.Tracked> tracked = bffRuntime.trackSessionRelay(
+                    admittingSession.get().sessionId(), admittingSession.get().expiresAt());
+            if (tracked.isEmpty()) {
+                LOGGER.debug("Session relay registry at its capacity on route '%s' — refusing the upgrade",
+                        route.getId());
+                releaseAdmission(ctx, admissionGuard);
+                ctx.vertx().runOnContext(v -> reject(ctx, SERVICE_UNAVAILABLE));
+                return;
+            }
+            sessionRelay = tracked.get();
+            ctx.put(SESSION_RELAY_KEY, sessionRelay);
+        }
         if (!webSocketRelayAdmission.tryAcquire()) {
             // The relay sub-budget is exhausted. The general admission permit is still held and this
             // request will never reach the relay teardown that would return it, so release it here —
@@ -1568,7 +1618,8 @@ public class GatewayEdgeRoute {
         // A handshake-failure response is gateway-authored — there is no origin header to defer to — so
         // the relay receives both header maps merged.
         webSocketRelayStage.relay(ctx, clientContext, route, forward.headers(),
-                request.gatewayAuthoredResponseHeaders(), uri, () -> releaseAdmission(ctx, admissionGuard));
+                request.gatewayAuthoredResponseHeaders(), uri, () -> releaseAdmission(ctx, admissionGuard),
+                sessionRelay);
     }
 
     /**

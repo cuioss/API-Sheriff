@@ -154,7 +154,13 @@ import org.jspecify.annotations.Nullable;
  * concurrent request on the same session joins the leader's result instead of launching its own
  * refresh. The leader re-resolves the session through the binding under this exclusion and
  * re-checks near-expiry, so a request that arrives just after a refresh completed observes the
- * already-rotated token and makes no engine call. The scope-driven leg leads through the same map: a
+ * already-rotated token and makes no engine call. That second resolve reads the request's own
+ * {@code Cookie} header, and <strong>an empty result is not a destroyed session</strong>: in server
+ * mode the header can name a cookie handle a step-up has just re-issued while the session lives on.
+ * It is reported as {@link RefreshOutcome.Kind#NO_SESSION NO_SESSION} — nothing is destroyed, marked
+ * or revoked, and the caller answers without a clearing cookie. The rotated session of a refresh that
+ * was in flight across such a re-issue is persisted under the stable session id, so it still finds the
+ * session and leaves the re-issued handle in place. The scope-driven leg leads through the same map: a
  * request that coalesces with a refresh of the other leg shares that refresh's result, and a scope
  * request whose shared current or refreshed session does not carry its requested set receives
  * {@link RefreshOutcome.Kind#SCOPE_REFUSED SCOPE_REFUSED} with the shared session and cookies rather
@@ -435,9 +441,7 @@ public final class TokenRefreshCoordinator {
     private Disposition performRefresh(String sessionId, @Nullable String cookieHeader, Instant now) {
         Optional<SessionRecord> resolved = sessionBinding.resolve(cookieHeader, now);
         if (resolved.isEmpty()) {
-            // Destroyed or expired between the near-expiry check and acquiring the lead — unauthenticated.
-            retryNotBefore.remove(sessionId);
-            return Disposition.of(RefreshOutcome.failed());
+            return Disposition.of(noSessionForRequest());
         }
         SessionRecord latest = resolved.get();
         String presentedRefreshToken = latest.refreshToken();
@@ -453,9 +457,7 @@ public final class TokenRefreshCoordinator {
             Instant now) {
         Optional<SessionRecord> resolved = sessionBinding.resolve(cookieHeader, now);
         if (resolved.isEmpty()) {
-            // Destroyed or expired between the caller's resolve and acquiring the lead — unauthenticated.
-            retryNotBefore.remove(sessionId);
-            return Disposition.of(RefreshOutcome.failed());
+            return Disposition.of(noSessionForRequest());
         }
         SessionRecord latest = resolved.get();
         if (latest.activeScopes().containsAll(requested)) {
@@ -477,6 +479,25 @@ public final class TokenRefreshCoordinator {
                     disposition.liveRefreshToken());
         }
         return disposition;
+    }
+
+    /**
+     * The outcome of a leader whose second resolve — from the request's own {@code Cookie} header, under
+     * the single-flight exclusion — found no session.
+     * <p>
+     * It is <strong>not</strong> a destroyed session. In server mode that header can name a cookie
+     * handle a step-up has just re-issued while the session lives on under the new one; in either mode
+     * the session may simply have reached a deadline since the caller resolved it. Either way this
+     * coordinator destroyed nothing, so nothing is destroyed, marked or revoked here, and the caller
+     * must not clear the browser's cookie on the strength of it.
+     * <p>
+     * The session's back-off entry is left as it is: the session may be alive, and dropping the entry
+     * would lift the throttle of a session that is still backing off. An entry of a session that is
+     * really gone is reclaimed by the pruning at the bound, like that of any abandoned session.
+     */
+    private static RefreshOutcome noSessionForRequest() {
+        LOGGER.debug("Refresh leader resolved no session from the request's cookie — nothing destroyed");
+        return RefreshOutcome.noSession();
     }
 
     /**
@@ -950,7 +971,8 @@ public final class TokenRefreshCoordinator {
      * @param kind             which of the refresh outcomes occurred
      * @param session          the carried session, present for {@link Kind#CURRENT},
      *                         {@link Kind#REFRESHED}, {@link Kind#DEFERRED} and {@link Kind#SCOPE_REFUSED},
-     *                         {@code null} for {@link Kind#UNAVAILABLE} and {@link Kind#FAILED}
+     *                         {@code null} for {@link Kind#UNAVAILABLE}, {@link Kind#FAILED} and
+     *                         {@link Kind#NO_SESSION}
      * @param setCookieHeaders the {@code Set-Cookie} header values the re-bind produced, empty when
      *                         the binding needs no new cookie
      * @author API Sheriff Team
@@ -983,6 +1005,14 @@ public final class TokenRefreshCoordinator {
             /** The session was destroyed; the caller treats the request as unauthenticated. */
             FAILED,
             /**
+             * The leader resolved no session from this request's {@code Cookie} header when it resolved
+             * it again under the single-flight exclusion. Nothing was destroyed, marked or revoked: the
+             * session may be alive under a cookie value re-issued meanwhile (server mode), or may have
+             * reached a deadline. The caller treats the request as unauthenticated and must
+             * <strong>not</strong> clear the browser's cookie.
+             */
+            NO_SESSION,
+            /**
              * A scope-driven refresh did not obtain the requested set and there was no refusal to dispose:
              * the identity provider granted a narrower {@code scope} (the rotated session is persisted and
              * carried with its cookies, its granted scope set already without the scopes the grant did not
@@ -1005,7 +1035,7 @@ public final class TokenRefreshCoordinator {
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
             boolean carriesSession = switch (kind) {
                 case CURRENT, REFRESHED, DEFERRED, SCOPE_REFUSED -> true;
-                case UNAVAILABLE, FAILED -> false;
+                case UNAVAILABLE, FAILED, NO_SESSION -> false;
             };
             if (carriesSession && session == null) {
                 throw new IllegalArgumentException("a " + kind + " outcome must carry a session");
@@ -1065,6 +1095,17 @@ public final class TokenRefreshCoordinator {
          */
         public static RefreshOutcome failed() {
             return new RefreshOutcome(Kind.FAILED, null, List.of());
+        }
+
+        /**
+         * The outcome of a refresh whose leader resolved no session from the request's own
+         * {@code Cookie} header. It carries no session and no cookie, and — unlike
+         * {@link #failed()} — says that nothing was destroyed.
+         *
+         * @return the no-session outcome
+         */
+        public static RefreshOutcome noSession() {
+            return new RefreshOutcome(Kind.NO_SESSION, null, List.of());
         }
 
         /**

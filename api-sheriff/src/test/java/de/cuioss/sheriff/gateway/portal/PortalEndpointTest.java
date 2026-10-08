@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
-
 import de.cuioss.sheriff.gateway.bff.reserved.ClaimAllowlistFilter;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
@@ -379,7 +378,9 @@ class PortalEndpointTest {
     class LiveSession {
 
         private static final Duration TTL = Duration.ofHours(1);
-        private static final String SESSION_ID = "opaque-portal-session";
+        private static final String SESSION_ID = "internal-portal-session";
+        /** The opaque value the session cookie carries — never the session id. */
+        private static final String COOKIE_HANDLE = "opaque-portal-cookie-handle";
 
         private InMemorySessionStore sessionStore;
         private SessionCookieCodec sessionCodec;
@@ -387,7 +388,9 @@ class PortalEndpointTest {
 
         @BeforeEach
         void createSession() {
-            sessionStore = new InMemorySessionStore(4);
+            // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
+            sessionStore = new InMemorySessionStore(4, TTL, Integer.MAX_VALUE, sessionId -> {
+            });
             sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, TTL);
             sessionStore.create(SessionRecord.builder()
                     .sessionId(SESSION_ID)
@@ -395,8 +398,8 @@ class PortalEndpointTest {
                     .idToken("raw-id-token")
                     .sub("user-sub-1")
                     .expiresAt(NOW.plus(TTL))
-                    .build(), NOW);
-            cookieHeader = sessionCodec.toSetCookieHeader(SESSION_ID).split(";", 2)[0];
+                    .build(), COOKIE_HANDLE, NOW);
+            cookieHeader = sessionCodec.toSetCookieHeader(COOKIE_HANDLE).split(";", 2)[0];
         }
 
         private PortalEndpoint endpointOver(Map<String, Object> claims) {

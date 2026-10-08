@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
@@ -39,10 +40,29 @@ import org.jspecify.annotations.Nullable;
  * {@link #resolve} unseals the request cookie, enforces the absolute TTL <strong>server-side</strong>
  * against the sealed login instant (a browser that keeps an expired cookie past its {@code Max-Age}
  * still gets "no session"), and reconstructs the record; {@link #persist} re-seals the updated
- * material; {@link #destroy} is a no-op locally — the browser's copy is cleared through
- * {@link #clearingSetCookieHeader()}, which the logout edge emits. A client that retains the cookie of a
+ * material; {@link #destroy} is a no-op locally — the browser's copies are cleared through
+ * {@link #clearingSetCookieHeaders()}, which the logout edge emits. A client that retains the cookie of a
  * session the refresh coordinator ended is refused by that coordinator's ended-refresh-token marker,
  * not by this binding.
+ * <p>
+ * <strong>Idle timeout, kept in a separate activity cookie.</strong> {@link #resolve} additionally
+ * refuses a session whose last access is older than the idle timeout. The last access is the instant
+ * in the activity cookie the same request carries ({@link SessionActivityCookieCodec}), provided that
+ * cookie unseals and is bound to this very session. When it is missing, unreadable, forged or bound to
+ * another session, the last access is the session's <em>login instant</em>: an activity cookie can
+ * only ever lengthen a session up to the idle timeout past a real access, and its absence can only
+ * shorten it. {@link #recordAccess} returns a new activity cookie once the last access is at least one
+ * <em>re-issue interval</em> old and nothing before that, so most responses carry no
+ * {@code Set-Cookie}. The re-issue interval is the smaller of {@link #ACTIVITY_COOKIE_INTERVAL} and
+ * half the idle timeout, so it is shorter than every idle timeout and an access can always be recorded
+ * before the deadline it is meant to move. The recorded last access is therefore at most one interval
+ * older than the real one: a session ends no later than the idle timeout after its last access and at
+ * most one interval earlier, and a session accessed at least once per idle timeout minus one interval
+ * stays alive up to its absolute lifetime. <strong>The session cookie
+ * is never rewritten on access</strong> — the idle touch writes the activity cookie alone, so it cannot
+ * race a refresh for the token-bearing cookie, and the sealed session payload gains no field. The
+ * absolute lifetime is enforced against the sealed login instant as before; no activity cookie
+ * extends it.
  * <p>
  * <strong>An update cannot observe a logout.</strong> Because {@link #destroy} removes nothing — there
  * is nothing held to remove — {@link #persist} has no state to consult and always re-seals: it never
@@ -84,8 +104,20 @@ import org.jspecify.annotations.Nullable;
  */
 public final class CookieSessionBinding implements SessionBinding {
 
+    /**
+     * The upper bound of the re-issue interval — the shortest distance between two activity cookies of
+     * one session. A new activity cookie is issued only when the last access is at least one re-issue
+     * interval old, which bounds the {@code Set-Cookie} traffic and the seal count of the activity key
+     * to one per session per interval, at the price of an idle deadline that can fall up to one
+     * interval early. The interval in force is this value for an idle timeout of at least twice it,
+     * and half the idle timeout below that, so it never reaches the idle timeout. Not configurable.
+     */
+    public static final Duration ACTIVITY_COOKIE_INTERVAL = Duration.ofSeconds(60);
+
     private static final String DIGEST_ALGORITHM = "SHA-256";
-    private static final int IDENTITY_BYTES = 16;
+
+    /** The derived identity's width — the width the activity cookie binds itself to. */
+    private static final int IDENTITY_BYTES = SessionActivityCookieCodec.SESSION_IDENTITY_BYTES;
 
     /**
      * The per-session nonce width, matched to {@code SessionRecord.newSessionId()}'s 32 bytes so the
@@ -97,18 +129,41 @@ public final class CookieSessionBinding implements SessionBinding {
 
     private final SealedSessionCookieCodec codec;
     private final byte[] identitySalt;
+    private final SessionActivityCookieCodec activityCodec;
+    private final Duration idleTimeout;
+    /**
+     * The re-issue interval in force: the smaller of {@link #ACTIVITY_COOKIE_INTERVAL} and half the
+     * idle timeout. Being shorter than the idle timeout is what lets an access be recorded before the
+     * idle deadline it moves, for every idle timeout.
+     */
+    private final Duration activityCookieInterval;
 
     /**
-     * Assembles the cookie-mode binding over its sealing codec.
+     * Assembles the cookie-mode binding over its sealing codec and its activity-cookie codec.
      *
-     * @param codec        the AES-256-GCM sealed-cookie codec
-     * @param identitySalt the per-gateway salt keying the derived session identity, so the identity
-     *                     cannot be recomputed from the payload alone by anything outside this
-     *                     gateway. Never emitted to the browser.
+     * @param codec         the AES-256-GCM sealed-cookie codec
+     * @param identitySalt  the per-gateway salt keying the derived session identity, so the identity
+     *                      cannot be recomputed from the payload alone by anything outside this
+     *                      gateway. Never emitted to the browser.
+     * @param activityCodec the codec of the activity cookie the last access is kept in
+     * @param idleTimeout   how long a session may go without an access before it is refused; must be
+     *                      positive
+     * @throws IllegalArgumentException when {@code idleTimeout} is not positive
      */
-    public CookieSessionBinding(SealedSessionCookieCodec codec, byte[] identitySalt) {
+    public CookieSessionBinding(SealedSessionCookieCodec codec, byte[] identitySalt,
+            SessionActivityCookieCodec activityCodec, Duration idleTimeout) {
         this.codec = Objects.requireNonNull(codec, "codec");
         this.identitySalt = Objects.requireNonNull(identitySalt, "identitySalt").clone();
+        this.activityCodec = Objects.requireNonNull(activityCodec, "activityCodec");
+        Objects.requireNonNull(idleTimeout, "idleTimeout");
+        if (idleTimeout.isZero() || idleTimeout.isNegative()) {
+            throw new IllegalArgumentException("idleTimeout must be positive, but was " + idleTimeout);
+        }
+        this.idleTimeout = idleTimeout;
+        Duration halfIdleTimeout = idleTimeout.dividedBy(2);
+        this.activityCookieInterval = halfIdleTimeout.compareTo(ACTIVITY_COOKIE_INTERVAL) < 0
+                ? halfIdleTimeout
+                : ACTIVITY_COOKIE_INTERVAL;
     }
 
     @Override
@@ -127,7 +182,29 @@ public final class CookieSessionBinding implements SessionBinding {
         return codec.readSealedValue(cookieHeader)
                 .flatMap(codec::unseal)
                 .filter(unsealed -> !unsealed.payload().isExpired(codec.sessionTtl(), now))
-                .map(unsealed -> toSessionRecord(unsealed.payload()));
+                .map(unsealed -> toSessionRecord(unsealed.payload()))
+                // The idle deadline, inclusive of the boundary like the absolute one. It is checked
+                // against the last access this same request proves, and never moved here.
+                .filter(session -> now.isBefore(lastAccess(session, cookieHeader, now).plus(idleTimeout)));
+    }
+
+    /**
+     * The last access of {@code session} as this request proves it: the instant in the request's
+     * activity cookie when that cookie unseals and is bound to this session, otherwise the session's
+     * login instant.
+     * <p>
+     * Falling back to the login instant is what makes a missing, unreadable, forged or foreign activity
+     * cookie harmless: it never counts as an access, so withholding or swapping the cookie can only
+     * end a session sooner. An instant before the login instant is not accepted either — a session
+     * cannot have been accessed before it existed.
+     */
+    private Instant lastAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
+        Instant loginInstant = session.expiresAt().minus(codec.sessionTtl());
+        return activityCodec.read(cookieHeader, now)
+                .filter(activity -> activity.sessionIdentity().equals(session.sessionId()))
+                .map(SessionActivityCookieCodec.Activity::lastAccess)
+                .filter(sealed -> sealed.isAfter(loginInstant))
+                .orElse(loginInstant);
     }
 
     /**
@@ -176,11 +253,60 @@ public final class CookieSessionBinding implements SessionBinding {
         return Optional.of(seal(payloadOf(updated, loginInstant, sessionNonce), now));
     }
 
+    /**
+     * Re-seals the updated material exactly as {@link #persist} does — the step-up and widening write.
+     * <p>
+     * In this mode "re-issuing the cookie" and "persisting" are the same act: the sealed value
+     * <em>is</em> the cookie, so every update already hands the browser a new one. The session nonce is
+     * carried verbatim (ADR-0018 decision (v)); the derived {@link SessionRecord#sessionId()} therefore
+     * does not change, and no nonce is minted outside {@link #bind}.
+     *
+     * @param updated the session carrying the new token material
+     * @param now     the reference instant, used only for the cookie's remaining {@code Max-Age}
+     * @return the re-sealed session and its single {@code Set-Cookie}; never empty
+     * @throws IllegalStateException when the record carries no session nonce, or the sealed value
+     *         exceeds the cookie size budget
+     */
+    @Override
+    public Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now) {
+        return persist(updated, now);
+    }
+
+    /**
+     * Returns a new activity cookie when the session's last access is at least one re-issue interval
+     * old — the smaller of {@link #ACTIVITY_COOKIE_INTERVAL} and half the idle timeout — and nothing
+     * otherwise.
+     * <p>
+     * It never returns a session cookie: the token-bearing value is left exactly as the browser holds
+     * it. The activity cookie is bound to {@code session}'s derived identity and carries {@code now} as
+     * the last access; its {@code Max-Age} is the session's remaining absolute lifetime.
+     * <p>
+     * Thread-safe: the method reads only its arguments and the immutable collaborators. Two concurrent
+     * requests of one session may each return an activity cookie; either one is correct.
+     *
+     * @param session      the live session the request was let through with
+     * @param cookieHeader the raw request {@code Cookie} header value the session was resolved from
+     * @param now          the instant of the access
+     * @return the single activity {@code Set-Cookie}, or an empty list while the last access is younger
+     *         than the re-issue interval
+     */
+    @Override
+    public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
+        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(now, "now");
+        Instant lastAccess = lastAccess(session, cookieHeader, now);
+        if (Duration.between(lastAccess, now).compareTo(activityCookieInterval) < 0) {
+            return List.of();
+        }
+        String sealedActivity = activityCodec.seal(session.sessionId(), now);
+        return List.of(activityCodec.toSetCookieHeader(sealedActivity, session.expiresAt(), now));
+    }
+
     @Override
     public void destroy(SessionRecord session) {
         Objects.requireNonNull(session, "session");
-        // Nothing is held server-side. The browser's copy is cleared by the caller emitting
-        // clearingSetCookieHeader() — an expired-by-Max-Age cookie the browser keeps anyway is
+        // Nothing is held server-side. The browser's copies are cleared by the caller emitting
+        // clearingSetCookieHeaders() — an expired-by-Max-Age cookie the browser keeps anyway is
         // still refused by resolve()'s server-side TTL check.
     }
 
@@ -201,9 +327,12 @@ public final class CookieSessionBinding implements SessionBinding {
         return IdpDestruction.UNSUPPORTED;
     }
 
+    /**
+     * @return the clearing header of the session cookie followed by that of the activity cookie
+     */
     @Override
-    public String clearingSetCookieHeader() {
-        return codec.toClearingSetCookieHeader();
+    public List<String> clearingSetCookieHeaders() {
+        return List.of(codec.toClearingSetCookieHeader(), activityCodec.toClearingSetCookieHeader());
     }
 
     private BoundSession seal(SealedSessionPayload payload, Instant now) {

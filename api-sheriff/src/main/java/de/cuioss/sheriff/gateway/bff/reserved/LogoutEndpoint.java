@@ -38,16 +38,24 @@ import org.jspecify.annotations.Nullable;
  * {@link RpInitiatedLogout}.
  * <p>
  * <strong>Logout leg.</strong> {@link #logout(String, Instant)} resolves the request's live
- * {@link SessionRecord} through the mode-neutral {@link SessionBinding} seam, drives
- * {@link RpInitiatedLogout#initiate} (which calls its token-revocation seam and builds the
- * {@code end_session_endpoint} redirect carrying the {@code id_token_hint}, the exact
- * {@code post_logout_redirect_uri}, and the single-use logout-state cookie), then destroys the
- * session ({@link SessionBinding#destroy}) and clears the session cookie. The local session
- * destruction is the authoritative, immediately-effective logout; the IdP round-trip is layered on
- * top. A logout request that carries <em>no</em> live session is already logged out — the endpoint
- * clears any stale session cookie and lands the browser on
- * {@link RpInitiatedLogout#finalRedirect()} directly, bypassing the IdP round-trip (there is no
- * {@code id_token_hint} to send).
+ * {@link SessionRecord} through the mode-neutral {@link SessionBinding} seam and
+ * <strong>destroys it first</strong> ({@link SessionBinding#destroy}): the local session
+ * destruction is the authoritative, immediately-effective logout, and nothing that follows can
+ * prevent it. Only then does it drive {@link RpInitiatedLogout#initiate} (which calls its
+ * token-revocation seam and builds the {@code end_session_endpoint} redirect carrying the
+ * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the single-use logout-state
+ * cookie). Every answer clears every cookie the binding sets
+ * ({@link SessionBinding#clearingSetCookieHeaders()} — in cookie mode the session cookie and its
+ * activity cookie).
+ * <p>
+ * The answer is always a {@code 302}. When an end-session redirect was built, the browser is sent to
+ * the identity provider; that redirect is marked {@linkplain LogoutOutcome#carriesIdToken() as
+ * carrying the ID token} so the edge answers it with {@code Referrer-Policy: no-referrer}. In every
+ * other case the browser is redirected to {@link RpInitiatedLogout#finalRedirect()}: a logout
+ * request that carries <em>no</em> live session (already logged out, and there is no
+ * {@code id_token_hint} to send), a session without an ID token, an identity provider that
+ * publishes no usable end-session endpoint, provider metadata that cannot be obtained, and any
+ * failure while the redirect is built. A logout request is never answered with an error.
  * <p>
  * <strong>Return leg.</strong> {@link #completeReturn(String, String)} delegates to
  * {@link RpInitiatedLogout#completeReturn} — the returned {@code state} is verified (constant-time,
@@ -82,14 +90,14 @@ public final class LogoutEndpoint {
     }
 
     /**
-     * Handles the RP-initiated logout leg: resolves the live session, drives the engine end-session
-     * redirect, destroys the server-side session, and clears the session cookie.
+     * Handles the RP-initiated logout leg: resolves the live session, destroys it, drives the engine
+     * end-session redirect, and clears the session cookie.
      *
      * @param cookieHeader the raw request {@code Cookie} header value, may be absent
      * @param now          the reference instant (the session-resolution TTL anchor)
-     * @return a {@code 302} redirect to the IdP {@code end_session_endpoint} (session-cleared and
-     *         logout-state {@code Set-Cookie} headers), or — when no live session — a {@code 302}
-     *         straight to {@code final_redirect} clearing the session cookie
+     * @return a {@code 302} redirect to the IdP {@code end_session_endpoint} (session-clearing and
+     *         logout-state {@code Set-Cookie} headers) when an end-session redirect was built,
+     *         otherwise a {@code 302} straight to {@code final_redirect} clearing the session cookie
      */
     public LogoutOutcome logout(@Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(now, "now");
@@ -98,30 +106,35 @@ public final class LogoutEndpoint {
         if (resolved.isEmpty()) {
             LOGGER.debug("RP-initiated logout without a live session — already logged out, landing on final_redirect");
             return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
-                    List.of(sessionBinding.clearingSetCookieHeader()));
+                    sessionBinding.clearingSetCookieHeaders());
         }
         SessionRecord session = resolved.get();
+        // Local logout is the authoritative, immediately-effective step, so it comes first: whatever
+        // happens to the end-session redirect below, the session is already gone.
+        sessionBinding.destroy(session);
 
-        RpInitiatedLogout.LogoutRedirect redirect;
-        // Local logout is the authoritative, immediately-effective step and must ALWAYS succeed: if the
-        // IdP end-session redirect cannot be built, still destroy the server-side session and clear the
-        // session cookie, then land the browser on final_redirect. The catch is deliberately broad so no
-        // redirect-construction failure can leave the local session usable.
+        Optional<RpInitiatedLogout.LogoutRedirect> endSession;
+        // The catch is deliberately broad: the end-session redirect is built by the engine over
+        // discovered provider metadata, and no failure there may turn a completed local logout into
+        // an error answer.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
-            redirect = rpInitiatedLogout.initiate(session);
+            endSession = rpInitiatedLogout.initiate(session);
         } catch (RuntimeException initiationFailure) {
-            sessionBinding.destroy(session);
             LOGGER.debug(initiationFailure,
                     "RP-initiated logout — end-session redirect construction failed; local session destroyed, landing on final_redirect");
-            return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
-                    List.of(sessionBinding.clearingSetCookieHeader()));
+            endSession = Optional.empty();
         }
-        sessionBinding.destroy(session);
+        if (endSession.isEmpty()) {
+            LOGGER.debug("RP-initiated logout — session destroyed, no end-session redirect; landing on final_redirect");
+            return LogoutOutcome.redirect(rpInitiatedLogout.finalRedirect(),
+                    sessionBinding.clearingSetCookieHeaders());
+        }
+        RpInitiatedLogout.LogoutRedirect redirect = endSession.get();
         List<String> setCookies = new ArrayList<>(redirect.setCookieHeaders());
-        setCookies.add(sessionBinding.clearingSetCookieHeader());
+        setCookies.addAll(sessionBinding.clearingSetCookieHeaders());
         LOGGER.debug("RP-initiated logout — session destroyed, redirecting to the IdP end_session_endpoint");
-        return LogoutOutcome.redirect(redirect.location(), setCookies);
+        return LogoutOutcome.endSessionRedirect(redirect.location(), setCookies);
     }
 
     /**
@@ -144,18 +157,25 @@ public final class LogoutEndpoint {
 
     /**
      * The framework-agnostic result of a logout leg: either a {@code 302} redirect (to the IdP
-     * {@code end_session_endpoint}, or to {@code final_redirect} on the return / already-logged-out
-     * paths) carrying the {@code Set-Cookie} headers to emit, or a {@code 4xx} error with no redirect.
-     * Token material never appears here — only the opaque cookie headers and the redirect location.
+     * {@code end_session_endpoint}, or to {@code final_redirect} on the return, already-logged-out
+     * and local-only paths) carrying the {@code Set-Cookie} headers to emit, or a {@code 4xx} error
+     * with no redirect.
+     * <p>
+     * The redirect to the IdP is the one outcome that holds token material: its location's query
+     * carries the {@code id_token_hint}. {@link #carriesIdToken()} marks it, and the record's string
+     * form prints neither the location nor a cookie value.
      *
      * @param status           the HTTP status the edge returns
      * @param location         the redirect target, {@code null} on anything but a redirect outcome
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit, empty on an error
+     * @param carriesIdToken   {@code true} when the location is the end-session redirect, whose
+     *                         query carries the {@code id_token_hint}
      * @author API Sheriff Team
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
-    public record LogoutOutcome(int status, @Nullable String location, List<String> setCookieHeaders) {
+    public record LogoutOutcome(int status, @Nullable String location, List<String> setCookieHeaders,
+    boolean carriesIdToken) {
 
         private static final int FOUND = 302;
 
@@ -167,7 +187,8 @@ public final class LogoutEndpoint {
         }
 
         /**
-         * A {@code 302} redirect carrying the {@code Set-Cookie} headers.
+         * A {@code 302} redirect to a gateway-configured landing, carrying the {@code Set-Cookie}
+         * headers. The location holds no token material.
          *
          * @param location         the redirect target
          * @param setCookieHeaders the {@code Set-Cookie} header values to emit
@@ -175,7 +196,20 @@ public final class LogoutEndpoint {
          */
         public static LogoutOutcome redirect(String location, List<String> setCookieHeaders) {
             Objects.requireNonNull(location, "location");
-            return new LogoutOutcome(FOUND, location, setCookieHeaders);
+            return new LogoutOutcome(FOUND, location, setCookieHeaders, false);
+        }
+
+        /**
+         * A {@code 302} redirect to the IdP {@code end_session_endpoint}, whose query carries the
+         * {@code id_token_hint}.
+         *
+         * @param location         the end-session redirect URL
+         * @param setCookieHeaders the {@code Set-Cookie} header values to emit
+         * @return the end-session redirect outcome
+         */
+        public static LogoutOutcome endSessionRedirect(String location, List<String> setCookieHeaders) {
+            Objects.requireNonNull(location, "location");
+            return new LogoutOutcome(FOUND, location, setCookieHeaders, true);
         }
 
         /**
@@ -185,7 +219,7 @@ public final class LogoutEndpoint {
          * @return the error outcome
          */
         public static LogoutOutcome error(int status) {
-            return new LogoutOutcome(status, null, List.of());
+            return new LogoutOutcome(status, null, List.of(), false);
         }
 
         /**
@@ -193,6 +227,19 @@ public final class LogoutEndpoint {
          */
         public boolean isRedirect() {
             return status == FOUND;
+        }
+
+        /**
+         * Overridden so that neither an end-session location — its query carries the
+         * {@code id_token_hint} — nor a cookie value reaches a log line or an exception message.
+         *
+         * @return the status, the location unless it carries the ID token, and the number of cookies
+         */
+        @Override
+        public String toString() {
+            return "LogoutOutcome[status=%s, location=%s, setCookieHeaders=%s, carriesIdToken=%s]"
+                    .formatted(status, carriesIdToken ? "<redacted>" : location, setCookieHeaders.size(),
+                            carriesIdToken);
         }
     }
 }

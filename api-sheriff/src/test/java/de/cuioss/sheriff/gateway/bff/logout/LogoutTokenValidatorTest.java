@@ -33,10 +33,12 @@ import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.LogoutSubject;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.Verdict;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;
 import de.cuioss.sheriff.token.validation.domain.token.IdTokenContent;
-import de.cuioss.sheriff.token.validation.domain.token.TokenContent;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link LogoutTokenValidator}: the pure OIDC back-channel-logout-token claim residual
@@ -59,6 +61,9 @@ class LogoutTokenValidatorTest {
     private static final String SUB = "user-sub-1";
     private static final String SID = "idp-sid-9";
     private static final String RAW = "raw-logout-token";
+    private static final String JTI = "logout-token-id-1";
+    /** After the reference instant and after every instant the freshness cases look at. */
+    private static final Instant EXPIRES_AT = NOW.plus(Duration.ofHours(2));
     private static final String OTHER_EVENT = "{\"http://schemas.openid.net/event/token-revoked\":{}}";
 
     /**
@@ -80,13 +85,25 @@ class LogoutTokenValidatorTest {
                 "iss", ClaimValue.forPlainString(ISSUER),
                 "aud", ClaimValue.forList("aud", List.of(AUDIENCE)),
                 "iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC)),
+                "exp", instant("exp", EXPIRES_AT),
+                "jti", ClaimValue.forPlainString(JTI),
                 "events", ClaimValue.forPlainString(EVENTS_JSON_FORM),
                 "sub", ClaimValue.forPlainString(SUB),
                 "sid", ClaimValue.forPlainString(SID)));
     }
 
-    private static TokenContent token(Map<String, ClaimValue> claims) {
-        return new IdTokenContent(claims, RAW);
+    private static ClaimValue instant(String name, Instant value) {
+        return ClaimValue.forDateTime(name, OffsetDateTime.ofInstant(value, ZoneOffset.UTC));
+    }
+
+    /** A signature-verified token typed as a logout token — the shape every claim case starts from. */
+    private static VerifiedLogoutToken token(Map<String, ClaimValue> claims) {
+        return typed(claims, LogoutTokenValidator.LOGOUT_TOKEN_TYPE);
+    }
+
+    /** A signature-verified token with the given {@code typ} header, {@code null} for none. */
+    private static VerifiedLogoutToken typed(Map<String, ClaimValue> claims, @Nullable String headerType) {
+        return new VerifiedLogoutToken(new IdTokenContent(claims, RAW), headerType);
     }
 
     private static LogoutSubject assertAccepted(Verdict verdict) {
@@ -352,6 +369,137 @@ class LogoutTokenValidatorTest {
         }
     }
 
+    /**
+     * The {@code typ} header is judged first. A token that carries none is admitted; a token that
+     * carries one is admitted only when it names a logout token. Both halves are asserted: a check that
+     * refused every token would pass the refusals alone, and one that admitted every token the
+     * acceptances alone.
+     */
+    @Nested
+    @DisplayName("typ header")
+    class TypeHeader {
+
+        @Test
+        @DisplayName("Should accept a token that carries no typ header")
+        void shouldAcceptUntypedToken() {
+            LogoutSubject subject = assertAccepted(validator.validate(typed(validClaims(), null), NOW));
+
+            assertEquals(SUB, subject.sub());
+        }
+
+        @ParameterizedTest(name = "typ \"{0}\"")
+        @ValueSource(strings = {"logout+jwt", "LOGOUT+JWT", "application/logout+jwt", "Application/Logout+JWT",
+                " logout+jwt "})
+        @DisplayName("Should accept the logout-token type in every spelling a media type allows")
+        void shouldAcceptLogoutTokenType(String headerType) {
+            assertAccepted(validator.validate(typed(validClaims(), headerType), NOW));
+        }
+
+        @ParameterizedTest(name = "typ \"{0}\"")
+        @ValueSource(strings = {"JWT", "at+jwt", "", " ", "logout", "application/jwt", "logout+jwt+x"})
+        @DisplayName("Should reject a token typed as anything but a logout token")
+        void shouldRejectOtherType(String headerType) {
+            assertRejectedFor(validator.validate(typed(validClaims(), headerType), NOW),
+                    LogoutRejection.TYPE_MISMATCH);
+        }
+
+        @Test
+        @DisplayName("Should name the type before the issuer when both are wrong")
+        void shouldJudgeTypeBeforeIssuer() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("iss", ClaimValue.forPlainString("https://evil.example.com"));
+
+            assertRejectedFor(validator.validate(typed(claims, "JWT"), NOW), LogoutRejection.TYPE_MISMATCH);
+        }
+    }
+
+    /**
+     * {@code exp} is required and must lie after the reference instant, with no allowance. The boundary
+     * is asserted from both sides, so a comparison turned the wrong way or widened by a leeway fails.
+     */
+    @Nested
+    @DisplayName("exp")
+    class Expiry {
+
+        @Test
+        @DisplayName("Should reject a token that carries no exp")
+        void shouldRejectMissingExp() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.remove("exp");
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EXPIRED);
+        }
+
+        @Test
+        @DisplayName("Should reject a token whose exp is the reference instant")
+        void shouldRejectExpAtNow() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("exp", instant("exp", NOW));
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EXPIRED);
+        }
+
+        @Test
+        @DisplayName("Should reject a token whose exp has passed while its iat is still fresh")
+        void shouldRejectPassedExp() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("exp", instant("exp", NOW.minusSeconds(1)));
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.EXPIRED);
+        }
+
+        @Test
+        @DisplayName("Should accept a token whose exp is one second after the reference instant")
+        void shouldAcceptExpJustAhead() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("exp", instant("exp", NOW.plusSeconds(1)));
+
+            assertAccepted(validator.validate(token(claims), NOW));
+        }
+    }
+
+    /**
+     * {@code jti} is required, and an accepted verdict hands it on together with the last instant at
+     * which the token would still be accepted — what a caller needs to recognise a repeat.
+     */
+    @Nested
+    @DisplayName("jti")
+    class TokenIdentifier {
+
+        @Test
+        @DisplayName("Should reject a token that carries no jti")
+        void shouldRejectMissingJti() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.remove("jti");
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.JTI_MISSING);
+        }
+
+        @Test
+        @DisplayName("Should reject a token whose jti is blank")
+        void shouldRejectBlankJti() {
+            Map<String, ClaimValue> claims = validClaims();
+            claims.put("jti", ClaimValue.forPlainString("  "));
+
+            assertRejectedFor(validator.validate(token(claims), NOW), LogoutRejection.JTI_MISSING);
+        }
+
+        @Test
+        @DisplayName("Should hand on the jti and the end of the freshness window of an accepted token")
+        void shouldCarryJtiAndWindowEnd() {
+            Map<String, ClaimValue> claims = validClaims();
+            Instant issuedAt = NOW.minusSeconds(30);
+            claims.put("iat", instant("iat", issuedAt));
+
+            Verdict.Accepted accepted = assertInstanceOf(Verdict.Accepted.class,
+                    validator.validate(token(claims), NOW));
+
+            assertEquals(JTI, accepted.jti());
+            assertEquals(issuedAt.plus(FRESHNESS), accepted.acceptableUntil(),
+                    "the window end is counted from the token's iat, not from the moment it arrived");
+        }
+    }
+
     @Nested
     @DisplayName("Argument contract")
     class ArgumentContract {
@@ -365,7 +513,7 @@ class LogoutTokenValidatorTest {
         @Test
         @DisplayName("Should reject a null reference instant")
         void shouldRejectNullNow() {
-            TokenContent token = token(validClaims());
+            VerifiedLogoutToken token = token(validClaims());
             assertThrows(NullPointerException.class, () -> validator.validate(token, null));
         }
 

@@ -33,7 +33,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -74,7 +73,9 @@ class AuthenticationStageTest {
     private static final String WWW_AUTHENTICATE = "WWW-Authenticate";
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
-    private static final String SESSION_ID = "opaque-session-id";
+    private static final String SESSION_ID = "internal-session-id";
+    /** The opaque value the session cookie carries, which the store resolves to the session. */
+    private static final String COOKIE_HANDLE = "opaque-cookie-handle";
     private static final String MEDIATED_TOKEN = "mediated-access-token";
     /** The scope a session route needs in the session-branch tests. */
     private static final String SESSION_SCOPE = "orders:read";
@@ -424,13 +425,13 @@ class AuthenticationStageTest {
         }
 
         private static Map<String, List<String>> sessionCookieOnly() {
-            return Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
+            return Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + COOKIE_HANDLE),
                     "accept", List.of("application/json"));
         }
 
         private static Map<String, List<String>> withSessionCookie(String authorization) {
             return Map.of("authorization", List.of(authorization),
-                    "cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
+                    "cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + COOKIE_HANDLE),
                     "accept", List.of("application/json"));
         }
 
@@ -468,7 +469,10 @@ class AuthenticationStageTest {
      * refreshable: the scope-refresh seam hands the session back unchanged and is reached by no test.
      */
     private static SessionAuthenticationStage sessionStage(Set<String> sessionScopes) {
-        InMemorySessionStore store = new InMemorySessionStore(16);
+        // The idle timeout equals the session's lifetime, so it is not in play here.
+        InMemorySessionStore store = new InMemorySessionStore(16, Duration.ofHours(1), Integer.MAX_VALUE,
+                sessionId -> {
+                });
         store.create(SessionRecord.builder()
                 .sessionId(SESSION_ID)
                 .accessToken(MEDIATED_TOKEN)
@@ -477,7 +481,7 @@ class AuthenticationStageTest {
                 .expiresAt(NOW.plusSeconds(3600))
                 .activeScopes(sessionScopes)
                 .grantedScopes(sessionScopes)
-                .build(), NOW);
+                .build(), COOKIE_HANDLE, NOW);
         SessionCookieCodec codec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, Duration.ofHours(1));
         return new SessionAuthenticationStage(new ServerSessionBinding(store, codec),
                 (session, cookieHeader, now) -> SessionAuthenticationStage.RefreshResult.mediate(
@@ -496,7 +500,7 @@ class AuthenticationStageTest {
                 .method(HttpMethod.GET)
                 .requestPath("/app/orders")
                 .queryParameters(List.of())
-                .headers(Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + SESSION_ID),
+                .headers(Map.of("cookie", List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + COOKIE_HANDLE),
                         "accept", List.of("application/json")))
                 .build();
         request.canonicalPath("/app/orders");

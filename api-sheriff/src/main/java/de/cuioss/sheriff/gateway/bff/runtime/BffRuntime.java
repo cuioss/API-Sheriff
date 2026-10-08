@@ -16,10 +16,13 @@
 package de.cuioss.sheriff.gateway.bff.runtime;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 
@@ -33,6 +36,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -69,8 +73,10 @@ import org.jspecify.annotations.Nullable;
  * The runtime is framework-agnostic (raw request pieces in, a {@link ReservedHttpResponse} out — no
  * JAX-RS / Vert.x coupling), so it is unit-testable without a container. The engine-dependent
  * collaborators are supplied by construction (the producer binds the {@code token-sheriff-client}
- * engine seams); the {@link #logoutEndpoint} is a {@link Supplier} so its discovery-dependent
- * {@code end_session_endpoint} is resolved lazily on first logout rather than at boot.
+ * engine seams); the {@link #logoutEndpoint} is a {@link Supplier} assembled on first logout. Its
+ * discovery-dependent {@code end_session_endpoint} is not part of that assembly: the handler asks
+ * for it on each logout, after the local session has been ended, so a logout never waits on, or
+ * fails with, provider discovery.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -79,6 +85,8 @@ public final class BffRuntime {
 
     private static final String CACHE_CONTROL = "Cache-Control";
     private static final String NO_STORE = "no-store";
+    private static final String REFERRER_POLICY = "Referrer-Policy";
+    private static final String NO_REFERRER = "no-referrer";
 
     private final boolean active;
     private final @Nullable SessionAuthenticationStage sessionStage;
@@ -92,6 +100,9 @@ public final class BffRuntime {
     private final @Nullable StepUpEndpoint stepUpEndpoint;
     private final @Nullable ClientJwksEndpoint clientJwksEndpoint;
     private final @Nullable GatewayJson gatewayJson;
+    private final Set<String> gatewayCookieNames;
+    private final @Nullable SessionRelayRegistry sessionRelays;
+    private final @Nullable Predicate<String> sessionHeld;
 
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     private BffRuntime(boolean active, @Nullable SessionAuthenticationStage sessionStage,
@@ -101,7 +112,11 @@ public final class BffRuntime {
             @Nullable BackchannelLogoutEndpoint backchannelLogoutEndpoint,
             @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint,
             @Nullable StepUpEndpoint stepUpEndpoint, @Nullable ClientJwksEndpoint clientJwksEndpoint,
-            @Nullable GatewayJson gatewayJson) {
+            @Nullable GatewayJson gatewayJson, Set<String> gatewayCookieNames,
+            @Nullable SessionRelayRegistry sessionRelays, @Nullable Predicate<String> sessionHeld) {
+        this.sessionRelays = sessionRelays;
+        this.sessionHeld = sessionHeld;
+        this.gatewayCookieNames = Set.copyOf(gatewayCookieNames);
         this.active = active;
         this.sessionStage = sessionStage;
         this.csrfDefence = csrfDefence;
@@ -125,8 +140,8 @@ public final class BffRuntime {
      * @param csrfDefence               the fixed CSRF defence for unsafe-method session requests
      * @param stepUpCoordinator         the RFC 9470 step-up coordinator (D7) for upstream challenges
      * @param callbackEndpoint          the OIDC auth-code callback handler
-     * @param logoutEndpoint            the lazy RP-initiated logout handler (resolves the
-     *                                  discovery-dependent {@code end_session_endpoint} on first use)
+     * @param logoutEndpoint            the lazy RP-initiated logout handler; obtaining it never
+     *                                  reaches provider discovery
      * @param backchannelLogoutEndpoint the OIDC back-channel logout receiver
      * @param userInfoEndpoint          the session/user-info fold handler (D11)
      * @param loginInitiationEndpoint   the login-initiation fold handler (D12)
@@ -136,13 +151,22 @@ public final class BffRuntime {
      *                                  withheld form for client-secret authentication
      * @param gatewayJson               the serializer the user-info body, the step-up {@code 401}
      *                                  problem body and the client JWKS document are rendered through
+     * @param gatewayCookieNames        the name of every cookie this runtime sets: the session cookie,
+     *                                  any further cookie of the session binding, the login-binding
+     *                                  cookie and the logout-state cookie
+     * @param sessionRelays             the registry of the long-lived relays opened with a session;
+     *                                  in server mode it is also the session store's end listener
+     * @param sessionHeld               whether the session binding still holds the session of a given
+     *                                  identity server-side; always {@code true} for a binding that
+     *                                  holds none and so cannot observe an end
      */
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     public BffRuntime(SessionAuthenticationStage sessionStage, CsrfDefence csrfDefence,
             StepUpCoordinator stepUpCoordinator, CallbackEndpoint callbackEndpoint,
             Supplier<LogoutEndpoint> logoutEndpoint, BackchannelLogoutEndpoint backchannelLogoutEndpoint,
             UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint,
-            StepUpEndpoint stepUpEndpoint, ClientJwksEndpoint clientJwksEndpoint, GatewayJson gatewayJson) {
+            StepUpEndpoint stepUpEndpoint, ClientJwksEndpoint clientJwksEndpoint, GatewayJson gatewayJson,
+            Set<String> gatewayCookieNames, SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
         this(true,
                 Objects.requireNonNull(sessionStage, "sessionStage"),
                 Objects.requireNonNull(csrfDefence, "csrfDefence"),
@@ -154,7 +178,50 @@ public final class BffRuntime {
                 Objects.requireNonNull(loginInitiationEndpoint, "loginInitiationEndpoint"),
                 Objects.requireNonNull(stepUpEndpoint, "stepUpEndpoint"),
                 Objects.requireNonNull(clientJwksEndpoint, "clientJwksEndpoint"),
-                Objects.requireNonNull(gatewayJson, "gatewayJson"));
+                Objects.requireNonNull(gatewayJson, "gatewayJson"),
+                Objects.requireNonNull(gatewayCookieNames, "gatewayCookieNames"),
+                Objects.requireNonNull(sessionRelays, "sessionRelays"),
+                Objects.requireNonNull(sessionHeld, "sessionHeld"));
+    }
+
+    /**
+     * Starts tracking a long-lived relay that is about to be opened for a request a session was let
+     * through with, so the relay is closed when that session ends.
+     * <p>
+     * The session was resolved a moment ago and may have been destroyed since. The relay is therefore
+     * tracked first and the session looked up again afterwards: a destruction that came before the
+     * tracking is found by the lookup, one that comes after it is reported to the registry. Either way
+     * the returned handle is told to close.
+     * <p>
+     * Call it off the event loop: in server mode the lookup takes the session store's monitor.
+     *
+     * @param sessionId the stable identity of the session the request was let through with
+     * @param expiresAt the session's absolute expiry
+     * @return the relay's handle; empty when the registry is at its capacity, in which case the relay
+     *         must not be opened
+     * @throws IllegalStateException when this runtime is inert (no BFF variant is configured)
+     */
+    public Optional<SessionRelayRegistry.Tracked> trackSessionRelay(String sessionId, Instant expiresAt) {
+        if (sessionRelays == null || sessionHeld == null) {
+            throw new IllegalStateException("inert BFF runtime tracks no session relay");
+        }
+        Optional<SessionRelayRegistry.Tracked> tracked = sessionRelays.track(sessionId, expiresAt);
+        if (tracked.isPresent() && !sessionHeld.test(sessionId)) {
+            sessionRelays.sessionEnded(sessionId);
+        }
+        return tracked;
+    }
+
+    /**
+     * The names of the cookies this runtime sets and no other party may set: the session cookie, any
+     * further cookie of the session binding (the activity cookie in cookie mode), the login-binding
+     * cookie and the logout-state cookie. The edge uses them to keep an upstream response from
+     * setting one of them.
+     *
+     * @return the immutable cookie names; empty for the inert runtime, which sets no cookie
+     */
+    public Set<String> gatewayCookieNames() {
+        return gatewayCookieNames;
     }
 
     /**
@@ -162,7 +229,8 @@ public final class BffRuntime {
      *         {@link #isActive()} {@code false}, exposes no session stage, and dispatches nothing.
      */
     public static BffRuntime inert() {
-        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null, null);
+        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null, null, Set.of(),
+                null, null);
     }
 
     /**
@@ -235,7 +303,8 @@ public final class BffRuntime {
      * @param kind the reserved endpoint the {@code ReservedPathRegistry} resolved for the request
      * @param req  the framework-agnostic request pieces the handlers consume
      * @param now  the reference instant (TTL anchor for session / pending resolution)
-     * @return the normalized response the edge renders
+     * @return the normalized response the edge renders; one that sets a cookie always carries
+     *         {@code Cache-Control: no-store}
      * @throws IllegalStateException when this runtime is inert (no reserved handler is wired)
      */
     public ReservedHttpResponse dispatch(ReservedEndpoint kind, ReservedHttpRequest req, Instant now) {
@@ -245,6 +314,30 @@ public final class BffRuntime {
         if (!active) {
             throw new IllegalStateException("inert BFF runtime cannot dispatch a reserved path");
         }
+        return uncacheableWhenSettingCookies(dispatchToHandler(kind, req, now));
+    }
+
+    /**
+     * Marks a reserved-path answer that sets a cookie as uncacheable: {@code Cache-Control: no-store}
+     * replaces any value the handler supplied. A cookie the gateway sets belongs to one browser, so
+     * the answer carrying it must not be stored and replayed to another.
+     */
+    private static ReservedHttpResponse uncacheableWhenSettingCookies(ReservedHttpResponse response) {
+        if (response.setCookieHeaders().isEmpty()) {
+            return response;
+        }
+        Map<String, String> headers = new LinkedHashMap<>();
+        response.headers().forEach((name, value) -> {
+            if (!CACHE_CONTROL.equalsIgnoreCase(name)) {
+                headers.put(name, value);
+            }
+        });
+        headers.put(CACHE_CONTROL, NO_STORE);
+        return new ReservedHttpResponse(response.status(), response.location(), response.jsonBody(), headers,
+                response.setCookieHeaders());
+    }
+
+    private ReservedHttpResponse dispatchToHandler(ReservedEndpoint kind, ReservedHttpRequest req, Instant now) {
         return switch (kind) {
             case CALLBACK ->
                 render(requireNonNull(callbackEndpoint).handle(callbackParameters(req), req.cookieHeader(), now));
@@ -289,7 +382,13 @@ public final class BffRuntime {
     }
 
     private static ReservedHttpResponse render(LogoutEndpoint.LogoutOutcome outcome) {
-        return new ReservedHttpResponse(outcome.status(), outcome.location(), null, Map.of(),
+        // The end-session redirect carries the ID token in its query. The policy governs the request
+        // the browser makes when it follows the redirect; what the provider's own pages send on as a
+        // Referer afterwards is the provider's policy to set.
+        Map<String, String> headers = outcome.carriesIdToken()
+                ? Map.of(REFERRER_POLICY, NO_REFERRER)
+                : Map.of();
+        return new ReservedHttpResponse(outcome.status(), outcome.location(), null, headers,
                 outcome.setCookieHeaders());
     }
 
@@ -393,9 +492,13 @@ public final class BffRuntime {
      * The normalized response the edge renders for a dispatched reserved path: the HTTP status, an
      * optional redirect {@code Location}, an optional already-serialized JSON body (the user-info
      * fold, the step-up endpoint's no-session problem and the published client key set), the fixed
-     * response headers, and the {@code Set-Cookie} header values to emit. Token material never
-     * appears here — only opaque cookie headers, the redirect location, allowlisted disclosure, and
-     * the client-authentication public key.
+     * response headers, and the {@code Set-Cookie} header values to emit.
+     * <p>
+     * One location carries token material: the end-session redirect of an RP-initiated logout,
+     * whose query holds the {@code id_token_hint} for the identity provider. Access and refresh
+     * tokens never appear here. Everything else is opaque cookie headers, a gateway-configured
+     * redirect location, allowlisted disclosure, or the client-authentication public key. The
+     * record's string form therefore prints neither the location nor a cookie value.
      *
      * @param status           the HTTP status the edge returns
      * @param location         the redirect target, present only for a redirect outcome
@@ -443,6 +546,25 @@ public final class BffRuntime {
          */
         public Optional<String> jsonBodyOptional() {
             return Optional.ofNullable(jsonBody);
+        }
+
+        /**
+         * Overridden to omit the location, the body and the cookie values: the end-session
+         * redirect's location carries the {@code id_token_hint}, and a {@code Set-Cookie} value can
+         * be a session credential.
+         *
+         * @return the status, whether a location and a body are present, the header names and the
+         *         number of cookies
+         */
+        @Override
+        public String toString() {
+            return "ReservedHttpResponse[status=%s, location=%s, jsonBody=%s, headerNames=%s, setCookieHeaders=%s]"
+                    .formatted(status, presence(location), presence(jsonBody), headers.keySet(),
+                            setCookieHeaders.size());
+        }
+
+        private static String presence(@Nullable String value) {
+            return value == null ? "absent" : "present";
         }
     }
 }

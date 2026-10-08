@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -40,13 +41,15 @@ import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
 import de.cuioss.sheriff.gateway.bff.logout.BackchannelLogoutReceiver;
+import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenReplayGuard;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
+import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
@@ -136,7 +139,9 @@ class CallbackEndpointTest {
     void setUp() {
         pendingStore = new PendingAuthorizationStore.InMemory(8);
         bindingCodec = new BindingCookieCodec(PendingAuthorizationRecord.FIXED_TTL);
-        sessionStore = new InMemorySessionStore(16);
+        // The idle timeout equals the absolute lifetime, so it is not in play in these cases.
+        sessionStore = new InMemorySessionStore(16, SESSION_TTL, Integer.MAX_VALUE, sessionId -> {
+        });
         sessionCodec = new SessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL);
         sessionBinding = new ServerSessionBinding(sessionStore, sessionCodec);
         wideningCalls = new ArrayList<>();
@@ -238,10 +243,15 @@ class CallbackEndpointTest {
         Arrays.fill(key, (byte) 0x11);
         byte[] salt = new byte[32];
         Arrays.fill(salt, (byte) 0x22);
+        byte[] activityKey = new byte[32];
+        Arrays.fill(activityKey, (byte) 0x44);
         return new CookieSessionBinding(
                 new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
                         SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"), (byte) 1),
-                salt);
+                salt,
+                new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                        new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                SESSION_TTL);
     }
 
     /**
@@ -289,6 +299,16 @@ class CallbackEndpointTest {
         }
 
         @Override
+        public Optional<BoundSession> persistReissuingCookie(SessionRecord updated, Instant now) {
+            return delegate.persistReissuingCookie(updated, now);
+        }
+
+        @Override
+        public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
+            return delegate.recordAccess(session, cookieHeader, now);
+        }
+
+        @Override
         public void destroy(SessionRecord session) {
             delegate.destroy(session);
         }
@@ -309,8 +329,8 @@ class CallbackEndpointTest {
         }
 
         @Override
-        public String clearingSetCookieHeader() {
-            return delegate.clearingSetCookieHeader();
+        public List<String> clearingSetCookieHeaders() {
+            return delegate.clearingSetCookieHeaders();
         }
     }
 
@@ -465,6 +485,230 @@ class CallbackEndpointTest {
         }
     }
 
+    /**
+     * A completed login ends the session the request's cookie resolves, whoever it belonged to, before
+     * the new session is bound. A callback that is refused ends nothing.
+     */
+    @Nested
+    @DisplayName("A login ends the session the browser presented")
+    class LoginEndsPresentedSession {
+
+        private static final String LOGIN_QUERY = "code=auth-code&state=";
+
+        /** Binds an earlier session of {@code sub} on {@code binding} and returns its request-cookie pair. */
+        private String earlierSession(SessionBinding binding, String sub, Instant expiresAt) {
+            SessionRecord earlier = SessionRecord.builder().sessionId(SessionRecord.newSessionId())
+                    .accessToken("earlier-access-token").idToken("earlier-id-token").sub(sub)
+                    .expiresAt(expiresAt).build();
+            return cookiePair(binding.bind(earlier, T0).setCookieHeaders().getFirst());
+        }
+
+        private String earlierSession(String sub) {
+            return earlierSession(sessionBinding, sub, T0.plus(SESSION_TTL));
+        }
+
+        private static String cookies(String... pairs) {
+            return String.join("; ", pairs);
+        }
+
+        private static String newSessionCookie(CallbackOutcome outcome) {
+            return cookiePair(outcome.setCookieHeaders().getFirst());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {SUBJECT, "another-subject"})
+        @DisplayName("Should end the presented session, of the same or another subject, and bind the new one")
+        void shouldEndThePresentedSession(String earlierSubject) {
+            String earlier = earlierSession(earlierSubject);
+
+            CallbackOutcome outcome = endpoint.handle(LOGIN_QUERY + state, cookies(bindingCookieHeader, earlier), T0);
+
+            assertAll("the browser is left with exactly the new session",
+                    () -> assertEquals(302, outcome.status()),
+                    () -> assertEquals(Optional.empty(), sessionBinding.resolve(earlier, T0),
+                            "the earlier session's cookie resolves nothing"),
+                    () -> assertEquals(Optional.of(SUBJECT),
+                            sessionBinding.resolve(newSessionCookie(outcome), T0).map(SessionRecord::sub),
+                            "the new session resolves"),
+                    () -> assertEquals(1, sessionStore.size(), "and it is the only session held"));
+        }
+
+        @Test
+        @DisplayName("Should end the presented session before binding: a store of one takes the new session")
+        void shouldEndBeforeBinding() {
+            InMemorySessionStore storeOfOne = new InMemorySessionStore(1, SESSION_TTL, Integer.MAX_VALUE,
+                    sessionId -> {
+                    });
+            SessionBinding binding = new ServerSessionBinding(storeOfOne, sessionCodec);
+            String earlier = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));
+
+            CallbackOutcome outcome = endpoint(successfulExchange(), binding)
+                    .handle(LOGIN_QUERY + state, cookies(bindingCookieHeader, earlier), T0);
+
+            assertEquals(302, outcome.status(), "the earlier session's place is free for the new one");
+            assertTrue(binding.resolve(newSessionCookie(outcome), T0).isPresent());
+        }
+
+        @Test
+        @DisplayName("Control: the same full store refuses a login that presents no session")
+        void fullStoreRefusesLoginPresentingNoSession() {
+            InMemorySessionStore storeOfOne = new InMemorySessionStore(1, SESSION_TTL, Integer.MAX_VALUE,
+                    sessionId -> {
+                    });
+            SessionBinding binding = new ServerSessionBinding(storeOfOne, sessionCodec);
+            String earlier = earlierSession(binding, "another-subject", T0.plus(SESSION_TTL));
+
+            CallbackOutcome outcome = endpoint(successfulExchange(), binding)
+                    .handle(LOGIN_QUERY + state, bindingCookieHeader, T0);
+
+            assertEquals(500, outcome.status(), "nothing made room, so the bind is refused at the store bound");
+            assertTrue(binding.resolve(earlier, T0).isPresent(), "and the session that was not presented lives on");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"", "; " + SessionCookieCodec.DEFAULT_COOKIE_NAME + "=not-a-handle",
+                "; unrelated=value"})
+        @DisplayName("Should end no session when the request presents none it can resolve")
+        void shouldEndNothingWithoutAResolvableSession(String furtherCookies) {
+            String notPresented = earlierSession(SUBJECT);
+
+            CallbackOutcome outcome = endpoint.handle(LOGIN_QUERY + state, bindingCookieHeader + furtherCookies, T0);
+
+            assertAll("the login binds as before and touches no other session",
+                    () -> assertEquals(302, outcome.status()),
+                    () -> assertTrue(sessionBinding.resolve(notPresented, T0).isPresent(),
+                            "a session of the same subject in another browser is left alone"),
+                    () -> assertEquals(2, sessionStore.size()));
+        }
+
+        @Test
+        @DisplayName("Should bind as before when the presented session has already expired")
+        void shouldBindWhenThePresentedSessionExpired() {
+            String expired = earlierSession(sessionBinding, SUBJECT, T0.minusSeconds(1));
+
+            CallbackOutcome outcome = endpoint.handle(LOGIN_QUERY + state, cookies(bindingCookieHeader, expired), T0);
+
+            assertEquals(302, outcome.status());
+            assertTrue(sessionBinding.resolve(newSessionCookie(outcome), T0).isPresent());
+        }
+
+        static Stream<Arguments> refusedCallbacks() {
+            return Stream.of(
+                    Arguments.of("a state that does not match the bound record", "code=abc&state=not-the-bound-state",
+                            true, 403),
+                    Arguments.of("no binding cookie", "code=abc&state=%s", false, 403),
+                    Arguments.of("an identity-provider error", "error=access_denied&state=%s", true, 400),
+                    Arguments.of("a duplicated code", "code=first&code=second&state=%s", true, 400),
+                    Arguments.of("a missing state", "code=abc", true, 400));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("refusedCallbacks")
+        @DisplayName("Should leave the presented session alone when the callback is refused")
+        void shouldLeaveThePresentedSessionOnRefusal(String what, String query, boolean withBindingCookie,
+                int expectedStatus) {
+            String earlier = earlierSession(SUBJECT);
+            String cookieHeader = withBindingCookie ? cookies(bindingCookieHeader, earlier) : earlier;
+
+            CallbackOutcome outcome = endpoint.handle(query.formatted(state), cookieHeader, T0);
+
+            assertEquals(expectedStatus, outcome.status(), "precondition: the callback is refused for " + what);
+            assertTrue(sessionBinding.resolve(earlier, T0).isPresent(), "the presented session still resolves");
+        }
+
+        @Test
+        @DisplayName("Should leave the presented session alone when the code exchange fails")
+        void shouldLeaveThePresentedSessionOnExchangeFailure() {
+            String earlier = earlierSession(SUBJECT);
+            CodeExchange failing = (context, params) -> {
+                throw new ClientProtocolException("token endpoint rejected the code");
+            };
+
+            CallbackOutcome outcome = endpoint(failing, sessionBinding)
+                    .handle(LOGIN_QUERY + state, cookies(bindingCookieHeader, earlier), T0);
+
+            assertEquals(400, outcome.status(), "precondition: the exchange failure is answered 400");
+            assertTrue(sessionBinding.resolve(earlier, T0).isPresent(), "the presented session still resolves");
+        }
+
+        @Test
+        @DisplayName("Should leave the presented session alone when the validated tokens name no subject")
+        void shouldLeaveThePresentedSessionWithoutASubject() {
+            String earlier = earlierSession(SUBJECT);
+            AuthorizationCodeFlow.AuthenticationResult subjectless = new AuthorizationCodeFlow.AuthenticationResult(
+                    new AccessTokenContent(new HashMap<>(), RAW_ACCESS_TOKEN),
+                    new IdTokenContent(new HashMap<>(), RAW_ID_TOKEN), null);
+
+            CallbackOutcome outcome = endpoint((context, params) -> subjectless, sessionBinding)
+                    .handle(LOGIN_QUERY + state, cookies(bindingCookieHeader, earlier), T0);
+
+            assertAll("a login that cannot name its user is refused and ends nothing",
+                    () -> assertEquals(400, outcome.status(), "precondition: the callback is refused"),
+                    () -> assertTrue(outcome.setCookieHeaders().isEmpty(), "the refusal sets no cookie"),
+                    () -> assertTrue(sessionBinding.resolve(earlier, T0).isPresent(),
+                            "the presented session still resolves"),
+                    () -> assertEquals(1, sessionStore.size(), "and no session was bound"));
+        }
+
+        @Test
+        @DisplayName("Should end the subject's oldest session when a login from another browser exceeds a bound of one")
+        void shouldEndOldestSessionOfTheSubjectAtItsBound() {
+            InMemorySessionStore boundOfOne = new InMemorySessionStore(16, SESSION_TTL, 1, sessionId -> {
+            });
+            SessionBinding binding = new ServerSessionBinding(boundOfOne, sessionCodec);
+            String otherBrowser = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));
+
+            CallbackOutcome outcome = endpoint(successfulExchange(), binding)
+                    .handle(LOGIN_QUERY + state, bindingCookieHeader, T0);
+
+            assertAll("the second login is answered as any login; the first browser is logged out",
+                    () -> assertEquals(302, outcome.status()),
+                    () -> assertEquals(Optional.empty(), binding.resolve(otherBrowser, T0),
+                            "the first browser's cookie resolves nothing"),
+                    () -> assertTrue(binding.resolve(newSessionCookie(outcome), T0).isPresent()));
+        }
+
+        @Test
+        @DisplayName("Should not count the session the same browser presented towards the subject's bound")
+        void shouldNotCountThePresentedSessionTowardsTheBound() {
+            InMemorySessionStore boundOfTwo = new InMemorySessionStore(16, SESSION_TTL, 2, sessionId -> {
+            });
+            SessionBinding binding = new ServerSessionBinding(boundOfTwo, sessionCodec);
+            String otherBrowser = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));
+            String thisBrowser = earlierSession(binding, SUBJECT, T0.plus(SESSION_TTL));
+
+            CallbackOutcome outcome = endpoint(successfulExchange(), binding)
+                    .handle(LOGIN_QUERY + state, cookies(bindingCookieHeader, thisBrowser), T0);
+
+            assertAll("the re-login replaced this browser's session and ended no other",
+                    () -> assertEquals(302, outcome.status()),
+                    () -> assertEquals(Optional.empty(), binding.resolve(thisBrowser, T0)),
+                    () -> assertTrue(binding.resolve(otherBrowser, T0).isPresent(),
+                            "the subject's older session in another browser — the one the bound would end — lives on"),
+                    () -> assertTrue(binding.resolve(newSessionCookie(outcome), T0).isPresent()),
+                    () -> assertEquals(2, boundOfTwo.size()));
+        }
+
+        @Test
+        @DisplayName("Cookie mode: a login presenting an earlier sealed cookie binds the new session")
+        void cookieModeBindsTheNewSession() {
+            SessionBinding binding = cookieBinding();
+            String earlier = earlierSession(binding, "another-subject", T0.plus(SESSION_TTL));
+
+            CallbackOutcome outcome = endpoint(successfulExchange(), binding)
+                    .handle(LOGIN_QUERY + state, cookies(bindingCookieHeader, earlier), T0);
+
+            assertAll("the browser's cookie is replaced; nothing server-side holds the earlier one",
+                    () -> assertEquals(302, outcome.status()),
+                    () -> assertNotEquals(earlier, newSessionCookie(outcome)),
+                    () -> assertEquals(Optional.of(SUBJECT),
+                            binding.resolve(newSessionCookie(outcome), T0).map(SessionRecord::sub)),
+                    () -> assertEquals(Optional.of("another-subject"),
+                            binding.resolve(earlier, T0).map(SessionRecord::sub),
+                            "a copy of the earlier sealed cookie stays valid until its own expiry"));
+        }
+    }
+
     @Nested
     @DisplayName("Successful login")
     class SuccessfulLogin {
@@ -491,8 +735,8 @@ class CallbackEndpointTest {
         void shouldStoreSession() {
             CallbackOutcome outcome = endpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
 
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            Optional<SessionRecord> session = sessionStore.resolve(sessionId, T0);
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            Optional<SessionRecord> session = sessionStore.resolve(cookieHandle, T0);
 
             assertTrue(session.isPresent(), "the session was created under the opaque id from the cookie");
             SessionRecord sessionRecord = session.get();
@@ -501,6 +745,31 @@ class CallbackEndpointTest {
             assertEquals(SUBJECT, sessionRecord.sub());
             assertEquals(IDP_SID, sessionRecord.sid());
             assertEquals(T0.plus(SESSION_TTL), sessionRecord.expiresAt(), "the session TTL is absolute from login");
+        }
+
+        @Test
+        @DisplayName("Should mint a fresh session id per login, keep it out of the cookie, and give the cookie the full ttl")
+        void shouldMintFreshSessionIdPerLogin() {
+            CallbackOutcome first = endpoint.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
+            FlowContext secondFlow = FlowContext.create(CALLBACK_URI);
+            PendingAuthorizationRecord secondPending =
+                    PendingAuthorizationRecord.create(secondFlow, RETURN_URL, REQUESTED_SCOPES, T0);
+            pendingStore.store(secondPending);
+            CallbackOutcome second = endpoint.handle("code=auth-code&state=" + secondFlow.state(),
+                    cookiePair(bindingCodec.toSetCookieHeader(secondPending.id())), T0);
+
+            SessionRecord firstSession = storedSessionOf(first);
+            SessionRecord secondSession = storedSessionOf(second);
+            String firstSetCookie = first.setCookieHeaders().getFirst();
+
+            assertAll("a login creates a session of its own",
+                    () -> assertNotEquals(firstSession.sessionId(), secondSession.sessionId(),
+                            "each login mints a fresh session id"),
+                    () -> assertEquals(2, sessionStore.size(), "two logins are two sessions"),
+                    () -> assertFalse(firstSetCookie.contains(firstSession.sessionId()),
+                            "the session id never reaches the browser"),
+                    () -> assertTrue(firstSetCookie.contains("; Max-Age=" + SESSION_TTL.toSeconds() + ";"),
+                            "the login cookie carries the full ttl: " + firstSetCookie));
         }
 
         /**
@@ -540,8 +809,8 @@ class CallbackEndpointTest {
         }
 
         private SessionRecord storedSessionOf(CallbackOutcome outcome) {
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            return sessionStore.resolve(sessionId, T0).orElseThrow();
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(cookieHandle, T0).orElseThrow();
         }
 
         @Test
@@ -561,8 +830,8 @@ class CallbackEndpointTest {
             CallbackEndpoint scoped = endpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim), sessionBinding);
             CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
             assertTrue(outcome.isRedirect(), "the login completes");
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            return sessionStore.resolve(sessionId, T0).orElseThrow();
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(cookieHandle, T0).orElseThrow();
         }
 
         @Test
@@ -609,8 +878,8 @@ class CallbackEndpointTest {
             CallbackEndpoint scoped = endpoint(exchangeReturning(RAW_REFRESH_TOKEN, scopeClaim), sessionBinding);
             CallbackOutcome outcome = scoped.handle("code=auth-code&state=" + state, bindingCookieHeader, T0);
             assertTrue(outcome.isRedirect(), "the login completes");
-            String sessionId = sessionCodec.readSessionId(outcome.setCookieHeaders().getFirst()).orElseThrow();
-            return sessionStore.resolve(sessionId, T0).orElseThrow();
+            String cookieHandle = sessionCodec.readCookieHandle(outcome.setCookieHeaders().getFirst()).orElseThrow();
+            return sessionStore.resolve(cookieHandle, T0).orElseThrow();
         }
 
         @Test
@@ -766,6 +1035,18 @@ class CallbackEndpointTest {
             return sessionBinding.resolve(sessionCookie, CALLBACK_AT).orElseThrow();
         }
 
+        /**
+         * Does what a browser does with a widening's answer: it replaces the session cookie it holds by
+         * the one the answer set, when it set one. A server-mode widening re-issues the cookie value, so
+         * every later request of the test has to carry the returned one.
+         */
+        private void followReissuedCookie(CallbackOutcome outcome) {
+            outcome.setCookieHeaders().stream()
+                    .filter(header -> header.startsWith(SessionCookieCodec.DEFAULT_COOKIE_NAME + "="))
+                    .findFirst()
+                    .ifPresent(header -> sessionCookie = cookiePair(header));
+        }
+
         private static void assertRefused(CallbackOutcome outcome) {
             assertEquals(403, outcome.status());
             assertNull(outcome.location(), "a refusal never redirects the browser round the widening again");
@@ -894,8 +1175,22 @@ class CallbackEndpointTest {
 
                 assertEquals(302, outcome.status());
                 assertEquals(WIDEN_RETURN_URL, outcome.location());
-                assertEquals(List.of(bindingCodec.toClearingSetCookieHeader()), outcome.setCookieHeaders(),
-                        "the server-mode handle is unchanged, so only the binding cookie is cleared");
+                assertEquals(2, outcome.setCookieHeaders().size(), "the re-issued session cookie + the binding clear");
+                assertEquals(bindingCodec.toClearingSetCookieHeader(), outcome.setCookieHeaders().get(1));
+                String previousCookie = sessionCookie;
+                followReissuedCookie(outcome);
+                String reissuedSetCookie = outcome.setCookieHeaders().getFirst();
+                assertAll("the widening re-issued the cookie value",
+                        () -> assertNotEquals(previousCookie, sessionCookie,
+                                "the browser is handed a cookie value that differs from the one it sent"),
+                        () -> assertTrue(sessionBinding.resolve(previousCookie, CALLBACK_AT).isEmpty(),
+                                "the value the request carried no longer resolves"),
+                        () -> assertTrue(
+                                reissuedSetCookie.contains("; Max-Age=" + SESSION_TTL.minusSeconds(30).toSeconds() + ";"),
+                                "the re-issued cookie lives as long as the session still does: " + reissuedSetCookie),
+                        () -> assertFalse(reissuedSetCookie.contains(live.sessionId()),
+                                "the session id is not the cookie value"),
+                        () -> assertEquals(1, sessionStore.size(), "the widening created no second session"));
                 SessionRecord merged = resolveServerSession();
                 assertAll("merged into the live session",
                         () -> assertEquals(live.sessionId(), merged.sessionId(), "the same session, never a new one"),
@@ -919,8 +1214,9 @@ class CallbackEndpointTest {
                 bindLive(sessionBinding);
                 pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
 
-                endpoint(grant(SUBJECT, ClaimValue.forPlainString("openid orders:read")), sessionBinding)
-                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+                followReissuedCookie(
+                        endpoint(grant(SUBJECT, ClaimValue.forPlainString("openid orders:read")), sessionBinding)
+                                .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT));
 
                 SessionRecord merged = resolveServerSession();
                 assertEquals(Set.of("openid", "orders:read"), merged.activeScopes(), "A is what the token carries");
@@ -938,6 +1234,7 @@ class CallbackEndpointTest {
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
 
                 assertTrue(outcome.isRedirect());
+                followReissuedCookie(outcome);
                 SessionRecord merged = resolveServerSession();
                 assertEquals(WIDENING_REQUEST, merged.activeScopes());
                 assertEquals(WIDENING_REQUEST, merged.grantedScopes());
@@ -953,6 +1250,7 @@ class CallbackEndpointTest {
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
 
                 assertTrue(outcome.isRedirect());
+                followReissuedCookie(outcome);
                 assertEquals(live.sessionId(), resolveServerSession().sessionId());
                 assertEquals(WIDENING_REQUEST, resolveServerSession().activeScopes());
             }
@@ -1131,6 +1429,7 @@ class CallbackEndpointTest {
                 CallbackOutcome outcome = endpoint(fullGrant(), interleaved)
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
 
+                followReissuedCookie(outcome);
                 SessionRecord merged = resolveServerSession();
                 assertAll("the same widening merges when the session is still there at the persist",
                         () -> assertEquals(302, outcome.status()),
@@ -1158,8 +1457,10 @@ class CallbackEndpointTest {
             /** Runs one widening round for {@link #WIDENING_REQUEST} answered by {@code exchange}. */
             private CallbackOutcome widenWith(CodeExchange exchange) {
                 pendWidening(SUBJECT, PendingAuthorizationRecord.Widening.Attempt.SILENT);
-                return endpoint(exchange, sessionBinding).handle("code=widen-code&state=" + wideningState,
-                        requestCookies(), CALLBACK_AT);
+                CallbackOutcome outcome = endpoint(exchange, sessionBinding)
+                        .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
+                followReissuedCookie(outcome);
+                return outcome;
             }
 
             @Test
@@ -1225,6 +1526,7 @@ class CallbackEndpointTest {
                 CallbackOutcome outcome = endpoint(exchange, sessionBinding)
                         .handle("code=widen-code&state=" + wideningState, requestCookies(), CALLBACK_AT);
                 assertEquals(302, outcome.status(), "precondition: the widening is merged");
+                followReissuedCookie(outcome);
             }
 
             /** Delivers a spec-shaped, sid-only back-channel logout token naming {@code sid}. */
@@ -1233,11 +1535,17 @@ class CallbackEndpointTest {
                         "iss", ClaimValue.forPlainString(ISSUER),
                         "aud", ClaimValue.forList("aud", List.of(CLIENT_ID)),
                         "iat", ClaimValue.forDateTime("iat", OffsetDateTime.ofInstant(CALLBACK_AT, ZoneOffset.UTC)),
+                        "exp", ClaimValue.forDateTime("exp",
+                                OffsetDateTime.ofInstant(CALLBACK_AT.plusSeconds(120), ZoneOffset.UTC)),
+                        "jti", ClaimValue.forPlainString("logout-token-for-" + sid),
                         "events", ClaimValue.forPlainString(
                                 "{" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "={}}"),
                         "sid", ClaimValue.forPlainString(sid));
-                return new BackchannelLogoutReceiver(raw -> new IdTokenContent(claims, raw),
-                        new LogoutTokenValidator(ISSUER, CLIENT_ID, Duration.ofMinutes(2)), sessionBinding)
+                return new BackchannelLogoutReceiver(
+                        raw -> new VerifiedLogoutToken(new IdTokenContent(claims, raw),
+                                LogoutTokenValidator.LOGOUT_TOKEN_TYPE),
+                        new LogoutTokenValidator(ISSUER, CLIENT_ID, Duration.ofMinutes(2)), sessionBinding,
+                        new LogoutTokenReplayGuard(16))
                         .receive("raw.logout.token", CALLBACK_AT);
             }
 

@@ -301,7 +301,9 @@ The threat categories that actually bite each boundary (empty cells omitted for 
   onto the session branch of a dual-posture route -> <<bff-16>>; by reaching a route with a session
   that lacks its scopes -> <<bff-15>>; by steering the widening of a live session -> <<bff-17>>.
   *Tampering*/theft of the
-  cookie -> <<bff-10>>, <<bff-12>>. *Elevation* via `state`/code injection on the callback
+  cookie -> <<bff-10>>, <<bff-12>>. *Spoofing* with a guessed or planted session identifier, or with
+  the cookie of a session that has ended -> <<bff-21>>. *Elevation* via `state`/code injection on the
+  callback
   -> <<bff-02>>, <<bff-03>>, <<bff-13>>. *Repudiation*/replay via missing `nonce` ->
   <<bff-04>>; logout flaws -> <<bff-09>>.
 
@@ -1955,10 +1957,34 @@ and records `ApiSheriff-111` with `session-terminated`; the widening callback an
 `session-terminated`. The tokens of a refused widening grant are dropped unstored and are not
 revoked, as with the callback's other refusals.
 
-*Status:* COVERED in server mode. Both channels, the logout-token checks and the logout-`state`
-cookie are delivered, cookie mode disables the back-channel receiver, and a server-mode termination
-is not undone by a refresh or a widening that was in flight. Cookie mode carries one accepted
-residual.
+*A logout token is typed, unexpired and acts once.* After the signature the receiver checks, in this
+order: the `typ` header, `iss`, `aud`, `iat` inside a two-minute window, `exp`, `events`, the absence
+of `nonce`, `sub` or `sid`, and `jti`. A token whose `typ` header is present must name `logout+jwt`
+(compared without case, with or without the `application/` prefix); a token without a `typ` header
+passes that one check. `exp` must be present and in the future, and `jti` must be present. An accepted
+token is then admitted once: the receiver remembers a digest of its `jti` for as long as its `iat`
+window can still accept it, and a second delivery inside that window destroys nothing. The memory is
+taken before any session is destroyed, so two deliveries arriving together cannot both act. It holds
+10 000 entries per gateway instance and is not shared between instances; an entry leaves only when
+its window has closed, and a token that finds the memory full of live entries is refused rather than
+acted on unremembered. Every refusal is the `400` of a rejected logout token, served `no-store`, with
+`ApiSheriff-112` naming the reason. A repeated token is recorded at `WARN` once per process and at
+`DEBUG` afterwards, because the holder of one captured token can repeat it at will.
+
+*An RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
+endpoint destroys the session and clears its cookies first and builds the redirect to the provider's
+`end_session_endpoint` afterwards. When that redirect cannot be built -- the provider publishes no
+endpoint, publishes one that is not an absolute `http` or `https` URI, its metadata cannot be
+obtained, or the session holds no ID token -- the browser is sent to `oidc.logout.final_redirect`.
+No such condition answers a logout with an error, and none leaves the session in place.
+`ApiSheriff-135` records once per process that the provider offers no usable endpoint.
+
+*Status:* COVERED in server mode. Both channels, the logout-token checks -- `typ`, `iss`, `aud`,
+`iat`, `exp`, `events`, `nonce`, `sub`/`sid`, `jti` and the single use of a token -- and the
+logout-`state` cookie are delivered, cookie mode disables the back-channel receiver, an RP-initiated
+logout ends the gateway session with or without the provider's endpoint, and a server-mode
+termination is not undone by a refresh or a widening that was in flight. Cookie mode carries one
+accepted residual.
 
 *Not delivered: token revocation at logout.* The control names revoking the refresh-token family.
 RP-initiated logout hands the session to a token-revocation seam that the shipped runtime binds to a
@@ -1999,7 +2025,19 @@ those ways during the provider exchange, on the near-expiry leg and on the scope
 written back, the request and a coalesced waiter are answered as session-ended, and the rotated
 refresh token is handed to revocation (`TokenRefreshCoordinatorTest`). The cookie-mode residual is
 pinned rather than hidden: the stateless update re-seals after every destroy form
-(`CookieSessionBindingTest`, `TokenRefreshCoordinatorTest`).
+(`CookieSessionBindingTest`, `TokenRefreshCoordinatorTest`). A logout token typed other than
+`logout+jwt`, without `exp` or at or past it, or without `jti` is refused, and an untyped one with
+every other claim valid is accepted (`LogoutTokenValidatorTest`); each of those refusals is a `400`
+that destroys nothing (`BackchannelLogoutEndpointTest`, `RefusedSignedTokens`). The same token
+delivered twice destroys once, sixteen deliveries arriving together act once, and a full replay
+memory refuses and remembers nothing (`LogoutTokenReplayGuardTest`; `BackchannelLogoutReceiverTest`,
+`SingleUse`). The session is destroyed before the redirect to the provider is built; a logout
+against a provider without a usable `end_session_endpoint`, with failing discovery, or for a session
+without an ID token ends the session, clears the cookies and lands on `final_redirect`, and
+`ApiSheriff-135` is recorded once (`RpInitiatedLogoutTest`, `NoUsableEndSessionEndpoint`;
+`LogoutEndpointTest`). The redirect that carries the ID token is answered with
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and a refused back-channel delivery
+with `no-store` (`GatewayEdgeGatewayCookieTest`, `ServerMode`).
 
 [#bff-10]
 === BFF-10 -- Cookie hardening & token-leakage-to-browser
@@ -2010,7 +2048,8 @@ fixation on login lets a pre-seeded session be adopted.
 *Evidence.* Browser-Based Apps BCP (BFF keeps tokens server-side). BFF cookie guidance
 (`__Host-`+`HttpOnly`+`Secure`+`SameSite`). Session-fixation guidance.
 
-*Control.* No token ever reaches the browser: server-mode holds them in the store; cookie-mode
+*Control.* The access token and the refresh token never reach the browser in a readable form:
+server-mode holds them in the store; cookie-mode
 seals them in an `HttpOnly` AES-GCM cookie decrypted per request. Session cookie:
 `__Host-` + `HttpOnly` + `Secure` + `SameSite=Lax`, opaque id only (see the variant
 docs). Regenerate the session id on login and privilege change; destroy on logout.
@@ -2026,6 +2065,24 @@ overwrite. The offending value is escaped before it is echoed (CWE-117). The ref
 the runtime consumes the name verbatim and the schema declares the key an unrestricted string. An
 omitted key resolves to the gateway's own `+__Host-sheriff-session+`.
 
+*The ID token is delivered to the browser once, at logout.* RP-initiated logout answers with a
+`302` to the identity provider's `end_session_endpoint`, and the redirect URL carries the session's
+ID token as `id_token_hint` beside `post_logout_redirect_uri` and `state`. The access token and the
+refresh token are in no answer. A URL is recorded where a request body is not: the ID token is
+readable in the browser's history, in the identity provider's access log, and by any intermediary
+that terminates TLS in front of the identity provider. Three things bound that. The redirect is
+followed over TLS to the provider that issued the token. An ID token is not an API credential: the
+gateway accepts it on no route and relays it to no upstream, so its holder learns the claims it
+carries and can present it as a logout hint, nothing more. And it is valid only until its own `exp`.
+The gateway's answer carries `Cache-Control: no-store` and `Referrer-Policy: no-referrer`; the
+latter governs the request the browser makes when it follows the redirect. Whether the identity
+provider's own pages pass their URL on as a `Referer` is decided by the provider's referrer policy,
+not by the gateway. The gateway session is ended and its cookies are
+cleared before the redirect is built; when no end-session redirect can be built -- the provider
+publishes no usable `end_session_endpoint`, its metadata cannot be obtained, or the session holds
+no ID token -- the logout is completed at the gateway and the browser is sent to
+`oidc.logout.final_redirect`, with no token in any URL.
+
 *The origin need not see the token either.* A route that only has to know the user is logged in
 declares `auth.token_relay: false`: the session is still required, refreshed and held to the route's
 scopes (<<bff-15>>), but no `Authorization` header is relayed, so a static app or asset origin never holds an access token it
@@ -2037,7 +2094,9 @@ names are not credentials and are printed as-is where the payload's `toString()`
 
 *Status:* COVERED.
 
-*Assertion.* No response ever carries a token to the browser; the session cookie has
+*Assertion.* No response carries an access token or a refresh token to the browser in a readable
+form, and the ID token appears only as `id_token_hint` in the RP-initiated logout redirect; the
+session cookie has
 `__Host-`+`HttpOnly`+`Secure`+`SameSite`; the session id is regenerated at login (fixation
 test); a configured `session.cookie_name` that lacks the prefix (or carries it in the wrong case, or
 as `+__Secure-+`), is the bare prefix, is blank, carries a `;` or a space, or names either
@@ -2782,6 +2841,209 @@ holds for a client authenticated with a secret (`BffClientSecretModeIT`). `BffSe
 asserts the same redirect shape on a widening started by a session route and by the step-up path,
 completes both, and asserts the `502` and the `ApiSheriff-132` record of a push Keycloak refuses.
 
+[#bff-21]
+=== BFF-21 -- Session identifier, session lifetime and the gateway's own cookies
+
+The entries above cover how a session is obtained and how its tokens are kept. This entry covers the
+session itself: the value the browser holds, how long that value is honoured, and what happens to
+the cookies the gateway sets. The failure classes are an identifier that can be guessed, read or
+planted; a session that never ends, or that any request keeps alive; a cookie the browser keeps
+after the session is over; a cookie that reaches an origin behind the gateway; and, where the
+gateway holds no state, a browser that supplies its own idea of when it was last active.
+
+*Evidence.* OWASP ASVS 5.0 chapter V7 and the OWASP Session Management Cheat Sheet (an unguessable
+identifier that is exchanged in a cookie only, a new identifier at authentication, an idle and an
+absolute timeout enforced by the server). `draft-ietf-httpbis-rfc6265bis` (the `+__Host-+` prefix
+and its conditions). Envoy OAuth2 filter CVE-2025-55162 *(unverified)*: a sign-out that deleted a
+prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p7jw-8qr3
+*(unverified)*: the session cookie forwarded to the proxied API. mod_auth_openidc CVE-2024-24814
+*(unverified)*: unauthenticated processing cost driven by the shape of a session cookie.
+
+*Control.*
+
+* *The cookie value is not the session id.* In server mode the browser holds a random handle of 256
+  bits from `SecureRandom`, minted by `ServerSessionBinding`; the store resolves it to the session
+  id, which is a second random value that never leaves the gateway and is not a lookup key. In
+  cookie mode the browser holds the sealed value (<<bff-12>>); the session identity derived from it
+  is used inside the gateway only. The value travels in the cookie and nowhere else: no endpoint
+  reads it from a URL, and no answer carries it.
+* *A login never adopts a value the browser presents.* The callback creates a session with a new id
+  and binds it under a new handle (server mode) or a new nonce (cookie mode). A cookie that was in
+  the browser before the login decides nothing about the session the login creates.
+* *In server mode a widening re-issues the cookie value.* The write that merges a widening
+  (<<bff-17>>) replaces the record and swaps the handle in one step under the lock every destroy
+  takes. The previous value resolves nothing from then on. It is the same session: same id, same
+  authentication time, same absolute expiry, still ended by a back-channel logout. The re-issued
+  cookie carries the session's remaining lifetime as `Max-Age`. A refresh keeps the handle, and a
+  refresh that resolved the session before a re-issue cannot put the previous handle back.
+* *Two deadlines, enforced when the session is resolved, in both modes.* A session ends at its
+  absolute lifetime (`oidc.session.ttl_seconds`, counted from the login) and after the idle timeout
+  (`oidc.session.idle_timeout_seconds`) without an access, whichever comes first. Neither rests on
+  the cookie's `Max-Age`: a browser that keeps a cookie past it is still answered as having no
+  session. Only a request that is let through to a session route counts as an access. A request
+  that is refused or redirected, the user-info endpoint and the portal's session lookup do not
+  extend a session. A declared idle timeout below 1 or above the effective lifetime is refused at
+  boot.
+* *Cookie mode keeps the last access in a cookie of its own.* The activity cookie
+  (`<session cookie name>-activity`) is sealed with AES-256-GCM under a key that exists for it
+  alone, derived from the sealing key. It carries the identity of the session it belongs to. An
+  activity cookie that is missing, tampered with, sealed under another key or for another cookie
+  name, or bound to another session counts as absent, and the session is then measured from its
+  login. Withholding or swapping the cookie can therefore only end a session sooner. No activity
+  cookie extends the absolute lifetime, and an instant later than the gateway's clock counts as
+  now. A new activity cookie is written only when the last access is at least one re-issue interval
+  old -- the smaller of 60 seconds and half the idle timeout, so an access can be recorded before
+  every idle deadline -- and writing it never rewrites the session cookie. A session therefore ends
+  no later than the idle timeout after its last access, and at most one interval earlier.
+* *An expired server-mode session leaves memory.* A periodic task removes expired and idle sessions
+  every 60 seconds whether or not anything looks them up.
+* *A cookie is cleared with the attributes it was set with.* Every clearing `Set-Cookie` the
+  gateway writes -- for the session cookie, the activity cookie, the binding cookie and the
+  logout-state cookie -- carries `Path=/` and `Secure` and no `Domain`, the conditions a browser
+  demands before it accepts any write to a `+__Host-+` cookie. A logout and a session ended by a
+  refresh clear every cookie the active binding sets.
+* *The gateway's cookies do not reach an upstream.* `Cookie` is a member of the request-direction
+  never-forward set and no route configuration re-admits it (<<gw-03>>). This holds for the HTTP,
+  the gRPC and the WebSocket dispatch.
+* *Reading a cookie costs bounded work before anything is authenticated.* The `Cookie` header is
+  capped before any session code runs. A value that is not a sealed cookie costs one base64 decode
+  and at most one authenticated decryption; a payload is inflated only after its tag verified, up
+  to a fixed size; the activity value has one fixed length. A rejected session cookie is recorded
+  once per kind of rejection and a rejected activity cookie at `DEBUG` only, so a stream of junk
+  cookies does not flood the log.
+* *A login ends the session the browser presented.* A login callback that has passed its checks --
+  the binding cookie, `state`, the code exchange and the subject -- destroys the session the
+  request's own cookie resolves, whoever it belongs to, and binds the new session afterwards. In
+  server mode the earlier session is gone from the store and its cookie value resolves nothing. A
+  callback that is refused touches no session, and a widening keeps the session it widens.
+* *One subject holds a bounded number of server-mode sessions.* The store ends the oldest session
+  of a subject -- the one created first, whatever its last access -- before it stores a login that
+  would take the subject past `oidc.session.max_sessions_per_subject`. The order is the order of
+  logins, which the holder of a session cannot influence. The bound is applied before the store-wide
+  `max_sessions`, so a subject at its own bound is not refused by a full store, and with the bound
+  below `max_sessions` one account cannot hold the whole store against every other. A value below
+  1 or above the effective `max_sessions` is refused at boot, and so is the key in cookie mode,
+  where no store exists to enforce it.
+* *A response the gateway sets a cookie on is not cacheable.* Whenever a pipeline stage adds a
+  `Set-Cookie` to a response, the response is written with `Cache-Control: no-store`, on a relayed
+  upstream response in place of whatever `Cache-Control` the upstream sent. Every answer of a
+  reserved path that sets a cookie, and a gateway-rendered page that sets one, carry the same. A
+  response the gateway adds no cookie to keeps the upstream's cache policy.
+* *An upstream cannot set a gateway cookie.* On the HTTP and the gRPC relay an upstream `Set-Cookie`
+  line naming a cookie the gateway owns -- the session cookie, the activity cookie, the binding
+  cookie, the logout-state cookie -- is dropped; every other line is relayed unchanged. The name is
+  compared exactly, the `+__Host-+` and `+__Secure-+` prefixes without case, and a nameless line
+  whose value starts with an owned name is dropped as well. A WebSocket upgrade and an asset answer
+  relay no upstream `Set-Cookie` at all.
+* *A WebSocket relay ends with its session.* A relay opened for a request a session was let through
+  with is closed on both legs, with close code `1008` and the reason `session ended`, at the
+  session's absolute expiry. In server mode it is also closed when the session is destroyed or
+  removed: by a logout, a back-channel logout, the login that replaces it, the per-subject bound, or
+  the removal of an expired or idle session. The relays are tracked under the session id, not under
+  the cookie value, so a re-issued cookie value closes nothing. At most 10 000 such relays are
+  tracked; an upgrade beyond that is refused `503` before anything is opened, and no relay of a
+  session is opened untracked. Frames on a relay do not extend the session. In cookie mode the
+  gateway holds no session whose end it could observe, so there a relay is closed at the absolute
+  expiry and not by a logout (<<bff-09>>).
+
+*Status:* COVERED, with two statements of the controls above that no test asserts; the end of the
+assertion names them. The limits of the
+stateless variant are recorded where they arise and are not repeated here: a sealed cookie cannot be
+withdrawn before its deadlines (<<bff-09>>), and its replay after a refresh is the identity
+provider's to refuse (<<bff-08>>).
+
+*Residual risk (accepted) -- cookie mode: a cookie sealed before a step-up or a widening stays
+usable as it was sealed.* A step-up or a widening answers with a newly sealed session cookie. The
+stateless binding holds nothing with which it could withdraw the cookie the browser held before, so
+a copy of that earlier cookie keeps resolving a session until its own deadlines, at the
+authentication level and with the scope sets sealed into it. It never gains what the step-up or the
+widening obtained: a route that needs the new scope refuses it or sends it into a widening of its
+own (<<bff-15>>). The exposure is that of any copied session cookie in this variant, held to the
+earlier level. In server mode the same step re-issues the cookie value, and the previous value
+resolves nothing.
+
+*Assertion.* A login mints a new session id and a cookie value that is not that id
+(`CallbackEndpointTest`, `SuccessfulLogin.shouldMintFreshSessionIdPerLogin`;
+`ServerSessionBindingTest`, `shouldNotEmitTheSessionId`, `shouldMintDistinctHandles`). After a
+server-mode widening the new value resolves the session, the previous value resolves nothing, the
+id, the authentication time and the expiry are unchanged, the cookie carries the remaining lifetime,
+and a back-channel logout by `sid` and by `sub` still ends the session (`CallbackEndpointTest`,
+`WideningCallback.SuccessfulGrant.shouldMergeIntoServerSession`; `ServerSessionBindingTest`,
+`ReissuingWrite`; `InMemorySessionStoreTest`, `HandleReissue`; `BackchannelLogoutReceiverTest`,
+`ReissuedSession`). A session is refused at its absolute and at its idle deadline in both modes, a
+request let through extends the idle deadline, and a refused request, a redirected one, the
+user-info endpoint and the session-identity lookup do not (`InMemorySessionStoreTest`,
+`IdleTimeout`, `TtlEviction`; `ServerSessionBindingTest`, `IdleDeadline`; `CookieSessionBindingTest`,
+`IdleDeadline`; `SessionAuthenticationStageTest`, `IdleTimeout`; `UserInfoEndpointTest`,
+`IdleTimeout`). An idle timeout outside its range fails the boot (`ConfigValidatorTest`,
+`SessionIdleTimeout`). An activity cookie that is missing, tampered with, sealed under another key,
+bound to another session, or that is a session cookie value never extends a session; a sealed
+session value and a sealed activity value are each refused by the other codec; an access inside the
+re-issue interval writes no cookie, an idle timeout below 60 seconds is kept alive by accesses and
+ends without them, and an access never writes a session cookie
+(`SessionActivityCookieCodecTest`; `CookieKeyMaterialTest`, `ActivityKey`;
+`CookieSessionBindingTest`, `IdleDeadline`, `AccessNotification`). The sweep removes an expired
+session that is never looked up (`BffRuntimeProducerTest`,
+`SessionLifetimeWiring.shouldSweepAnExpiredSessionWithoutALookup`). A logout clears every cookie of
+the binding on each of its paths, and a session ended by a refresh does the same
+(`LogoutEndpointTest`, `shouldClearBothCookiesOnEveryPathInCookieMode`,
+`shouldClearTheSessionCookieOnEveryPathInServerMode`; `SessionAuthenticationStageTest`,
+`ActivityCookie.endedSessionClearsEveryCookieOfTheBinding`). A proxied request of a live session
+reaches the upstream with no `Cookie` header, on an HTTP and on a gRPC route
+(`GatewayEdgeRouteBffWiringTest`, `CookieModeActivityCookie`). Each of the five cookies is set with
+`+__Host-+`, `Path=/`, `Secure`, `HttpOnly` and `SameSite=Lax` and without `Domain`, each clearing
+line carries `Max-Age=0`, `Path=/` and `Secure` and no `Domain`, a cookie value presented under
+another spelling of the name resolves nothing in either mode, an activity cookie of an earlier
+access leaves the session idle from that access, and a refresh after a re-issue does not bring the
+previous value back (`GatewayCookieContractTest`; `LogoutEndpointTest`,
+`shouldClearWithLinesTheHostPrefixAdmits`, `shouldClearLogoutStateCookieOnReturn`). A completed
+login, a refused callback, a logout and a transparent refresh, completed or refused, write no cookie
+value, session id, token, authorization code or `state` to the log at any level
+(`ReservedEndpointLogHygieneTest`; `TokenRefreshLogHygieneTest`).
+
+A login callback carrying the cookie of a live session leaves that session unresolvable and binds
+the new one, also with the store at its capacity, while a refused callback leaves it alone
+(`CallbackEndpointTest`, `LoginEndsPresentedSession`) and a widening keeps the session it widens
+(`WideningCallback.SuccessfulGrant.shouldMergeIntoServerSession`). A login beyond the per-subject
+bound ends the subject's first-created session and no other subject's (`InMemorySessionStoreTest`,
+`PerSubjectBound`); the declared bound, and ten when the key is omitted, is the one the store
+applies (`ConfigLoaderTest`; `BffRuntimeProducerTest`, `PerSubjectSessionBound`); a bound outside
+its range, or declared in cookie mode, fails the boot (`ConfigValidatorTest`,
+`SessionMaxSessionsPerSubject`).
+
+A relayed HTTP or gRPC response on which the gateway sets a cookie reaches the client with
+`no-store` and exactly one `Cache-Control` line, the same response without a gateway cookie keeps
+the upstream's value, and a reserved answer that sets a cookie carries `no-store` while one that
+sets none keeps its own headers (`GatewayEdgeGatewayCookieTest`; `GatewayEdgeRouteBffWiringTest`,
+`QueryCallbackDispatch.shouldMarkCompletedLoginUncacheable`). For the other answers the gateway
+authors, the rule is asserted on the header map their writers apply (`PipelineRequestTest`). An
+upstream `Set-Cookie` naming a gateway cookie does not reach the client, on a session route, on a
+route without a session and on a gRPC route, in both session modes, while the gateway's own line on
+the same response and every other upstream line do; a gateway without sessions relays every line
+(`UpstreamSetCookieFilterTest`; `ResponseStageTest`, `UpstreamSetCookie`;
+`GatewayEdgeGatewayCookieTest`; `BffRuntimeProducerTest`, `GatewayCookieNames`). The trailer section
+of a gRPC response is relayed as the upstream sent it, a `Set-Cookie` trailer included: only the
+leading headers are filtered, and a browser processes no `Set-Cookie` in a trailer
+(`ResponseStageTest`, `UpstreamSetCookie.trailingRelayCopiesTheTrailerSectionAsSent`). The session
+cookie is found when an HTTP/2 client sends its cookies as two `Cookie` header fields
+(`GatewayEdgeGatewayCookieTest`, `SplitCookieHeaderFields`).
+
+A WebSocket relay is closed on both legs with `1008` at its session's absolute expiry in both modes
+and, in server mode, by each store operation that ends a session -- destruction by identity, by
+`sid` and by `sub`, the removal of an expired session and the per-subject bound -- and by an
+RP-initiated logout through the edge; it stays open across a re-issued cookie value and a refresh,
+an upgrade beyond the tracking bound is refused `503` before the upstream is dialed, and no
+teardown leaves an entry behind (`WebSocketRelayStageTest`, `SessionBoundRelay`;
+`SessionRelayRegistryTest`; `InMemorySessionStoreTest`, `EndReports`; `GatewayEdgeSessionRelayTest`;
+`BffRuntimeProducerTest`, `SessionRelays`). That a back-channel logout and a replacing login reach
+those store operations is asserted with the receiver and the callback
+(`BackchannelLogoutReceiverTest`; `CallbackEndpointTest`, `LoginEndsPresentedSession`), not with a
+relay held open across them.
+
+Not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie -- no page the
+gateway renders sets one today, and every HTML error page is `no-store` by its own envelope -- and
+that a WebSocket upgrade relays no upstream `Set-Cookie`.
+
 [[_html_surface_failure_catalogue]]
 == HTML surface failure catalogue
 
@@ -3011,7 +3273,7 @@ outstanding hardening work (next section).
 | <<bff-06>> | Alg pinning; aud/iss/exp; psychic-sig guard | Validation lib (fail-closed, in-library) + ADR-0001 | COVERED
 | <<bff-07>> | Ignore `jku`/`x5u`; egress-guarded bounded JWKS fetch (the `jwks.url` host exempted, derived or declared -- see <<gw-05>>); readiness `DOWN` per issuer without a key set; bounded fast retry | Validation lib (`EgressPolicy`) + gateway (`TokenValidatorProducer` egress allowance, `RetryingJwksLoader`, `GatewayReadinessCheck`) | COVERED
 | <<bff-08>> | RT reuse detection by IdP strict rotation; per-kind refresh-failure dispositions; per-session single-flight | IdP (strict rotation, shipped in the integration and compose-sample realms) + engine `RefreshFlow.classify` + gateway `TokenRefreshCoordinator` -- ADR-0046 | COVERED (server: replay unreachable, IdP revocation via refresh) / COVERED (cookie: replay rejected by the IdP; duplicate-refresh residual accepted)
-| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks (gateway); in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated) + gateway (back-channel receiver, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018 | COVERED (server) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
+| <<bff-09>> | Logout: exact post-logout URI + state (engine); back-channel token checks including `typ`, `exp`, `jti` and single use (gateway); the gateway session ended before the provider redirect is built, and without it where none can be built; in server mode a termination is not undone by an in-flight refresh or widening write | Engine (RP-initiated) + gateway (back-channel receiver, `LogoutTokenValidator`, `LogoutTokenReplayGuard`, `LogoutEndpoint`, `SessionBinding` updating write over the conditional `SessionStore` write) -- ADR-0018 | COVERED (server) / PARTIAL-accepted (cookie: a response in flight can outlast the logout)
 | <<bff-10>> | Tokens never in browser; `__Host-` cookie, with a non-`__Host-` `session.cookie_name` refused at boot; fixation; `token_relay: false` keeps the token from the origin, `Authorization` re-admission refused at boot | Engine `TokenStore` SPI + gateway session cookie + configuration validator | COVERED
 | <<bff-11>> | CSRF on cookie-authed API (Origin/Sec-Fetch-Site) | Gateway (fixed behaviour, no knob) | COVERED
 | <<bff-12>> | AES-GCM random nonce; key-id AAD; rotation; size budget | Gateway `TokenStore` implementation (`SealedSessionCookieCodec`) | COVERED
@@ -3023,6 +3285,7 @@ outstanding hardening work (next section).
 | <<bff-18>> | `private_key_jwt` by default, algorithm derived from the key; key files read by the gateway and refused at boot on any defect, generated keys in process memory only; `oidc.client_secret` an operator choice announced at every boot and refused together with a client-authentication key file | Engine `PrivateKeyJwtAuth` + gateway `ClientSigningKey` / `BffRuntimeProducer` + configuration validator -- ADR-0058 | COVERED (key mode) / accepted residual (client-secret mode: the profile's client-authentication requirement is not met)
 | <<bff-19>> | Client key set published without a credential on every host: one public key, no input read, `GET` only; `404` and still reserved in client-secret mode; a colliding `jwks_path` refused at boot | Gateway (`ClientJwksEndpoint`, `ReservedPathRegistry`) + configuration validator -- ADR-0058 | COVERED (TLS on the path, the registered URL and a generated key behind several replicas are deployment residuals, accepted)
 | <<bff-20>> | Every authorization request pushed -- login, session widening and RFC 9470 step-up re-drive; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login or the widening `502` before any state is stored, recorded once per reason | Engine `ParClient` + gateway `PushedAuthorizationRequests` -- ADR-0058 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap, accepted)
+| <<bff-21>> | Cookie value is a random handle, never the session id; a login adopts no presented value; server-mode handle re-issued on a widening; absolute and idle deadline enforced at resolution in both modes, extended only by a request let through to a session route; cookie-mode last access in a separately keyed sealed cookie bound to its session; expired sessions swept; cookies cleared with the attributes they were set with; no gateway cookie reaches an upstream; bounded work per presented cookie; a login ends the presented session; a bound of sessions per subject; `no-store` on every response the gateway sets a cookie on; no upstream `Set-Cookie` for a gateway cookie; a WebSocket relay closed with its session | Gateway (`ServerSessionBinding`, `InMemorySessionStore`, `SessionCookieCodec`, `CookieSessionBinding`, `SessionActivityCookieCodec`, `CookieKeyMaterial`, `SessionAuthenticationStage`, `CallbackEndpoint`, `LogoutEndpoint`, `BffRuntimeProducer`, `ConnectionHeaders`, `PipelineRequest`, `UpstreamSetCookieFilter`, `ResponseStage`, `SessionRelayRegistry`, `WebSocketRelayStage`) + configuration validator -- ADR-0018 | COVERED (not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie, which no page does today, and that a WebSocket upgrade relays no upstream `Set-Cookie`; cookie mode: a cookie sealed before a step-up or a widening stays usable at its earlier level, accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED

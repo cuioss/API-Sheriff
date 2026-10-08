@@ -18,15 +18,22 @@ package de.cuioss.sheriff.gateway.auth;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 
+import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
+import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;
 import de.cuioss.sheriff.token.client.token.IdTokenValidationBridge;
 import de.cuioss.sheriff.token.validation.IssuerConfig;
 import de.cuioss.sheriff.token.validation.TokenType;
@@ -50,7 +57,7 @@ import org.junit.jupiter.api.Test;
  * swap is invisible to a test of either side alone:
  * <ul>
  *   <li><strong>Positive.</strong> A spec-shaped back-channel logout token — signed, carrying
- *       {@code sid} but no {@code sub}, no {@code exp} and no {@code azp} — is verified here and its
+ *       {@code sid}, {@code exp} and {@code jti} but no {@code sub} and no {@code azp} — is verified here and its
  *       claims reach {@link LogoutTokenValidator}, which accepts it.</li>
  *   <li><strong>Negative control.</strong> The <em>same</em> token, put through
  *       {@link IdTokenValidationBridge#validateRefreshedIdToken(String)} — the seam this class
@@ -70,21 +77,22 @@ import org.junit.jupiter.api.Test;
 class SignatureOnlyTokenVerifierTest {
 
     private static final String SID = "idp-sid-9";
+    private static final String JTI = "logout-token-id-1";
     private static final String EVENTS = "{\"" + LogoutTokenValidator.BACKCHANNEL_LOGOUT_EVENT + "\":{}}";
 
     /**
      * A back-channel logout token as
      * <a href="https://openid.net/specs/openid-connect-backchannel-1_0.html">the spec</a> defines it
-     * and as {@code backchannel.logout.session.required=true} produces it: {@code sid} but no
-     * {@code sub}, no {@code exp}, no {@code azp}.
+     * and as {@code backchannel.logout.session.required=true} produces it: {@code sid}, {@code exp}
+     * and {@code jti}, but no {@code sub} and no {@code azp}.
      */
     private final TestTokenHolder logoutToken = new TestTokenHolder(TokenType.ID_TOKEN,
             ClaimControlParameter.builder()
                     .missingSubject(true)
-                    .missingExpiration(true)
                     .missingAuthorizedParty(true)
                     .build())
             .withClaim("sid", ClaimValue.forPlainString(SID))
+            .withClaim("jti", ClaimValue.forPlainString(JTI))
             .withClaim("events", ClaimValue.forPlainString(EVENTS));
 
     private final IssuerConfig issuerConfig = logoutToken.getIssuerConfig();
@@ -99,9 +107,9 @@ class SignatureOnlyTokenVerifierTest {
     class SeamSwap {
 
         @Test
-        @DisplayName("Should verify a sid-only, exp-less, azp-less logout token and surface its claims")
+        @DisplayName("Should verify a sid-only, azp-less logout token and surface its claims")
         void shouldVerifySpecShapedLogoutToken() {
-            TokenContent verified = verifier.verify(logoutToken.getRawToken());
+            TokenContent verified = verifier.verify(logoutToken.getRawToken()).content();
 
             assertNotNull(verified);
             assertEquals(SID, verified.getClaims().get("sid").getOriginalString());
@@ -127,13 +135,74 @@ class SignatureOnlyTokenVerifierTest {
                     logoutToken.getAudience().iterator().next(), Duration.ofMinutes(2));
 
             LogoutTokenValidator.Verdict verdict =
-                    claimResidual.validate(verifier.verify(logoutToken.getRawToken()), Instant.now());
+                    claimResidual.validate(asLogoutToken(verifier.verify(logoutToken.getRawToken())), Instant.now());
 
             LogoutTokenValidator.Verdict.Accepted accepted = assertInstanceOf(
                     LogoutTokenValidator.Verdict.Accepted.class, verdict,
                     "the documented sid-only path must be reachable end to end, not just past the seam");
             assertEquals(SID, accepted.subject().sid());
+            assertEquals(JTI, accepted.jti(), "the jti the token was signed with reaches the verdict");
         }
+
+        @Test
+        @DisplayName("Should verify an exp-less token at the seam and leave its refusal to the claim residual")
+        void shouldLeaveMissingExpiryToTheClaimResidual() {
+            TestTokenHolder withoutExpiry = new TestTokenHolder(TokenType.ID_TOKEN,
+                    ClaimControlParameter.builder()
+                            .missingSubject(true)
+                            .missingExpiration(true)
+                            .missingAuthorizedParty(true)
+                            .build())
+                    .withClaim("sid", ClaimValue.forPlainString(SID))
+                    .withClaim("jti", ClaimValue.forPlainString(JTI))
+                    .withClaim("events", ClaimValue.forPlainString(EVENTS));
+            IssuerConfig expirylessIssuer = withoutExpiry.getIssuerConfig();
+            // Building a validator over the issuer is what initialises its key loader.
+            TokenValidator expirylessValidator = TokenValidator.builder().issuerConfig(expirylessIssuer).build();
+            SignatureOnlyTokenVerifier seam = new SignatureOnlyTokenVerifier(List.of(expirylessIssuer),
+                    expirylessValidator.getSecurityEventCounter());
+            LogoutTokenValidator claimResidual = new LogoutTokenValidator(withoutExpiry.getIssuer(),
+                    withoutExpiry.getAudience().iterator().next(), Duration.ofMinutes(2));
+
+            LogoutTokenValidator.Verdict verdict =
+                    claimResidual.validate(asLogoutToken(seam.verify(withoutExpiry.getRawToken())), Instant.now());
+
+            LogoutTokenValidator.Verdict.Rejected rejected = assertInstanceOf(
+                    LogoutTokenValidator.Verdict.Rejected.class, verdict,
+                    "the seam judges the signature only; the missing exp is the claim residual's refusal");
+            assertEquals(LogoutRejection.EXPIRED, rejected.reason());
+        }
+    }
+
+    /**
+     * The {@code typ} header reaches the caller as the token was signed with it, so the caller's type
+     * check judges a value the signature covers rather than one read from an unverified copy.
+     */
+    @Nested
+    @DisplayName("The typ header of the signed token")
+    class HeaderType {
+
+        @Test
+        @DisplayName("Should hand on the typ value of the token's protected header")
+        void shouldHandOnTheSignedHeaderType() {
+            String raw = logoutToken.getRawToken();
+            String header = new String(Base64.getUrlDecoder().decode(raw.substring(0, raw.indexOf('.'))),
+                    StandardCharsets.UTF_8);
+            Matcher signedType = Pattern.compile("\"typ\"\\s*:\\s*\"([^\"]*)\"").matcher(header);
+
+            String handedOn = verifier.verify(raw).headerType();
+
+            if (signedType.find()) {
+                assertEquals(signedType.group(1), handedOn, "the typ of the signed header: " + header);
+            } else {
+                assertNull(handedOn, "a header without typ is handed on as absent: " + header);
+            }
+        }
+    }
+
+    /** What the session runtime does with a verified token before the claim residual judges it. */
+    private static VerifiedLogoutToken asLogoutToken(SignatureOnlyTokenVerifier.VerifiedToken verified) {
+        return new VerifiedLogoutToken(verified.content(), verified.headerType());
     }
 
     @Nested

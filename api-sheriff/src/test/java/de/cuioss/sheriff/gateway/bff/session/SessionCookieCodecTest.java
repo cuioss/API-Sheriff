@@ -57,6 +57,26 @@ class SessionCookieCodecTest {
         }
 
         @Test
+        @DisplayName("Should give a re-issued cookie the remaining lifetime as Max-Age, otherwise the same header")
+        void shouldEmitRemainingLifetimeOnReissue() {
+            String header = codec.toSetCookieHeader("opaque-id", Duration.ofSeconds(1234));
+
+            assertEquals("__Host-sheriff-session=opaque-id; Max-Age=1234; Path=/; Secure; HttpOnly; SameSite=Lax",
+                    header);
+            assertEquals(codec.toSetCookieHeader("opaque-id"),
+                    codec.toSetCookieHeader("opaque-id", Duration.ofHours(1)),
+                    "the login form is the re-issue form at the codec's full lifetime");
+        }
+
+        @Test
+        @DisplayName("Should write a negative remaining lifetime as Max-Age=0")
+        void shouldClampNegativeRemainingLifetime() {
+            String header = codec.toSetCookieHeader("opaque-id", Duration.ofSeconds(-5));
+
+            assertTrue(header.contains("; Max-Age=0;"), header);
+        }
+
+        @Test
         @DisplayName("Should clear the cookie with Max-Age=0 keeping the __Host- attributes")
         void shouldClearCookie() {
             String header = codec.toClearingSetCookieHeader();
@@ -84,20 +104,20 @@ class SessionCookieCodecTest {
         @DisplayName("Should read the session id from a Cookie header carrying the session cookie among others")
         void shouldReadSessionIdFromCookieHeader() {
             String cookieHeader = "csrf=1; __Host-sheriff-session=opaque-id; last=z";
-            assertEquals(Optional.of("opaque-id"), codec.readSessionId(cookieHeader));
+            assertEquals(Optional.of("opaque-id"), codec.readCookieHandle(cookieHeader));
         }
 
         @ParameterizedTest(name = "cookie header \"{0}\" yields no session id")
         @ValueSource(strings = {"", "   ", "other=abc", "__Host-sheriff-session="})
         @DisplayName("Should return empty when the session cookie is absent or empty-valued")
         void shouldReturnEmptyWhenAbsentOrEmpty(String cookieHeader) {
-            assertTrue(codec.readSessionId(cookieHeader).isEmpty());
+            assertTrue(codec.readCookieHandle(cookieHeader).isEmpty());
         }
 
         @Test
         @DisplayName("Should return empty for a null Cookie header")
         void shouldReturnEmptyForNullHeader() {
-            assertTrue(codec.readSessionId(null).isEmpty());
+            assertTrue(codec.readCookieHandle(null).isEmpty());
         }
     }
 

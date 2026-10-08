@@ -15,14 +15,17 @@
  */
 package de.cuioss.sheriff.gateway.bff.logout;
 
+import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.token.client.logout.EndSessionFlow;
 import de.cuioss.tools.logging.CuiLogger;
@@ -44,10 +47,26 @@ import org.jspecify.annotations.Nullable;
  * is revoked at the identity provider is decided entirely by the seam implementation it is given. The engine-owned {@code post_logout_redirect_uri} is a
  * gateway-owned reserved path (the return leg), so the browser never controls the redirect target.
  * <p>
+ * <strong>The end-session request is a redirect.</strong> {@link #initiate} hands out the URL the
+ * engine built on the provider's {@code end_session_endpoint}; its query carries the
+ * {@code id_token_hint}, the {@code post_logout_redirect_uri} and the {@code state}. The ID token is
+ * therefore part of a URL the browser follows; the access and refresh tokens are in no answer.
+ * <p>
+ * <strong>The end-session endpoint is resolved per logout, and its absence is not a failure.</strong>
+ * The endpoint comes from provider discovery through the {@link EndSessionEndpointSource} seam, read
+ * when a logout is initiated rather than when this object is built. When discovery fails, when the
+ * provider publishes no usable {@code end_session_endpoint}, or when the session holds no ID token,
+ * {@link #initiate} yields no redirect: the caller's local logout stands on its own and the browser
+ * lands on {@code final_redirect}. A provider without a usable endpoint is recorded once per instance
+ * as {@code ApiSheriff-135}; every repeat is a {@code DEBUG} line.
+ * <p>
  * The {@linkplain #completeReturn return leg} verifies the returned {@code state} against the cookie
  * (constant-time, engine-owned), clears the single-use cookie, then redirects to the configured
  * {@code final_redirect}. A missing or mismatched {@code state} is rejected {@code 400} — a forged
  * logout-return cannot land the browser anywhere.
+ * <p>
+ * Thread-safe: the collaborators are safe for concurrent use and the one piece of mutable state is
+ * an atomic latch; one instance serves every request.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -63,30 +82,35 @@ public final class RpInitiatedLogout {
     private static final int STATE_BYTES = 32;
     private static final int BAD_REQUEST = 400;
     private static final int FOUND = 302;
+    private static final String SCHEME_HTTPS = "https";
+    private static final String SCHEME_HTTP = "http";
 
     private final EndSessionFlow endSessionFlow;
     private final TokenRevocation revocation;
-    private final String endSessionEndpoint;
+    private final EndSessionEndpointSource endSessionEndpointSource;
     private final String postLogoutRedirectUri;
     private final String finalRedirect;
     private final Duration stateCookieTtl;
+    private final AtomicBoolean missingEndpointReported = new AtomicBoolean();
 
     /**
      * Assembles the RP-initiated logout with the engine end-session flow and the gateway-side settings.
      *
-     * @param endSessionFlow        the engine end-session redirect builder (owns exact-match validation)
-     * @param revocation            the token-revocation seam, called once per initiated logout
-     *                              (best-effort)
-     * @param endSessionEndpoint    the IdP {@code end_session_endpoint} (from discovery)
-     * @param postLogoutRedirectUri the gateway-owned return-leg URI sent to the IdP (exact-match)
-     * @param finalRedirect         the application landing URL after the return leg
-     * @param stateCookieTtl        the short lifetime of the single-use logout-state cookie (e.g. 60s)
+     * @param endSessionFlow           the engine end-session redirect builder (owns exact-match validation)
+     * @param revocation               the token-revocation seam, called once per initiated logout
+     *                                 (best-effort)
+     * @param endSessionEndpointSource the seam naming the provider's {@code end_session_endpoint},
+     *                                 consulted once per initiated logout
+     * @param postLogoutRedirectUri    the gateway-owned return-leg URI sent to the IdP (exact-match)
+     * @param finalRedirect            the application landing URL after the return leg
+     * @param stateCookieTtl           the short lifetime of the single-use logout-state cookie (e.g. 60s)
      */
-    public RpInitiatedLogout(EndSessionFlow endSessionFlow, TokenRevocation revocation, String endSessionEndpoint,
-            String postLogoutRedirectUri, String finalRedirect, Duration stateCookieTtl) {
+    public RpInitiatedLogout(EndSessionFlow endSessionFlow, TokenRevocation revocation,
+            EndSessionEndpointSource endSessionEndpointSource, String postLogoutRedirectUri, String finalRedirect,
+            Duration stateCookieTtl) {
         this.endSessionFlow = Objects.requireNonNull(endSessionFlow, "endSessionFlow");
         this.revocation = Objects.requireNonNull(revocation, "revocation");
-        this.endSessionEndpoint = requireNonBlank(endSessionEndpoint, "endSessionEndpoint");
+        this.endSessionEndpointSource = Objects.requireNonNull(endSessionEndpointSource, "endSessionEndpointSource");
         this.postLogoutRedirectUri = requireNonBlank(postLogoutRedirectUri, "postLogoutRedirectUri");
         this.finalRedirect = requireNonBlank(finalRedirect, "finalRedirect");
         this.stateCookieTtl = Objects.requireNonNull(stateCookieTtl, "stateCookieTtl");
@@ -94,8 +118,9 @@ public final class RpInitiatedLogout {
 
     /**
      * The configured application landing after logout. The {@link de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint}
-     * edge redirects an <em>already-logged-out</em> browser (a logout request that carries no live
-     * session, so there is no {@code id_token_hint} to send) straight here, bypassing the IdP round-trip.
+     * edge redirects the browser straight here whenever it is not sent to the identity provider: an
+     * <em>already-logged-out</em> browser (a logout request that carries no live session), and a
+     * logout for which {@link #initiate} yielded no redirect.
      *
      * @return the {@code final_redirect} application landing URL
      */
@@ -104,15 +129,21 @@ public final class RpInitiatedLogout {
     }
 
     /**
-     * Initiates RP-initiated logout for a live session: hands the session to the token-revocation
+     * Initiates RP-initiated logout for a session: hands the session to the token-revocation
      * seam (best-effort — a {@link RuntimeException} it raises is logged and does not stop the logout),
-     * mints the session-bound {@code state}, and builds the engine end-session redirect carrying the
-     * {@code id_token_hint}, the exact {@code post_logout_redirect_uri}, and the {@code state}.
+     * resolves the provider's end-session endpoint, mints the session-bound {@code state}, and has the
+     * engine build the end-session redirect carrying the {@code id_token_hint}, the exact
+     * {@code post_logout_redirect_uri}, and the {@code state}.
+     * <p>
+     * The result is empty — and the caller completes the logout locally — when the session holds no ID
+     * token, when the end-session endpoint cannot be resolved, or when the provider publishes none
+     * that is an absolute {@code http} or {@code https} URI. None of these raises.
      *
-     * @param session the live session being logged out (its raw ID token is the {@code id_token_hint})
-     * @return the redirect to the IdP {@code end_session_endpoint} carrying the logout-state {@code Set-Cookie}
+     * @param session the session being logged out (its raw ID token is the {@code id_token_hint})
+     * @return the redirect to the IdP {@code end_session_endpoint} carrying the logout-state
+     *         {@code Set-Cookie}; empty when the browser cannot be sent there
      */
-    public LogoutRedirect initiate(SessionRecord session) {
+    public Optional<LogoutRedirect> initiate(SessionRecord session) {
         Objects.requireNonNull(session, "session");
         // The revocation seam is best-effort: any runtime failure of it must not strand the browser
         // half-logged-out, so the catch is deliberately broad.
@@ -125,10 +156,72 @@ public final class RpInitiatedLogout {
             // the browser half-logged-out, so it is logged and the logout proceeds.
             LOGGER.debug(revocationFailure, "Token revocation failed during RP-initiated logout — proceeding with local logout");
         }
+        if (session.idToken().isBlank()) {
+            LOGGER.debug("RP-initiated logout for a session without an ID token — no end-session redirect is sent");
+            return Optional.empty();
+        }
+        Optional<String> resolvedEndpoint = resolveEndSessionEndpoint();
+        if (resolvedEndpoint.isEmpty()) {
+            return Optional.empty();
+        }
+        String endpoint = resolvedEndpoint.get();
+        if (!isAbsoluteHttpUri(endpoint)) {
+            reportMissingEndpoint();
+            return Optional.empty();
+        }
         String state = newState();
-        String location = endSessionFlow.buildLogoutRedirect(endSessionEndpoint, session.idToken(),
+        String location = endSessionFlow.buildLogoutRedirect(endpoint, session.idToken(),
                 postLogoutRedirectUri, state);
-        return new LogoutRedirect(location, List.of(stateSetCookie(state)));
+        return Optional.of(new LogoutRedirect(location, List.of(stateSetCookie(state))));
+    }
+
+    /**
+     * Reads the end-session endpoint from the seam. A failure of the seam — provider discovery could
+     * not be completed — is not a failure of the logout: it is logged and reported as an absent
+     * endpoint, and the next logout asks the seam again. The catch is deliberately broad because the
+     * seam reaches the confidential-client engine, whose failure types are not part of this contract.
+     */
+    private Optional<String> resolveEndSessionEndpoint() {
+        Optional<String> declared;
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            declared = endSessionEndpointSource.endSessionEndpoint();
+        } catch (RuntimeException discoveryFailure) {
+            LOGGER.debug(discoveryFailure,
+                    "RP-initiated logout — the end-session endpoint could not be resolved; no end-session redirect is sent");
+            return Optional.empty();
+        }
+        Optional<String> usable = declared.filter(endpoint -> !endpoint.isBlank());
+        if (usable.isEmpty()) {
+            reportMissingEndpoint();
+        }
+        return usable;
+    }
+
+    private void reportMissingEndpoint() {
+        if (missingEndpointReported.compareAndSet(false, true)) {
+            LOGGER.warn(BffLogMessages.WARN.NO_END_SESSION_ENDPOINT);
+        } else {
+            LOGGER.debug("RP-initiated logout without a usable end_session_endpoint again — already reported "
+                    + "once, stays at DEBUG for the rest of the process");
+        }
+    }
+
+    /**
+     * Whether the candidate is an absolute {@code http} or {@code https} URI with a host. Anything
+     * else — a relative reference, another scheme, a URI without a host, or text that is no URI at
+     * all — is not an address the browser may be redirected to.
+     */
+    private static boolean isAbsoluteHttpUri(String candidate) {
+        URI uri;
+        try {
+            uri = URI.create(candidate);
+        } catch (IllegalArgumentException _) {
+            return false;
+        }
+        String scheme = uri.getScheme();
+        return uri.getHost() != null
+                && (SCHEME_HTTPS.equalsIgnoreCase(scheme) || SCHEME_HTTP.equalsIgnoreCase(scheme));
     }
 
     /**
@@ -217,8 +310,31 @@ public final class RpInitiatedLogout {
     }
 
     /**
+     * The seam naming the identity provider's {@code end_session_endpoint}. It is consulted once per
+     * initiated logout, so an implementation backed by provider discovery is asked again after a
+     * failed attempt instead of the failure being remembered.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    @FunctionalInterface
+    public interface EndSessionEndpointSource {
+
+        /**
+         * Names the provider's end-session endpoint.
+         *
+         * @return the {@code end_session_endpoint} the provider publishes; empty when it publishes none
+         * @throws RuntimeException when the provider's metadata cannot be obtained; the caller treats
+         *                          that as an absent endpoint for this one logout
+         */
+        Optional<String> endSessionEndpoint();
+    }
+
+    /**
      * The framework-agnostic result of a logout initiation: a {@code 302} redirect to the IdP
-     * {@code end_session_endpoint}, carrying the single-use logout-state {@code Set-Cookie}.
+     * {@code end_session_endpoint}, carrying the single-use logout-state {@code Set-Cookie}. The
+     * location's query holds the {@code id_token_hint}, so {@link #toString()} prints neither the
+     * location nor a cookie value.
      *
      * @param location         the IdP end-session redirect URL to send the browser to
      * @param setCookieHeaders the {@code Set-Cookie} header values to emit (the logout-state cookie)
@@ -233,6 +349,17 @@ public final class RpInitiatedLogout {
         public LogoutRedirect {
             Objects.requireNonNull(location, "location");
             setCookieHeaders = setCookieHeaders == null ? List.of() : List.copyOf(setCookieHeaders);
+        }
+
+        /**
+         * Overridden so that neither the location — its query carries the {@code id_token_hint} — nor
+         * a cookie value reaches a log line or an exception message.
+         *
+         * @return the number of cookies only
+         */
+        @Override
+        public String toString() {
+            return "LogoutRedirect[location=<redacted>, setCookieHeaders=%s]".formatted(setCookieHeaders.size());
         }
     }
 

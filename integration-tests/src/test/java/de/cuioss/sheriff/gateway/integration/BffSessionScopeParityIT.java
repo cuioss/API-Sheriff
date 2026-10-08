@@ -71,18 +71,20 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       provider with a pushed authorization request — {@code client_id} and {@code request_uri} on
  *       the redirect, {@code prompt=none} and the scope set inside the pushed request, where this
  *       suite cannot read them — the realm SSO session answers without a login form, and the browser
- *       lands back on the route. The session cookie the login set — unchanged — then mediates a token
- *       carrying the scope.</li>
+ *       lands back on the route. The widening re-issues the session cookie: the callback sets a value
+ *       that differs from the one the login set, the previous value is answered as unauthenticated,
+ *       and the new value mediates a token carrying the scope without a further login.</li>
  *   <li><em>A grantable scope, XHR.</em> The request is refused {@code 403 application/problem+json}
  *       naming the missing scope and a same-origin {@code step_up_url}; a navigation to that URL
- *       widens the session, and the retried XHR is relayed with a token carrying the scope.</li>
+ *       widens the session and re-issues the session cookie in the same way, and the XHR retried with
+ *       the new cookie value is relayed with a token carrying the scope.</li>
  *   <li><em>A scope the identity provider will not grant.</em> The widening's authorization request
  *       is pushed before the browser is redirected, and Keycloak refuses a pushed request that names a
  *       scope the client is not assigned. The navigation is therefore answered {@code 502} with no
  *       redirect and no cookie, and the instance log carries the refused-push record
  *       ({@value #PUSH_REFUSED_RECORD}) with the reason {@code push-failed}; the XHR is refused
- *       {@code 403}; and in both cases the same session is still served on {@code /bff-session/get}
- *       with the scopes it had.</li>
+ *       {@code 403}; and in both cases no cookie is set and the same session is still served on
+ *       {@code /bff-session/get}, under the cookie the login set, with the scopes it had.</li>
  *   <li><em>A satisfied route.</em> Two consecutive calls relay a byte-identical bearer and set no
  *       cookie, so the comparison alone costs no identity-provider round trip.</li>
  *   <li><em>The step-up path.</em> An off-origin {@code returnUrl} falls back to the default return
@@ -139,6 +141,9 @@ class BffSessionScopeParityIT {
 
     /** The endpoint scope the realm defines but assigns to no client. */
     private static final String UNASSIGNED_SCOPE = "sheriff_it_unassigned";
+
+    /** The default session-cookie name; the primary stack's {@code gateway.yaml} declares no other. */
+    private static final String SESSION_COOKIE = "__Host-sheriff-session";
 
     /** A path on the plain session route, which needs {@code oidc.scopes} only. */
     private static final String PLAIN_SESSION_PATH = "/bff-session/get";
@@ -249,9 +254,10 @@ class BffSessionScopeParityIT {
                 "a granted widening must redirect the browser back to the route it was navigating to");
         assertEquals(surface.grantablePath, BffKeycloakLoginFlow.location(widening.callback()),
                 "the widening must return to the URL the navigation asked for");
-        // Sent with the cookies exactly as the login left them: the widening merges into the live
-        // session, so the cookie that identified the session before it still does.
-        Set<String> after = activeScopesOn(session.gatewayCookies(), surface.grantablePath);
+        // The widening merges into the live session and hands the browser a new cookie value for it:
+        // the value the login set no longer identifies the session, the re-issued one does.
+        Map<String, String> reissued = assertSessionCookieReissued(session, browser, widening);
+        Set<String> after = activeScopesOn(reissued, surface.grantablePath);
         assertTrue(after.contains(BffEndpointScopesIT.ENDPOINT_SCOPE),
                 "the widened session must mediate a token carrying " + BffEndpointScopesIT.ENDPOINT_SCOPE
                         + "; granted scopes were " + after);
@@ -283,8 +289,10 @@ class BffSessionScopeParityIT {
                 "a granted widening started on the step-up path must redirect the browser back");
         assertEquals(surface.grantablePath, BffKeycloakLoginFlow.location(widening.callback()),
                 "the step-up path must return to the URL its returnUrl named");
-        Response retried = xhr(session.gatewayCookies(), surface.grantablePath);
-        assertEquals(200, retried.statusCode(), "the retried XHR must be relayed once the session was widened");
+        Map<String, String> reissued = assertSessionCookieReissued(session, browser, widening);
+        Response retried = xhr(reissued, surface.grantablePath);
+        assertEquals(200, retried.statusCode(), "the XHR retried with the re-issued session cookie must be "
+                + "relayed once the session was widened");
         Set<String> after = BffEndpointScopesIT.grantedScopes(BffEndpointScopesIT.mediatedAuthorization(retried));
         assertTrue(after.contains(BffEndpointScopesIT.ENDPOINT_SCOPE),
                 "the retried XHR must relay a token carrying " + BffEndpointScopesIT.ENDPOINT_SCOPE
@@ -585,6 +593,37 @@ class BffSessionScopeParityIT {
      */
     private static void assertPushedWideningRequest(Response initiation) {
         BffLoginInitiationIT.assertPushedRequestRedirect(initiation, GATEWAY_CLIENT_ID);
+    }
+
+    /**
+     * Asserts that a granted widening re-issued the session cookie, and returns the browser's cookie
+     * jar as the widening left it.
+     * <p>
+     * Three statements, each about the same session: the callback sets a session cookie whose value
+     * differs from the one the login set; the value the login set is answered as unauthenticated from
+     * then on; and the jar that absorbed the callback's cookies is the one the caller goes on with. The
+     * comparison is made on booleans, so no cookie value reaches a failure message.
+     *
+     * @param session  the session as the login established it
+     * @param browser  the browser's gateway cookie jar during the widening
+     * @param widening the completed widening round trip
+     * @return the cookie jar after the widening callback, carrying the re-issued session cookie
+     */
+    private static Map<String, String> assertSessionCookieReissued(Session session, Map<String, String> browser,
+            WideningRoundTrip widening) {
+        String previous = session.gatewayCookies().get(SESSION_COOKIE);
+        assertNotNull(previous, "precondition: the login must have set " + SESSION_COOKIE);
+        Map<String, String> afterWidening = new HashMap<>(browser);
+        BffKeycloakLoginFlow.absorbSetCookies(afterWidening, widening.callback());
+        String reissued = afterWidening.get(SESSION_COOKIE);
+        assertNotNull(reissued, "a granted widening must set " + SESSION_COOKIE + " on its callback");
+        // Compared into a boolean first, so neither cookie value reaches a failure message.
+        boolean sameCookie = previous.equals(reissued);
+        assertFalse(sameCookie,
+                "a granted widening must re-issue the session cookie with a value that differs from the previous one");
+        assertEquals(401, xhr(session.gatewayCookies(), PLAIN_SESSION_PATH).statusCode(),
+                "the session cookie value from before the widening must be answered as unauthenticated");
+        return afterWidening;
     }
 
     private static void assertGranted(WideningRoundTrip widening) {

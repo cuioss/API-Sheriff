@@ -33,9 +33,23 @@
  *       implementation over the codec. It reports
  *       {@link de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction#UNSUPPORTED}
  *       because a stateless gateway holds no index to destroy another browser's session through.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec} seals the
+ *       <em>activity cookie</em>: the session's derived identity and the instant of its last access,
+ *       under a key that exists for this cookie alone, with a format version of its own.</li>
  * </ul>
- * The classes are framework-agnostic (no CDI, no JAX-RS/Vert.x coupling) and introduce no new
- * dependency — the sealing uses the JDK's own {@code javax.crypto} AES-GCM provider.
+ * <strong>Idle timeout.</strong> A session ends at its absolute lifetime and, earlier, when it has not
+ * been accessed for {@code oidc.session.idle_timeout_seconds}. A stateless gateway can remember the
+ * last access only in the browser, and it does so in the activity cookie, named after the session
+ * cookie with the suffix {@code -activity}. A request let through on a session-protected route gets a
+ * new activity cookie when the last one is at least a minute old, or half the idle timeout where that
+ * is shorter, so an access can be recorded before every idle deadline. <strong>The session cookie is not
+ * rewritten on access</strong>: the token-bearing value changes only at login, refresh and widening,
+ * so recording an access cannot race a refresh, and the sealed session format is unchanged. An
+ * activity cookie that is missing, unreadable, forged or bound to another session never extends a
+ * session — idleness is then measured from the login instant.
+ * <p>
+ * The classes carry no CDI and no JAX-RS/Vert.x coupling and introduce no new dependency — the
+ * sealing uses the JDK's own {@code javax.crypto} AES-GCM provider.
  *
  * @author API Sheriff Team
  * @since 1.0

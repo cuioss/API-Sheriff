@@ -33,6 +33,10 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -50,9 +54,17 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
+import javax.crypto.spec.SecretKeySpec;
 
 
+import de.cuioss.sheriff.gateway.bff.cookie.CookieSessionBinding;
+import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
+import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -95,6 +107,8 @@ import io.vertx.core.http.WebSocketClient;
 import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.http.WebSocketFrame;
 import io.vertx.core.http.WebSocketFrameType;
+import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.util.TypeLiteral;
@@ -625,6 +639,277 @@ class WebSocketRelayStageTest {
     }
 
     /**
+     * A relay opened with a session ends with it. Each case opens a real WebSocket through a relay-only
+     * server whose relay is tracked in a {@link SessionRelayRegistry}, and reads the close frame both
+     * ends receive: the client from its own socket, the upstream from the stub's accepted socket.
+     * <p>
+     * The cases that end a relay stand beside the ones that must not: a relay of another session keeps
+     * relaying, and a relay closed by its client is deregistered and is not closed a second time when
+     * its session's expiry comes. The admission-release callback handed to the stage releases the
+     * tracking handle as the edge's own release does, so the registry's entry count is the observable
+     * for "nothing is left behind".
+     */
+    @Nested
+    @DisplayName("session-bound relay — closed with 1008 when its session ends")
+    class SessionBoundRelay {
+
+        private static final short SESSION_ENDED_CODE = 1008;
+        private static final String SESSION_ENDED_REASON = "session ended";
+        private static final Duration FAR_EXPIRY = Duration.ofHours(1);
+
+        private final SessionRelayRegistry registry = new SessionRelayRegistry(8, Clock.systemUTC());
+        private final List<String> upstreamReceived = new CopyOnWriteArrayList<>();
+        private final List<Closed> upstreamCloses = new CopyOnWriteArrayList<>();
+        private final AtomicInteger admissionReleases = new AtomicInteger();
+        private HttpServer recordingUpstream;
+
+        @BeforeEach
+        void startRecordingUpstream() throws Exception {
+            recordingUpstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.toWebSocket().onSuccess(accepted -> {
+                                accepted.textMessageHandler(text -> {
+                                    upstreamReceived.add(text);
+                                    accepted.writeTextMessage(text);
+                                });
+                                accepted.closeHandler(v -> upstreamCloses.add(
+                                        new Closed(accepted.closeStatusCode(), accepted.closeReason())));
+                            }))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the close-recording stub upstream to start listening");
+        }
+
+        @AfterEach
+        void stopRecordingUpstream() throws Exception {
+            Awaits.teardown(recordingUpstream.close(), "the close-recording stub upstream to close");
+        }
+
+        @Test
+        @DisplayName("closes both legs with 1008 'session ended' when the session's end is reported from another thread")
+        void closesBothLegsWhenSessionEnds() throws Exception {
+            String sessionId = Generators.letterStrings(8, 16).next();
+            SessionRelayRegistry.Tracked tracked = track(sessionId, FAR_EXPIRY);
+            HttpServer relayServer = relayServerFor(tracked);
+            try {
+                RelayClient client = new RelayClient(relayServer.actualPort(), "before-the-end");
+                assertEquals("before-the-end", Awaits.connect(client.firstMessage, "the relay to echo a frame"),
+                        "precondition: the relay is open and relaying");
+                assertEquals(1, registry.size(), "precondition: the relay is tracked");
+
+                registry.sessionEnded(sessionId);
+
+                Closed clientClose = Awaits.connect(client.closed, "the client leg to be closed");
+                Closed upstreamClose = awaitUpstreamClose();
+                assertAll("both legs carry the session-end close",
+                        () -> assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), clientClose),
+                        () -> assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), upstreamClose),
+                        () -> assertEquals(1, admissionReleases.get(), "the admission permit is returned once"),
+                        () -> assertEquals(0, registry.size(), "no tracking entry is left behind"));
+            } finally {
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("leaves the relay of another session open")
+        void leavesRelayOfAnotherSessionOpen() throws Exception {
+            String endedSession = "ended-" + Generators.letterStrings(8, 16).next();
+            String liveSession = "live-" + Generators.letterStrings(8, 16).next();
+            HttpServer endedRelay = relayServerFor(track(endedSession, FAR_EXPIRY));
+            HttpServer liveRelay = relayServerFor(track(liveSession, FAR_EXPIRY));
+            try {
+                RelayClient ended = new RelayClient(endedRelay.actualPort(), "ended-first");
+                RelayClient live = new RelayClient(liveRelay.actualPort(), "live-first");
+                Awaits.connect(ended.firstMessage, "the first relay to echo a frame");
+                Awaits.connect(live.firstMessage, "the second relay to echo a frame");
+
+                registry.sessionEnded(endedSession);
+                Awaits.connect(ended.closed, "the ended session's relay to be closed");
+                CompletableFuture<String> afterTheEnd = live.nextMessage();
+                Awaits.connect(live.socket, "the live relay's client socket").writeTextMessage("still-relayed");
+
+                assertEquals("still-relayed", Awaits.connect(afterTheEnd, "the live relay to keep relaying"),
+                        "the relay of a session that did not end keeps relaying");
+                assertFalse(live.closed.isDone(), "and its client leg was not closed");
+                assertEquals(1, registry.size(), "only the ended session's relay left the registry");
+            } finally {
+                Awaits.teardown(liveRelay.close(), "the live relay-only server to close");
+                Awaits.teardown(endedRelay.close(), "the ended relay-only server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("closes both legs with 1008 when the session's absolute expiry is reached")
+        void closesAtAbsoluteExpiry() throws Exception {
+            SessionRelayRegistry.Tracked tracked = track(Generators.letterStrings(8, 16).next(),
+                    Duration.ofSeconds(2));
+            HttpServer relayServer = relayServerFor(tracked);
+            try {
+                RelayClient client = new RelayClient(relayServer.actualPort(), "before-expiry");
+                assertEquals("before-expiry", Awaits.connect(client.firstMessage, "the relay to echo a frame"),
+                        "precondition: the relay is open before the session's expiry");
+
+                Closed clientClose = Awaits.connect(client.closed, "the client leg to be closed at expiry");
+
+                assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), clientClose);
+                assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), awaitUpstreamClose());
+                assertEquals(1, admissionReleases.get(), "the admission permit is returned once");
+                assertEquals(0, registry.size(), "no tracking entry is left behind");
+            } finally {
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("relays not one frame when the session ended while the upstream was being dialed")
+        void relaysNothingWhenSessionEndedBeforeWiring() throws Exception {
+            String sessionId = Generators.letterStrings(8, 16).next();
+            SessionRelayRegistry.Tracked tracked = track(sessionId, FAR_EXPIRY);
+            registry.sessionEnded(sessionId);
+            HttpServer relayServer = relayServerFor(tracked);
+            try {
+                RelayClient client = new RelayClient(relayServer.actualPort(), "must-not-be-relayed");
+
+                Closed clientClose = Awaits.connect(client.closed, "the client leg to be closed at once");
+
+                assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), clientClose);
+                assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), awaitUpstreamClose());
+                assertAll("nothing passed through the relay",
+                        () -> assertEquals(List.of(), List.copyOf(upstreamReceived),
+                                "the frame the client sent on open never reached the upstream"),
+                        () -> assertEquals(List.of(), List.copyOf(client.received)),
+                        () -> assertEquals(1, admissionReleases.get(), "the admission permit is returned once"));
+            } finally {
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("relays not one frame when the session's expiry had passed before the relay was wired")
+        void relaysNothingWhenExpiryPassedBeforeWiring() throws Exception {
+            SessionRelayRegistry.Tracked tracked = track(Generators.letterStrings(8, 16).next(),
+                    Duration.ofSeconds(-1));
+            HttpServer relayServer = relayServerFor(tracked);
+            try {
+                RelayClient client = new RelayClient(relayServer.actualPort(), "must-not-be-relayed");
+
+                Closed clientClose = Awaits.connect(client.closed, "the client leg to be closed at once");
+
+                assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), clientClose);
+                assertEquals(new Closed(SESSION_ENDED_CODE, SESSION_ENDED_REASON), awaitUpstreamClose());
+                assertEquals(List.of(), List.copyOf(upstreamReceived),
+                        "the frame the client sent on open never reached the upstream");
+                assertEquals(0, registry.size(), "no tracking entry is left behind");
+            } finally {
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("deregisters a relay its client closed, and does not close it again at the session's expiry")
+        void deregistersRelayClosedByItsClient() throws Exception {
+            String sessionId = Generators.letterStrings(8, 16).next();
+            SessionRelayRegistry.Tracked tracked = track(sessionId, Duration.ofSeconds(2));
+            HttpServer relayServer = relayServerFor(tracked);
+            try {
+                RelayClient client = new RelayClient(relayServer.actualPort(), "before-close");
+                Awaits.connect(client.firstMessage, "the relay to echo a frame");
+                assertEquals(1, registry.size(), "precondition: the relay is tracked");
+
+                Awaits.connect(Awaits.connect(client.socket, "the client socket").close(),
+                        "the client to close its socket");
+                Closed upstreamClose = awaitUpstreamClose();
+                Awaits.connect(vertx.timer(2500, TimeUnit.MILLISECONDS), "the session's expiry to pass");
+                registry.sessionEnded(sessionId);
+
+                assertAll("a client-closed relay is gone, once",
+                        () -> assertEquals((short) 1000, upstreamClose.code(),
+                                "the upstream leg carries the client's own close, not the session-end close"),
+                        () -> assertEquals(1, upstreamCloses.size(), "the upstream leg was closed once"),
+                        () -> assertEquals(1, admissionReleases.get(), "the admission permit is returned once"),
+                        () -> assertEquals(0, registry.size(), "the entry count is back at zero"));
+            } finally {
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
+            }
+        }
+
+        private SessionRelayRegistry.Tracked track(String sessionId, Duration untilExpiry) {
+            return registry.track(sessionId, Instant.now().plus(untilExpiry)).orElseThrow();
+        }
+
+        /**
+         * A relay-only server whose one relay is tracked under {@code tracked}. Its admission release
+         * counts itself and releases the handle, as the edge's own release does.
+         */
+        private HttpServer relayServerFor(SessionRelayRegistry.Tracked tracked) throws Exception {
+            return startRelayOnlyServer(recordingUpstream.actualPort(), () -> {
+                admissionReleases.incrementAndGet();
+                tracked.release();
+            }, RelayObserver.NO_OP, () -> tracked);
+        }
+
+        /** Waits for the stub upstream to report the close of the relay's upstream leg. */
+        private Closed awaitUpstreamClose() throws Exception {
+            CompletableFuture<Closed> observed = new CompletableFuture<>();
+            long timer = vertx.setPeriodic(10, id -> {
+                if (!upstreamCloses.isEmpty()) {
+                    observed.complete(upstreamCloses.getFirst());
+                }
+            });
+            try {
+                return Awaits.connect(observed, "the upstream leg to be closed");
+            } finally {
+                vertx.cancelTimer(timer);
+            }
+        }
+
+        /** One client of a relay-only server: what it received and how its socket was closed. */
+        private final class RelayClient {
+
+            private final CompletableFuture<WebSocket> socket = new CompletableFuture<>();
+            private final CompletableFuture<Closed> closed = new CompletableFuture<>();
+            private final CompletableFuture<String> firstMessage = new CompletableFuture<>();
+            private final List<String> received = new CopyOnWriteArrayList<>();
+            private final AtomicReference<CompletableFuture<String>> next = new AtomicReference<>();
+
+            /** Opens the socket and writes {@code sendOnOpen} from the upgrade's own callback. */
+            RelayClient(int port, String sendOnOpen) {
+                relayTimeline.startUpgrade();
+                wsClient.connect(relayOnlyOptions(port))
+                        .onSuccess(opened -> {
+                            opened.textMessageHandler(text -> {
+                                received.add(text);
+                                firstMessage.complete(text);
+                                CompletableFuture<String> awaited = next.getAndSet(null);
+                                if (awaited != null) {
+                                    awaited.complete(text);
+                                }
+                            });
+                            opened.closeHandler(v -> closed.complete(
+                                    new Closed(opened.closeStatusCode(), opened.closeReason())));
+                            opened.writeTextMessage(sendOnOpen);
+                            socket.complete(opened);
+                        })
+                        .onFailure(failure -> {
+                            socket.completeExceptionally(failure);
+                            closed.completeExceptionally(failure);
+                            firstMessage.completeExceptionally(failure);
+                        });
+            }
+
+            /** The next text message this client receives after this call. */
+            CompletableFuture<String> nextMessage() {
+                CompletableFuture<String> awaited = new CompletableFuture<>();
+                next.set(awaited);
+                return awaited;
+            }
+        }
+    }
+
+    /** How one end of a WebSocket saw it closed. */
+    private record Closed(@Nullable Short code, @Nullable String reason) {
+    }
+
+    /**
      * A received pong is control traffic, not data. Vert.x hands a pong that reaches a relay leg to
      * that leg's frame handler as well as to its pong handler, so the relay has to forward it as a pong
      * itself. Were it to fall through to the data path, the other leg would receive it as a binary
@@ -1061,6 +1346,17 @@ class WebSocketRelayStageTest {
      */
     private HttpServer startRelayOnlyServer(int upstreamTargetPort, Runnable releaseAdmission,
             RelayObserver wiringDelegate) throws Exception {
+        return startRelayOnlyServer(upstreamTargetPort, releaseAdmission, wiringDelegate,
+                SessionRelayRegistry::untracked);
+    }
+
+    /**
+     * As {@link #startRelayOnlyServer(int, Runnable, RelayObserver)}, with each relay opened under the
+     * handle {@code sessionRelay} supplies — the handle of the session the upgrade was let through
+     * with, or the no-session handle.
+     */
+    private HttpServer startRelayOnlyServer(int upstreamTargetPort, Runnable releaseAdmission,
+            RelayObserver wiringDelegate, Supplier<SessionRelayRegistry.Tracked> sessionRelay) throws Exception {
         RouteRuntime route = RouteRuntime.builder()
                 .id("relay-only")
                 .protocol(Protocol.WEBSOCKET)
@@ -1077,7 +1373,8 @@ class WebSocketRelayStageTest {
             ctx.request().pause();
             // The router handler runs on the client connection's event loop, so its current context is the
             // one GatewayEdgeRoute.handle() captures and hands the relay.
-            stage.relay(ctx, Vertx.currentContext(), route, Map.of(), Map.of(), "/", releaseAdmission);
+            stage.relay(ctx, Vertx.currentContext(), route, Map.of(), Map.of(), "/", releaseAdmission,
+                    sessionRelay.get());
         });
         return Awaits.connect(
                 vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -1109,7 +1406,7 @@ class WebSocketRelayStageTest {
             // Captured on the event loop, before the hop, exactly as GatewayEdgeRoute.handle() does.
             Context clientContext = Vertx.currentContext();
             virtualThreadExecutor.execute(() -> stage.relay(ctx, clientContext, route, Map.of(), Map.of(),
-                    "/", UNOBSERVED_ADMISSION_RELEASE));
+                    "/", UNOBSERVED_ADMISSION_RELEASE, SessionRelayRegistry.untracked()));
         });
         return Awaits.connect(
                 vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -1396,6 +1693,211 @@ class WebSocketRelayStageTest {
             return "lsof unavailable (interrupted: " + cause + ")";
         } catch (IOException cause) {
             return "lsof unavailable (" + cause + ")";
+        }
+    }
+
+    /**
+     * A {@code require: session} WebSocket route on a cookie-mode gateway, over the full edge.
+     * <p>
+     * The session stage counts the upgrade as one access and hands the binding's activity cookie to the
+     * response cookies. Whether that cookie then reaches the browser on the {@code 101} is a property of
+     * the WebSocket relay, so it is read off the wire here rather than assumed: the {@code 101} carries
+     * it. The plain HTTP route on the same edge, with the same session cookie, is the control: it shows
+     * that the stage did issue an activity cookie for this session at this instant, so what the upgrade
+     * response carries is attributable to the upgrade path and not to the stage.
+     */
+    @Nested
+    @DisplayName("session route in cookie mode — the activity cookie and the upgrade response")
+    class SessionActivityCookieOnUpgrade {
+
+        private static final String ACTIVITY_COOKIE_PREFIX = SessionCookieCodec.DEFAULT_COOKIE_NAME + "-activity=";
+        private static final Duration SESSION_TTL = Duration.ofHours(1);
+        private static final Duration IDLE_TIMEOUT = Duration.ofMinutes(30);
+
+        private HttpServer httpUpstream;
+        private HttpServer sessionFront;
+        private HttpClient httpClient;
+        private String sessionCookie;
+
+        @BeforeEach
+        void startSessionEdge() throws Exception {
+            httpUpstream = Awaits.connect(vertx.createHttpServer()
+                    .requestHandler(request -> request.response().end("upstream"))
+                    .listen(0, LoopbackHost.ADDRESS), "the stub HTTP upstream server to start listening");
+
+            byte[] key = new byte[32];
+            Arrays.fill(key, (byte) 0x11);
+            byte[] salt = new byte[32];
+            Arrays.fill(salt, (byte) 0x22);
+            byte[] activityKey = new byte[32];
+            Arrays.fill(activityKey, (byte) 0x44);
+            CookieSessionBinding binding = new CookieSessionBinding(
+                    new SealedSessionCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME, SESSION_TTL,
+                            SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET, new SecretKeySpec(key, "AES"),
+                            (byte) 1),
+                    salt,
+                    new SessionActivityCookieCodec(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                            new SecretKeySpec(activityKey, "AES"), (byte) 2),
+                    IDLE_TIMEOUT);
+            // The session was bound two minutes ago and carries no activity cookie, so its last access is
+            // older than the binding's 60 s interval: the next request let through earns an activity cookie.
+            Instant login = Instant.now().minusSeconds(120);
+            String setCookie = binding.bind(SessionRecord.builder()
+                    .sessionId(SessionRecord.newSessionId())
+                    .accessToken(Generators.letterStrings(16, 32).next())
+                    .idToken(Generators.letterStrings(16, 32).next())
+                    .sub(Generators.letterStrings(8, 16).next())
+                    .expiresAt(login.plus(SESSION_TTL))
+                    .build(), login).setCookieHeaders().getFirst();
+            sessionCookie = setCookie.substring(0, setCookie.indexOf(';'));
+
+            RouteTable table = new RouteTable(List.of(
+                    wsRoute("wssession", "/ws-session", Require.SESSION, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
+                            positiveListNamingNothing()),
+                    ResolvedRoute.builder()
+                            .id("httpsession")
+                            .protocol(Protocol.HTTP)
+                            .match(MatchConfig.builder().pathPrefix("/http-session").build())
+                            .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
+                            .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                            .effectiveSecurityHeaders(securityHeaders())
+                            .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, httpUpstream.actualPort(), ""))
+                            .build()));
+            TokenValidator tokenValidator = TokenValidator.builder()
+                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(table,
+                    GatewayConfig.builder().version(1).securityHeaders(securityHeaders()).build(),
+                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
+                    GatewayEdgeRouteBffWiringTest.activeRuntime(binding), EgressTrustProfiles.unconsulted(),
+                    PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson(),
+                    relayTimeline.observer(RelayObserver.NO_OP));
+            Router router = Router.router(vertx);
+            edge.registerRoutes(router);
+            sessionFront = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the session edge front server to start listening");
+            httpClient = vertx.createHttpClient();
+        }
+
+        @AfterEach
+        void stopSessionEdge() throws Exception {
+            Awaits.teardown(httpClient.close(), "the HTTP client to close");
+            Awaits.teardown(sessionFront.close(), "the session edge front server to close");
+            Awaits.teardown(httpUpstream.close(), "the stub HTTP upstream server to close");
+        }
+
+        private List<String> activityCookiesOf(MultiMap responseHeaders) {
+            return responseHeaders.getAll("Set-Cookie").stream()
+                    .filter(header -> header.startsWith(ACTIVITY_COOKIE_PREFIX))
+                    .toList();
+        }
+
+        private List<String> activityCookiesOfProxiedGet() throws Exception {
+            return Awaits.connect(httpClient
+                    .request(io.vertx.core.http.HttpMethod.GET, sessionFront.actualPort(), LoopbackHost.ADDRESS,
+                            "/http-session/page")
+                    .compose(request -> request.putHeader("Cookie", sessionCookie).send())
+                    .map(response -> {
+                        assertEquals(200, response.statusCode(), "precondition: the session request is proxied");
+                        return activityCookiesOf(response.headers());
+                    }), "the proxied response of the HTTP session route");
+        }
+
+        private WebSocket upgradeWithSession() throws Exception {
+            WebSocketConnectOptions options = new WebSocketConnectOptions()
+                    .setHost(LoopbackHost.ADDRESS).setPort(sessionFront.actualPort()).setURI("/ws-session/room")
+                    .addHeader("Origin", ALLOWED_ORIGIN).addHeader("Cookie", sessionCookie);
+            relayTimeline.startUpgrade();
+            return Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to /ws-session/room");
+        }
+
+        @Test
+        @DisplayName("control: the same session's proxied HTTP response carries the activity cookie")
+        void proxiedHttpResponseCarriesTheActivityCookie() throws Exception {
+            assertEquals(1, activityCookiesOfProxiedGet().size(),
+                    "the stage issued an activity cookie for this session and the edge wrote it");
+        }
+
+        @Test
+        @DisplayName("an upgrade with a live session is accepted and relays frames")
+        void sessionUpgradeIsAcceptedAndRelays() throws Exception {
+            WebSocket socket = upgradeWithSession();
+            CompletableFuture<String> echoed = new CompletableFuture<>();
+            socket.textMessageHandler(echoed::complete);
+
+            writeRelayed(socket, "session-frame");
+
+            assertEquals("session-frame", awaitRelayed(echoed, "the echoed frame to return through the relay"));
+        }
+
+        /**
+         * Performs the upgrade handshake over a plain TCP socket and returns the response head as the
+         * gateway wrote it. The WebSocket client hands a test no handshake response headers once the
+         * upgrade has completed, so the {@code 101} is read off the wire instead.
+         */
+        private List<String> upgradeResponseHeadLines() throws Exception {
+            NetClient netClient = vertx.createNetClient();
+            try {
+                NetSocket socket = Awaits.connect(
+                        netClient.connect(sessionFront.actualPort(), LoopbackHost.ADDRESS),
+                        "the TCP connection to the session edge");
+                CompletableFuture<String> head = new CompletableFuture<>();
+                StringBuilder received = new StringBuilder();
+                socket.handler(buffer -> {
+                    received.append(buffer.toString(StandardCharsets.ISO_8859_1));
+                    int endOfHead = received.indexOf("\r\n\r\n");
+                    if (endOfHead >= 0) {
+                        head.complete(received.substring(0, endOfHead));
+                    }
+                });
+                socket.write(String.join("\r\n",
+                        "GET /ws-session/room HTTP/1.1",
+                        "Host: " + LoopbackHost.ADDRESS + ":" + sessionFront.actualPort(),
+                        "Upgrade: websocket",
+                        "Connection: Upgrade",
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+                        "Sec-WebSocket-Version: 13",
+                        "Origin: " + ALLOWED_ORIGIN,
+                        "Cookie: " + sessionCookie,
+                        "", ""));
+                return List.of(Awaits.connect(head, "the head of the upgrade response").split("\r\n"));
+            } finally {
+                Awaits.teardown(netClient.close(), "the raw TCP client to close");
+            }
+        }
+
+        @Test
+        @DisplayName("the 101 of a session upgrade carries the activity cookie")
+        void upgradeResponseCarriesTheActivityCookie() throws Exception {
+            List<String> head = upgradeResponseHeadLines();
+
+            List<String> activityCookies = head.stream()
+                    .filter(line -> line.regionMatches(true, 0, "set-cookie:", 0, "set-cookie:".length()))
+                    .map(line -> line.substring("set-cookie:".length()).strip())
+                    .filter(value -> value.startsWith(ACTIVITY_COOKIE_PREFIX))
+                    .toList();
+
+            assertAll("the upgrade response as the gateway wrote it: " + head,
+                    () -> assertTrue(head.getFirst().startsWith("HTTP/1.1 101"),
+                            "the upgrade is accepted: " + head.getFirst()),
+                    () -> assertEquals(1, activityCookies.size(), "the activity cookies on the 101"));
+        }
+
+        @Test
+        @DisplayName("an upgrade without a session cookie is rejected before the upstream is dialed")
+        void upgradeWithoutSessionIsRejected() {
+            WebSocketConnectOptions options = new WebSocketConnectOptions()
+                    .setHost(LoopbackHost.ADDRESS).setPort(sessionFront.actualPort()).setURI("/ws-session/room")
+                    .addHeader("Origin", ALLOWED_ORIGIN);
+            int connectsBefore = upstreamConnects.get();
+
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> Awaits.connect(wsClient.connect(options), "the unauthenticated upgrade to be rejected"));
+
+            UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
+            assertEquals(401, rejected.getStatus(), "a session route answers an upgrade without a session 401");
+            assertEquals(connectsBefore, upstreamConnects.get(), "the upstream is never dialed");
         }
     }
 

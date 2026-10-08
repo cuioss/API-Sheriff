@@ -113,6 +113,17 @@ import org.jspecify.annotations.Nullable;
  * now-consumed binding cookie (single-use), and redirects the browser to the record's
  * same-origin-validated return URL.
  * <p>
+ * <strong>A login replaces the session the browser already had.</strong> When the callback request
+ * still carries a cookie that resolves a live session, that session is destroyed through
+ * {@link SessionBinding#destroy} before the new one is bound — whether it belongs to the same subject
+ * or to another. A browser therefore holds at most one session of this gateway, and a session
+ * established before the login cannot outlive it. In server mode the earlier session is removed from
+ * the store; in cookie mode there is nothing held to remove, and the new cookie replaces the earlier
+ * one in the browser. A widening callback is the opposite case and keeps its session (below). If the
+ * new session then cannot be bound, the answer is the {@code 500} described above and carries no
+ * cookie: in server mode the browser is left without a session, in cookie mode it still holds the
+ * cookie it presented.
+ * <p>
  * <strong>Active scope set.</strong> The new session's active scope set {@code A} — the {@code scope}
  * every later near-expiry refresh grant sends — is the access token's granted {@code scope} claim, or
  * the scope set the authorization request asked for (recorded on the pending record) when the token
@@ -151,15 +162,24 @@ import org.jspecify.annotations.Nullable;
  *       <em>live</em> session, which keeps its {@code sessionId}, {@code sessionNonce},
  *       {@code expiresAt} and {@code authTime}, takes the new access, refresh and ID tokens and the
  *       new {@code acr}, and sets both {@code A} and {@code S} to the granted scope. It is written
- *       through {@link SessionBinding#persist} — the updating write, which never creates a
- *       session — and the browser is redirected to the recorded return URL. A persist that reports
- *       the session gone is answered like a missing live session: a terminal {@code 403}, no
- *       {@code Location}, no {@code Set-Cookie}, nothing stored (see below). A persist the binding
- *       cannot hold answers {@code 500}, like a bind failure on login.</li>
+ *       through {@link SessionBinding#persistReissuingCookie} — the updating write that also
+ *       re-issues the cookie value the browser holds and, like {@code persist}, never creates a
+ *       session — and the browser is redirected to the recorded return URL with the cookies that
+ *       write returned. A write that reports the session gone is answered like a missing live
+ *       session: a terminal {@code 403}, no {@code Location}, no {@code Set-Cookie}, nothing stored
+ *       (see below). A write the binding cannot hold answers {@code 500}, like a bind failure on
+ *       login.</li>
  * </ul>
+ * <strong>A widening re-issues the cookie and keeps the session.</strong> The step-up endpoint and the
+ * scope widening both land here, so this one write covers both. In server mode the browser receives a
+ * new cookie value and the value it presented stops resolving at once; the session is the same
+ * session — same id, same authentication time, same absolute expiry, still ended by a back-channel
+ * logout. In cookie mode the session is re-sealed with its nonce carried verbatim, so its derived
+ * identity does not change either.
+ * <p>
  * <strong>A terminated session is not brought back by the merge.</strong> In server mode a logout or
  * a validated back-channel logout may destroy the session between the resolve above and the
- * persist. The binding then writes nothing and reports the session gone; the callback answers
+ * write. The binding then writes nothing and reports the session gone; the callback answers
  * {@code 403} with no {@code Location} and no {@code Set-Cookie} and records
  * {@code ApiSheriff-131} with the reason {@code session-terminated}. The tokens of the refused grant
  * are dropped, exactly as the other refusals drop theirs — they are stored nowhere and are not
@@ -178,11 +198,11 @@ import org.jspecify.annotations.Nullable;
  * tokens it now holds belong to the identity-provider session that answered the widening, which is
  * not necessarily the one the gateway session was created from; indexing the session under that
  * {@code sid} is what lets a back-channel logout for it find the session. In server mode the store
- * re-indexes the session on the persist, so a logout token naming the previous {@code sid} no longer
+ * re-indexes the session on the write, so a logout token naming the previous {@code sid} no longer
  * matches it.
  * <p>
  * The merge is a check-then-act on the live session: a concurrent refresh may rotate its tokens
- * between the resolve and the persist. Between those two writers the last one wins over two IdP-fresh
+ * between the resolve and the write. Between those two writers the last one wins over two IdP-fresh
  * token sets of the same identity; the identity is re-checked on the resolved record, never taken
  * from the pending record alone. A termination is not a writer in that sense: in server mode it wins
  * over the merge, as described above.
@@ -227,7 +247,7 @@ public final class CallbackEndpoint {
 
     /**
      * The bounded reason recorded when the session a widening was about to be merged into was
-     * terminated between the callback's resolve and its persist — reported by a binding that can
+     * terminated between the callback's resolve and its write — reported by a binding that can
      * observe it (server mode).
      */
     private static final String REASON_SESSION_TERMINATED = "session-terminated";
@@ -326,7 +346,7 @@ public final class CallbackEndpoint {
             return CallbackOutcome.error(BAD_REQUEST);
         }
         PendingAuthorizationRecord.Widening widening = pending.widening();
-        return widening == null ? completeLogin(result, pending, now)
+        return widening == null ? completeLogin(result, pending, cookieHeader, now)
                 : completeWidening(result, pending, widening, cookieHeader, now);
     }
 
@@ -357,8 +377,9 @@ public final class CallbackEndpoint {
     /**
      * Merges a successful widening grant into the live session the request carries, after checking
      * that it is the same identity and that the grant carries the scopes the widening sought. The
-     * merge is written through the binding's updating write, so a session the binding reports gone
-     * at that point is refused {@code 403} instead of being created anew.
+     * merge is written through the binding's re-issuing updating write, so a session the binding
+     * reports gone at that point is refused {@code 403} instead of being created anew, and the cookies
+     * that write produced are the ones the redirect carries.
      */
     private CallbackOutcome completeWidening(AuthorizationCodeFlow.AuthenticationResult result,
             PendingAuthorizationRecord pending, PendingAuthorizationRecord.Widening widening,
@@ -413,9 +434,10 @@ public final class CallbackEndpoint {
                 .build();
         Optional<SessionBinding.BoundSession> persisted;
         try {
-            // The updating write: it never creates a session, so a session a logout destroyed since
-            // the resolve above is not brought back by this merge.
-            persisted = sessionBinding.persist(merged, now);
+            // The re-issuing updating write: it never creates a session, so a session a logout
+            // destroyed since the resolve above is not brought back by this merge, and it replaces
+            // the cookie value the browser holds. The session keeps its identity.
+            persisted = sessionBinding.persistReissuingCookie(merged, now);
         } catch (IllegalStateException persistFailure) {
             // As on login: the grant was valid, but the binding cannot hold the merged session (for
             // example the sealed cookie-mode value outgrew the cookie-size budget). The live session
@@ -439,8 +461,11 @@ public final class CallbackEndpoint {
         return CallbackOutcome.redirect(pending.returnUrl(), setCookies);
     }
 
+    /**
+     * Completes a login: ends the session the request still carries, then binds the new one.
+     */
     private CallbackOutcome completeLogin(AuthorizationCodeFlow.AuthenticationResult result,
-            PendingAuthorizationRecord pending, Instant now) {
+            PendingAuthorizationRecord pending, @Nullable String cookieHeader, Instant now) {
         AccessTokenContent accessToken = result.accessToken();
         IdTokenContent idToken = result.idToken();
         Optional<String> subject = idToken.getSubject().or(accessToken::getSubject);
@@ -471,6 +496,14 @@ public final class CallbackEndpoint {
                 .activeScopes(loginScopes)
                 .grantedScopes(loginScopes)
                 .build();
+        // A login never leaves an earlier session behind: the session the request's cookie still
+        // resolves is ended before the new one is bound, whoever it belonged to. It is ended first, so
+        // a binding at its capacity bound regains that session's place for the new one.
+        Optional<SessionRecord> previous = sessionBinding.resolve(cookieHeader, now);
+        if (previous.isPresent()) {
+            sessionBinding.destroy(previous.get());
+            LOGGER.debug("OIDC callback ended the session the request carried before binding the new one");
+        }
         SessionBinding.BoundSession bound;
         try {
             bound = sessionBinding.bind(session, now);

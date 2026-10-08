@@ -29,12 +29,12 @@ import java.net.ConnectException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
-
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -255,7 +255,7 @@ class GrpcDispatchStageTest {
             // Front server: relays the upstream response WITH its trailers exactly as the gRPC dispatch
             // path does (ResponseStage#relayWithTrailers), with X-Frame-Options and
             // Content-Security-Policy both in default mode.
-            ResponseStage responseStage = new ResponseStage();
+            ResponseStage responseStage = new ResponseStage(Set.of());
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
                     .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, LoopbackHost.ADDRESS,
                             "/svc.Service/Method")
