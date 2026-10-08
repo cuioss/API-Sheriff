@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,6 +33,8 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
@@ -60,6 +63,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the same class scans the integration-test sources: a publish option, a raw {@code network connect}
  * and a call of the harness's own network attachment each appear in a named set of files and in no
  * other. A file joining one of those sets fails here and has to be looked at.
+ * <p>
+ * <strong>The documented host ports.</strong> {@link DocumentedHostPorts} reads the host-port table of
+ * {@code doc/development/integration-test-topology.adoc} out of the note at runtime and compares it
+ * with the ports the same sources assign. It holds no copy of either side: the ports come from the
+ * sources' own declarations and the expectation from the note, so the table cannot fall behind a
+ * suite that adds or moves a port. It compares what is declared; whether a port is free on a host is
+ * not something a source scan can say.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -78,6 +88,36 @@ class OneOffGatewayContainersTest {
     private static final String CONFIGURATION_MOUNT = "/app/sheriff-config";
     private static final String DESCRIPTOR_CONTENT = "# descriptor written by OneOffGatewayContainersTest\n";
     private static final String EXTRA_ENDPOINT = "harness-test-extra.yaml";
+
+    /**
+     * The integration-test sources: where a raw docker call would bypass the harness, and where a
+     * suite assigns its gateway a host port.
+     */
+    private static final Path SOURCES = MODULE.resolve("src/test/java/de/cuioss/sheriff/gateway/integration");
+
+    private static final String JAVA_SUFFIX = ".java";
+
+    /** The Java sources directly below {@link #SOURCES}; fails when there are too few to be the real set. */
+    private static List<Path> sources() throws IOException {
+        List<Path> sources;
+        try (Stream<Path> files = Files.list(SOURCES)) {
+            sources = files.filter(file -> file.getFileName().toString().endsWith(JAVA_SUFFIX)).sorted().toList();
+        }
+        assertTrue(sources.size() > 10, () -> "expected the integration-test sources below " + SOURCES
+                + ", found " + sources.size() + " files — a scan that reads nothing proves nothing");
+        return sources;
+    }
+
+    /** The file names of the integration-test sources whose text carries {@code token}. */
+    private static List<String> sourcesNaming(String token) throws IOException {
+        List<String> naming = new ArrayList<>();
+        for (Path source : sources()) {
+            if (Files.readString(source).contains(token)) {
+                naming.add(source.getFileName().toString());
+            }
+        }
+        return naming;
+    }
 
     private static Path writeReadableByOthers(String relative, String content) throws IOException {
         Path file = WORK.resolve(relative);
@@ -125,10 +165,6 @@ class OneOffGatewayContainersTest {
         private static final String CONTAINER = "harness-test-container";
         private static final String FIRST_LOOPBACK = "127.0.0.1::8443";
         private static final String SECOND_LOOPBACK = "127.0.0.1::9000";
-
-        /** The integration-test sources, where a raw docker call would bypass the harness. */
-        private static final Path SOURCES =
-                MODULE.resolve("src/test/java/de/cuioss/sheriff/gateway/integration");
 
         @Test
         @DisplayName("refuses two loopback publications, naming the container and both publications")
@@ -299,21 +335,244 @@ class OneOffGatewayContainersTest {
                     + "test started, which publishes a port on loopback, leaves that port number dead");
         }
 
-        /** The file names of the integration-test sources whose text carries {@code token}. */
-        private static List<String> sourcesNaming(String token) throws IOException {
-            List<Path> sources;
-            try (Stream<Path> files = Files.list(SOURCES)) {
-                sources = files.filter(file -> file.getFileName().toString().endsWith(".java")).sorted().toList();
+    }
+
+    @Nested
+    @DisplayName("The documented host ports")
+    class DocumentedHostPorts {
+
+        /** The note whose host-port table this class reads, relative to the repository root. */
+        private static final String NOTE = "doc/development/integration-test-topology.adoc";
+
+        /** The note's tagged block that holds the table. */
+        private static final String TAG = "test-started-host-ports";
+
+        private static final String TABLE_DELIMITER = "|===";
+        private static final String CELL_SEPARATOR = "|";
+        private static final List<String> HEADER = List.of("Host port", "Gateway container", "Suite");
+
+        /** Backtick-delimited span — the table writes every port and every class name as monospace. */
+        private static final Pattern MONOSPACE_SPAN = Pattern.compile("`([^`]+)`");
+        private static final Pattern PORT_NUMBER = Pattern.compile("\\d+");
+        private static final Pattern CLASS_NAME = Pattern.compile("[A-Z][A-Za-z0-9]*");
+
+        /**
+         * The declaration by which a source assigns a test-started gateway its fixed host port: an
+         * {@code int} constant whose name is, or ends in, {@code APPLICATION_PORT}, initialised with a
+         * literal. It is matched against a whole source line from its start, so a port number a
+         * comment or a Javadoc names is not an assignment, and neither is a literal a call passes.
+         */
+        private static final Pattern ASSIGNMENT = Pattern.compile(
+                "^\\s*(?:private\\s+)?static\\s+final\\s+int\\s+(?:[A-Z][A-Z0-9]*_)*APPLICATION_PORT\\s*=\\s*(\\d+)\\s*;");
+
+        /** How a source starts a gateway through the harness, or describes one for it to start. */
+        private static final List<String> GATEWAY_STARTS =
+                List.of("startGateway(", "startBffGateway(", "new BffGateway(");
+
+        /** The harness and this test: they define and exercise the start methods and start no gateway. */
+        private static final Set<String> NOT_A_SUITE =
+                Set.of("OneOffGatewayContainers.java", "OneOffGatewayContainersTest.java");
+
+        @Test
+        @DisplayName("the table lists exactly the host ports the sources assign to a test-started gateway")
+        void tableListsExactlyTheAssignedPorts() throws Exception {
+            Set<Integer> assigned = new TreeSet<>();
+            for (Assignment assignment : assignments()) {
+                assigned.add(assignment.port());
             }
-            assertTrue(sources.size() > 10, () -> "expected the integration-test sources below " + SOURCES
-                    + ", found " + sources.size() + " files — a scan that reads nothing proves nothing");
-            List<String> naming = new ArrayList<>();
-            for (Path source : sources) {
-                if (Files.readString(source).contains(token)) {
-                    naming.add(source.getFileName().toString());
+
+            Set<Integer> documented = new TreeSet<>(documentedPorts());
+
+            assertEquals(assigned, documented, () -> "the host-port table in the '" + TAG + "' block of "
+                    + NOTE + " (actual) no longer lists the ports the integration-test sources assign "
+                    + "(expected). A contributor reads that table to pick a free port: add, move or remove "
+                    + "the row in the change that adds, moves or removes the port");
+        }
+
+        @Test
+        @DisplayName("each assigned port stands in a row that names the suite, or the rig, that assigns it")
+        void eachPortIsAssignedWhereItsRowSays() throws Exception {
+            List<Row> rows = rows();
+
+            List<String> misattributed = new ArrayList<>();
+            for (Assignment assignment : assignments()) {
+                boolean named = rows.stream().anyMatch(row -> row.ports().contains(assignment.port())
+                        && row.classes().contains(assignment.className()));
+                if (!named) {
+                    misattributed.add(assignment.port() + " is assigned in " + assignment.className());
                 }
             }
-            return naming;
+
+            assertEquals(List.of(), misattributed, () -> "every port must stand in a row of the '" + TAG
+                    + "' block of " + NOTE + " whose suite cell names the class that assigns it");
+        }
+
+        @Test
+        @DisplayName("no host port stands in the table twice")
+        void tablePortsAreDistinct() throws Exception {
+            List<Integer> ports = documentedPorts();
+
+            List<Integer> repeated = ports.stream()
+                    .filter(port -> ports.indexOf(port) != ports.lastIndexOf(port)).distinct().toList();
+
+            assertEquals(List.of(), repeated, () -> "a host port is listed more than once in the '" + TAG
+                    + "' block of " + NOTE + "; two gateways cannot publish the same port");
+        }
+
+        @Test
+        @DisplayName("every source that starts a gateway through the harness declares its port in the recognised form")
+        void everyGatewayStartingSourceDeclaresItsPort() throws Exception {
+            Set<String> declaring = new TreeSet<>();
+            for (Assignment assignment : assignments()) {
+                declaring.add(assignment.className() + ".java");
+            }
+
+            Set<String> starting = new TreeSet<>();
+            for (String start : GATEWAY_STARTS) {
+                starting.addAll(sourcesNaming(start));
+            }
+            starting.removeAll(NOT_A_SUITE);
+
+            assertFalse(starting.isEmpty(), () -> "no integration-test source carries any of " + GATEWAY_STARTS
+                    + " — the start methods were renamed, and this check would hold for no file at all");
+            assertEquals(starting, declaring, () -> "a source that starts a gateway through the harness assigns "
+                    + "it a fixed host port, and the table check sees that port only as a constant whose name "
+                    + "is or ends in APPLICATION_PORT. A source in one set and not the other either passes "
+                    + "its port in a form the scan does not recognise, or declares a port it never starts a "
+                    + "gateway on");
+        }
+
+        /** The ports of every row, in table order, repetitions kept. */
+        private static List<Integer> documentedPorts() throws IOException {
+            List<Integer> ports = new ArrayList<>();
+            for (Row row : rows()) {
+                ports.addAll(row.ports());
+            }
+            return ports;
+        }
+
+        /**
+         * The rows of the note's host-port table: the ports of the first cell and the class names of
+         * the third. Fails when the note or its tagged block is missing, when the block holds no
+         * table of the expected three columns, and when a row gives no port or names no class.
+         */
+        private static List<Row> rows() throws IOException {
+            Path note = note();
+            List<String> block = taggedBlock(note);
+            int from = block.indexOf(TABLE_DELIMITER);
+            int to = block.lastIndexOf(TABLE_DELIMITER);
+            assertTrue(from >= 0 && to > from, () -> "the '" + TAG + "' block of " + note
+                    + " holds no table delimited by two '" + TABLE_DELIMITER + "' lines");
+
+            List<String> cells = new ArrayList<>();
+            for (String line : block.subList(from + 1, to)) {
+                if (line.startsWith(CELL_SEPARATOR)) {
+                    for (String cell : line.substring(1).split(Pattern.quote(CELL_SEPARATOR))) {
+                        cells.add(cell.strip());
+                    }
+                } else if (!line.isBlank()) {
+                    assertFalse(cells.isEmpty(), () -> "the table in " + note + " starts with a line that "
+                            + "opens no cell: " + line);
+                    cells.set(cells.size() - 1, cells.getLast() + " " + line.strip());
+                }
+            }
+            int columns = HEADER.size();
+            assertTrue(cells.size() > columns && cells.size() % columns == 0, () -> "the table in the '" + TAG
+                    + "' block of " + note + " must hold a header and at least one row of " + columns
+                    + " cells each; found " + cells.size() + " cells");
+            assertEquals(HEADER, cells.subList(0, columns), () -> "the table in the '" + TAG + "' block of "
+                    + note + " no longer has the columns this check reads the ports and the suites from");
+
+            List<Row> rows = new ArrayList<>();
+            for (int index = columns; index < cells.size(); index += columns) {
+                String portCell = cells.get(index);
+                String suiteCell = cells.get(index + columns - 1);
+                List<Integer> ports = spans(portCell, PORT_NUMBER).stream().map(Integer::valueOf).toList();
+                Set<String> classes = new TreeSet<>(spans(suiteCell, CLASS_NAME));
+                assertFalse(ports.isEmpty(), () -> "a row of the table in " + note
+                        + " gives no host port in its first cell: " + portCell);
+                assertFalse(classes.isEmpty(), () -> "a row of the table in " + note
+                        + " names no class in its suite cell: " + suiteCell);
+                rows.add(new Row(ports, classes));
+            }
+            return rows;
+        }
+
+        /** The monospace spans of a cell that match {@code shape} as a whole. */
+        private static List<String> spans(String cell, Pattern shape) {
+            List<String> spans = new ArrayList<>();
+            Matcher matcher = MONOSPACE_SPAN.matcher(cell);
+            while (matcher.find()) {
+                String span = matcher.group(1).strip();
+                if (shape.matcher(span).matches()) {
+                    spans.add(span);
+                }
+            }
+            return spans;
+        }
+
+        /**
+         * The note, resolved from the module working directory: it lives at the repository root, the
+         * parent of the module directory.
+         */
+        private static Path note() {
+            Path repositoryRoot = MODULE.getParent();
+            assertNotNull(repositoryRoot, () -> "the module directory " + MODULE + " has no parent, so "
+                    + NOTE + " cannot be resolved");
+            Path note = repositoryRoot.resolve(NOTE);
+            assertTrue(Files.isRegularFile(note), () -> "the note whose host-port table this check reads "
+                    + "was not found at " + note + "; point the check at its new location rather than "
+                    + "leaving it to read nothing");
+            return note;
+        }
+
+        /** The lines strictly between the {@code tag::} and {@code end::} markers of {@link #TAG}. */
+        private static List<String> taggedBlock(Path note) throws IOException {
+            List<String> lines = Files.readAllLines(note);
+            String open = "// tag::" + TAG + "[]";
+            String close = "// end::" + TAG + "[]";
+            int from = lines.indexOf(open);
+            int to = lines.indexOf(close);
+            assertTrue(from >= 0, () -> "the marker '" + open + "' is absent from " + note
+                    + "; it must stand alone on its own line, unindented");
+            assertTrue(to > from, () -> "the marker '" + close + "' is absent from " + note
+                    + " or precedes its opening marker");
+            List<String> block = lines.subList(from + 1, to);
+            assertTrue(block.stream().anyMatch(line -> !line.isBlank()),
+                    () -> "the '" + TAG + "' block of " + note + " is empty");
+            return block;
+        }
+
+        /**
+         * Every host port an integration-test source assigns to a test-started gateway, with the class
+         * that assigns it. Fails when the scan recognises no assignment at all.
+         */
+        private static List<Assignment> assignments() throws IOException {
+            List<Path> sources = sources();
+            List<Assignment> assignments = new ArrayList<>();
+            for (Path source : sources) {
+                String fileName = source.getFileName().toString();
+                String className = fileName.substring(0, fileName.length() - JAVA_SUFFIX.length());
+                for (String line : Files.readAllLines(source)) {
+                    Matcher matcher = ASSIGNMENT.matcher(line);
+                    if (matcher.find()) {
+                        assignments.add(new Assignment(className, Integer.parseInt(matcher.group(1))));
+                    }
+                }
+            }
+            assertFalse(assignments.isEmpty(), () -> "none of the " + sources.size() + " sources below " + SOURCES
+                    + " declares an int constant named APPLICATION_PORT or ending in _APPLICATION_PORT — the "
+                    + "declaration this check recognises a port assignment by is gone, and it would compare "
+                    + "the table with nothing");
+            return assignments;
+        }
+
+        /** A row of the host-port table: the ports of its first cell, the class names of its last. */
+        private record Row(List<Integer> ports, Set<String> classes) {
+        }
+
+        /** A fixed host port and the class whose source assigns it. */
+        private record Assignment(String className, int port) {
         }
     }
 
