@@ -28,6 +28,8 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -266,7 +268,7 @@ class SessionRelayRegistryTest {
             int workers = 8;
             int rounds = 200;
             SessionRelayRegistry shared = new SessionRelayRegistry(workers * rounds, CLOCK);
-            AtomicInteger closes = new AtomicInteger();
+            Queue<AtomicInteger> closesPerRelay = new ConcurrentLinkedQueue<>();
             CyclicBarrier start = new CyclicBarrier(workers);
             List<Future<?>> running = new ArrayList<>();
             try (ExecutorService executor = Executors.newFixedThreadPool(workers)) {
@@ -277,6 +279,8 @@ class SessionRelayRegistryTest {
                         start.await(10, TimeUnit.SECONDS);
                         for (int round = 0; round < rounds; round++) {
                             Tracked relay = shared.track(session, EXPIRES_AT).orElseThrow();
+                            AtomicInteger closes = new AtomicInteger();
+                            closesPerRelay.add(closes);
                             relay.onSessionEnd(closes::incrementAndGet);
                             if (ends) {
                                 shared.sessionEnded(session);
@@ -292,7 +296,9 @@ class SessionRelayRegistryTest {
             }
 
             assertEquals(0, shared.size(), "every relay was released or ended, so nothing is tracked");
-            assertTrue(closes.get() <= workers * rounds, "no close action ran more than once");
+            assertEquals(workers * rounds, closesPerRelay.size(), "every tracked relay registered its close action");
+            assertTrue(closesPerRelay.stream().allMatch(closes -> closes.get() <= 1),
+                    "no close action ran more than once");
         }
     }
 }

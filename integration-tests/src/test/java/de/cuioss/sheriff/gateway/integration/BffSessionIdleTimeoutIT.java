@@ -87,9 +87,10 @@ import org.junit.jupiter.api.Timeout;
  * <p>
  * <strong>Cookie mode.</strong> A stateless gateway keeps the last access in a second cookie, the
  * activity cookie, named after the session cookie with the suffix {@code -activity}. It is written
- * when the last access the request proves is at least 60 seconds old, and never earlier, so a
- * response inside the first minute of a session sets no cookie at all. The idle window is
- * {@value #COOKIE_IDLE_SECONDS} seconds, longer than that interval, and the legs are:
+ * when the last access the request proves is at least one re-issue interval old, and never earlier.
+ * That interval is the smaller of 60 seconds and half the idle window. The idle window is
+ * {@value #COOKIE_IDLE_SECONDS} seconds, so the interval is {@value #COOKIE_REISSUE_INTERVAL_SECONDS}
+ * seconds here and a response right after the login sets no cookie at all. The legs are:
  * <ol>
  *   <li>a request right after the login is served and sets no cookie;</li>
  *   <li>a request {@value #COOKIE_FIRST_ACTIVITY_SECONDS} seconds after the login is served, sets the
@@ -141,6 +142,12 @@ class BffSessionIdleTimeoutIT {
     private static final int SERVER_SECOND_USE_SECONDS = 14;
 
     private static final int COOKIE_IDLE_SECONDS = 90;
+    /**
+     * The gateway's re-issue interval for {@link #COOKIE_IDLE_SECONDS}: half the idle window, which is
+     * below the 60-second ceiling of that interval. Leg 2 falls later than it after the login, leg 3
+     * earlier than it after leg 2.
+     */
+    private static final int COOKIE_REISSUE_INTERVAL_SECONDS = COOKIE_IDLE_SECONDS / 2;
     private static final int COOKIE_FIRST_ACTIVITY_SECONDS = 65;
     private static final int COOKIE_PAST_LOGIN_WINDOW_SECONDS = 95;
 
@@ -271,10 +278,10 @@ class BffSessionIdleTimeoutIT {
             assertNull(withoutActivity.get(ACTIVITY_COOKIE),
                     "precondition: the login sets no activity cookie, the login instant is the first last access");
 
-            // Leg 1 — inside the first minute nothing is written
+            // Leg 1 — inside the re-issue interval after the login nothing is written
             Response rightAfterLogin = request(COOKIE_MODE, withoutActivity);
 
-            // Leg 2 — the first access at least a minute after the login writes the activity cookie
+            // Leg 2 — the first access at least one re-issue interval after the login writes the activity cookie
             sleepUntil(loggedInAt, COOKIE_FIRST_ACTIVITY_SECONDS);
             Response firstActivity = request(COOKIE_MODE, withoutActivity);
             long activityWrittenBy = System.nanoTime();
@@ -282,7 +289,8 @@ class BffSessionIdleTimeoutIT {
             assertAll("the response that records an access " + COOKIE_FIRST_ACTIVITY_SECONDS + "s after the login",
                     () -> assertEquals(OK, rightAfterLogin.statusCode(), "a fresh session must be served"),
                     () -> assertEquals(List.of(), rightAfterLogin.getHeaders().getValues("Set-Cookie"),
-                            "a response inside the first minute of a session must set no cookie"),
+                            "a response inside the first " + COOKIE_REISSUE_INTERVAL_SECONDS
+                                    + "s of a session must set no cookie"),
                     () -> assertEquals(OK, firstActivity.statusCode(), () -> "a session used inside the idle window of "
                             + COOKIE_IDLE_SECONDS + "s must be served. " + gatewayLog(COOKIE_MODE.name())),
                     () -> assertNotNull(activity, () -> "the response must set " + ACTIVITY_COOKIE + "; it set "
@@ -317,7 +325,8 @@ class BffSessionIdleTimeoutIT {
                             + COOKIE_PAST_LOGIN_WINDOW_SECONDS + "s after its login. "
                             + gatewayLog(COOKIE_MODE.name())),
                     () -> assertEquals(List.of(), keptTheActivityCookie.getHeaders().getValues("Set-Cookie"),
-                            "an access less than a minute after the last recorded one writes no cookie"),
+                            "an access less than " + COOKIE_REISSUE_INTERVAL_SECONDS
+                                    + "s after the last recorded one writes no cookie"),
                     () -> assertEquals(UNAUTHENTICATED, droppedTheActivityCookie, () -> "without the activity cookie "
                             + "the last access is the login, so " + COOKIE_PAST_LOGIN_WINDOW_SECONDS
                             + "s after it the session is past the idle window. A 200 here means the declared "

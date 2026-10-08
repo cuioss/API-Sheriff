@@ -28,7 +28,6 @@ import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
-
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -40,7 +39,8 @@ import org.jspecify.annotations.Nullable;
  * <strong>Why a cookie of its own.</strong> A stateless gateway has nowhere to keep a last-access
  * instant but the browser. Putting it into the sealed session payload would re-seal the tokens on
  * every access, race a concurrent refresh for the same cookie, and change the sealed format. The
- * activity cookie carries no token material, is written at most once a minute per session, and leaves
+ * activity cookie carries no token material, is written at most once per re-issue interval per session
+ * (the smaller of 60 seconds and half the idle timeout, see {@link CookieSessionBinding}), and leaves
  * {@link SealedSessionCookieCodec} and its format version untouched.
  * <p>
  * <strong>Cookie value layout.</strong> {@code version(1B) || key-id(1B) || nonce(12B) ||
@@ -55,8 +55,8 @@ import org.jspecify.annotations.Nullable;
  * from one session to another to keep the second one alive.
  * <p>
  * <strong>A key of its own.</strong> The codec seals under a key that exists for this cookie alone
- * ({@link CookieKeyMaterial#activityCodec(String)} derives it from the sealing key). The one-a-minute
- * seal cadence therefore does not count against the random-nonce budget of the key that seals tokens,
+ * ({@link CookieKeyMaterial#activityCodec(String)} derives it from the sealing key). Its seal
+ * cadence therefore does not count against the random-nonce budget of the key that seals tokens,
  * and a value sealed by either codec is refused by the other at the key-id gate or the tag check.
  * <p>
  * <strong>Nonce discipline.</strong> {@link #seal} draws a fresh 96-bit nonce from

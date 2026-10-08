@@ -25,7 +25,6 @@ import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
@@ -126,8 +125,8 @@ public final class CookieKeyMaterial {
      * <p>
      * <strong>Why not the sealing key.</strong> AES-GCM with random 96-bit nonces is bounded in the
      * number of seals one key may make before a nonce collision becomes likely (NIST SP 800-38D). The
-     * session cookie is sealed at login, refresh and widening; the activity cookie up to once a minute
-     * per session. Sealing both under one key would add that cadence to the count of the key that
+     * session cookie is sealed at login, refresh and widening; the activity cookie up to once per
+     * re-issue interval per session — a minute, or half the idle timeout where that is shorter. Sealing both under one key would add that cadence to the count of the key that
      * protects tokens. The activity key is therefore derived from the sealing key under a fixed label,
      * the way the identity salt and the key id are, and a nonce collision under it can at worst allow
      * a forged activity cookie, never the disclosure of a token.

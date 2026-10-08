@@ -33,7 +33,6 @@ import java.util.Set;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
@@ -61,7 +60,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * cookie of this very session proves and from the login instant otherwise, so an activity cookie that
  * is missing, tampered, bound to another session or sealed under another key never extends a session;
  * the access notification returns an activity cookie at most once per interval and never a session
- * cookie; and the clearing list clears both cookies.
+ * cookie; an idle timeout below 60 seconds re-issues at half of itself, so activity keeps such a
+ * session alive and its absence ends it; and the clearing list clears both cookies.
  */
 class CookieSessionBindingTest {
 
@@ -1015,6 +1015,96 @@ class CookieSessionBindingTest {
 
             assertEquals(1, returned.size(),
                     "the foreign cookie proves no access of this session, so a new activity cookie is issued");
+        }
+    }
+
+    @Nested
+    @DisplayName("Idle timeout shorter than the 60-second re-issue ceiling")
+    class ShortIdleTimeout {
+
+        /** Below {@link CookieSessionBinding#ACTIVITY_COOKIE_INTERVAL}, so the re-issue interval is half of it. */
+        private static final Duration SHORT_IDLE_TIMEOUT = Duration.ofSeconds(30);
+
+        private CookieSessionBinding shortIdleBinding;
+        private String sessionCookie;
+
+        @BeforeEach
+        void bindSession() {
+            shortIdleBinding = new CookieSessionBinding(codec, identitySalt(), activityCodec, SHORT_IDLE_TIMEOUT);
+            sessionCookie = cookieHeaderOf(shortIdleBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN));
+        }
+
+        /**
+         * One request of a browser at {@code now}: the session must resolve from {@code cookies}, the
+         * access is recorded, and the browser keeps an activity cookie the response set.
+         *
+         * @return the request {@code Cookie} header the browser sends next
+         */
+        private String access(String cookies, Instant now) {
+            SessionRecord live = shortIdleBinding.resolve(cookies, now)
+                    .orElseThrow(() -> new AssertionError("the session must still be live at " + now));
+            List<String> setCookies = shortIdleBinding.recordAccess(live, cookies, now);
+            if (setCookies.isEmpty()) {
+                return cookies;
+            }
+            String setCookie = setCookies.getFirst();
+            return sessionCookie + "; " + setCookie.substring(0, setCookie.indexOf(';'));
+        }
+
+        @Test
+        @DisplayName("Should keep a session alive past the idle timeout while it is used more often than the timeout")
+        void shouldStayAliveWhileUsed() {
+            String cookies = sessionCookie;
+
+            for (int seconds = 10; seconds <= 120; seconds += 10) {
+                cookies = access(cookies, LOGIN.plusSeconds(seconds));
+            }
+
+            assertTrue(shortIdleBinding.resolve(cookies, LOGIN.plusSeconds(125)).isPresent(),
+                    "used every 10 seconds, the session outlives four idle timeouts of 30 seconds");
+        }
+
+        @Test
+        @DisplayName("Should end a session one idle timeout after its last recorded access when it is not used")
+        void shouldEndWhenNotUsed() {
+            Instant lastAccess = LOGIN.plusSeconds(20);
+            String cookies = access(sessionCookie, lastAccess);
+
+            assertTrue(shortIdleBinding.resolve(sessionCookie, LOGIN.plus(SHORT_IDLE_TIMEOUT)).isEmpty(),
+                    "never used, the session ends one idle timeout after the login");
+            assertTrue(shortIdleBinding.resolve(cookies, lastAccess.plus(SHORT_IDLE_TIMEOUT).minusSeconds(1)).isPresent(),
+                    "the recorded access moved the deadline past the one measured from the login");
+            assertTrue(shortIdleBinding.resolve(cookies, lastAccess.plus(SHORT_IDLE_TIMEOUT)).isEmpty(),
+                    "left alone, the session ends one idle timeout after the access");
+        }
+
+        @Test
+        @DisplayName("Should re-issue the activity cookie at half the idle timeout, not at the 60-second ceiling")
+        void shouldReissueAtHalfTheIdleTimeout() {
+            SessionRecord live = shortIdleBinding.resolve(sessionCookie, LOGIN).orElseThrow();
+
+            assertTrue(shortIdleBinding.recordAccess(live, sessionCookie, LOGIN.plusSeconds(14)).isEmpty(),
+                    "an access inside half the idle timeout writes no cookie");
+            assertEquals(1, shortIdleBinding.recordAccess(live, sessionCookie, LOGIN.plusSeconds(15)).size(),
+                    "an access half an idle timeout after the last one is recorded, before the deadline it moves");
+        }
+
+        @Test
+        @DisplayName("Should make the shortest accepted idle timeout of one second keepable by activity")
+        void shouldKeepAOneSecondIdleTimeoutAlive() {
+            CookieSessionBinding oneSecond =
+                    new CookieSessionBinding(codec, identitySalt(), activityCodec, Duration.ofSeconds(1));
+            String cookie = cookieHeaderOf(oneSecond.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN));
+            Instant access = LOGIN.plusMillis(500);
+            SessionRecord live = oneSecond.resolve(cookie, access).orElseThrow();
+
+            String setCookie = oneSecond.recordAccess(live, cookie, access).getFirst();
+            String cookies = cookie + "; " + setCookie.substring(0, setCookie.indexOf(';'));
+
+            assertTrue(oneSecond.resolve(cookie, LOGIN.plusSeconds(1)).isEmpty(), "without the access it ends");
+            assertTrue(oneSecond.resolve(cookies, LOGIN.plusMillis(1400)).isPresent(),
+                    "the access half a second in is recorded and carries the session past the login's deadline");
+            assertTrue(oneSecond.resolve(cookies, LOGIN.plusMillis(1500)).isEmpty());
         }
     }
 }

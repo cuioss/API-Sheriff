@@ -41,7 +41,8 @@
  * been accessed for {@code oidc.session.idle_timeout_seconds}. A stateless gateway can remember the
  * last access only in the browser, and it does so in the activity cookie, named after the session
  * cookie with the suffix {@code -activity}. A request let through on a session-protected route gets a
- * new activity cookie when the last one is at least a minute old. <strong>The session cookie is not
+ * new activity cookie when the last one is at least a minute old, or half the idle timeout where that
+ * is shorter, so an access can be recorded before every idle deadline. <strong>The session cookie is not
  * rewritten on access</strong>: the token-bearing value changes only at login, refresh and widening,
  * so recording an access cannot race a refresh, and the sealed session format is unchanged. An
  * activity cookie that is missing, unreadable, forged or bound to another session never extends a

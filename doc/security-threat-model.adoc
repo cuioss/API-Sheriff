@@ -2891,8 +2891,10 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   name, or bound to another session counts as absent, and the session is then measured from its
   login. Withholding or swapping the cookie can therefore only end a session sooner. No activity
   cookie extends the absolute lifetime, and an instant later than the gateway's clock counts as
-  now. A new activity cookie is written only when the last access is at least 60 seconds old, and
-  writing it never rewrites the session cookie.
+  now. A new activity cookie is written only when the last access is at least one re-issue interval
+  old -- the smaller of 60 seconds and half the idle timeout, so an access can be recorded before
+  every idle deadline -- and writing it never rewrites the session cookie. A session therefore ends
+  no later than the idle timeout after its last access, and at most one interval earlier.
 * *An expired server-mode session leaves memory.* A periodic task removes expired and idle sessions
   every 60 seconds whether or not anything looks them up.
 * *A cookie is cleared with the attributes it was set with.* Every clearing `Set-Cookie` the
@@ -2977,7 +2979,8 @@ user-info endpoint and the session-identity lookup do not (`InMemorySessionStore
 `SessionIdleTimeout`). An activity cookie that is missing, tampered with, sealed under another key,
 bound to another session, or that is a session cookie value never extends a session; a sealed
 session value and a sealed activity value are each refused by the other codec; an access inside the
-60 seconds writes no cookie, and an access never writes a session cookie
+re-issue interval writes no cookie, an idle timeout below 60 seconds is kept alive by accesses and
+ends without them, and an access never writes a session cookie
 (`SessionActivityCookieCodecTest`; `CookieKeyMaterialTest`, `ActivityKey`;
 `CookieSessionBindingTest`, `IdleDeadline`, `AccessNotification`). The sweep removes an expired
 session that is never looked up (`BffRuntimeProducerTest`,

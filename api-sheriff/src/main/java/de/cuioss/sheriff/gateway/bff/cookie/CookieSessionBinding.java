@@ -51,9 +51,14 @@ import org.jspecify.annotations.Nullable;
  * cookie unseals and is bound to this very session. When it is missing, unreadable, forged or bound to
  * another session, the last access is the session's <em>login instant</em>: an activity cookie can
  * only ever lengthen a session up to the idle timeout past a real access, and its absence can only
- * shorten it. {@link #recordAccess} returns a new activity cookie once the last access is at least
- * {@link #ACTIVITY_COOKIE_INTERVAL} old and nothing before that, so most responses carry no
- * {@code Set-Cookie}; the idle deadline is exact to within that interval. <strong>The session cookie
+ * shorten it. {@link #recordAccess} returns a new activity cookie once the last access is at least one
+ * <em>re-issue interval</em> old and nothing before that, so most responses carry no
+ * {@code Set-Cookie}. The re-issue interval is the smaller of {@link #ACTIVITY_COOKIE_INTERVAL} and
+ * half the idle timeout, so it is shorter than every idle timeout and an access can always be recorded
+ * before the deadline it is meant to move. The recorded last access is therefore at most one interval
+ * older than the real one: a session ends no later than the idle timeout after its last access and at
+ * most one interval earlier, and a session accessed at least once per idle timeout minus one interval
+ * stays alive up to its absolute lifetime. <strong>The session cookie
  * is never rewritten on access</strong> — the idle touch writes the activity cookie alone, so it cannot
  * race a refresh for the token-bearing cookie, and the sealed session payload gains no field. The
  * absolute lifetime is enforced against the sealed login instant as before; no activity cookie
@@ -100,10 +105,12 @@ import org.jspecify.annotations.Nullable;
 public final class CookieSessionBinding implements SessionBinding {
 
     /**
-     * The shortest interval between two activity cookies of one session: a new one is issued only when
-     * the last access is at least this old. It bounds the {@code Set-Cookie} traffic and the seal
-     * count of the activity key to one per session per interval, at the price of an idle deadline that
-     * is exact to within the interval. Not configurable.
+     * The upper bound of the re-issue interval — the shortest distance between two activity cookies of
+     * one session. A new activity cookie is issued only when the last access is at least one re-issue
+     * interval old, which bounds the {@code Set-Cookie} traffic and the seal count of the activity key
+     * to one per session per interval, at the price of an idle deadline that can fall up to one
+     * interval early. The interval in force is this value for an idle timeout of at least twice it,
+     * and half the idle timeout below that, so it never reaches the idle timeout. Not configurable.
      */
     public static final Duration ACTIVITY_COOKIE_INTERVAL = Duration.ofSeconds(60);
 
@@ -124,6 +131,12 @@ public final class CookieSessionBinding implements SessionBinding {
     private final byte[] identitySalt;
     private final SessionActivityCookieCodec activityCodec;
     private final Duration idleTimeout;
+    /**
+     * The re-issue interval in force: the smaller of {@link #ACTIVITY_COOKIE_INTERVAL} and half the
+     * idle timeout. Being shorter than the idle timeout is what lets an access be recorded before the
+     * idle deadline it moves, for every idle timeout.
+     */
+    private final Duration activityCookieInterval;
 
     /**
      * Assembles the cookie-mode binding over its sealing codec and its activity-cookie codec.
@@ -147,6 +160,10 @@ public final class CookieSessionBinding implements SessionBinding {
             throw new IllegalArgumentException("idleTimeout must be positive, but was " + idleTimeout);
         }
         this.idleTimeout = idleTimeout;
+        Duration halfIdleTimeout = idleTimeout.dividedBy(2);
+        this.activityCookieInterval = halfIdleTimeout.compareTo(ACTIVITY_COOKIE_INTERVAL) < 0
+                ? halfIdleTimeout
+                : ACTIVITY_COOKIE_INTERVAL;
     }
 
     @Override
@@ -256,8 +273,9 @@ public final class CookieSessionBinding implements SessionBinding {
     }
 
     /**
-     * Returns a new activity cookie when the session's last access is at least
-     * {@link #ACTIVITY_COOKIE_INTERVAL} old, and nothing otherwise.
+     * Returns a new activity cookie when the session's last access is at least one re-issue interval
+     * old — the smaller of {@link #ACTIVITY_COOKIE_INTERVAL} and half the idle timeout — and nothing
+     * otherwise.
      * <p>
      * It never returns a session cookie: the token-bearing value is left exactly as the browser holds
      * it. The activity cookie is bound to {@code session}'s derived identity and carries {@code now} as
@@ -270,14 +288,14 @@ public final class CookieSessionBinding implements SessionBinding {
      * @param cookieHeader the raw request {@code Cookie} header value the session was resolved from
      * @param now          the instant of the access
      * @return the single activity {@code Set-Cookie}, or an empty list while the last access is younger
-     *         than the interval
+     *         than the re-issue interval
      */
     @Override
     public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
         Objects.requireNonNull(session, "session");
         Objects.requireNonNull(now, "now");
         Instant lastAccess = lastAccess(session, cookieHeader, now);
-        if (Duration.between(lastAccess, now).compareTo(ACTIVITY_COOKIE_INTERVAL) < 0) {
+        if (Duration.between(lastAccess, now).compareTo(activityCookieInterval) < 0) {
             return List.of();
         }
         String sealedActivity = activityCodec.seal(session.sessionId(), now);

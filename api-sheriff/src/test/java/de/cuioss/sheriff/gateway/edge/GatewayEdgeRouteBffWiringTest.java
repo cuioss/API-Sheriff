@@ -171,8 +171,6 @@ class GatewayEdgeRouteBffWiringTest {
      * absolute lifetime is the only deadline in play unless a case sets its own.
      */
     static final Duration NO_IDLE_EFFECT = Duration.ofHours(8);
-    /** The login-binding cookie, which the gateway owns beside the session and logout-state cookies. */
-    private static final String BINDING_COOKIE_NAME = "__Host-sheriff-binding";
 
     /**
      * A fixture store: sixteen sessions, no per-subject bound a fixture reaches, and nobody told of
@@ -189,7 +187,8 @@ class GatewayEdgeRouteBffWiringTest {
      * cookie.
      */
     static Set<String> gatewayCookieNames(SessionBinding binding) {
-        List<String> names = new ArrayList<>(List.of(BINDING_COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME));
+        List<String> names = new ArrayList<>(
+                List.of(BindingCookieCodec.COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME));
         binding.clearingSetCookieHeaders().forEach(header -> names.add(header.substring(0, header.indexOf('='))));
         return Set.copyOf(names);
     }
