@@ -176,8 +176,8 @@ A stateless gateway can keep the time of the last request only in the browser. I
 activity cookie and not in the sealed session, for three reasons: an access then never re-seals the
 tokens, it never races a token refresh for the session cookie, and the sealed session's field set
 and format version stay as they are, so no session ends at an upgrade on its account. The gateway
-writes the activity cookie at most once every 60 seconds for one session, so the idle deadline is
-exact to within that interval.
+writes the activity cookie at most once per interval for one session -- 60 seconds, or half the idle
+timeout where that is shorter -- so the idle deadline is exact to within that interval.
 
 The activity cookie can only shorten a session. One that is missing, unreadable or bound to
 another session is ignored, and the idle timeout is then measured from the login

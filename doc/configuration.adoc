@@ -2704,8 +2704,9 @@ See link:#_oidc_client_authentication[Client authentication].
   *Server mode* keeps the last access in the session store. *Cookie mode* keeps it in the activity
   cookie -- `<cookie_name>-activity`, `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, with `Max-Age`
   set to the session's remaining absolute lifetime -- which the gateway sets on a session-route
-  response at most once every 60 seconds for one session. The recorded access can therefore be up to
-  60 seconds older than the latest request, and the idle deadline is exact to within that interval.
+  response at most once per interval for one session: every 60 seconds, or every half idle timeout
+  where that is shorter. The recorded access can therefore be up to one interval older than the
+  latest request, and the idle deadline is exact to within that interval.
   The session cookie itself is not set again on an access. Without a readable activity cookie the
   idle timeout is measured from the login. See
   link:user/bff-cookie.adoc#idle-timeout[Cookie-Based BFF -- Idle timeout and the activity cookie].

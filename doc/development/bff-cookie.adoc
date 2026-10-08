@@ -123,8 +123,8 @@ version is this cookie's own counter (`SessionActivityCookieCodec.FORMAT_VERSION
 and is independent of the sealed session's.
 
 *Its own key.* `CookieKeyMaterial.activityCodec(...)` derives a key for this cookie alone from the
-sealing key. The reason is the seal count: the activity cookie is sealed up to once a minute per
-session, and that cadence must not count against the random-nonce budget of the key that seals
+sealing key. The reason is the seal count: the activity cookie is sealed up to once per re-issue
+interval per session, and that cadence must not count against the random-nonce budget of the key that seals
 tokens. A value sealed by either codec is refused by the other. Both keys go when
 `encryption_key` is replaced; the operator rule that follows from the cadence is in
 link:../user/bff-cookie.adoc#key-rotation[the operator guide].
@@ -142,10 +142,11 @@ and its absence can only shorten the session. A last access in the future is cla
 reference instant, so a gateway whose clock runs ahead cannot hand out idle time. Every rejection
 is logged at `DEBUG` only: any client can send a junk activity cookie on any request.
 
-*The 60-second rule.* `CookieSessionBinding.recordAccess` returns a new activity cookie only when
-the last access is at least `ACTIVITY_COOKIE_INTERVAL` (60 seconds) old, and nothing before that.
-Most responses therefore carry no `Set-Cookie`, and the idle deadline is exact to within that
-interval. The interval is not configurable. `recordAccess` never returns the session cookie: an
+*The re-issue interval.* `CookieSessionBinding.recordAccess` returns a new activity cookie only when
+the last access is at least one interval old, and nothing before that. The interval is the smaller
+of `ACTIVITY_COOKIE_INTERVAL` (60 seconds) and half the idle timeout, so an idle timeout below
+60 seconds can still be kept alive by accesses. Most responses therefore carry no `Set-Cookie`, and
+the idle deadline is exact to within that interval. The interval has no key of its own. `recordAccess` never returns the session cookie: an
 access does not re-seal the tokens and cannot race a refresh for the token-bearing cookie.
 
 *Clearing.* `clearingSetCookieHeaders()` returns two values, one per cookie. Every caller that ends
@@ -443,7 +444,7 @@ Unit-test entry points:
 * `CookieSessionBindingTest` -- bind/resolve/persist, the server-side TTL enforcement, the identity
   properties (stability across a re-seal, uniqueness within a clock second), the idle deadline
   (a missing, tampered, other-session or other-key activity cookie never extends a session), the
-  60-second rule of `recordAccess`, and the two clearing cookies.
+  re-issue interval of `recordAccess`, and the two clearing cookies.
 * `SessionActivityCookieCodecTest` -- the activity cookie: round trip, the binding to the session
   identity, fail-closed unsealing, separation from the sealed session cookie in both directions,
   the exact `Set-Cookie` and the 72-character value.

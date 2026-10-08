@@ -143,7 +143,9 @@ days = 4 294 967 296 / (1 440 x peak concurrent sessions)
 |===
 
 Compute your own figure from the formula with your peak, counted across all replicas that share the
-key. Replacing the key resets the count for both keys, and it ends every session, as described
+key. The 1 440 holds for an `idle_timeout_seconds` of 120 or more, the default included. Below 120
+the gateway seals the activity cookie once every half idle timeout, so use
+`172 800 / idle_timeout_seconds` in its place: 5 760 seals per session per day at 30 seconds. Replacing the key resets the count for both keys, and it ends every session, as described
 above. A *generated* key needs no
 schedule beyond this: it is replaced at every restart, so restart the gateway within the same
 interval.
@@ -664,9 +666,9 @@ in a second cookie, the *activity cookie*.
   belongs to. It carries no token. Its value is always 72 characters.
 
 | When it is set
-| On the response to a request let through on a session route, *at most once every 60 seconds* for
-  one session. It is first set 60 seconds or more after the login; until then the login itself is
-  the last request.
+| On the response to a request let through on a session route, *at most once per interval* for one
+  session. The interval is 60 seconds, or half the idle timeout where that is shorter. The cookie is
+  first set one interval or more after the login; until then the login itself is the last request.
 
 | When it is cleared
 | At logout, and whenever the gateway ends the session: both cookies are cleared together.
@@ -675,9 +677,11 @@ in a second cookie, the *activity cookie*.
 *The session cookie is not set again on a request.* Only a login, a token refresh and a widening
 write the session cookie. An ordinary response carries at most the small activity cookie.
 
-*The deadline is exact to within a minute.* Because the cookie is written at most once every 60
-seconds, the recorded time can be up to 60 seconds older than the latest request. With an idle
-timeout of 1800 seconds a session ends between 1740 and 1800 seconds after its last request.
+*The deadline is exact to within one interval.* Because the cookie is written at most once per
+interval, the recorded time can be up to one interval older than the latest request. With an idle
+timeout of 1800 seconds the interval is 60 seconds and a session ends between 1740 and 1800 seconds
+after its last request. With an idle timeout of 30 seconds the interval is 15 seconds and a session
+ends between 15 and 30 seconds after its last request.
 
 *The cookie can only shorten a session.* A missing, altered or unreadable activity cookie, and one
 that belongs to another session, is ignored, and the idle timeout is then measured from the login.
