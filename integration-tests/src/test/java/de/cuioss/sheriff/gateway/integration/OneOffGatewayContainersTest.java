@@ -367,7 +367,7 @@ class OneOffGatewayContainersTest {
 
         /** How a source starts a gateway through the harness, or describes one for it to start. */
         private static final List<String> GATEWAY_STARTS =
-                List.of("startGateway(", "startBffGateway(", "new BffGateway(");
+                List.of("startGateway(", "startBffGateway(", "startBffGatewayWithSigningKeys(", "new BffGateway(");
 
         /** The harness and this test: they define and exercise the start methods and start no gateway. */
         private static final Set<String> NOT_A_SUITE =

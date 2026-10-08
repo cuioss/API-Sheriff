@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.sleepSeconds;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.dockerQuietly;
@@ -184,10 +185,20 @@ class BffSessionIdleTimeoutIT {
     private static final String DESCRIPTOR_MODE = "rw-r--r--";
 
     /**
+     * The fixed host ports the two gateways publish their application listener on, on every interface.
+     * Above the range the compose stack publishes, and listed with every other test-started gateway's
+     * port in {@code doc/development/integration-test-topology.adoc}, which also records the port
+     * numbers that must not be handed out again.
+     */
+    private static final int SERVER_MODE_APPLICATION_PORT = 10469;
+    private static final int COOKIE_MODE_APPLICATION_PORT = 10470;
+
+    /**
      * The server-mode gateway: the committed descriptor of the {@code api-sheriff-passthrough-empty}
      * instance — server mode, no passthrough listener — retargeted at this gateway's port.
      */
-    private static final Instance SERVER_MODE = new Instance("sheriff-idle-timeout-server", 10457,
+    private static final Instance SERVER_MODE = new Instance("sheriff-idle-timeout-server",
+            SERVER_MODE_APPLICATION_PORT,
             DOCKER.resolve(Path.of("sheriff-config-passthrough-empty", "gateway.yaml")),
             BffKeycloakLoginFlow.GATEWAY_ORIGIN, "server", SERVER_IDLE_SECONDS,
             List.of("OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem"));
@@ -197,7 +208,8 @@ class BffSessionIdleTimeoutIT {
      * cookie mode, refresh off, so the session cookie is never re-sealed under the test — retargeted at
      * this gateway's port. The sealing key is a fixed test value of this suite alone.
      */
-    private static final Instance COOKIE_MODE = new Instance("sheriff-idle-timeout-cookie", 10458,
+    private static final Instance COOKIE_MODE = new Instance("sheriff-idle-timeout-cookie",
+            COOKIE_MODE_APPLICATION_PORT,
             DOCKER.resolve(Path.of("sheriff-config-cookie", "gateway.yaml")),
             BffKeycloakLoginFlow.COOKIE_GATEWAY_ORIGIN, "cookie", COOKIE_IDLE_SECONDS,
             List.of("OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem",
@@ -208,7 +220,8 @@ class BffSessionIdleTimeoutIT {
      * One one-off gateway of this suite.
      *
      * @param name               the container name and network alias
-     * @param port               the fixed loopback host port of the application listener
+     * @param port               the fixed host port of the application listener, published on every
+     *                           interface
      * @param sourceDescriptor   the committed descriptor the gateway's own is derived from
      * @param sourceOrigin       the origin the committed descriptor names, which the derivation
      *                           retargets
@@ -361,6 +374,7 @@ class BffSessionIdleTimeoutIT {
         awaitReadiness(instance.name(), "https://localhost:" + publishedPort(instance.name(), 9000),
                 response -> response.statusCode() == OK, BOOT_TIMEOUT_SECONDS,
                 "the gateway " + instance.name() + " to report readiness UP");
+        assertApplicationPortAnswers(instance.name(), instance.origin());
     }
 
     private static Response request(Instance instance, Map<String, String> cookies) {

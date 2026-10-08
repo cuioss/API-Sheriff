@@ -529,6 +529,10 @@ sources assign -- so the table is a test input, and a change to it is not a docu
 | `10467`, `10468`
 | `jwks-egress-mismatch-gateway-<suffix>` and its control, `jwks-egress-mismatch-control-<suffix>`
 | `JwksEgressMismatchIT`, which runs the two side by side
+
+| `10469`, `10470`
+| `sheriff-idle-timeout-server` and `sheriff-idle-timeout-cookie`
+| `BffSessionIdleTimeoutIT`, one gateway per test, each with the signing-key directory mounted
 |===
 // end::test-started-host-ports[]
 
