@@ -42,10 +42,15 @@ import org.junit.jupiter.api.function.Executable;
  * It holds two properties:
  * <ul>
  *   <li><strong>The reference is pinned.</strong> It has the shape
- *       {@code name:tag@sha256:<64 hex>} — an exact release tag <em>and</em> the digest. A tag alone
- *       can be moved to another image, so a reference that loses its digest fails here. This property
- *       is held for two references: {@link StubIdentityProviderRig#IMAGE} and the identity-provider
- *       proxy of the TLS-relaxation rig, {@link BffTlsRelaxationIT#PROXY_IMAGE}.</li>
+ *       {@code name:tag@sha256:<64 hex>} — a versioned release tag <em>and</em> the digest. The tag
+ *       starts with a dotted numeric version of at least two components (major.minor) and may carry
+ *       a suffix, so a floating tag name such as {@code latest} fails here. A tag alone can be moved
+ *       to another image, so a reference that loses its digest fails here as well; what the suite
+ *       runs is fixed by the digest. The pattern holds no more than that: a major.minor tag names a
+ *       release line, not one release, and the suffix after the version is not examined. This
+ *       property is held for two references: {@link StubIdentityProviderRig#IMAGE} and the
+ *       identity-provider proxy of the TLS-relaxation rig,
+ *       {@link BffTlsRelaxationIT#PROXY_IMAGE}.</li>
  *   <li><strong>The stub image stays a test fixture.</strong> Its name appears in neither
  *       {@code integration-tests/docker-compose.yml}, nor {@code api-sheriff/pom.xml}, nor any file
  *       below {@code api-sheriff/src/main/docker/} — so it can reach neither the stack every other
@@ -57,8 +62,9 @@ import org.junit.jupiter.api.function.Executable;
  * the pinned reference pulls is proven by the suite that starts the image, not here.
  * <p>
  * <strong>Anti-vacuity.</strong> The shape pattern is shown to refuse, for every pinned reference, the
- * same reference without its digest, with a shortened digest and without a tag, so a pattern loosened
- * to accept anything fails; the set of pinned references is asserted to be non-empty first. The
+ * same reference without its digest, with a shortened digest, without a tag and with its tag replaced
+ * by the floating name {@code latest}, so a pattern loosened to accept anything, or any tag name,
+ * fails; the set of pinned references is asserted to be non-empty first. The
  * absence scan is shown to find the name in the rig's own source with the very predicate it applies
  * to the production inputs, and each production input must exist and be non-empty, so a scan that
  * reads nothing fails instead of reporting absence.
@@ -73,11 +79,21 @@ class StubIdentityProviderWiringTest {
     /** The module base directory (surefire runs with the module root as the working directory). */
     private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
-    /** An image name, an exact tag and the sha256 digest of the image, in that order. */
+    /**
+     * An image name, a versioned release tag and the sha256 digest of the image, in that order. The
+     * tag is a dotted numeric version of at least two components (major.minor), optionally followed
+     * by a suffix that a separator introduces; a tag that does not start with such a version does not
+     * match.
+     */
     private static final Pattern PINNED_REFERENCE = Pattern.compile(
-            "[a-z0-9]+(?:[._/-][a-z0-9]+)*:[A-Za-z0-9_][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}");
+            "[a-z0-9]+(?:[._/-][a-z0-9]+)*"
+                    + ":[0-9]+(?:\\.[0-9]+)+(?:[._-][A-Za-z0-9_.-]+)?"
+                    + "@sha256:[0-9a-f]{64}");
 
     private static final String DIGEST_SEPARATOR = "@sha256:";
+
+    /** A floating tag name: it names whatever image was published last, and no release. */
+    private static final String FLOATING_TAG = "latest";
 
     /** The image references held to the pinned shape, each with the constant that declares it. */
     private static final List<PinnedImage> PINNED_IMAGES = List.of(
@@ -97,18 +113,21 @@ class StubIdentityProviderWiringTest {
     private static final Path PRODUCTION_DOCKER = Path.of("api-sheriff", "src", "main", "docker");
 
     @Test
-    @DisplayName("every pinned image reference is an exact tag together with a sha256 digest")
+    @DisplayName("every pinned image reference is a versioned release tag together with a sha256 digest")
     void imageReferencesArePinnedByTagAndDigest() {
         assertFalse(PINNED_IMAGES.isEmpty(), "no image reference is held to the pinned shape");
 
         assertAll("image references pinned by tag and digest", PINNED_IMAGES.stream()
                 .<Executable>map(image -> () -> assertTrue(PINNED_REFERENCE.matcher(image.reference()).matches(),
-                        () -> image.declaredIn() + " must have the shape name:tag@sha256:<64 hex>, so a "
-                                + "moved tag cannot change what the suite runs; found " + image.reference())));
+                        () -> image.declaredIn() + " must have the shape name:tag@sha256:<64 hex>, with a "
+                                + "tag that starts with a dotted numeric version of at least major.minor: "
+                                + "the digest fixes what the suite runs, and a floating tag name beside it "
+                                + "names no release; found " + image.reference())));
     }
 
     @Test
-    @DisplayName("control: a reference without its digest, with a shortened digest or without a tag is refused")
+    @DisplayName("control: a reference without its digest, with a shortened digest, without a tag or under "
+            + "the floating tag latest is refused")
     void unpinnedReferencesAreRefused() {
         assertFalse(PINNED_IMAGES.isEmpty(), "no image reference is held to the pinned shape");
 
@@ -120,6 +139,7 @@ class StubIdentityProviderWiringTest {
             String withoutDigest = reference.substring(0, digestAt);
             String shortenedDigest = reference.substring(0, reference.length() - 1);
             String withoutTag = imageName(reference) + reference.substring(digestAt);
+            String underFloatingTag = imageName(reference) + ":" + FLOATING_TAG + reference.substring(digestAt);
 
             assertAll(image.declaredIn() + ": references that are not pinned by tag and digest",
                     () -> assertFalse(PINNED_REFERENCE.matcher(withoutDigest).matches(),
@@ -127,7 +147,10 @@ class StubIdentityProviderWiringTest {
                     () -> assertFalse(PINNED_REFERENCE.matcher(shortenedDigest).matches(),
                             "a digest shorter than 64 hex digits must be refused: " + shortenedDigest),
                     () -> assertFalse(PINNED_REFERENCE.matcher(withoutTag).matches(),
-                            "a reference without a tag must be refused: " + withoutTag));
+                            "a reference without a tag must be refused: " + withoutTag),
+                    () -> assertFalse(PINNED_REFERENCE.matcher(underFloatingTag).matches(),
+                            "a reference under a floating tag name must be refused, digest or not: "
+                                    + underFloatingTag));
         }
     }
 
