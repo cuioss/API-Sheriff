@@ -25,9 +25,8 @@
  * shipped by {@code token-sheriff-validation-quarkus}.
  * <p>
  * <strong>Framework edge.</strong> This package holds CDI wiring ({@code jakarta.enterprise} /
- * {@code jakarta.inject}) and is therefore part of the framework edge, deliberately outside the
- * ADR-0005 framework-agnostic arch-gate rule set (which covers {@code config.model},
- * {@code config.validation}, {@code events}, {@code forward}, and {@code pipeline} only).
+ * {@code jakarta.inject}) and is therefore part of the framework edge. No package rule forbids
+ * that: the framework-free gate covers the pre-boot configuration packages only (ADR-0062).
  *
  * @author API Sheriff Team
  * @since 1.0

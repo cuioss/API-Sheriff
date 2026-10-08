@@ -39,12 +39,12 @@ import org.jspecify.annotations.Nullable;
  * The immutable, boot-time-compiled runtime for one route. The request pipeline consumes
  * these already-resolved values on the hot path and never re-derives inheritance.
  * <p>
- * <strong>Framework-coupled by design (operator resolution 2026-07-19).</strong> Unlike the
- * agnostic core, this type holds the shared data-plane Vert.x {@link HttpClient} reference and
- * the per-route SmallRye Fault-Tolerance {@link Guard} directly — there is no separate
- * {@code edge.RouteBinding}. Consequently the {@code routing} package is excluded from the
- * ADR-0005 framework-agnostic arch-gate. The client and guard are shared instances handed in
- * by the {@code RouteRuntimeAssembler}; this type holds references, it does not construct them.
+ * <strong>Framework-coupled by design.</strong> This type holds the shared data-plane Vert.x
+ * {@link HttpClient} reference and the per-route SmallRye Fault-Tolerance {@link Guard}
+ * directly — there is no separate {@code edge.RouteBinding}. No package rule forbids that: the
+ * framework-free gate covers the pre-boot configuration packages only (ADR-0062). The client
+ * and guard are shared instances handed in by the {@code RouteRuntimeAssembler}; this type
+ * holds references, it does not construct them.
  *
  * @author API Sheriff Team
  * @since 1.0

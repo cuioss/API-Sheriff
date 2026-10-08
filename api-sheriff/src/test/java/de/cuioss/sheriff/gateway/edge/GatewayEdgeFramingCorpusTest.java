@@ -237,7 +237,8 @@ class GatewayEdgeFramingCorpusTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),
                 vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
                 new SheriffMetrics(registry), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                GatewayEdgeRouteBffWiringTest.gatewayJson());
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
         HttpServer frontServer = Awaits.connect(

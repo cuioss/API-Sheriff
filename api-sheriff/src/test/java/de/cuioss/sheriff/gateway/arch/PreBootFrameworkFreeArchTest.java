@@ -29,47 +29,53 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * ADR-0005 framework-agnostic package-boundary gate. Asserts that the agnostic
- * core packages ({@code config.boot}, {@code config.model}, {@code config.validation},
- * {@code events}, {@code forward}, {@code pipeline}) carry no framework imports, so the
- * request pipeline stays portable across the framework edge and the boot configuration
- * pipeline the offline configuration check shares with the boot stays runnable without it.
+ * Pre-boot framework-free gate (ADR-0062). Asserts that the five pre-boot configuration packages
+ * ({@code config.boot}, {@code config.load}, {@code config.model}, {@code config.validation},
+ * {@code config.topology}) depend on no framework package.
  * <p>
- * The {@code routing} package is deliberately <em>excluded</em> from the agnostic set
- * (operator resolution 2026-07-19): {@code routing.RouteRuntime} holds the shared Vert.x
- * {@code HttpClient} reference and the per-route SmallRye Fault-Tolerance guard by design,
- * so it is framework-coupled and must NOT be asserted framework-agnostic here.
+ * The reason is not portability. The offline {@code --validate-config} check runs these packages
+ * before the framework starts (ADR-0061), and a framework type reached from them would put framework
+ * code on a path that must start nothing.
  * <p>
- * This is a plain JUnit 5 test (no ArchUnit {@code @AnalyzeClasses} runner) so it runs in
- * both {@code test} and {@code verify -Ppre-commit}, wiring the boundary into the quality gate.
+ * <strong>{@code events}, {@code forward} and {@code pipeline} are deliberately not covered.</strong>
+ * ADR-0062 retires the framework-agnostic core rule those three packages were held to; they are not
+ * on the pre-boot path and may use platform types. Adding them back here would re-enact a rule that
+ * no longer exists.
+ * <p>
+ * The gate checks the dependencies of the five packages only. A class outside them that the pre-boot
+ * path calls is not covered here; the integration test that runs the flag on the built image is what
+ * observes that case.
+ * <p>
+ * This is a plain JUnit 5 test (no ArchUnit {@code @AnalyzeClasses} runner) so it runs in both
+ * {@code test} and {@code verify -Ppre-commit}, wiring the boundary into the quality gate.
  *
+ * @author API Sheriff Team
  * @since 1.0
  */
-class FrameworkAgnosticArchTest {
+class PreBootFrameworkFreeArchTest {
 
     private static final String BASE_PACKAGE = "de.cuioss.sheriff.gateway";
 
     /**
-     * The agnostic core packages the ADR-0005 gate protects. {@code routing} is intentionally
-     * absent — see the class Javadoc.
+     * The pre-boot configuration packages the gate protects: everything the offline configuration
+     * check runs before the framework starts. See the class Javadoc for the packages that are
+     * intentionally absent.
      */
-    private static final String[] AGNOSTIC_PACKAGES = {
+    private static final String[] PRE_BOOT_PACKAGES = {
             "de.cuioss.sheriff.gateway.config.boot..",
+            "de.cuioss.sheriff.gateway.config.load..",
             "de.cuioss.sheriff.gateway.config.model..",
             "de.cuioss.sheriff.gateway.config.validation..",
-            "de.cuioss.sheriff.gateway.events..",
-            "de.cuioss.sheriff.gateway.forward..",
-            "de.cuioss.sheriff.gateway.pipeline.."
+            "de.cuioss.sheriff.gateway.config.topology.."
     };
 
     /**
-     * Framework packages that an agnostic-core class must never depend on.
+     * Framework packages that a pre-boot class must never depend on.
      * <p>
-     * {@code io.smallrye..} is listed because the class Javadoc names the per-route SmallRye
-     * Fault-Tolerance guard as precisely the coupling that keeps {@code routing} out of the agnostic
-     * set — leaving it unlisted would let an agnostic-core class acquire that same coupling unchecked.
-     * {@code io.netty..} and {@code org.jboss..} are listed for the same reason: they arrive
-     * transitively with the Quarkus/Vert.x stack and are framework by any reading of ADR-0005.
+     * {@code io.smallrye..} is listed because SmallRye Config and SmallRye Fault-Tolerance are exactly
+     * the platform mechanisms that do not exist before the framework starts. {@code io.netty..} and
+     * {@code org.jboss..} are listed for the same reason: they arrive transitively with the
+     * Quarkus/Vert.x stack and none of them may be reached on a path that must start nothing.
      */
     private static final String[] FRAMEWORK_PACKAGES = {
             "io.quarkus..",
@@ -88,39 +94,41 @@ class FrameworkAgnosticArchTest {
             .importPackages(BASE_PACKAGE);
 
     @Test
-    @DisplayName("ADR-0005: agnostic core packages must not depend on framework packages")
-    void agnosticPackagesMustNotDependOnFrameworks() {
+    @DisplayName("Pre-boot configuration packages must not depend on framework packages")
+    void preBootPackagesMustNotDependOnFrameworks() {
         ArchRule rule = noClasses()
-                .that().resideInAnyPackage(AGNOSTIC_PACKAGES)
+                .that().resideInAnyPackage(PRE_BOOT_PACKAGES)
                 .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
-                .because("ADR-0005 requires config.boot, config.model, config.validation, events, forward, "
-                        + "and pipeline to remain framework-agnostic (routing is excluded by design)");
+                .because("the offline --validate-config check runs config.boot, config.load, config.model, "
+                        + "config.validation and config.topology before the framework starts (ADR-0061), so "
+                        + "a framework type reached from them puts framework code on a path that must start "
+                        + "nothing (ADR-0062)");
 
         rule.check(PRODUCTION_CLASSES);
     }
 
     /**
-     * Guards the guard: every entry in {@link #AGNOSTIC_PACKAGES} must actually resolve to at least
+     * Guards the guard: every entry in {@link #PRE_BOOT_PACKAGES} must actually resolve to at least
      * one production class.
      * <p>
-     * Without this, a renamed package or a single misspelled entry silently reduces the rule above to
-     * a no-op — it would match zero classes, find zero violations, and stay green while protecting
-     * nothing. The negative control below cannot catch that: it exercises its own hardcoded package,
-     * so it proves the ArchUnit mechanism works while saying nothing about whether the real package
-     * list still resolves. This test is what makes an empty match loud, and it names the offending
-     * entry rather than failing generically.
+     * Without this, a renamed package or a single misspelled entry silently narrows the rule above —
+     * that entry would match zero classes, contribute zero violations, and the rule would stay green
+     * while one pre-boot package went unprotected. The negative control below cannot catch that: it
+     * exercises its own hardcoded package, so it proves the ArchUnit mechanism works while saying
+     * nothing about whether the real package list still resolves. This test is what makes an empty
+     * match loud, and it names the offending entry rather than failing generically.
      */
     @Test
-    @DisplayName("ADR-0005 gate is non-vacuous: every protected package resolves to at least one class")
-    void everyAgnosticPackageResolvesToClasses() {
-        for (String agnosticPackage : AGNOSTIC_PACKAGES) {
-            long matched = countClassesIn(agnosticPackage);
+    @DisplayName("Pre-boot gate is non-vacuous: every protected package resolves to at least one class")
+    void everyPreBootPackageResolvesToClasses() {
+        for (String preBootPackage : PRE_BOOT_PACKAGES) {
+            long matched = countClassesIn(preBootPackage);
 
             assertTrue(matched > 0,
-                    () -> "ADR-0005 protected package '" + agnosticPackage + "' resolved to NO "
-                            + "production classes — the framework-agnostic rule above is silently "
-                            + "protecting nothing. Fix the entry in AGNOSTIC_PACKAGES, or remove it "
-                            + "deliberately if the package was retired.");
+                    () -> "Pre-boot package '" + preBootPackage + "' resolved to NO production classes "
+                            + "— the framework-free rule above is silently not protecting it. Fix the "
+                            + "entry in PRE_BOOT_PACKAGES, or remove it deliberately if the package was "
+                            + "retired.");
         }
     }
 
@@ -155,7 +163,7 @@ class FrameworkAgnosticArchTest {
      * exception, and the test would go green while proving nothing.
      */
     @Test
-    @DisplayName("ADR-0005 gate detects a deliberate framework dependency (negative control)")
+    @DisplayName("Pre-boot gate detects a deliberate framework dependency (negative control)")
     void gateFailsOnFrameworkDependency() {
         ArchRule ruleAgainstFrameworkCoupledPackage = noClasses()
                 .that().resideInAPackage("de.cuioss.sheriff.gateway.quarkus..")

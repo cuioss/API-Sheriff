@@ -67,8 +67,10 @@ import org.jspecify.annotations.Nullable;
  * order (loader, then topology), from every stage that ran — including when a later stage
  * failed — as {@link Outcome#defaulted()}.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> The class carries no framework import:
- * the {@link EnvSecretResolver} is constructor-injected, and the one framework value the run
+ * <strong>Pre-boot seam (ADR-0061, ADR-0062).</strong> The class carries no framework
+ * dependency, because the offline configuration check runs it before the framework starts;
+ * {@code PreBootFrameworkFreeArchTest} enforces that for this package. The
+ * {@link EnvSecretResolver} is constructor-injected, and the one framework value the run
  * needs — the HTTP request-body ceiling ({@code quarkus.http.limits.max-body-size}) — is passed
  * in by the caller, which owns the framework-key knowledge (ADR-0023). A caller that has no such
  * ceiling passes {@code null}; the check is then reported as not checked rather than passed.

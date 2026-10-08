@@ -32,7 +32,7 @@ import jakarta.inject.Inject;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The framework-bound metrics adapter (ADR-0005 seam) that surfaces the gateway's request,
+ * The framework-bound metrics adapter that surfaces the gateway's request,
  * error, security, and upstream signals as Micrometer meters on the management port, exposed
  * as Prometheus data via {@code quarkus-micrometer-registry-prometheus}.
  * <p>

@@ -56,7 +56,7 @@ import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.bff.runtime.JsonWriter;
+import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
@@ -308,6 +308,7 @@ public class GatewayEdgeRoute {
     private final ReservedPathRegistry reservedPathRegistry;
     private final BffRuntime bffRuntime;
     private final PortalEndpoint portalEndpoint;
+    private final GatewayJson gatewayJson;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
@@ -381,15 +382,18 @@ public class GatewayEdgeRoute {
      *                              OIDC reserved paths and before route selection; the
      *                              {@linkplain PortalEndpoint#inert() inert} endpoint (no
      *                              {@code portal} block) never matches and leaves the edge unchanged
+     * @param gatewayJson           the serializer the RFC 9457 problem body is rendered through
      */
     @Inject
     public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> tokenValidator, Vertx vertx,
             @VirtualThreads ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
-            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint) {
+            EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
+            GatewayJson gatewayJson) {
         this(routeTable, gatewayConfig, tokenValidator, vertx, virtualThreadExecutor, hardening, sheriffMetrics,
-                bffRuntime, egressTrustProfileResolver, portalEndpoint, WebSocketRelayStage.RelayObserver.NO_OP);
+                bffRuntime, egressTrustProfileResolver, portalEndpoint, gatewayJson,
+                WebSocketRelayStage.RelayObserver.NO_OP);
     }
 
     /**
@@ -412,6 +416,7 @@ public class GatewayEdgeRoute {
      * @param bffRuntime                 as for the CDI constructor
      * @param egressTrustProfileResolver as for the CDI constructor
      * @param portalEndpoint             as for the CDI constructor
+     * @param gatewayJson                as for the CDI constructor
      * @param relayObserver              the observer every WebSocket relay this edge builds reports to
      */
     // The parameter list mirrors the CDI constructor's by construction, plus the observer; a parameter
@@ -421,12 +426,13 @@ public class GatewayEdgeRoute {
             Vertx vertx, ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
-            WebSocketRelayStage.RelayObserver relayObserver) {
+            GatewayJson gatewayJson, WebSocketRelayStage.RelayObserver relayObserver) {
         this.virtualThreadExecutor = virtualThreadExecutor;
         this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
         this.bffRuntime = bffRuntime;
         this.portalEndpoint = Objects.requireNonNull(portalEndpoint, "portalEndpoint");
+        this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
         this.admission = new Semaphore(hardening.admissionCap());
         this.webSocketRelayAdmission = new Semaphore(hardening.webSocketRelayCap());
 
@@ -1899,7 +1905,7 @@ public class GatewayEdgeRoute {
         if (answeredWithErrorPage(ctx, request, classification, status, List.of())) {
             return;
         }
-        String body = problemBody(type, title, status, problemExtensions);
+        String body = problemBody(gatewayJson, type, title, status, problemExtensions);
         Map<String, String> responseHeaders = request != null ? request.gatewayAuthoredResponseHeaders() : Map.of();
         // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
         // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
@@ -1922,25 +1928,27 @@ public class GatewayEdgeRoute {
      * Builds the RFC 9457 {@code application/problem+json} body: the standard members {@code type},
      * {@code title} and {@code status}, followed by the extension members in their iteration order.
      * The standard members come from the gateway's own event catalogue and are written as they are;
-     * every extension member name and value is serialized through {@link JsonWriter}, which applies
+     * every extension member name and value is serialized through {@link GatewayJson}, which applies
      * RFC 8259 string escaping. Without extension members the body is exactly the three standard
      * members.
      * <p>
      * Package-private rather than private so the rendering is asserted directly by
      * {@code GatewayEdgeRouteTest}, matching the precedent {@link #securityPostureFor} sets.
      *
+     * @param gatewayJson       the serializer the extension members are rendered through
      * @param type              the problem type URI
      * @param title             the problem title
      * @param status            the HTTP status
      * @param problemExtensions the extension members to append, empty for none
      * @return the compact JSON body
      */
-    static String problemBody(String type, String title, int status, Map<String, Object> problemExtensions) {
+    static String problemBody(GatewayJson gatewayJson, String type, String title, int status,
+            Map<String, Object> problemExtensions) {
         StringBuilder body = new StringBuilder("{\"type\":\"").append(type)
                 .append("\",\"title\":\"").append(title)
                 .append("\",\"status\":").append(status);
         problemExtensions.forEach((name, value) -> body.append(',')
-                .append(JsonWriter.toJson(name)).append(':').append(JsonWriter.toJson(value)));
+                .append(gatewayJson.toJson(name)).append(':').append(gatewayJson.toJson(value)));
         return body.append('}').toString();
     }
 

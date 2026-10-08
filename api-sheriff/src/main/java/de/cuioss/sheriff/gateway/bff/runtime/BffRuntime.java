@@ -91,6 +91,7 @@ public final class BffRuntime {
     private final @Nullable LoginInitiationEndpoint loginInitiationEndpoint;
     private final @Nullable StepUpEndpoint stepUpEndpoint;
     private final @Nullable ClientJwksEndpoint clientJwksEndpoint;
+    private final @Nullable GatewayJson gatewayJson;
 
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     private BffRuntime(boolean active, @Nullable SessionAuthenticationStage sessionStage,
@@ -99,7 +100,8 @@ public final class BffRuntime {
             @Nullable Supplier<LogoutEndpoint> logoutEndpoint,
             @Nullable BackchannelLogoutEndpoint backchannelLogoutEndpoint,
             @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint,
-            @Nullable StepUpEndpoint stepUpEndpoint, @Nullable ClientJwksEndpoint clientJwksEndpoint) {
+            @Nullable StepUpEndpoint stepUpEndpoint, @Nullable ClientJwksEndpoint clientJwksEndpoint,
+            @Nullable GatewayJson gatewayJson) {
         this.active = active;
         this.sessionStage = sessionStage;
         this.csrfDefence = csrfDefence;
@@ -111,6 +113,7 @@ public final class BffRuntime {
         this.loginInitiationEndpoint = loginInitiationEndpoint;
         this.stepUpEndpoint = stepUpEndpoint;
         this.clientJwksEndpoint = clientJwksEndpoint;
+        this.gatewayJson = gatewayJson;
     }
 
     /**
@@ -131,13 +134,15 @@ public final class BffRuntime {
      * @param clientJwksEndpoint        the client JWKS handler, in its publishing form for
      *                                  {@code private_key_jwt} client authentication and in its
      *                                  withheld form for client-secret authentication
+     * @param gatewayJson               the serializer the user-info body, the step-up {@code 401}
+     *                                  problem body and the client JWKS document are rendered through
      */
     @SuppressWarnings("java:S107") // wiring holder assembled once by BffRuntimeProducer
     public BffRuntime(SessionAuthenticationStage sessionStage, CsrfDefence csrfDefence,
             StepUpCoordinator stepUpCoordinator, CallbackEndpoint callbackEndpoint,
             Supplier<LogoutEndpoint> logoutEndpoint, BackchannelLogoutEndpoint backchannelLogoutEndpoint,
             UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint,
-            StepUpEndpoint stepUpEndpoint, ClientJwksEndpoint clientJwksEndpoint) {
+            StepUpEndpoint stepUpEndpoint, ClientJwksEndpoint clientJwksEndpoint, GatewayJson gatewayJson) {
         this(true,
                 Objects.requireNonNull(sessionStage, "sessionStage"),
                 Objects.requireNonNull(csrfDefence, "csrfDefence"),
@@ -148,7 +153,8 @@ public final class BffRuntime {
                 Objects.requireNonNull(userInfoEndpoint, "userInfoEndpoint"),
                 Objects.requireNonNull(loginInitiationEndpoint, "loginInitiationEndpoint"),
                 Objects.requireNonNull(stepUpEndpoint, "stepUpEndpoint"),
-                Objects.requireNonNull(clientJwksEndpoint, "clientJwksEndpoint"));
+                Objects.requireNonNull(clientJwksEndpoint, "clientJwksEndpoint"),
+                Objects.requireNonNull(gatewayJson, "gatewayJson"));
     }
 
     /**
@@ -156,7 +162,7 @@ public final class BffRuntime {
      *         {@link #isActive()} {@code false}, exposes no session stage, and dispatches nothing.
      */
     public static BffRuntime inert() {
-        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null);
+        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -294,9 +300,9 @@ public final class BffRuntime {
         return new ReservedHttpResponse(outcome.status(), null, null, Map.of(CACHE_CONTROL, NO_STORE), List.of());
     }
 
-    private static ReservedHttpResponse render(UserInfoEndpoint.UserInfoOutcome outcome) {
-        return new ReservedHttpResponse(outcome.status(), null, JsonWriter.toJson(outcome.body()), outcome.headers(),
-                List.of());
+    private ReservedHttpResponse render(UserInfoEndpoint.UserInfoOutcome outcome) {
+        return new ReservedHttpResponse(outcome.status(), null, requireNonNull(gatewayJson).toJson(outcome.body()),
+                outcome.headers(), List.of());
     }
 
     private static ReservedHttpResponse render(LoginInitiationEndpoint.LoginInitiationOutcome outcome) {
@@ -304,19 +310,19 @@ public final class BffRuntime {
                 outcome.setCookieHeaders());
     }
 
-    private static ReservedHttpResponse render(StepUpEndpoint.StepUpOutcome outcome) {
+    private ReservedHttpResponse render(StepUpEndpoint.StepUpOutcome outcome) {
         // A redirect carries no body; the 401 no-session answer carries the fixed problem body.
-        String jsonBody = outcome.body().isEmpty() ? null : JsonWriter.toJson(outcome.body());
+        String jsonBody = outcome.body().isEmpty() ? null : requireNonNull(gatewayJson).toJson(outcome.body());
         return new ReservedHttpResponse(outcome.status(), outcome.location(), jsonBody, outcome.headers(),
                 outcome.setCookieHeaders());
     }
 
-    private static ReservedHttpResponse render(ClientJwksEndpoint.JwksOutcome outcome) {
+    private ReservedHttpResponse render(ClientJwksEndpoint.JwksOutcome outcome) {
         // Only the publishing form's GET carries a document; every other outcome is body-less, and an
         // absent body must stay absent rather than be serialized as the JSON literal null.
         Map<String, Object> document = outcome.document();
-        return new ReservedHttpResponse(outcome.status(), null, document == null ? null : JsonWriter.toJson(document),
-                outcome.headers(), List.of());
+        return new ReservedHttpResponse(outcome.status(), null,
+                document == null ? null : requireNonNull(gatewayJson).toJson(document), outcome.headers(), List.of());
     }
 
     private static <T> T requireNonNull(@Nullable T value) {

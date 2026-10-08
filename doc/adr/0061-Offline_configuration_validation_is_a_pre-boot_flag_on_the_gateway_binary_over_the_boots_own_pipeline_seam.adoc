@@ -190,7 +190,9 @@ the command runs, which violates the requirement that the check binds nothing an
 nothing. The reversal verdict on ADR-0005 that a sibling plan (PLAN-V02-01) was preparing,
 which also evaluates command mode, could not be read when this decision was taken: it had
 not landed, ADR-0005 is still Accepted and no reversal ADR exists. Its landing is a revisit
-trigger for this decision.
+trigger for this decision. That revisit was decided by
+link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]:
+command mode is not adopted and the flag on the gateway binary stays.
 
 **A dedicated validator written for the check.** Re-implementing the rules the check needs
 in a separate code path. Rejected because it creates the drift the check exists to remove:

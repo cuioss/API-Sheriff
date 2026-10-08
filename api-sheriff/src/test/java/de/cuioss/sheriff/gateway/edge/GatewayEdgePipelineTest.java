@@ -207,7 +207,8 @@ class GatewayEdgePipelineTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                GatewayEdgeRouteBffWiringTest.gatewayJson());
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

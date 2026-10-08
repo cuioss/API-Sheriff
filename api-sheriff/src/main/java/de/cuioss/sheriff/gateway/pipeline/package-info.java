@@ -20,7 +20,7 @@
  * Every stage operates on the agnostic {@link de.cuioss.sheriff.gateway.pipeline.PipelineRequest}
  * carrier the edge builds from its framework-specific request, so this package carries no
  * {@code io.vertx..} / {@code io.quarkus..} / {@code jakarta..} / {@code org.eclipse.microprofile..}
- * imports and stays inside the ADR-0005 framework-agnostic arch-gate rule set. Stages reject by
+ * imports. That is its current state and not a gated rule (ADR-0062). Stages reject by
  * throwing a typed {@link de.cuioss.sheriff.gateway.events.GatewayException}; the framework edge maps it
  * to the RFC 9457 response and never lets a rejected request reach the upstream.
  * <ul>

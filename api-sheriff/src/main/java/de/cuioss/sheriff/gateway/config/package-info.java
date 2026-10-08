@@ -22,7 +22,7 @@
  * effective per-route settings, and the {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}
  * structured-log catalogue. The framework-bound wiring — the CDI producer that
  * drives the boot pipeline and fails startup on invalid configuration — lives in
- * the {@code de.cuioss.sheriff.gateway.quarkus} edge package (ADR-0005); nothing here
+ * the {@code de.cuioss.sheriff.gateway.quarkus} edge package; nothing here
  * carries a CDI, Quarkus, or MicroProfile import.
  * <p>
  * <strong>Null-safety.</strong> The package is {@link org.jspecify.annotations.NullMarked}:

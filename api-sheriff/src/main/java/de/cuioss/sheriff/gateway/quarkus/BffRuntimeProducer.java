@@ -61,6 +61,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -284,6 +285,7 @@ public class BffRuntimeProducer {
     private final Instance<SignatureOnlyTokenVerifier> logoutTokenVerifier;
     private final JwksTrustProfileResolver trustProfileResolver;
     private final ExecutorService virtualThreadExecutor;
+    private final GatewayJson gatewayJson;
     /**
      * The resolved global {@code egress_tls} block, read once here for the same reason
      * {@code TokenValidatorProducer} resolves its own key once (ADR-0040): the keys are gateway-global
@@ -308,18 +310,21 @@ public class BffRuntimeProducer {
      *                              only when a profile is named
      * @param virtualThreadExecutor the Quarkus-managed virtual-thread executor a best-effort refresh-token
      *                              revocation is dispatched on, off the request path
+     * @param gatewayJson           the serializer the runtime renders its gateway-authored JSON bodies
+     *                              through
      */
     public BffRuntimeProducer(GatewayConfig gatewayConfig, RouteTable routeTable,
             @GatewayValidator Instance<TokenValidator> tokenValidator,
             Instance<SignatureOnlyTokenVerifier> logoutTokenVerifier,
             JwksTrustProfileResolver trustProfileResolver,
-            @VirtualThreads ExecutorService virtualThreadExecutor) {
+            @VirtualThreads ExecutorService virtualThreadExecutor, GatewayJson gatewayJson) {
         this.gatewayConfig = Objects.requireNonNull(gatewayConfig, "gatewayConfig");
         this.routeTable = Objects.requireNonNull(routeTable, "routeTable");
         this.tokenValidator = Objects.requireNonNull(tokenValidator, "tokenValidator");
         this.logoutTokenVerifier = Objects.requireNonNull(logoutTokenVerifier, "logoutTokenVerifier");
         this.trustProfileResolver = Objects.requireNonNull(trustProfileResolver, "trustProfileResolver");
         this.virtualThreadExecutor = Objects.requireNonNull(virtualThreadExecutor, "virtualThreadExecutor");
+        this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
         EgressTlsConfig declaredEgressTls = gatewayConfig.egressTls();
         this.egressTls = declaredEgressTls == null ? EgressTlsConfig.defaults() : declaredEgressTls;
     }
@@ -616,7 +621,7 @@ public class BffRuntimeProducer {
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint, stepUpEndpoint,
-                clientCredential.jwksEndpoint());
+                clientCredential.jwksEndpoint(), gatewayJson);
     }
 
     /**

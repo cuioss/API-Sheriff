@@ -39,6 +39,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.bff.client.ClientSigningKey;
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
@@ -63,6 +64,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpo
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.ServerSessionBinding;
@@ -271,7 +273,8 @@ class GatewayEdgeRouteBffWiringTest {
             return new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
                     new SheriffMetrics(new SimpleMeterRegistry()), runtime, EgressTrustProfiles.unconsulted(),
-                    PortalEndpoint.inert());
+                    PortalEndpoint.inert(),
+                    gatewayJson());
         }
     }
 
@@ -304,7 +307,8 @@ class GatewayEdgeRouteBffWiringTest {
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
                     activeRuntime(serverBinding(new InMemorySessionStore(16))), EgressTrustProfiles.unconsulted(),
-                    PortalEndpoint.inert());
+                    PortalEndpoint.inert(),
+                    gatewayJson());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             front = Awaits.connect(
@@ -420,7 +424,8 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                    gatewayJson());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             front = Awaits.connect(
@@ -517,7 +522,8 @@ class GatewayEdgeRouteBffWiringTest {
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                    gatewayJson());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             front = Awaits.connect(
@@ -847,7 +853,8 @@ class GatewayEdgeRouteBffWiringTest {
 
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
                     () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
-                    engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld());
+                    engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld(),
+                    gatewayJson());
         }
     }
 
@@ -1028,7 +1035,8 @@ class GatewayEdgeRouteBffWiringTest {
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
                     activeRuntime(serverBinding(new InMemorySessionStore(16)), jwksEndpoint),
-                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                    gatewayJson());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             return Awaits.connect(
@@ -1222,7 +1230,8 @@ class GatewayEdgeRouteBffWiringTest {
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
                     activeRuntime(serverBinding(new InMemorySessionStore(16)),
                             new ClientJwksEndpoint(signingKey.publicJwk())),
-                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                    gatewayJson());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             HttpServer front = Awaits.connect(
@@ -1338,7 +1347,8 @@ class GatewayEdgeRouteBffWiringTest {
                     GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                    gatewayJson());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             front = Awaits.connect(
@@ -1524,7 +1534,8 @@ class GatewayEdgeRouteBffWiringTest {
                     GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert());
+                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
+                    gatewayJson());
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
             front = Awaits.connect(
@@ -1693,7 +1704,15 @@ class GatewayEdgeRouteBffWiringTest {
                 engineFreeReturnTargetScopes());
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
-                userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint);
+                userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson());
+    }
+
+    /**
+     * The serializer every edge fixture hands the edge and the runtime: the production class over a
+     * mapper of its own, so a fixture renders its JSON bodies exactly as the gateway does.
+     */
+    static GatewayJson gatewayJson() {
+        return new GatewayJson(new ObjectMapper());
     }
 
     /**

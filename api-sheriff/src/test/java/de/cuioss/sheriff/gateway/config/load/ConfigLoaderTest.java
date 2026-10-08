@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 
@@ -94,6 +95,11 @@ class ConfigLoaderTest {
      */
     private static final int MAX_CONFIG_FILE_BYTES = 512 * 1024;
 
+    /** The sink of a test that asserts the bound model or the errors, not the applied defaults. */
+    private static final Consumer<DefaultedPlaceholder> IGNORE_DEFAULTED = defaulted -> {
+        // Applied in-file defaults are not what these tests assert.
+    };
+
     @TempDir
     Path configDir;
 
@@ -134,7 +140,7 @@ class ConfigLoaderTest {
     void bindsValidGatewayConfigAndResolvesSecrets() throws Exception {
         copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load(IGNORE_DEFAULTED);
 
         GatewayConfig gateway = loaded.gateway();
         assertEquals(1, gateway.version());
@@ -160,7 +166,7 @@ class ConfigLoaderTest {
         copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("client_secret")
@@ -173,7 +179,7 @@ class ConfigLoaderTest {
         copyFixtureAs("/config/invalid/unknown-key.yaml", "gateway.yaml");
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertFalse(exception.errors().isEmpty());
         assertTrue(exception.errors().stream().allMatch(error -> "gateway.yaml".equals(error.file())));
@@ -184,7 +190,7 @@ class ConfigLoaderTest {
     @Test
     void reportsMissingGatewayFile() {
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -224,7 +230,7 @@ class ConfigLoaderTest {
                           max_attempts: 3
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(1, loaded.endpoints().size());
         EndpointConfig endpoint = loaded.endpoints().getFirst();
@@ -262,7 +268,7 @@ class ConfigLoaderTest {
                         require: bearer
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         EndpointConfig endpoint = loaded.endpoints().getFirst();
         RouteConfig route = endpoint.routes().getFirst();
@@ -286,7 +292,7 @@ class ConfigLoaderTest {
                     default_return_url: /app/home?tab=overview
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals("/app/home?tab=overview", loaded.gateway().oidc().login().defaultReturnUrl());
     }
@@ -300,7 +306,7 @@ class ConfigLoaderTest {
                     path: /auth/login
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertNull(loaded.gateway().oidc().login().defaultReturnUrl());
     }
@@ -320,7 +326,7 @@ class ConfigLoaderTest {
                         path_prefix: /orders
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(List.of(), loaded.endpoints().getFirst().scopes());
     }
@@ -456,7 +462,7 @@ class ConfigLoaderTest {
         writeConfig("endpoints/orders.yaml",
                 endpointDeclaringScope("\"orders:read\", \"k_beispiel_token_permissions\""));
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(List.of("openid", "orders:read", "k_beispiel_token_permissions", "!#[]~"),
                 loaded.gateway().oidc().scopes(), "well-formed oidc.scopes entries must bind");
@@ -472,7 +478,7 @@ class ConfigLoaderTest {
         writeConfig("endpoints/orders.yaml", endpointYaml);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "endpoints/orders.yaml".equals(error.file())
@@ -485,7 +491,7 @@ class ConfigLoaderTest {
     void loadsWithoutEndpointsWhenDirectoryAbsent() throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(1, loaded.gateway().version());
         assertTrue(loaded.endpoints().isEmpty());
@@ -507,7 +513,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert — the key is accepted by the schema (additionalProperties: false) and
         // binds through the SNAKE_CASE strategy to the record component
@@ -530,7 +536,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert — no entries means the host of jwks.url is derived as the egress allowance downstream
         IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
@@ -594,7 +600,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert — the schema refuses it at boot, naming the offending key's own pointer
         assertTrue(exception.errors().stream()
@@ -619,7 +625,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert — the key is accepted by the schema (additionalProperties: false) and binds
         // through the SNAKE_CASE strategy to the record component
@@ -642,7 +648,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert — an absent profile binds to null, which the runtime reads as default trust
         IssuerConfig issuer = loaded.gateway().tokenValidation().issuers().getFirst();
@@ -653,7 +659,7 @@ class ConfigLoaderTest {
     void omittedEgressTlsBlockBindsNullAndResolvesToVerificationOn() throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertAll("omitted egress_tls",
                 () -> assertNull(loaded.gateway().egressTls(),
@@ -671,7 +677,7 @@ class ConfigLoaderTest {
                   upstream_tls_profile: corporate-up
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(new EgressTlsConfig(true, true, "corporate-up", true, null), loaded.gateway().egressTls(),
                 "a present block that names no flag must leave every flag on — the BFF back-channel's "
@@ -689,7 +695,7 @@ class ConfigLoaderTest {
                   oidc_tls_profile: corporate-idp
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Binding only: the pair parses and binds. That the pair is refused at boot, and that each key
         // acts on a real dial, is BffRuntimeProducerTest.OidcBackChannelTls's subject (ADR-0040's
@@ -706,7 +712,7 @@ class ConfigLoaderTest {
                   oidc_tls_profile: corporate-idp
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertAll("a present block naming only the BFF trust profile",
                 () -> assertTrue(loaded.gateway().egressTls().oidcVerifyHostname(),
@@ -723,7 +729,7 @@ class ConfigLoaderTest {
                   upstream_verify_hostname: false
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(new EgressTlsConfig(false, true, null, true, null), loaded.gateway().egressTls(),
                 "an explicit false binds false, and neither sibling key is disturbed by it");
@@ -737,7 +743,7 @@ class ConfigLoaderTest {
                   jwks_verify_hostname: false
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Binding only, and deliberately still only that. This settles that the key parses,
         // validates and binds — never that the control it names is in force. The behaviour half now
@@ -872,7 +878,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of("OIDC_SCOPES", "openid,orders\"read"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -887,7 +893,7 @@ class ConfigLoaderTest {
         writeConfig("gateway.yaml", gatewayYaml);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -904,7 +910,7 @@ class ConfigLoaderTest {
                   trusted_proxies: []
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertTrue(loaded.gateway().forwarded().trustedProxies().isEmpty(),
                 "an explicitly empty trusted_proxies list means no proxy is trusted and stays valid");
@@ -919,7 +925,7 @@ class ConfigLoaderTest {
                     enabled: true
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertTrue(loaded.gateway().management().tls().enabled(),
                 "a policy-only management block must bind without a port component");
@@ -934,7 +940,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -960,7 +966,7 @@ class ConfigLoaderTest {
                     allowed_methods: ["GET", "POST"]
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         Map<String, AnchorConfig> anchors = loaded.gateway().anchors();
         assertEquals(1, anchors.size(), "the anchors block should bind one anchor");
@@ -995,7 +1001,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1023,7 +1029,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1049,7 +1055,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert
         SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults();
@@ -1070,7 +1076,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert
         SecurityDefaultsConfig securityDefaults = loaded.gateway().securityDefaults();
@@ -1096,7 +1102,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1127,7 +1133,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1169,7 +1175,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals("minimal", loaded.gateway().securityDefaults().profile());
@@ -1205,7 +1211,7 @@ class ConfigLoaderTest {
                         path_prefix: /api/read
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         EndpointConfig endpoint = loaded.endpoints().getFirst();
         assertEquals("api", endpoint.anchor(), "the endpoint anchor ref should bind");
@@ -1236,7 +1242,7 @@ class ConfigLoaderTest {
                         path_prefix: /api/read
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         EndpointConfig endpoint = loaded.endpoints().getFirst();
         assertNull(endpoint.auth(),
@@ -1273,7 +1279,7 @@ class ConfigLoaderTest {
                         status: 308
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         EndpointConfig endpoint = loaded.endpoints().getFirst();
         RouteConfig assets = endpoint.routes().getFirst();
@@ -1300,7 +1306,7 @@ class ConfigLoaderTest {
                         path: /orders/
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         MatchConfig match = loaded.endpoints().getFirst().routes().getFirst().match();
         assertAll("match.path binds as an exact matcher",
@@ -1329,7 +1335,7 @@ class ConfigLoaderTest {
                         allow_external: true
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(new RedirectConfig("https://docs.example.com/", 302, true, true),
                 loaded.endpoints().getFirst().routes().getFirst().redirect(),
@@ -1353,7 +1359,7 @@ class ConfigLoaderTest {
                         status: 307
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(new RedirectConfig("/home", 307, false, false),
                 loaded.endpoints().getFirst().routes().getFirst().redirect(),
@@ -1384,7 +1390,7 @@ class ConfigLoaderTest {
                 """.formatted(status));
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
@@ -1410,7 +1416,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "endpoints/moved.yaml".equals(error.file())
@@ -1423,7 +1429,7 @@ class ConfigLoaderTest {
     void substitutedScalarIsSchemaTypeChecked() throws Exception {
         writeConfig("gateway.yaml", "version: \"${CONFIG_VERSION:-1}\"\n");
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(1, loaded.gateway().version(),
                 "a defaulted ${VAR} on an integer field must coerce to an integer and satisfy the schema");
@@ -1434,7 +1440,7 @@ class ConfigLoaderTest {
         copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");
         String tooLargeForALong = "9".repeat(20);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", tooLargeForALong)).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", tooLargeForALong)).load(IGNORE_DEFAULTED);
 
         assertEquals(tooLargeForALong, loaded.gateway().oidc().clientSecret(),
                 "client_secret is a schema-declared string, so an all-digit substitution stays text on its "
@@ -1452,7 +1458,7 @@ class ConfigLoaderTest {
                     path: /auth/step-up
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertAll("oidc.step_up.path is admitted by the schema and binds on its own",
                 () -> assertEquals("/auth/step-up", loaded.gateway().oidc().stepUp().path()),
@@ -1472,7 +1478,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -1503,7 +1509,7 @@ class ConfigLoaderTest {
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of(
                 "SHERIFF_CLIENT_ID", resolved,
-                "OIDC_CLIENT_SECRET", "s3cr3t")).load();
+                "OIDC_CLIENT_SECRET", "s3cr3t")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(resolved, loaded.gateway().oidc().clientId(),
@@ -1528,7 +1534,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("TRUST_SCHEME_HOST", resolved)).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("TRUST_SCHEME_HOST", resolved)).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(Boolean.valueOf(resolved), loaded.gateway().forwarded().trustSchemeHost(),
@@ -1543,7 +1549,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("CONFIG_VERSION", "s3cr3t-topsecret-value"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert — refused at its own pointer, and the refusal names TYPES rather than the resolved
         // value: a resolved scalar may hold a secret and must never reach a collected error message.
@@ -1570,7 +1576,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("ISSUER_NAME", "123")).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("ISSUER_NAME", "123")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals("123", loaded.gateway().tokenValidation().issuers().getFirst().name(),
@@ -1594,7 +1600,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader.LoadedConfig loaded =
-                loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32,10.0.0.6/32")).load();
+                loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32,10.0.0.6/32")).load(IGNORE_DEFAULTED);
 
         // Assert — the bound list, not a private return: the point is that the whole list arrived.
         assertEquals(List.of("10.0.0.5/32", "10.0.0.6/32"),
@@ -1614,7 +1620,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader.LoadedConfig loaded =
-                loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32 , 10.0.0.6/32")).load();
+                loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32 , 10.0.0.6/32")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(List.of("10.0.0.5/32", "10.0.0.6/32"),
@@ -1636,7 +1642,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_CIPHER_SUITES",
-                "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256")).load();
+                "TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(List.of("TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"),
@@ -1659,7 +1665,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("SHERIFF_TRUSTED_PROXIES", ""));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert — refused at the value's own pointer, so an operator is told which key failed.
         assertTrue(exception.errors().stream()
@@ -1682,7 +1688,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1706,7 +1712,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("SHERIFF_TRUSTED_PROXIES", "10.0.0.5/32,,10.0.0.6/32"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1738,7 +1744,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_PASSTHROUGH_SNI",
-                "legacy.example.com=LEGACY,vault.example.com=VAULT")).load();
+                "legacy.example.com=LEGACY,vault.example.com=VAULT")).load(IGNORE_DEFAULTED);
 
         // Assert — the bound map, not a private return: the point is that the whole map arrived.
         assertEquals(Map.of("legacy.example.com", "LEGACY", "vault.example.com", "VAULT"),
@@ -1758,7 +1764,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_PASSTHROUGH_SNI",
-                " legacy.example.com = LEGACY , vault.example.com = VAULT ")).load();
+                " legacy.example.com = LEGACY , vault.example.com = VAULT ")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(Map.of("legacy.example.com", "LEGACY", "vault.example.com", "VAULT"),
@@ -1779,7 +1785,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader.LoadedConfig loaded =
-                loader(Map.of("SHERIFF_PASSTHROUGH_SNI", "legacy.example.com=ALIAS=WITH=EQUALS")).load();
+                loader(Map.of("SHERIFF_PASSTHROUGH_SNI", "legacy.example.com=ALIAS=WITH=EQUALS")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(Map.of("legacy.example.com", "ALIAS=WITH=EQUALS"),
@@ -1804,7 +1810,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("SHERIFF_PASSTHROUGH_SNI", malformed));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1833,7 +1839,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("SHERIFF_PASSTHROUGH_SNI", ""));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1867,7 +1873,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader.LoadedConfig loaded =
-                loader(Map.of("SHERIFF_SET_HEADERS", "x-tenant=acme,x-region=eu")).load();
+                loader(Map.of("SHERIFF_SET_HEADERS", "x-tenant=acme,x-region=eu")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(Map.of("x-tenant", "acme", "x-region", "eu"),
@@ -1906,7 +1912,7 @@ class ConfigLoaderTest {
         // Act — shaped as a key=value pair precisely so that an arm leaking onto the item path would
         // produce a schema-valid item; nothing else about this value would be distinguishable.
         ConfigLoader loader = loader(Map.of("SHERIFF_MATCH_HEADERS", "name=x-tenant"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -1943,7 +1949,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         // The message is asserted, not just the pointer: a well-formed key=value map at an object-typed
@@ -1974,7 +1980,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2007,7 +2013,7 @@ class ConfigLoaderTest {
         // Act
         ConfigLoader.LoadedConfig loaded = loader(Map.of(
                 "OIDC_CLIENT_SECRET", "s3cr3t",
-                "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")).load();
+                "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals("s3cr3t", loaded.gateway().oidc().clientSecret(),
@@ -2052,7 +2058,7 @@ class ConfigLoaderTest {
                     key_file: %s
                 """.formatted(keyFileYaml));
 
-        ConfigLoader.LoadedConfig loaded = loader(environment).load();
+        ConfigLoader.LoadedConfig loaded = loader(environment).load(IGNORE_DEFAULTED);
 
         assertAll(description,
                 () -> assertEquals(expectedPath, loaded.gateway().oidc().clientAuthentication().keyFile(),
@@ -2073,7 +2079,7 @@ class ConfigLoaderTest {
                   redirect_uri: "https://gw.example.com/callback"
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertNull(loaded.gateway().oidc().clientAuthentication(),
                 "an omitted client_authentication block binds as absent, which selects a generated key");
@@ -2092,7 +2098,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -2131,7 +2137,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_PATH", "123")).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_PATH", "123")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(List.of("123"),
@@ -2159,7 +2165,7 @@ class ConfigLoaderTest {
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_MAX_BODY", "4096")).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("SHERIFF_MAX_BODY", "4096")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(4096, loaded.gateway().anchors().get("api-public").securityFilter().maxBodyBytes(),
@@ -2186,7 +2192,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("SHERIFF_MAX_BODY", "4096"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2206,7 +2212,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("CONFIG_VERSION", "2147483648"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2232,7 +2238,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("CONFIG_VERSION", widerThanALong));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2259,7 +2265,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of("SHERIFF_MANAGEMENT_PORT", "true"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2290,7 +2296,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2312,7 +2318,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2336,7 +2342,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("client_secret")
@@ -2356,7 +2362,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("client_secret")),
@@ -2395,7 +2401,7 @@ class ConfigLoaderTest {
                 "OIDC_CLIENT_SECRET", "s3cr3t",
                 "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 "SHERIFF_SESSION_KEY_PREVIOUS", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -2414,7 +2420,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.file().contains("orders.yml")
@@ -2435,7 +2441,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t-topsecret-value"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .noneMatch(error -> error.message().contains("s3cr3t-topsecret-value")),
@@ -2457,7 +2463,7 @@ class ConfigLoaderTest {
         writeConfig("gateway.yaml", yaml.toString());
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED),
                 "a YAML document exceeding the alias-expansion limit must fail the boot");
 
         assertTrue(exception.errors().stream()
@@ -2486,7 +2492,7 @@ class ConfigLoaderTest {
         writeConfig("gateway.yaml", yaml.toString());
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED),
                 "a nested/exponential alias bomb must fail the boot");
 
         assertTrue(exception.errors().stream()
@@ -2507,7 +2513,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream().noneMatch(error -> error.message().contains("bomb protection tripped")),
                 () -> "a modest number of aliases must not trip the alias-expansion guard, got: "
@@ -2523,7 +2529,7 @@ class ConfigLoaderTest {
                 "the fixture must sit exactly on the cap for the boundary to be the thing under test");
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals(1, loaded.gateway().version(),
@@ -2537,7 +2543,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED),
                 "a configuration file one byte over the cap must fail the boot");
 
         // Assert — the refusal is a collected error, and it is the ONLY error for the file: a schema or
@@ -2569,7 +2575,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2593,7 +2599,7 @@ class ConfigLoaderTest {
 
         // Act
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // Assert
         assertTrue(exception.errors().stream()
@@ -2615,7 +2621,7 @@ class ConfigLoaderTest {
                     m4v: video/mp4;codecs=avc1
                 """);
 
-        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load();
+        ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
 
         assertEquals(Map.of("avif", "image/avif", "m4v", "video/mp4;codecs=avc1"),
                 loaded.gateway().assetDefaults().contentTypes(),
@@ -2645,7 +2651,7 @@ class ConfigLoaderTest {
                       frame_deny: true
                 """);
 
-        GatewayConfig gateway = loader(Map.of()).load().gateway();
+        GatewayConfig gateway = loader(Map.of()).load(IGNORE_DEFAULTED).gateway();
 
         AnchorConfig frontend = gateway.anchors().get("frontend");
         assertAll("the anchor accepts every response security header and the global block keeps cors",
@@ -2685,7 +2691,7 @@ class ConfigLoaderTest {
                         fallback: index.html
                 """);
 
-        EndpointConfig endpoint = loader(Map.of()).load().endpoints().getFirst();
+        EndpointConfig endpoint = loader(Map.of()).load(IGNORE_DEFAULTED).endpoints().getFirst();
 
         RouteConfig rewritten = endpoint.routes().get(0);
         RouteConfig verbatim = endpoint.routes().get(1);
@@ -2719,7 +2725,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream().anyMatch(error -> error.file().contains("web.yaml")),
                 () -> "a misspelt asset key must be refused at schema load, got: " + exception.errors());
@@ -2740,7 +2746,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         // The refusal echoes the offending pattern verbatim, so assert on that rather than on the surrounding
         // sentence — the validator's diagnostics are localized and the sentence changes with the JVM locale.
@@ -2767,7 +2773,7 @@ class ConfigLoaderTest {
                 """);
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> "gateway.yaml".equals(error.file())
@@ -2794,7 +2800,7 @@ class ConfigLoaderTest {
                 """.formatted(";a=b".repeat(50_000)));
 
         ConfigLoader loader = loader(Map.of());
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load,
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED),
                 "an oversized malformed content-type value must fail the boot as an aggregated "
                         + "ConfigLoadException, never as a StackOverflowError out of the regex engine");
 
@@ -2857,7 +2863,7 @@ class ConfigLoaderTest {
                     """.formatted(defaultValue));
 
             ConfigLoader loader = loader(Map.of("SET_HOST", setValue));
-            ConfigLoadException exception = assertThrows(ConfigLoadException.class, loader::load);
+            ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 
             assertEquals(List.of(
                             new ConfigError("gateway.yaml", "/oidc/redirect_uri",
@@ -2929,7 +2935,7 @@ class ConfigLoaderTest {
             writeConfig("endpoints/home.yaml", ENDPOINT_WITH_DEFAULTED_ID.formatted(sentinel()));
             ConfigLoader loader = loader(Map.of());
 
-            ConfigLoader.LoadedConfig withoutSink = loader.load();
+            ConfigLoader.LoadedConfig withoutSink = loader.load(IGNORE_DEFAULTED);
             ConfigLoader.LoadedConfig withSink = loader.load(entry -> {
                 // the sink must not influence the bound result
             });
@@ -2959,7 +2965,7 @@ class ConfigLoaderTest {
 
     private List<ConfigError> loadErrors() {
         ConfigLoader loader = loader(Map.of());
-        return assertThrows(ConfigLoadException.class, loader::load).errors();
+        return assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED)).errors();
     }
 
     private static void assertErrorAt(List<ConfigError> errors, String file, String pointerPrefix) {
@@ -2980,7 +2986,7 @@ class ConfigLoaderTest {
                   error_pages: true
                 """);
 
-        GatewayConfig gateway = loader(Map.of()).load().gateway();
+        GatewayConfig gateway = loader(Map.of()).load(IGNORE_DEFAULTED).gateway();
 
         assertEquals(new PortalConfig("/", "Applications", "/app/sheriff-config/portal", 60, true),
                 gateway.portal());
@@ -2995,7 +3001,7 @@ class ConfigLoaderTest {
                   title: Applications
                 """);
 
-        PortalConfig portal = loader(Map.of()).load().gateway().portal();
+        PortalConfig portal = loader(Map.of()).load(IGNORE_DEFAULTED).gateway().portal();
 
         assertNotNull(portal);
         assertAll("omitted optional portal keys bind as absent and resolve to their defaults",
@@ -3010,7 +3016,7 @@ class ConfigLoaderTest {
     void omittedPortalBlockBindsAsAbsent() throws Exception {
         writeConfig("gateway.yaml", "version: 1\n");
 
-        assertNull(loader(Map.of()).load().gateway().portal());
+        assertNull(loader(Map.of()).load(IGNORE_DEFAULTED).gateway().portal());
     }
 
     @Test
@@ -3077,7 +3083,7 @@ class ConfigLoaderTest {
                     order: 10
                 """.strip().replace("\n", "\n  "));
 
-        EndpointConfig endpoint = loader(Map.of()).load().endpoints().getFirst();
+        EndpointConfig endpoint = loader(Map.of()).load(IGNORE_DEFAULTED).endpoints().getFirst();
 
         assertEquals(new CatalogConfig("Orders", "Order management", "/orders/", 10), endpoint.catalog());
     }
@@ -3087,7 +3093,7 @@ class ConfigLoaderTest {
         writeConfig("gateway.yaml", "version: 1\n");
         writeCatalogEndpoint("enabled: true");
 
-        assertNull(loader(Map.of()).load().endpoints().getFirst().catalog());
+        assertNull(loader(Map.of()).load(IGNORE_DEFAULTED).endpoints().getFirst().catalog());
     }
 
     @Test

@@ -38,10 +38,11 @@
  * two would erase the distinction. Instances are safe to publish and share across
  * threads without external synchronization.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> This package carries no
- * CDI, Quarkus, Vert.x, MicroProfile, or Micrometer imports. Collaborators are
- * supplied by constructor parameters; the framework-bound wiring lives in the
- * edge package.
+ * <strong>Pre-boot seam (ADR-0061, ADR-0062).</strong> This package carries no
+ * CDI, Quarkus, Vert.x, MicroProfile, or Micrometer imports, because the offline
+ * configuration check runs it before the framework starts.
+ * {@code PreBootFrameworkFreeArchTest} enforces that. Collaborators are supplied
+ * by constructor parameters; the framework-bound wiring lives in the edge package.
  *
  * @author API Sheriff Team
  * @since 1.0

@@ -240,7 +240,7 @@
             <artifactId>smallrye-fault-tolerance-standalone</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- ArchUnit: ADR-0005 framework-agnostic package-boundary gate (FrameworkAgnosticArchTest) -->
+        <!-- ArchUnit: the architecture tests under de.cuioss.sheriff.gateway.arch -->
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
             <artifactId>archunit</artifactId>

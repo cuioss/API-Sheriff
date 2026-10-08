@@ -25,7 +25,7 @@
  * {@link de.cuioss.tools.logging.LogRecord} vocabulary for the session lifecycle, transparent
  * refresh, CSRF, and logout events those sub-packages emit. Keeping the catalogue in the
  * framework-agnostic {@code cui-tools} {@code LogRecord} abstraction carries no framework
- * dependency (ADR-0005).
+ * dependency.
  *
  * @author API Sheriff Team
  * @since 1.0

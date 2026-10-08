@@ -23,10 +23,10 @@
  * outcome. It is shared by the gateway boot ({@code quarkus.ConfigProducer}) and the offline
  * configuration check, so both reach their verdict through the same code and cannot drift.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> This package is on the
- * framework-agnostic list: it carries no CDI, Quarkus, or framework imports. The secret
- * resolver is constructor-injected and the one framework value a run needs is passed in by
- * the caller.
+ * <strong>Pre-boot seam (ADR-0061, ADR-0062).</strong> This package carries no CDI, Quarkus,
+ * or framework imports, because the offline configuration check runs it before the framework
+ * starts. {@code PreBootFrameworkFreeArchTest} enforces that. The secret resolver is
+ * constructor-injected and the one framework value a run needs is passed in by the caller.
  *
  * @author API Sheriff Team
  * @since 1.0

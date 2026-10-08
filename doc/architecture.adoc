@@ -159,8 +159,11 @@ The authentication stage is where the three variants differ: offline bearer vali
 
 The portal (link:user/portal.adoc[operator guide],
 link:adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053])
-lives in the framework-agnostic `de.cuioss.sheriff.gateway.portal` package and is wired by one CDI
-producer, `PortalProducer`, following the ADR-0005 seam rule:
+lives in the `de.cuioss.sheriff.gateway.portal` package and is wired by one CDI producer,
+`PortalProducer`. No framework-free rule binds the package: the gateway uses the mechanism the
+platform supplies and keeps a hand-rolled component only with a recorded reason
+(link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]).
+Its parts:
 
 * `PortalEndpoint` is the portal's *own* reservation seam. It is not a member of the OIDC
   `ReservedPathRegistry` closed set, because that registry matches only on the OIDC host while the
@@ -948,8 +951,10 @@ The upstream client is split by plane
 * *Resilience -- SmallRye Fault Tolerance, programmatic.* One guard per route, built at boot
   from `upstream.retry` / `upstream.circuit_breaker` and invoked around the dispatch call in
   the framework-bound edge layer (no annotations, no CDI interception on the hot path; the
-  framework-agnostic core carries only the resolved policy values, per
-  link:adr/0005-module-structure.adoc[ADR-0005]). Retry is *stream-aware*: an attempt is
+  configuration model carries only the resolved policy values and stays free of framework types
+  under the pre-boot rule of
+  link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[ADR-0062]).
+  Retry is *stream-aware*: an attempt is
   retried only for an idempotent method *and only when zero request-body bytes have been sent
   upstream* -- there is no replay buffer. The breaker is stateless per node: opens after the
   configured consecutive failures, half-opens after `reset_ms`; state transitions surface as

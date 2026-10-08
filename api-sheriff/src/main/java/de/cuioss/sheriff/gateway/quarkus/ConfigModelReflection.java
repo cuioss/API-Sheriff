@@ -55,7 +55,7 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * Jackson can bind the YAML configuration trees into them in a native image.
  * <p>
  * The {@link de.cuioss.sheriff.gateway.config.model} records carry no framework imports
- * (ADR-0005 seam); this framework-bound holder consolidates their native
+ * (the pre-boot rule, ADR-0062); this framework-bound holder consolidates their native
  * reflection registration in one place — listing every Jackson-bound record, its
  * nested records, and the bound enums — rather than annotating each model type.
  * The class has no runtime behavior; it exists solely to carry the

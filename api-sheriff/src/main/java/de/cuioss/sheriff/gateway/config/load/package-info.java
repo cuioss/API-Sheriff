@@ -30,11 +30,31 @@
  * each carrying its source file and a JSON-pointer location — and raised together as
  * a single {@link de.cuioss.sheriff.gateway.config.load.ConfigLoadException}.
  * <p>
- * <strong>Framework-agnostic seam (ADR-0005).</strong> The loader carries no CDI,
- * Quarkus, or framework imports; its configuration directory and secret resolver are
- * supplied by constructor parameters. The cross-cutting semantic validation,
- * endpoint-enablement resolution, topology-alias resolution, and route-table
- * assembly are layered on by later deliverables.
+ * <strong>The five types, checked against the platform (ADR-0062).</strong> ADR-0062 keeps a
+ * hand-rolled component only with a recorded reason. The package was checked on that rule;
+ * nothing in it is replaced, because none of its types duplicates a platform mechanism:
+ * <ul>
+ * <li>{@link de.cuioss.sheriff.gateway.config.load.ConfigLoader} orchestrates the pass and
+ * already takes from a platform library everything one offers: Jackson binds the YAML, the
+ * networknt validator checks the schemas, and a SnakeYAML compose pre-pass applies the
+ * expansion limits (ADR-0010). What it adds is the order of those steps, the secrets rule
+ * and the typing of a substituted value from its schema-declared destination.</li>
+ * <li>{@link de.cuioss.sheriff.gateway.config.load.EnvSecretResolver} is the placeholder
+ * engine. It is kept; its class comment lists the reasons.</li>
+ * <li>{@link de.cuioss.sheriff.gateway.config.load.ConfigError} is one problem: file,
+ * JSON pointer and message.</li>
+ * <li>{@link de.cuioss.sheriff.gateway.config.load.ConfigLoadException} carries every
+ * {@code ConfigError} of one pass.</li>
+ * <li>{@link de.cuioss.sheriff.gateway.config.load.DefaultedPlaceholder} names one
+ * placeholder that fell back to its in-file default — never a value.</li>
+ * </ul>
+ * <p>
+ * <strong>Pre-boot path (ADR-0061).</strong> The offline {@code --validate-config} check
+ * runs this package before the framework starts, so no class here may depend on a
+ * framework type; {@code PreBootFrameworkFreeArchTest} enforces that. The configuration
+ * directory and the secret resolver are supplied by constructor parameters. Endpoint
+ * enablement, topology resolution, semantic validation and route-table assembly follow in
+ * {@link de.cuioss.sheriff.gateway.config.boot.ConfigBootPipeline}.
  *
  * @author API Sheriff Team
  * @since 1.0

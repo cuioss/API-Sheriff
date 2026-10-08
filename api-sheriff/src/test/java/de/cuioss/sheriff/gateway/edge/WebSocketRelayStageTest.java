@@ -213,7 +213,8 @@ class WebSocketRelayStageTest {
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
                 new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(), relayTimeline.observer(RelayObserver.NO_OP));
+                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson(),
+                relayTimeline.observer(RelayObserver.NO_OP));
 
         Router router = Router.router(vertx);
         edge.registerRoutes(router);

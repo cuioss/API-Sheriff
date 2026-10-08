@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Thread-safe, lock-free in-process event counter, modelled on {@code token-sheriff}'s
  * {@code SecurityEventCounter}. It feeds the metrics and error-mapping edges without
  * pulling in a broker, an observer bus, or a Micrometer dependency — keeping the
- * {@code events} package framework-agnostic (ADR-0005).
+ * {@code events} package free of framework types.
  * <p>
  * Increments use {@link ConcurrentHashMap#computeIfAbsent} plus
  * {@link AtomicLong#incrementAndGet}, so concurrent callers never block one another.

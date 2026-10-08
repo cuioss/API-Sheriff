@@ -4,7 +4,7 @@
 
 == Status
 
-Accepted.
+Superseded by link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062].
 
 == Context
 
@@ -89,13 +89,7 @@ This section records the framework-agnostic surface *as 0.1.0 actually ships it*
 reversal has a measurable baseline rather than a remembered one. It is a *record of state, not a
 new decision* -- the Decision section above is unchanged.
 
-[IMPORTANT]
-====
-*Pending supersession.* This ADR is expected to be *reversed* by `api-sheriff-next`, on the
-operator decision _"Revert the ADR. If there is something available (quarkus) use that"_. That
-work owns the reversal and owns retiring the arch-gate; nothing here anticipates it. The snapshot
-exists precisely so the reversal can be measured against what shipped.
-====
+This ADR is superseded by link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062], which retires the framework-agnostic core rule and its arch-gate and keeps a narrowed gate over the pre-boot configuration packages.
 
 === The reactor at the cut
 

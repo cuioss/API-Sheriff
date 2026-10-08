@@ -340,7 +340,8 @@ class GatewayEdgeRouteTest {
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)),
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                    unconsultedTrustProfileResolver(), PortalEndpoint.inert()).registerRoutes(router);
+                    unconsultedTrustProfileResolver(), PortalEndpoint.inert(),
+                    GatewayEdgeRouteBffWiringTest.gatewayJson()).registerRoutes(router);
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
@@ -544,7 +545,7 @@ class GatewayEdgeRouteTest {
         void rendersUnchangedBodyWithoutMembers() {
             GatewayException rejected = new GatewayException(EventType.SCOPE_MISSING, LOG_MESSAGE);
 
-            String body = GatewayEdgeRoute.problemBody(TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
+            String body = GatewayEdgeRoute.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
                     rejected.getProblemExtensions());
 
             assertEquals("""
@@ -560,7 +561,7 @@ class GatewayEdgeRouteTest {
             members.put("step_up_url", "/auth/step-up?returnUrl=%2Fapp%2Forders");
             GatewayException rejected = new GatewayException(EventType.SCOPE_MISSING, LOG_MESSAGE, members);
 
-            String body = GatewayEdgeRoute.problemBody(TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
+            String body = GatewayEdgeRoute.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
                     rejected.getProblemExtensions());
 
             assertAll(
@@ -577,7 +578,7 @@ class GatewayEdgeRouteTest {
         void escapesExtensionMemberNamesAndValues() {
             Map<String, Object> members = Map.of("quoted\"name", "back\\slash and\nnewline");
 
-            String body = GatewayEdgeRoute.problemBody(TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(), members);
+            String body = GatewayEdgeRoute.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(), members);
 
             assertEquals("""
                     {"type":"urn:api-sheriff:problem:authorization","title":"Authorization","status":403,\
@@ -1124,7 +1125,9 @@ class GatewayEdgeRouteTest {
                     """);
             GatewayConfig loaded = new ConfigLoader(configDir, new EnvSecretResolver(
                     name -> "SHERIFF_TRUSTED_PROXIES".equals(name) ? trustedProxies : null))
-                    .load().gateway();
+                    .load(defaulted -> {
+                        // The document declares no ${VAR:-default}, so there is no fallback to observe.
+                    }).gateway();
 
             // Guard — without this, a substitution that silently produced an empty set would make both
             // legs agree (nothing is trusted) and the negative control would pass for the wrong reason.
@@ -1142,7 +1145,8 @@ class GatewayEdgeRouteTest {
             new GatewayEdgeRoute(new RouteTable(List.of(proxyRoute(upstream.actualPort()))), loaded,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                    unconsultedTrustProfileResolver(), PortalEndpoint.inert()).registerRoutes(router);
+                    unconsultedTrustProfileResolver(), PortalEndpoint.inert(),
+                    GatewayEdgeRouteBffWiringTest.gatewayJson()).registerRoutes(router);
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
@@ -1340,7 +1344,7 @@ class GatewayEdgeRouteTest {
             new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).egressTls(egressTls).build(),
                     new SingletonInstance<>(tokenValidator), capturing, virtualThreadExecutor, hardening,
                     new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), resolver,
-                    PortalEndpoint.inert());
+                    PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
             return capturing;
         }
     }
@@ -1758,7 +1762,7 @@ class GatewayEdgeRouteTest {
             new GatewayEdgeRoute(new RouteTable(List.of(route(ROUTE_ID, Protocol.HTTP, Require.NONE))), config,
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
                     new SheriffMetrics(registry), BffRuntime.inert(), unconsultedTrustProfileResolver(),
-                    portal).registerRoutes(router);
+                    portal, GatewayEdgeRouteBffWiringTest.gatewayJson()).registerRoutes(router);
             return Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the edge front server to start listening");
@@ -1840,7 +1844,7 @@ class GatewayEdgeRouteTest {
             PortalEndpoint portal) {
         return new GatewayEdgeRoute(table, config, new SingletonInstance<>(tokenValidator), vertx,
                 virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), runtime,
-                unconsultedTrustProfileResolver(), portal);
+                unconsultedTrustProfileResolver(), portal, GatewayEdgeRouteBffWiringTest.gatewayJson());
     }
 
     private static EgressTrustProfileResolver unconsultedTrustProfileResolver() {

@@ -455,7 +455,8 @@ class GatewayEdgeErrorPageTest {
                 PortalRenderer.builtIn(), runtime::sessionIdentity, oidc, true, "/");
         GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),
                 vertx, virtualThreadExecutor, new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                runtime, EgressTrustProfiles.unconsulted(), portalEndpoint);
+                runtime, EgressTrustProfiles.unconsulted(), portalEndpoint,
+                GatewayEdgeRouteBffWiringTest.gatewayJson());
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
         return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),

@@ -86,13 +86,15 @@ import org.jspecify.annotations.Nullable;
  * resolution entirely and need not resolve.</li>
  * </ul>
  * <p>
- * {@link #resolve(Path, List, Collection, Consumer)} additionally reports every
+ * {@link #resolve(Path, List, Collection, Consumer)} is the one entry. It also reports every
  * {@code ${VAR:-default}} placeholder that fell back to its in-file default, as a
  * {@link DefaultedPlaceholder} naming {@code topology.properties}, the alias and the
  * variable — never a value — and only for aliases it actually resolves.
  * <p>
- * Framework-agnostic (ADR-0005): the substitution engine is constructor-injected.
- * Instances are stateless between calls and safe to reuse.
+ * Pre-boot path (ADR-0061, ADR-0062): the offline {@code --validate-config} check runs this
+ * resolver before the framework starts, so it depends on no framework type and takes the
+ * substitution engine through its constructor. Instances are stateless between calls and
+ * safe to reuse.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -103,9 +105,6 @@ public final class TopologyResolver {
     private static final String TOPOLOGY_FILE = "topology.properties";
     private static final int HTTP_PORT = 80;
     private static final int HTTPS_PORT = 443;
-    private static final Consumer<DefaultedPlaceholder> IGNORE_DEFAULTED = defaulted -> {
-        // The three-argument resolve overload does not report applied in-file defaults.
-    };
 
     private final EnvSecretResolver resolver;
 
@@ -128,8 +127,15 @@ public final class TopologyResolver {
     }
 
     /**
-     * Resolves and decomposes the topology aliases referenced by the enabled
-     * endpoints together with the supplied additional aliases.
+     * Resolves and decomposes the topology aliases referenced by the enabled endpoints
+     * together with the supplied additional aliases, and reports every
+     * {@code ${VAR:-default}} placeholder that fell back to its in-file default.
+     * <p>
+     * Each fallback reaches {@code defaultedSink} as one
+     * {@code DefaultedPlaceholder("topology.properties", <ALIAS>, <VAR>)} — never the default
+     * or any value — only for an alias this pass actually resolves, so a disabled endpoint's
+     * alias and an absent additional alias are never reported. Entries are emitted in
+     * resolution order and whether or not the pass later fails.
      *
      * @param topologyFile      the {@code topology.properties} file (may be absent)
      * @param enabledEndpoints  the endpoints already filtered to those enabled; an endpoint
@@ -140,37 +146,14 @@ public final class TopologyResolver {
      *                          than collected, leaving
      *                          {@link de.cuioss.sheriff.gateway.config.validation.ConfigValidator}
      *                          to report it
+     * @param defaultedSink     receives one entry per variable whose in-file default was
+     *                          applied, per alias
      * @return the immutable resolved topology
      * @throws TopologyResolutionException carrying every failure of the pass: each alias
      *                                     referenced by an enabled endpoint that is
      *                                     unresolved, each resolved alias whose placeholder
      *                                     cannot be resolved or whose URL is malformed, and
      *                                     an unreadable topology file
-     */
-    public ResolvedTopology resolve(Path topologyFile, List<EndpointConfig> enabledEndpoints,
-            Collection<String> additionalAliases) {
-        return resolve(topologyFile, enabledEndpoints, additionalAliases, IGNORE_DEFAULTED);
-    }
-
-    /**
-     * Resolves and decomposes the topology aliases exactly as
-     * {@link #resolve(Path, List, Collection)} does, and reports every
-     * {@code ${VAR:-default}} placeholder that fell back to its in-file default.
-     * <p>
-     * Each fallback reaches {@code defaultedSink} as one
-     * {@code DefaultedPlaceholder("topology.properties", <ALIAS>, <VAR>)} — never the default
-     * or any value — only for an alias this pass actually resolves, so a disabled endpoint's
-     * alias and an absent additional alias are never reported. Entries are emitted in
-     * resolution order and whether or not the pass later fails.
-     *
-     * @param topologyFile      the {@code topology.properties} file (may be absent)
-     * @param enabledEndpoints  the endpoints already filtered to those enabled
-     * @param additionalAliases aliases to resolve independently of endpoint enablement
-     * @param defaultedSink     receives one entry per variable whose in-file default was
-     *                          applied, per alias
-     * @return the immutable resolved topology
-     * @throws TopologyResolutionException carrying every failure of the pass, as for
-     *                                     {@link #resolve(Path, List, Collection)}
      * @since 1.0
      */
     public ResolvedTopology resolve(Path topologyFile, List<EndpointConfig> enabledEndpoints,

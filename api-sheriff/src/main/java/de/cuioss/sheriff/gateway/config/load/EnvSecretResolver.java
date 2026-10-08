@@ -54,13 +54,23 @@ import org.jspecify.annotations.Nullable;
  * <em>pre-substitution</em> value: a secret must be written as a bare
  * {@code ${VAR}} reference, never a literal or a defaulted placeholder.
  * <p>
- * {@link #resolve(String, Consumer)} additionally reports each variable whose in-file
- * default was applied — by <em>name only</em>, never the default and never any value —
- * so a caller can tell an operator which settings silently fell back.
+ * {@link #resolve(String, Consumer)} reports each variable whose in-file default was
+ * applied — by <em>name only</em>, never the default and never any value — so a caller
+ * can tell an operator which settings silently fell back.
  * <p>
- * The environment lookup is constructor-injected (defaulting to
- * {@link System#getenv(String)}), keeping the engine framework-agnostic and
- * deterministically testable.
+ * <strong>Why this engine is kept (ADR-0062).</strong> The platform's own expression
+ * resolution, SmallRye Config, does not replace it. The reasons are:
+ * <ul>
+ * <li>its own {@code :-} default syntax, with no escape form;</li>
+ * <li>refusal of a malformed placeholder instead of leaving it in the value;</li>
+ * <li>every missing name of a value reported at once, not only the first;</li>
+ * <li>a call-back on each defaulted name, by name only;</li>
+ * <li>the environment as the only source, reached only through an injected lookup that
+ * defaults to {@link System#getenv(String)} — which also makes the engine
+ * deterministically testable;</li>
+ * <li>it runs on the pre-boot {@code --validate-config} path (ADR-0061), before SmallRye
+ * Config exists.</li>
+ * </ul>
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -71,9 +81,6 @@ public final class EnvSecretResolver {
             .compile("\\$\\{([A-Za-z_]\\w*)(?::-((?:(?!\\$\\{).)*?))?}");
     private static final Pattern BARE_REFERENCE = Pattern.compile("\\$\\{[A-Za-z_]\\w*}");
     private static final String OPEN = "${";
-    private static final Consumer<String> IGNORE_DEFAULTED = name -> {
-        // The plain resolve(String) overload does not track applied defaults.
-    };
 
     private final UnaryOperator<@Nullable String> lookup;
 
@@ -117,24 +124,8 @@ public final class EnvSecretResolver {
     }
 
     /**
-     * Substitutes every placeholder in the value with the resolved environment value
-     * or its literal default.
-     *
-     * @param value the raw configuration value
-     * @return the value with all placeholders substituted
-     * @throws MissingVariableException     when one or more bare {@code ${NAME}}
-     *                                      placeholders name an undefined variable; it
-     *                                      names every such variable of the value
-     * @throws MalformedPlaceholderException when the value contains a {@code ${} that
-     *                                      is not a well-formed placeholder
-     */
-    public String resolve(String value) {
-        return resolve(value, IGNORE_DEFAULTED);
-    }
-
-    /**
-     * Substitutes every placeholder in the value exactly as {@link #resolve(String)} does,
-     * and reports each variable whose in-file default was applied.
+     * Substitutes every placeholder in the value with the resolved environment value or its
+     * literal default, and reports each variable whose in-file default was applied.
      * <p>
      * Each time a {@code ${NAME:-default}} placeholder falls back to its default because
      * {@code NAME} is unset, {@code NAME} is handed to {@code onDefaulted} — once per

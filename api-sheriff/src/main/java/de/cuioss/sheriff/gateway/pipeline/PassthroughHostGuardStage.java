@@ -40,8 +40,8 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  * This is the genuinely-new runtime half of the guard, distinct from the framing / anti-smuggling
  * {@code FramingGate} and from the boot-time collision rule
  * ({@code ConfigValidator.validatePassthroughHostCollision}). The stage is inert when
- * {@code passthrough_sni} is empty, and framework-agnostic (ADR-0005) — it consumes only the
- * agnostic {@link PipelineRequest}.
+ * {@code passthrough_sni} is empty, and it consumes only the framework-agnostic
+ * {@link PipelineRequest}.
  *
  * @author API Sheriff Team
  * @since 1.0

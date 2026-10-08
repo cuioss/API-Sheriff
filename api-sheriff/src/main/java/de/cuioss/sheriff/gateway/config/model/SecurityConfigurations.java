@@ -35,7 +35,8 @@ import org.jspecify.annotations.Nullable;
  * omitted component is invisible at the call site and shows up only as a validator that quietly
  * stopped applying.
  * <p>
- * Framework-agnostic (ADR-0005): the class touches the cui-http configuration API only.
+ * The class touches the cui-http configuration API only and carries no framework dependency, as
+ * the pre-boot rule requires of this package (ADR-0062).
  *
  * @author API Sheriff Team
  * @since 1.0

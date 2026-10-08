@@ -1,0 +1,262 @@
+= ADR-0062: Platform mechanisms are preferred over hand-rolled equivalents and the framework-agnostic core rule is retired
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: Where the Quarkus platform already supplies a mechanism the gateway uses it, and a hand-rolled component stays only with a recorded reason -- EnvSecretResolver, the BFF session store, ClientHelloSniParser and the pre-boot configuration path each carry one. The framework-agnostic core rule of ADR-0005 and its six-package gate are retired; what remains is a narrowed gate, PreBootFrameworkFreeArchTest, that keeps the five pre-boot configuration packages config.boot, config.load, config.model, config.validation and config.topology free of framework dependencies because the offline configuration check runs them before the framework starts. @SessionScoped and the Vert.x Web SessionStore are rejected for the BFF session, the session store and binding stay producer-built, and Quarkus command mode is not adopted for the offline check.
+// tags: module-structure, platform-adoption, quarkus, hand-rolled, arch-gate, pre-boot, session-store, cdi, configuration
+// affects: api-sheriff, documentation
+// supersedes: 5
+// end-adr-metadata
+
+== Status
+
+Accepted. Supersedes link:0005-module-structure.adoc[ADR-0005].
+
+== Context
+
+ADR-0005 kept one Quarkus module and asked for a framework-agnostic core inside it: a set of
+packages that import no framework type, take their collaborators through constructors and are
+wired by a thin framework-bound edge. The seam was kept so that a core module could be extracted
+cheaply once a second consumer of that logic appeared.
+
+=== What changed since ADR-0005
+
+*The reactor grew and no second consumer came with it.* ADR-0005 was written against three
+modules. The reactor now has six: `api-sheriff`, `integration-tests`, `benchmarks`, `demo-client`,
+`deployment` and `build-parent`. The three added modules carry no Java. `api-sheriff` is still the
+only deployable and still the only consumer of the logic the seam protected, so the condition
+ADR-0005 names for extracting a core module never occurred.
+
+*The seam cost more than it returned.* Keeping framework types out of a package means writing by
+hand what the platform already ships. The gateway carried its own JSON writer although Quarkus
+supplies a Jackson serializer on the same classpath, and it built object graphs by hand where the
+container could have built them. Each such component is code to maintain, test and review for a
+portability nobody uses.
+
+*The gate never covered what was hand-rolled.* The enforced set of the ADR-0005 gate was six
+packages: `config.boot`, `config.model`, `config.validation`, `events`, `forward` and `pipeline`.
+Neither `bff` nor `config.load` was ever in it. The JSON writer and the session store live under
+`bff`, so they were hand-rolled by convention and not because a gate required it. The rule shaped
+code well outside the packages it was enforced on.
+
+The question is therefore no longer how to keep a core extractable. It is which hand-rolled
+components still have a reason to exist, and what remains worth enforcing mechanically.
+
+== Decision
+
+=== The rule
+
+*Where the Quarkus platform already supplies a mechanism, the gateway uses it. A hand-rolled
+component stays only with a recorded reason.*
+
+The platform here means Quarkus and the Jakarta and MicroProfile APIs it ships. A reason is a
+property the platform mechanism does not have, or a point in the process lifetime at which it does
+not exist yet. "It keeps the package framework-free" is no longer a reason on its own. The
+framework-agnostic core rule of ADR-0005 is retired together with its gate; the one part of it that
+survives is the pre-boot rule in <<narrowed-pre-boot-rule>>, and it survives for a different reason.
+
+The first application of the rule is the JSON writer of the BFF runtime: it is replaced by the
+Jackson serializer the platform supplies.
+
+=== Components that stay hand-rolled
+
+Each of the following was checked against the platform mechanism that would replace it. Each stays,
+for the reason given.
+
+[cols="1,3", options="header"]
+|===
+| Component | Why it stays
+
+| `EnvSecretResolver`
+| It resolves `${VAR}` placeholders in the configuration files with semantics SmallRye Config does
+  not offer together: its own `:-` default syntax without an escape form, refusal of a malformed
+  placeholder, every missing name reported in one pass instead of the first one, a call-back naming
+  each placeholder that fell back to its default, and the process environment as the only source.
+  It also runs on the pre-boot `--validate-config` path
+  (link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]),
+  where SmallRye Config does not exist yet.
+
+| The BFF session store (`SessionStore`, `InMemorySessionStore`)
+| Neither platform session mechanism fits; see <<rejected-session-alternatives>>.
+
+| `ClientHelloSniParser`
+| It reads the Server Name Indication out of the ClientHello before TLS is terminated, which is
+  what the L4 passthrough relay decides on
+  (link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]).
+  A terminating framework API exposes the name only after the handshake it would have to complete.
+
+| Pre-boot configuration (`config/load`, `config/boot`, `ConfigValidationCommand`)
+| The offline configuration check answers before the framework starts, and the boot calls the same
+  pipeline seam so the two verdicts cannot differ (ADR-0061). Code on that path cannot use a
+  mechanism that needs a running container.
+|===
+
+[[rejected-session-alternatives]]
+=== Rejected session alternatives
+
+Two platform mechanisms carry the name "session". Neither can hold a BFF session.
+
+*`@SessionScoped`.* The CDI session scope is backed by a Servlet `HttpSession`. It exists only when
+`quarkus-undertow` is present, and it is activated by a request passing through a servlet. The
+gateway edge is one Vert.x catch-all route and no request ever passes a servlet, so the scope would
+never be active on the request path. Adding Undertow to make it active would put a second HTTP
+stack in front of a proxy for the sake of one scope.
+
+*The Vert.x Web `SessionStore`.* It is the session mechanism of the stack the edge already runs on,
+and its local implementation needs no new dependency. It is rejected because it lacks what the
+session contract of
+link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+requires:
+
+* no cap on the number of stored sessions;
+* no absolute lifetime -- a session lives as long as it is accessed;
+* no lookup by `sid` or `sub`, which back-channel logout needs to find the sessions of one
+  identity-provider session or one subject;
+* a reaper that removes expired sessions without a call-back, so nothing can be revoked or counted
+  when a session expires;
+* a clustered store only through additional dependencies.
+
+Wrapping the store to add these would leave the gateway maintaining the same logic it has today,
+plus an adapter.
+
+=== `put` after `delete` in the Vert.x local session store
+
+The local store has one further property that decides the question on its own. It was read in
+`io.vertx.ext.web.sstore.impl.LocalSessionStoreImpl#put` of `io.vertx:vertx-web` *4.5.34*, the
+version the Quarkus BOM resolves for `api-sheriff`.
+
+`put` looks up the entry stored under the session's id. It compares versions only when an entry is
+found, and fails on a mismatch. When no entry is found it stores the session. `delete` removes the
+entry. A `put` issued after a `delete` of the same id therefore finds no entry, skips the version
+check and stores the session again.
+
+For a BFF session that order is the ordinary race between a logout and a request that is refreshing
+or widening the same session. The gateway's own store closes it with an updating write that
+replaces a stored session and never creates one, so a session ended while a writer was in flight is
+not written back
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018,
+updating write]). The Vert.x local store has no such operation.
+
+=== The session store and the session binding stay producer-built
+
+`BffRuntimeProducer.build` creates the session store and the `SessionBinding` only when the
+configuration declares a recognised `session.mode`. A bearer-only gateway creates neither.
+
+A CDI bean has a different lifecycle: it exists in every mode, so the store and the binding would
+have to exist, or be replaced by an inert form, on a gateway that has no session at all. The rule
+of this ADR prefers the platform mechanism where it is equivalent. Here it changes when a component
+is created and whether it is created, so the producer keeps building both.
+
+=== Where the session decisions are recorded
+
+This ADR settles that the session store stays hand-rolled. What the store and the binding do --
+the re-issue of the cookie value the browser holds, the idle deadline, the activity cookie of
+cookie mode and the periodic sweep -- is recorded as amendments of the two ADRs that own the
+session contract, and is not restated here:
+
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+  -- the `SessionBinding` seam and the session-identity contract;
+* link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]
+  -- scope refresh and the widening of a live session.
+
+=== The ADR-0061 revisit: Quarkus command mode is not adopted
+
+ADR-0061 routes the offline configuration check in `main` and names the reversal of ADR-0005 as
+the point at which Quarkus command mode is to be evaluated again. It was, and it is not adopted.
+
+Command mode starts the application before the command runs. The CDI container is up at that
+point, which contradicts the property ADR-0061 is built on: that no container, listener,
+identity-provider client or bind exists while a configuration directory is being judged. The
+`--validate-config` flag on the gateway binary stays as ADR-0061 decided it.
+
+[[narrowed-pre-boot-rule]]
+=== The narrowed pre-boot rule
+
+The six-package gate of ADR-0005 is retired. `events`, `forward` and `pipeline` are no longer
+checked and may use platform types.
+
+A narrowed gate stays over the five pre-boot configuration packages:
+
+* `de.cuioss.sheriff.gateway.config.boot`
+* `de.cuioss.sheriff.gateway.config.load`
+* `de.cuioss.sheriff.gateway.config.model`
+* `de.cuioss.sheriff.gateway.config.validation`
+* `de.cuioss.sheriff.gateway.config.topology`
+
+*No class in these packages may depend on a framework package.* The reason is not portability. The
+offline `--validate-config` check runs these packages before the framework starts (ADR-0061), and a
+framework type reached from them would put framework code on a path that must start nothing.
+
+`config.load` and `config.topology` are new to the gate. Both are on the pre-boot path and neither
+was in the ADR-0005 set.
+
+The forbidden framework packages are the nine the retired gate listed: `io.quarkus..`,
+`io.vertx..`, `io.smallrye..`, `io.netty..`, `org.jboss..`, `jakarta.enterprise..`,
+`jakarta.inject..`, `org.eclipse.microprofile..` and `io.micrometer..`.
+
+The rule is enforced by `PreBootFrameworkFreeArchTest`, a plain JUnit 5 test that runs in the
+module test lane and in the quality gate. It carries a vacuity guard, which fails when one of the
+five package entries resolves to no production class, and a negative control, which proves the
+check fails on a package that does depend on the framework.
+
+== Consequences
+
+=== Positive
+
+* A component the platform already supplies is no longer written, tested and reviewed a second
+  time.
+* Every hand-rolled component that remains has a stated reason, so a later reader can tell a
+  deliberate choice from an inherited one and can re-check the reason when the platform changes.
+* The remaining gate protects a property the product depends on -- the offline check starting
+  nothing -- and covers all five packages on that path, two of which the old gate missed.
+* `events`, `forward` and `pipeline` may use the platform's metrics, injection and client types
+  directly.
+
+=== Negative
+
+* Extracting a framework-free core module is no longer cheap. Outside the five pre-boot packages
+  nothing keeps framework types out, so a later extraction would be a refactoring and not a move.
+* The reasons in this ADR are tied to platform behaviour at the versions read. A platform release
+  that adds a size cap or an identity lookup to its session store, or a command mode that starts no
+  container, makes the matching entry worth re-checking.
+
+=== Risks
+
+* "Recorded reason" is enforced by review, not by a test. A new hand-rolled component can be added
+  without one.
+* The pre-boot gate checks dependencies of the five packages. A class outside them that the
+  pre-boot path calls is not covered; the integration test that runs the flag on the built image is
+  what observes that case.
+
+== Alternatives Considered
+
+*Keeping the ADR-0005 gate unchanged.* The six packages would stay framework-free and a core
+module would stay cheap to extract. Rejected because the extraction has no consumer, and because
+the gate both over-reaches and under-reaches: it forbids platform types in three packages that
+gain nothing from the ban, and it does not cover two of the five packages the offline check
+actually runs.
+
+*Retiring the gate without a replacement.* It would remove the last mechanical rule and leave
+package dependencies to review. Rejected because the pre-boot property is exactly the kind a single
+convenient import breaks without any test noticing until the offline check is run on a built
+image.
+
+*Extracting the core module now.* It would turn the package rule into a compile-time one. Rejected
+for the reason ADR-0005 already gave and which still holds: a second reactor node and a published
+artifact for one consumer.
+
+The platform session mechanisms are covered in <<rejected-session-alternatives>>, and Quarkus
+command mode in the ADR-0061 section above.
+
+== References
+
+* link:0005-module-structure.adoc[ADR-0005] -- the superseded decision, kept with its 0.1.0 snapshot of the enforced set
+* link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017] -- the accept-time SNI split `ClientHelloSniParser` serves
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018] -- the session contract, the updating write and the session amendments
+* link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057] -- scope refresh and session widening, and its session amendment
+* link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061] -- the offline check whose pre-boot path the narrowed gate protects
+* link:../architecture.adoc#_bff_session_runtime[Architecture -- BFF runtime] -- where `BffRuntimeProducer` assembles the session store and binding
