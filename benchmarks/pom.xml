@@ -614,14 +614,14 @@
                                 </configuration>
                             </execution>
 
-                            <!-- The executions below carry a <skip> bound to their own property. Both
-                                 properties are now false, so both goals run: uploadLarge's blocking
+                            <!-- The executions below carry a <skip> bound to their own property. For
+                                 uploadLarge and websocketEcho it is now false, so both run: uploadLarge's blocking
                                  defect — the anchor's max_body_bytes silently capped at the Quarkus
                                  10 MiB default — is fixed by the framework body-size floor declared in
                                  application.properties, and websocketEcho's — the leaked edge admission
                                  permit in GatewayEdgeRoute — was fixed earlier. Each property is kept so
                                  its goal stays individually suppressible without editing the execution.
-                                 Both stay ordered LAST as defense-in-depth: Maven runs same-phase
+                                 They stay ordered after every goal without a skip, as defense-in-depth: Maven runs same-phase
                                  executions in declaration order, so a fail-fast abort from a goal here
                                  still cannot discard goals that would otherwise pass. -->
 
