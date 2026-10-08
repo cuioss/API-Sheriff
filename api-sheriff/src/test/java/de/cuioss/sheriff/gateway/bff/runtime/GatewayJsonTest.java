@@ -212,4 +212,26 @@ class GatewayJsonTest {
                             "indented, and without the null member its inclusion rule drops"));
         }
     }
+
+    @Nested
+    @DisplayName("Derived from a mapper with every serialization feature inverted")
+    class DerivedFromMapperWithEveryFeatureInverted {
+
+        private final GatewayJson derived = new GatewayJson(everyFeatureInverted());
+
+        private static ObjectMapper everyFeatureInverted() {
+            ObjectMapper mapper = new ObjectMapper();
+            for (SerializationFeature feature : SerializationFeature.values()) {
+                mapper.configure(feature, !feature.enabledByDefault());
+            }
+            return mapper;
+        }
+
+        @ParameterizedTest(name = "{0} renders as {2}")
+        @MethodSource("de.cuioss.sheriff.gateway.bff.runtime.GatewayJsonTest#parityCorpus")
+        @DisplayName("Should render every corpus value to the same bytes")
+        void shouldRenderCorpusValue(String label, @Nullable Object value, String expectedJson) {
+            assertEquals(expectedJson, derived.toJson(value), () -> "Rendering of: " + label);
+        }
+    }
 }

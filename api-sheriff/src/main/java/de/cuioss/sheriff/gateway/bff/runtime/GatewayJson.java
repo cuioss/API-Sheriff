@@ -106,6 +106,11 @@ public final class GatewayJson {
         derived.setDefaultPropertyInclusion(
                 JsonInclude.Value.construct(JsonInclude.Include.ALWAYS, JsonInclude.Include.ALWAYS));
         derived.deactivateDefaultTyping();
+        // Every serialization feature starts from the library default, so a feature switched on the
+        // shared mapper — omitting null map values, for one — cannot reach a gateway-authored body.
+        for (SerializationFeature feature : SerializationFeature.values()) {
+            derived.configure(feature, feature.enabledByDefault());
+        }
         derived.setSerializerFactory(BeanSerializerFactory.instance
                 .withAdditionalSerializers(new ValueSerializers())
                 .withAdditionalKeySerializers(new KeySerializers()));
