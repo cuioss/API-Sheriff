@@ -381,7 +381,7 @@ class BackchannelLogoutReceiverTest {
         }
 
         @Test
-        @DisplayName("Should latch the warning a holder of one captured token can repeat")
+        @DisplayName("Should warn once when an already accepted token is presented repeatedly")
         void shouldLatchRepeatedReplay() {
             RecordingBinding binding = new RecordingBinding(SessionBinding.IdpDestruction.SUPPORTED, 1);
             BackchannelLogoutReceiver receiver = receiver(logoutClaims(), binding);
@@ -392,22 +392,45 @@ class BackchannelLogoutReceiverTest {
             }
 
             assertEquals(1, warningsFor(LogoutRejection.REPLAYED),
-                    "one captured token must not buy one WARN per delivery");
+                    "the reason is reported on its first occurrence only");
         }
 
+        /**
+         * A token refused on a claim check is not remembered, so the same token can be presented
+         * again and is refused again each time. The refusal is reported once per reason.
+         */
         @Test
-        @DisplayName("Should warn on every wrongly typed token, which only the identity provider can sign")
-        void shouldWarnOnEveryTypeMismatch() {
+        @DisplayName("Should warn once when the same claim-failing token is presented repeatedly")
+        void shouldLatchRepeatedClaimRejection() {
             RecordingBinding binding = new RecordingBinding(SessionBinding.IdpDestruction.SUPPORTED, 1);
             BackchannelLogoutReceiver receiver = new BackchannelLogoutReceiver(typed(logoutClaims(), "JWT"),
                     validator, binding, roomyGuard());
 
-            for (int attempt = 0; attempt < 3; attempt++) {
-                assertFalse(receiver.receive(RAW, NOW).accepted());
+            for (int attempt = 0; attempt < 5; attempt++) {
+                assertFalse(receiver.receive(RAW, NOW).accepted(), "every presentation is refused");
             }
 
-            assertEquals(3, warningsFor(LogoutRejection.TYPE_MISMATCH));
+            assertEquals(1, warningsFor(LogoutRejection.TYPE_MISMATCH),
+                    "the reason is reported on its first occurrence only");
             assertEquals(0, binding.destroyCalls);
+        }
+
+        @Test
+        @DisplayName("Should warn once when tokens the memory cannot hold are presented repeatedly")
+        void shouldLatchRepeatedFullMemory() {
+            RecordingBinding binding = new RecordingBinding(SessionBinding.IdpDestruction.SUPPORTED, 1);
+            Map<String, ClaimValue> claims = logoutClaims();
+            BackchannelLogoutReceiver receiver = new BackchannelLogoutReceiver(verifying(claims), validator,
+                    binding, new LogoutTokenReplayGuard(1));
+            receiver.receive(RAW, NOW);
+            claims.put("jti", ClaimValue.forPlainString("logout-token-id-2"));
+
+            for (int attempt = 0; attempt < 5; attempt++) {
+                assertFalse(receiver.receive(RAW, NOW).accepted(), "every presentation is refused");
+            }
+
+            assertEquals(1, warningsFor(LogoutRejection.REPLAY_MEMORY_FULL));
+            assertEquals(1, binding.destroyCalls, "only the remembered token was acted on");
         }
 
         @Test

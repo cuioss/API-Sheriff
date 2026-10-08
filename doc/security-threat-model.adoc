@@ -1968,8 +1968,8 @@ taken before any session is destroyed, so two deliveries arriving together canno
 10 000 entries per gateway instance and is not shared between instances; an entry leaves only when
 its window has closed, and a token that finds the memory full of live entries is refused rather than
 acted on unremembered. Every refusal is the `400` of a rejected logout token, served `no-store`, with
-`ApiSheriff-112` naming the reason. A repeated token is recorded at `WARN` once per process and at
-`DEBUG` afterwards, because the holder of one captured token can repeat it at will.
+`ApiSheriff-112` naming the reason. Each reason is recorded at `WARN` once per process and at
+`DEBUG` afterwards, because a refused token can be presented again at will.
 
 *An RP-initiated logout ends the gateway session whatever the identity provider offers.* The logout
 endpoint destroys the session and clears its cookies first and builds the redirect to the provider's

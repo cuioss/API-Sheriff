@@ -63,8 +63,8 @@ import org.jspecify.annotations.Nullable;
  * while still surfacing a genuine first occurrence at the default log level — the earlier
  * unconditional-{@code DEBUG} rule bounded the flood too, but at the price of making a delivery that
  * arrived and was refused indistinguishable from one that never arrived at all. See
- * {@link LogoutRejectionLog} for the full rule, including why the signature-verified rejections the
- * receiver raises are <em>not</em> latched. Server-mode behaviour is unchanged.
+ * {@link LogoutRejectionLog} for the full rule, which latches the rejections the receiver raises the
+ * same way. Server-mode behaviour is unchanged.
  * <p>
  * The endpoint is framework-agnostic (raw form body in, a {@link BackchannelLogoutOutcome} the edge
  * renders out — no JAX-RS/Vert.x coupling), so it is unit-testable without a container or a live IdP;
