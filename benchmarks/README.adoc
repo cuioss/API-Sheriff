@@ -174,7 +174,12 @@ running gateway and the real identity provider:
   yields a session.
 
 Each expectation, and each flood's exact count of started logins, is a k6 threshold; a run that
-misses one exits non-zero, and so does a run that aborts before it reaches one. A last check asserts
+misses one exits non-zero. A run that cannot go on -- a login that never reaches the identity
+provider's login form, a flood request that starts no login -- is aborted as a whole with
+`exec.test.abort` and exits non-zero as well. Both exits were measured on the pinned k6 image
+(`Dockerfile.k6`, k6 2.1.0) with a one-iteration script whose only counter is never incremented: k6
+evaluates the `count==1` threshold on that counter, reports it crossed with `count=0` and exits 99,
+and an aborted run exits 108 and still calls its summary handler. A last check asserts
 that the gateway still answers its readiness probe. Each phase has to finish inside the five-minute
 lifetime of a pending login, which the script checks for phase B before it reads the refusal.
 

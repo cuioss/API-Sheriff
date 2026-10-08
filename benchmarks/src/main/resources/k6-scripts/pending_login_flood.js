@@ -28,9 +28,21 @@
  * has the threshold `count==1`: the first login of phase A kept, the first login of phase B dropped,
  * the newest login of phase B kept, and the gateway answering its readiness probe afterwards. The two
  * flood counters have the thresholds `count==9999` and `count==10000`, so a flood that started one
- * login too few or too many fails the run as well. An expectation that is not reached leaves its
- * counter at zero; a threshold is evaluated on a counter that was never incremented, so an aborted
- * run cannot pass.
+ * login too few or too many fails the run as well.
+ *
+ * What ends the run early. A step nothing after it can make up for -- a login that does not reach the
+ * identity provider's login form, a flood request that starts no login -- aborts the run with
+ * `exec.test.abort`, not the iteration with `fail()`. Both were measured on the pinned k6 image
+ * (grafana/k6 2.1.0, `Dockerfile.k6`), with a one-iteration script whose only counter carries
+ * `count==1` and is never incremented:
+ *
+ *   * with `fail()` in the iteration, k6 evaluates the threshold on the counter that was never
+ *     incremented, reports `count==1` as crossed with `count=0`, and exits 99;
+ *   * with `exec.test.abort()` in the iteration, k6 exits 108 and still calls `handleSummary`.
+ *
+ * So an expectation that is not reached leaves its counter at zero and fails the run on that image
+ * either way. The abort is what makes the exit of a run that could not go on independent of how k6
+ * treats a metric without samples.
  *
  * The run is one iteration of one virtual user, and that is deliberate. Opening a login, flooding and
  * completing the login have to happen in that order, twice, and the cookie jar of the opened login
@@ -44,7 +56,8 @@
  * The aspect has no counterpart on another gateway and is not part of the comparison lane.
  */
 import http from 'k6/http';
-import { check, fail } from 'k6';
+import { check } from 'k6';
+import exec from 'k6/execution';
 import { Counter } from 'k6/metrics';
 import { buildSummary, SUMMARY_TREND_STATS } from './lib/summary.js';
 import { baseUrl, managementUrl, targetUrl } from './lib/target.js';
@@ -139,11 +152,11 @@ function openLogin(which) {
     const jar = new http.CookieJar();
     const loginPage = http.get(LOGIN_URL, { jar: jar, redirects: 10, tags: { step: 'open' } });
     if (loginPage.status !== 200) {
-        fail(`${which}: ${LOGIN_URL} did not reach a login form: HTTP ${loginPage.status}`);
+        exec.test.abort(`${which}: ${LOGIN_URL} did not reach a login form: HTTP ${loginPage.status}`);
     }
     const formAction = extractFormAction(loginPage.body);
     if (!formAction) {
-        fail(`${which}: the login form at ${loginPage.url} carried no form action`);
+        exec.test.abort(`${which}: the login form at ${loginPage.url} carried no form action`);
     }
     return { jar: jar, formAction: formAction, openedAt: Date.now() };
 }
@@ -186,7 +199,8 @@ function flood(count, started) {
         }
         for (const response of http.batch(requests)) {
             if (!startedALogin(response)) {
-                fail(`a login of the flood was not started: HTTP ${response.status} from ${LOGIN_URL}`);
+                exec.test.abort(
+                    `a login of the flood was not started: HTTP ${response.status} from ${LOGIN_URL}`);
             }
             started.add(1);
         }
