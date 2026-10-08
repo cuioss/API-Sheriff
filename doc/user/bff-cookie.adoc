@@ -115,51 +115,48 @@ format-version change described under "Upgrading" below.
 === When to replace a passed key
 
 A passed key has to be replaced on a schedule. The schedule follows from how often the gateway
-seals with it.
+seals a session cookie with it.
 
-The gateway seals with AES-256-GCM and a random 96-bit nonce, and NIST SP 800-38D bounds one key
-used that way at 2^32^ (4 294 967 296) seals. The session cookie and the activity cookie (see
-<<idle-timeout>>) are sealed under separate keys, and both come from `session.encryption_key`. The
-activity key is the one that reaches the bound first, because it seals once per interval for every
-session in use -- 1 440 seals per session per day at an interval of 60 seconds, for a client that
-sends its requests one after another. The session key seals once per login, refresh and widening,
-which is far less often.
+The gateway seals the session cookie with AES-256-GCM and a random 96-bit nonce, and NIST SP
+800-38D bounds one key used that way at 2^32^ (4 294 967 296) seals. A session cookie is sealed at
+a login, at a token refresh and at a widening, and at no other time. Each of the three follows a
+successful response from the identity provider's token endpoint, so the gateway does not seal more
+often than the identity provider answers it.
 
-A client that sends requests in parallel raises that figure. The gateway keeps no state per
-session in cookie mode, so every request that arrives with the same activity cookie, once that
-cookie is one interval old, is answered with a newly sealed one. The seals in one interval are
-therefore bounded by the
-number of requests one session has in flight at the same time, not by one.
+The activity cookie (see <<idle-timeout>>) does not count towards the bound. It is not encrypted.
+It is authenticated with HMAC-SHA-256 under a key of its own, and that has no limit of this kind.
+How often it is written does not affect the schedule, whatever a client does.
 
 The rule: *replace `session.encryption_key` before this many days have passed since the key was
 first used.*
 
 [source]
 ----
-days = 4 294 967 296 / (1 440 x parallel requests per session x peak concurrent sessions)
+days = 4 294 967 296 / session-cookie seals per day
 ----
 
-The table gives the result for one request at a time. Divide its figure by the number of requests
-your client sends in parallel: a browser typically opens up to six connections to one origin over
-HTTP/1.1, and more streams than that over HTTP/2.
+The seals per day are the successful token-endpoint responses your identity provider gives the
+gateway's client per day, counted across all replicas that share the key. Read that number from the
+identity provider; it is the authoritative one.
+
+Where you have no such number yet, estimate it. A session in continuous use is refreshed once per
+access-token lifetime, which is `86 400 / access-token lifetime in seconds` seals per session per
+day: 288 at a lifetime of five minutes. Logins and widenings add to it. The table gives the
+estimate for a five-minute access token and sessions that are in use around the clock.
 
 [cols="1,1", options="header"]
 |===
-| Peak concurrent sessions | Replace the key at least every (one request at a time)
+| Peak concurrent sessions | Replace the key at least every
 
-| 8 000 | year (the bound is 365 days at 8 171 sessions)
-| 10 000 | 298 days
-| 50 000 | 59 days
-| 100 000 | four weeks (the bound is 29.8 days, so a calendar month is too long)
+| 10 000 | 1 491 days
+| 50 000 | 298 days
+| 100 000 | 149 days
+| 500 000 | four weeks (the bound is 29.8 days, so a calendar month is too long)
 |===
 
-Compute your own figure from the formula with your peak, counted across all replicas that share the
-key. The 1 440 holds for an `idle_timeout_seconds` of 120 or more, the default included. Below 120
-the gateway seals the activity cookie once every half idle timeout, so use
-`172 800 / idle_timeout_seconds` in its place: 5 760 seals per session per day at 30 seconds.
-Replacing the key resets the count for both keys, and it ends every session, as described above. A
-*generated* key needs no schedule beyond this: it is replaced at every restart, so restart the
-gateway within the same interval.
+Replacing the key resets the count, and it ends every session, as described above. A *generated*
+key needs no schedule beyond this: it is replaced at every restart, so restart the gateway within
+the same interval.
 
 === Migrating from a configuration that declared `previous_key`
 
@@ -673,14 +670,14 @@ in a second cookie, the *activity cookie*.
   is the session's remaining absolute lifetime.
 
 | Content
-| The time of the last request, sealed under a key of its own and bound to the one session it
-  belongs to. It carries no token. Its value is always 72 characters.
+| The time of the last request, authenticated under a key of its own and bound to the one session
+  it belongs to. It is not encrypted and carries no token. Its value is always 56 characters.
 
 | When it is set
 | On the response to a request let through on a session route, once the recorded last request is
   *one interval old*. The interval is 60 seconds, or half the idle timeout where that is shorter.
-  Requests that arrive in parallel with the same activity cookie each receive a new one. The cookie
-  is first set one interval or more after the login; until then the login itself is the last
+  Requests that arrive in parallel with the same activity cookie each receive a new one, and so
+  does a request that presents an older activity cookie again. The cookie is first set one interval or more after the login; until then the login itself is the last
   request.
 
 | When it is cleared
@@ -690,8 +687,8 @@ in a second cookie, the *activity cookie*.
 *The session cookie is not set again on a request.* Only a login, a token refresh and a widening
 write the session cookie. An ordinary response carries at most the small activity cookie.
 
-*The deadline is exact to within one interval.* Because the cookie is written at most once per
-interval, the recorded time can be up to one interval older than the latest request. With an idle
+*The deadline is exact to within one interval.* Because the cookie is written only once the
+recorded time is one interval old, that time can be up to one interval older than the latest request. With an idle
 timeout of 1800 seconds the interval is 60 seconds and a session ends between 1740 and 1800 seconds
 after its last request. With an idle timeout of 30 seconds the interval is 15 seconds and a session
 ends between 15 and 30 seconds after its last request.
@@ -705,11 +702,11 @@ despite activity, check that the second cookie reaches the browser and comes bac
 *A response that sets it is not cacheable.* Whenever the gateway sets or clears one of its cookies
 on a response, it sends that response with `Cache-Control: no-store`, replacing the upstream's
 value. In this variant that includes the session-route response that carries the activity cookie
--- at most one response per session per interval -- and every response that re-seals the session
+-- for a browser, about one response per session per interval -- and every response that re-seals the session
 cookie. All other responses keep the upstream's cache policy.
 
 *It shares the `Cookie` header headroom.* The inbound `Cookie` header cap is unchanged:
-`max_cookie_size` plus 512 bytes. The activity cookie takes 104 of those 512 bytes under the default
+`max_cookie_size` plus 512 bytes. The activity cookie takes 88 of those 512 bytes under the default
 name.
 
 *A WebSocket or a streamed response counts once, when it starts.* An open WebSocket does not keep

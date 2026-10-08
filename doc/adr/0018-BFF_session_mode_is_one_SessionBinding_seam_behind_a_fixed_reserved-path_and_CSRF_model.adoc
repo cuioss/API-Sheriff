@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie; amended so that the seam has one creating write (bind, the login) and one updating write (persist) that never creates a session, which keeps a server-mode session terminated when a logout overtakes an in-flight refresh or widening, while cookie mode cannot observe a termination and re-seals; amended so that the updating write has a second variant (persistReissuingCookie) that also re-issues the value the browser holds, which in server mode is a handle the store maps to the session and is separate from the session identity, so a step-up or a widening changes the cookie value and nothing else about the session; amended so that a session has an idle deadline beside its absolute one in both modes, which resolve enforces and never extends, kept in the store and removed by a periodic sweep in server mode and kept in a separate sealed activity cookie in cookie mode, with the sealed session payload and its format version unchanged
+// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie; amended so that the seam has one creating write (bind, the login) and one updating write (persist) that never creates a session, which keeps a server-mode session terminated when a logout overtakes an in-flight refresh or widening, while cookie mode cannot observe a termination and re-seals; amended so that the updating write has a second variant (persistReissuingCookie) that also re-issues the value the browser holds, which in server mode is a handle the store maps to the session and is separate from the session identity, so a step-up or a widening changes the cookie value and nothing else about the session; amended so that a session has an idle deadline beside its absolute one in both modes, which resolve enforces and never extends, kept in the store and removed by a periodic sweep in server mode and kept in a separate authenticated activity cookie in cookie mode, with the sealed session payload and its format version unchanged
 // tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff, logout, session-termination, cookie-handle, idle-timeout, activity-cookie
 // affects: api-sheriff
 // supersedes:
@@ -544,14 +544,19 @@ answer.
 either deadline -- is removed when it is next looked up, and otherwise by a periodic sweep, so it
 does not stay in memory until the store fills.
 
-*Cookie mode* keeps the last access in a separate *activity cookie*. The cookie is sealed under a
-key of its own and bound to the derived session identity, so it is valid for one session only. It
+*Cookie mode* keeps the last access in a separate *activity cookie*. The cookie is authenticated
+with HMAC-SHA-256 under a key of its own and bound to the derived session identity, so it is valid
+for one session only. It is not encrypted: the time of the last access is not a secret. It
 carries the session cookie's attributes and the session's remaining absolute lifetime. The binding
 writes it once the recorded access is one interval old -- 60 seconds, or half the idle timeout where
 that is shorter -- so the recorded access can be up to one interval older than the latest request
 and the idle deadline is exact to within that interval. The binding keeps no state per session, so
-requests that arrive in parallel with the same activity cookie each receive a new one. The session
-cookie itself is not written on an access.
+a request that presents an activity cookie one interval old receives a new one, whether it is one
+of several sent in parallel or presents a cookie the client was already given a successor for. How
+often the cookie is written is therefore decided by the client. That is the reason for the message
+authentication code: a cipher with a random nonce may protect only a limited number of values under
+one key, and a client could spend that limit, while HMAC-SHA-256 has none. The session cookie
+itself is not written on an access.
 
 The sealed session payload gains no field. The Negative consequence "any change to the sealed
 payload's field set forces a format-version bump" is therefore not triggered, and no cookie-mode

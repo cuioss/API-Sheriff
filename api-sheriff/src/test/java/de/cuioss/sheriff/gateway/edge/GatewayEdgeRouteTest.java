@@ -1022,7 +1022,7 @@ class GatewayEdgeRouteTest {
                             Instant.now()).id());
             String bindingPair = bindingSetCookie.substring(0, bindingSetCookie.indexOf(';'));
             String activityPair = activityCodec.cookieName() + "="
-                    + activityCodec.seal(sessionIdentity, Instant.now());
+                    + activityCodec.sign(sessionIdentity, Instant.now());
             String cookieHeaderValue = String.join("; ", sessionPair, bindingPair, activityPair);
             SecurityConfiguration baseline = SecurityProfile.STRICT.preset();
 
@@ -1033,7 +1033,7 @@ class GatewayEdgeRouteTest {
             assertAll("the three gateway cookies fit under the default cap with headroom to spare",
                     () -> assertEquals(DEFAULT_COOKIE_HEADER_CAP, carveOut.maxHeaderValueLength(),
                             "the activity cookie did not change the cap"),
-                    () -> assertEquals(104, activityPair.length(), "the activity cookie's name=value pair"),
+                    () -> assertEquals(88, activityPair.length(), "the activity cookie's name=value pair"),
                     () -> assertTrue(cookieHeaderValue.length() > baseline.maxHeaderValueLength(),
                             "control precondition: the header would not pass the strict baseline on its own"),
                     () -> assertTrue(cookieHeaderValue.length() <= carveOut.maxHeaderValueLength(),

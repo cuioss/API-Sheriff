@@ -2649,8 +2649,8 @@ See link:#_oidc_client_authentication[Client authentication].
   previously made cookie mode unusable: the pre-route filter rejected every request carrying a live
   sealed cookie with `400` before any BFF logic ran.
 
-  The activity cookie shares that headroom; the cap itself is unchanged. Its value is always 72
-  characters, so under the default cookie name the pair `name=value` takes 104 of the 512 bytes.
+  The activity cookie shares that headroom; the cap itself is unchanged. Its value is always 56
+  characters, so under the default cookie name the pair `name=value` takes 88 of the 512 bytes.
   Under the default configuration a full-budget session cookie, the login-binding cookie and the
   activity cookie in one `Cookie` header leave at least 256 bytes of the headroom free for cookies
   the application sets.

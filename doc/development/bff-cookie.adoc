@@ -47,7 +47,7 @@ The cookie-specific code is in the `api-sheriff` module under
   activity cookie), and the derived session identity. Reports `IdpDestruction.UNSUPPORTED`.
 
 | `SessionActivityCookieCodec`
-| The AES-256-GCM seal/unseal of the activity cookie -- the last-access instant the idle timeout
+| The HMAC-SHA-256 sign/verify of the activity cookie -- the last-access instant the idle timeout
   rests on -- with its own layout, its own `FORMAT_VERSION` and its own key. See
   <<activity-cookie>>.
 
@@ -109,34 +109,41 @@ and nothing in `SealedSessionPayload` or `SealedSessionCookieCodec` knows about 
 (`-activity`). A suffix, not a prefix, so the cookie keeps the `+__Host-+` prefix. Its attributes are
 the session cookie's hardening set, and its `Max-Age` is the session's remaining absolute lifetime.
 
-*Layout.* The value is base64url without padding, always 72 characters for 54 bytes:
+*Layout.* The value is base64url without padding, always 56 characters for 42 bytes:
 
 [source]
 ----
-version(1B) | key-id(1B) | GCM nonce(12B) | ciphertext(24B) | GCM tag(16B)
+version(1B) | key-id(1B) | last-access(8B, epoch milliseconds) | HMAC-SHA-256 tag(32B)
 
-ciphertext covers:  session-identity(16B) | last-access(8B, epoch milliseconds)
+tag covers:  cookie name | version | key-id | session-identity(16B) | last-access
 ----
 
-The `version`, the `key-id` and the cookie *name* are bound into the GCM associated data. The
-version is this cookie's own counter (`SessionActivityCookieCodec.FORMAT_VERSION`, currently `1`)
-and is independent of the sealed session's.
+The version is this cookie's own counter (`SessionActivityCookieCodec.FORMAT_VERSION`, currently
+`2`) and is independent of the sealed session's.
+
+*Authenticated, not encrypted.* The value carries one fact, the time of the last access, and that
+is not a secret. The codec therefore signs it with a message authentication code and does not
+encrypt it. *Do not change this to an AEAD cipher with a random nonce.* The binding keeps no state
+per session, so the client decides how often `recordAccess` writes a cookie: it can send requests in
+parallel, and it can present an activity cookie again after it was given a newer one. One key may
+protect only a limited number of values under such a cipher (2^32^ for AES-GCM with a random
+96-bit nonce, NIST SP 800-38D), and a client could spend that limit. HMAC-SHA-256 has no such
+limit, and `sign` is deterministic: the same session and instant give the same value.
 
 *Its own key.* `CookieKeyMaterial.activityCodec(...)` derives a key for this cookie alone from the
-sealing key. The reason is the seal count: the activity cookie is sealed up to once per re-issue
-interval per session, and that cadence must not count against the random-nonce budget of the key that seals
-tokens. A value sealed by either codec is refused by the other. Both keys go when
-`encryption_key` is replaced; the operator rule that follows from the cadence is in
-link:../user/bff-cookie.adoc#key-rotation[the operator guide].
+sealing key, so one key serves one algorithm. A value produced by either codec is refused by the
+other. Both keys go when `encryption_key` is replaced. The operator's replacement schedule in
+link:../user/bff-cookie.adoc#key-rotation[the operator guide] depends on the session cookie alone.
 
-*Bound to the derived identity.* The sealed value carries the 16-byte derived identity of the
-session it belongs to. `CookieSessionBinding` compares it with the identity derived from the
-session cookie of the same request and ignores an activity cookie that names another session, so
-one cannot be moved to a second session to keep that one alive.
+*Bound to the derived identity.* The 16-byte derived identity of the session is part of what the
+tag covers and is not part of the value. `CookieSessionBinding` passes the identity derived from the
+session cookie of the same request to `read`, and a value signed for another session does not
+verify, so an activity cookie cannot be moved to a second session to keep that one alive. The
+identity is never sent to the browser.
 
-*Fail-closed unsealing.* `unseal` returns empty -- "no activity cookie", never an error -- for a value
-that is malformed, truncated, of another version, sealed under another key or for another cookie
-name, or tampered with. The binding then takes the session's *login instant* as the last access.
+*Fail-closed verification.* `verify` returns empty -- "no activity cookie", never an error -- for a
+value that is malformed, truncated, of another version, signed under another key, for another
+cookie name or for another session, or tampered with. The binding then takes the session's *login instant* as the last access.
 An activity cookie can therefore only extend a session up to the idle timeout past a real access,
 and its absence can only shorten the session. A last access in the future is clamped to the
 reference instant, so a gateway whose clock runs ahead cannot hand out idle time. Every rejection
@@ -146,8 +153,10 @@ is logged at `DEBUG` only: any client can send a junk activity cookie on any req
 the last access is at least one interval old, and nothing before that. The interval is the smaller
 of `ACTIVITY_COOKIE_INTERVAL` (60 seconds) and half the idle timeout, so an idle timeout below
 60 seconds can still be kept alive by accesses. Most responses therefore carry no `Set-Cookie`, and
-the idle deadline is exact to within that interval. The interval has no key of its own. `recordAccess` never returns the session cookie: an
-access does not re-seal the tokens and cannot race a refresh for the token-bearing cookie.
+the idle deadline is exact to within that interval. The interval has no configuration key of its
+own. It limits the `Set-Cookie` traffic of a well-behaved client and is not a bound a client has to
+honour (see "Authenticated, not encrypted" above). `recordAccess` never returns the session cookie:
+an access does not re-seal the tokens and cannot race a refresh for the token-bearing cookie.
 
 *Clearing.* `clearingSetCookieHeaders()` returns two values, one per cookie. Every caller that ends
 a session or logs out emits the whole list.
@@ -446,8 +455,9 @@ Unit-test entry points:
   (a missing, tampered, other-session or other-key activity cookie never extends a session), the
   re-issue interval of `recordAccess`, and the two clearing cookies.
 * `SessionActivityCookieCodecTest` -- the activity cookie: round trip, the binding to the session
-  identity, fail-closed unsealing, separation from the sealed session cookie in both directions,
-  the exact `Set-Cookie` and the 72-character value.
+  identity, the absence of that identity from the value, the deterministic value, fail-closed
+  verification, separation from the sealed session cookie in both directions, the exact
+  `Set-Cookie` and the 56-character value.
 * `TokenRefreshCoordinatorTest` -- its `CookieMode` group covers the stateless refresh: re-seal into
   a new `Set-Cookie` and nonce propagation across `rotate()`.
 

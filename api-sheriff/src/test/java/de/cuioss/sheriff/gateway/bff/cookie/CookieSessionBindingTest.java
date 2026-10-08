@@ -772,8 +772,8 @@ class CookieSessionBindingTest {
     }
 
     /** The request {@code Cookie} header carrying a session cookie and an activity cookie value. */
-    private String withActivity(String sessionCookieHeader, String sealedActivity) {
-        return sessionCookieHeader + "; " + activityCodec.cookieName() + "=" + sealedActivity;
+    private String withActivity(String sessionCookieHeader, String signedActivity) {
+        return sessionCookieHeader + "; " + activityCodec.cookieName() + "=" + signedActivity;
     }
 
     @Nested
@@ -839,7 +839,7 @@ class CookieSessionBindingTest {
         @DisplayName("Should measure idleness from the last access a valid activity cookie proves")
         void shouldMeasureFromActivityCookie() {
             Instant lastAccess = LOGIN.plus(Duration.ofMinutes(20));
-            String cookies = withActivity(sessionCookie, activityCodec.seal(resolvedAtLogin.sessionId(), lastAccess));
+            String cookies = withActivity(sessionCookie, activityCodec.sign(resolvedAtLogin.sessionId(), lastAccess));
 
             assertTrue(idleBinding.resolve(cookies, LOGIN.plus(IDLE_TIMEOUT)).isPresent(),
                     "the activity cookie moved the deadline past the one measured from login");
@@ -851,9 +851,9 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should ignore a tampered activity cookie and measure idleness from the login instant")
         void shouldIgnoreTamperedActivityCookie() {
-            String sealed = activityCodec.seal(resolvedAtLogin.sessionId(), LOGIN.plus(Duration.ofMinutes(20)));
-            char last = sealed.charAt(sealed.length() - 1);
-            String tampered = sealed.substring(0, sealed.length() - 1) + (last == 'A' ? 'B' : 'A');
+            String signed = activityCodec.sign(resolvedAtLogin.sessionId(), LOGIN.plus(Duration.ofMinutes(20)));
+            char last = signed.charAt(signed.length() - 1);
+            String tampered = signed.substring(0, signed.length() - 1) + (last == 'A' ? 'B' : 'A');
 
             assertIdlenessMeasuredFromLogin(withActivity(sessionCookie, tampered));
         }
@@ -864,17 +864,17 @@ class CookieSessionBindingTest {
             String otherCookie = cookieHeaderOf(idleBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN));
             String otherIdentity = idleBinding.resolve(otherCookie, LOGIN).orElseThrow().sessionId();
             assertNotEquals(resolvedAtLogin.sessionId(), otherIdentity, "two logins are two sessions");
-            String foreign = activityCodec.seal(otherIdentity, LOGIN.plus(Duration.ofMinutes(20)));
+            String foreign = activityCodec.sign(otherIdentity, LOGIN.plus(Duration.ofMinutes(20)));
 
             assertIdlenessMeasuredFromLogin(withActivity(sessionCookie, foreign));
         }
 
         @Test
-        @DisplayName("Should ignore an activity cookie sealed under another key and measure idleness from the login instant")
+        @DisplayName("Should ignore an activity cookie signed under another key and measure idleness from the login instant")
         void shouldIgnoreActivityCookieOfAnotherKey() {
             SessionActivityCookieCodec foreignKey =
                     new SessionActivityCookieCodec(COOKIE_NAME, aesKey((byte) 0x55), ACTIVITY_KEY_ID);
-            String foreign = foreignKey.seal(resolvedAtLogin.sessionId(), LOGIN.plus(Duration.ofMinutes(20)));
+            String foreign = foreignKey.sign(resolvedAtLogin.sessionId(), LOGIN.plus(Duration.ofMinutes(20)));
 
             assertIdlenessMeasuredFromLogin(withActivity(sessionCookie, foreign));
         }
@@ -890,7 +890,7 @@ class CookieSessionBindingTest {
         @Test
         @DisplayName("Should not accept a last access before the login instant")
         void shouldNotAcceptAccessBeforeLogin() {
-            String beforeLogin = activityCodec.seal(resolvedAtLogin.sessionId(), LOGIN.minus(Duration.ofHours(1)));
+            String beforeLogin = activityCodec.sign(resolvedAtLogin.sessionId(), LOGIN.minus(Duration.ofHours(1)));
 
             assertIdlenessMeasuredFromLogin(withActivity(sessionCookie, beforeLogin));
         }
@@ -900,7 +900,7 @@ class CookieSessionBindingTest {
         void shouldNotExtendAbsoluteDeadline() {
             Instant absoluteDeadline = LOGIN.plus(TTL);
             String cookies = withActivity(sessionCookie,
-                    activityCodec.seal(resolvedAtLogin.sessionId(), absoluteDeadline.minusSeconds(60)));
+                    activityCodec.sign(resolvedAtLogin.sessionId(), absoluteDeadline.minusSeconds(60)));
 
             assertTrue(idleBinding.resolve(cookies, absoluteDeadline.minusSeconds(1)).isPresent(),
                     "the recent access keeps the session live up to its absolute deadline");
@@ -996,7 +996,7 @@ class CookieSessionBindingTest {
         @DisplayName("Should measure the interval from the access a valid activity cookie proves")
         void shouldMeasureIntervalFromActivityCookie() {
             Instant lastAccess = LOGIN.plus(Duration.ofMinutes(10));
-            String cookies = withActivity(sessionCookie, activityCodec.seal(resolvedAtLogin.sessionId(), lastAccess));
+            String cookies = withActivity(sessionCookie, activityCodec.sign(resolvedAtLogin.sessionId(), lastAccess));
 
             assertTrue(idleBinding.recordAccess(resolvedAtLogin, cookies, lastAccess.plusSeconds(59)).isEmpty(),
                     "an activity cookie younger than the interval is not replaced");
@@ -1009,7 +1009,7 @@ class CookieSessionBindingTest {
             String otherCookie = cookieHeaderOf(idleBinding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN));
             String otherIdentity = idleBinding.resolve(otherCookie, LOGIN).orElseThrow().sessionId();
             Instant now = LOGIN.plus(Duration.ofMinutes(10));
-            String cookies = withActivity(sessionCookie, activityCodec.seal(otherIdentity, now));
+            String cookies = withActivity(sessionCookie, activityCodec.sign(otherIdentity, now));
 
             List<String> returned = idleBinding.recordAccess(resolvedAtLogin, cookies, now);
 

@@ -716,8 +716,9 @@ which closes the WebSocket relays opened under that session. A replacement of th
 re-issued handle included, reports nothing.
 
 *The activity cookie (cookie mode).* The stateless binding keeps the last access in a second
-cookie, `<session cookie name>-activity`, sealed by `SessionActivityCookieCodec` under a key of its
-own and bound to the derived session identity. `CookieSessionBinding.recordAccess` writes it once
+cookie, `<session cookie name>-activity`, authenticated by `SessionActivityCookieCodec` with
+HMAC-SHA-256 under a key of its own and bound to the derived session identity. The value is not
+encrypted, and writing it consumes no per-key budget, however often a client causes it. `CookieSessionBinding.recordAccess` writes it once
 the recorded access is one interval old -- 60 seconds, or half the idle timeout where that is
 shorter; requests that arrive in parallel with the same activity cookie each receive a new one, and
 the session cookie is not written on an access. An

@@ -157,8 +157,8 @@ and the gateway holds no per-user state.
 
 | Activity cookie
 | A second, small cookie, `<session cookie name>-activity`, with the session cookie's attributes.
-  It carries the time of the last request, sealed under a key of its own and bound to the one
-  session it belongs to, and no token. It is what the idle timeout rests on (below).
+  It carries the time of the last request, authenticated under a key of its own and bound to the
+  one session it belongs to, and no token. It is what the idle timeout rests on (below).
 |===
 
 [[_session_lifetime]]

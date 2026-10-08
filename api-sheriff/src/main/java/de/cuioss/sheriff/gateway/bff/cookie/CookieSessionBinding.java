@@ -48,7 +48,7 @@ import org.jspecify.annotations.Nullable;
  * <strong>Idle timeout, kept in a separate activity cookie.</strong> {@link #resolve} additionally
  * refuses a session whose last access is older than the idle timeout. The last access is the instant
  * in the activity cookie the same request carries ({@link SessionActivityCookieCodec}), provided that
- * cookie unseals and is bound to this very session. When it is missing, unreadable, forged or bound to
+ * cookie verifies for this very session. When it is missing, unreadable, forged or bound to
  * another session, the last access is the session's <em>login instant</em>: an activity cookie can
  * only ever lengthen a session up to the idle timeout past a real access, and its absence can only
  * shorten it. {@link #recordAccess} returns a new activity cookie once the last access is at least one
@@ -107,9 +107,11 @@ public final class CookieSessionBinding implements SessionBinding {
     /**
      * The upper bound of the re-issue interval — the shortest distance between two activity cookies of
      * one session. A new activity cookie is issued only when the last access is at least one re-issue
-     * interval old, which bounds the {@code Set-Cookie} traffic and the seal count of the activity key
-     * to one per session per interval, at the price of an idle deadline that can fall up to one
-     * interval early. The interval in force is this value for an idle timeout of at least twice it,
+     * interval old, which keeps the {@code Set-Cookie} traffic of a well-behaved client to one per
+     * session per interval, at the price of an idle deadline that can fall up to one interval early.
+     * It is not a bound a client has to honour: requests sent in parallel, or sent again with an old
+     * activity cookie, each receive a new one, which is why the activity cookie is authenticated with
+     * a primitive that has no per-key usage limit. The interval in force is this value for an idle timeout of at least twice it,
      * and half the idle timeout below that, so it never reaches the idle timeout. Not configurable.
      */
     public static final Duration ACTIVITY_COOKIE_INTERVAL = Duration.ofSeconds(60);
@@ -190,7 +192,7 @@ public final class CookieSessionBinding implements SessionBinding {
 
     /**
      * The last access of {@code session} as this request proves it: the instant in the request's
-     * activity cookie when that cookie unseals and is bound to this session, otherwise the session's
+     * activity cookie when that cookie verifies for this session, otherwise the session's
      * login instant.
      * <p>
      * Falling back to the login instant is what makes a missing, unreadable, forged or foreign activity
@@ -200,10 +202,8 @@ public final class CookieSessionBinding implements SessionBinding {
      */
     private Instant lastAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
         Instant loginInstant = session.expiresAt().minus(codec.sessionTtl());
-        return activityCodec.read(cookieHeader, now)
-                .filter(activity -> activity.sessionIdentity().equals(session.sessionId()))
-                .map(SessionActivityCookieCodec.Activity::lastAccess)
-                .filter(sealed -> sealed.isAfter(loginInstant))
+        return activityCodec.read(cookieHeader, session.sessionId(), now)
+                .filter(signed -> signed.isAfter(loginInstant))
                 .orElse(loginInstant);
     }
 
@@ -298,8 +298,8 @@ public final class CookieSessionBinding implements SessionBinding {
         if (Duration.between(lastAccess, now).compareTo(activityCookieInterval) < 0) {
             return List.of();
         }
-        String sealedActivity = activityCodec.seal(session.sessionId(), now);
-        return List.of(activityCodec.toSetCookieHeader(sealedActivity, session.expiresAt(), now));
+        String signedActivity = activityCodec.sign(session.sessionId(), now);
+        return List.of(activityCodec.toSetCookieHeader(signedActivity, session.expiresAt(), now));
     }
 
     @Override
