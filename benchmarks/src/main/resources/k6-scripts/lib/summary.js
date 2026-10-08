@@ -19,6 +19,12 @@
  * The body-transfer aspects (`uploadSmall` / `uploadLarge`) additionally carry a
  * `throughput_mbps` field; every other field is common to all scripts.
  *
+ * A script whose run proves a property and measures nothing worth a trend passes
+ * `published: false` to {@link buildSummary}. Its document then carries the member
+ * `"published": false`, and `K6BenchmarkConverter` leaves such a document out: the file is still
+ * written, so the coverage step finds the goal's summary, and no report or history entry is made
+ * from it. No other script's document carries the member at all -- it is absent, not `true`.
+ *
  * The HTTP aspects source their headline figures from k6's built-in `http_req_duration` /
  * `http_reqs` / `http_req_failed` metrics. The non-HTTP protocol aspects added for plan-05
  * (`websocketEcho`, `grpcUnary`) do not populate those metrics — k6 records gRPC calls under
@@ -106,9 +112,11 @@ function round(value, digits = 2) {
  * @param {string} benchmarkName the stable benchmark name -- also the gh-pages history/trend key
  * @param {object} data the k6 end-of-test summary object
  * @param {{throughput?: boolean, durationMetric?: string, requestsMetric?: string,
- *          failuresMetric?: string}} [options={}] opt-ins for aspect-specific summary fields and
- *          per-aspect overrides of which k6 metric backs the latency / request-rate / failure-rate
- *          figures (defaulting to the built-in `http_*` metrics)
+ *          failuresMetric?: string, published?: boolean}} [options={}] opt-ins for aspect-specific
+ *          summary fields and per-aspect overrides of which k6 metric backs the latency /
+ *          request-rate / failure-rate figures (defaulting to the built-in `http_*` metrics).
+ *          `published: false`, and only that value, adds the member `"published": false` to the
+ *          document (see the module header)
  * @returns {object} a k6 `handleSummary()` return mapping output paths to their content
  */
 export function buildSummary(benchmarkName, data, options = {}) {
@@ -141,6 +149,10 @@ export function buildSummary(benchmarkName, data, options = {}) {
     if (options.throughput) {
         const sent = (metrics.data_sent || {}).values || {};
         summary.throughput_mbps = round(sent.rate / BYTES_PER_MB);
+    }
+
+    if (options.published === false) {
+        summary.published = false;
     }
 
     const document = JSON.stringify(summary, null, 2);

@@ -90,6 +90,24 @@ import org.junit.jupiter.api.Test;
  * <em>source-text</em> scan, and its limit is stated where it is defined — see
  * {@link #oneOffLaunchSites()}.
  * <p>
+ * <strong>The one exemption.</strong> By operator decision, exactly one fixture is outside two of these
+ * guards: the TLS-relaxation fixture of {@code BffTlsRelaxationIT}. Its descriptor,
+ * {@code sheriff-config-tls-relaxation/gateway.yaml}, declares
+ * {@code egress_tls.oidc_verify_hostname: false}; the gateway refuses that key together with a named
+ * {@code oidc_tls_profile} at boot, so the descriptor cannot name the profile, and its back-channel
+ * verifies the identity provider's chain against the JVM default trust store, which the test supplies
+ * as JSSE trust-store arguments after the image. So
+ * {@link #everyBffDescriptorNamesTheOidcTrustProfile()} skips exactly that descriptor and
+ * {@link #noOneOffLaunchSitePassesAJsseSystemProperty()} skips exactly that test's source file — each
+ * by its literal path, never by a pattern. Neither skip is unconditional: each guard first asserts the
+ * property its exemption rests on (see {@link #tlsRelaxationDescriptor()} and
+ * {@link #tlsRelaxationLaunchSite(List)}), so a deleted fixture, a fixture that gained a profile, or a
+ * test that dropped its trust-store argument turns this class red instead of leaving an exemption that
+ * covers nothing. {@link #noGatewayInstancePassesAJsseSystemProperty()} has no exemption: no compose
+ * service may pass such an argument. Both conditions were shown to fail while they were written: with
+ * the fixture's {@code oidc_verify_hostname} set to {@code true} the descriptor guard went red, and
+ * with the property prefix removed from the test's arguments the launch-site guard did.
+ * <p>
  * The binding is asserted as LIST MEMBERSHIP rather than whole-value equality, because
  * {@code QUARKUS_CONFIG_LOCATIONS} is comma-separated and two instances legitimately load a second
  * location beside this one — see {@link #configLocations(String)}.
@@ -204,6 +222,27 @@ class ItProfileConfigBindingWiringTest {
      */
     private static final int MINIMUM_ONE_OFF_LAUNCH_SITES = 8;
 
+    /**
+     * The one descriptor exempt from {@link #everyBffDescriptorNamesTheOidcTrustProfile()}: the
+     * TLS-relaxation fixture, named by its literal path. See {@link #tlsRelaxationDescriptor()} for
+     * what it must keep declaring to stay exempt.
+     */
+    private static final Path TLS_RELAXATION_DESCRIPTOR = DOCKER
+            .resolve("sheriff-config-tls-relaxation")
+            .resolve(DESCRIPTOR_FILE)
+            .toAbsolutePath()
+            .normalize();
+
+    /**
+     * The one launch site exempt from {@link #noOneOffLaunchSitePassesAJsseSystemProperty()}: the
+     * source of the test that boots the TLS-relaxation fixture. See
+     * {@link #tlsRelaxationLaunchSite(List)} for what it must keep carrying to stay exempt.
+     */
+    private static final Path TLS_RELAXATION_LAUNCH_SITE = TEST_SOURCES
+            .resolve(BffTlsRelaxationIT.class.getName().replace('.', '/') + ".java")
+            .toAbsolutePath()
+            .normalize();
+
     @Test
     @DisplayName("every it-profile gateway instance binds the mounted trust file")
     void everyItProfileInstanceBindsTheMountedTrustFile() throws Exception {
@@ -225,7 +264,14 @@ class ItProfileConfigBindingWiringTest {
     @Test
     @DisplayName("every descriptor with an oidc block names the benchmark-idp profile for the back-channel")
     void everyBffDescriptorNamesTheOidcTrustProfile() throws Exception {
-        List<Path> descriptors = bffDescriptors();
+        Path exempt = tlsRelaxationDescriptor();
+        List<Path> descriptors = bffDescriptors().stream()
+                .filter(descriptor -> !exempt.equals(descriptor.toAbsolutePath().normalize()))
+                .toList();
+        assertTrue(descriptors.size() >= MINIMUM_BFF_DESCRIPTORS,
+                () -> "expected at least " + MINIMUM_BFF_DESCRIPTORS + " descriptors to remain under this guard "
+                        + "once the single exempt fixture is set aside, found " + descriptors.size() + ": "
+                        + descriptors);
 
         for (Path descriptor : descriptors) {
             Object egressTls = loadYaml(descriptor).get(EGRESS_TLS_BLOCK);
@@ -268,7 +314,11 @@ class ItProfileConfigBindingWiringTest {
     @Test
     @DisplayName("no one-off gateway launch site passes a JSSE system property")
     void noOneOffLaunchSitePassesAJsseSystemProperty() throws Exception {
-        List<Path> launchSites = oneOffLaunchSites();
+        List<Path> derived = oneOffLaunchSites();
+        Path exempt = tlsRelaxationLaunchSite(derived);
+        List<Path> launchSites = derived.stream()
+                .filter(launchSite -> !exempt.equals(launchSite.toAbsolutePath().normalize()))
+                .toList();
 
         for (Path launchSite : launchSites) {
             assertFalse(readText(launchSite).contains(JSSE_SYSTEM_PROPERTY_PREFIX),
@@ -496,6 +546,66 @@ class ItProfileConfigBindingWiringTest {
                 () -> "the derived launch-site set " + fileNames + " must contain " + KNOWN_LAUNCH_SITES
                         + " — the two one-off launch sites the JSSE trust-store argument was removed from");
         return List.copyOf(launchSites);
+    }
+
+    /**
+     * The one descriptor {@link #everyBffDescriptorNamesTheOidcTrustProfile()} does not hold to the
+     * trust profile, after asserting everything its exemption rests on:
+     * <ul>
+     *   <li>the file exists — an exemption for a file that is gone would be a hole nobody can see;</li>
+     *   <li>it declares an {@code oidc} block, so it is a member of the population the guard sweeps and
+     *       the skip removes something;</li>
+     *   <li>it declares {@code egress_tls.oidc_verify_hostname: false} — the one reason a descriptor
+     *       cannot name the profile, since the gateway refuses the two together at boot;</li>
+     *   <li>it names no {@code egress_tls.oidc_tls_profile} — a fixture that names the profile needs no
+     *       exemption and must come back under the guard.</li>
+     * </ul>
+     *
+     * @return the exempt descriptor, absolute and normalised
+     */
+    private static Path tlsRelaxationDescriptor() throws IOException {
+        assertTrue(Files.isRegularFile(TLS_RELAXATION_DESCRIPTOR),
+                () -> "the descriptor exempt from the trust-profile guard, " + TLS_RELAXATION_DESCRIPTOR
+                        + ", does not exist — remove the exemption with the fixture rather than leaving a hole");
+        Map<String, Object> document = loadYaml(TLS_RELAXATION_DESCRIPTOR);
+        assertTrue(document.containsKey(OIDC_BLOCK),
+                () -> TLS_RELAXATION_DESCRIPTOR + " declares no " + OIDC_BLOCK + " block, so the guard would not "
+                        + "sweep it and its exemption covers nothing");
+        Object egressTls = document.get(EGRESS_TLS_BLOCK);
+        assertInstanceOf(Map.class, egressTls,
+                () -> TLS_RELAXATION_DESCRIPTOR + " must declare an " + EGRESS_TLS_BLOCK + " block: the relaxation "
+                        + "declared there is what its exemption rests on");
+        Map<?, ?> block = (Map<?, ?>) egressTls;
+        assertEquals(Boolean.FALSE, block.get(OIDC_VERIFY_HOSTNAME_KEY),
+                () -> TLS_RELAXATION_DESCRIPTOR + " is exempt from naming " + OIDC_TLS_PROFILE_KEY + " only because "
+                        + "it declares " + EGRESS_TLS_BLOCK + "." + OIDC_VERIFY_HOSTNAME_KEY + ": false, which the "
+                        + "gateway refuses together with a named profile");
+        assertFalse(block.containsKey(OIDC_TLS_PROFILE_KEY),
+                () -> TLS_RELAXATION_DESCRIPTOR + " names " + EGRESS_TLS_BLOCK + "." + OIDC_TLS_PROFILE_KEY
+                        + ", so it needs no exemption — remove it from the exemption and let the guard hold it");
+        return TLS_RELAXATION_DESCRIPTOR;
+    }
+
+    /**
+     * The one launch site {@link #noOneOffLaunchSitePassesAJsseSystemProperty()} does not hold to the
+     * absence of a JSSE argument, after asserting what its exemption rests on: the file is a member of
+     * the derived launch-site set, so the skip removes something, and it carries
+     * {@link #JSSE_SYSTEM_PROPERTY_PREFIX}, so the exemption is still needed. A test that stopped
+     * passing the argument must come back under the guard.
+     *
+     * @param launchSites the derived launch-site set
+     * @return the exempt launch site, absolute and normalised
+     */
+    private static Path tlsRelaxationLaunchSite(List<Path> launchSites) throws IOException {
+        assertTrue(launchSites.stream()
+                        .anyMatch(launchSite -> TLS_RELAXATION_LAUNCH_SITE.equals(launchSite.toAbsolutePath().normalize())),
+                () -> "the launch site exempt from the JSSE guard, " + TLS_RELAXATION_LAUNCH_SITE
+                        + ", is not in the derived launch-site set, so its exemption covers nothing — it must "
+                        + "name the " + GATEWAY_IMAGE + " image through " + HARNESS_CLASS + ".IMAGE");
+        assertTrue(readText(TLS_RELAXATION_LAUNCH_SITE).contains(JSSE_SYSTEM_PROPERTY_PREFIX),
+                () -> TLS_RELAXATION_LAUNCH_SITE + " carries no " + JSSE_SYSTEM_PROPERTY_PREFIX + "* argument, so it "
+                        + "needs no exemption — remove it from the exemption and let the guard hold it");
+        return TLS_RELAXATION_LAUNCH_SITE;
     }
 
     /**

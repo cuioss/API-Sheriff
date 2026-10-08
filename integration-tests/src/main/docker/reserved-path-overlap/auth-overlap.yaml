@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The reserved-path overlap fixture of BffReservedPathPrecedenceIT: one proxy route whose prefix,
+# /auth, contains every reserved OIDC path the gateway carves out under /auth.
+#
+# WHY IT IS NOT UNDER sheriff-config/endpoints/. Every gateway instance of the stack mounts that
+# directory, and an endpoint names an anchor that the gateway document it is loaded beside must
+# declare (ADR-0007). A shared endpoint on a new anchor would therefore force that anchor into every
+# committed gateway.yaml, the two single-variable matched pairs included. So this file lives in a
+# directory no instance mounts. The test copies it into a configuration directory it assembles below
+# target/, beside a gateway document derived from sheriff-config-passthrough-empty/gateway.yaml with
+# the one anchor below added, and mounts that directory whole. Nothing under a sheriff-config
+# directory is added or changed for it.
+#
+# WHAT THE ROUTE IS FOR. The reserved paths are matched exactly and ahead of the route table, so this
+# prefix route must never see /auth/callback, /auth/login and their siblings, while every other path
+# below /auth is its own. The test asserts both sides, and which pipeline stages a reserved path does
+# and does not pass:
+#   * allowed_methods is restricted to POST, so the route's verb gate has something to refuse: a GET
+#     below /auth is refused 405 on the routed path, while a GET on a reserved path is answered by the
+#     reserved endpoint. It is the endpoint's allowed_methods and not a match.methods matcher on
+#     purpose: a matcher decides whether the route is selected at all, the allowed list is what the
+#     verb gate enforces on the selected route;
+#   * the route declares no security_filter, so it resolves the gateway-wide strict profile and its
+#     post-route parameter checks refuse a value a reserved path is never asked about;
+#   * the route declares no forward block, so it forwards every header that is not gateway-owned: the
+#     probe header the test sends comes back in the echo of a routed request, and its absence from the
+#     answer of a reserved path shows that request reached no upstream.
+#
+# The UPSTREAM topology alias resolves to the go-httpbin echo backend, as for the httpbin endpoint.
+# The anchor is public and carries no auth block, so the endpoint declares the require: none posture
+# itself.
+endpoint:
+  id: auth-overlap
+  enabled: true
+  base_url: UPSTREAM
+  anchor: auth-overlap
+  allowed_methods: ["POST"]
+  auth:
+    require: none
+  routes:
+    - id: auth-overlap-proxy
+      match:
+        path_prefix: /auth

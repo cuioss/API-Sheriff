@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *twenty-seven files* under `integration-tests/src/main/docker/`.
+The declared surface is *twenty-nine files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -53,7 +53,7 @@ disk without touching this table and the guard fails.
 | Surface | Count | Files
 
 | `sheriff-config*/gateway.yaml`
-| 11
+| 12
 | `sheriff-config/gateway.yaml` (base), `sheriff-config-cookie/gateway.yaml`,
   `sheriff-config-cookie-refresh/gateway.yaml`,
   `sheriff-config-egress-verify-off/gateway.yaml`,
@@ -62,10 +62,11 @@ disk without touching this table and the guard fails.
   `sheriff-config-late-idp/gateway.yaml`,
   `sheriff-config-mtls/gateway.yaml`, `sheriff-config-passthrough-empty/gateway.yaml`,
   `sheriff-config-refresh/gateway.yaml`,
+  `sheriff-config-tls-relaxation/gateway.yaml`,
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 14
+| 15
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-scoped.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`,
@@ -74,7 +75,7 @@ disk without touching this table and the guard fails.
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
   `sheriff-config/endpoints/portal-hidden.yaml`,
   `sheriff-config/endpoints/secure.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
-  `sheriff-config/endpoints/untrusted.yaml`,
+  `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/upstream-fault.yaml`,
   `sheriff-config/endpoints/websocket.yaml`
 
 | `sheriff-config/portal/portal.html`
@@ -88,9 +89,12 @@ disk without touching this table and the guard fails.
 |===
 // end::inventory[]
 
-Only the base directory carries `endpoints/`, `portal/` and `topology.properties`; the eight overlay
+Only the base directory carries `endpoints/`, `portal/` and `topology.properties`; the nine overlay
 directories replace `gateway.yaml` and nothing else, which is why the endpoints tree resolves
-identically for every gateway instance the compose stack boots.
+identically for every gateway instance the compose stack boots. Eight of the nine back a compose
+service. The ninth, `sheriff-config-tls-relaxation/gateway.yaml`, backs none: `BffTlsRelaxationIT`
+mounts it over the shared directory of a one-off gateway, in the way a compose instance mounts its
+overlay, and it is described under the citation notation below.
 
 `sheriff-config-late-idp/gateway.yaml` is one of the two descriptors that are *not* overlays -- the
 other, `sheriff-config-jwks-egress-mismatch/gateway.yaml`, is built on the same shape and is
@@ -101,7 +105,13 @@ readiness gate would refuse it. It is a standalone, deliberately minimal documen
 beside exactly one shared endpoint file, `sheriff-config/endpoints/assets-secure.yaml`, and no
 `topology.properties`, so its route set is that single bearer-gated directory asset route.
 
-*No limit-shaped key lives outside this surface.* The sweep is a key-name pattern, applied to
+`reserved-path-overlap/auth-overlap.yaml` sits beside the surface, in a directory no gateway instance
+mounts, and declares `allowed_methods`. `BffReservedPathPrecedenceIT` copies it into a configuration
+directory it assembles and asserts that list on the wire: a `GET` on the routed path is refused
+`405`. `DescriptorInventoryWiringTest` sweeps the `sheriff-config*` directories only, so this file is
+outside its inventory by construction and is not counted in the twenty-nine.
+
+The sweep is a key-name pattern, applied to
 declared key names only -- never to raw file text, so the descriptors' extensive prose comments
 cannot manufacture a hit:
 
@@ -109,7 +119,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all twenty-seven files it returns hits in exactly seventeen of them:
+Over all twenty-nine files it returns hits in exactly eighteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -122,6 +132,7 @@ Over all twenty-seven files it returns hits in exactly seventeen of them:
 * `sheriff-config-mtls/gateway.yaml`
 * `sheriff-config-passthrough-empty/gateway.yaml`
 * `sheriff-config-refresh/gateway.yaml`
+* `sheriff-config-tls-relaxation/gateway.yaml`
 * `sheriff-config-ws-admission/gateway.yaml`
 * `sheriff-config/endpoints/bff-session.yaml`
 * `sheriff-config/endpoints/bff-session-websocket.yaml`
@@ -131,13 +142,14 @@ Over all twenty-seven files it returns hits in exactly seventeen of them:
 * `sheriff-config/endpoints/websocket.yaml`
 // end::limit-bearing[]
 
-The remaining ten -- `sheriff-config/endpoints/assets.yaml`,
+The remaining eleven -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/bff-scoped.yaml`,
 `sheriff-config/endpoints/bff-unassigned-scope.yaml`,
 `sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/portal-hidden.yaml`,
 `sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
+`sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` and `sheriff-config/topology.properties` -- declare none.
-That complement is the other half of the same claim, so asserting the seventeen exactly asserts both
+That complement is the other half of the same claim, so asserting the eighteen exactly asserts both
 halves at once.
 
 `sheriff-config/endpoints/bff-unassigned-scope.yaml` is limit-free for the same reason as
@@ -165,16 +177,28 @@ backs is about whether the TLS dial completes at all. A `forward` allow/deny lis
 there would be inert configuration that nonetheless made the file limit-bearing and owed a Coverage
 Matrix row.
 
+`sheriff-config/endpoints/upstream-fault.yaml` is limit-free because the limits it exists to reach
+are not configuration at all. Its single route backs `HtmlErrorPageIT`'s upstream-timeout and
+open-circuit legs, and the timeout and the circuit breaker those legs trip are fixed in the gateway
+-- a 30-second timeout, and a breaker per upstream host and port with a 20-request window, a
+50 percent failure ratio and a 5-second open delay -- so no key of a route can declare them. The
+fault is injected from outside instead, by a Toxiproxy proxy the test creates in front of the echo
+backend. The route declares a match prefix and an `upstream.path` and nothing else, and its alias in
+`sheriff-config/topology.properties` is named `FAULT_UPSTREAM`, a name that matches no alternative
+of the sweep, so neither file crosses the partition. Those fixed values are not Layer 2 rows either:
+Layer 2 records the caps a declared profile *resolves* to, and these are resolved from nothing a
+descriptor says.
+
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the seventeen limit-bearing paths -- and uses them
+runtime -- the inventory table, the sweep pattern and the eighteen limit-bearing paths -- and uses them
 as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-seventeen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+eighteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -185,7 +209,7 @@ cite every line explicitly as `×4 -- base:N, cookie:N, mtls:N, ws:N`, where `ws
 `sheriff-config-ws-admission`. A row citing a bare `sheriff-config/gateway.yaml:N` is declared in
 the *base document only* and is inherited by the overlays as the omitted-key default. The
 `allowed_methods` row does not fit that reading: every `gateway.yaml` in the surface declares the
-key -- the eight overlays at the base's own values -- and the row cites the base document's five
+key -- the nine overlays at the base's own values -- and the row cites the base document's five
 declarations rather than each document's. The documents described below that copy the base, or
 stand alone, declare further base-cited keys; each paragraph says which.
 
@@ -234,7 +258,9 @@ declared at the same five places with the same values. The other nine -- `securi
 Their `egress_tls` block adds *no* limit-shaped key: none of its three keys --
 `upstream_verify_hostname`, `upstream_tls_profile` and `oidc_tls_profile` -- matches any alternative
 in the sweep pattern above. The same holds for the `egress_tls` block of every other descriptor that
-carries an `oidc` block, which declares `oidc_tls_profile` alone. Both files are
+carries an `oidc` block: each declares `oidc_tls_profile` alone, except
+`sheriff-config-tls-relaxation/gateway.yaml`, which declares `oidc_verify_hostname` and
+`jwks_verify_hostname` instead -- two keys the sweep does not match either. Both files are
 limit-bearing purely on keys a row already cites -- `allowed_methods`,
 `anchors.upload.security_filter.max_body_bytes`, the `benchmark-keycloak` issuer's
 `jwks.allowed_egress_hosts`, `oidc.session.ttl_seconds`, `oidc.session.refresh.leeway_seconds` and
@@ -327,6 +353,38 @@ name and asserts the inverse instead -- the list is non-empty and does *not* con
 host -- so the fixture cannot silently degrade into a matching or derived list and turn the refusal
 it exists for into a pass.
 
+`sheriff-config-tls-relaxation/gateway.yaml` is outside the `×N` notation as well, and the `×4` rows
+are **not** re-cited to include it. It backs `BffTlsRelaxationIT`, which mounts it over the shared
+directory of a one-off gateway on a dedicated network; no compose service loads it. It is built on
+the shape of the refresh overlay -- server mode, `refresh-client` with its client secret, refresh
+enabled, the base document's anchor set -- and differs from that overlay in five places:
+
+* its `egress_tls` block declares `oidc_verify_hostname: false` and `jwks_verify_hostname: false`
+  and no `oidc_tls_profile`;
+* neither http-sourced issuer names a `jwks.tls_profile`;
+* the gateway origin inside `redirect_uri`, `post_logout_redirect_uri` and `csrf.trusted_origins` is
+  10463;
+* its `security_defaults` block does not declare `allow_get_with_content_length_body`, because
+  `GetWithBodyActivationWiringTest` admits that opt-in on the enumerated base copies only;
+* `metadata.config_version` is its own label.
+
+Every key it declares that a matrix row indexes -- every *limit-shaped* key it declares among them
+-- is declared at the value the base document declares: `allowed_methods` at the base's five places, `security_defaults.profile` beside
+`max_authorization_header_value_length` (*G1*), `tls.min_version` (*G11*),
+`anchors.upload.security_filter.max_body_bytes`, `security_headers.hsts.max_age`, the four
+`security_headers.cors` lists, `asset_defaults.content_types`, the `benchmark-keycloak` issuer's
+`jwks.allowed_egress_hosts` (*G2*), `oidc.session.ttl_seconds` (*G9*),
+`oidc.session.refresh.leeway_seconds` and `oidc.user_info.allowed_claims` (*G10*). None of them is a
+new limit and none is asserted at its boundary on this instance, so the file is limit-bearing purely
+on keys a row already cites and those rows are not re-cited. Three base-only rows do *not* derive
+onto it, because it does not declare their keys: `allow_get_with_content_length_body`,
+`tls.passthrough_sni` and `portal.cache_seconds`.
+
+What the file adds is the one row that cites it alone: the two hostname relaxations. Neither key
+matches the sweep pattern, so the row is not owed by the limit-bearing partition; it is in the matrix
+because the pair is a declared security posture with a runtime boundary, in the way the
+`tls.passthrough_sni` and `tls.mtls` rows are.
+
 *Seventeen* Coverage Matrix rows cite the base document: the *seven* `×4` rows (`anchors.upload`,
 `csrf.trusted_origins`, `refresh.leeway_seconds`, G2, G8, G9, G10) and the *ten* base-only
 `sheriff-config/gateway.yaml:N` rows (`security_defaults.profile`,
@@ -336,9 +394,10 @@ it exists for into a pass.
 Citing the passthrough-empty overlay per row would add a *fifth* line number to each of the seven
 `×4` rows and a *second* to nine of the ten base-only rows -- *sixteen* rows, restating one fact
 sixteen times where it is better stated once: *derive it from the base citation.*
-The two remaining `gateway.yaml` rows in the matrix cite an overlay only
-(`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`) and declare keys
-the base does not, so they are outside this derivation entirely.
+The three remaining `gateway.yaml` rows in the matrix cite an overlay only
+(`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`,
+`sheriff-config-tls-relaxation/gateway.yaml`) and declare keys the base does not, so they are outside
+this derivation entirely.
 
 The sixteenth-versus-seventeenth row is not an off-by-one: the base-only row that would gain *no*
 citation is `tls.passthrough_sni` itself, the one key this overlay does **not** carry -- and that
@@ -350,7 +409,8 @@ overlays*: the cookie, mTLS and ws-admission overlays declare no `security_defau
 resolve the shipped defaults, and neither do the three overlays built on their shape -- the
 cookie-refresh overlay and the egress pair. The passthrough-empty and refresh overlays are the
 exceptions that follow directly from their derivation -- being base copies, they carry the base's
-`security_defaults` verbatim.
+`security_defaults` verbatim. The TLS-relaxation fixture carries the block too, without the
+`allow_get_with_content_length_body` key.
 
 == The Two Declaration Layers
 
@@ -469,6 +529,22 @@ declaration's *existence* is proven while its *boundary* is not.
 | `MtlsServerCustomizer` (require-and-verify at the handshake)
 | COVERED
 | `MtlsHandshakeIT` (wrong-CA identity rejected; trusted identity admitted)
+
+| `egress_tls.oidc_verify_hostname: false` / `jwks_verify_hostname: false`
+  `sheriff-config-tls-relaxation/gateway.yaml:178,179`
+| The BFF OIDC back-channel client built in `BffRuntimeProducer` and the JWKS loader built in
+  `TokenValidatorProducer` (hostname matching only; chain trust is a separate mechanism)
+| COVERED
+| `BffTlsRelaxationIT` -- one gateway per leg behind a TLS proxy of the compose Keycloak, on the
+  native image. *Both relaxed*, proxy certificate trusted but not naming the dialled host: readiness
+  `UP` and a full login, mediated call and refresh. *Only the JWKS leg relaxed* (the same document
+  with `oidc_verify_hostname` removed): readiness still `UP` and a bearer token accepted, while a
+  login is refused before any redirect into the identity provider -- the single variable attributes
+  the first leg's login to the key. *Both relaxed, proxy certificate naming the host but untrusted*:
+  the key set never loads and a login is refused, so neither key reached chain trust.
+  `ItProfileConfigBindingWiringTest` is the descriptor half: it exempts exactly this file from the
+  trust-profile guard and exactly the test's source from the launch-site guard, and asserts for each
+  that the property the exemption rests on is still there.
 
 | `secure-filtered.security_filter.profile: strict` / `allowed_paths`
   `sheriff-config/endpoints/secure.yaml:19-57`
@@ -783,21 +859,22 @@ enlarge exactly the hole this note has chosen to report.
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
 paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
-seventeen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+eighteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
 *boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
 so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *seventeen already limit-bearing* files
+The consequence: adding a limit-shaped key to one of the *eighteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
-row is forced. Only a key that makes one of the remaining ten --
+row is forced. Only a key that makes one of the remaining eleven --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
 `sheriff-config/endpoints/bff-scoped.yaml`, `sheriff-config/endpoints/bff-unassigned-scope.yaml`,
 `sheriff-config/endpoints/origin-headers.yaml`,
 `sheriff-config/endpoints/portal-hidden.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
-`sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/portal/portal.html` or
+`sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/upstream-fault.yaml`,
+`sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Seventeen of twenty-seven is the *majority* of the surface,
-so this is the ordinary case rather than an edge one: for those seventeen files the "add its row here
+Eighteen of twenty-nine is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those eighteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
 `hsts.max_age` and the CORS allow lists are limit-shaped, the base file was already limit-bearing, and
@@ -825,14 +902,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (twenty-seven files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (twenty-nine files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the seventeen limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the eighteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the seventeen/ten partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the eighteen/eleven partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -841,7 +918,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the twenty-seven files, add its row here in the same change --
+When you add a limit-shaped key to any of the twenty-nine files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
@@ -917,10 +994,16 @@ that position, and the reasoning is written down here so it is not re-litigated 
 
 *Both are secure-by-default relaxations that no shipped deployment activates.* Each defaults to
 `true`, an omitted key or an omitted block resolves to `true`, and the shipped posture *is* that
-default. No committed descriptor -- neither the integration stack's nor the compose sample's -- declares
-either key, so there is no deployed document whose activation a wiring test could check. An
-activation test here could only assert that the relaxation is *off* everywhere, which is the property
-the default already states and the schema already carries.
+default. No descriptor a deployment boots -- no compose service of the integration stack, and nothing
+in the compose sample -- declares either key, so there is no deployed document whose activation a
+wiring test could check. An activation test here could only assert that the relaxation is *off*
+everywhere, which is the property the default already states and the schema already carries.
+
+*One committed descriptor does declare both, and it is a test fixture rather than a deployment.*
+`sheriff-config-tls-relaxation/gateway.yaml` sets both keys to `false` so that `BffTlsRelaxationIT`
+can show, on the native image and against a real identity provider, what each relaxation reaches and
+what neither does; see its Coverage Matrix row. The rule in "What would reopen it" below applied to
+that change in full, and the guard was extended in the same change.
 
 *The two halves that are owed are both present.*
 
@@ -951,12 +1034,28 @@ wiring guard in the same change.
 
 *`oidc_tls_profile` is the member of that list a deployment does activate.* It is a trust profile and
 not a relaxation, so the rationale above never covered it. Every integration descriptor that carries
-an `oidc` block declares `egress_tls.oidc_tls_profile: benchmark-idp`, and
+an `oidc` block declares `egress_tls.oidc_tls_profile: benchmark-idp` -- every one but the
+TLS-relaxation fixture, described below -- and
 `ItProfileConfigBindingWiringTest` is the wiring guard the paragraph above requires. It derives the
 descriptor set by directory glob with a floor, asserts that each such descriptor names the profile and
 declares no `oidc_verify_hostname` beside it, asserts that every `QUARKUS_PROFILE=it` gateway instance
 loads the properties file that binds the profile, and asserts that no gateway passes a
-`-Djavax.net.ssl.*` argument on its command line. That last assertion covers two populations: the
+`-Djavax.net.ssl.*` argument on its command line.
+
+*The one exemption, and what it is conditioned on.* `sheriff-config-tls-relaxation/gateway.yaml`
+cannot name the profile: the gateway refuses a hostname relaxation together with a named profile at
+boot, so a descriptor that relaxes hostname matching has to verify the chain against the JVM default
+trust store, and `BffTlsRelaxationIT` supplies that store with `-Djavax.net.ssl.trustStore*` arguments
+after the image. By operator decision the guard therefore exempts exactly two files, each by its
+literal path: that descriptor from the per-descriptor assertion, and `BffTlsRelaxationIT.java` from
+the launch-site assertion. Neither exemption is unconditional. Before it skips the descriptor the
+guard asserts that the file exists, declares an `oidc` block, declares `oidc_verify_hostname: false`
+and names no `oidc_tls_profile`; before it skips the test source it asserts that the file is in the
+derived launch-site set and carries the `-Djavax.net.ssl.` prefix. Deleting the fixture, giving it a
+profile, or dropping the trust-store argument therefore turns the guard red instead of leaving an
+exemption that covers nothing. The assertion over the compose gateway services has no exemption.
+
+The command-line assertion covers two populations: the
 gateway services of the compose file, read from both their `entrypoint` and their `command` in either
 compose form, and the one-off launch sites, the files under the module's `src/test/java` and
 `scripts/` that name the gateway image -- by its literal or through the harness constant

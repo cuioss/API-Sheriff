@@ -235,6 +235,15 @@ public class GatewayEdgeRoute {
     private static final String CONTENT_LENGTH_HEADER = "Content-Length";
     private static final String CONNECTION_HEADER = "Connection";
     private static final String CONNECTION_CLOSE = "close";
+    /** The {@code Retry-After} response header an open-circuit {@code 503} carries. */
+    static final String RETRY_AFTER_HEADER = "Retry-After";
+    /**
+     * How long an upstream circuit breaker stays open before it lets a trial request through, in
+     * seconds. It is both the breaker's delay ({@link #guardFor}) and the value of the
+     * {@code Retry-After} header on the {@code 503} an open circuit answers ({@link #seedRetryAfter}),
+     * so the hint a client is given can never differ from the window the breaker applies.
+     */
+    static final int BREAKER_RESET_SECONDS = 5;
     private static final String CLAIMS_PARAM = "claims";
     private static final String RETURN_URL_PARAM = "returnUrl";
     private static final String STATE_PARAM = "state";
@@ -1897,9 +1906,13 @@ public class GatewayEdgeRoute {
      * {@linkplain GatewayException#getProblemExtensions() problem extension members}. A rejection that
      * fires before route selection (no selected route) always renders problem+json. A gRPC status has
      * no place for extension members, so they are not rendered there.
+     * <p>
+     * An open circuit's {@code 503} is given its {@code Retry-After} header first
+     * ({@link #seedRetryAfter}), so it rides on whichever of the three shapes answers.
      */
     private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
         EventType eventType = rejected.getEventType();
+        seedRetryAfter(request, eventType);
         RouteRuntime selected = request != null ? request.selectedRoute() : null;
         if (selected != null && selected.getProtocol() == Protocol.GRPC) {
             Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
@@ -1914,6 +1927,32 @@ public class GatewayEdgeRoute {
             return;
         }
         renderProblem(ctx, request, eventType, rejected.getProblemExtensions());
+    }
+
+    /**
+     * Gives the {@code 503} of an open circuit ({@link EventType#UPSTREAM_CIRCUIT_OPEN}) its
+     * {@code Retry-After} header, as the error contract in {@code architecture.adoc} states: the
+     * header is seeded onto the request's {@linkplain PipelineRequest#responseHeaders() response-header
+     * map}, which every writer of a gateway-authored answer applies — the problem document, the
+     * negotiated HTML error page and the trailers-only gRPC status alike. Every other rejection is left
+     * as it is.
+     * <p>
+     * The value is {@value #BREAKER_RESET_SECONDS}, the whole seconds the breaker stays open
+     * ({@link #BREAKER_RESET_SECONDS}); a delay in seconds is the one form of the header that needs no
+     * clock (RFC 9110 §10.2.3). It is a constant of the gateway and carries nothing of the request or
+     * of the upstream.
+     * <p>
+     * Package-private rather than private so the header is asserted directly by
+     * {@code GatewayEdgeRouteRetryAfterTest}, matching the precedent {@link #problemBody} sets.
+     *
+     * @param request   the rejected request, {@code null} for a rejection answered before one was
+     *                  built — such a rejection is never an open circuit and gets no header
+     * @param eventType the event the rejection reports
+     */
+    static void seedRetryAfter(@Nullable PipelineRequest request, EventType eventType) {
+        if (request != null && eventType == EventType.UPSTREAM_CIRCUIT_OPEN) {
+            request.responseHeaders().put(RETRY_AFTER_HEADER, Integer.toString(BREAKER_RESET_SECONDS));
+        }
     }
 
     /**
@@ -2522,7 +2561,7 @@ public class GatewayEdgeRoute {
                 .name(name)
                 .requestVolumeThreshold(20)
                 .failureRatio(0.5)
-                .delay(5, ChronoUnit.SECONDS)
+                .delay(BREAKER_RESET_SECONDS, ChronoUnit.SECONDS)
                 .successThreshold(2)
                 .skipOn(GatewayException.class)
                 .onStateChange(state -> upstreamFailureMapper.recordBreakerTransition(name, state))

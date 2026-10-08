@@ -421,8 +421,9 @@ it adds no row to the instance table and nothing to the diagram.
   listener keeps the stack certificate.
 
 | Host ports
-| The application listener on the fixed loopback port `10456`; the management interface on an
-  ephemeral loopback port.
+| The application listener on the fixed host port `10462`, published on every interface as the
+  Compose stack publishes its own gateway ports; the management interface on a loopback port docker
+  assigns.
 
 | Mounts
 | The certificates, the shared configuration with the derived descriptor laid over it, the assets and
@@ -443,10 +444,9 @@ byte-identical. The Keycloak service trusts the certificate through a second ent
 to `docker-compose.yml`, and it is inert for every suite that starts no such gateway.
 
 *The port is fixed, and `docker-compose.yml` does not show it.* The descriptor of a BFF names its own
-origin, so the application port cannot be ephemeral. `10456` is the next port after the range the
-Compose stack publishes, `10443` to `10455`. The note above says to allocate host ports by reading
-`docker-compose.yml`. This port is the one that file does not list: a compose instance published on
-`10456` would collide with this test.
+origin and is read at boot, so the application port cannot be one docker assigns. This gateway takes
+`10462`. <<test-started-host-ports>> lists every such port, says how each is published and why, and
+records the port numbers that must not be handed out again.
 
 *What guards the wiring.* The wiring is spread over the realm import, the compose file and the
 certificate. `BffClientKeyWiringTest` reads all three without a container and asserts that:
@@ -476,6 +476,376 @@ session. The failure message of the test names the other possible verdict -- the
 and the session ends through `oidc.session.refresh.on_failure` -- so a Keycloak upgrade that changes
 the behaviour turns the test red. The decision record states the limits of this observation
 (link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc#observed-on-the-integration-stack[ADR-0058: Observed on the integration stack]).
+
+[#test-started-host-ports]
+=== The test-started containers and their host ports
+
+Some suites start containers of their own instead of using a Compose service: a gateway whose
+readiness is `DOWN` by design, a gateway with a lifetime or a restart of its own, a stub or a proxy
+standing in for the identity provider. They are started through the shared harness
+(`OneOffGatewayContainers`) and removed on every exit path. None is a service of
+`docker-compose.yml`, and none adds a row to the instance table or anything to the diagram.
+
+*The ports `docker-compose.yml` does not list.* The Compose stack publishes `10443` to `10455`. Every
+test-started gateway publishes its application listener on a fixed host port above that range. The
+note above says to allocate host ports by reading `docker-compose.yml`; these are the ports that file
+does not show, and a Compose instance published on one of them would collide with the suite that uses
+it.
+
+The table below is enclosed in a `test-started-host-ports` tagged block, which
+`OneOffGatewayContainersTest` reads at runtime and compares with the ports the integration-test
+sources assign -- so the table is a test input, and a change to it is not a documentation-only commit.
+
+// tag::test-started-host-ports[]
+[cols="1,2,3"]
+|===
+| Host port | Gateway container | Suite
+
+| `10459`
+| `sheriff-absolute-ttl`
+| `BffSessionAbsoluteTtlIT` -- see <<short-ttl-gateway>>
+
+| `10462`
+| `sheriff-generated-keys`
+| `BffGeneratedKeysIT` -- see <<generated-keys-gateway>>
+
+| `10463`
+| `sheriff-tls-relaxation-gateway`
+| `BffTlsRelaxationIT` -- see <<tls-relaxation-rig>>
+
+| `10464`
+| `sheriff-reserved-path-overlap`
+| `BffReservedPathPrecedenceIT` -- see <<reserved-path-gateway>>
+
+| `10465`
+| `sheriff-stub-idp-gateway`
+| `BffRefreshScopeWireIT`, `BffRefreshSingleFlightIT` and `BffRefreshTransientFailureIT`, through
+  `StubIdentityProviderRig` -- see <<stub-idp-rig>>
+
+| `10466`
+| `late-idp-gateway-<suffix>`
+| `JwksLateIdpReadinessIT`
+
+| `10467`, `10468`
+| `jwks-egress-mismatch-gateway-<suffix>` and its control, `jwks-egress-mismatch-control-<suffix>`
+| `JwksEgressMismatchIT`, which runs the two side by side
+
+| `10469`, `10470`
+| `sheriff-idle-timeout-server` and `sheriff-idle-timeout-cookie`
+| `BffSessionIdleTimeoutIT`, one gateway per test, each with the signing-key directory mounted
+|===
+// end::test-started-host-ports[]
+
+*How they are published.* Every one of these gateways publishes two ports: the application listener
+as `<port>:8443` on every interface (`OneOffGatewayContainers.applicationPortPublication`), the form
+the Compose stack publishes its own gateway ports in, and the management interface as
+`127.0.0.1::9000`, on a loopback port docker assigns and the suite reads back. The application port
+of a BFF has to be known before the container exists, because the descriptor names the gateway's own
+origin and is read at boot. The two bearer-only suites have no such constraint and take a fixed port
+for the reason the next paragraphs give. The cost of the form is that a test's gateway is reachable
+from the network the host is on while the test runs, as the Compose gateways are.
+
+*The host constraint behind that form.* On Rancher Desktop under WSL 2 a host port number can be left
+dead. A container that publishes a dead number afterwards starts normally and answers on its other
+ports; a connection to the dead number is accepted and reset about five seconds later. The trigger was
+established on 2026-10-07 with plain nginx containers and no gateway. A number goes dead when a
+container is removed that had one of two shapes:
+
+. two publications on a loopback address;
+. one publication on a loopback address while it was attached to two networks.
+
+A container with at most one loopback publication on a single network leaves nothing behind, and a
+publication on every interface counts towards neither shape. A dead number stays dead however it is
+published afterwards, on loopback or on every interface. What was not measured: whether restarting the
+runtime clears a dead number, and whether any other container runtime behaves this way. The
+constraint was observed on that host only.
+
+*The rule the harness follows.* No container a test starts carries two loopback publications, or one
+loopback publication while it is attached to two networks:
+
+* a gateway publishes one port on every interface and one on loopback, and joins one network;
+* the stub identity provider publishes its admin port on loopback and nothing else, and joins one
+  network;
+* the two containers that are attached to a second network -- the identity-provider proxy of
+  `BffTlsRelaxationIT` and the late provider of `JwksLateIdpReadinessIT` -- publish no port at all.
+
+`OneOffGatewayContainers.assertLeavesNoDeadHostPort` refuses both shapes in every argument builder of
+the harness, before any docker call. `OneOffGatewayContainersTest` holds the rule without a docker
+daemon: it runs each builder with the options the suites pass, and it scans the integration-test
+sources so that a publish option, a raw `network connect` and a call of the harness's own network
+attachment each occur in a named set of files and in no other. The echo container a rig borrows from
+the Compose stack is attached to the rig's network and detached again; no test starts it, and the rule
+does not cover it.
+
+*The start check.* A gateway's readiness is polled on its management port, so readiness `UP` says
+nothing about the application port, which is published over a different mapping. Each suite therefore
+makes one request to the application port once the gateway answers
+(`OneOffGatewayContainers.assertApplicationPortAnswers`). On a dead number that request fails the
+suite's start with a message naming the port and the condition, instead of surfacing as a socket error
+in whichever test request comes first. It is one request and not a wait.
+
+*Retired port numbers.* `10456`, `10457`, `10458`, `10460` and `10461` are dead on that host and must
+not be handed out again. Each was the fixed port of a test-started gateway at a time when such a
+gateway published both of its ports on loopback: `10456` of `BffGeneratedKeysIT`, `10457` and later
+`10461` of the stub identity-provider rig, `10458` of `BffTlsRelaxationIT`, `10460` of
+`BffReservedPathPrecedenceIT`. The two bearer-only suites published both of their ports on loopback
+ports docker assigned. By the measurement above each such gateway left its two numbers dead; those
+lie in the range docker assigns from and are not recorded, which is why no test-started container
+takes a port docker assigns on every interface.
+
+[#stub-idp-rig]
+=== The stub identity-provider rig
+
+Three suites have to see, or to decide, what the identity provider is sent and what it answers: the
+`scope` of a refresh grant (`BffRefreshScopeWireIT`), the number of refresh grants a burst of requests
+causes (`BffRefreshSingleFlightIT`), and a token endpoint that fails once (`BffRefreshTransientFailureIT`).
+The Compose Keycloak shows a test none of the three. The suites share one rig,
+`StubIdentityProviderRig`, in which a WireMock container stands in for the identity provider. Each
+test starts a rig of its own and closes it.
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Stub image
+| `wiremock/wiremock:3.13.1@sha256:d61e7720f89483fdef5366843b58d1dfd06bcce5828179c9f2f54de5c28354b0`
+  -- an exact release tag together with the digest of its multi-platform index. It is the one
+  container image the integration tests start that the Compose stack does not.
+
+| Network
+| A dedicated docker network, `sheriff-stub-idp`.
+
+| Stub container
+| `sheriff-stub-idp-wiremock`, under the network alias `keycloak` -- the host the descriptor's issuer
+  and every `jwks.url` name. It serves HTTPS on `8443` from a PKCS12 key store the rig derives below
+  `target/` from the committed `localhost.crt` and `localhost.key`. The subject alternative names of
+  that certificate cover the alias, so the gateway keeps `egress_tls.oidc_tls_profile: benchmark-idp`,
+  keeps hostname verification on and needs no new trust material. Its plain-HTTP admin port is its
+  one published port, on a loopback port docker assigns; the rig scripts answers and reads the
+  request journal there.
+
+| Echo upstream
+| The Compose `go-httpbin` container, connected to the rig's network under its service name for the
+  life of the rig and disconnected on teardown, so the session route has its upstream.
+
+| Gateway
+| `sheriff-stub-idp-gateway`, on the rig's network and no other.
+
+| Descriptor
+| Derived at test time from the committed `sheriff-config-refresh/gateway.yaml`, with the gateway
+  origin retargeted at the port below. It is written below `target/` and never committed.
+
+| Mounts
+| What every one-off BFF gateway mounts, and the signing-key directory, because the descriptor names a
+  DPoP proof key.
+
+| Host ports
+| The application listener on the fixed host port `10465`, on every interface; the management
+  interface on a loopback port docker assigns.
+|===
+
+*What the stub serves.* The provider metadata document below the issuer, the key set on every
+`jwks.url` path the descriptor names, and the pushed-authorization-request, token and revocation
+endpoints. Tokens are signed with an RSA key generated when the rig starts, and every access token
+carries the thumbprint of the committed proof key as `cnf.jkt`, because the gateway refuses a token
+response that is not bound to its own proof key. The stub validates nothing. Its token endpoint
+refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
+passing unnoticed.
+
+*What guards the image.* `StubIdentityProviderWiringTest` reads committed files only. It asserts that
+the image reference has the shape `name:tag@sha256:<64 hex>`, and that the image name occurs in
+neither `integration-tests/docker-compose.yml`, nor `api-sheriff/pom.xml`, nor any file below
+`api-sheriff/src/main/docker/`.
+
+[#tls-relaxation-rig]
+=== The TLS-relaxation rig
+
+`BffTlsRelaxationIT` pins what the two hostname relaxations of the back-channel to the identity
+provider reach, and what neither reaches. It needs an identity provider whose certificate the test
+chooses, so each of its three tests starts a rig of its own: a TLS proxy of the Compose Keycloak, and a
+gateway that reaches Keycloak through that proxy only.
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Network
+| A dedicated docker network, `sheriff-tls-relaxation`.
+
+| Proxy
+| `sheriff-tls-relaxation-idp`, running
+  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- a
+  release-line tag together with the digest of its multi-platform index -- and rendered from
+  `tls-relaxation-idp/default.conf.template`. On the rig's network it carries the alias
+  `keycloak`. It is attached to the Compose network as well, where it dials the Keycloak container by
+  its container name, and it forwards every path with `Host: keycloak:8443`. It publishes no host
+  port.
+
+| Echo upstream
+| The Compose `go-httpbin` container, connected for the life of the rig as in <<stub-idp-rig>>.
+
+| Gateway
+| `sheriff-tls-relaxation-gateway`, on the rig's network and no other. It authenticates as
+  `refresh-client`, with the secret the realm import registers.
+
+| Descriptor
+| The committed fixture `sheriff-config-tls-relaxation/gateway.yaml`, mounted over the shared
+  configuration directory as a Compose instance mounts its overlay. It declares
+  `egress_tls.oidc_verify_hostname: false` and `egress_tls.jwks_verify_hostname: false` and names no
+  trust profile. No Compose service loads it.
+
+| Trust
+| Three process arguments after the image name: `-Djavax.net.ssl.trustStore`,
+  `-Djavax.net.ssl.trustStorePassword` and `-Djavax.net.ssl.trustStoreType=PKCS12`. They put the
+  gateway process on the committed `upstream-truststore.p12`, which holds one certificate. The path
+  and the secret are read from `certificates/it-upstream-trust.properties`.
+
+| Host ports
+| The application listener on the fixed host port `10463`, on every interface; the management
+  interface on a loopback port docker assigns.
+|===
+
+*The certificate and the descriptor of each leg.* A leg says something about hostname matching only
+if the proxy's certificate is trusted and does not name the host, and something about chain trust
+only if the certificate names the host and is not trusted. Each test asserts those two facts on the
+committed certificate, against the committed trust store, before it starts its rig.
+
+[cols="3,2,1,1,2"]
+|===
+| Test | Proxy certificate | In the trust store | Names `keycloak` | Descriptor
+
+| `bothRelaxationsAdmitATrustedCertificateThatDoesNotNameTheHost`
+| `upstream-mismatch.crt`
+| yes
+| no
+| the fixture
+
+| `theKeySetRelaxationAloneDoesNotAdmitTheBackChannel`
+| `upstream-mismatch.crt`
+| yes
+| no
+| the fixture without `oidc_verify_hostname`, written below `target/` and asserted to differ from the
+  fixture in that key and in nothing else
+
+| `neitherRelaxationReachesChainTrust`
+| `localhost.crt`
+| no
+| yes
+| the fixture
+|===
+
+*The serving control.* Before the gateway starts, the rig asserts that the proxy serves the realm's
+metadata to a client that verifies nothing, so a refusal that follows is the gateway's verdict on the
+certificate. The proxy is on two networks and therefore publishes no port
+(<<test-started-host-ports>>), so that client is `curl` in a one-shot container of the proxy's own
+image on the rig's network, which dials the proxy under the name the gateway dials it under.
+
+*What guards the proxy image.* `StubIdentityProviderWiringTest` holds the proxy's reference to the
+shape `name:tag@sha256:<64 hex>`, beside the stub image of <<stub-idp-rig>> and with the same
+control. The shape is all it holds: that the pinned reference pulls is shown by this suite starting
+the proxy.
+
+*The JSSE arguments, and the exemption that covers them.* This is the one launch of the gateway
+image in the module that passes JSSE trust-store system properties. The gateway refuses a hostname
+relaxation together with a named trust profile at boot, so a descriptor that relaxes hostname matching
+has to verify the chain against the JVM default trust store. `ItProfileConfigBindingWiringTest`
+exempts exactly two files, each by its literal path: the fixture descriptor from its trust-profile
+guard and `BffTlsRelaxationIT.java` from its launch-site guard. Neither exemption is unconditional;
+link:declared-limit-assertion-coverage.adoc[the coverage note] states what each one asserts first.
+
+[#short-ttl-gateway]
+=== The short-lifetime gateway
+
+`BffSessionAbsoluteTtlIT` pins that a server-mode session ends `ttl_seconds` after its login whatever
+a refresh did in between. The lifetime is a property of the whole gateway, and no Compose instance
+declares one short enough to wait out in a test, so the short lifetime needs an instance of its own.
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Container name and network alias
+| `sheriff-absolute-ttl`, on the Compose network, against the real Keycloak.
+
+| Descriptor
+| Derived at test time from the committed `sheriff-config-refresh/gateway.yaml`: `ttl_seconds` set to
+  `40`, and the gateway origin retargeted at the port below. The two are asserted, on the parsed
+  documents, to be the only differences. It is written below `target/` and never committed.
+
+| Control
+| The Compose instance `api-sheriff-refresh`, which runs the committed descriptor itself. Both
+  instances authenticate as `refresh-client`.
+
+| Mounts
+| What every one-off BFF gateway mounts, and the signing-key directory.
+
+| Host ports
+| The application listener on the fixed host port `10459`, on every interface; the management
+  interface on a loopback port docker assigns.
+|===
+
+[#reserved-path-gateway]
+=== The reserved-path gateway
+
+`BffReservedPathPrecedenceIT` pins that the gateway's reserved OIDC paths win over a proxy route whose
+prefix contains them. No committed endpoint declares such a route, and none may: the route sits under
+an anchor of its own, and an anchor has to be declared in every gateway document that resolves the
+route. So the suite starts a gateway over a configuration of its own, once for the class.
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Container name and network alias
+| `sheriff-reserved-path-overlap`, on the Compose network.
+
+| Fixture
+| `reserved-path-overlap/auth-overlap.yaml`: one endpoint with one route, `path_prefix: /auth`, to the
+  echo upstream, with `allowed_methods: ["POST"]`. It lives outside every `sheriff-config*` directory.
+
+| Configuration directory
+| Assembled below `target/` by `OneOffGatewayContainers.assembleConfigurationDirectory`: a copy of the
+  shared `sheriff-config` tree, the fixture as one further file of its `endpoints/`, and as its
+  `gateway.yaml` a document derived from `sheriff-config-passthrough-empty/gateway.yaml` by adding the
+  one anchor the fixture names -- asserted to be the only difference. The directory is mounted whole
+  at `/app/sheriff-config`, read-only, in place of the shared directory and its overlay.
+
+| Mounts
+| The certificates, the assembled configuration, the assets, the demo directory and the signing-key
+  directory.
+
+| Host ports
+| The application listener on the fixed host port `10464`, on every interface; the management
+  interface on a loopback port docker assigns.
+|===
+
+*Why the fixture is not mounted into the shared directory.* Every gateway mounts the shared
+`sheriff-config` directory read-only. A file mounted into it needs a mount point inside it, and for a
+name that does not exist there the container runtime cannot create one under a read-only parent: the
+container would not start. Under a writable parent the runtime would create the mount point as an
+empty file in the committed directory, and every Compose instance would load it from then on. The
+existing `gateway.yaml` overlay is unaffected, because that name exists in the mounted directory. The
+harness refuses an extra mount at or below a path it mounts itself, and the suite asserts, before it
+starts and after it has finished, that the committed `sheriff-config/endpoints/` directory holds no
+file of the fixture's name.
+
+=== The fault proxy in front of the echo backend
+
+Toxiproxy fronts a second backend. Beside the standing use by `PassthroughFaultIT`, in front of the
+passthrough backend, `HtmlErrorPageIT` places a Toxiproxy proxy in front of `go-httpbin` to observe
+the gateway's own `504` and `503` answers. The proxy is not part of the standing topology:
+
+* the shared endpoint file `sheriff-config/endpoints/upstream-fault.yaml` declares one route,
+  `path_prefix: /proxy/fault`, under the existing `api` anchor;
+* its `base_url` is the alias `FAULT_UPSTREAM`, which `sheriff-config/topology.properties` points at
+  `http://toxiproxy:8667`;
+* nothing listens on that port until a test creates the proxy through Toxiproxy's admin API, which the
+  Compose stack publishes on `8474`, and the test deletes the proxy again.
+
+The listen port is this alias's own -- `PASSTHROUGH_FAULT` listens on `8666` -- so the proxy, and the
+circuit breaker the gateway keeps per upstream host and port, are shared with no other route. Every
+gateway instance loads the route, because the endpoints directory is shared; outside those tests it is
+never requested. The change adds no Compose service and no published port.
 
 === Mounted material
 
@@ -597,8 +967,8 @@ issuer's explicit `allowed_egress_hosts` names a host other than its `jwks.url` 
 compose network so `keycloak` resolves to the same site-local address the compose instances dial,
 asserts `DOWN` without disclosure and a `401` for a real token, and then starts a second one-off
 control that differs only by that key's removal and must reach `UP` and accept the same token
-through the derived allowance. Neither one-off gateway adds a service, a port pair or a row to the
-table or the diagram above.
+through the derived allowance. Neither suite adds a service or a row to the table or the diagram
+above; the host ports their gateways take are listed under <<test-started-host-ports>>.
 
 What readiness still does not cover is worth stating plainly, because it is the thing most likely to
 be assumed wrong:
@@ -935,3 +1305,18 @@ The `<desc>` accessibility narrative was read against the change. It states that
 primary gateway inside the network for the client key set and for back-channel logout. That stays
 true of the Compose stack. While `BffGeneratedKeysIT` runs, Keycloak dials the one-off gateway as
 well, for that gateway's key set; this leg belongs to the test and is not part of the narrative.
+
+=== Diagram check for the test-started rigs
+
+This change alters no fact the diagram depicts, so the diagram is deliberately not redrawn. It adds
+no Compose service, no published Compose port and no change to the `gateway.yaml` of a Compose
+instance. The four rigs of <<stub-idp-rig>>, <<tls-relaxation-rig>>, <<short-ttl-gateway>> and
+<<reserved-path-gateway>> are containers the suites start and remove, and the host ports of
+<<test-started-host-ports>> are published by those suites, not by the Compose stack.
+
+Two things did change in the material every gateway instance mounts: the shared configuration gained
+the endpoint file `endpoints/upstream-fault.yaml` and the alias `FAULT_UPSTREAM`. The diagram draws
+the mounted directories as pills and names no file inside them, and it draws the standing legs of the
+stack. The leg from `toxiproxy` to `go-httpbin` exists only between the moment `HtmlErrorPageIT`
+creates its proxy and the moment it deletes it, so it is not a standing leg and is not drawn. Neither
+the diagram nor its `<desc>` narrative was edited.

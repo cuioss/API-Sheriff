@@ -99,7 +99,7 @@ import org.junit.jupiter.api.Test;
  *   <li>The descriptor is derived at test time from the committed cookie-refresh descriptor: both
  *       {@code key_file} entries removed, {@code client_id} {@value #CLIENT_ID}, a declared
  *       {@code client_authentication.jwks_path} of {@value #JWKS_PATH}, and the origin triple
- *       retargeted at the fixed loopback port {@value #APPLICATION_PORT}. Everything else — cookie
+ *       retargeted at the fixed host port {@value #APPLICATION_PORT}. Everything else — cookie
  *       mode, refresh on, the 30-second leeway — is the committed document.</li>
  *   <li>A sealing key is passed, so the sealed session cookie survives the restart. Without it the
  *       cookie would be undecipherable after the restart and the test would observe a lost session for
@@ -156,10 +156,14 @@ class BffGeneratedKeysIT {
     private static final String CERTIFICATE_KEY = "generated-keys-gateway.key";
 
     /**
-     * The fixed loopback host port of the application listener. The compose stack publishes
-     * {@code 10443}–{@code 10455}; this is the next free one.
+     * The fixed host port of the application listener, published on every interface (see
+     * {@link OneOffGatewayContainers#applicationPortPublication(int)}). The compose stack publishes
+     * {@code 10443}–{@code 10455}; the other one-off gateways take {@code 10459} and
+     * {@code 10463}–{@code 10468}. {@code 10456}, the port this gateway had before, is a dead host port
+     * number and is retired with {@code 10457}, {@code 10458}, {@code 10460} and {@code 10461}; the
+     * topology note says why.
      */
-    private static final int APPLICATION_PORT = 10456;
+    private static final int APPLICATION_PORT = 10462;
 
     private static final String ORIGIN = "https://localhost:" + APPLICATION_PORT;
 
@@ -277,6 +281,7 @@ class BffGeneratedKeysIT {
     private static void awaitUp(String managementOrigin) {
         awaitReadiness(NETWORK_ALIAS, managementOrigin, response -> response.statusCode() == 200,
                 BOOT_TIMEOUT_SECONDS, "the generated-keys gateway to report readiness UP");
+        OneOffGatewayContainers.assertApplicationPortAnswers(NETWORK_ALIAS, ORIGIN);
     }
 
     private static RequestSpecification gateway() {

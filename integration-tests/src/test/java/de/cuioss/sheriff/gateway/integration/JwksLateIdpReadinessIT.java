@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.integration;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.CERTIFICATES;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.RETRY_SCHEDULED_RECORD;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertReportsDown;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitLogRecord;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
@@ -122,6 +123,14 @@ class JwksLateIdpReadinessIT {
      */
     private static final String PROXY_ALIAS = "api-sheriff";
 
+    /**
+     * The fixed host port of the gateway's application listener, published on every interface (see
+     * {@link OneOffGatewayContainers#applicationPortPublication(int)}). The compose stack publishes
+     * {@code 10443}–{@code 10455}; the other one-off gateways take {@code 10459}, {@code 10462}–{@code 10465},
+     * {@code 10467} and {@code 10468}.
+     */
+    private static final int APPLICATION_PORT = 10466;
+
     private static final Path LATE_GATEWAY = DOCKER.resolve(Path.of("sheriff-config-late-idp", "gateway.yaml"));
     private static final Path PROXY_CONFIG = DOCKER.resolve(Path.of("late-idp", "nginx.conf"));
 
@@ -175,15 +184,16 @@ class JwksLateIdpReadinessIT {
             docker("create the dedicated network", "network", "create", network);
             createProxy(proxy, network);
             docker("attach the late provider to the compose network", "network", "connect", composeNetwork(), proxy);
-            startGateway(gateway, network, LATE_GATEWAY);
+            startGateway(gateway, network, LATE_GATEWAY, APPLICATION_PORT);
             String managementOrigin = "https://localhost:" + publishedPort(gateway, 9000);
-            String applicationOrigin = "https://localhost:" + publishedPort(gateway, 8443);
+            String applicationOrigin = "https://localhost:" + APPLICATION_PORT;
             String bearer = mintIntegrationRealmToken();
 
             // Act + Assert (1) — DOWN while the provider is absent
             Response down = awaitReadiness(gateway, managementOrigin, response -> true, BOOT_TIMEOUT_SECONDS,
                     "the late gateway's management interface to answer");
             assertReportsDown(gateway, down, UNDISCLOSED);
+            assertApplicationPortAnswers(gateway, applicationOrigin);
             assertEquals(401, securedAssetStatus(applicationOrigin, bearer), () -> "matched control: with no key "
                     + "set loaded the gateway cannot validate the provider's token, so it must be rejected 401. "
                     + gatewayLog(gateway));
