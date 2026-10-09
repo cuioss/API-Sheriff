@@ -30,6 +30,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Function;
 
 import io.restassured.response.ExtractableResponse;
@@ -208,7 +212,11 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
 
             // A POST with a body, because the gateway never re-sends one: a bodyless GET would be
             // attempted three times, and each leg would take three timeouts instead of one.
-            assertNegotiated(504, true,
+            //
+            // The two legs are sent at the same time. Each still waits out the gateway's whole
+            // 30-second timeout for an upstream answer; the two waits overlap instead of following
+            // one another. For the breaker it is the same two failures in a window of twenty.
+            assertNegotiatedConcurrently(504, true,
                     spec -> spec.contentType("text/plain").body("upstream-timeout").when().post(FAULT_PATH));
         }
     }
@@ -315,6 +323,52 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
 
         assertHtmlErrorPage(html, status);
         assertCurrentShape(json, status, problemJson);
+    }
+
+    /**
+     * {@link #assertNegotiated} with the two legs sent at the same time instead of one after the
+     * other, for a request each leg of which is answered only after a long wait. The assertions are
+     * the same two, made once both answers are in.
+     * <p>
+     * Neither leg is given a deadline here, as neither has one in {@link #assertNegotiated}: the wait
+     * under test is the gateway's own.
+     *
+     * @param status      the status both legs must answer
+     * @param problemJson whether the exit's current shape is {@code application/problem+json}
+     * @param request     completes a specification into the request under test; called once per leg,
+     *                    from two threads
+     */
+    private static void assertNegotiatedConcurrently(int status, boolean problemJson,
+            Function<RequestSpecification, Response> request) {
+        ExtractableResponse<Response> html;
+        ExtractableResponse<Response> json;
+        try (ExecutorService legs = Executors.newFixedThreadPool(2)) {
+            Future<ExtractableResponse<Response>> htmlLeg = legs.submit(() -> send(BROWSER_ACCEPT, request));
+            Future<ExtractableResponse<Response>> jsonLeg = legs.submit(() -> send(JSON_ACCEPT, request));
+            html = answerOf(htmlLeg);
+            json = answerOf(jsonLeg);
+        }
+
+        assertHtmlErrorPage(html, status);
+        assertCurrentShape(json, status, problemJson);
+    }
+
+    /** The answer of one leg; a failure of the leg is rethrown as the leg threw it. */
+    private static ExtractableResponse<Response> answerOf(Future<ExtractableResponse<Response>> leg) {
+        try {
+            return leg.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting for a leg of the negotiation", interrupted);
+        } catch (ExecutionException failed) {
+            if (failed.getCause() instanceof RuntimeException thrown) {
+                throw thrown;
+            }
+            if (failed.getCause() instanceof Error thrown) {
+                throw thrown;
+            }
+            throw new IllegalStateException("a leg of the negotiation failed", failed.getCause());
+        }
     }
 
     private static ExtractableResponse<Response> send(String accept, Function<RequestSpecification, Response> request) {

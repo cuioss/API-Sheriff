@@ -99,16 +99,20 @@ import org.junit.jupiter.api.Test;
  * <strong>Strict rotation and this suite.</strong> The {@code integration} realm enforces strict
  * refresh-token rotation ({@code revokeRefreshToken: true}, {@code refreshTokenMaxReuse: 0}), so every
  * refresh token here is single-use and a second redemption would be refused with {@code invalid_grant}.
- * No test redeems one twice: each test logs in afresh and drives at most one refresh, and the one test
- * that makes a request after the refresh replays the <em>re-sealed</em> cookie, whose rotated refresh
- * token is untouched, rather than the login cookie whose token the refresh already spent. A test that
- * replayed the login cookie after a rotation would redeem a spent token and fail for that reason, not
- * for the re-seal under test. This suite shares {@link BffKeycloakLoginFlow#REFRESH_USERNAME} with
+ * No refresh token is redeemed twice. The {@code CURRENT} test logs in for itself and drives no
+ * refresh. The three tests that assert on a refresh share one login, and that login's cookie is
+ * presented inside the window exactly once; the one request made after the refresh replays the
+ * <em>re-sealed</em> cookie, whose rotated refresh token is untouched, rather than the login cookie
+ * whose token the refresh already spent. A second call on the login cookie after the rotation would
+ * redeem a spent token and fail for that reason, not for the re-seal under test — which is why the
+ * three tests read one observed refresh instead of each driving one on the shared session. This suite
+ * shares {@link BffKeycloakLoginFlow#REFRESH_USERNAME} with
  * {@code BffTokenRefreshIT}, whose failure legs end every session of that user; that is safe only
  * because Failsafe runs the IT classes one at a time (see {@code BffTokenRefreshIT}).
  * <p>
- * <strong>Timing.</strong> The waits are wall-clock and deliberate: the property under test is
- * defined in elapsed time against a token lifespan, so there is no state to poll for.
+ * <strong>Timing.</strong> The wait is wall-clock and deliberate: the property under test is
+ * defined in elapsed time against a token lifespan, so there is no state to poll for. The class waits
+ * into the window once per run; a run therefore observes one refresh, not one per test.
  * <p>
  * This suite deliberately does not extend {@code BaseIntegrationTest}: that base binds the primary
  * instance's origin, while every request here must go to this instance.
@@ -166,13 +170,12 @@ class BffCookieRefreshIT {
     @Test
     @DisplayName("REFRESHED: a call inside the window rotates the bearer and re-seals one browser-sized cookie")
     void refreshedOutcomeRotatesTheBearerAndResealsTheCookie() {
-        // Arrange
-        Session session = login();
-        String beforeRefresh = authorizationOf(mediatedCall(session.gatewayCookies()));
-
-        // Act
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        Response afterRefresh = mediatedCall(session.gatewayCookies());
+        // Arrange + Act — the one login, the wait into the window and the call inside it that this
+        // class makes; see observedRefresh()
+        ObservedRefresh observed = observedRefresh();
+        Session session = observed.session();
+        String beforeRefresh = authorizationOf(served(observed.beforeTheWindow()));
+        Response afterRefresh = served(observed.insideTheWindow());
 
         // Assert — the rotated bearer and the re-seal are asserted together. Either one alone is
         // satisfiable by a broken half: a rotation the browser never receives, or a cookie re-emitted
@@ -201,18 +204,16 @@ class BffCookieRefreshIT {
     @Test
     @DisplayName("the re-sealed cookie still resolves on the next request")
     void theResealedCookieStillResolvesOnASubsequentRequest() {
-        // Arrange
-        Session session = login();
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        Response afterRefresh = mediatedCall(session.gatewayCookies());
+        // Arrange — the refresh this class observed once; see observedRefresh()
+        ObservedRefresh observed = observedRefresh();
+        Response afterRefresh = served(observed.insideTheWindow());
         String refreshedAuthorization = authorizationOf(afterRefresh);
         String resealed = afterRefresh.getCookie(SESSION_COOKIE);
         assertNotNull(resealed, "this test needs an actual re-seal to replay; none was emitted");
-        Map<String, String> resealedJar = new HashMap<>(session.gatewayCookies());
-        resealedJar.put(SESSION_COOKIE, resealed);
 
-        // Act — replay the browser's NEW cookie, exactly as a browser would on the following request.
-        Response subsequent = mediatedCall(resealedJar);
+        // Act — the browser's NEW cookie was replayed right after the refresh, exactly as a browser
+        // would on the following request: the login jar with the re-sealed value in place of the old.
+        Response subsequent = served(observed.replayOfTheResealedCookie());
 
         // Assert — a re-seal that arrives but cannot be unsealed again would leave the browser holding
         // a cookie that fails on the very next navigation, which the rotation assertion alone cannot
@@ -236,14 +237,13 @@ class BffCookieRefreshIT {
     @Test
     @DisplayName("the re-seal carries the remaining lifetime, never a restarted one")
     void theResealDoesNotExtendTheSession() {
-        // Arrange
-        Session session = login();
-        Cookie atLogin = session.callbackCookies().get(SESSION_COOKIE);
+        // Arrange — the login whose refresh this class observed once; see observedRefresh()
+        ObservedRefresh observed = observedRefresh();
+        Cookie atLogin = observed.session().callbackCookies().get(SESSION_COOKIE);
         assertNotNull(atLogin, "the login must establish the sealed session cookie");
 
-        // Act
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        Cookie resealed = mediatedCall(session.gatewayCookies()).getDetailedCookies().get(SESSION_COOKIE);
+        // Act — the call inside the window
+        Cookie resealed = served(observed.insideTheWindow()).getDetailedCookies().get(SESSION_COOKIE);
         assertNotNull(resealed, "this test needs an actual re-seal to measure; none was emitted");
 
         // Assert — strictly less, not merely different: the absolute deadline is anchored at login, so
@@ -253,6 +253,77 @@ class BffCookieRefreshIT {
                 "a refresh rotates tokens and must not restart the session lifetime: login carried "
                         + "Max-Age=" + atLogin.getMaxAge() + ", the re-seal carried Max-Age="
                         + resealed.getMaxAge());
+    }
+
+    // ---------------------------------------------------------------- the refresh observed once
+
+    /**
+     * One login and the one refresh of it, as the three tests that assert on a refresh need them.
+     * Nothing here is asserted when it is observed: each test asserts on the responses it reads.
+     *
+     * @param session                   the login
+     * @param beforeTheWindow           a mediated call right after the login, before the window opens
+     * @param insideTheWindow           the mediated call {@value #WAIT_INTO_REFRESH_WINDOW_SECONDS}
+     *                                  seconds later, on the login cookie — the call that refreshes
+     * @param replayOfTheResealedCookie the mediated call made right after it with the re-sealed cookie
+     *                                  in place of the login cookie; {@code null} when the call inside
+     *                                  the window re-sealed nothing, so there was nothing to replay
+     */
+    private record ObservedRefresh(Session session, Response beforeTheWindow, Response insideTheWindow,
+    Response replayOfTheResealedCookie) {
+    }
+
+    private static ObservedRefresh observedRefresh;
+
+    /** Why the observation could not be made; kept so that it is attempted once per class run. */
+    private static Throwable observationFailure;
+
+    /**
+     * The refresh the three tests share, observed on first use: one login, one wait into the window,
+     * one call inside it, and one replay of what that call re-sealed.
+     * <p>
+     * <strong>Why one.</strong> Each of the three tests used to log in and wait for itself, and each
+     * then observed the same event: the first call on a login cookie inside the window. The realm's
+     * strict rotation makes that event unrepeatable on one session — a second call on the login cookie
+     * inside the window would present a spent refresh token — so the session is used for exactly one
+     * such call and the three tests read its response.
+     * <p>
+     * <strong>What that changes.</strong> A run observes one refresh where it observed three, and the
+     * tests are no longer independent samples of it. The call before the window, which only the
+     * {@code REFRESHED} test asked for, now precedes the observation the other two read as well; a
+     * call before the window re-seals nothing, which is what the {@code CURRENT} test asserts. A
+     * failure to make the observation — a login that fails, an interrupted wait — fails all three.
+     *
+     * @return the observation
+     */
+    private static synchronized ObservedRefresh observedRefresh() {
+        if (observedRefresh == null && observationFailure == null) {
+            // The catch below is deliberately wide: whatever stops the observation — a failed login, a
+            // refused connection, an interrupted wait — is kept, so the wait is attempted once per run
+            // and every test that reads the observation fails with that failure as its cause.
+            // cui-rewrite:disable InvalidExceptionUsageRecipe
+            try {
+                Session session = login();
+                Response beforeTheWindow = unassertedCall(session.gatewayCookies());
+                sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+                Response insideTheWindow = unassertedCall(session.gatewayCookies());
+                String resealed = insideTheWindow.getCookie(SESSION_COOKIE);
+                Response replay = null;
+                if (resealed != null) {
+                    Map<String, String> resealedJar = new HashMap<>(session.gatewayCookies());
+                    resealedJar.put(SESSION_COOKIE, resealed);
+                    replay = unassertedCall(resealedJar);
+                }
+                observedRefresh = new ObservedRefresh(session, beforeTheWindow, insideTheWindow, replay);
+            } catch (RuntimeException | AssertionError failure) {
+                observationFailure = failure;
+            }
+        }
+        if (observationFailure != null) {
+            throw new AssertionError("the one refresh this class observes could not be observed: "
+                    + observationFailure, observationFailure);
+        }
+        return observedRefresh;
     }
 
     // ---------------------------------------------------------------- helpers
@@ -267,6 +338,25 @@ class BffCookieRefreshIT {
                 .when().get(MEDIATED_PATH)
                 .then().statusCode(200)
                 .extract().response();
+    }
+
+    /** {@link #mediatedCall(Map)} without its status assertion, for a response a test asserts on later. */
+    private static Response unassertedCall(Map<String, String> gatewayCookies) {
+        return BffKeycloakLoginFlow.gateway(gatewayCookies, COOKIE_REFRESH_ORIGIN)
+                .when().get(MEDIATED_PATH)
+                .then().extract().response();
+    }
+
+    /**
+     * The status assertion {@link #mediatedCall(Map)} makes, for a response observed earlier.
+     *
+     * @param response the response; must not be {@code null}
+     * @return {@code response}
+     */
+    private static Response served(Response response) {
+        assertNotNull(response, "the call was never made: the call inside the window re-sealed nothing");
+        assertEquals(200, response.statusCode(), "the sealed session must be served on " + MEDIATED_PATH);
+        return response;
     }
 
     /**

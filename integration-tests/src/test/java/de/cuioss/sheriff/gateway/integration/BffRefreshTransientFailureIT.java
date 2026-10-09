@@ -31,6 +31,9 @@ import de.cuioss.sheriff.gateway.integration.StubIdentityProviderRig.Endpoint;
 import io.restassured.path.json.JsonPath;
 import io.restassured.response.Response;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -45,8 +48,8 @@ import org.junit.jupiter.api.Test;
  * can be stopped, but not made to fail one grant and serve the next.
  * <p>
  * <strong>What this suite proves.</strong> Two legs, one per failure shape — the token endpoint
- * answers {@code 503}, and the token endpoint resets the connection — each on a rig and a session of
- * its own. In each leg the access token is inside the refresh leeway and not expired throughout:
+ * answers {@code 503}, and the token endpoint resets the connection — each on a session of its own.
+ * In each leg the access token is inside the refresh leeway and not expired throughout:
  * <ol>
  *   <li>Before the first mediated call the journal holds no refresh grant.</li>
  *   <li>The first call attempts the refresh, which fails. The call is answered {@code 200} with a
@@ -61,6 +64,14 @@ import org.junit.jupiter.api.Test;
  * No response of either leg carries a {@code Set-Cookie}, so the session cookie is never cleared.
  * The log has gained exactly one {@code ApiSheriff-127} record by the end of the leg: the calls
  * inside the back-off made no attempt and recorded nothing.
+ * <p>
+ * <strong>One rig for both legs.</strong> The stub and the gateway are started once for the class and
+ * {@linkplain StubIdentityProviderRig#reset() reset} before each leg, so each leg finds an empty
+ * script and counts the grants from zero. The gateway is not restarted: the leg that runs second runs
+ * against a gateway, and against connections to the stub, that the first leg has already used. The
+ * session, the injected failure and every count a leg asserts are its own. What a run does not show
+ * is that a leg's outcome is independent of the other leg having run first: JUnit runs the two in one
+ * fixed order, so each run observes that order and never the reverse.
  * <p>
  * <strong>What "the same bearer" establishes.</strong> The token of the login answer is not visible to
  * this suite, so the first call's bearer is not compared with it. The failed grant returned no token
@@ -111,6 +122,27 @@ class BffRefreshTransientFailureIT {
     private static final long LOG_VISIBILITY_TIMEOUT_MILLIS = 5_000L;
     private static final long LOG_POLL_INTERVAL_MILLIS = 250L;
 
+    /** The one rig both legs run on; started before the first, closed after the last. */
+    private static StubIdentityProviderRig sharedRig;
+
+    @BeforeAll
+    static void startRig() {
+        sharedRig = StubIdentityProviderRig.start();
+    }
+
+    @AfterAll
+    static void closeRig() {
+        if (sharedRig != null) {
+            sharedRig.close();
+        }
+    }
+
+    /** Each leg starts on an empty script and an empty journal, whichever leg ran before it. */
+    @BeforeEach
+    void resetRig() {
+        sharedRig.reset();
+    }
+
     @Test
     @DisplayName("503 from the token endpoint: the session is kept, the back-off holds, the retry rotates the bearer")
     void serviceUnavailableKeepsTheSessionAndRetriesAfterTheBackOff() {
@@ -130,48 +162,47 @@ class BffRefreshTransientFailureIT {
      * @param shape   what the token endpoint did, for the failure messages
      */
     private static void assertSessionKeptAndRefreshRetried(Answer failure, String shape) {
-        try (StubIdentityProviderRig rig = StubIdentityProviderRig.start()) {
-            Instant loginTokenMinted = Instant.now();
-            Session session = rig.login(MEDIATED_PATH, INSIDE_THE_LEEWAY);
-            Instant loginTokenExpires = loginTokenMinted.plus(INSIDE_THE_LEEWAY);
-            assertEquals(0, rig.refreshGrants().size(), "before the first call the journal must hold no refresh grant");
-            long recordsBefore = deferredRecords(rig);
+        StubIdentityProviderRig rig = sharedRig;
+        Instant loginTokenMinted = Instant.now();
+        Session session = rig.login(MEDIATED_PATH, INSIDE_THE_LEEWAY);
+        Instant loginTokenExpires = loginTokenMinted.plus(INSIDE_THE_LEEWAY);
+        assertEquals(0, rig.refreshGrants().size(), "before the first call the journal must hold no refresh grant");
+        long recordsBefore = deferredRecords(rig);
 
-            rig.script(Endpoint.TOKEN, failure);
-            Instant attemptSent = Instant.now();
-            String keptBearer = servedBearer(rig, session, "the call whose refresh the token endpoint " + shape);
-            Instant backOffOver = Instant.now().plus(BACK_OFF);
-            assertEquals(1, rig.refreshGrants().size(),
-                    "the first call is near expiry and must have sent exactly one refresh grant");
+        rig.script(Endpoint.TOKEN, failure);
+        Instant attemptSent = Instant.now();
+        String keptBearer = servedBearer(rig, session, "the call whose refresh the token endpoint " + shape);
+        Instant backOffOver = Instant.now().plus(BACK_OFF);
+        assertEquals(1, rig.refreshGrants().size(),
+                "the first call is near expiry and must have sent exactly one refresh grant");
 
-            String insideFirst = servedBearer(rig, session, "the first call inside the back-off");
-            String insideSecond = servedBearer(rig, session, "the second call inside the back-off");
-            assertTrue(Instant.now().isBefore(attemptSent.plus(BACK_OFF)), "both follow-up calls must have "
-                    + "completed inside the five-second back-off, otherwise they do not test it");
-            assertEquals(1, rig.refreshGrants().size(), "a call inside the back-off must send no refresh grant");
-            assertEquals(List.of(keptBearer, keptBearer), List.of(insideFirst, insideSecond),
-                    "inside the back-off the session must go on relaying the bearer it held");
-            awaitDeferredRecord(rig, recordsBefore, shape);
+        String insideFirst = servedBearer(rig, session, "the first call inside the back-off");
+        String insideSecond = servedBearer(rig, session, "the second call inside the back-off");
+        assertTrue(Instant.now().isBefore(attemptSent.plus(BACK_OFF)), "both follow-up calls must have "
+                + "completed inside the five-second back-off, otherwise they do not test it");
+        assertEquals(1, rig.refreshGrants().size(), "a call inside the back-off must send no refresh grant");
+        assertEquals(List.of(keptBearer, keptBearer), List.of(insideFirst, insideSecond),
+                "inside the back-off the session must go on relaying the bearer it held");
+        awaitDeferredRecord(rig, recordsBefore, shape);
 
-            sleepUntil(backOffOver.plus(PAST_THE_BACK_OFF));
-            assertTrue(Instant.now().isBefore(loginTokenExpires), "the retry must be made while the login's "
-                    + "access token has not expired, otherwise this leg tests an expired token instead");
-            Answer healthy = rig.tokenAnswer(SCOPES, FAR_FROM_EXPIRY);
-            rig.script(Endpoint.TOKEN, healthy);
-            String rotatedBearer = servedBearer(rig, session, "the first call after the back-off");
-            assertEquals(2, rig.refreshGrants().size(),
-                    "after the back-off the next call must send exactly one further refresh grant");
-            assertEquals(new JsonPath(healthy.body()).getString("access_token"), rotatedBearer,
-                    "the retry must relay the access token the healthy token endpoint returned");
-            assertNotEquals(keptBearer, rotatedBearer, "the retry must rotate the bearer");
+        sleepUntil(backOffOver.plus(PAST_THE_BACK_OFF));
+        assertTrue(Instant.now().isBefore(loginTokenExpires), "the retry must be made while the login's "
+                + "access token has not expired, otherwise this leg tests an expired token instead");
+        Answer healthy = rig.tokenAnswer(SCOPES, FAR_FROM_EXPIRY);
+        rig.script(Endpoint.TOKEN, healthy);
+        String rotatedBearer = servedBearer(rig, session, "the first call after the back-off");
+        assertEquals(2, rig.refreshGrants().size(),
+                "after the back-off the next call must send exactly one further refresh grant");
+        assertEquals(new JsonPath(healthy.body()).getString("access_token"), rotatedBearer,
+                "the retry must relay the access token the healthy token endpoint returned");
+        assertNotEquals(keptBearer, rotatedBearer, "the retry must rotate the bearer");
 
-            assertEquals(rotatedBearer, servedBearer(rig, session, "the call after the successful retry"),
-                    "control: once refreshed the session must relay the rotated bearer unchanged");
-            assertEquals(2, rig.refreshGrants().size(), "control: a call after the successful retry must "
-                    + "send no refresh grant");
-            assertEquals(recordsBefore + 1, deferredRecords(rig), "the leg must have recorded exactly one "
-                    + REFRESH_DEFERRED_RECORD + ": the calls inside the back-off made no attempt");
-        }
+        assertEquals(rotatedBearer, servedBearer(rig, session, "the call after the successful retry"),
+                "control: once refreshed the session must relay the rotated bearer unchanged");
+        assertEquals(2, rig.refreshGrants().size(), "control: a call after the successful retry must "
+                + "send no refresh grant");
+        assertEquals(recordsBefore + 1, deferredRecords(rig), "the leg must have recorded exactly one "
+                + REFRESH_DEFERRED_RECORD + ": the calls inside the back-off made no attempt");
     }
 
     /**
