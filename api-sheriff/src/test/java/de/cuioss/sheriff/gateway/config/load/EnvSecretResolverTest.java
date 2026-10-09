@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
-
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver.MalformedPlaceholderException;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver.MissingVariableException;
 import de.cuioss.test.generator.Generators;

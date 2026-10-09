@@ -30,7 +30,6 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.LogoutRejection;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator;
 import de.cuioss.sheriff.gateway.bff.logout.VerifiedLogoutToken;

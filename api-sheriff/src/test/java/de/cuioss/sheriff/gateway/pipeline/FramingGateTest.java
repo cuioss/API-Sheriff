@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;

@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.logging.LogRecord;
 
-
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;

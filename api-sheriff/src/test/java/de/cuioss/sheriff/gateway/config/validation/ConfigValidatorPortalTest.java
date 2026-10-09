@@ -24,7 +24,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;

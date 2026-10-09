@@ -24,7 +24,6 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.stream.Stream;
 
-
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;

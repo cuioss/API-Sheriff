@@ -22,7 +22,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
-
 import de.cuioss.sheriff.gateway.bff.login.LoginFlow.LoginRedirect;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;

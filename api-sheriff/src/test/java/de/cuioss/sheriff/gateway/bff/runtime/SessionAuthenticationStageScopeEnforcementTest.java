@@ -41,7 +41,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiFunction;
 
-
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.LoginChallenge;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.OnFailure;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage.RefreshResult;

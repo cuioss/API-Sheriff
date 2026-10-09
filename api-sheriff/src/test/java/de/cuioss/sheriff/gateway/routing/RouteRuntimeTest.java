@@ -26,7 +26,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;

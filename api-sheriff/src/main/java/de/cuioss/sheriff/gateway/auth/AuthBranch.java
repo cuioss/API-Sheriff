@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.auth;
 
 import java.util.Objects;
 
-
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 

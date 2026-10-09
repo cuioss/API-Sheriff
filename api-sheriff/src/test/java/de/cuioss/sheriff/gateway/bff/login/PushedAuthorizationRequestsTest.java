@@ -41,7 +41,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.LogRecord;
 import java.util.stream.Collectors;
 
-
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.client.TestSigningKeys;
 import de.cuioss.sheriff.gateway.events.EventType;

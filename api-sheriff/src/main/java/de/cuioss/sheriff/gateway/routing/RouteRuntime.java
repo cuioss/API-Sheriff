@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.routing;
 import java.util.List;
 import java.util.Set;
 
-
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;

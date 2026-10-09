@@ -34,7 +34,6 @@ import java.nio.file.SecureDirectoryStream;
 import java.util.Map;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import org.junit.jupiter.api.BeforeEach;

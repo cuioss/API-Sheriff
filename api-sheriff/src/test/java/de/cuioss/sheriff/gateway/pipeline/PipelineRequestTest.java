@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.List;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;

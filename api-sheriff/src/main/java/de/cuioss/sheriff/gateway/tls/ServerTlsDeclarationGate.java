@@ -20,7 +20,6 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
-
 import de.cuioss.sheriff.gateway.config.DeclaredKeyMaterialKeys;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;

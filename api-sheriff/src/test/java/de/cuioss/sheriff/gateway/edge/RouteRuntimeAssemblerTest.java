@@ -36,7 +36,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
-
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;

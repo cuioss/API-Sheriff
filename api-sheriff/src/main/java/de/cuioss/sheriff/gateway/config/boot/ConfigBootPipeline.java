@@ -23,7 +23,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoadException;

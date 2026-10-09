@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.edge;
 import java.util.List;
 import java.util.Objects;
 
-
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
