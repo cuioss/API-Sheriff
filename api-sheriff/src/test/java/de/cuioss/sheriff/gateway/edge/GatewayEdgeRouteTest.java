@@ -171,14 +171,18 @@ class GatewayEdgeRouteTest {
     }
 
     @Test
-    @DisplayName("boots cleanly over an empty route table")
+    @DisplayName("boots over an empty route table with no upstream client and the one edge-wide WebSocket client")
     void bootsCleanlyOverEmptyRouteTable() {
         // Arrange
         RouteTable emptyTable = new RouteTable(List.of());
 
-        // Act + Assert — assembling every stage once, at boot, must not throw for a valid config.
-        assertDoesNotThrow(() -> newEdge(emptyTable),
-                "A valid route set assembles every stage without error");
+        // Act — assembling every stage once, at boot
+        ClientWiring wiring = clientWiringOf(emptyTable);
+
+        // Assert
+        assertEquals(new ClientWiring(0, 0, 1), wiring,
+                "an empty route table names no upstream, so no upstream HTTP client is built; the WebSocket "
+                        + "client is edge-wide and is built whatever the routes are");
     }
 
     @Test
@@ -202,51 +206,75 @@ class GatewayEdgeRouteTest {
         // Arrange
         RouteTable sessionTable = new RouteTable(List.of(
                 route("s", Protocol.HTTP, Require.SESSION)));
+        RouteTable openTable = new RouteTable(List.of(
+                route("s", Protocol.HTTP, Require.NONE)));
 
-        // Act + Assert — a require:session route now assembles at boot; its stage-4 runtime is the
+        // Act — a require:session route assembles at boot; its stage-4 runtime is the
         // SessionAuthenticationStage (D4), which replaced the boot-time CONFIG_INVALID rejection. This
         // edge wires no session runtime, so such a route is only rejected at request time, not at boot.
-        assertDoesNotThrow(() -> newEdge(sessionTable),
-                "A require:session route assembles at boot now the boot-time rejection is removed");
+        ClientWiring sessionWiring = clientWiringOf(sessionTable);
+        ClientWiring openWiring = clientWiringOf(openTable);
+
+        // Assert
+        assertAll("a require:session route is assembled, not skipped",
+                () -> assertEquals(new ClientWiring(1, 0, 1), sessionWiring,
+                        "the route's one default upstream HTTP client is built at boot"),
+                () -> assertEquals(openWiring, sessionWiring,
+                        "session auth is a stage-4 concern: the upstream wiring is that of the same route "
+                                + "without it"));
     }
 
     @Test
-    @DisplayName("boots a gRPC route (now served by the gRPC processor)")
+    @DisplayName("boots a gRPC route onto a forced-HTTP/2 upstream client")
     void bootsGrpcProtocol() {
         // Arrange
         RouteTable grpcTable = new RouteTable(List.of(
                 route("g", Protocol.GRPC, Require.NONE)));
 
-        // Act + Assert — GRPC is now registered, so a gRPC route assembles cleanly at boot (the boot
-        // rejection was removed with the gRPC processor).
-        assertDoesNotThrow(() -> newEdge(grpcTable),
-                "A gRPC route is served by the registered gRPC processor and boots cleanly");
+        // Act
+        ClientWiring wiring = clientWiringOf(grpcTable);
+
+        // Assert — GRPC is registered, so the route is assembled by the gRPC processor's rules
+        assertEquals(new ClientWiring(0, 1, 1), wiring,
+                "a gRPC route dials its upstream over a forced-HTTP/2 client and builds no default one");
     }
 
     @Test
-    @DisplayName("boots a WebSocket route (now served by the WebSocket processor)")
+    @DisplayName("boots a WebSocket route without a forced-HTTP/2 client, beside the edge-wide WebSocket client")
     void bootsWebSocketProtocol() {
         // Arrange
         RouteTable webSocketTable = new RouteTable(List.of(
                 route("w", Protocol.WEBSOCKET, Require.NONE)));
 
-        // Act + Assert — WEBSOCKET is now registered, so a WebSocket route assembles cleanly at boot
-        // (the boot rejection was removed with the WebSocket processor).
-        assertDoesNotThrow(() -> newEdge(webSocketTable),
-                "A WebSocket route is served by the registered WebSocket processor and boots cleanly");
+        // Act
+        ClientWiring wiring = clientWiringOf(webSocketTable);
+
+        // Assert — WEBSOCKET is registered, so the route is assembled by the WebSocket processor's rules
+        assertEquals(new ClientWiring(1, 0, 1), wiring,
+                "a WebSocket route's upstream tuple builds a default client and never a forced-HTTP/2 one; "
+                        + "the relay itself runs over the one edge-wide WebSocket client");
     }
 
     @Test
-    @DisplayName("boots a session-auth WebSocket route now the boot-time rejection is removed (D4)")
+    @DisplayName("boots a session-auth WebSocket route with the wiring of the same route without session auth")
     void bootsSessionAuthWebSocketRoute() {
         // Arrange
-        RouteTable webSocketTable = new RouteTable(List.of(
+        RouteTable sessionTable = new RouteTable(List.of(
                 route("w", Protocol.WEBSOCKET, Require.SESSION)));
+        RouteTable openTable = new RouteTable(List.of(
+                route("w", Protocol.WEBSOCKET, Require.NONE)));
 
-        // Act + Assert — session auth no longer gates boot, so a session-auth WebSocket route
-        // assembles exactly like any other WebSocket route.
-        assertDoesNotThrow(() -> newEdge(webSocketTable),
-                "A session-auth WebSocket route assembles at boot now session auth no longer fails boot");
+        // Act
+        ClientWiring sessionWiring = clientWiringOf(sessionTable);
+        ClientWiring openWiring = clientWiringOf(openTable);
+
+        // Assert — session auth no longer gates boot, so a session-auth WebSocket route assembles
+        // exactly like any other WebSocket route.
+        assertAll("a session-auth WebSocket route is assembled, not skipped",
+                () -> assertEquals(1, sessionWiring.webSocketClients(),
+                        "the edge-wide WebSocket client its relay runs over is built"),
+                () -> assertEquals(openWiring, sessionWiring,
+                        "session auth leaves the route's upstream wiring unchanged"));
     }
 
     @Test
@@ -1904,6 +1932,28 @@ class GatewayEdgeRouteTest {
     }
 
     /**
+     * How many clients of each kind an edge built at boot. An assembled edge exposes no view of its
+     * compiled routes, so the clients it asked Vert.x for are what a boot leaves observable: an HTTP
+     * or WebSocket route's upstream tuple builds a default client, a gRPC route's a forced-HTTP/2
+     * one, and the WebSocket client is built once for the whole edge.
+     *
+     * @param defaultHttpClients  the HTTP/1.1-with-h2-upgrade upstream clients
+     * @param forcedHttp2Clients  the forced-HTTP/2 upstream clients
+     * @param webSocketClients    the WebSocket clients
+     */
+    private record ClientWiring(int defaultHttpClients, int forcedHttp2Clients, int webSocketClients) {
+    }
+
+    /** Boots a real edge over {@code table} and reports the clients it built doing so. */
+    private ClientWiring clientWiringOf(RouteTable table) {
+        CapturingVertx capturing = new CapturingVertx(vertx);
+        new GatewayEdgeRoute(table, gatewayConfig, new SingletonInstance<>(tokenValidator), capturing,
+                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
+                unconsultedTrustProfileResolver(), PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
+        return capturing.wiring();
+    }
+
+    /**
      * Minimal {@link Instance} test double resolving to a single supplied bean. These boot / drain
      * tests exercise only {@link #get()} (and none of them reaches a {@code require: bearer} route, so
      * even that is not resolved); the remaining CDI accessors are unused and throw.
@@ -1996,6 +2046,15 @@ class GatewayEdgeRouteTest {
         public WebSocketClient createWebSocketClient(WebSocketClientOptions options) {
             webSocketClientOptions.add(options);
             return delegate.createWebSocketClient(options);
+        }
+
+        /** @return how many clients of each kind were requested from this instance */
+        ClientWiring wiring() {
+            int forcedHttp2 = (int) httpClientOptions.stream()
+                    .filter(options -> options.getProtocolVersion() == HttpVersion.HTTP_2)
+                    .count();
+            return new ClientWiring(httpClientOptions.size() - forcedHttp2, forcedHttp2,
+                    webSocketClientOptions.size());
         }
 
         /** @return the options of the default (HTTP/1.1 with h2 upgrade) client */

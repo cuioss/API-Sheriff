@@ -22,8 +22,9 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The pre-1.0 clean-break removed the placeholder {@code /api/health} + {@code /api/info} data-plane
  * endpoints; the gateway now exposes only the deny-by-default data-plane edge (covered by
- * {@link PipelineVerbIT} / {@link BearerValidationIT}) plus the Quarkus management port. These tests
- * assert the surviving management-port surface.
+ * {@link PipelineVerbIT} / {@link BearerValidationIT}) plus the Quarkus management port. This test
+ * asserts the health endpoint of that management port; its metrics endpoint is asserted by
+ * {@link MetricsIT}.
  *
  * @author API Sheriff Team
  */
@@ -55,17 +56,5 @@ class ApiSheriffIntegrationIT extends BaseIntegrationTest {
                 .then()
                 .statusCode(200)
                 .contentType("application/json");
-    }
-
-    /**
-     * Test that metrics endpoint is available on the management interface.
-     */
-    @Test
-    void metricsEndpoint() {
-        givenManagement()
-                .when()
-                .get("/metrics")
-                .then()
-                .statusCode(200);
     }
 }

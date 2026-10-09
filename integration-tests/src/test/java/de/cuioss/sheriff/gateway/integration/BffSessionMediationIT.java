@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -113,6 +114,9 @@ class BffSessionMediationIT extends BaseIntegrationTest {
         // BffTokenRefreshIT does, against the dedicated api-sheriff-refresh instance and its 45s
         // refresh-client.
         Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+
+        assertFalse(session.gatewayCookies().isEmpty(),
+                "the callback must set a session cookie establishing the server-side session");
 
         for (int request = 0; request < 2; request++) {
             var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())

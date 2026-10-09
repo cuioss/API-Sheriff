@@ -38,10 +38,11 @@ import org.junit.jupiter.api.Test;
  * answers it with: {@code Referrer-Policy: no-referrer} and {@code Cache-Control: no-store}.
  * <p>
  * <strong>Back-channel logout (caveat b).</strong> The back-channel {@code LogoutTokenVerifier} is
- * bound to the id-token JWKS validation bridge. Minting a real Keycloak-issued logout token requires
- * driving Keycloak's admin back-channel machinery, which is out of reach of a black-box suite; this
- * suite instead proves the receiver is wired at the live edge (reachable, not {@code NO_ROUTE_MATCHED})
- * and fail-closed: an empty back-channel post is rejected {@code 400} and marked uncacheable.
+ * bound to the id-token JWKS validation bridge. This suite proves the refusing side only: the receiver
+ * is wired at the live edge (reachable, not {@code NO_ROUTE_MATCHED}) and fail-closed, so an empty
+ * back-channel post is rejected {@code 400} and marked uncacheable. The accepting side — a real
+ * Keycloak-issued logout token ending the session — is driven by {@link BffBackchannelLogoutIT}, which
+ * triggers an IdP-initiated logout through the Keycloak admin API.
  */
 class BffLogoutIT extends BaseIntegrationTest {
 

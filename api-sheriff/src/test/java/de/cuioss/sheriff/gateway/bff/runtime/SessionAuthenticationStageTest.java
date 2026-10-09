@@ -334,6 +334,15 @@ class SessionAuthenticationStageTest {
         }
     }
 
+    /**
+     * The first two cases are also the stage-side half of the short-circuit contract
+     * {@code GatewayEdgeRoute.handle} honors. After the authentication stage ran, an unauthenticated
+     * navigation leaves the request short-circuited ({@code 302}) with a {@code Location} and mediates
+     * no upstream bearer, so the edge renders the redirect instead of proceeding to the forward stage;
+     * an unauthenticated XHR raises the {@code 401} problem path with no short-circuit, so the edge
+     * takes its rejection branch. The {@code 302} the edge actually writes, rather than a {@code 200}
+     * fall-through to the upstream, is asserted end-to-end by {@code BffSessionMediationIT}.
+     */
     @Nested
     @DisplayName("Unauthenticated request")
     class Unauthenticated {
@@ -615,53 +624,6 @@ class SessionAuthenticationStageTest {
         @DisplayName("rejects a mediate result without a bound session")
         void rejectsMediateWithoutBoundSession() {
             assertThrows(NullPointerException.class, () -> RefreshResult.mediate(null));
-        }
-    }
-
-    @Nested
-    @DisplayName("Edge short-circuit contract (honored by GatewayEdgeRoute; edge-render IT-covered)")
-    class EdgeShortCircuitContract {
-
-        /**
-         * Pins the stage-side half of the edge fix in {@code GatewayEdgeRoute.handle}: after the
-         * authentication stage runs, an unauthenticated navigation must leave the request short-circuited
-         * (302) with a {@code Location}, and — critically — mediate NO upstream bearer. The edge honors
-         * that short-circuit and renders the 302 instead of proceeding to the forward stage, so nothing is
-         * forwarded to the upstream. The 302 actually written by the edge (rather than a 200 fall-through to
-         * the upstream) is asserted end-to-end by the native BffSessionLoginIT / BffSessionMediationIT ITs.
-         */
-        @Test
-        @DisplayName("an unauthenticated navigation leaves a 302 short-circuit and no bearer, so the edge redirects instead of forwarding")
-        void navigationLeavesShortCircuitAndNoBearer() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
-            PipelineRequest request = sessionRequest(Set.of(), navigationHeaders());
-
-            stage.process(request);
-
-            assertEquals(Optional.of(302), request.shortCircuitStatus(),
-                    "the short-circuit the edge must honor is present after the auth stage runs");
-            assertEquals(LOGIN_LOCATION, request.responseHeaders().get("Location"),
-                    "the redirect target the edge renders is set on the request");
-            assertTrue(request.mediatedBearer().isEmpty(),
-                    "no bearer is mediated, so there is nothing for the edge to forward to the upstream");
-        }
-
-        /**
-         * The non-navigation counterpart: an unauthenticated XHR raises the 401 problem path (no
-         * short-circuit), so the edge takes its rejection/problem branch rather than the redirect.
-         */
-        @Test
-        @DisplayName("an unauthenticated XHR raises 401 TOKEN_MISSING with no short-circuit, so the edge takes the problem path not the redirect")
-        void xhrRaises401WithNoShortCircuit() {
-            SessionAuthenticationStage stage = stage(emptyBinding(), identityRefresh(), redirectLogin());
-            PipelineRequest request = sessionRequest(Set.of(), xhrHeaders());
-
-            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
-
-            assertEquals(EventType.TOKEN_MISSING, thrown.getEventType(),
-                    "an unauthenticated non-navigation request is the 401 application/problem+json path");
-            assertTrue(request.shortCircuitStatus().isEmpty(),
-                    "no short-circuit is set, so the edge renders the problem response rather than a redirect");
         }
     }
 

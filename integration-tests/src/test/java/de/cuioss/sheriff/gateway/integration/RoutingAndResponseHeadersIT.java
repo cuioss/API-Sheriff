@@ -35,11 +35,17 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Acceptance of the route-table and response-path behaviour against the native image over the public
- * HTTPS edge: exact routes and the redirect terminal action (AS-3), asset-only endpoints without a
- * {@code base_url} (AS-4), anchor-scoped security headers with their per-header precedence (AS-8), the
- * appended {@code upstream.path} (AS-9), the opt-in {@code Location} rewrite (AS-11), and header-matcher
- * route selection: a {@code present: true} / {@code present: false} route pair on one prefix selects the
- * same route whichever order it is declared in, with the matcher name compared case-insensitively.
+ * HTTPS edge: exact routes and the redirect terminal action (AS-3), anchor-scoped security headers with
+ * their per-header precedence (AS-8), the appended {@code upstream.path} (AS-9), the opt-in
+ * {@code Location} rewrite (AS-11), and header-matcher route selection: a {@code present: true} /
+ * {@code present: false} route pair on one prefix selects the same route whichever order it is declared
+ * in, with the matcher name compared case-insensitively.
+ * <p>
+ * Asset-only endpoints without a {@code base_url} (AS-4) carry no row of their own here.
+ * {@code endpoints/assets.yaml} and {@code endpoints/assets-secure.yaml} declare none, and had either
+ * been refused the whole gateway would have failed to boot; the served asset that proves it is asserted
+ * by {@link DirectoryAssetServingIT#getServesGovernedFile()}, and by the {@code /assets/static/app.css}
+ * request of the AS-8 group below.
  * <p>
  * The stack runs the native binary, so every configuration record these features introduced — the
  * redirect block, the header modes, the asset index and fallback, the rewrite toggle — is bound by the
@@ -104,23 +110,6 @@ class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
                     () -> assertEquals(200, response.statusCode()),
                     () -> assertTrue(response.path("url").toString().contains("/anything/redirect-entry"),
                             "the prefix route forwarded the request to the echo upstream: " + response.asString()));
-        }
-    }
-
-    @Nested
-    @DisplayName("AS-4 — asset-only endpoints boot and serve without a base_url")
-    class AssetOnlyEndpoints {
-
-        @Test
-        @DisplayName("the base_url-free public asset endpoint serves a file")
-        void baseUrlFreeAssetEndpointServes() {
-            // endpoints/assets.yaml and endpoints/assets-secure.yaml declare no base_url. Had either been
-            // refused, the whole gateway would have failed to boot, so a served asset is the proof.
-            given()
-                    .when()
-                    .get("/assets/static/app.css")
-                    .then()
-                    .statusCode(200);
         }
     }
 

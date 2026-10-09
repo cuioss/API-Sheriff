@@ -348,17 +348,6 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should request the session's active scope set on the refresh grant")
-        void shouldRequestActiveScopes() {
-            List<Set<String>> requested = new ArrayList<>();
-
-            refreshReturning(rotation(), requested);
-
-            assertEquals(List.of(ACTIVE_SCOPES), requested,
-                    "the grant sends A, never the static oidc.scopes, so an endpoint scope survives the refresh");
-        }
-
-        @Test
         @DisplayName("Should set the new A to the response scope")
         void shouldTakeResponseScope() {
             RefreshOutcome outcome = refreshReturning(
@@ -414,7 +403,8 @@ class TokenRefreshCoordinatorTest {
             coordinator.refresh(rotated, COOKIE_HEADER, NOW);
 
             assertEquals(List.of(ACTIVE_SCOPES, Set.of("openid")), requested,
-                    "each refresh sends the A the previous one left on the session");
+                    "each refresh sends the A the previous one left on the session — the first one the "
+                            + "session's own A, never the static oidc.scopes, so an endpoint scope survives it");
         }
 
         private static Set<String> rotatedScopes(RefreshOutcome outcome) {
@@ -735,22 +725,6 @@ class TokenRefreshCoordinatorTest {
         }
 
         @Test
-        @DisplayName("Should let a session without its own window attempt the refresh again once the overflow window elapsed")
-        void shouldRetryUntrackedSessionAfterOverflowWindow() {
-            TokenRefreshCoordinator coordinator = failingCoordinator(NEAR);
-            saturate(coordinator);
-            refresh(coordinator, stored("overflowing"), NOW);
-            int callsAfterOverflow = calls.get();
-
-            RefreshOutcome retried = refresh(coordinator, stored("untracked"),
-                    NOW.plus(TokenRefreshCoordinator.PRE_REDEMPTION_RETRY_BACKOFF));
-
-            assertEquals(RefreshOutcome.Kind.DEFERRED, retried.kind());
-            assertEquals(callsAfterOverflow + 1, calls.get(),
-                    "the overflow window expires on its own after the fixed back-off");
-        }
-
-        @Test
         @DisplayName("Should govern a session holding its own window by that window alone, even while the overflow window is open")
         void shouldKeepPerSessionBehaviourForTrackedSession() {
             TokenRefreshCoordinator coordinator = failingCoordinator(NEAR);
@@ -877,7 +851,8 @@ class TokenRefreshCoordinatorTest {
             RefreshOutcome probe = refresh(coordinator, stored("probe"), windowElapsed);
             RefreshOutcome next = refresh(coordinator, stored("next"), windowElapsed);
 
-            assertAll("the saturating windows expired, so the per-session windows govern again",
+            assertAll("the overflow window expired on its own after the fixed back-off, and so did the "
+                    + "saturating windows, so the per-session windows govern again",
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, probe.kind()),
                     () -> assertEquals(RefreshOutcome.Kind.DEFERRED, next.kind()),
                     () -> assertEquals(callsBeforeProbe + 2, calls.get(),

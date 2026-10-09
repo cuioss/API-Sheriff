@@ -723,8 +723,28 @@ declaration's *existence* is proven while its *boundary* is not.
 | *G9* `oidc.session.ttl_seconds: 3600`
   `gateway.yaml` ×4 -- base:331, cookie:165, mtls:159, ws:134
 | Session store expiry
-| GAP
-| none
+| COVERED
+| `BffSessionAbsoluteTtlIT` (`sessionEndsAtItsDeclaredLifetimeWhateverTheRefreshDid`), on two
+  instances that differ in this key alone. The short one is a one-off gateway whose descriptor the
+  test derives from the committed `sheriff-config-refresh/gateway.yaml` with `ttl_seconds` set to 40
+  and the gateway origin retargeted; the test asserts on the parsed documents that these are the
+  only two differences. The control is the compose instance `api-sheriff-refresh`, which runs the
+  committed descriptor with `ttl_seconds: 3600`. One user logs in on both. Three seconds past the
+  40-second lifetime the short-lived session is refused -- `401` for a non-navigation request, a
+  redirect to the identity provider's authorization endpoint for a navigation -- while the control
+  session of the same age is still served and still relays a bearer. Both sessions were refreshed
+  inside the lifetime, and the refused calls are asserted to fall before the refreshed access token
+  expires, so the refusal is the lifetime's and not a token's.
+
+  *What the row does not claim.* The boundary is asserted at 40 seconds, not at the declared 3600:
+  no test waits an hour. What is proven is that the key is enforced as an absolute lifetime on a
+  running gateway; the declared 3600 enters as the control and as an equality the test asserts on
+  the committed descriptor, so a session under it is shown alive at 43 seconds and not shown ending
+  at 3600. The suite runs in server
+  mode only and does not measure the instant at which the session ends.
+
+  *This row was `GAP` with `none` in this column* while the suite above already existed; the row
+  had not been updated.
 
 | *G10* `oidc.user_info.allowed_claims`
   `gateway.yaml` ×4 -- base:339, cookie:187, mtls:167, ws:142
@@ -761,8 +781,8 @@ note's own vocabulary that was not `COVERED`, so G2's runtime leg was carried in
 remainder rather than dropped -- until `JwksEgressMismatchIT` closed it (see the standing remainder
 below and the G2 matrix row).
 
-*Six items remain* -- G6--G11 -- and they are listed as the standing remainder so the class stays
-countable.
+*Five items remain* -- G6, G7, G8, G10 and G11 -- and they are listed as the standing remainder so
+the class stays countable. G9 was the sixth until `BffSessionAbsoluteTtlIT` was credited to its row.
 
 [cols="1,1,1,4"]
 |===
@@ -796,13 +816,12 @@ countable.
 
 === The standing remainder
 
-*G6--G11 are deliberately not authored*, and are recorded so the class stays countable rather than
-forgotten:
+*G6, G7, G8, G10 and G11 are deliberately not authored*, and are recorded so the class stays
+countable rather than forgotten:
 
 * *G6* -- strict parameter-value length cap (1024)
 * *G7* -- strict path length cap (1024)
 * *G8* -- `tls.alpn`
-* *G9* -- `oidc.session.ttl_seconds`
 * *G10* -- `oidc.user_info.allowed_claims` negative leg
 * *G11* -- `tls.min_version` / `cipher_suites` runtime handshake leg
 
@@ -822,10 +841,18 @@ their own `jwks.url` host or are derived from it, but a dedicated one-off gatewa
 (`sheriff-config-jwks-egress-mismatch/gateway.yaml`) whose explicit list deliberately names another
 host, paired with a control that differs from it by that single key.
 
-Two of these are additionally *impractical to boundary-test at proportionate cost*: G9 would need a
-one-hour wait, and G11's runtime leg needs a handshake fixture matrix. A future plan should pick
-the *wiring* shape for those two rather than the boundary shape -- a descriptor guard that fails on
-drift is worth more than a boundary test nobody can afford to run.
+*G9 has left this list as well.* `oidc.session.ttl_seconds` is `COVERED` by
+`BffSessionAbsoluteTtlIT`; see the G9 matrix row above. This section used to call it impractical to
+boundary-test, on the reasoning that the declared lifetime is 3600 seconds. That reasoning measured
+the wrong thing: the test does not wait out the declared value, it runs a second instance whose
+descriptor differs in the lifetime alone and declares 40 seconds, with the 3600-second instance as
+its control. It is the same move that closed the leeway and the G2 items -- a dedicated instance
+that makes the boundary reachable, not a new assertion on the existing ones.
+
+One of the remaining five is additionally *impractical to boundary-test at proportionate cost*:
+G11's runtime leg needs a handshake fixture matrix. A future plan should pick the *wiring* shape for
+it rather than the boundary shape -- a descriptor guard that fails on drift is worth more than a
+boundary test nobody can afford to run.
 
 == Report-Only Finding: the body-cap guard does not reach the endpoints tree
 
@@ -940,7 +967,7 @@ behaviour.
 The one-line test is: *if the key were deleted entirely, would any test go red?* If the answer is
 no, the control is *not test-proven* -- and that is the whole of what the test settles. It does not
 settle whether the control is in effect. Two shapes come back green and are still live: a key with a
-production reader but no asserting test -- rows *G7*, *G8* and *G9* of the matrix above are exactly
+production reader but no asserting test -- rows *G7* and *G8* of the matrix above are exactly
 that, each naming an enforcer and `none` in the asserting-test column -- and a key whose default or
 inherited value carries the same behaviour once the explicit declaration is gone. So the deletion
 test is the first of two steps, not the verdict. Confirm production consumption separately, by
@@ -957,7 +984,7 @@ production reader -- finding none -- is what settled it.
 
 The day an inert key becomes live, every consumer that reads the surface it governs changes
 behaviour at once. An existing test may fail, and the trap is to treat that one failure as the scope
-of the change. Where the surface carries no asserting test at all -- rows *G7*, *G8* and *G9* again
+of the change. Where the surface carries no asserting test at all -- rows *G7* and *G8* again
 -- the flip lands with nothing going red, and the trap has no trigger to spring.
 
 *The test that fails first is a sample of the dependant set, not the whole of it.* Fixing it closes

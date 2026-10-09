@@ -107,7 +107,7 @@ shape over an unaffordable handshake matrix.
 
 [cols="1,4"]
 |===
-|Severity |LOW — Confidence HIGH — Category: missing-edge-case (deployment layer; project-acknowledged G9)
+|Severity |LOW — Confidence HIGH — Category: missing-edge-case (deployment layer; G9 of the declared-limit matrix, `COVERED` for the lifetime by `BffSessionAbsoluteTtlIT`)
 |Location |`InMemorySessionStoreTest`, `SealedSessionPayloadTest`, `TokenRefreshCoordinatorTest` (mechanisms well covered)
 |===
 

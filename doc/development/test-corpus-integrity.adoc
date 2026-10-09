@@ -649,6 +649,9 @@ none has a control, and swapping the arrange blocks of `noFrontListenerWhenPasst
 | `bootsSessionAuthWebSocketRoute`  | 187 | keep | same shape, WebSocket + session
 |===
 
+All five have been strengthened since this pass; the verdicts above are the pass's own and stand as
+recorded. See <<after-the-passes>>.
+
 === `bff/runtime/SessionAuthenticationStageTest.java` -- 0 flagged
 
 Five `assertDoesNotThrow` occurrences, and *every one* is followed by a substantive `assertEquals` on
@@ -941,7 +944,8 @@ pass is the larger sample that says so again, from the other direction.
 | 41 | (d)
 | `assertFalse(session.gatewayCookies().isEmpty())` is captioned "the callback must set a session
   cookie", but a jar carrying only the short binding cookie satisfies it. Assert the session cookie
-  by name, as the cookie-mode sibling already does.
+  by name, as the cookie-mode sibling already does. *The method has since been removed* rather than
+  strengthened; see <<after-the-passes>>.
 
 | `userInfoServesCuratedDefaultView`
   (`BffUserInfoIT`)
@@ -1226,9 +1230,11 @@ occurrence found in 56 files is not evidence that it is rare; it is evidence tha
 [[class-name-overclaim]]
 ==== A class name claiming more than any of its methods do
 
-`GracefulShutdownIT` exercises no shutdown. Its three methods are honestly named and honestly scoped
--- liveness, readiness, and a concurrent burst -- and its class Javadoc states the limitation
-outright: a black-box suite cannot signal `SIGTERM` to a container it does not own. No method is
+`GracefulShutdownIT` exercises no shutdown. Its methods are honestly named and honestly scoped --
+liveness and a concurrent burst; the readiness probe it also carried when this pass read it repeated
+`ConfigLoadedIntegrationIT.managementHealthReportsUp` and has been removed -- and its class Javadoc
+states the limitation outright: a black-box suite cannot signal `SIGTERM` to a container it does not
+own. No method is
 flagged, because none over-claims. It is recorded because *the taxonomy is defined over methods and
 this defect is not one*: a reader scanning class names for shutdown coverage would conclude it exists.
 
@@ -1719,6 +1725,10 @@ Grouped by file. Every row names the thing that makes the admission attributable
 | `acceptsCleanPath` (`pipeline/CanonicalPathGuardTest`)               | 62 | (a) | matched negative control `rejectsNonCanonicalPaths`:49 -- six non-canonical raw paths through the same guard, each asserted to raise `SECURITY_FILTER_VIOLATION`
 |===
 
+Six of these thirty -- the five `edge/GatewayEdgeRouteTest` rows and
+`edge/GrpcDispatchStageTest.buildsWithFailureMapper` -- have been strengthened since this pass. The
+verdicts above are the pass's own and stand as recorded; see <<after-the-passes>>.
+
 === Findings from this pass
 
 [[census-evasion-unit]]
@@ -2190,6 +2200,81 @@ guard, which is the defect this note exists to remove -- while doubling the main
 hand-rolled source scanner. If the integration lane ever adopts `Awaits`, that decision is the trigger
 to revisit this, and nothing else is.
 
+[[after-the-passes]]
+== Classified Rows Changed After the Passes
+
+The three passes record verdicts against the commits they read. Seven of the rows they classified
+have changed since, and each is named here so that a verdict above is never read as a description of
+a method that no longer has that body. The passes' own totals are unchanged: they count verdicts,
+and later work does not rewrite a verdict.
+
+=== Six `keep` rows strengthened
+
+All six were `keep` under shape (a): the first pass classified the five `edge/GatewayEdgeRouteTest`
+rows, and <<unit-lane-audit>> classified the same five again together with
+`edge/GrpcDispatchStageTest.buildsWithFailureMapper`. Each was a constructor call inside
+`assertDoesNotThrow`. Each still constructs, and now asserts something about what was constructed.
+
+An assembled edge exposes no view of its compiled routes, so the five edge rows read what the boot
+leaves observable instead: the clients the edge asked Vert.x for while it was assembled, counted as
+default upstream HTTP clients, forced-HTTP/2 upstream clients and WebSocket clients.
+
+[cols="3,4",options="header"]
+|===
+| Method | The observable it now asserts
+
+| `GatewayEdgeRouteTest.bootsCleanlyOverEmptyRouteTable`
+| No upstream HTTP client of either kind, and the one edge-wide WebSocket client.
+
+| `GatewayEdgeRouteTest.bootsSessionAuthRoute`
+| One default upstream HTTP client and none forced to HTTP/2 -- and exactly the wiring of the same
+  route under `require: none`, so the session route is assembled rather than skipped.
+
+| `GatewayEdgeRouteTest.bootsGrpcProtocol`
+| One forced-HTTP/2 upstream client and no default one.
+
+| `GatewayEdgeRouteTest.bootsWebSocketProtocol`
+| One default client for the route's upstream tuple and none forced to HTTP/2, beside the edge-wide
+  WebSocket client.
+
+| `GatewayEdgeRouteTest.bootsSessionAuthWebSocketRoute`
+| The wiring of the same WebSocket route under `require: none`.
+
+| `GrpcDispatchStageTest.buildsWithFailureMapper`
+| A dispatch through the built stage whose guard refuses the connection leaves the stage as a
+  `GatewayException` carrying `UPSTREAM_ERROR`, so the mapper the stage was built with is the one it
+  consults.
+|===
+
+*These six are not among the thirty-two this note opens with.* No inversion audit was run for them,
+so the thirty-two remain the set whose strengthening rests on an observed RED.
+
+=== One `strengthen` row removed
+
+`BffSessionLoginIT.loginEstablishesUsableSession`, one of the fourteen `strengthen` verdicts of
+<<pro-forma-audit>>, no longer exists. It repeated
+`BffSessionMediationIT.mediatedSessionStaysUsableAcrossRequests`, which logs in the same way, replays
+the cookie jar on the same route and asserts the upstream echo, twice.
+
+The gap the verdict named -- an `isEmpty()` check that a jar holding only the binding cookie
+satisfies -- is not what the surviving test rests on. It carries the same check, and what carries its
+claim is the replay: a jar without the session cookie is not served, so it cannot produce the echo.
+
+=== Two unflagged tests that gained an assertion
+
+Neither was a row of this note, because neither carries a marker: both were `assertThrows` or
+substantive throughout. They are recorded because the same change touched them.
+
+`pipeline/FramingGateTest.rejectsBodyOnHead` and `.rejectsTrustHeaderStrip` asserted that a
+`GatewayException` was thrown and nothing about it; they now assert `SECURITY_FILTER_VIOLATION`, as
+their siblings in the class already did.
+
+`bff/session/ServerSessionBindingTest.shouldNotDropTheSessionWhilePersisting` was named for a
+concurrent resolve and ran on one thread. It now resolves from a second thread before and after the
+store write a `persist` makes, and asserts both resolves find the session. What it reaches is the
+binding's own sequence of store calls; that one store call is atomic is `InMemorySessionStoreTest`'s
+subject.
+
 [[backlog]]
 == The Countable Backlog
 
@@ -2214,10 +2299,12 @@ in full*, so no marker-carrying file remains censused-but-unclassified in either
 What replaces it is not "nothing left to do" but a *different* residue, and the twenty-eight
 `strengthen` verdicts split cleanly in two. The fourteen in <<unit-lane-audit>> are no longer
 outstanding at all: they were applied at `857822d` and each one was inversion-verified in
-<<unit-lane-inversion-audit>>. The fourteen in <<pro-forma-audit>> are the work that remains, every
-one of them a named method with a `file:line` and a stated gap. Neither half is a coverage gap --
-the applied fourteen are closed, the remaining fourteen are a work list -- and that distinction is
-the one this section was built to keep.
+<<unit-lane-inversion-audit>>. The fourteen in <<pro-forma-audit>> are the work list that pass left,
+every one of them a named method with a `file:line` and a stated gap; one of them,
+`BffSessionLoginIT.loginEstablishesUsableSession`, has since left the list by being removed
+(<<after-the-passes>>). Neither half is a coverage gap -- the applied fourteen are closed, the
+integration-lane rows are a work list -- and that distinction is the one this section was built to
+keep.
 
 The `497c592` derivation and the 29 rows are kept below *as history*, because the earlier passes'
 selection and cap were derived from them. Read them as the record of what was outstanding, not as a

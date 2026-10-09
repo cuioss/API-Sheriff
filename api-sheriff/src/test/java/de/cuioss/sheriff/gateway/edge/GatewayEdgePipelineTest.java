@@ -253,16 +253,6 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("rejects an unmatched path 404 (deny by default)")
-    void rejectsUnmatchedPath() throws Exception {
-        // Act
-        Response response = send(io.vertx.core.http.HttpMethod.GET, "/nowhere", Map.of(), null);
-
-        // Assert
-        assertEquals(404, response.status());
-    }
-
-    @Test
     @DisplayName("rejects a verb outside the route's allowed_methods 405 with an Allow header")
     void rejectsDisallowedVerb() throws Exception {
         // Act — the echo route allows GET and POST, never DELETE

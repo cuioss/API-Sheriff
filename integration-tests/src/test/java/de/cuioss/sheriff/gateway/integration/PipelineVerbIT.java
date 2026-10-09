@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.DisplayName;
@@ -28,9 +27,10 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The mounted {@code gateway.yaml} allows {@code GET, POST, PUT, DELETE}; the {@code /proxy}
  * route forwards to the {@code go-httpbin} echo backend ({@code /anything/*}), which reflects the
- * received method and body. Each allowed verb must forward and echo; a method outside the allowed
- * set must be rejected {@code 405} at the gateway <em>without</em> reaching the upstream (the
- * response is the gateway's rejection, never the echo).
+ * received method and body. Each allowed verb must forward and echo. The other side of the gate — a
+ * method outside the allowed set is rejected {@code 405} at the gateway <em>without</em> reaching the
+ * upstream — is asserted by {@link ErrorContractIT#disallowedMethodProblemJson()}, which drives the
+ * same {@code PATCH /proxy/get} and additionally pins the problem document.
  */
 class PipelineVerbIT extends BaseIntegrationTest {
 
@@ -109,20 +109,5 @@ class PipelineVerbIT extends BaseIntegrationTest {
                 .extract();
 
         assertEquals("DELETE", response.path("method"));
-    }
-
-    @Test
-    @DisplayName("a method outside allowed_methods is rejected 405 and never forwarded")
-    void disallowedMethodRejectedWithoutForward() {
-        var response = given()
-                .when()
-                .patch("/proxy/get")
-                .then()
-                .statusCode(405)
-                .extract();
-
-        // A forwarded request would carry the go-httpbin echo (a non-null "method"); its absence
-        // is the observable proof the upstream count stayed 0 for this rejection.
-        assertNull(response.path("method"));
     }
 }
