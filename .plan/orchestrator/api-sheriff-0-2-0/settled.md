@@ -98,6 +98,34 @@ _Relocated 2026-09-24 by `cleanup` (operator-confirmed)._
   `2026-07-27-09-001` and standing rule (4) below. One mechanism, three faces, and the most
   enforceable group in the corpus: a post-gate `git status --porcelain` assertion covers all three.
 
+## Inbox Drain — 2026-10-09 (sender `plan-v02-01-adr-0005-reversal-quarkus-adoption`, at its landing)
+
+19 messages: 18 `candidate-lesson`, 1 `landing`. All valid, all archived.
+
+| Message | Disposition | Where it went |
+|---|---|---|
+| 001 outline coverage check ran over an empty set | folded | recurrence on lesson `2026-10-04-09-003` |
+| 002 outline changed behaviour ADR-0018 decides, ADR not listed | promoted | lesson `2026-10-09-13-001` |
+| 003 outline replaced a rule of ADR-0057, ADR not listed | promoted | lesson `2026-10-09-13-002` |
+| 004 operator decision at outline review reworked D5 | folded | "Related" section of lesson `2026-10-09-13-001` (the escalation half of the same rule) |
+| 005 idle time in a separate cookie avoided a format change | promoted | lesson `2026-10-09-13-003` |
+| 006 test and implementation task in different modules | promoted | lesson `2026-10-09-13-004` |
+| 007 flag flipped, class Javadoc claim not re-checked | folded | recurrence on lesson `2026-10-04-09-004` |
+| 008 method renamed, test names kept the old word | promoted | lesson `2026-10-09-13-005` |
+| 009 one Javadoc sentence reworded, the next kept the old meaning | folded | recurrence on lesson `2026-10-04-09-004` |
+| 010 self-review round accepted with two named unchecked items | promoted | lesson `2026-10-09-13-006` |
+| 011 same wrong `get-deliverable` flag four times | folded | recurrence on lesson `2026-10-03-06-006` |
+| 012 `self_review surface` called with an undeclared flag | folded | recurrence on lesson `2026-10-03-06-006` |
+| 013 two calls to script names that do not exist | discarded | no rule proposed, no state changed, no recurrence on record |
+| 014 single PR too large for both review bots | folded | recurrence on lesson `2026-10-03-06-003` |
+| 015 formatter's inferred import spacing flipped for the whole tree | promoted | lesson `2026-10-09-13-007` |
+| 016 integration-test job cancelled by its own timeout, all green | promoted | lesson `2026-10-09-13-008` |
+| 017 Sonar fix that leaves the reported line unchanged | promoted | lesson `2026-10-09-13-009` |
+| 018 finalize closed by hand, no file record captured | promoted | lesson `2026-10-09-13-010` |
+| 019 landing | reconciled | `landings/PLAN-V02-01.md` |
+
+No fold touched a staged spec, so no declared surface changed in this drain.
+
 ## Inbox Drain — 2026-10-06 (sender `plan-v02-14-offline-config-validation`)
 
 _Relocated 2026-10-06 by `cleanup` (operator-confirmed)._

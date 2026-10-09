@@ -55,21 +55,21 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
   `events/GatewayEventCounter.java` → `quarkus/SheriffMetrics.java` (Micrometer) and WARN logging in
   `edge/GatewayEdgeRoute.java` (`SECURITY_FILTER_VIOLATION`, payload-safe). Find the WARN site by
   content — `LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, …)` — not by line.
-  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: EventCategory now has six values with ROUTING (ADR-0059); WARN site GatewayEdgeRoute.reportRejection SECURITY_FILTER_VIOLATION and SheriffMetrics.ERRORS_TOTAL exist; claim re-scoped
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory has six values incl. ROUTING; GatewayEdgeRoute.reportRejection WARNs SECURITY_FILTER_VIOLATION; SheriffMetrics.ERRORS_TOTAL exists
 - OBSERVED absence: no cross-request scoring / campaign notion exists — the counter is global-per-event,
   not per-client-windowed. (CRS itself scores per-request only; the cross-request accumulation is the
   net-new value here.)
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no campaign, score, windowed or per-client construct in api-sheriff/src/main; GatewayEventCounter is global per EventType (control reached RateLimitConfig)
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no anomaly, campaign, ECS, OCSF or score construct in api-sheriff/src/main/java
 - HYPOTHESIS: `PLAN-V02-06`'s per-client substrate is reusable as the accumulation window for the score
   rather than a second parallel per-client store. Confirm/refute at the substrate `PLAN-V02-06` actually
   ships § its per-client state API (verify-at-outline) — **central risk**: if that substrate is
   bucket-only (recon codes) and not general-purpose, the gap is a finding against `PLAN-V02-06`'s
   substrate contract, not work to absorb here and not a reason to build a second store.
-  - verdict: unverifiable | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06's substrate has not shipped, so reuse cannot be judged
+  - verdict: unverifiable | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06's substrate has not shipped, so reuse cannot be judged
 - Verify-first clause: scope the ECS/OCSF field set against the actual schema (Elastic Common Schema /
   OCSF event classes), not against this spec's field list, before emitting — the shape must validate
   against a real consumer.
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still applicable: no ECS or OCSF emitter exists and the field list is unvalidated against a schema
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still applicable: no ECS or OCSF emitter exists
 
 ## Expected Surface
 
@@ -78,6 +78,7 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/GatewayEventCounter.java` / `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java` — the two-tier signal wiring
 - OBSERVED absence → NEW: an ECS/OCSF structured-emit formatter + a new `LogRecord` ALERT constant (`doc/LogMessages.adoc`)
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**` — weights / window / threshold config; `doc/**`; `api-sheriff/src/test/**`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` (`reportRejection`, the WARN dispatch site), `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java` (the ALERT record)
 
 ## Dependencies and Sequencing
 
@@ -92,9 +93,11 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 - This is the most downstream plan of WS-03; emit it last among them.
 - Overlaps with: `PLAN-V02-06`, and `PLAN-V03-01` (honeypot) in the `api-sheriff-0-3-0` epic — all
   touch the event system and the substrate. Never concurrent with either.
-- Verify at outline: whether `edge/GatewayEdgeRoute.java` (the WARN dispatch site) is touched, and
-  whether `PASSTHROUGH_HOST_SMUGGLED` is a second WARN case beside `SECURITY_FILTER_VIOLATION`. If
-  either holds, the Expected Surface above is understated.
+- `GatewayEdgeRoute.reportRejection` is the WARN dispatch site, and `PASSTHROUGH_HOST_SMUGGLED` is a
+  second WARN case beside `SECURITY_FILTER_VIOLATION`; both are in the Expected Surface.
+- ADR-0062 (platform-first, landed by `PLAN-V02-01`): the ECS/OCSF formatter serialises through
+  `bff/runtime/GatewayJson`, not a hand-rolled writer, and the scoring ADR records the reason for any
+  hand-rolled state.
 
 ## Standing Conventions
 

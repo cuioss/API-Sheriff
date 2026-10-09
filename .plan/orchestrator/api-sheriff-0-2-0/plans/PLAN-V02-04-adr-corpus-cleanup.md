@@ -69,7 +69,7 @@ filename, never by a number quoted here.
    such rather than editing history — a superseded decision is legitimate content, an inaccurate one
    is not.
 
-   **Statuses are the largest part of this.** 41 of 61 records read `Proposed` when last counted, most
+   **Statuses are the largest part of this.** 41 of 62 records read `Proposed` when last counted, most
    of them for shipped work. That makes this a sweep, not a spot-fix; re-count at outline. ADR-0059
    and ADR-0060 are among them; both decisions have shipped.
 
@@ -79,15 +79,17 @@ filename, never by a number quoted here.
    (`withTimeout().duration(30, ChronoUnit.SECONDS)`). Amend or supersede that sentence; check the
    rest of ADR-0008 against the resilience guard while there.
 
-   Two records are owned by other plans and must not be pre-empted:
-   - **`0005`** (framework-agnostic core) is being reversed by `PLAN-V02-01`. Note the pending
-     supersession; do not write it.
+   **`0005`** (framework-agnostic core) reads `Superseded by ADR-0062`; `PLAN-V02-01` landed that
+   supersession (#410). Classify both records like any other. `PLAN-V02-01` also amended `0018`,
+   `0051`, `0057` and `0061`; check each amendment against the shipped code like the rest.
+
+   One record is owned by another plan and must not be pre-empted:
    - **`0027`** (*the token-validation extension's unqualified beans are excluded, not accommodated*)
      is the exclusion `PLAN-V02-09` re-examines. Note it; do not settle it.
 
 4. **Compress what survives.** The corpus mean doubled mid-project: among the first 31 records,
-   `0001`–`0017` average about 112 lines and `0018`–`0031` about 232, with `0025`, `0019` and `0018`
-   each near or above 400. **A decision does not take 400 lines** — the excess is usually
+   `0001`–`0017` average about 136 lines and `0018`–`0031` about 273, with `0018` (677 lines), `0025`
+   (515) and `0019` (403) the longest. **A decision does not take 400 lines** — the excess is usually
    implementation narrative, rationale restated several ways, or content that belongs in the
    developer docs the ADR should link to instead.
 
@@ -98,19 +100,19 @@ filename, never by a number quoted here.
 
 ## Claim Labels
 
-- OBSERVED: `doc/adr/` holds 61 records (`0001`–`0061`, contiguous; ~14,049 lines) at `1a20edad`, and has grown at every measurement — `git ls-tree --name-only HEAD doc/adr/`
-  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: doc/adr/ holds 61 records (0001-0061, contiguous) and about 14049 lines at 1a20edad, not 55 / 11809; claim and body re-scoped
-- OBSERVED: 41 of 61 records read status `Proposed` at `1a20edad` (18 Accepted or Accepted-and-amended, 1 Superseded, 1 Accepted without a period) — first line of the `== Status` block per record
-  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 41 of 61 records read Proposed at 1a20edad (18 Accepted or amended, 1 Superseded, 1 Accepted without period), not 35 of 55; claim and body re-scoped
+- OBSERVED: `doc/adr/` holds 62 records (`0001`–`0062`, contiguous; ~14,507 lines) at `386f3f74`, and has grown at every measurement — `git ls-tree --name-only HEAD doc/adr/`
+  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: doc/adr/ holds 62 records (0001-0062 contiguous) and 14507 lines at 386f3f74, not 61 / 14049; claim and body re-scoped
+- OBSERVED: 41 of 62 records read status `Proposed` at `386f3f74` (19 Accepted or Accepted-and-amended, 2 Superseded: `0005` and `0034`) — first line of the `== Status` block per record
+  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 41 of 62 records read Proposed; 19 Accepted or amended, 2 Superseded (0005, 0034); claim and body re-scoped
 - OBSERVED: every ordinal in `doc/adr/` is claimed by exactly one record, and `AdrOrdinalUniquenessContractTest` fails the build on a duplicate — `doc/adr/` basenames `uniq -d`; the former duplicate `0053` was resolved by renumbering the header-matcher record to `0056`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no duplicate ordinal across 61 basenames; AdrOrdinalUniquenessContractTest asserts it with a control; 0053 portal, 0056 header-matcher
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no duplicate ordinal across 62 basenames; AdrOrdinalUniquenessContractTest asserts it with a control
 - OBSERVED: the artifact-purity and nullable-not-Optional records are `0032` and `0033`, each with an ordinal of its own — `doc/adr/0032-*`, `0033-*`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032 shipped-artifact-declares-nothing-test-shaped and 0033 nullable-not-Optional each have their own ordinal
-- OBSERVED: `0005-module-structure.adoc` is still `Accepted` and `0027` is not re-opened, so V02-01 and V02-09 have not pre-empted this audit — confirm again at outline (verify-at-outline)
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0005 Status Accepted with only a pending-supersession note; 0027 Status Proposed, not reopened
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032 and 0033 each own an ordinal
+- OBSERVED: `0005-module-structure.adoc` reads `Superseded by ADR-0062` (landed by `PLAN-V02-01`), and `0027` is `Proposed` and not re-opened, so V02-09 has not pre-empted this audit — confirm again at outline (verify-at-outline)
+  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 0005 Status reads Superseded by ADR-0062 (#410); 0027 still Proposed and untouched; claim, body and dependencies re-scoped
 
 - OBSERVED: ADR-0008's statement that timeouts are transport options and not fault-tolerance timeouts is contradicted by the shipped resilience guard — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § `guardFor` (`withTimeout().duration(30, ChronoUnit.SECONDS)`), on `origin/main` at `84afdba0`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.guardFor builder.withTimeout().duration(30, ChronoUnit.SECONDS) beside the circuit breaker; ADR-0008 still says timeouts are transport options, not fault-tolerance timeouts
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.guardFor withTimeout().duration(30, SECONDS); ADR-0008 still says timeouts are transport options; 0008 unchanged
 
 ## Expected Surface
 
@@ -119,14 +121,16 @@ filename, never by a number quoted here.
 - Every inbound `ADR-00NN` reference and `link:…adr/…adoc` across `doc/`, `api-sheriff/src/**`,
   `integration-tests/**`, `benchmarks/**`, `pom.xml`, `*.properties`, `*.json`, `*.yaml` — merges and
   deletions break links, and a dangling xref is a broken AsciiDoc build
+- Further inbound references outside those trees: `CLAUDE.md`, `README.adoc`,
+  `.claude/skills/release/SKILL.md`, `.github/workflows/**`
 - No production behaviour change. If the audit finds an ADR that contradicts shipped behaviour, that
   is a finding to report — the ADR is corrected, the code is not.
 
 ## Dependencies and Sequencing
 
 - Depends on: none. `PLAN-V02-19` has landed, so the audit starts from a corpus with unique ordinals.
-- **Not concurrent with any plan that authors or re-opens an ADR**: `PLAN-V02-01`, `PLAN-V02-06`,
-  `PLAN-V02-07`, `PLAN-V02-08`, `PLAN-V02-09`, `PLAN-V02-11`, `PLAN-V02-12`, `PLAN-V02-13`. A merge or
+- **Not concurrent with any plan that authors or re-opens an ADR**: `PLAN-V02-06`, `PLAN-V02-07`,
+  `PLAN-V02-09`, `PLAN-V02-11`, `PLAN-V02-12`. A merge or
   deletion here moves the ground under a record being written there.
 - Merges and deletions break links in released versions' documentation. That cost is real and is
   accepted; report every removed or merged record with its replacement so the break is traceable.
