@@ -103,6 +103,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class CookieSessionBinding implements SessionBinding {
 
+    /** The parameter name the null checks of a session argument report. */
+    private static final String SESSION_PARAMETER = "session";
+
     /**
      * The upper bound of the re-issue interval — the shortest distance between two activity cookies of
      * one session. A new activity cookie is issued only when the last access is at least one re-issue
@@ -169,7 +172,7 @@ public final class CookieSessionBinding implements SessionBinding {
 
     @Override
     public BoundSession bind(SessionRecord session, Instant now) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         Objects.requireNonNull(now, "now");
         // A fresh login anchors the absolute lifetime at this instant and mints the session's one
         // nonce. Minting here — once, on the login path only — is what makes two logins by the same
@@ -291,7 +294,7 @@ public final class CookieSessionBinding implements SessionBinding {
      */
     @Override
     public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         Objects.requireNonNull(now, "now");
         Instant lastAccess = lastAccess(session, cookieHeader, now);
         if (Duration.between(lastAccess, now).compareTo(activityCookieInterval) < 0) {
@@ -303,7 +306,7 @@ public final class CookieSessionBinding implements SessionBinding {
 
     @Override
     public void destroy(SessionRecord session) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         // Nothing is held server-side. The browser's copies are cleared by the caller emitting
         // clearingSetCookieHeaders() — an expired-by-Max-Age cookie the browser keeps anyway is
         // still refused by resolve()'s server-side TTL check.

@@ -96,6 +96,12 @@ import de.cuioss.tools.logging.CuiLogger;
  */
 public final class InMemorySessionStore implements SessionStore {
 
+    /** The parameter name the null checks of a session argument report. */
+    private static final String SESSION_PARAMETER = "session";
+
+    /** The parameter name the null checks of a session-id argument report. */
+    private static final String SESSION_ID_PARAMETER = "sessionId";
+
     private static final CuiLogger LOGGER = new CuiLogger(InMemorySessionStore.class);
 
     private final int maxSessions;
@@ -150,7 +156,7 @@ public final class InMemorySessionStore implements SessionStore {
 
     @Override
     public void create(SessionRecord session, String cookieHandle, Instant now) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         Objects.requireNonNull(cookieHandle, "cookieHandle");
         Objects.requireNonNull(now, "now");
         // A refused creation may already have ended sessions on its way to the bound; they are
@@ -222,7 +228,7 @@ public final class InMemorySessionStore implements SessionStore {
 
     @Override
     public synchronized boolean replaceIfPresent(SessionRecord session) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         // The presence check and the replacement share this monitor with every destroy method, so a
         // logout or a back-channel logout either ran before the check — and nothing is written — or
         // runs after the replacement and removes it. There is no window in which a destroyed session
@@ -239,7 +245,7 @@ public final class InMemorySessionStore implements SessionStore {
 
     @Override
     public synchronized boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         Objects.requireNonNull(newCookieHandle, "newCookieHandle");
         // One atomic step with every destroy method, exactly as replaceIfPresent: a session destroyed
         // before the check is not written back and its new handle is never registered.
@@ -256,7 +262,7 @@ public final class InMemorySessionStore implements SessionStore {
 
     @Override
     public synchronized void recordAccess(String sessionId, Instant now) {
-        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(sessionId, SESSION_ID_PARAMETER);
         Objects.requireNonNull(now, "now");
         HeldSession held = byId.get(sessionId);
         // Only the instant is written, never the record: the record a concurrent refresh stored under
@@ -323,7 +329,7 @@ public final class InMemorySessionStore implements SessionStore {
 
     @Override
     public void destroyById(String sessionId) {
-        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(sessionId, SESSION_ID_PARAMETER);
         announcingEnds(() -> {
             endInternal(sessionId);
             return Boolean.TRUE;
@@ -350,12 +356,11 @@ public final class InMemorySessionStore implements SessionStore {
 
     /** The sweep itself. Callers hold the instance monitor. */
     private int sweepExpiredLocked(Instant now) {
-        List<String> expired = new ArrayList<>();
-        for (Map.Entry<String, HeldSession> entry : byId.entrySet()) {
-            if (isExpired(entry.getValue(), now)) {
-                expired.add(entry.getKey());
-            }
-        }
+        // Collected first: ending a session removes it from the map this reads.
+        List<String> expired = byId.entrySet().stream()
+                .filter(entry -> isExpired(entry.getValue(), now))
+                .map(Map.Entry::getKey)
+                .toList();
         expired.forEach(this::endInternal);
         return expired.size();
     }
@@ -376,7 +381,7 @@ public final class InMemorySessionStore implements SessionStore {
      * @return {@code true} while the session is held
      */
     public synchronized boolean isHeld(String sessionId) {
-        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(sessionId, SESSION_ID_PARAMETER);
         return byId.containsKey(sessionId);
     }
 

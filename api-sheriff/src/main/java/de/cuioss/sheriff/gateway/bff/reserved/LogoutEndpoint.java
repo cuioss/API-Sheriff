@@ -71,6 +71,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class LogoutEndpoint {
 
+    /** The parameter name the null checks of a redirect location report. */
+    private static final String LOCATION_PARAMETER = "location";
+
     private static final CuiLogger LOGGER = new CuiLogger(LogoutEndpoint.class);
 
     private final RpInitiatedLogout rpInitiatedLogout;
@@ -150,7 +153,7 @@ public final class LogoutEndpoint {
         if (!result.isRedirect()) {
             return LogoutOutcome.error(result.status());
         }
-        return LogoutOutcome.redirect(Objects.requireNonNull(result.location(), "location"),
+        return LogoutOutcome.redirect(Objects.requireNonNull(result.location(), LOCATION_PARAMETER),
                 result.setCookieHeaders());
     }
 
@@ -194,7 +197,7 @@ public final class LogoutEndpoint {
          * @return the redirect outcome
          */
         public static LogoutOutcome redirect(String location, List<String> setCookieHeaders) {
-            Objects.requireNonNull(location, "location");
+            Objects.requireNonNull(location, LOCATION_PARAMETER);
             return new LogoutOutcome(FOUND, location, setCookieHeaders, false);
         }
 
@@ -207,7 +210,7 @@ public final class LogoutEndpoint {
          * @return the end-session redirect outcome
          */
         public static LogoutOutcome endSessionRedirect(String location, List<String> setCookieHeaders) {
-            Objects.requireNonNull(location, "location");
+            Objects.requireNonNull(location, LOCATION_PARAMETER);
             return new LogoutOutcome(FOUND, location, setCookieHeaders, true);
         }
 

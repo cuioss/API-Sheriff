@@ -826,8 +826,9 @@ class InMemorySessionStoreTest {
             SessionRecord third = session("s3", "sub3", null, FUTURE);
             SessionRecord second = session("s2", "sub2", null, FUTURE);
 
-            assertThrows(IllegalStateException.class, () -> store.create(third, handleOf("s1"), T0));
-            assertThrows(IllegalStateException.class, () -> store.replaceAndReissueHandle(second, handleOf("s1")));
+            String handleInUse = handleOf("s1");
+            assertThrows(IllegalStateException.class, () -> store.create(third, handleInUse, T0));
+            assertThrows(IllegalStateException.class, () -> store.replaceAndReissueHandle(second, handleInUse));
 
             assertEquals("s1", resolve(store, "s1", T0).orElseThrow().sessionId(),
                     "the handle still resolves to the session it belongs to");
@@ -1157,7 +1158,8 @@ class InMemorySessionStoreTest {
             create(store, session("b1", OTHER_SUB, null, FUTURE), T0);
             SessionRecord oneTooMany = session("a2", SUB, null, FUTURE);
 
-            assertThrows(IllegalStateException.class, () -> create(store, oneTooMany, T0.plusSeconds(1)));
+            Instant atCreation = T0.plusSeconds(1);
+            assertThrows(IllegalStateException.class, () -> create(store, oneTooMany, atCreation));
 
             assertTrue(resolve(store, "a1", T0.plusSeconds(2)).isPresent(),
                     "the subject lost no session to a creation that was refused");
@@ -1312,7 +1314,8 @@ class InMemorySessionStoreTest {
             SessionRecord colliding = session("a2", "sub-a", null, FUTURE);
             Instant later = T0.plusSeconds(1);
 
-            assertThrows(IllegalStateException.class, () -> store.create(colliding, handleOf("b1"), later),
+            String handleOfAnotherSession = handleOf("b1");
+            assertThrows(IllegalStateException.class, () -> store.create(colliding, handleOfAnotherSession, later),
                     "a handle that resolves another session is refused");
 
             assertEquals(List.of("a1"), listener.ended(), "the session ended on the way is still reported");

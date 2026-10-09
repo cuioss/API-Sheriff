@@ -84,6 +84,7 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
+// @Singleton and not @ApplicationScoped: the class is final and immutable, so it needs no client proxy.
 @Singleton
 public final class GatewayJson {
 
