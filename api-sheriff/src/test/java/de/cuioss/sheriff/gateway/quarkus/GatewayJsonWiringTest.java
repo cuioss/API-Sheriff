@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.quarkus;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import io.quarkus.test.junit.QuarkusTest;

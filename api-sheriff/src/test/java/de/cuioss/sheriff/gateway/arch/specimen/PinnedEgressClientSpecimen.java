@@ -19,7 +19,6 @@ import java.net.http.HttpClient;
 import java.security.NoSuchAlgorithmException;
 import javax.net.ssl.SSLContext;
 
-
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 
 /**

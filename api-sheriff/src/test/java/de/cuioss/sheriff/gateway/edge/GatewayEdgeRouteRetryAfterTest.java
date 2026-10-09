@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;

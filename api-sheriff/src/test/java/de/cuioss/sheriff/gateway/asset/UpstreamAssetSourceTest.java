@@ -30,7 +30,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource.UpstreamFetcher;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;

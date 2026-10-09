@@ -32,7 +32,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.token.client.flow.TokenEndpointClient;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import org.junit.jupiter.api.DisplayName;

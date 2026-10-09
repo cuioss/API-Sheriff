@@ -28,7 +28,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.LogoutSubject;
 import de.cuioss.sheriff.gateway.bff.logout.LogoutTokenValidator.Verdict;
 import de.cuioss.sheriff.token.validation.domain.claim.ClaimValue;

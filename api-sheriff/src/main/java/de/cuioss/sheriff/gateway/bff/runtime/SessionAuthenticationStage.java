@@ -30,7 +30,6 @@ import java.util.Set;
 import java.util.StringJoiner;
 import java.util.TreeSet;
 
-
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.events.EventType;

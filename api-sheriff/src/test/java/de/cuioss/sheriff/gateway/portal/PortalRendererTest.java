@@ -27,7 +27,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.OptionalInt;
 
-
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;

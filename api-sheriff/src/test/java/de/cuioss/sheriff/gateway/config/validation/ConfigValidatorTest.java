@@ -28,7 +28,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;

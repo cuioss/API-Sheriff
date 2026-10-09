@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.arch.specimen;
 import java.io.IOException;
 import java.net.ServerSocket;
 
-
 import io.vertx.core.Future;
 import io.vertx.core.net.NetServer;
 

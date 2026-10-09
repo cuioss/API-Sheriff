@@ -17,7 +17,6 @@ package de.cuioss.sheriff.gateway.pipeline;
 
 import java.util.Objects;
 
-
 import org.jspecify.annotations.Nullable;
 
 /**

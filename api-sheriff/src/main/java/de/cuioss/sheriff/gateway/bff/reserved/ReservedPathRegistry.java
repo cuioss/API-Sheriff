@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import org.jspecify.annotations.Nullable;
 

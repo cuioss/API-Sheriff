@@ -36,7 +36,6 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
-
 import de.cuioss.sheriff.gateway.ConfigValidationCommand;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.boot.ConfigBootPipeline;

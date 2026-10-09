@@ -30,7 +30,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
-
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.JwksTrustProfileResolver;
 import de.cuioss.sheriff.gateway.auth.SignatureOnlyTokenVerifier;

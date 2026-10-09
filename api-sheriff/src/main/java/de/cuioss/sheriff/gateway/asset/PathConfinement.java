@@ -20,7 +20,6 @@ import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
 
-
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.core.HttpSecurityValidator;
 import de.cuioss.http.security.exceptions.UrlSecurityException;

@@ -28,7 +28,6 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.EndSessionEndpointSource;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.LogoutRedirect;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout.LogoutReturn;
