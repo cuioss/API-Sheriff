@@ -39,10 +39,15 @@ and the key cannot be shared across replicas — are unaffected.
    - `schema/gateway.schema.json`;
    - the cookie-mode integration overlays (`sheriff-config-cookie`, `sheriff-config-cookie-refresh`)
      and their compose wiring;
+   - `bff/cookie/SessionActivityCookieCodec`, whose HMAC key `CookieKeyMaterial` derives from the same
+     key (label `api-sheriff:cookie-session-activity-mac-key:v1`): the file format keeps the 32-byte
+     contract, and the ADR states every derivation (identity salt, key id, activity MAC key);
    - `BffLogMessages` and `doc/LogMessages.adoc` for any changed message;
    - the further documents that describe the key: `doc/development/bff-cookie.adoc`,
      `doc/variants/03-bff-cookie.adoc`, `doc/fapi_next_steps.adoc`,
-     `doc/quality-report/security-posture.adoc` and the diagram
+     `doc/quality-report/security-posture.adoc`, `doc/quality-report/code-correctness.adoc`,
+     `doc/development/test-corpus-integrity.adoc`, `doc/security-threat-model.adoc`,
+     `doc/user/tls-scenarios.adoc` and the diagram
      `doc/resources/diagrams/tls-key-material.svg`;
    - the test fixtures and tests that set the key: `api-sheriff/src/test/resources/config/cookieboot/gateway.yaml`,
      `CookieKeyMaterialTest`, `ConfigLoaderTest`, `ConfigValidatorTest`, `CookieModeBootTest` and the
@@ -63,17 +68,17 @@ and the key cannot be shared across replicas — are unaffected.
 ## Claim Labels
 
 - OBSERVED: the cookie sealing key's provided mode is a base64 value set through `session.encryption_key` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/CookieKeyMaterial.java` § `Mode.PASSED` and `ENCRYPTION_KEY_FIELD`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CookieKeyMaterial ENCRYPTION_KEY_FIELD session.encryption_key; Mode.PASSED decodes base64 and refuses non-base64
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CookieKeyMaterial ENCRYPTION_KEY_FIELD session.encryption_key; Mode.PASSED decodes base64 and refuses anything else
 - OBSERVED: the two signing keys are provided as a PEM file named by path, or generated at startup — read at `doc/adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc` § "A key is either provided or generated"
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0058 section 3: a provided key is a PEM file named by key_file; the two signing keys are client authentication and DPoP
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0058 section 3: a provided key is a PEM file named by key_file; the two keys are client authentication and DPoP
 - OBSERVED: `ConfigLoader` treats `/oidc/session/encryption_key` as a secret a defaulted placeholder must not materialise — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/load/ConfigLoader.java` § the secrets list
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ConfigLoader.SECRET_POINTERS lists /oidc/client_secret and /oidc/session/encryption_key; a defaulted placeholder materialising it is refused
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ConfigLoader.SECRET_POINTERS lists /oidc/client_secret and /oidc/session/encryption_key
 - OBSERVED: the current shape is carried by `gateway.schema.json`, two cookie-mode integration overlays, `doc/user/bff-cookie.adoc`, `doc/configuration.adoc` and `doc/user/environment-variable-overrides.adoc` — a search for `encryption_key` on `origin/main` at `cd383c2e`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: all five named carriers contain encryption_key on origin/main; the list is not exhaustive (claim 4)
-- HYPOTHESIS: no further carrier exists outside the listed files — confirm/refute at outline by a repository-wide search for `encryption_key` and `CookieKeyMaterial`, without a pathspec (verify-at-outline). Re-grounding refuted the first list; D2 and the Expected Surface now name every carrier a search at `1a20edad` returns
-  - verdict: contradicted | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: a whole-repo search finds further carriers in doc/development, doc/variants, doc/fapi_next_steps, doc/quality-report, tls-key-material.svg, a test fixture and five tests; D2 and the surface re-scoped to name them
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: all named carriers contain encryption_key at HEAD
+- HYPOTHESIS: no further carrier exists outside the listed files — confirm/refute at outline by a repository-wide search for `encryption_key` and `CookieKeyMaterial`, without a pathspec (verify-at-outline). Re-grounding refuted the list twice; D2 and the Expected Surface now name every carrier a search at `386f3f74` returns, and the search, not the list, is the authority
+  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: a search at 386f3f74 finds further carriers (SessionActivityCookieCodec, four tests and specimens, four docs); D2 and the surface re-scoped, the search named as the authority
 - Verify-first clause: confirm at outline whether ADR-0058's key-file reader can be shared for a symmetric key or must stay separate; a shared reader that admits a PEM block where raw key bytes are expected is a defect, not a simplification
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause applicable: ADR-0058's reader is bff/client/ClientSigningKey (two-block PEM) while CookieKeyMaterial decodes base64 AES-256; sharing is undecided
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause applicable: ClientSigningKey is a two-block PEM reader while CookieKeyMaterial decodes base64 AES-256
 
 ## Expected Surface
 
@@ -88,6 +93,8 @@ and the key cannot be shared across replicas — are unaffected.
 - OBSERVED: `doc/user/bff-cookie.adoc`, `doc/user/environment-variable-overrides.adoc`, `doc/configuration.adoc`, `doc/LogMessages.adoc` — D4
 - OBSERVED: `doc/development/bff-cookie.adoc`, `doc/variants/03-bff-cookie.adoc`, `doc/fapi_next_steps.adoc`, `doc/quality-report/security-posture.adoc`, `doc/resources/diagrams/tls-key-material.svg` — D2
 - OBSERVED: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffCookieActivationWiringTest.java` — D2
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SessionActivityCookieCodec.java` — D2
+- OBSERVED: `doc/quality-report/code-correctness.adoc`, `doc/development/test-corpus-integrity.adoc`, `doc/security-threat-model.adoc`, `doc/user/tls-scenarios.adoc` — D2
 - OBSERVED: `doc/adr/` — one new record — D1
 
 ## Dependencies and Sequencing

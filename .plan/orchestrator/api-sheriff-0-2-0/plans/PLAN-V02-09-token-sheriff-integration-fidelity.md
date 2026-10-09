@@ -160,17 +160,17 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 ## Claim Labels
 
 - OBSERVED: token-sheriff is pinned at `0.9.6` — `api-sheriff/pom.xml`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: version.token-sheriff 0.9.6 in the root pom.xml, consumed by api-sheriff/pom.xml through the BOM
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: version.token-sheriff 0.9.6 in the root pom.xml, consumed by api-sheriff/pom.xml
 - OBSERVED: the `quarkus.arc.exclude-types` exclusion of token-sheriff health/metrics beans is unconditional — `application.properties`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties quarkus.arc.exclude-types covers ...quarkus.health.* and ...quarkus.metrics.*, declared unconditionally in no profile
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties quarkus.arc.exclude-types covers the token quarkus health and metrics packages, unconditional, single occurrence
 - OBSERVED: readiness already reads live `IssuerKeySetStatus` — `GatewayReadinessCheck`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayReadinessCheck reads IssuerKeySetStatus loaded/configured/failed counts, a non-fetching live per-issuer state
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayReadinessCheck injects Instance<IssuerKeySetStatus>; file unchanged since 1a20edad
 - OBSERVED: the token validator's `SecurityEventCounter` is bound to no meter; `SheriffMetrics` binds only cui-http's counter — D3's metrics half
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics.bindSecurityEventCounter binds only cui-http's counter; the validator counter feeds SignatureOnlyTokenVerifier only
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics.bindSecurityEventCounter binds only cui-http's counter; the token-side counter is bound to no meter
 - OBSERVED: `ADR-0027` carries no `#641`/`#617` reference — `doc/adr/0027-*.adoc`
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/0027-*.adoc contains neither 641 nor 617 (control matched its Status line)
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/0027 contains neither 641 nor 617 (control matched its Status line); ADR-0062 does not mention 0027
 - OBSERVED: `token-sheriff-validation-0.9.6.jar` ships `META-INF/native-image/.../reflect-config.json` — `unzip -l` of the resolved artifact
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: unzip -l of token-sheriff-validation-0.9.6.jar lists META-INF/native-image/.../reflect-config.json and native-image.properties
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: token-sheriff-validation-0.9.6.jar lists META-INF/native-image reflect-config.json and native-image.properties
 
 ## Expected Surface
 
@@ -182,6 +182,8 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
   `SheriffMetrics.java` — the discovery and metrics write sites
 - Possibly new: a `ConfigSource` under `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/`, if deliverable 2 selects a mapping direction
 - `doc/` — the three-layer documentation, and ADR-0027 or its successor
+- `api-sheriff/src/test/**` — `ShippedApplicationPropertiesTest`, `DefaultProfileReadinessTest`, `ExtensionUnqualifiedBeanExclusionTest`, `JwksTrustProfileResolverTest`
+- `pom.xml` — the BOM comment block, re-measured on a version bump
 - Read-only: the `token-sheriff-validation-quarkus` and `token-sheriff-validation` 0.9.6 artifacts
 
 ## Dependencies and Sequencing
@@ -190,11 +192,12 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
   goes after it. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058); scope D3's discovery probe
   against the PAR-and-DPoP login it introduced. Never concurrent with `PLAN-V02-20`, which writes the
   same block.
-- Sequence after `PLAN-V02-01` (ADR-0005 reversal) where possible. That plan's premise is that
-  hand-rolled equivalents were built where a platform mechanism already existed, and this plan asks
-  the same question of token-sheriff. Its ADR verdict sets the standing rule D2 should apply rather
-  than re-derive. If it has not landed when this plan reaches outline, record that the verdict could
-  not be read rather than assuming one.
+- `PLAN-V02-01` (ADR-0005 reversal) has landed. ADR-0062 sets the standing rule D2 applies: a
+  platform mechanism is preferred, and a hand-rolled equivalent stays only with a recorded reason.
+  Its stays-hand-rolled table lists `EnvSecretResolver`, the session store, `ClientHelloSniParser`
+  and the pre-boot configuration path; it lists neither `TokenValidatorProducer` nor the exclusion.
+  That plan also rewrote `BffRuntimeProducer` and `OidcConfig`, so re-anchor D3's discovery probe by
+  content.
 - Not concurrent with `PLAN-V02-04` (ADR corpus audit), which is told not to pre-empt this plan's
   re-examination of ADR-0027.
 - Not release-gating. The exclusion is a defensible shipped posture, pinned by a fitness function.

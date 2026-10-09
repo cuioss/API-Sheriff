@@ -80,27 +80,28 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
   hop-by-hop and conditional headers — it does **not** strip `Server`/`X-Powered-By`, so an upstream
   emitting them leaks them through; `relay()` and `relayWithTrailers()` both copy every forwardable
   upstream header through that one filter.
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage.isForwardableResponseHeader drops only ConnectionHeaders.RESPONSE_STRIP and etag/last-modified; no Server or X-Powered-By handling in main; relay and relayWithTrailers share the filter
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage.isForwardableResponseHeader drops only connection-specific and etag/last-modified; both relays reach it through relaysUpstreamHeader
 - OBSERVED: security headers are opt-in today — `pipeline/SecurityHeadersStage.java` emits HSTS /
   nosniff / frame-deny only when the `security_headers` block enables each.
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersStage.OwnedHeader emits HSTS, nosniff and frame DENY only when the security_headers block enables each; portal responses force CSP and nosniff
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersStage.OwnedHeader emits HSTS, nosniff and frame DENY only when the security_headers block sets them
 - OBSERVED: error bodies are already clean — `edge/GatewayEdgeRoute.java` `renderProblem` emits a
   minimal `{"type","title","status"}` with generic `EventCategory` titles, no stack/framework signature.
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.renderProblem/problemBody emit type, title, status plus extension members only from a GatewayException; HTML page only for Accept text/html; no stack or framework text
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem/problemBody emit type, title, status plus extension members only; no stack or framework text
 - HYPOTHESIS: the gateway itself emits no `Server`/`X-Powered-By` by default (Vert.x/Quarkus default;
   no `quarkus.http.server-header` property exists — override idiom is `quarkus.http.header."Server".value`).
   Confirm/refute at outline with a live `curl -I` against the running native gateway (verify-at-outline)
   — do not build self-header suppression for a header we do not emit; the real work is the *upstream*
   passthrough strip.
-  - verdict: unverifiable | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a live curl -I against the native gateway; statically no quarkus.http.header or server-header property exists (control: application.properties carries 21 quarkus.http keys)
+  - verdict: unverifiable | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a live curl -I against the native gateway; statically no quarkus.http.header or server-header key in main
 - Verify-first clause: enumerate the actual set of identity-leaking headers an upstream can send (the IT
   stack: Keycloak, go-httpbin) and confirm which pass through today before fixing the allowlist.
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still accurate: the IT stack runs Keycloak and go-httpbin 2.23.1 and RESPONSE_STRIP is a deny list, so which identity headers pass is still unenumerated
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still accurate: RESPONSE_STRIP is a deny list of 10 names; go-httpbin 2.23.1 and Keycloak identity headers unenumerated
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java` — the response-header forward filter
-  (add the identity-strip); both `relay()` and `relayWithTrailers()` share this one filter
+  (add the identity-strip); both `relay()` and `relayWithTrailers()` reach it through `relaysUpstreamHeader`,
+  which combines it with `UpstreamSetCookieFilter`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/ConnectionHeaders.java` (`RESPONSE_STRIP`) — the shared
   response-direction policy both relay paths read
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/SecurityHeadersStage.java` + `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/SecurityHeadersConfig.java` — default-on posture
@@ -108,6 +109,8 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
 - OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`, `doc/architecture.adoc` — the doc layers incl.
   the TLS/CDN deployment note
 - OBSERVED: `api-sheriff/src/test/**` — the header tests
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/ForwardPolicyStage.java` — D5; its test `ForwardPolicyStageTest.forwardAllCarriesValidatorsPastTheToggle` changes with it
+- `doc/adr/` — a new record if the strip policy needs one
 
 ## Dependencies and Sequencing
 

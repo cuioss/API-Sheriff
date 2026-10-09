@@ -74,12 +74,19 @@ integration compose stack, the image name in one integration test, and two claim
 ## Claim Labels
 
 - OBSERVED: `SealedSessionCookieCodec` logs `COOKIE_SESSION_SEALED` at INFO in `seal`, and `CookieSessionBinding` calls `seal` from both `bind` and `persist` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/SealedSessionCookieCodec.java` § `seal` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/CookieSessionBinding.java` § `seal`, on `origin/main` at `7f6375a5`
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SealedSessionCookieCodec.seal logs COOKIE_SESSION_SEALED at INFO; CookieSessionBinding.seal is called from bind and persist; no test asserts the record
 - OBSERVED: `start-integration-container.sh` repeats one polling loop three times with literal attempt counts — read at `integration-tests/scripts/start-integration-container.sh` § the Keycloak, go-httpbin and nginx-static waits
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: start-integration-container.sh has three wait loops (120, 30, 30) with literals repeated in messages and no shared helper
 - OBSERVED: the `api-sheriff` service's `depends_on` names `keycloak`, `go-httpbin`, `asset-origin` and `grpc-echo` only, and `passthrough-backend` runs `apk add --no-cache openssl` at start — read at `integration-tests/docker-compose.yml` § `api-sheriff` and § `passthrough-backend`
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: api-sheriff depends_on lists keycloak, go-httpbin, asset-origin, grpc-echo only; passthrough-backend runs apk add openssl at start
 - HYPOTHESIS: some gateway services route to `passthrough-backend` or `toxiproxy` at test time, so starting them first matters — confirm/refute at `integration-tests/src/main/docker/sheriff-config*/gateway.yaml` § passthrough and upstream targets (verify-at-outline)
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: base topology.properties points at passthrough-backend:8443 and toxiproxy; egress-verify-on/off already depend on passthrough-backend service_healthy
 - HYPOTHESIS: every parser of the compose file in the test code resolves YAML merge keys — confirm/refute at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ItProfileConfigBindingWiringTest.java` § its compose reader (verify-at-outline)
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: compose readers in integration-tests use SnakeYAML; the script uses docker compose config; docker-compose.yml has no merge key today
 - OBSERVED: ADR-0031 states that "no host and no *published* host port is restated in the script", while the three bring-up scripts build every probe URL on `localhost` and the backend waits restate `18080` and `18081` — read at `doc/adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc` § the derivation rule, `integration-tests/scripts/start-integration-container.sh` § `KEYCLOAK_HEALTH_URL` and the backend waits, `demo-client/scripts/start-dev-environment.sh` § `IDP_HEALTH_URL`, `deployment/compose-sample/scripts/start-sample.sh` § `MGMT_URL`
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0031 says no host or published port is restated in the script; the three start scripts use localhost and literal ports
 - OBSERVED: `ImageMetadataIT` declares `IMAGE = "api-sheriff:distroless"` while the start script resolves the image from `SHERIFF_IMAGE_TYPE` — read at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ImageMetadataIT.java` § `IMAGE` and `integration-tests/scripts/start-integration-container.sh` § `resolve_image_tag`
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ImageMetadataIT IMAGE is api-sheriff:distroless; the start script resolves the image from SHERIFF_IMAGE_TYPE
 
 ## Expected Surface
 
@@ -90,6 +97,8 @@ integration compose stack, the image name in one integration test, and two claim
 - OBSERVED: `integration-tests/docker-compose.yml` — D3
 - HYPOTHESIS: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ItProfileConfigBindingWiringTest.java` — D3, only if its compose reader needs merge-key support (verify-at-outline)
 - OBSERVED: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ImageMetadataIT.java`, `integration-tests/pom.xml` — D4
+- OBSERVED: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/ImageMetadataJfrIT.java` — D4, the `-Pjfr` counterpart the pinned image name has to be reconciled with
+- OBSERVED: `integration-tests/scripts/lib-docker-compose.sh`, `demo-client/scripts/start-dev-environment.sh`, `deployment/compose-sample/scripts/start-sample.sh` — D5 checks all three start scripts against ADR-0031
 - OBSERVED: `doc/adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc` — D5
 
 ## Dependencies and Sequencing

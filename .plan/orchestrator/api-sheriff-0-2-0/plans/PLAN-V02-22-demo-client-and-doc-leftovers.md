@@ -6,15 +6,15 @@ workstream: WS-02
 > Staged plan spec — one shippable unit of work, ready for `/plan-marshall` hand-off.
 > The orchestrator EMITS the command below; it never launches the plan inline.
 > Source: open items no plan owned — the remainder of GitHub issue #189 after `PLAN-V02-13`
-> (#383), epic Open Defects 2, 3 and 11, and the release guard's evidence claims in
+> (#383), epic Open Defect 2, and the release guard's evidence claims in
 > `doc/development/release-process.adoc` (a telemetry finding, 2026-10-07).
 
 ## Objective
 
 Close the small demo-client and documentation items that have stayed open because no plan owned
-them: the demo panel and documents issue #189 still asks for, two traps in the demo client's
-development start script, one over-reaching claim in the documentation index, and the release
-process document's account of what the release guard's negative control proves.
+them: the demo panel and documents issue #189 still asks for, one trap in the demo client's
+development start script, and the release process document's account of what the release guard's
+negative control proves.
 
 ## Deliverables
 
@@ -32,24 +32,20 @@ process document's account of what the release guard's negative control proves.
    the item is already discharged — say so on the issue. **Close #189 when this lands**, naming the
    PR and merge commit; a PR body that only mentions the issue does not close it.
 
-2. **The development start script's two traps (Open Defects 2 and 3).**
-   - `demo-client/scripts/start-dev-environment.sh` prints `cd demo-client && npm run test`, but
-     `demo-client/playwright.config.js` requires three variables at load time that only the Maven
-     execution supplies, so the printed command fails at once. Print a command that sets them, or
-     have the config fall back to the development defaults when they are absent, and say which.
-   - The same script gates on `/q/health/live` with an unmeasured 30-attempt budget, while
-     `integration-tests/scripts/start-integration-container.sh` gates on readiness. Gate on readiness,
-     as the recorded readiness contract says.
+2. **The development start script's printed command (Open Defect 2).**
+   `demo-client/scripts/start-dev-environment.sh` prints `cd demo-client && npm run test`, but
+   `demo-client/playwright.config.js` requires three variables at load time that only the Maven
+   execution supplies, so the printed command fails at once. Print a command that sets them, or
+   have the config fall back to the development defaults when they are absent, and say which.
 
-3. **Narrow the documentation index's claim (Open Defect 11).** `doc/README.adoc` says the old
-   archive was "fully adapted", but the deleted `doc/archive/others/excluded.adoc` (gateways that were
-   considered and not evaluated) has no live counterpart. Either narrow the sentence to what was
-   adapted, or restore that list in `doc/features-analysis.adoc`. Git history holds the old file.
+   Already in place, not this plan's work: the same script gates on `/health/ready` with one named
+   budget (`GATEWAY_READY_ATTEMPTS=30`), and `doc/README.adoc` no longer carries the "fully adapted"
+   sentence (#197 removed it with the Archived Sources row).
 
-4. **Make the release guard's evidence claims match the evidence.** In
+3. **Make the release guard's evidence claims match the evidence.** In
    `doc/development/release-process.adoc`:
    - `[#guard-refusal-predicates]` says "a refusal announces neither of them". That is false. The
-     pinned guard (`cuioss-organization` `release-guard`, v0.36.0) returns a `reason` and logs it
+     pinned guard (`cuioss-organization` `release-guard`, v0.40.0) returns a `reason` and logs it
      (`Release guard: SKIP — release.current-version unchanged at …` or `… changed to …, but a tag
      for … already exists`). What does not name the reason is the downstream rendering:
      `released-version` empty and the skipped jobs. Say that precisely.
@@ -68,14 +64,22 @@ process document's account of what the release guard's negative control proves.
 ## Claim Labels
 
 - OBSERVED: issue #189 is open and its last comment lists the demo-client panel, `doc/variants/01-base-gateway.adoc`, `demo-client/doc/integration-sample.adoc`, the PROHIBITED ASSERTION wording and `doc/plan/04-request-pipeline.adoc` as still open — read at GitHub issue #189 § the latest comment, 2026-10-04
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: issue #189 is OPEN; its last comment lists the demo panel, the three documents and the doc/plan file as open
 - OBSERVED: `doc/plan/` does not exist on `origin/main` at `7f6375a5` — `git ls-tree origin/main doc/plan`
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: git ls-tree HEAD doc/plan returns nothing
 - OBSERVED: `start-dev-environment.sh` prints `cd demo-client && npm run test` — read at `demo-client/scripts/start-dev-environment.sh` § the closing hints
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: start-dev-environment.sh line 339 still prints cd demo-client && npm run test
 - HYPOTHESIS: `demo-client/playwright.config.js` still requires the three variables at module load — confirm/refute at `demo-client/playwright.config.js` § `required()` (verify-at-outline)
-- HYPOTHESIS: `start-dev-environment.sh` still gates on `/q/health/live` — confirm/refute at `demo-client/scripts/start-dev-environment.sh` § the gateway wait (verify-at-outline)
-- HYPOTHESIS: `doc/README.adoc` still carries the "fully adapted" claim — confirm/refute at `doc/README.adoc` § the archive paragraph (verify-at-outline)
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: playwright.config.js routes three variables through required() at module load
+- OBSERVED: `start-dev-environment.sh` gates on `/health/ready` with `GATEWAY_READY_ATTEMPTS=30`, so the readiness half of the former D2 is already done — read at `demo-client/scripts/start-dev-environment.sh` § the gateway wait
+  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: the script probes /health/ready with GATEWAY_READY_ATTEMPTS=30 (unchanged since #341); the readiness half of D2 removed, claim re-scoped
+- OBSERVED: `doc/README.adoc` carries no "fully adapted" claim; #197 removed it, so the former D3 is discharged — `git grep -i adapted doc/README.adoc`
+  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: doc/README.adoc has no adapted or archive wording; #197 removed the sentence; D3 removed, claim re-scoped
 
 - OBSERVED: control run `31256991225` (PR #196, merge `963e422`): `current-version` is `0.1.1` at the merge and at its parent, tag `0.1.1` was created 2026-08-07, and the `release / guard` log reads `Release guard: SKIP — release.current-version unchanged at 0.1.1` — read with `gh run view 31256991225 --log` and `git show 963e422:.github/project.yml`
-- OBSERVED: the guard decides "unchanged" before "already tagged" and returns a `reason` for each — read at `cuioss/cuioss-organization` `.github/actions/release-guard/release-guard.py` § `decide`, at `c43c22f9`; the guard job checks out with `fetch-depth: 0` and `fetch-tags: true` — read at `.github/workflows/reusable-maven-release.yml` § `guard`, at `b2de4107` (v0.36.0, the pin in `release.yml`)
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: run 31256991225 guard log reads SKIP, release.current-version unchanged at 0.1.1; project.yml 0.1.1 at 963e422 and its parent
+- OBSERVED: the guard decides "unchanged" before "already tagged" and returns a `reason` for each — read at `cuioss/cuioss-organization` `.github/actions/release-guard/release-guard.py` § `decide`, at `c43c22f9`; the guard job checks out with `fetch-depth: 0` and `fetch-tags: true` — read at `.github/workflows/reusable-maven-release.yml` § `guard`, at `8e6a0c7c` (v0.40.0, the pin in `release.yml`); re-check when the pin moves
+  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: release.yml pins v0.40.0 (8e6a0c7c), not v0.36.0; decision order, reason strings and fetch-depth 0 / fetch-tags true hold there; claim and deliverable re-scoped
 
 ## Expected Surface
 
@@ -83,9 +87,7 @@ process document's account of what the release guard's negative control proves.
 - OBSERVED: `doc/variants/01-base-gateway.adoc`, `demo-client/doc/integration-sample.adoc`, `demo-client/doc/playwright-suite.adoc` — D1
 - OBSERVED: `demo-client/tests/*.spec.js` — D1, a spec for the new panel
 - OBSERVED: `demo-client/scripts/start-dev-environment.sh`, `demo-client/playwright.config.js` — D2
-- OBSERVED: `doc/README.adoc` — D3
-- OBSERVED: `doc/development/release-process.adoc` — D4
-- HYPOTHESIS: `doc/features-analysis.adoc` — D3, only if the list is restored (verify-at-outline)
+- OBSERVED: `doc/development/release-process.adoc` — D3
 
 ## Dependencies and Sequencing
 

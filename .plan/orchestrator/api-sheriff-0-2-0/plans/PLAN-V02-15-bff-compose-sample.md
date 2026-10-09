@@ -119,11 +119,11 @@ pre-commit process.
   A search for an `oidc` block or a `session` key returns nothing; `gateway.yaml` names BFF
   sessions among the deliberate omissions and documents the public anchor's absent auth block;
   `endpoints/demo-api.yaml` is `require: none`.
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 14 tracked files under deployment/compose-sample; no oidc block or session key; gateway.yaml names BFF sessions among the omissions; demo-api.yaml require: none
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 14 tracked files under deployment/compose-sample; gateway.yaml has no oidc block or session key; demo-api.yaml require: none
 - OBSERVED: a Keycloak realm import already ships at
   `deployment/compose-sample/docker/keycloak/sample-realm.json`, and it carries the confidential
   client `sample-client`, so D1's client work is at most an edit rather than new infrastructure.
-  - verdict: corroborated | checked_at: 1a20edade64aee1cb92fbddec7352a920fb5b46d | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json carries sample-client, publicClient false, placeholder secret
+  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json carries sample-client, publicClient false, placeholder secret, standard flow enabled
 
 ## Expected Surface
 
@@ -145,6 +145,11 @@ pre-commit process.
 - Overlaps with: `PLAN-V02-12` on the compose sample and `doc/user/`;
   `PLAN-V02-14` on `.github/workflows/**` and `doc/user/compose-sample.adoc`. The disjointness gate
   decides at emit time.
+- The sample's `.env` pins `ghcr.io/cuioss/api-sheriff:0.2.4`, which predates the session keys
+  `PLAN-V02-01` added (`idle_timeout_seconds`, `max_sessions_per_subject`); a sample that sets them
+  needs a newer pin. `ConfigValidator` now also requires the `__Host-` cookie-name prefix.
+- `.github/workflows/config-validation.yml` already validates the sample's configuration set offline.
+  That proves the new `oidc` block parses, not that a login works; D4 still owes the login run.
 - Surface note: `deployment/compose-sample/.env` carries the version pins. Any pin bump touches the
   same file; sequence deliberately.
 

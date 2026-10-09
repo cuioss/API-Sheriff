@@ -53,6 +53,15 @@ would otherwise force a retrofit.
 - **PLAN-V02-14** — SHIPPED 2026-10-06 as PR #387 (`1a20edad`, ADR-0061), see `landings/PLAN-V02-14.md`.
   Issue #175 closed. Its residue for `PLAN-V02-01` (command-mode revisit, three unused overloads) is in
   that spec.
+- **PLAN-V02-01** — SHIPPED 2026-10-09 as PR #410 (`1591972d`, ADR-0062), #412 (`862d574e`), #409
+  (`9f9eeae8`), #415 (`b3185ce0`, import spacing) and #417 (`386f3f74`, Sonar), see
+  `landings/PLAN-V02-01.md`. The board is no longer held by a runs-alone plan: up to three slots are
+  free. Its realized footprint reached `edge/`, `pipeline/`, `events/`, `config/validation/` and
+  `quarkus/` beyond its declared surface, so every staged spec touching those packages re-reads them
+  at outline.
+- **Every ADR-authoring plan** (V02-04, V02-06, V02-11, V02-12), note added 2026-10-09: the next free
+  ordinal on `origin/main` at `386f3f74` is `0063`. ADR-0005 is `Superseded by ADR-0062`; ADR-0018,
+  ADR-0051 and ADR-0057 were amended by `PLAN-V02-01`.
 - **Collision the gate did not predict (2026-10-04):** `PLAN-V02-13` and `PLAN-V02-10` ran together
   as the only disjoint pair, and both changed `edge/DispatchStage.java`, `edge/GatewayEdgeRoute.java`,
   their two tests and `doc/configuration.adoc`. Neither spec declared `DispatchStage.java`; V02-10's
@@ -153,9 +162,9 @@ sufficient.
 | rejection taxonomy | **V02-13 → V02-06 → V02-07** | V02-13 re-cuts `EventCategory` and makes `renderProblem` content-negotiating at all five call sites. V02-06's uniform-404 branch edits those same sites; V02-07 weights the resulting taxonomy. |
 | sample vs. model | **V02-12 → V02-15** | V02-15 D5 defers the browser-vs-container issuer address to V02-12 rather than letting a sample become the de-facto specification. |
 | doc structure | **V02-03 before or after V02-17, chosen deliberately** | Both write `doc/development/**`. Landing prose into documents V02-03 is about to split wastes both. |
-| ADR-authoring exclusion | **V02-04 runs against none of** V02-01, V02-06, V02-07, V02-11, V02-12, V02-13 | V02-04's spec forbids concurrency with any ADR-authoring plan. Also excluded: V02-09, whose ADR-0027 re-opening V02-04 is told not to pre-empt. |
-| broad Java sweeps | **V02-01 and V02-02 never concurrent** | Both sweep `api-sheriff/src/main/java/**`. |
-| runs alone | **V02-01** | Retiring an arch gate mid-flight changes the gate set every concurrent plan is verified against. |
+| ADR-authoring exclusion | **V02-04 runs against none of** V02-06, V02-07, V02-11, V02-12 (V02-01 and V02-13 have shipped) | V02-04's spec forbids concurrency with any ADR-authoring plan. Also excluded: V02-09, whose ADR-0027 re-opening V02-04 is told not to pre-empt. |
+| ~~broad Java sweeps~~ | **DISCHARGED 2026-10-09** | V02-01 and V02-02 have both shipped. |
+| ~~runs alone~~ | **DISCHARGED 2026-10-09** | V02-01 shipped; the arch gate is now `PreBootFrameworkFreeArchTest` over the five pre-boot packages. |
 | ~~trust wiring~~ | **EDGE REMOVED 2026-08-09** | V02-10's D1 moved into V02-09 as its D6, so the conditional now lives inside the plan that takes the decision. **V02-10 is reduced to the compose cleanup and is UNBLOCKED.** |
 
 **Freest candidates, revised 2026-08-09 after four landings** (V02-16 and V02-17 have shipped):
@@ -180,6 +189,16 @@ with documented contention-driven IT startup flakes, and `main` is merge-queue-g
 doc-only or build-light plan for the second and third slots.
 
 ## Open Defects
+
+17. **MEDIUM — NO OWNER — the post-merge benchmark has failed on every merge since #408** (added
+    2026-10-09, found at the `PLAN-V02-01` landing). Six consecutive runs, from #408 (`b7f937d3`, run
+    37846286183) to #417 (run 37933805532), fail in `run-k6-pending-login-flood-benchmark`:
+    `pending_login_flood.js` aborts in phase A because `https://api-sheriff:8443/auth/login` answers
+    `HTTP 404`. #408 changed `.github/workflows/benchmark.yml` and `benchmarks/pom.xml` and belongs
+    to no plan in this queue; the three `PLAN-V02-01` parts merged before it have green benchmark
+    runs. Why the login path is unmapped in the benchmark stack is not established. The lane does
+    not gate merges, so nothing blocked. Candidate homes: the plan behind #408, or `PLAN-V02-11`,
+    which owns the benchmark lane's purpose. While it is red, Open Defect 16 cannot be observed.
 
 16. **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
     `ENHANCE_YOUR_CALM` ("Maximum number of RST frames reached")** (added 2026-10-06, found at the
@@ -218,13 +237,13 @@ doc-only or build-light plan for the second and third slots.
     enumerated rather than sampled) and needs no action. **This entry must survive into the successor
     epic** — 0.2.0 cannot close it, and closing it here would silently convert "not yet due" into
     "done".
-11. **LOW, traceability — OWNER: `PLAN-V02-22` D3 (2026-10-06) — the deleted `doc/archive/others/excluded.adoc` traces to nothing live.**
+11. **CLOSED 2026-10-09 — the claim is gone: `doc/README.adoc` no longer says "fully adapted"; #197 (`89a3cfed`) removed the sentence with the Archived Sources row. `PLAN-V02-22` no longer carries it.** Was: LOW, traceability — the deleted `doc/archive/others/excluded.adoc` traces to nothing live.**
     Opened 2026-08-09 by `PLAN-V02-03` D1. Its content (Apiman, WSO2 and other
     considered-but-not-evaluated gateways) has no live design document behind it —
     `doc/features-analysis.adoc` distils only the six *evaluated* gateways. Zero inbound refs and git
     history preserves it, so the deletion stood, but **`doc/README.adoc`'s "fully adapted" claim
     over-reaches for that one file.** Either narrow the claim or restore the content somewhere live.
-12. **MEDIUM, dead allocation — OWNER: `PLAN-V02-01` (conditional) — `RouteRuntimeAssembler` allocates a per-tuple `HttpClient` and a
+12. **MEDIUM, dead allocation — NO OWNER (2026-10-09: `PLAN-V02-01` did not adopt it; ADR-0062 § Not adopted says it "has no owner yet") — `RouteRuntimeAssembler` allocates a per-tuple `HttpClient` and a
     resilience `Guard` for `WEBSOCKET` routes that no longer read them.** Opened 2026-08-09 by
     `PLAN-V02-02`, **reported rather than swept** exactly as the standing rule requires. Collapsing
     it is a behavioural change to boot-time allocation plus a nullability-contract change reaching
@@ -245,7 +264,7 @@ doc-only or build-light plan for the second and third slots.
    command. **Keep the generalizable check**: for any doc offering run-it-directly beside
    run-it-through-the-build, enumerate what the build supplies that the direct path does not —
    environment, working directory, classpath.
-3. **MEDIUM — divergent readiness contract — OWNER: `PLAN-V02-22` D2 (2026-10-06).** `demo-client/scripts/start-dev-environment.sh` gates on
+3. **CLOSED 2026-10-09 — already fixed: the script gates on `/health/ready` with one named budget, `GATEWAY_READY_ATTEMPTS=30` (in place since #341). `PLAN-V02-22` no longer carries it.** Was: MEDIUM — divergent readiness contract. `demo-client/scripts/start-dev-environment.sh` gates on
    `/q/health/live` with an unmeasured 30-attempt budget while `start-integration-container.sh` gates
    on readiness with a measured one (PLAN-42 D2 proved the live→ready delta is 0.00s across six
    instances under contention). Deliberate scoping at the time and disclosed in-tree, but it is the
@@ -282,12 +301,21 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
+- **`PLAN-V02-01` D7 RESIDUE, NONE STAGED** (added 2026-10-09, from the landing). Not found in the
+  landed diff: a recorded verdict on `PLAN-V02-08`'s two status choices (`502` on a refused widening
+  re-drive push, `400` with ApiSheriff-134 for an unbound token on a widening callback); whether the
+  refresh-revocation and nonce-retry items folded into D7 on 2026-10-06 were handled was not
+  checked. `BFF-21` itself names two controls no test asserts (`no-store` on a gateway-rendered page
+  that sets a cookie; no upstream `Set-Cookie` relayed on a WebSocket upgrade). D6's check of
+  `ClientHelloSniParser` for open Sonar findings was not reported. The per-attack-class audit
+  catalogue is an operator-only document and is not in the repository. Stage a plan when wanted.
+
 - **DECLINED REFACTOR FROM #387, NONE STAGED** (added 2026-10-06). CodeRabbit proposed deriving the
   offline validator's NOT CHECKED catalogue from shared refusal descriptors instead of a hand-kept list
   (ADR-0061 § Risks). Declined in #387 because it reaches the TLS, JWKS, BFF and portal refusal paths.
   Stage a plan when the hand-kept list drifts or the refusal paths are touched anyway.
 
-- **ISSUE #189 REMAINDER — STAGED AS `PLAN-V02-22` D1 (2026-10-06)** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
+- **ISSUE #189 REMAINDER — STAGED AS `PLAN-V02-22` D1 (2026-10-06; that spec now has three deliverables)** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
   a demo-client panel (`demo-client/src/main/resources/spa/index.html`, `app.js`) that fires each
   rejection variant and reports status, `Content-Type` and redirect; `doc/variants/01-base-gateway.adoc`;
   `demo-client/doc/integration-sample.adoc`; and the PROHIBITED ASSERTION scope wording in
@@ -383,6 +411,8 @@ doc-only or build-light plan for the second and third slots.
   reading *"…follow the plans under `doc/plan/`"*, which is stale now that nine of those twelve files
   are deleted. It is **steward-regenerated, not hand-editable**, so the plan flagged it rather than
   patching it — the correct call. Two unrelated findings now point at the same un-run mechanism.
+  **Third route, 2026-10-09:** `PLAN-V02-01` reported `marshal.json` stale against the regenerated
+  executor (the plan's claim, not checked here).
 - **A SPEC-ASSERTED COUNT IS A CLAIM, NOT A MEASUREMENT — and the orchestrator is the author who owes
   the re-derivation.** Earned 2026-08-09 on `PLAN-V02-02` D3: a headline occurrence count propagated
   spec → clarified request → outline unchallenged, arriving at implementation as three
@@ -456,6 +486,10 @@ doc-only or build-light plan for the second and third slots.
   cross-check` counts the plan-less sentinel `.plan/local/plans/NO_PLAN` (`"sentinel": true`) as a
   live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
   `next` while it exists; the operator ruled that verdict wrong and overrode it.
+
+## Inbox Drain — 2026-10-09 (sender `plan-v02-01-adr-0005-reversal-quarkus-adoption`, at its landing)
+
+> ↪ Relocated to `settled.md` § "Inbox Drain — 2026-10-09 (sender `plan-v02-01-adr-0005-reversal-quarkus-adoption`, at its landing)" — every message consumed and archived; logs/decision.log stays authoritative
 
 ## Inbox Drain — 2026-10-06 (sender `plan-v02-14-offline-config-validation`)
 
