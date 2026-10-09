@@ -41,6 +41,7 @@ import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -147,12 +148,30 @@ import org.junit.jupiter.api.Test;
  * the difference to be exactly one id. That id is, by construction, the session this login created,
  * whatever other sessions earlier suites left behind.
  * <p>
- * <strong>Why the shared refresh user is safe here.</strong> Every revocation is targeted at one
- * session id this suite created itself; the suite never logs a user out realm-wide. It therefore
- * cannot end a session another suite holds, even though it authenticates as
- * {@link BffKeycloakLoginFlow#REFRESH_USERNAME} like {@code BffTokenRefreshIT} and
- * {@code BffCookieRefreshIT}. Those suites' all-sessions logouts cannot reach this one's sessions either:
- * Failsafe runs the IT classes one at a time (see {@code BffTokenRefreshIT}).
+ * <strong>A user of its own.</strong> The suite authenticates as
+ * {@link BffKeycloakLoginFlow#REUSE_USERNAME}, which no other suite logs in as. Two things rest on
+ * that. Every revocation is targeted at one session id this suite created itself, and the id is found
+ * as the one session the user gained across a login — which is exact only while nobody else logs that
+ * user in. And no other suite can end a session of this one: the one suite that logs a user out
+ * realm-wide, {@code BffTokenRefreshIT}, names a user of its own.
+ * <p>
+ * <strong>Run concurrently, and what that rests on.</strong> The class carries the tag
+ * {@code sleep-bound} and runs in the concurrent Failsafe execution (see
+ * {@code integration-tests/pom.xml}), beside other tagged suites. What it shares with them, and why
+ * that does not reach its assertions:
+ * <ul>
+ *   <li><em>The two instance logs.</em> Each record-count assertion below attributes a
+ *       {@code credential-rejected} record to one request by the count on either side of it, and the
+ *       record carries no session, user or request to tell it by. The attribution therefore holds only
+ *       while no suite running at the same time causes that record on the same instance. None does: no
+ *       other tagged suite ends a Keycloak session, so none drives a refresh that is refused, and
+ *       {@code BffTokenRefreshIT}, which does, stays in the sequential execution for this reason.
+ *       {@code FailsafeConcurrencyContractTest} fails the build when a second tagged suite names one
+ *       of the two logs.</li>
+ *   <li><em>The two refresh instances.</em> Other tagged suites hold sessions on them at the same time,
+ *       as another user. A server-mode instance keeps at most ten sessions per subject and ends the
+ *       oldest beyond that; this suite logs its user in twice there.</li>
+ * </ul>
  * <p>
  * <strong>Timing.</strong> The waits are wall-clock and deliberate, following the
  * {@code BffTokenRefreshIT} rationale: the property under test is defined in elapsed time against a
@@ -168,6 +187,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
+@Tag("sleep-bound")
 class BffRefreshReuseIT {
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
@@ -219,11 +239,11 @@ class BffRefreshReuseIT {
         // Arrange: A1 seals the login's refresh token R1; the Keycloak session this login creates is
         // captured so its fate after the replay can be observed.
         String setupAdminToken = adminToken();
-        String userId = userIdOf(setupAdminToken, BffKeycloakLoginFlow.REFRESH_USERNAME);
+        String userId = userIdOf(setupAdminToken, BffKeycloakLoginFlow.REUSE_USERNAME);
         Set<String> beforeLogin = keycloakSessionIds(setupAdminToken, userId);
         Session session = BffKeycloakLoginFlow.login(MEDIATED_PATH,
                 BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                BffKeycloakLoginFlow.REUSE_USERNAME, BffKeycloakLoginFlow.REUSE_PASSWORD);
         String keycloakSessionA1 = singleNewSession(beforeLogin, keycloakSessionIds(setupAdminToken, userId));
         Map<String, String> cookieA1 = Map.copyOf(session.gatewayCookies());
 
@@ -385,7 +405,7 @@ class BffRefreshReuseIT {
      */
     private static ObservedRevocations observeTargetedRevocations() {
         String adminToken = adminToken();
-        String userId = userIdOf(adminToken, BffKeycloakLoginFlow.REFRESH_USERNAME);
+        String userId = userIdOf(adminToken, BffKeycloakLoginFlow.REUSE_USERNAME);
 
         // Server mode: two logins by one user create two Keycloak user sessions and two gateway sessions.
         Set<String> beforeFirst = keycloakSessionIds(adminToken, userId);
@@ -403,7 +423,7 @@ class BffRefreshReuseIT {
         Set<String> beforeCookieLogin = keycloakSessionIds(adminToken, userId);
         Session sealed = BffKeycloakLoginFlow.login(MEDIATED_PATH,
                 BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                BffKeycloakLoginFlow.REUSE_USERNAME, BffKeycloakLoginFlow.REUSE_PASSWORD);
         String sealedKeycloakSession = singleNewSession(beforeCookieLogin, keycloakSessionIds(adminToken, userId));
 
         // Revoke exactly the two grants the tests name, then let all three sessions reach the window.
@@ -470,7 +490,7 @@ class BffRefreshReuseIT {
 
     private static Session loginToRefreshInstance() {
         return BffKeycloakLoginFlow.login(MEDIATED_PATH, BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                BffKeycloakLoginFlow.REUSE_USERNAME, BffKeycloakLoginFlow.REUSE_PASSWORD);
     }
 
     private static Response mediatedCall(Map<String, String> gatewayCookies, String origin) {

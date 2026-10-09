@@ -54,6 +54,7 @@ import io.restassured.http.Cookie;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -117,11 +118,19 @@ import org.junit.jupiter.api.Timeout;
  * the reserved endpoints' rule — user-info, login, logout and step-up enforce the idle timeout and do
  * not extend it — nor the sweep that removes idle server-mode sessions nobody asks for again; both
  * are proven at unit level.
+ * <p>
+ * <strong>Run concurrently.</strong> The class carries the tag {@code sleep-bound} and runs in the
+ * concurrent Failsafe execution (see {@code integration-tests/pom.xml}). Both gateways are this
+ * suite's own — container names, host ports and derived descriptors no other suite uses — so their
+ * session stores and logs are shared with nobody. The suite logs in as
+ * {@link BffKeycloakLoginFlow#USERNAME}, logs one gateway session out, its own, and drives no admin
+ * API of the identity provider, so it ends no session another suite holds.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 @DisplayName("Session idle timeout on one-off gateways, server mode and cookie mode")
+@Tag("sleep-bound")
 class BffSessionIdleTimeoutIT {
 
     /** The declared key this suite exists for, below {@code oidc.session}. */

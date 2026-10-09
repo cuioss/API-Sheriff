@@ -31,6 +31,7 @@ import io.restassured.http.Cookie;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -105,10 +106,15 @@ import org.junit.jupiter.api.Test;
  * <em>re-sealed</em> cookie, whose rotated refresh token is untouched, rather than the login cookie
  * whose token the refresh already spent. A second call on the login cookie after the rotation would
  * redeem a spent token and fail for that reason, not for the re-seal under test — which is why the
- * three tests read one observed refresh instead of each driving one on the shared session. This suite
- * shares {@link BffKeycloakLoginFlow#REFRESH_USERNAME} with
- * {@code BffTokenRefreshIT}, whose failure legs end every session of that user; that is safe only
- * because Failsafe runs the IT classes one at a time (see {@code BffTokenRefreshIT}).
+ * three tests read one observed refresh instead of each driving one on the shared session.
+ * <p>
+ * <strong>Run concurrently.</strong> The class carries the tag {@code sleep-bound} and runs in the
+ * concurrent Failsafe execution (see {@code integration-tests/pom.xml}). It logs in as
+ * {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, as other suites running at the same time do, and
+ * that is safe because none of them ends a Keycloak session of that user: the suite that logs a user
+ * out realm-wide ({@code BffTokenRefreshIT}) and the one that deletes sessions
+ * ({@code BffRefreshReuseIT}) each name a user of their own. The instance is stateless, so sessions
+ * of other suites on it are not state this suite could meet, and the suite reads no instance log.
  * <p>
  * <strong>Timing.</strong> The wait is wall-clock and deliberate: the property under test is
  * defined in elapsed time against a token lifespan, so there is no state to poll for. The class waits
@@ -120,6 +126,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
+@Tag("sleep-bound")
 class BffCookieRefreshIT {
 
     /** The cookie-mode-with-refresh gateway instance every request in this suite drives. */

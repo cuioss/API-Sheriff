@@ -210,6 +210,38 @@
       ],
       "realmRoles": ["user"],
       "groups": ["/test-group"]
+    },
+    {
+      "username": "revocation-user",
+      "enabled": true,
+      "firstName": "Revoked",
+      "lastName": "User",
+      "email": "revoked@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "revocation-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["user"],
+      "groups": ["/test-group"]
+    },
+    {
+      "username": "reuse-user",
+      "enabled": true,
+      "firstName": "Reuse",
+      "lastName": "User",
+      "email": "reuse@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "reuse-password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["user"],
+      "groups": ["/test-group"]
     }
   ],
   "groups": [

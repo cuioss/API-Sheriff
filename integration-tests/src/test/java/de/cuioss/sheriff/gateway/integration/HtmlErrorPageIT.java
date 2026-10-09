@@ -41,6 +41,7 @@ import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -80,10 +81,18 @@ import org.junit.jupiter.api.Test;
  * XHR and REST clients send — never qualifies for HTML; and a response <em>relayed from an origin</em>
  * with {@code Accept: text/html} passes through unchanged, because the gateway never replaces what an
  * upstream said.
+ * <p>
+ * <strong>Run concurrently.</strong> The class carries the tag {@code sleep-bound} and runs in the
+ * concurrent Failsafe execution (see {@code integration-tests/pom.xml}). It is the one tagged suite
+ * that drives the primary instance, and what it changes there is its own: the circuit breaker it
+ * opens guards the {@code upstream-fault} route alone, and the Toxiproxy proxy behind that route has
+ * a name and a listen port no other suite uses. Its JVM is not shared with another class, so the
+ * REST Assured statics {@code BaseIntegrationTest} sets are this class's alone.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
+@Tag("sleep-bound")
 class HtmlErrorPageIT extends BaseIntegrationTest {
 
     /** A browser navigation's {@code Accept}, listing {@code text/html} explicitly. */

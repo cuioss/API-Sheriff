@@ -102,19 +102,28 @@ import org.junit.jupiter.api.Test;
  * it replays a cookie map, exactly as {@link BffKeycloakLoginFlow} documents.
  * <p>
  * <strong>Why the realm-wide admin logout is safe to use here.</strong> The {@code FAILED} legs end
- * <em>every</em> Keycloak session of {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, which
- * other suites log in as too. The suites cannot overlap: the
- * {@code integration-tests} Failsafe execution declares no {@code forkCount} (so the default of one
- * fork at a time applies), sets {@code reuseForks=false}, and configures no JUnit parallel execution,
- * so test classes run strictly one after another, and so do the tests of this class. Every session
- * here is one this suite logged in itself: the two no-wait tests log in for themselves, and the two
- * tests of each pair read sessions their pair logged in once. The logout is issued inside the
- * {@code FAILED} pair's observation, which runs from its two logins to its last request with no other
- * test in between, so it ends no session a test of this class has yet to use; the sessions of tests
- * that already finished are ended with it, unused. A logout therefore
- * only ever ends sessions this suite created itself. Enabling parallel IT execution would break that
- * premise, and the fix then belongs in the tests (a distinct user per suite), never in the realm's
- * rotation settings.
+ * <em>every</em> Keycloak session of the user they name, and that user is
+ * {@link BffKeycloakLoginFlow#REVOCATION_USERNAME}, which no other suite logs in as. A logout
+ * therefore only ever ends sessions this suite created itself, whichever suite runs before, after or
+ * beside it; that no longer rests on the order or the number of the Failsafe forks. Within the class
+ * the tests run one after another, in one JVM, with no JUnit parallel execution configured: the two
+ * no-wait tests log in for themselves, and the two tests of each pair read sessions their pair logged
+ * in once. The logout is issued inside the {@code FAILED} pair's observation, which runs from its two
+ * logins to its last request with no other test in between, so it ends no session a test of this
+ * class has yet to use; the sessions of tests that already finished are ended with it, unused.
+ * <p>
+ * <strong>Why this suite still runs in the sequential Failsafe execution.</strong> The user is not
+ * what keeps it there; the log is. Each {@code FAILED} leg attributes a {@code credential-rejected}
+ * record to its own request by the record count of {@code quarkus-refresh.log} on either side of
+ * that request. The record ({@code ApiSheriff-111}) carries the reason and nothing else — no
+ * session, no user, no request — so a record cannot be told from one that another suite's request
+ * caused on the same instance. {@code BffRefreshReuseIT} causes such records on this instance, and
+ * it runs in the concurrent execution ({@code sleep-bound}, see {@code integration-tests/pom.xml}).
+ * Were this suite tagged as well, a record of that suite could satisfy a count assertion here whose
+ * own request recorded nothing. So the longer of the two suites runs concurrently and this one does
+ * not; the two Failsafe executions run one after the other, so the two suites never overlap.
+ * {@code FailsafeConcurrencyContractTest} fails the build when two tagged suites name the same
+ * instance log.
  * <p>
  * <strong>The defect this suite reproduced, and its cause.</strong> Run against the live stack on
  * 2026-09-07 ({@code verify -Pintegration-tests}, 130 integration tests, of which the five below),
@@ -413,7 +422,7 @@ class BffTokenRefreshIT {
                 Response plainBefore = unassertedCall(plain, MEDIATED_PATH);
                 Session scoped = BffKeycloakLoginFlow.login(BffEndpointScopesIT.SCOPED_SESSION_PATH,
                         BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
-                        BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                        BffKeycloakLoginFlow.REVOCATION_USERNAME, BffKeycloakLoginFlow.REVOCATION_PASSWORD);
                 Response scopedBefore = unassertedCall(scoped, BffEndpointScopesIT.SCOPED_SESSION_PATH);
 
                 sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
@@ -439,7 +448,7 @@ class BffTokenRefreshIT {
             "the two rejections after the revocation", () -> {
                 Session forTheXhr = loginToRefreshInstance();
                 Session forTheNavigation = loginToRefreshInstance();
-                revokeSessionsOf(BffKeycloakLoginFlow.REFRESH_USERNAME);
+                revokeSessionsOf(BffKeycloakLoginFlow.REVOCATION_USERNAME);
 
                 sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
                 Rejection ofTheXhr = rejectionOf(forTheXhr, "application/json");
@@ -501,7 +510,7 @@ class BffTokenRefreshIT {
 
     private static Session loginToRefreshInstance() {
         return BffKeycloakLoginFlow.login(MEDIATED_PATH, BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                BffKeycloakLoginFlow.REVOCATION_USERNAME, BffKeycloakLoginFlow.REVOCATION_PASSWORD);
     }
 
     private static Response mediatedCall(Session session) {

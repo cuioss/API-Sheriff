@@ -62,6 +62,7 @@ import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -134,11 +135,18 @@ import org.junit.jupiter.api.Test;
  * changed across the restart on a gateway that refuses any token response not bound to its own key.
  * It does not prove the provided-key rotation (replace the file, restart); the mechanism is the same
  * and only the origin of the new key differs.
+ * <p>
+ * <strong>Run concurrently.</strong> The class carries the tag {@code sleep-bound} and runs in the
+ * concurrent Failsafe execution (see {@code integration-tests/pom.xml}). The gateway it starts and
+ * restarts is its own — container name, host port, realm client and derived descriptor are used by
+ * no other suite — and its log is read from that container. It logs in as
+ * {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, whose Keycloak sessions no suite ends.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 @DisplayName("Generated keys: client key published, both usable for a login, both replaced by a restart under a live session")
+@Tag("sleep-bound")
 class BffGeneratedKeysIT {
 
     /** The container name and the network alias; the host of the realm client's {@code jwks.url}. */
