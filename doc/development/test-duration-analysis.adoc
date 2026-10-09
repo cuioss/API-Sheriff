@@ -4,7 +4,7 @@
 :sectnums:
 
 Where the time of the test cycle goes in CI, why, and what can change without reducing what is
-proven. This page is an analysis and a ranked proposal list. It changes no test, POM or workflow;
+proven. This page is an analysis and a list of proposals ordered by expected gain. It changes no test, POM or workflow;
 each proposal is implemented only after it has been picked.
 
 The constraint every proposal is held to: test quality stays the same or improves. No test is
@@ -28,26 +28,29 @@ a fix.
 | 32.7 min
 |===
 
-Five facts explain almost all of it:
+Six facts explain almost all of it:
 
 . *The unit suite runs four times per pull request.* `maven.yml` runs `verify` on Java 25, on Java
   26 and a third time for Sonar; the integration-test lane runs it a fourth time because its
-  command carries `-am`. Each run is the same 5483 tests and costs about 790 s.
+  command carries `-am`. Each run is the same roughly 5500 tests and costs about 790 s.
 . *The Sonar build is serial.* `sonar-build` declares `needs: build`, so the required
   `build/conclusion` waits for two full `verify` runs back to back.
-. *Every test class gets its own JVM.* The root `pom.xml` sets `reuseForks=false`. Surefire reports
-  about 290 s of test time inside a 796 s plugin execution; the remainder is fork start-up and
-  per-JVM warm-up, paid about 160 times.
+. *Every test class gets its own JVM.* The root `pom.xml` sets `reuseForks=false`. Of the 796 s the
+  unit run takes, about 290 s is test time; 513 s passes *between* classes, in 163 fork changes.
+. *Every `@QuarkusTest` JVM waits out a 10 s timeout on shutdown.* The `quarkus-jacoco` extension
+  waits for a data file that is never written: nine classes, about 90 s per `verify`.
 . *Integration-test time is real waiting, run in sequence.* Twelve classes account for about 90% of
   the failsafe run. They sleep on real token and session lifetimes, one class after another.
 . *A test fixture image costs two minutes per run.* The `grpc-echo` image runs Maven inside Docker
   with an empty local repository, for one IT class with four tests.
 
 Duplicated assertions are *not* where the time goes: every genuine duplicate found is worth
-milliseconds. Runner queueing (2 s median) and job set-up (about 40 s per job) are negligible.
+milliseconds. Job set-up is about 40 s per job, and runners did not queue in the sample.
 
-With the first four proposals in <<proposals>> both required checks are expected to land at 15 to
-20 minutes; with all of them, at roughly 10 to 12.
+The four small proposals in <<proposals>> -- parallel Sonar build, no unit suite in the
+integration-test lane, host-built `grpc-echo` jar, no `quarkus-jacoco` timeout -- are expected to
+bring the build lane to about 15 minutes and the integration-test lane to about 20. All twelve
+together bring them to roughly 9 and 12.
 
 == Measured baseline
 
@@ -77,10 +80,27 @@ is smaller than the requested 20. Plugin-level numbers come from the job logs of
 10 `integration-tests.yml` pull-request runs; failsafe numbers come from the published report
 artifacts of 19 pull-request runs.
 
+The headline numbers were recomputed independently by the TokenSheriff analysis from 25 runs per
+workflow of the same two days and reproduce: 30m14s and 34m41s to the two conclusions, 872 s,
+874 s and 907 s for the three `verify` jobs.
+
+Two properties of the sample matter when reading it:
+
+* *One population.* Every sampled pull-request run that built also ran `sonar-build`; no Dependabot
+  run (for which Sonar is skipped) is mixed into the medians.
+* *Test counts differ by branch.* The eight inspected build logs ran 5473 to 5502 tests in
+  `api-sheriff`, 113 to 162 in `integration-tests` and 202 to 207 in `benchmarks`. Counts quoted
+  below are from one run and vary within those ranges.
+
 === Wall-clock per workflow and job
 
 Median / p90 in seconds. Queue time (job created to job started) is 2 s median for every job and
 at most 28 s at p90.
+
+CAUTION: Queueing was negligible in this two-day sample, not in general. On the same organisation
+runners TokenSheriff measured, over two weeks, a median of about 350 s between the trigger and the
+start of its first build leg (range 31 s to 29 min), spent waiting for a runner across the chained
+helper jobs.
 
 [cols="3,1,1,1"]
 |===
@@ -143,12 +163,12 @@ A pull request can merge when both `build/conclusion` and `integration-tests/con
 |===
 | Module | Plugin execution | Median / p90 (s)
 
-| api-sheriff | `surefire:test` (5483 tests) | 796 / 811
-| integration-tests | `surefire:test` (113 tests) | 30 / 31
+| api-sheriff | `surefire:test` (about 5500 tests) | 796 / 811
+| integration-tests | `surefire:test` (113 to 162 tests) | 30 / 31
 | api-sheriff | `compiler:testCompile` | 11 / 11
 | api-sheriff | `compiler:compile` | 8 / 10
 | api-sheriff | `quarkus:build` (JVM) | 4 / 4
-| benchmarks | `surefire:test` (202 tests) | 4 / 4
+| benchmarks | `surefire:test` (202 to 207 tests) | 4 / 4
 |===
 
 Javadoc, OpenRewrite and the native build are not part of this job. `sonar-build` is the same
@@ -179,12 +199,35 @@ reactor plus `sonar:sonar` at 50 s (p90 55); JaCoCo is already active in the pla
 | Log dump, `compose down`, report upload | 6
 |===
 
+Two of these medians hide a spread. The unit suite inside this lane ran between 528 s and 821 s.
 The two newest runs in the sample, which carry every IT on `main` today, spent 929 s and 985 s in
-failsafe. The median understates the current state.
+failsafe, so the failsafe median understates the current state.
 
 NOTE: Nested Maven runs print their own plugin banners inside the outer `exec` steps. A parser keyed
 on those banners splits the stages wrongly; the stage boundaries above are taken from the script
 output instead.
+
+=== Between the test classes
+
+Surefire prints a line when a class starts and when it ends. The time between one class ending and
+the next one starting belongs to no test: it is JVM exit, JVM start, and for a `@QuarkusTest` class
+the application boot and shutdown. Eight `build (25)` logs, 161 to 164 class changes per run:
+
+[cols="3,1,1,1"]
+|===
+| Transition | Per run | Median gap (s) | Sum per run (s)
+
+| plain class to plain class | about 150 | 2.0 | 328
+| plain class to `@QuarkusTest` class | 5 | 11.0 | 53
+| `@QuarkusTest` class to plain class | 5 | 13.0 | 66
+| `@QuarkusTest` class to `@QuarkusTest` class | 3 | 22.0 | 66
+| *Total* | *163* | | *513*
+|===
+
+Read against the plain fork change of 2 s, a Quarkus boot costs about 9 s before the first test and
+a Quarkus shutdown about 11 s after the last. Ten of those eleven seconds are the `quarkus-jacoco`
+timeout described under <<findings-b>>. The 513 s account for the whole difference between the
+796 s of the plugin execution and the roughly 290 s of test time surefire reports.
 
 === Per test class and method
 
@@ -279,7 +322,7 @@ reproduction (`test -pl api-sheriff -am` through the Maven executor, commit `b7f
 ====
 The reproduction is partial and distorted. The host was under heavy foreign load (load average
 above 40), and the executor's timeout ended the run after 853 s with 97 of about 160 classes
-reported (3261 of 5483 tests). Use it for ranking, never for absolute numbers. Classes that had not
+reported (3261 of about 5500 tests). Use it for ranking, never for absolute numbers. Classes that had not
 run by then are missing, among them most of `bff/**`.
 ====
 
@@ -365,6 +408,11 @@ simply the *first* test its JVM ran: `bootsGrpcProtocol` is a constructor wrappe
 material, Vert.x, the configuration stack -- which a fresh JVM pays again for every class. Only
 `AwaitsTest` and the `WebSocketRelayStageTest` expiry tests are slow for what they do.
 
+`RetryingJwksLoaderTest` ranks second locally at 17.7 s. On CI the class takes 6.5 to 9.5 s (eight
+logs): the key-material initialisation its first test pays, plus about 3 s of real retry and drain
+waits. It does not wait out a production retry back-off of the kind TokenSheriff found in its own
+loader tests (five tests of 15 s each).
+
 === Fixed overhead against test time
 
 [cols="3,1,3"]
@@ -373,8 +421,10 @@ material, Vert.x, the configuration stack -- which a fresh JVM pays again for ev
 
 | `build (25)`
 | 890
-| 40 set-up; 36 compile and packaging; about 290 of reported unit-test time; *about 500 of fork
-  start-up and per-JVM warm-up*, of which about 90 is the `quarkus-jacoco` shutdown timeout
+| 40 set-up; 36 compile and packaging; 34 for the other modules' tests; about 290 of reported
+  unit-test time; *513 between classes*: about 300 for 150 plain fork changes, about 80 for nine
+  Quarkus boots, about 100 for nine Quarkus shutdowns (90 of it the `quarkus-jacoco` timeout), the
+  rest fork changes around the Quarkus classes
 
 | `integration-tests / test`
 | 2051
@@ -395,7 +445,8 @@ material, Vert.x, the configuration stack -- which a fresh JVM pays again for ev
 === The Java 25 and 26 matrix
 
 Both legs run `./mvnw verify -Dmaven.compiler.release=<version>` on the matching JDK. The logs show
-identical work: 5483 + 113 + 202 tests on each leg, zero skipped. No test in the repository is
+identical work: the same test counts on both legs of every run (for example 5483 + 113 + 202),
+zero skipped. No test in the repository is
 conditional on the Java version (the only execution condition is one `@EnabledOnOs`).
 
 What the Java 26 leg proves that nothing else does: the sources compile with `--release 26` under
@@ -413,7 +464,7 @@ Java 25 leg, because JaCoCo is bound in the plain build.
 
 `pom.xml:216-218` and `:237-238` set `useSystemClassLoader=false` and `reuseForks=false` for surefire
 and failsafe, under the comment "Fix for class loading issues". No `forkCount` is set and
-`.mvn/maven.config` pins `-T1`, so about 160 forks run one after another.
+`.mvn/maven.config` pins `-T1`, so about 163 forks run one after another.
 
 * The setting arrived with commit `15850608` (2025-08-09) as scaffolding copied from another
   project and was moved verbatim by `eb01ab27`. Neither commit states a reason, and no document or
@@ -461,10 +512,12 @@ test log handler shared by 29 classes.
 ==== Nine Quarkus boots for four configurations
 
 There are nine `@QuarkusTest` classes, no `@QuarkusTestResource`, and three `@TestProfile` classes.
-That is four distinct boot configurations, booted nine times because each class has its own JVM. A
-boot-only class costs about 14 s of wall time in CI against 3.3 s reported; about 10 s of the
-difference is the `quarkus-jacoco` shutdown timeout described in <<tokensheriff-review>>, not the
-boot.
+That is four distinct boot configurations, booted nine times because each class has its own JVM.
+Each boot costs about 9 s and each shutdown about 11 s (see <<_between_the_test_classes>>); the
+classes themselves report about 3.3 s.
+
+In a shared JVM the grouping by configuration would need no set-up: `quarkus-junit` ships
+`QuarkusTestProfileAwareClassOrderer` as the default class orderer, and nothing here overrides it.
 
 [cols="3,2,3"]
 |===
@@ -544,7 +597,33 @@ class has an in-memory sibling for the pure logic (`pipeline/*StageTest` under
 `GatewayEdgePipelineTest`, `FramingGateTest` under the framing corpus, and so on) and adds the real
 parser, metrics and response rendering on top; that layering is deliberate.
 
+[#findings-b]
 === B -- Grouping and infrastructure restarts
+
+==== The `quarkus-jacoco` shutdown timeout
+
+`api-sheriff/pom.xml:158` declares the `quarkus-jacoco` extension while `jacoco:prepare-agent` is
+active as well. The extension registers a shutdown hook that waits for
+`target/jacoco-quarkus.exec` to change, polling for at most 10 s. The file is never written. After
+a local run `api-sheriff/target/jacoco-report/error.txt` reads:
+
+----
+Timed out waiting for Jacoco data file .../api-sheriff/target/jacoco-quarkus.exec update,
+file size before test run: did not exist, current file size: does not exist
+----
+
+Only `jacoco.exec` exists in `target/`. The CI logs show the signature after every `@QuarkusTest`
+class: the next class starts 13 s later where a plain class takes 2 s. Nine classes, about 90 s per
+`verify`.
+
+Why the data file is never written was not established. The likely explanation is that the
+instrumented classes resolve the agent `jacoco:prepare-agent` already installed, so the data lands
+in `jacoco.exec`; if so, `@QuarkusTest` coverage is already in the report Sonar reads and the
+Quarkus-side report is empty and unused. This build sets no `quarkus.jacoco.*` property.
+TokenSheriff has the same defect and additionally sets `quarkus.jacoco.reuse-data-file=true`, which
+did not prevent it there.
+
+==== Restarts, builds and settings
 
 * *Quarkus restarts in the unit run:* nine, for four configurations (above).
 * *Compose stack:* started once, stopped once. Fourteen IT classes additionally start their own
@@ -774,8 +853,8 @@ them. Keycloak start and realm import is about 15 s per run.
 | Idea | Evaluation | Verdict
 
 | CI caching of the Maven repository
-| Already in place, restored in 10 to 12 s (twice in the IT job).
-| nothing to gain
+| Already in place and hit on every run, restored in 10 to 12 s -- twice per job.
+| proposal 11
 
 | Caching Docker layers or image pulls
 | All pulls together are about 45 s; a cache restore costs a similar amount.
@@ -784,7 +863,7 @@ them. Keycloak start and realm import is about 15 s per run.
 | Caching the native executable for pull requests that do not touch `api-sheriff/src/main`
 | About 256 s on those pull requests. A wrong cache key means testing a stale binary, and the
   release lane must never use it. The reusable workflow is organisation-owned.
-| possible, risky, later
+| possible, risky; not proposed
 
 | One native image shared across jobs
 | The IT lane, `demo-client-e2e` and the benchmark each build it. They run on different triggers,
@@ -793,12 +872,12 @@ them. Keycloak start and realm import is about 15 s per run.
 
 | Splitting jobs to run in parallel
 | Worth it exactly once: `sonar-build` waits for `build` without consuming anything from it.
-| see <<proposals>>
+| proposal 1
 
 | Sharding the IT suite across runners
 | Each shard needs the native binary and the full stack (about 7 minutes of fixed cost) and the
   same shared-state preconditions as concurrency within one runner.
-| concurrency within the runner first
+| proposal 3 first
 
 | Skipping lanes by changed paths
 | Already done for documentation-only changes. Skipping the native build for test-only changes is
@@ -828,84 +907,99 @@ them. Keycloak start and realm import is about 15 s per run.
 |===
 
 [#proposals]
-== Ranked proposals
+== Proposals, ordered by expected gain
 
-Savings are CI seconds per run on the pull-request path. "Measured" means the stage was timed in
-the logs; "estimated" means derived.
+The gain is CI seconds saved per run of the lane named. "Measured" means the stage was timed in the
+logs; "estimated" means derived. A gain "per `verify`" is paid once in each build leg and, today,
+once more in the integration-test lane.
 
-[cols="1,4,2,1,2"]
+[cols="1,4,2,1,1"]
 |===
-| # | Change | Expected saving | Effort | Risk
+| # | Change | Expected gain | Effort | Risk
 
 | 1
 | *Run `sonar-build` in parallel with the matrix* instead of after it (drop `build` from its
   `needs`), or fold the Sonar goal into the Java 25 leg.
-| build lane 30.9 min to about 16 min (measured stage). Folding also removes one full `verify` of
-  runner time.
-| S, but in the organisation-owned reusable workflow
+| build lane minus about 900 s on pull requests and pushes (measured); folding also frees one
+  runner
+| S, in the organisation-owned workflow
 | low
 
 | 2
 | *Do not re-run the unit suite inside the integration-test lane.* An opt-in property set only by
   `integration-tests.yml`; the release lane keeps its current command.
-| IT lane minus 785 s (measured), on pull request, merge queue and push
+| IT lane minus 785 s (measured; 528 to 821), on every event
 | S
-| low -- but see the note below
+| low
 
 | 3
-| *Build the `grpc-echo` fixture jar on the host* with the warm repository and let its Dockerfile
-  only copy it.
-| IT lane minus about 105 s (measured stage); the same in the benchmark lane
-| S to M
-| low
-
-| 4
-| *Stop the `quarkus-jacoco` shutdown timeout* that every `@QuarkusTest` JVM waits out
-  (`quarkus.jacoco.report=false`, or remove the extension), after a coverage comparison. See
-  <<tokensheriff-review>>.
-| each `verify` minus about 90 s (9 x 10 s; gaps measured in one CI log, timeout confirmed locally)
-| S
-| low
-
-| 5
 | *Run the sleep-bound IT classes concurrently*, in a separate failsafe execution, after giving
   each destructive suite its own Keycloak user and its own log to count on.
 | IT lane minus 400 to 500 s (estimated; bounded by the longest class at about 195 s)
 | M
 | medium
 
-| 6
+| 4
+| *Split the unit run into two surefire executions*: a reused fork for pure unit classes, and the
+  current one-JVM-per-class policy for Quarkus, socket-edge, trust-store-swapping and architecture
+  tests. A guard test fails the build when a class is in neither group.
+| minus 250 to 350 s per `verify` (estimated: 2 s per moved class, plus warm-up paid once)
+| M
+| medium
+
+| 5
 | *Share one wait between tests that observe the same event*: `BffCookieRefreshIT` (66 s to 22 s),
   `BffTokenRefreshIT` (88 s to 44 s), `BffRefreshReuseIT` tests 2 and 3, the two requests of
   `HtmlErrorPageIT.upstreamTimeout`, the two legs of `BffSessionIdleTimeoutIT`, one stub rig per
   class.
-| IT lane minus about 190 s sequentially (estimated from the wait constants); less if 5 is done
+| IT lane minus about 190 s (estimated from the wait constants); less once 3 is done
 | M
 | low to medium
 
+| 6
+| *Build the `grpc-echo` fixture jar on the host* with the warm repository and let its Dockerfile
+  only copy it.
+| IT lane minus about 105 s (measured stage); the same in the benchmark lane
+| S to M
+| low
+
 | 7
-| *Split the unit run into two surefire executions*: a reused fork for pure unit classes, and the
-  current one-JVM-per-class policy for Quarkus, socket-edge, trust-store-swapping and architecture
-  tests. A guard test fails the build when a class is in neither group.
-| each `verify` minus 250 to 350 s (estimated), in every leg and locally
-| M
-| medium
+| *Stop the `quarkus-jacoco` shutdown timeout* by setting `quarkus.jacoco.report=false`, after a
+  coverage comparison.
+| minus about 90 s per `verify` (measured: nine shutdowns of 11 s against 2 s)
+| S
+| low
 
 | 8
-| *Remove the accidental unit waits and fixtures*: `AwaitsTest:459`, the injectable scheduler in
-  `RetryingJwksLoaderTest`, a cached RSA pair in `TestSigningKeys`, static fields in
-  `BffRuntimeProducerTest`.
-| each `verify` minus 10 to 15 s (estimated)
-| S
+| *Take the lazy key-material generators from TokenSheriff* once released there
+  (`InMemoryKeyMaterialHandler` generates ten key pairs eagerly today).
+| minus 45 to 65 s per `verify` (estimated: 3 to 4.5 s in 15 forks); most of it is also reached
+  by 4
+| none here; a version bump
 | low
 
 | 9
 | *One reused fork for the nine `@QuarkusTest` classes*: four boots instead of nine.
-| each `verify` minus 50 to 70 s (estimated; about 35 s if 4 is done first)
+| minus about 55 s per `verify` (estimated: five boots of 9 s and five fork changes)
 | M
 | medium
 
 | 10
+| *Remove the accidental unit waits and fixtures*: `AwaitsTest:459`, the injectable scheduler in
+  `RetryingJwksLoaderTest`, a cached RSA pair in `TestSigningKeys`, static fields in
+  `BffRuntimeProducerTest`.
+| minus 10 to 15 s per `verify` (estimated)
+| S
+| low
+
+| 11
+| *Restore `~/.m2` once per job* instead of twice (`setup-java` with `cache: maven` plus an
+  explicit `actions/cache` step).
+| minus 10 to 12 s per job (measured)
+| S, in the organisation-owned workflow
+| low
+
+| 12
 | *Hygiene*: remove the genuine duplicates listed under C, strengthen the weak assertions, correct
   the stale texts listed below.
 | under 1 s
@@ -913,227 +1007,181 @@ the logs; "estimated" means derived.
 | low
 |===
 
-Expected end state: proposals 1 to 4 bring both required checks to about 15 to 20 minutes;
-adding 5 or 6 brings the IT lane to about 12 to 15; adding 7 brings the build lane to about 10.
+=== What the order does not show
+
+The order is by gain alone. Three things matter when picking:
+
+* *Both lanes gate.* Proposal 1 alone leaves the integration-test lane at 34.7 min; proposal 2
+  alone leaves the build lane at 30.9 min. Neither shortens a pull request without the other.
+* *The cheap ones are 1, 2, 6 and 7.* Together they are expected to bring the build lane to about
+  15 min (one `verify` of about 14 min after 7, plus helper jobs) and the integration-test lane to
+  about 20 min (2082 s minus 785 s minus 105 s).
+* *Some gains overlap.* 3 takes most of what 5 would save. 4 takes most of what 8 would save, and
+  it requires the circuit-breaker name collision (site B2) to be removed first. Proposals 4, 7, 8,
+  9 and 10 act on every `verify`, so their effect on the critical path is counted once after
+  proposal 1 and twice before it.
+
+Expected end state with all twelve: build lane about 9 minutes, integration-test lane about 12. In
+the merge queue only the integration-test lane changes, from 30.5 min to about the same 12.
 
 === Why test quality is unchanged or better
 
-. *Parallel Sonar build.* The same three `verify` runs and the same Sonar analysis execute; only
-  their order changes. The quality gate still blocks `build/conclusion`. If the Sonar goal is
-  folded into the Java 25 leg instead, the analysis consumes the coverage of that very run, and the
-  duplicate third run disappears. Nothing proven is lost, because that third run repeats the Java
-  25 leg test for test.
-. *No unit suite in the IT lane.* This one *does* work by running less, and is listed for that
-  reason as a finding to decide on, not as a neutral fix. What makes it defensible: the removed run
-  executes the same 5483 tests, on the same commit, on the same Java 25, as `build (25)`, whose
-  result gates the same merge through the required `build/conclusion` -- on the pull request, in
-  the merge queue and on the push. What is lost is one of four identical executions, which today
-  acts as an unintended flake detector. Coverage is unaffected: the nested native build runs
-  `clean` on `api-sheriff/target`, so the IT lane's unit coverage data is discarded today.
-. *Host-built fixture jar.* `grpc-echo` is an upstream fixture, not the system under test. The same
-  profile builds the same jar; only the place of the build changes. `GrpcProxyIT` is untouched.
-. *No `quarkus-jacoco` timeout.* No test is touched. The condition is that coverage does not move:
-  `api-sheriff/target/site/jacoco/jacoco.xml` must show the same covered instructions and branches
-  per class before and after, and the SonarCloud figure must not drop. If the comparison shows
-  that `@QuarkusTest` coverage is *not* in `jacoco.exec` today, the right change is to align the
-  extension with the agent's data file, which raises reported coverage.
-. *Concurrent sleep-bound classes.* Every class, method and assertion stays. Quality *improves* if
-  the preconditions are done properly, because each destructive suite then owns its Keycloak user
-  and its log, which removes the cross-suite coupling that today is only held off by sequential
-  execution. Done without the preconditions it would produce false reds (revoked sessions) and
-  false greens (foreign log records); that is the stated risk.
-. *Shared waits.* Every assertion is kept and still observes a real refresh, timeout or expiry of
-  the declared length. No wait is shortened. The cost is coarser failure granularity where two
-  test methods become two assertion groups behind one wait; that can be kept by holding two
-  sessions through one wait in a class-level fixture and leaving the methods separate.
-. *Two surefire executions.* The same tests run with the same assertions. The classes that need
-  isolation keep it, and for the first time the need is declared in the build and enforced by a
-  guard, where today it is an undocumented side effect two source files quietly rely on. The
-  breaker-name collision (B2) must be removed first, which also removes a latent trap.
-. *Accidental waits and fixtures.* Each test still proves the same behaviour: `AwaitsTest:459`
-  proves delegation with any ceiling; `RetryingJwksLoaderTest` proves the absence of a retry
-  deterministically instead of by elapsed time, which is a stronger proof.
-. *Shared Quarkus fork.* Same tests, same assertions; four boots are the number of distinct
-  configurations.
-. *Hygiene.* A duplicate is removed only where the table under C names the surviving test and the
-  assertion that covers it.
+1 -- Parallel Sonar build::
+The same three `verify` runs and the same Sonar analysis execute; only their order changes. The
+quality gate still blocks `build/conclusion`. A failing build no longer prevents a Sonar run, which
+costs runner minutes on broken builds. If the Sonar goal is folded into the Java 25 leg instead,
+the analysis consumes the coverage of that very run and the duplicate third run disappears; nothing
+proven is lost, because that run repeats the Java 25 leg test for test.
+
+2 -- No unit suite in the IT lane::
+This one *does* run less than today, and is marked as such. What makes it sound: the removed run
+executes the same tests, on the same commit, on the same Java 25, as `build (25)`, whose result
+gates the same merge through the required `build/conclusion` -- on the pull request, in the merge
+queue and on the push. What is lost is one of four identical executions, which today acts as an
+unintended flake detector. Coverage is unaffected: the nested native build runs `clean` on
+`api-sheriff/target`, so the lane's unit coverage data is discarded today. Building the upstream
+modules with tests skipped and running `verify` on the IT module alone is also the ordinary shape
+of such a lane; TokenSheriff's is built that way.
+
+3 -- Concurrent sleep-bound classes::
+Every class, method and assertion stays. Quality *improves* if the preconditions are met, because
+each destructive suite then owns its Keycloak user and its log, which removes the cross-suite
+coupling that today is only held off by sequential execution. Done without the preconditions it
+would produce false reds (revoked sessions) and false greens (foreign log records); that is the
+stated risk.
+
+4 -- Two surefire executions::
+The same tests run with the same assertions. The classes that need isolation keep it, and for the
+first time the need is declared in the build and enforced by a guard, where today it is an
+undocumented side effect two source files quietly rely on. Removing the breaker-name collision
+first also removes a latent trap.
+
+5 -- Shared waits::
+Every assertion is kept and still observes a real refresh, timeout or expiry of the declared
+length. No wait is shortened. The cost is coarser failure granularity where two test methods become
+two assertion groups behind one wait; holding two sessions through one wait in a class-level
+fixture keeps the methods separate.
+
+6 -- Host-built fixture jar::
+`grpc-echo` is an upstream fixture, not the system under test. The same profile builds the same
+jar; only the place of the build changes. `GrpcProxyIT` is untouched.
+
+7 -- No `quarkus-jacoco` timeout::
+No test is touched. The condition is that coverage does not move:
+`api-sheriff/target/site/jacoco/jacoco.xml` must show the same covered instructions and branches
+per class before and after, and the SonarCloud figure must not drop. If the comparison shows that
+`@QuarkusTest` coverage is *not* in `jacoco.exec` today, the right change is to align the extension
+with the agent's data file, which raises reported coverage. Disable the report; do not remove the
+extension before the cause is understood.
+
+8 -- Lazy key material::
+The keys are fixtures. Generation on first use yields the same keys to the same tests. The change
+must make the lookup atomic, which also removes a check-then-act race in the current code.
+
+9 -- Shared Quarkus fork::
+Same tests, same assertions; four boots are the number of distinct configurations.
+
+10 -- Accidental waits and fixtures::
+Each test still proves the same behaviour: `AwaitsTest:459` proves delegation with any ceiling;
+`RetryingJwksLoaderTest` proves the absence of a retry deterministically instead of by elapsed
+time, which is a stronger proof.
+
+11 -- One repository restore::
+Not test-related.
+
+12 -- Hygiene::
+A duplicate is removed only where the table under C names the surviving test and the assertion
+that covers it.
 
 === Findings that are not proposals
 
-These would save time by running less. They are recorded, not recommended.
+These would save time by running less, or by narrowing a margin. They are recorded, not
+recommended.
 
 * *The push to `main` re-tests the tree the merge queue just tested.* Both lanes run a third time
   on the merge commit. Removing that would save about 30 minutes of runner time per merge and no
   merge latency.
 * *The Java 26 leg* costs one full `verify`. It proves compilation at `--release 26` and the suite
   on a Java 26 runtime. With proposal 1 it is off the critical path.
+* *A shorter access-token lifespan for the refresh clients* (45 s today, refresh window at 15 s,
+  hence the 22 s waits) would cut about 10 s from each of about 15 waits. It narrows the margin of
+  every "not yet refreshed" assertion on a slow runner; proposals 3 and 5 reach the same time
+  without it.
 * *Shortening `COOKIE_IDLE_SECONDS` from 90* would cut about 85 s. The schema allows it, but it
   shrinks the margins of a timing test on slow runners.
-* *`reuseForks=true` globally* or *in-JVM parallel execution* -- blocked by B1 to B4 and by the
-  global test log handler.
+* *`reuseForks=true` globally* or *in-JVM parallel execution* -- blocked by sites B1 to B4 and by
+  the global test log handler.
+* *Fork reuse for failsafe* -- blocked by RestAssured global statics and system properties, and
+  worth 60 to 90 s; proposal 3 is the better use of the effort.
 
-[#tokensheriff-review]
-== Review of the TokenSheriff analysis
+== Relation to the TokenSheriff analysis
 
-TokenSheriff, a sibling project with the same build scaffolding, ran the same analysis
-(`doc/development/test-duration-analysis.adoc` in its `test-duration-analysis` worktree, revision
-`b031ec36`, dated 2026-10-09). This section reviews that document for correctness and records what
-carries over. The review spot-checked claims against the TokenSheriff sources and the GitHub API;
-it did not re-measure the document's timings.
+TokenSheriff, a sibling project built on the same scaffolding and the same organisation workflows,
+was analysed the same way (`doc/development/test-duration-analysis.adoc` there). The two analyses
+checked each other; what follows is where they meet.
 
-=== Claims checked and confirmed
+Shared findings, reached independently in both repositories:
 
-[cols="3,3"]
+* The serial `sonar-build` is the largest single lever on the build lane. One change to the
+  organisation workflow serves both projects, and so does the single `~/.m2` restore.
+* `reuseForks=false` is copied scaffolding without a recorded reason, in both the surefire and the
+  failsafe configuration.
+* The `quarkus-jacoco` shutdown timeout exists in both builds with the same signature.
+* The second Java leg proves something distinct; the Sonar run is the redundant one.
+* Genuine duplicates exist and are worth less than a second.
+* A JVM-mode replacement for the native integration tests cannot be shown to keep what the native
+  run proves. Native-binary caching is possible but risky; Docker image caching is not worth it.
+* The eager key generation in the `token-sheriff-validation` test generators costs 3 to 4.5 s per
+  JVM. This repository pays it in 15 forks; the fix belongs to TokenSheriff.
+
+What TokenSheriff found that has no counterpart here:
+
+[cols="2,3"]
 |===
-| Claim | Check
+| TokenSheriff finding | Here
 
-| One JVM per test class in the Quarkus modules
-| `token-sheriff-quarkus-parent/pom.xml:179-181` and `:199-201` carry the same two lines and the
-  same comment as this repository's root `pom.xml`.
+| Retry back-off inside unit tests (five tests of 15 s)
+| Not present; see the note on `RetryingJwksLoaderTest` in the unit ranking.
 
-| Nine `@QuarkusTest` classes in `token-sheriff-validation-quarkus`, 38 test classes
-| Nine files carry the annotation; three more only mention it.
+| JFR compiled into the IT native image
+| `quarkus.native.monitoring=jfr` is set in the product's own `application.properties`. The IT lane
+  tests the image the release publishes, so it is not a test-lane setting.
 
-| `quarkus-jacoco` shutdown timeout
-| The dependency is at `token-sheriff-validation-quarkus/pom.xml:88-92`, and
-  `target/jacoco-report/error.txt` in that worktree holds the quoted timeout message. Only
-  `jacoco.exec` exists.
-
-| Discovery ignores the caller's retry configuration
-| `HttpJwksLoaderConfig.java:751` hardcodes `.retryConfig(RetryConfig.defaults())`.
-
-| Eager key generation in `InMemoryKeyMaterialHandler`, and a check-then-act lookup
-| Static initialiser at `:102-113`, `getKeyPair` at `:163-169`.
-
-| Three required checks
-| Ruleset `main-branch-protection` lists `build / conclusion`, `integration-tests / conclusion` and
-  `e2e-tests / conclusion`.
-
-| No `Thread.sleep` in the validation, client or Quarkus test sources
-| The only occurrence is inside a comment.
-|===
-
-Its arithmetic for the Quarkus module is internally consistent: 104 + 70 + 49 + 45 = 268 s against
-273 s measured, and the three gap sizes it derives match the composition it gives.
-
-=== Errors and weaknesses
-
-. *The headline medians mix two populations.* Of the last 25 successful pull-request runs of
-  `maven.yml`, 12 are Dependabot runs, for which `sonar-build` is skipped. Their wall-clock is 580
-  to 1159 s; the other runs are 1248 to 2998 s, median about 28 minutes. The reported "19m10s
-  until all required checks are green" and "20m02s" for `maven.yml` sit in the gap between the two
-  groups and describe neither. A contributor's pull request waits about 28 minutes, not 19. The
-  document does note that only 12 runs carried `sonar-build`, but does not split the medians.
-. *The saving of the Sonar change is stated for the wrong population.* "About 9.5 minutes per pull
-  request" holds for the non-Dependabot half only; Dependabot pull requests gain nothing.
-. *The expected end state contradicts the document's own numbers.* It gives "about 6 minutes" once
-  Sonar runs in parallel. Its integration-test lane is 10m55s wall-clock today and about 6m10s of
-  job time after its proposals P10 to P13, plus the chained helper jobs; its end-to-end lane is
-  7m18s. The critical path cannot fall below the slowest required lane, so the floor is 9 to 11
-  minutes until the IT lane is shortened as well.
-. *The `quarkus-jacoco` finding omits a setting that bears on it.* The module sets
-  `quarkus.jacoco.reuse-data-file=true` at `pom.xml:173` and in its test `application.properties`.
-  Someone configured the extension deliberately. The document leaves the cause of the missing data
-  file open and makes the fix conditional on a coverage comparison, which is the right safeguard,
-  but the existing configuration should be part of that investigation.
-. *An unsourced claim.* "`forkCount > 1` was evaluated and rejected earlier (timing flakes, JaCoCo
-  data loss)" cites no commit, issue or document, and none was found in its `doc/` tree or POMs.
-. *Most duplicate pairs are not named.* It counts 53 genuine duplicates across five areas, names a
-  handful and refers to working notes for the rest. No removal is proposed, so nothing follows
-  from it, but the list is not reviewable as written.
-. *The overhead table adds numbers that are not additive.* Its 484 s of surefire time is summed
-  across modules that the reactor runs in parallel (`-T1C`), and is set beside the 574 s wall-clock
-  of the job. The listed components sum to 529 s.
-. *One proposal shortens a real wait.* P11 cuts a token lifetime from 35 s to 10 s for an expiry
-  test. The document rates it low to medium risk and names a floor; under the constraint that no
-  real wait may be shortened into a flake, it is the weakest of its proposals.
-
-None of these touches the document's central findings, which hold: the serial Sonar build, the
-fork policy, the JaCoCo timeout and the retry backoff are each demonstrated from source and log.
-
-=== What applies here
-
-[cols="2,3,1"]
-|===
-| TokenSheriff finding | In this repository | Verdict
-
-| `quarkus-jacoco` shutdown timeout, 10 s per `@QuarkusTest` JVM
-| *Present and confirmed.* `api-sheriff/pom.xml:158` declares `quarkus-jacoco` beside
-  `jacoco:prepare-agent`. The local run left
-  `api-sheriff/target/jacoco-report/error.txt` with "Timed out waiting for Jacoco data file ...
-  jacoco-quarkus.exec update ... does not exist". In the CI log the next class starts 13 s after a
-  `@QuarkusTest` class ends (21 s when the next is one too), against 2 to 3 s after a plain class.
-  Nine classes, about 90 s per `verify`, four `verify` runs per pull request. This analysis had
-  attributed that time to the Quarkus boot.
-| *new proposal 4*
-
-| Sonar build in parallel with the matrix
-| The same change in the same organisation workflow; one change serves both projects. Its caveat
-  carries over: a failing build no longer prevents a Sonar run.
-| proposal 1
-
-| `~/.m2` restored twice per job
-| Same workflow, same duplication: `setup-java` with `cache: maven` plus an explicit `actions/cache`
-  step, 10 to 12 s each.
-| fold into proposal 1's workflow change
-
-| Lazy `InMemoryKeyMaterialHandler`
-| This repository consumes that class from the TokenSheriff test jar; 15 forks pay its 3 to 4.5 s
-  here. The fix belongs upstream and arrives with a TokenSheriff release.
-| upstream; no change here
-
-| `QuarkusTestProfileAwareClassOrderer` is the default class orderer
-| Supports proposal 9: in a shared fork the nine classes would be grouped into four boots without
-  any ordering configuration.
-| supports proposal 9
-
-| Retry backoff inside unit tests (5 x 15 s)
-| Not present. The one test that waits a production retry delay is
-  `RetryingJwksLoaderTest:414`, about 1 s, and it is named for that.
-| does not apply
-
-| A dedicated short-lived client for the expiry test
-| The analogue would be a shorter access-token lifespan for the refresh clients (45 s today,
-  refresh window at 15 s, hence the 22 s waits). It would cut about 10 s from each of about 15
-  waits, and it narrows the margin of every "not yet refreshed" assertion on a slow runner.
-| not recommended; proposals 5 and 6 reach the same time without it
-
-| JFR compiled into the native image
-| `quarkus.native.monitoring=jfr` is set here too, in the product's own `application.properties`.
-  The IT lane tests the image the release publishes, so it is not a test-lane setting.
-| does not apply
-
-| Fork reuse for failsafe
-| Blocked here by RestAssured global statics and system properties, and worth 60 to 90 s.
-| lower priority than proposal 5
-
-| Frontend chain, Zitadel start order, client-only IT job
+| Frontend chain in the IT build, identity-provider start order, a client-only IT job
 | No counterpart in this build.
-| does not apply
 |===
 
-Two cautions also carry over from the review:
-
-* TokenSheriff measured p90 queue times of 60 to 312 s on the same organisation runners over two
-  weeks. The 2 s median reported here comes from a two-day sample; queueing was negligible in that
-  sample, not necessarily in general.
-* The population mix that distorts TokenSheriff's medians was checked here and is absent: all 19
-  built pull-request runs in this sample carried `sonar-build`.
+What this analysis found that TokenSheriff took over: the blocker analysis before reusing forks,
+the two-execution split with a guard test in place of a global switch, and sharing a wait instead
+of shortening a lifetime.
 
 == Not measured, not verified
 
 Stated separately from what was measured and found fine.
 
-* *No per-class unit timings from CI.* The build job publishes no surefire reports, and the log
-  prints display names of nested classes, which cannot be mapped to classes reliably. The unit
-  ranking above is a local reproduction that timed out after 97 of about 160 classes on a loaded
-  host. It ranks only, and it is incomplete.
-* *The split of the 500 s unit overhead* into fork start-up, class loading and fixture warm-up is
-  inferred from local reports and from the gap between plugin time and reported time. No CI run
-  with a different fork policy exists.
-* *Every saving marked "estimated"*, in particular proposals 5, 7 and 9, has not been tried. The
-  blocking sites B2 (a JVM-global breaker registry) and B3 are inferred from source, not observed
-  failing.
+=== Not measured
+
+* *Per-class unit timings on CI.* The build job publishes no surefire reports, and the log prints
+  display names of nested classes, which cannot be mapped to classes reliably. The unit ranking is
+  a local reproduction that timed out after 97 of about 160 classes on a loaded host. It ranks
+  only, and it is incomplete.
+* *Every gain marked "estimated"*, in particular proposals 3, 4 and 9. None has been tried.
+* *The split of in-test warm-up* (key material, configuration stack, Vert.x first use) inside the
+  290 s of reported test time. The time *between* classes is measured; the warm-up inside the
+  first test of each class is inferred from local reports.
+* *Flakes.* Failed and re-run runs were counted, not attributed.
+* *SonarCloud coverage numbers* were not read; no proposal changes which tests run in the build
+  that feeds Sonar.
+
+=== Not verified
+
+* *Why `jacoco-quarkus.exec` is never written*, and therefore whether `@QuarkusTest` coverage
+  already reaches `jacoco.exec`. Proposal 7 depends on it.
+* *The blocking sites B2 and B3* -- a JVM-global breaker registry, and a live Quarkus application
+  under the test log handler -- are inferred from source, not observed failing.
+* *The unit-test wait inventory for classes that never ran locally.* Most of `bff/**` is missing
+  from the local run. For those classes the statement that every other timeout is an upper bound
+  that returns immediately rests on reading alone.
 * *Reading coverage.* The fork-policy, IT-infrastructure and BFF/TLS readings covered their
   files. The routing, configuration and framing reading covered the framing and configuration-boot
   tests and 17 ITs in full and the remaining unit classes of `edge`, `pipeline`, `config` and
@@ -1141,19 +1189,24 @@ Stated separately from what was measured and found fine.
   areas is verified only where it names two tests; further duplicates there cannot be excluded.
   About 45 acceptance tests consisting of a single `assertDoesNotThrow` were flagged by a scan and
   not read individually.
-* *Flakes.* Failed and re-run runs were counted, not attributed.
+* *The IT-specific findings have one reader.* The BFF refresh, idle and TTL waits, the twelve
+  gateway variants and the `grpc-echo` fixture were not checked against the test sources by the
+  second analysis; TokenSheriff has no counterpart to them.
 * *The release lane.* `release.yml` runs the same IT command. Whether its called release workflow
   runs the unit suite independently was not checked; proposal 2 therefore leaves the release
   command unchanged.
 * *The key sizes* behind the 3 to 4.5 s key-material initialisation were not confirmed in the
   library source.
-* *The `quarkus-jacoco` timeout* was confirmed from one CI log and one local run. Why the data
-  file is never written, and whether `@QuarkusTest` coverage already reaches `jacoco.exec`, was
-  not established; proposal 4 depends on it.
-* *SonarCloud coverage numbers* were not read; no proposal changes which tests run in the build
-  that feeds Sonar.
 
-Stale texts noticed on the way:
+=== Measured and found fine
+
+* Queueing in the sample: 2 s median per job.
+* The Maven repository cache hit on every sampled run.
+* The compose stack starts once and is never reconfigured; twelve gateways are ready in 6 to 7 s.
+* The pull-request medians are one population.
+* Parameterised tests: about 2 s in total.
+
+=== Stale texts noticed on the way
 
 * link:declared-limit-assertion-coverage.adoc[The declared-limit matrix] row G9 says no test exists
   because it "would need a one-hour wait"; `BffSessionAbsoluteTtlIT` now covers it.

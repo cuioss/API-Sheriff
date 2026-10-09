@@ -111,8 +111,9 @@ to *run* the finished gateway).
 | link:test-duration-analysis.adoc[Test-Cycle Duration -- Measured Baseline, Findings and Proposals]
 | Where the CI test cycle spends its time -- wall-clock per workflow, job, step, Maven plugin and
   test class, the critical path to the two required checks, the Java 25/26 matrix -- the findings
-  on fork policy, Quarkus boots, environments, waits and duplicates, and a ranked list of proposals
-  with the reason each one leaves test quality unchanged. An analysis; it changes nothing by itself.
+  on fork policy, the `quarkus-jacoco` shutdown timeout, Quarkus boots, environments, waits and
+  duplicates, and the proposals ordered by expected gain, with the reason each one leaves test
+  quality unchanged. An analysis; it changes nothing by itself.
 
 | link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
 | Which declared gateway limit has a boundary assertion and which does not -- the twenty-nine-file
