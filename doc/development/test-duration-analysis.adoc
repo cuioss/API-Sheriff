@@ -922,9 +922,12 @@ them. Keycloak start and realm import is about 15 s per run.
 | proposal 2 first
 
 | Skipping lanes by changed paths
-| Already done for documentation-only changes. Skipping the native build for test-only changes is
-  the caching idea above. No further class of change exists that a lane provably cannot observe.
-| nothing further
+| The two gating lanes and `config-validation.yml` already skip documentation-only changes.
+  `benchmark.yml` and `demo-client-e2e.yml` carry no path filter: both run after every merge,
+  including a documentation-only one, about 21 and 6 minutes of runner time that cannot observe
+  the change. Neither gates a merge. Skipping the native build for test-only changes is the caching
+  idea above.
+| runner time only; no merge latency
 
 | JVM-mode ITs with a smaller native smoke set
 | The native run uniquely proves reflection registration, included resources, run-time
