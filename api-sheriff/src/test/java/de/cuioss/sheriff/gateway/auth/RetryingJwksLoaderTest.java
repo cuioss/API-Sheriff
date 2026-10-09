@@ -30,6 +30,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -271,26 +272,37 @@ class RetryingJwksLoaderTest {
         @DisplayName("close releases the delegate and describes the loader without its URL")
         void closeAndToString() throws Exception {
             // Arrange — the endpoint never succeeds, so a retry episode is live and a re-dial is
-            // already scheduled: there is something for close() to release.
+            // already scheduled: there is something for close() to release. The loader gets a
+            // scheduler of its own whose queue the test can read, and which drops a task from that
+            // queue the moment it is cancelled. What is still scheduled is then a fact read off the
+            // scheduler, not something inferred from a re-dial failing to arrive within a wait.
             failuresBeforeSuccess.set(Integer.MAX_VALUE);
-            Duration retryDelay = Duration.ofMillis(250);
-            RetryingJwksLoader loader = httpLoader(retryDelay, REFRESH_INTERVAL);
-            initialise(loader);
-            int requestsBeforeClose = server.getRequestCount();
+            ScheduledThreadPoolExecutor retries = new ScheduledThreadPoolExecutor(1);
+            retries.setRemoveOnCancelPolicy(true);
+            try {
+                RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
+                        () -> JwksLoaderFactory.createHttpLoader(httpConfig()), REFRESH_INTERVAL, NEVER_WITHIN_TEST,
+                        retries);
+                initialise(loader);
+                assertEquals(1, retries.getQueue().size(), "precondition: the re-dial is on the scheduler");
+                int requestsBeforeClose = server.getRequestCount();
 
-            // Act
-            loader.close();
-            drainScheduler(retryDelay.multipliedBy(4));
+                // Act
+                loader.close();
 
-            // Assert — the release is observable on the delegate rather than only on the flag: past
-            // the barrier the cancelled retry has not dialled. A close() that rendered a tidy
-            // toString while leaving the delegate running would have fetched at least once more,
-            // which is the half the old assertDoesNotThrow(loader::close) could not distinguish.
-            assertEquals(requestsBeforeClose, server.getRequestCount(),
-                    "a closed loader releases its delegate and issues no further fetch");
-            String rendered = loader.toString();
-            assertTrue(rendered.contains(ISSUER_NAME));
-            assertFalse(rendered.contains(String.valueOf(server.getPort())), "the JWKS URL is never rendered");
+                // Assert — the release is observable on the scheduler rather than only on the loader's
+                // own flag: the one re-dial it held is gone, so no later fetch can come from it. A
+                // close() that rendered a tidy toString while leaving the retry scheduled would still
+                // have it queued, which is the half the old assertDoesNotThrow(loader::close) could
+                // not distinguish.
+                assertTrue(retries.getQueue().isEmpty(), "a closed loader leaves no re-dial scheduled");
+                assertEquals(requestsBeforeClose, server.getRequestCount(), "closing issues no fetch of its own");
+                String rendered = loader.toString();
+                assertTrue(rendered.contains(ISSUER_NAME));
+                assertFalse(rendered.contains(String.valueOf(server.getPort())), "the JWKS URL is never rendered");
+            } finally {
+                retries.shutdownNow();
+            }
         }
     }
 

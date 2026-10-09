@@ -90,6 +90,15 @@ class AwaitsTest {
     /** Small enough that a real timeout costs milliseconds, large enough to measure. */
     private static final Duration CONTROL_CEILING = Duration.ofMillis(50);
 
+    /**
+     * The ceiling the delegation probe hands to the public {@link Awaits#until}. That entry point
+     * takes whole seconds and has no {@link Duration} seam of its own, so one second is the smallest
+     * ceiling it can be driven with. It is deliberately not a tier: the probe proves that an unmet
+     * condition comes back as the core's labelled timeout, which holds for any ceiling, so waiting
+     * out a full tier would only add seconds. Call sites outside this class name a tier.
+     */
+    private static final long DELEGATION_PROBE_SECONDS = 1;
+
     private static final Pattern ELAPSED_NANOS = Pattern.compile("elapsed=(\\d+) ns");
 
     /**
@@ -455,8 +464,7 @@ class AwaitsTest {
                 },
                 () -> {
                     TimeoutException failure = assertThrows(TimeoutException.class,
-                            () -> Awaits.until(() -> false, CONTROL_LABEL,
-                                    Awaits.TEARDOWN_CEILING_SECONDS),
+                            () -> Awaits.until(() -> false, CONTROL_LABEL, DELEGATION_PROBE_SECONDS),
                             "until reaches the core, which is what turns an unmet condition into a "
                                     + "TimeoutException rather than an Awaitility exception or nothing");
                     assertTrue(failure.getMessage().contains(CONTROL_LABEL),

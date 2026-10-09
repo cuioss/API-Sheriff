@@ -30,9 +30,11 @@ import java.util.Base64;
 
 /**
  * Signing-key fixtures for the tests of {@link ClientSigningKey} and of everything assembled over
- * it. Every key is generated with {@link KeyPairGenerator} when a test asks for it, and a key file is
- * written as a PEM file into a directory the test supplies, so no signing key is committed for unit
- * tests.
+ * it. Every key is generated with {@link KeyPairGenerator}, and a key file is written as a PEM file
+ * into a directory the test supplies, so no signing key is committed for unit tests. A key is
+ * generated when a test asks for it, with one exception: {@link #sharedRsaKeyPair()} hands every
+ * caller in a JVM the same pair, for the tests that need some RSA key and assert nothing about which
+ * one.
  * <p>
  * The helper writes the one accepted file shape — an unencrypted PKCS#8 {@code PRIVATE KEY} block
  * followed by a {@code PUBLIC KEY} block — and variants of it a provided key file is refused
@@ -62,6 +64,22 @@ public final class TestSigningKeys {
      */
     public static KeyPair rsaKeyPair() {
         return rsaKeyPair(RSA_BITS);
+    }
+
+    /**
+     * The one RSA key pair every caller in this JVM shares, generated on first use. RSA generation at
+     * 2048 bits is the slowest fixture this class has, so a test that only needs <em>some</em>
+     * accepted RSA key takes this one.
+     * <p>
+     * Use it only where the key's identity is not what the test is about — a key file refused for
+     * its label, or for a half of another key type. A test that asserts which key was used, compares
+     * two keys, or reads a key id or thumbprint takes {@link #rsaKeyPair()}: with a shared pair two
+     * such keys would be equal by construction and the assertion would hold whatever the code did.
+     *
+     * @return the shared RSA key pair at the accepted floor of 2048 bits, the same on every call
+     */
+    public static KeyPair sharedRsaKeyPair() {
+        return SharedRsaKeyPair.INSTANCE;
     }
 
     /**
@@ -225,6 +243,12 @@ public final class TestSigningKeys {
         } catch (GeneralSecurityException unavailable) {
             throw new IllegalStateException("RSA key generation is unavailable", unavailable);
         }
+    }
+
+    /** Holds the shared pair so it is generated on first use and only in a JVM that asks for it. */
+    private static final class SharedRsaKeyPair {
+
+        private static final KeyPair INSTANCE = rsaKeyPair(RSA_BITS);
     }
 
     private static KeyPair ecKeyPair(String curve) {

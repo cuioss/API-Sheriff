@@ -237,10 +237,16 @@ class BffRuntimeProducerTest {
     private static final String ON_FAILURE_ENUM_POINTER =
             "/properties/oidc/properties/session/properties/refresh/properties/on_failure/enum";
 
-    /** The in-memory issuer backing both the validator and the signature-only verifier below. */
-    private final IssuerConfig testIssuer = TestTokenGenerators.accessTokens().next().getIssuerConfig();
+    /**
+     * The in-memory issuer backing both the validator and the signature-only verifier below.
+     * <p>
+     * The three fixtures are built once for the class, not once per test instance. The producer only
+     * holds the validator and the verifier and hands them on, as it does in production with the
+     * gateway's one shared validator, and no test here reads state off either of them.
+     */
+    private static final IssuerConfig TEST_ISSUER = TestTokenGenerators.accessTokens().next().getIssuerConfig();
 
-    private final TokenValidator tokenValidator = TokenValidator.builder().issuerConfig(testIssuer).build();
+    private static final TokenValidator TOKEN_VALIDATOR = TokenValidator.builder().issuerConfig(TEST_ISSUER).build();
 
     /**
      * The seam the back-channel logout receiver is bound to. Built over the SAME issuer as the
@@ -248,8 +254,8 @@ class BffRuntimeProducerTest {
      * drift apart, since a verifier over a different issuer set would verify nothing the validator
      * trusts.
      */
-    private final SignatureOnlyTokenVerifier logoutTokenVerifier =
-            new SignatureOnlyTokenVerifier(List.of(testIssuer), tokenValidator.getSecurityEventCounter());
+    private static final SignatureOnlyTokenVerifier LOGOUT_TOKEN_VERIFIER =
+            new SignatureOnlyTokenVerifier(List.of(TEST_ISSUER), TOKEN_VALIDATOR.getSecurityEventCounter());
 
     @Nested
     @DisplayName("Active server-mode runtime")
@@ -2082,8 +2088,8 @@ class BffRuntimeProducerTest {
                 boolean verifiesHostname) {
             OidcConfig oidc = serverModeOidc();
             RecordingProducer recording = new RecordingProducer(
-                    GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build(), tokenValidator,
-                    logoutTokenVerifier);
+                    GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build(), TOKEN_VALIDATOR,
+                    LOGOUT_TOKEN_VERIFIER);
 
             BffRuntime runtime = recording.bffRuntime();
 
@@ -2188,7 +2194,7 @@ class BffRuntimeProducerTest {
                     .build();
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
                     .egressTls(oidcHostname(false)).build();
-            return new RecordingProducer(gatewayConfig, tokenValidator, logoutTokenVerifier);
+            return new RecordingProducer(gatewayConfig, TOKEN_VALIDATOR, LOGOUT_TOKEN_VERIFIER);
         }
 
         private ClientConfiguration backChannelFor(SanMismatchedJwksServer target, @Nullable EgressTlsConfig egressTls) {
@@ -2385,7 +2391,7 @@ class BffRuntimeProducerTest {
             ENCRYPTED_BLOCK {
                 @Override
                 Path write(Path directory) {
-                    return TestSigningKeys.writeRelabelledPrivateBlock(directory, TestSigningKeys.rsaKeyPair(),
+                    return TestSigningKeys.writeRelabelledPrivateBlock(directory, TestSigningKeys.sharedRsaKeyPair(),
                             "ENCRYPTED PRIVATE KEY");
                 }
             },
@@ -4412,8 +4418,8 @@ class BffRuntimeProducerTest {
     private BffRuntimeProducer producer(@Nullable OidcConfig oidc, @Nullable EgressTlsConfig egressTls,
             TestTlsConfigurationRegistry registry, RouteTable routeTable, RecordingTimers timers) {
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc).egressTls(egressTls).build();
-        return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(tokenValidator),
-                new SingletonInstance<>(logoutTokenVerifier), new JwksTrustProfileResolver(registry),
+        return new BffRuntimeProducer(gatewayConfig, routeTable, new SingletonInstance<>(TOKEN_VALIDATOR),
+                new SingletonInstance<>(LOGOUT_TOKEN_VERIFIER), new JwksTrustProfileResolver(registry),
                 REVOCATION_EXECUTOR, new GatewayJson(new ObjectMapper()), timers.vertx());
     }
 
