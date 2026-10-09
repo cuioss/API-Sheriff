@@ -92,8 +92,11 @@
                  the normal build from packaging integration-tests as a Quarkus app. A
                  separate 'grpc-codegen' execution re-enables ONLY the gRPC proto codegen
                  (generate-code / generate-code-tests) so echo.proto compiles into stubs.
-                 The 'grpc-echo' profile below re-enables the 'build' goal to produce the
-                 echo fast-jar for its container image. -->
+                 The 'integration-tests' and 'jfr' profiles below each bind a
+                 'grpc-echo-build' execution of the 'build' goal, so the host reactor
+                 produces the echo fast-jar under target/quarkus-app at 'package' — before
+                 either profile's pre-integration-test executions start the stack, whose
+                 grpc-echo image build copies that directory. -->
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
@@ -183,14 +186,20 @@
             </build>
         </profile>
 
-        <!-- Packages the in-repo gRPC echo service as a Quarkus JVM fast-jar. Activated
-             only by the grpc-echo Dockerfile build stage; it re-enables the Quarkus
-             'build' goal that the normal module build deliberately leaves disabled. The
-             resulting target/quarkus-app is copied into the grpc-echo container image. -->
+        <!-- Profile for running integration tests with native image -->
         <profile>
-            <id>grpc-echo</id>
+            <id>integration-tests</id>
+            <properties>
+                <skipITs>false</skipITs>
+            </properties>
             <build>
                 <plugins>
+                    <!-- Packages the in-repo gRPC echo service as a Quarkus JVM fast-jar. It
+                         re-enables the Quarkus 'build' goal that the normal module build
+                         deliberately leaves disabled. The goal runs at 'package', so
+                         target/quarkus-app exists before the pre-integration-test executions
+                         below start the stack: the grpc-echo image build copies that directory
+                         and runs no Maven of its own. -->
                     <plugin>
                         <groupId>io.quarkus</groupId>
                         <artifactId>quarkus-maven-plugin</artifactId>
@@ -203,18 +212,7 @@
                             </execution>
                         </executions>
                     </plugin>
-                </plugins>
-            </build>
-        </profile>
 
-        <!-- Profile for running integration tests with native image -->
-        <profile>
-            <id>integration-tests</id>
-            <properties>
-                <skipITs>false</skipITs>
-            </properties>
-            <build>
-                <plugins>
                     <!-- Skip Unit Tests (Surefire) -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
@@ -453,6 +451,22 @@
             </properties>
             <build>
                 <plugins>
+                    <!-- Same grpc-echo-build execution as the integration-tests profile above,
+                         for the same reason: this lane starts the same stack, whose grpc-echo
+                         image build copies the host-built target/quarkus-app. -->
+                    <plugin>
+                        <groupId>io.quarkus</groupId>
+                        <artifactId>quarkus-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>grpc-echo-build</id>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
                     <!-- Skip Unit Tests (Surefire) -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
