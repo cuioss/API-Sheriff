@@ -44,6 +44,7 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.function.Executable;
@@ -57,6 +58,7 @@ import org.junit.jupiter.api.function.Executable;
 @ExtendWith(SheriffDebugCapture.class)
 @EnableGeneratorController
 @DisplayName("Transparent refresh — no credential reaches the log at any level")
+@Tag("isolated-fork")
 class TokenRefreshLogHygieneTest {
 
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");

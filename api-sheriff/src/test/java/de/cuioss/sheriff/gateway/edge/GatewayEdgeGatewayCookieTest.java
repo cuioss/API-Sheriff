@@ -80,6 +80,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -98,6 +99,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — a gateway cookie makes the response uncacheable, and no upstream can set one")
+@Tag("isolated-fork")
 class GatewayEdgeGatewayCookieTest {
 
     private static final String OIDC_HOST = "gw.example.com";

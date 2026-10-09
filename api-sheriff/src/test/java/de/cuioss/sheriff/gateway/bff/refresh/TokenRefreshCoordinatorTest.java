@@ -87,6 +87,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -109,6 +110,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * which refresh token it revokes, and which record it logs.
  */
 @EnableTestLogger
+@Tag("isolated-fork")
 class TokenRefreshCoordinatorTest {
 
     private static final Instant NOW = Instant.parse("2026-07-23T10:00:00Z");

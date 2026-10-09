@@ -64,6 +64,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
@@ -72,6 +73,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 @EnableGeneratorController
 @DisplayName("TokenValidatorProducer — builds the shared gateway validator from token_validation")
+@Tag("isolated-fork")
 class TokenValidatorProducerTest {
 
     private static final String ISSUER = "https://issuer.example";

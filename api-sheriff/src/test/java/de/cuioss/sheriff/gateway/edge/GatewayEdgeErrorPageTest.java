@@ -77,6 +77,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -92,6 +93,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — negotiated HTML error pages for gateway-originated errors")
+@Tag("isolated-fork")
 class GatewayEdgeErrorPageTest {
 
     private static final String OIDC_HOST = "gw.example.com";

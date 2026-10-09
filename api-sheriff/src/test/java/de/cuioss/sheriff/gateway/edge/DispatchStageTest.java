@@ -97,6 +97,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -104,6 +105,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 @EnableGeneratorController
 @DisplayName("DispatchStage — stage 6 streamed upstream dispatch")
+@Tag("isolated-fork")
 class DispatchStageTest {
 
     /** The {@code max_body_bytes} ceiling of the unit-level body streams, above every body they carry. */

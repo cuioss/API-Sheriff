@@ -134,6 +134,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -149,6 +150,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — server-mode BFF runtime edge wiring (D16)")
+@Tag("isolated-fork")
 class GatewayEdgeRouteBffWiringTest {
 
     private static final String OIDC_HOST = "gw.example.com";

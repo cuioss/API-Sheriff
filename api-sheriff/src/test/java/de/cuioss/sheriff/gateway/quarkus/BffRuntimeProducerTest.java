@@ -188,6 +188,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -211,6 +212,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 @EnableGeneratorController
 @DisplayName("BffRuntimeProducer — server-mode activation and inert bearer-only default")
+@Tag("isolated-fork")
 class BffRuntimeProducerTest {
 
     private static final String ORIGIN = "https://gw.example.com";

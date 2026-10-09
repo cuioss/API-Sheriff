@@ -66,6 +66,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -76,6 +77,7 @@ import org.junit.jupiter.api.Test;
  * abuse bounds that hold on the gRPC path without a per-protocol relaxation.
  */
 @DisplayName("GrpcDispatchStage — forced-h2 wiring, UNAVAILABLE mapping, trailer relay, GW-08 bounds")
+@Tag("isolated-fork")
 class GrpcDispatchStageTest {
 
     @Nested

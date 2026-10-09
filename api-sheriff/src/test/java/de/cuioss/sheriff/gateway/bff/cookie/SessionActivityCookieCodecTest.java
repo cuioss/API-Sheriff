@@ -39,6 +39,7 @@ import de.cuioss.test.juli.junit5.EnableTestLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -57,6 +58,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the pre-route {@code Cookie} header cap has to leave room for.
  */
 @EnableTestLogger
+@Tag("isolated-fork")
 class SessionActivityCookieCodecTest {
 
     private static final String COOKIE_NAME = SessionCookieCodec.DEFAULT_COOKIE_NAME;

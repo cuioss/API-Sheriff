@@ -71,6 +71,7 @@ import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -102,6 +103,7 @@ import org.junit.jupiter.api.Test;
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — reserved-path request-body byte ceiling")
+@Tag("isolated-fork")
 class ReservedBodyCeilingTest {
 
     private static final String CALLBACK_PATH = "/auth/callback";
