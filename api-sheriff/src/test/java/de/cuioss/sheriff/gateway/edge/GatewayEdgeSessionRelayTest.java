@@ -75,6 +75,7 @@ import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
@@ -210,7 +211,7 @@ class GatewayEdgeSessionRelayTest {
             Session session = login();
             RelayClient relay = openRelay(SESSION_WS, session.cookie());
 
-            int destroyed = store.destroyBySid(session.record().sid());
+            int destroyed = store.destroyBySid(session.sessionRecord().sid());
 
             assertEquals(1, destroyed, "precondition: the store ended exactly this session");
             assertClosedBecauseTheSessionEnded(relay);
@@ -243,7 +244,7 @@ class GatewayEdgeSessionRelayTest {
             Session session = login();
             RelayClient relay = openRelay(SESSION_WS, session.cookie());
 
-            store.destroyById(session.record().sessionId());
+            store.destroyById(session.sessionRecord().sessionId());
 
             assertClosedBecauseTheSessionEnded(relay);
         }
@@ -272,7 +273,7 @@ class GatewayEdgeSessionRelayTest {
             Session newest = login(sub, null);
 
             assertClosedBecauseTheSessionEnded(relay);
-            assertTrue(store.isHeld(newest.record().sessionId()), "the new session is the one that is held");
+            assertTrue(store.isHeld(newest.sessionRecord().sessionId()), "the new session is the one that is held");
         }
 
         @Test
@@ -282,7 +283,7 @@ class GatewayEdgeSessionRelayTest {
             Session session = login();
             RelayClient relay = openRelay(SESSION_WS, session.cookie());
 
-            boolean reissued = store.replaceAndReissueHandle(session.record(),
+            boolean reissued = store.replaceAndReissueHandle(session.sessionRecord(),
                     "handle-" + SessionRecord.newSessionId());
 
             assertTrue(reissued, "precondition: the store re-issued the handle of the live session");
@@ -296,7 +297,7 @@ class GatewayEdgeSessionRelayTest {
             Session session = login();
             RelayClient relay = openRelay(SESSION_WS, session.cookie());
 
-            boolean replaced = store.replaceIfPresent(session.record());
+            boolean replaced = store.replaceIfPresent(session.sessionRecord());
 
             assertTrue(replaced, "precondition: the store replaced the record of the live session");
             assertStillRelaying(relay, 1);
@@ -410,10 +411,10 @@ class GatewayEdgeSessionRelayTest {
                 Awaits.connect(leavingClient.close(), "the client to drop its connection");
 
                 awaitTracked(1, "the tracking entry of the abandoned upgrade to be released");
-                registry.sessionEnded(leaving.record().sessionId());
+                registry.sessionEnded(leaving.sessionRecord().sessionId());
                 assertEquals(1, registry.size(),
                         "the entry that left is the one of the client that left: its session has none to end");
-                registry.sessionEnded(waiting.record().sessionId());
+                registry.sessionEnded(waiting.sessionRecord().sessionId());
                 assertEquals(0, registry.size(),
                         "the entry that stayed is the one of the client still waiting on its dial");
             } finally {
@@ -690,7 +691,7 @@ class GatewayEdgeSessionRelayTest {
 
     private int plainRequestStatus(String uri) throws Exception {
         return Awaits.connect(httpClient.request(reservedHostRequest(uri))
-                .compose(request -> request.send())
+                .compose(HttpClientRequest::send)
                 .map(HttpClientResponse::statusCode), "the edge's answer to GET " + uri);
     }
 
@@ -721,7 +722,7 @@ class GatewayEdgeSessionRelayTest {
     }
 
     /** A logged-in session and the cookie pair its browser presents. */
-    private record Session(SessionRecord record, String cookie) {
+    private record Session(SessionRecord sessionRecord, String cookie) {
     }
 
     /** How one end of a WebSocket saw it closed. */

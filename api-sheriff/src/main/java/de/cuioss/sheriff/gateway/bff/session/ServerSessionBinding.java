@@ -67,6 +67,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ServerSessionBinding implements SessionBinding {
 
+    /** The parameter name the null checks of a session argument report. */
+    private static final String SESSION_PARAMETER = "session";
+
     /** The cookie-handle width: 256 bits, the same entropy as {@link SessionRecord#newSessionId()}. */
     private static final int COOKIE_HANDLE_BYTES = 32;
 
@@ -92,7 +95,7 @@ public final class ServerSessionBinding implements SessionBinding {
 
     @Override
     public BoundSession bind(SessionRecord session, Instant now) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         Objects.requireNonNull(now, "now");
         String cookieHandle = newCookieHandle();
         sessionStore.create(session, cookieHandle, now);
@@ -143,7 +146,7 @@ public final class ServerSessionBinding implements SessionBinding {
 
     @Override
     public List<String> recordAccess(SessionRecord session, @Nullable String cookieHeader, Instant now) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         Objects.requireNonNull(now, "now");
         // Keyed on the stable session id, so it reaches the session whatever handle the request carried.
         sessionStore.recordAccess(session.sessionId(), now);
@@ -153,7 +156,7 @@ public final class ServerSessionBinding implements SessionBinding {
 
     @Override
     public void destroy(SessionRecord session) {
-        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(session, SESSION_PARAMETER);
         sessionStore.destroyById(session.sessionId());
     }
 

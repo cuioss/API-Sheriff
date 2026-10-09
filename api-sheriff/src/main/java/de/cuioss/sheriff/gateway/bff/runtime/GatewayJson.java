@@ -84,7 +84,7 @@ import org.jspecify.annotations.Nullable;
  * @author API Sheriff Team
  * @since 1.0
  */
-@Singleton
+@Singleton // not @ApplicationScoped: the class is final and immutable, so it needs no client proxy
 public final class GatewayJson {
 
     private static final int FIRST_UNESCAPED_CHARACTER = 0x20;
