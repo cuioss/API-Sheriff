@@ -100,7 +100,9 @@ at most 28 s at p90.
 CAUTION: Queueing was negligible in this two-day sample, not in general. On the same organisation
 runners TokenSheriff measured, over two weeks, a median of about 350 s between the trigger and the
 start of its first build leg (range 31 s to 29 min), spent waiting for a runner across the chained
-helper jobs.
+helper jobs. `gate`, `config` and `check-changes` are three jobs of a few seconds each that run one
+after another, and each waits for its own runner; merged into one job they would wait once. That
+is a change to the organisation workflow and is worth nothing while runners are free.
 
 [cols="3,1,1,1"]
 |===
@@ -1011,6 +1013,14 @@ once more in the integration-test lane.
 
 The order is by gain alone. Three things matter when picking:
 
+* *Proposals 1 and 11 are not changes to this repository.* Both live in the reusable workflows of
+  `cuioss-organization` and are proposed there as
+  https://github.com/cuioss/cuioss-organization/pull/318[cuioss-organization#318], in the parallel
+  form: `sonar-build` drops `build` from its `needs`, and each job keeps the explicit `~/.m2` cache
+  step and loses `cache: maven` on `setup-java`. Folding the Sonar goal into the Java 25 leg is not
+  part of it. They reach this repository with the next workflow-version bump of `maven.yml` and
+  `integration-tests.yml`; the gain of proposal 1 is confirmed by the first pull request built on
+  that version, whose `build/conclusion` should arrive after one `verify`, not two.
 * *Both lanes gate.* Proposal 1 alone leaves the integration-test lane at 34.7 min; proposal 2
   alone leaves the build lane at 30.9 min. Neither shortens a pull request without the other.
 * *The cheap ones are 1, 2, 6 and 7.* Together they are expected to bring the build lane to about
@@ -1028,7 +1038,8 @@ the merge queue only the integration-test lane changes, from 30.5 min to about t
 
 1 -- Parallel Sonar build::
 The same three `verify` runs and the same Sonar analysis execute; only their order changes. The
-quality gate still blocks `build/conclusion`. A failing build no longer prevents a Sonar run, which
+quality gate still blocks `build/conclusion`: the `conclusion` job checks `build` and `sonar-build`
+separately and is red when either fails. `deploy-snapshot` still waits for both. A failing build no longer prevents a Sonar run, which
 costs runner minutes on broken builds. If the Sonar goal is folded into the Java 25 leg instead,
 the analysis consumes the coverage of that very run and the duplicate third run disappears; nothing
 proven is lost, because that run repeats the Java 25 leg test for test.
@@ -1087,7 +1098,11 @@ Each test still proves the same behaviour: `AwaitsTest:459` proves delegation wi
 time, which is a stronger proof.
 
 11 -- One repository restore::
-Not test-related.
+Not test-related. The explicit cache step is the one to keep: it has a `restore-keys` fallback, so
+a changed POM starts from the previous repository, where `setup-java` restores on the exact hash
+only. This repository's own jobs (`rewrite-report`, `config-validation`, `demo-client-e2e`,
+`benchmark`, `release`) use `setup-java` with `cache: maven` alone and restore once; they are
+unaffected.
 
 12 -- Hygiene::
 A duplicate is removed only where the table under C names the surviving test and the assertion
