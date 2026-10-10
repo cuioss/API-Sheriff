@@ -218,7 +218,7 @@ class SurefireForkGroupContractTest {
 
     @Test
     @DisplayName("the partition detector accepts a correct split and rejects each way of breaking it")
-    void partitionDetectorRejectsBrokenSplits() throws Exception {
+    void partitionDetectorRejectsBrokenSplits() {
         String correct = pomWith(execution(DEFAULT_EXECUTION, "", "quarkus-fork,isolated-fork", "true")
                 + execution("quarkus", QUARKUS_FORK, "", "true") + execution("isolated", ISOLATED_FORK, "", "false"));
         String runsAClassTwice = pomWith(execution(DEFAULT_EXECUTION, "", QUARKUS_FORK, "true")

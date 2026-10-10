@@ -113,9 +113,11 @@ shape over an unaffordable handshake matrix.
 
 Unit coverage of the mechanisms is strong and boundary-inclusive with injected clocks
 (inclusive TTL boundary; within/outside leeway; single-flight concurrency with real threads).
-The gap: no descriptor guard asserts the declared values (`ttl_seconds: 3600`,
-`leeway_seconds: 30`) and no IT forces a refresh at the leeway boundary — deleting either key
-would turn nothing red.
+The gap: of the declared values (`ttl_seconds: 3600`, `leeway_seconds: 30`), only the
+`ttl_seconds` of `sheriff-config-refresh/gateway.yaml` is deletion-detectable, through
+`BffSessionAbsoluteTtlIT`. No guard asserts the `ttl_seconds` of any other descriptor or
+`leeway_seconds` anywhere, so deleting one of those keys would turn nothing red, and no IT forces
+a refresh at the leeway boundary.
 
 *Narrowed for the lifetime, on one descriptor.*
 `BffSessionAbsoluteTtlIT.sessionEndsAtItsDeclaredLifetimeWhateverTheRefreshDid` pins the absolute

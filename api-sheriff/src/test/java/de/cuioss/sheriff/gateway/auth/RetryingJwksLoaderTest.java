@@ -28,8 +28,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -89,12 +87,19 @@ class RetryingJwksLoaderTest {
     private static final Duration FAST = Duration.ofMillis(50);
 
     private MockWebServer server;
-    private ScheduledExecutorService scheduler;
+    /**
+     * The per-test scheduler the loaders built by this fixture retry on; the one production-timing
+     * test uses the shared production scheduler instead. It is held as the concrete pool so a test
+     * can read its queue, and it drops a task from that queue the moment the task is cancelled, so
+     * what is still scheduled is a fact read off the scheduler.
+     */
+    private ScheduledThreadPoolExecutor scheduler;
     private final AtomicInteger failuresBeforeSuccess = new AtomicInteger();
 
     @BeforeEach
     void startSchedulerAndServer() throws IOException {
-        scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler = new ScheduledThreadPoolExecutor(1);
+        scheduler.setRemoveOnCancelPolicy(true);
         server = new MockWebServer();
         server.setDispatcher(new Dispatcher() {
             @Override
@@ -272,37 +277,31 @@ class RetryingJwksLoaderTest {
         @DisplayName("close releases the delegate and describes the loader without its URL")
         void closeAndToString() throws Exception {
             // Arrange — the endpoint never succeeds, so a retry episode is live and a re-dial is
-            // already scheduled: there is something for close() to release. The loader gets a
-            // scheduler of its own whose queue the test can read, and which drops a task from that
-            // queue the moment it is cancelled. What is still scheduled is then a fact read off the
-            // scheduler, not something inferred from a re-dial failing to arrive within a wait.
+            // already scheduled: there is something for close() to release. The loader retries on
+            // the test's own scheduler, which this test alone has used, whose queue the test can
+            // read, and which drops a task from that queue the moment it is cancelled. What is still
+            // scheduled is then a fact read off the scheduler, not something inferred from a re-dial
+            // failing to arrive within a wait. The fixture stops that scheduler after the test
+            // whatever an assertion did, so a re-dial left queued for an hour is discarded with it.
             failuresBeforeSuccess.set(Integer.MAX_VALUE);
-            ScheduledThreadPoolExecutor retries = new ScheduledThreadPoolExecutor(1);
-            retries.setRemoveOnCancelPolicy(true);
-            try {
-                RetryingJwksLoader loader = new RetryingJwksLoader(ISSUER_NAME,
-                        () -> JwksLoaderFactory.createHttpLoader(httpConfig()), REFRESH_INTERVAL, NEVER_WITHIN_TEST,
-                        retries);
-                initialise(loader);
-                assertEquals(1, retries.getQueue().size(), "precondition: the re-dial is on the scheduler");
-                int requestsBeforeClose = server.getRequestCount();
+            RetryingJwksLoader loader = httpLoader();
+            initialise(loader);
+            assertEquals(1, scheduler.getQueue().size(), "precondition: the re-dial is on the scheduler");
+            int requestsBeforeClose = server.getRequestCount();
 
-                // Act
-                loader.close();
+            // Act
+            loader.close();
 
-                // Assert — the release is observable on the scheduler rather than only on the loader's
-                // own flag: the one re-dial it held is gone, so no later fetch can come from it. A
-                // close() that rendered a tidy toString while leaving the retry scheduled would still
-                // have it queued, which is the half the old assertDoesNotThrow(loader::close) could
-                // not distinguish.
-                assertTrue(retries.getQueue().isEmpty(), "a closed loader leaves no re-dial scheduled");
-                assertEquals(requestsBeforeClose, server.getRequestCount(), "closing issues no fetch of its own");
-                String rendered = loader.toString();
-                assertTrue(rendered.contains(ISSUER_NAME));
-                assertFalse(rendered.contains(String.valueOf(server.getPort())), "the JWKS URL is never rendered");
-            } finally {
-                retries.shutdownNow();
-            }
+            // Assert — the release is observable on the scheduler rather than only on the loader's
+            // own flag: the one re-dial it held is gone, so no later fetch can come from it. A
+            // close() that rendered a tidy toString while leaving the retry scheduled would still
+            // have it queued, which is the half the old assertDoesNotThrow(loader::close) could
+            // not distinguish.
+            assertTrue(scheduler.getQueue().isEmpty(), "a closed loader leaves no re-dial scheduled");
+            assertEquals(requestsBeforeClose, server.getRequestCount(), "closing issues no fetch of its own");
+            String rendered = loader.toString();
+            assertTrue(rendered.contains(ISSUER_NAME));
+            assertFalse(rendered.contains(String.valueOf(server.getPort())), "the JWKS URL is never rendered");
         }
     }
 

@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 
+import io.restassured.http.Cookie;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
@@ -47,6 +48,12 @@ import org.junit.jupiter.api.Test;
 class BffSessionMediationIT extends BaseIntegrationTest {
 
     private static final String NORELAY_PATH = "/bff-session/norelay/get";
+
+    /**
+     * The session-cookie name the primary stack uses, the gateway's default. Spelled out here rather
+     * than imported: this black-box suite takes no constant from the gateway's own classes.
+     */
+    private static final String SESSION_COOKIE = "__Host-sheriff-session";
 
     @Test
     @DisplayName("an authenticated session injects the bearer upstream and never forwards the session cookie")
@@ -115,7 +122,13 @@ class BffSessionMediationIT extends BaseIntegrationTest {
         // refresh-client.
         Session session = BffKeycloakLoginFlow.login("/bff-session/get");
 
-        assertFalse(session.gatewayCookies().isEmpty(),
+        // Read off the callback response alone. The jar the login returns already held the cookies of
+        // the initiation response before the callback was followed, so its being non-empty says nothing
+        // about the callback. Reduced to a boolean first, so the cookie value reaches no failure message.
+        Cookie callbackSessionCookie = session.callbackCookies().get(SESSION_COOKIE);
+        boolean callbackSetNoSessionCookie = callbackSessionCookie == null
+                || callbackSessionCookie.getValue() == null || callbackSessionCookie.getValue().isEmpty();
+        assertFalse(callbackSetNoSessionCookie,
                 "the callback must set a session cookie establishing the server-side session");
 
         for (int request = 0; request < 2; request++) {
