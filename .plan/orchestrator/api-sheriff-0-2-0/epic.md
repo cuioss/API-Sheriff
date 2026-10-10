@@ -62,6 +62,22 @@ would otherwise force a retrofit.
 - **Every ADR-authoring plan** (V02-04, V02-06, V02-11, V02-12), note added 2026-10-09: the next free
   ordinal on `origin/main` at `386f3f74` is `0063`. ADR-0005 is `Superseded by ADR-0062`; ADR-0018,
   ADR-0051 and ADR-0057 were amended by `PLAN-V02-01`.
+- **Test-cycle rework landed outside the queue (2026-10-10)** — #414 (`9aac0bca`, the analysis) and
+  #424 (`9f9dc6f9`, nine of its ten proposals; the analysis document deleted again), from the direct
+  brief `test-duration-reduction-claude-brief.md`, not a queued plan. It touched 89 files under
+  `api-sheriff/src/test/**`, `integration-tests/**`, `benchmarks/` and both test POMs. Every staged
+  plan that adds or moves a test now follows three new conventions, each guarded by a contract test:
+  - `api-sheriff` runs three surefire executions chosen by JUnit `@Tag` (plain classes in one reused
+    fork, `@QuarkusTest` classes in another, isolated classes one JVM each) —
+    `SurefireForkGroupContractTest`. A new class that pins a logger level or other JVM-wide state
+    needs the isolation tag.
+  - A second failsafe execution runs seven wall-clock-bound IT classes three at a time —
+    `FailsafeConcurrencyContractTest`. A new IT joins it only if it shares no Keycloak user, log
+    counter or fixture with another member.
+  - `UnreachablePort` hands out each port once per JVM.
+  `PLAN-V02-12` additionally meets two new users in `integration-realm.json` and the reworked
+  `grpc-echo` build in `integration-tests/docker-compose.yml`; `PLAN-V02-11` meets the changed
+  `benchmarks/pom.xml` (`package` instead of `compile` for the nested build).
 - **Collision the gate did not predict (2026-10-04):** `PLAN-V02-13` and `PLAN-V02-10` ran together
   as the only disjoint pair, and both changed `edge/DispatchStage.java`, `edge/GatewayEdgeRoute.java`,
   their two tests and `doc/configuration.adoc`. Neither spec declared `DispatchStage.java`; V02-10's
@@ -197,7 +213,9 @@ doc-only or build-light plan for the second and third slots.
     `HTTP 404`. #408 changed `.github/workflows/benchmark.yml` and `benchmarks/pom.xml` and belongs
     to no plan in this queue; the three `PLAN-V02-01` parts merged before it have green benchmark
     runs. Why the login path is unmapped in the benchmark stack is not established. The lane does
-    not gate merges, so nothing blocked. Candidate homes: the plan behind #408, or `PLAN-V02-11`,
+    not gate merges, so nothing blocked. **Seventh failure 2026-10-10 on #424**, same abort; that run
+    built and started the reworked `grpc-echo` image, so #424's benchmark-lane change works up to
+    this goal. Candidate homes: the plan behind #408, or `PLAN-V02-11`,
     which owns the benchmark lane's purpose. While it is red, Open Defect 16 cannot be observed.
 
 16. **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
@@ -300,6 +318,16 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy
+  key-material generators from TokenSheriff, proposal 7) and #423 (IT concurrency not realised: the
+  idle-timeout legs and four sequential suites). Quality points the brief's "no decrease" rule
+  makes worth watching: `BffCookieRefreshIT` now observes one refresh per run where it observed
+  three, and tests sharing a wait fail together; the two operand orders of `ConfigValidator`'s
+  anchor-overlap check are covered only by map iteration order (no test fixes it); the commit
+  messages of three #424 commits still claim "identical" coverage from accumulated JaCoCo data,
+  which the PR body itself retracts. Fourteen tests were removed as duplicates, each with a named
+  survivor in the hygiene commit message — not re-read here.
 
 - **`PLAN-V02-01` D7 RESIDUE, NONE STAGED** (added 2026-10-09, from the landing). Not found in the
   landed diff: a recorded verdict on `PLAN-V02-08`'s two status choices (`502` on a refused widening
