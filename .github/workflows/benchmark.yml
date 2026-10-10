@@ -24,35 +24,22 @@ jobs:
     # Only run on merged PRs, not just closed ones
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     # Add timeout to prevent long-running jobs (increased for integration benchmarks).
-    # The -Pbenchmark profile DECLARES THIRTEEN k6 goals: the eight cross-gateway matrix aspects, the
-    # two retained non-matrix health benchmarks (healthLiveCheck, gatewayHealth), the two
-    # API-Sheriff-only passthrough-relay executions (mapped relay throughput and the empty-mode
-    # no-regression run), and the pending-login flood. All THIRTEEN of them execute: uploadLarge,
-    # websocketEcho and pendingLoginFlood carry a <skip> bound to their own property, but all three
-    # properties are false in benchmarks/pom.xml, so all three goals run. They are ordered last in
-    # the profile, the flood last of all, so a fail-fast abort from any of them cannot discard a
-    # goal that would otherwise produce a result.
-    #
-    # The thirteenth goal is a bound proof, not a measurement. It is expected to WRITE its summary
-    # document, pendingLoginFlood-summary.json, which the coverage step below requires like any
-    # other, and to produce NO published row: the document carries `published: false`, and the
-    # converter makes no report or history entry from it.
+    # The k6 goals the -Pbenchmark profile declares are not listed here: their source is
+    # benchmarks/pom.xml, and the build-generated execution manifest
+    # (benchmarks/target/benchmark-execution-manifest.json) reports which of them are enabled and
+    # run. uploadLarge and websocketEcho carry a <skip> bound to their own property and are ordered
+    # last in the profile, so a fail-fast abort from either of them cannot discard a goal that would
+    # otherwise produce a result.
     #
     # Budget. The first two terms are per-goal timings measured locally 2026-07-28 rather than
-    # estimated; the flood's term is a bound, not a measurement:
-    #   * goal execution   ~16 min for the twelve measured goals, plus the flood.
+    # estimated:
+    #   * goal execution   ~16 min for the goal set measured then.
     #                      11 request-rate goals x (60s k6 window + ~10s compose/k6 start and
     #                      summary write) = ~13 min, plus uploadLarge. uploadLarge is NOT a
     #                      request-rate goal: it is transfer-bound at reduced concurrency
     #                      (k6.vus.upload.large = 5), so it does not finish in the same wall time as
     #                      a request-rate run — it is budgeted at ~3 min on its own.
-    #                      pendingLoginFlood is not a request-rate goal either: it starts a fixed
-    #                      20 001 logins, each costing the identity provider one pushed request, and
-    #                      takes as long as that takes. It has not been timed on a runner. Its bound
-    #                      is the script's own maxDuration of 12 min (each of its two phases has to
-    #                      finish inside the five-minute lifetime of a pending login, or the goal
-    #                      fails), so the term is at most ~28 min. Replace the bound with a measured
-    #                      figure once the goal has run here. Re-derive this term when a skip
+    #                      Re-derive this term when a skip
     #                      property is flipped, or when a goal is added or removed.
     #   * stack startup    ~120 s -- the lane boots SEVEN native gateway instances (api-sheriff,
     #                      api-sheriff-mtls, api-sheriff-cookie, api-sheriff-cookie-2,
@@ -71,8 +58,7 @@ jobs:
     #   * native compile   the dominant and most variable term on a cold cache.
     #
     # 75 minutes holds with headroom for the cold native compile; it is kept unchanged because the
-    # measured run does not approach the cap, and the flood's bound of 12 further minutes does not
-    # take it there either.
+    # measured run does not approach the cap.
     timeout-minutes: 75
     permissions:
       # READ, not write. The former `contents: write` was justified in-comment as "needed to upload
@@ -135,14 +121,9 @@ jobs:
       - name: Run Integration Benchmarks with k6
         id: run-benchmarks
         run: |
-          # Run k6-based integration benchmarks with native image. The -Pbenchmark profile declares
-          # thirteen goals: the eight cross-gateway matrix aspects (unauth, bearer, http2,
-          # graphql, upload-1MB, upload-50MB, ws, grpc), the two retained non-matrix health
-          # benchmarks (healthLiveCheck, gatewayHealth), the two API-Sheriff-only
-          # passthrough-relay executions (mapped and empty), and the pending-login flood. All
-          # thirteen execute and are expected to write a summary document; twelve of those become a
-          # CI result, and the flood's, marked `published: false`, becomes none.
-          # The on-demand APISIX comparison lane is deliberately NOT run
+          # Run k6-based integration benchmarks with native image. Every goal the execution
+          # manifest reports as enabled is expected to write a summary document that becomes a CI
+          # result. The on-demand APISIX comparison lane is deliberately NOT run
           # here. Maven still fails fast on the goals that do run, so the coverage step below
           # remains what proves which goals actually produced a result.
           echo "Running k6 integration benchmarks with native Quarkus..."

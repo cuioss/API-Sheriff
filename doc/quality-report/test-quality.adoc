@@ -241,8 +241,8 @@ neutralised fixtures — a technique, not a smell.
 
 A downstream consumer documents gateway behaviour to its operators, and points each statement at a
 test. It filed seventeen properties, each under an id of its own: six it found pinned at integration
-level, eleven proven at unit level only. Those eleven are pinned here, ten in Failsafe suites of
-`integration-tests` and one as a k6 run of `benchmarks`. The ids are the downstream's. A refactoring that removes one of the tests below un-proves a statement another
+level, eleven proven at unit level only. Those eleven are pinned here, all in Failsafe suites of
+`integration-tests`. The ids are the downstream's. A refactoring that removes one of the tests below un-proves a statement another
 project makes to its operators, so the rows are recorded where a reviewer will look.
 
 === Pinned by the suites added for them
@@ -261,10 +261,11 @@ stages only the baseline security filter applies to a reserved path.
 
 |M-41
 |Pending logins are bounded at 10 000, and the oldest is evicted at the limit.
-|The k6 script `benchmarks/src/main/resources/k6-scripts/pending_login_flood.js`, run as the last
-goal of the benchmark lane. Its run is a bound proof and not a throughput figure: its summary is
-written, marked unpublished, and left out of the published benchmark report.
-`K6BenchmarkConverterTest` holds the unpublished case at unit level.
+|`BffPendingLoginBoundIT.firstOfCapacityLoginsIsKept` (the first of 10 000 started logins still
+completes into a session) and `BffPendingLoginBoundIT.firstLoginIsDroppedOnceCapacityLoginsFollowIt`
+(with 10 000 logins started after it, the first is refused at the callback, while the newest still
+completes into a session). The suite runs alone, in the sequential Failsafe execution, against the
+primary instance.
 
 |M-42
 |Concurrent requests on one session whose access token is near expiry cause one refresh grant at
@@ -313,7 +314,7 @@ after the back-off.
 |===
 
 No leg has been stopped as a finding. One correction to the gateway is recorded in the M-51 row.
-M-41 has no recorded run; see <<native-run-state>>.
+M-41 passed against the native image in a later run than the other rows; see <<native-run-state>>.
 
 === Already pinned when the filing was read
 
@@ -358,19 +359,21 @@ already says which two clients lack the URL, and it is accurate.
 [#native-run-state]
 === What has run against the native image
 
-A Failsafe suite proves its row only where it has passed against the native image. The state on
-2026-10-07 is recorded here because one row has no run at all.
+A Failsafe suite proves its row only where it has passed against the native image. The rows did not
+all pass in the same run, so the state is recorded here with the date of each run.
 
-* *Passed in a full run of the lane, in the form in which they are committed:* M-40, M-42, M-44,
+* *Passed in a full run of the lane on 2026-10-07, in the form in which they are committed:* M-40, M-42, M-44,
   M-50, M-51 (all three legs), M-52, M-54, M-55, M-59 and both legs of M-60. The run was
   `verify -Pintegration-tests -pl integration-tests -am` on the developer build host, not in CI, on
   the sources as this change commits them: 301 tests, no failure, no error, none skipped.
   `JwksLateIdpReadinessIT` (M-48) and `JwksEgressMismatchIT`, whose gateway start this change also
   altered, passed in the same run.
-* *M-41:* no run of the benchmark lane with the flood script is recorded. Until one is, the row
-  rests on the script as written and on `K6BenchmarkConverterTest`.
+* *M-41, passed in a full run of the lane on 2026-10-10:* both test methods of
+  `BffPendingLoginBoundIT`, in 76 seconds. The run was `verify -Pintegration-tests -pl
+  integration-tests -am` on the developer build host, not in CI, on the sources that add the suite:
+  285 tests, no failure, no error, none skipped.
 
-The full run before that one, on the same day, failed six tests in the suites of M-42, M-44, M-50,
+The full run before the one of 2026-10-07, on the same day, failed six tests in the suites of M-42, M-44, M-50,
 M-59 and M-60. None failed at an assertion about its property: each failed at the start of its rig,
 on a host port number that was dead on the build host. The cause, and the rule every test-started
 container follows since, are in

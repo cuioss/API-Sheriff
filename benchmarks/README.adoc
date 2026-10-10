@@ -24,11 +24,10 @@ The two lanes run deliberately different sets, so a number is always attributabl
 |Lane |Executions |Contents
 
 |CI baseline (`-Pbenchmark`)
-|13
+|Per the execution manifest
 |The eight cross-gateway matrix aspects, the two retained non-matrix benchmarks `healthLiveCheck`
- and `gatewayHealth`, the two API-Sheriff-only passthrough-relay executions (`mapped` relay
- throughput and the `empty`-mode no-regression run), *plus* the pending-login flood, which proves a
- bound and publishes no figure (see <<_the_pending_login_flood>>).
+ and `gatewayHealth`, *plus* the two API-Sheriff-only passthrough-relay executions (`mapped` relay
+ throughput and the `empty`-mode no-regression run).
 
 |On-demand comparison (`run-comparison.sh`)
 |8
@@ -159,45 +158,14 @@ plain-HTTP surface remains anywhere in the stack.
 
 === The pending-login flood
 
-`pending_login_flood.js` (benchmark name `pendingLoginFlood`) is a *bound proof, not a throughput
-figure*. The gateway keeps a record of every login a browser has started and not yet completed.
-Unauthenticated callers create those records, so the store is bounded: it holds 10 000 of them and
-drops the oldest for every further one. The script pins that bound from both sides against the
-running gateway and the real identity provider:
-
-* *Phase A.* One login is opened up to the identity provider's login form, 9 999 further logins are
-  started and left unfinished, and the first login is then completed. It is the oldest of exactly
-  10 000 records, and it must yield a session.
-* *Phase B.* One login is opened, 10 000 further logins are started, and the first login is then
-  completed. It has been dropped, so the gateway's callback must refuse it — no session cookie, and
-  the session route answers `401` — while the newest login of the flood, completed next, still
-  yields a session.
-
-Each expectation, and each flood's exact count of started logins, is a k6 threshold; a run that
-misses one exits non-zero. A run that cannot go on -- a login that never reaches the identity
-provider's login form, a flood request that starts no login -- is aborted as a whole with
-`exec.test.abort` and exits non-zero as well. Both exits were measured on the pinned k6 image
-(`Dockerfile.k6`, k6 2.1.0) with a one-iteration script whose only counter is never incremented: k6
-evaluates the `count==1` threshold on that counter, reports it crossed with `count=0` and exits 99,
-and an aborted run exits 108 and still calls its summary handler. A last check asserts
-that the gateway still answers its readiness probe. Each phase has to finish inside the five-minute
-lifetime of a pending login. The script checks that for phase B: it measures the age of the first
-login from before the request that starts it until its completion has returned, and that age has to
-be below 270 seconds.
-
-What it reports: nothing worth a trend. The request mix is a flood of unfinished logins, so the
-run's rate and latency say nothing about a gateway hot path. Its summary document,
-`pendingLoginFlood-summary.json`, is *written* — the coverage step expects one from every goal that
-runs — and is marked `published: false`, so `K6BenchmarkConverter` makes no report, badge or history
-entry from it. The aspect is API-Sheriff-only and not part of the comparison lane.
-
-It is the last k6 goal of the lane on purpose: it leaves the gateway holding 10 000 pending logins,
-and no measured aspect should run against that. `skip.benchmark.pending.login.flood` suppresses it.
+The bound on the gateway's store of pending logins is *not part of the benchmark lane*. It is proven
+by the Failsafe suite `BffPendingLoginBoundIT` in `integration-tests`, which `-Pintegration-tests`
+runs.
 
 === Which goals actually run
 
-The CI baseline lane declares thirteen goals, and all thirteen execute. Being declared in `pom.xml` is
-not evidence that a goal produces a number -- a single failing goal used to let Maven's fail-fast
+The goals the CI baseline lane declares are those of the `-Pbenchmark` profile in `pom.xml`. Being
+declared there is not evidence that a goal produces a number -- a single failing goal used to let Maven's fail-fast
 discard every goal sequenced after it, so the coverage gate below, not the declaration, is what
 proves a goal ran.
 
@@ -245,13 +213,6 @@ documentation of that resolved set, not its source:
  teardown funnel and takes a bounded relay sub-budget on top, so the goal measures relay throughput
  instead of the exhaustion path. Its trend series starts empty. `skip.benchmark.websocket.echo` is
  retained (now `false`) so the goal stays individually suppressible.
-
-|`pendingLoginFlood`
-|runs
-|A bound proof, not a measurement (see <<_the_pending_login_flood>>). It writes its summary document,
- which the coverage step requires, and that document is marked `published: false`, so it produces no
- report entry and no trend series. `skip.benchmark.pending.login.flood` (default `false`) suppresses
- it.
 
 |`sessionMediated`
 |*unwired*
@@ -307,8 +268,7 @@ For quick runs (shorter duration, assumes containers already running):
 
 Results are written to `target/benchmark-results/` and post-processed by `K6ResultPostProcessor`
 into the report artifacts consumed by the benchmark pages pipeline. Every summary document becomes
-one report entry, with one exception: a document that carries `published: false` is left out. The
-pending-login flood writes the only such document.
+one report entry.
 
 For the proxied and matrix runs the container topology is overlaid with
 `docker-compose.benchmark.yml`, which adds the `nginx-static` backend and repoints the gateway's
@@ -667,9 +627,7 @@ know:
   `K6BenchmarkConverter` / `K6ResultPostProcessor`. The downstream report pipeline (badges,
   10-run history, trends, GitHub Pages) consumes an identically-shaped model and is unchanged.
 . *Coverage*: the lane grew from three wired executions to twelve *declared* goals, all of which
-  execute and are expected to produce a CI result. A thirteenth declared goal, the pending-login
-  flood, was added since; it executes as well and publishes no result (see
-  <<_the_pending_login_flood>>). Two of the twelve reached that state late: `websocketEcho`
+  execute and are expected to produce a CI result. Two of the twelve reached that state late: `websocketEcho`
   once its blocking edge admission-permit leak was fixed, and `uploadLarge` once the framework
   body-size floor was declared under the `upload` anchor's `max_body_bytes`. `bearer`
   is genuinely new CI coverage — the wrk-era bearer runner existed on disk but was registered in no
@@ -692,9 +650,7 @@ incomparable, the k6 series starts fresh rather than continuing the wrk series:
   needs ten runs before its trend series is meaningful. That was most of the lane: eight of the
   twelve goals the swap left declared had never executed in CI, and all eight started their series
   empty — six when the fail-fast truncation was repaired, `websocketEcho` once its blocking permit
-  leak was fixed, and `uploadLarge` once the framework body-size floor was declared. The
-  pending-login flood, declared since, is not one of them: its summary document is not published,
-  so it starts no series at all. The workflow's
+  leak was fixed, and `uploadLarge` once the framework body-size floor was declared. The workflow's
   end-of-job coverage step (`.github/workflows/benchmark.yml`) is the record of which goals produced
   a result in a given run. A flat or short trend line on a name that *did* run is an absence of
   history, not a regression.
