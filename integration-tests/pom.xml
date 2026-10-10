@@ -288,6 +288,10 @@
                            running one at a time.
                          MtlsHandshakeIT, WebSocketProxyIT: timing margins too tight for CPU
                            contention.
+                         BffPendingLoginBoundIT: proves the bound of the pending-login store of
+                           the primary instance with two counts of started logins. The counts
+                           are exact only while no other class starts a login on that instance,
+                           so the class must never carry the tag.
 
                          A class that fails, or is flaky, only when it runs concurrently loses
                          the tag. Do not change the test. -->

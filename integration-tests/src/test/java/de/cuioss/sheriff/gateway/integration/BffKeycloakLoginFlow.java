@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,6 +90,13 @@ import io.restassured.specification.RequestSpecification;
  * This helper is a test-support class (no {@code *IT} suffix), so Failsafe does not run it as a
  * suite; the {@code Bff*IT} classes call {@link #login(String)} / {@link #login(String, String)} to
  * establish a live session.
+ * <p>
+ * <strong>The two halves of the flow.</strong> A suite that needs a login to stay unfinished for a
+ * while, or expects the gateway to refuse its callback, drives the halves itself:
+ * {@link #open(String, String)} runs the flow up to the identity provider's login form, and
+ * {@link #complete(OpenedLogin, String, String)} posts the credentials and navigates to the callback
+ * without asserting its status. Every {@code login} method is built on these two, so the Keycloak leg
+ * exists once.
  */
 final class BffKeycloakLoginFlow {
 
@@ -295,6 +303,45 @@ final class BffKeycloakLoginFlow {
     }
 
     /**
+     * A login that has been opened up to the identity provider's login form and not completed: the
+     * state {@link #open(String, String)} leaves behind and {@link #complete(OpenedLogin, String, String)}
+     * continues from.
+     * <p>
+     * Both cookie jars are the live, mutable jars of the flow, not copies:
+     * {@link #complete(OpenedLogin, String, String)} applies the cookies of the credential response
+     * and of the callback to them, so after it returns {@link #gatewayCookies()} is what a request to
+     * the gateway replays.
+     *
+     * @param gatewayOrigin   the browser-facing gateway origin the login was opened on
+     * @param gatewayCookies  the gateway cookie jar, carrying the browser-binding cookie of the pending
+     *                        login
+     * @param keycloakCookies the Keycloak cookie jar, carrying the cookies of the login page
+     * @param formAction      the action URL of the login form, rewritten to the host-published
+     *                        Keycloak authority
+     * @param startedAt       the instant taken before the first request of the login was sent
+     * @since 1.0
+     */
+    record OpenedLogin(String gatewayOrigin, Map<String, String> gatewayCookies,
+    Map<String, String> keycloakCookies, String formAction, Instant startedAt) {
+    }
+
+    /**
+     * A login {@link #complete(OpenedLogin, String, String)} has driven to the gateway callback: where
+     * the identity provider sent the browser, and what the gateway answered there.
+     * <p>
+     * The target is part of the result because a caller that expects the gateway to refuse the
+     * callback has to know that the callback is what answered: a credential response redirecting
+     * anywhere else would be navigated just the same, and its answer could pass for a refusal.
+     *
+     * @param callbackUrl the {@code Location} of the credential response, exactly as the identity
+     *                    provider emitted it
+     * @param callback    the response of the navigation to that location, not followed
+     * @since 1.0
+     */
+    record CompletedLogin(String callbackUrl, Response callback) {
+    }
+
+    /**
      * Runs the full auth-code flow against the primary (server-mode) gateway origin.
      *
      * @param startPath the gateway path to navigate to (a require:session route such as
@@ -397,8 +444,48 @@ final class BffKeycloakLoginFlow {
     private static Session login(String startPath, String gatewayOrigin,
             Map<String, String> initialGatewayCookies, Map<String, String> callbackOnlyCookies, String username,
             String password) {
+        OpenedLogin opened = open(startPath, gatewayOrigin, initialGatewayCookies);
+        opened.gatewayCookies().putAll(callbackOnlyCookies);
+
+        Response callback = complete(opened, username, password).callback();
+        int callbackStatus = callback.statusCode();
+        assertEquals(302, callbackStatus, () -> "the gateway callback must complete a login with a redirect "
+                + "back to the original path, but answered " + callbackStatus);
+
+        // The one seam every Bff*IT login funnels through, so the deliverability check belongs here
+        // rather than duplicated per suite: whatever the gateway just set on the browser has to be a
+        // cookie the browser would actually keep.
+        assertCookiesFitBrowserBudget(callback);
+
+        return new Session(opened.gatewayCookies(), callback.getDetailedCookies(), location(callback),
+                Map.copyOf(opened.keycloakCookies()));
+    }
+
+    /**
+     * Opens a login on the given gateway origin up to the identity provider's login form, from an
+     * empty cookie jar, and stops there: no credentials are posted and the gateway callback is not
+     * reached.
+     * <p>
+     * These are steps 1 and 2 of the flow: the navigation that starts the login, the authorization URL
+     * the gateway redirects to, the login page and its form action. The gateway holds a pending login
+     * for the returned {@link OpenedLogin} from here on, until {@link #complete(OpenedLogin, String, String)}
+     * finishes it or the gateway drops it.
+     *
+     * @param startPath     the gateway path to navigate to; an unauthenticated navigation onto it must
+     *                      answer {@code 302} into the identity provider
+     * @param gatewayOrigin the browser-facing gateway origin to drive
+     * @return the opened login
+     * @since 1.0
+     */
+    static OpenedLogin open(String startPath, String gatewayOrigin) {
+        return open(startPath, gatewayOrigin, Map.of());
+    }
+
+    private static OpenedLogin open(String startPath, String gatewayOrigin,
+            Map<String, String> initialGatewayCookies) {
         Map<String, String> gatewayCookies = new HashMap<>(initialGatewayCookies);
         Map<String, String> keycloakCookies = new HashMap<>();
+        Instant startedAt = Instant.now();
 
         // Step 1 — navigate onto the require:session route: the gateway sets the pending-auth binding
         // cookie and 302s the browser to the IdP authorization endpoint.
@@ -421,6 +508,29 @@ final class BffKeycloakLoginFlow {
         Response loginPage = loginPage(keycloakCookies, authorizationUrl);
         String formAction = rewriteToHost(extractFormAction(loginPage.asString()));
 
+        return new OpenedLogin(gatewayOrigin, gatewayCookies, keycloakCookies, formAction, startedAt);
+    }
+
+    /**
+     * Completes an opened login: posts the credentials to the identity provider and follows its
+     * redirect to the gateway callback.
+     * <p>
+     * These are steps 3 and 4 of the flow. The credential POST must answer {@code 302}; the status of
+     * the callback is <em>not</em> asserted, because a caller may expect the gateway to refuse it. The
+     * cookies the callback sets are applied to the gateway jar of {@code openedLogin} before the
+     * response is returned, and the Keycloak jar gains the cookies of the credential response.
+     *
+     * @param openedLogin the login {@link #open(String, String)} returned
+     * @param username    the realm username to authenticate as
+     * @param password    that user's password
+     * @return where the credential response redirected to, and the response of that navigation, not
+     *         followed
+     * @since 1.0
+     */
+    static CompletedLogin complete(OpenedLogin openedLogin, String username, String password) {
+        Map<String, String> gatewayCookies = openedLogin.gatewayCookies();
+        Map<String, String> keycloakCookies = openedLogin.keycloakCookies();
+
         // Step 3 — POST the credentials. The gateway drives the authorization request with
         // response_mode=query, so on a successful login Keycloak answers a 302 whose Location is the
         // gateway redirect_uri (/auth/callback) with the authorization code + state in the QUERY STRING.
@@ -429,14 +539,15 @@ final class BffKeycloakLoginFlow {
                 .formParam("username", username)
                 .formParam("password", password)
                 .redirects().follow(false)
-                .when().post(formAction)
+                .when().post(openedLogin.formAction())
                 .then().statusCode(302).extract().response();
         // The credential response is the one that establishes the realm SSO session: it sets the
         // identity and session cookies and expires the login-restart cookie. Without them the jar
         // holds only the login page's cookies, and a later prompt=none authorization request would
         // find no SSO session to answer from.
         absorbSetCookies(keycloakCookies, credentials);
-        String callbackUrl = rewriteToHost(location(credentials));
+        String redirectTarget = location(credentials);
+        String callbackUrl = rewriteToHost(redirectTarget);
 
         // Step 4 — follow that redirect to the gateway callback exactly as a browser would: a plain
         // top-level GET navigation carrying code + state in the query. The gateway parses the code from
@@ -447,22 +558,14 @@ final class BffKeycloakLoginFlow {
         // urlEncodingEnabled(false) is load-bearing here, as it is on the keycloak() spec: the Location
         // Keycloak emitted is already percent-encoded, and REST Assured's default re-encoding would
         // double-encode the code/state/iss values and the gateway would reject the callback.
-        gatewayCookies.putAll(callbackOnlyCookies);
-        Response callback = gateway(gatewayCookies, gatewayOrigin)
+        Response callback = gateway(gatewayCookies, openedLogin.gatewayOrigin())
                 .urlEncodingEnabled(false)
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when().get(callbackUrl)
-                .then().statusCode(302).extract().response();
+                .then().extract().response();
         gatewayCookies.putAll(callback.getCookies());
-
-        // The one seam every Bff*IT login funnels through, so the deliverability check belongs here
-        // rather than duplicated per suite: whatever the gateway just set on the browser has to be a
-        // cookie the browser would actually keep.
-        assertCookiesFitBrowserBudget(callback);
-
-        return new Session(gatewayCookies, callback.getDetailedCookies(), location(callback),
-                Map.copyOf(keycloakCookies));
+        return new CompletedLogin(redirectTarget, callback);
     }
 
     /**
