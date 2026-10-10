@@ -151,7 +151,7 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
     @Test
     @Timeout(value = 6, unit = TimeUnit.MINUTES)
     @DisplayName("the first of 10 000 started logins is still pending and completes into a session")
-    void firstOfCapacityLoginsIsKept() throws InterruptedException, ExecutionException {
+    void firstOfCapacityLoginsIsKept() throws Exception {
         OpenedLogin first = BffKeycloakLoginFlow.open(LOGIN_PATH, GATEWAY_ORIGIN);
         int started = flood(FLOOD_KEEPING_THE_FIRST);
         assertEquals(FLOOD_KEEPING_THE_FIRST, started, "the flood must start exactly the logins it counts");
@@ -176,7 +176,7 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
     @Test
     @Timeout(value = 6, unit = TimeUnit.MINUTES)
     @DisplayName("the first login is dropped once 10 000 logins were started after it, the newest one is kept")
-    void firstLoginIsDroppedOnceCapacityLoginsFollowIt() throws InterruptedException, ExecutionException {
+    void firstLoginIsDroppedOnceCapacityLoginsFollowIt() throws Exception {
         OpenedLogin first = BffKeycloakLoginFlow.open(LOGIN_PATH, GATEWAY_ORIGIN);
         int started = flood(FLOOD_DROPPING_THE_FIRST - 1);
         OpenedLogin newest = BffKeycloakLoginFlow.open(LOGIN_PATH, GATEWAY_ORIGIN);
