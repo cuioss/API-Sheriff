@@ -48,13 +48,6 @@
              execution. -->
         <skip.benchmark.websocket.echo>false</skip.benchmark.websocket.echo>
 
-        <!-- pendingLoginFlood is a bound proof, not a measurement: it starts 20 001 logins to show
-             that the gateway's store of pending logins keeps exactly 10 000 of them. It runs by
-             default. The property makes the goal individually suppressible without editing the
-             execution, for a run that wants the measured aspects alone: the goal takes several
-             minutes and loads the identity provider with one pushed request per started login. -->
-        <skip.benchmark.pending.login.flood>false</skip.benchmark.pending.login.flood>
-
         <!-- Skip container lifecycle management (useful when containers are already running) -->
         <skip.container.lifecycle>false</skip.container.lifecycle>
 
@@ -240,8 +233,6 @@
                                         <argument>skip.benchmark.upload.large=${skip.benchmark.upload.large}</argument>
                                         <argument>--skip-property</argument>
                                         <argument>skip.benchmark.websocket.echo=${skip.benchmark.websocket.echo}</argument>
-                                        <argument>--skip-property</argument>
-                                        <argument>skip.benchmark.pending.login.flood=${skip.benchmark.pending.login.flood}</argument>
                                     </arguments>
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
@@ -689,44 +680,6 @@
                                     <environmentVariables>
                                         <BENCHMARK_VUS>${k6.vus}</BENCHMARK_VUS>
                                         <BENCHMARK_DURATION>${k6.duration}</BENCHMARK_DURATION>
-                                        <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
-                                    </environmentVariables>
-                                </configuration>
-                            </execution>
-
-                            <!-- Run the pending-login flood: a bound proof, not a measurement. It is the
-                                 LAST k6 goal on purpose. It leaves the gateway holding 10 000 pending
-                                 logins and the identity provider 20 001 pushed requests, and no measured
-                                 aspect should run against that state; and a failure here cannot discard
-                                 a measured goal, since Maven runs same-phase executions in declaration
-                                 order.
-
-                                 The script takes neither BENCHMARK_VUS nor BENCHMARK_DURATION: its two
-                                 phases are fixed counts of started logins, not a load held for a time.
-                                 The timeout covers the script's own maxDuration of twelve minutes -
-                                 each phase has to finish inside the five-minute lifetime of a pending
-                                 login - with room for the container start. -->
-                            <execution>
-                                <id>run-k6-pending-login-flood-benchmark</id>
-                                <phase>integration-test</phase>
-                                <goals>
-                                    <goal>exec</goal>
-                                </goals>
-                                <configuration>
-                                    <!-- Individually suppressible — see skip.benchmark.pending.login.flood -->
-                                    <skip>${skip.benchmark.pending.login.flood}</skip>
-                                    <executable>docker</executable>
-                                    <arguments>
-                                        <argument>compose</argument>
-                                        <argument>run</argument>
-                                        <argument>--rm</argument>
-                                        <argument>k6</argument>
-                                        <argument>run</argument>
-                                        <argument>/scripts/pending_login_flood.js</argument>
-                                    </arguments>
-                                    <workingDirectory>${integration.compose.dir}</workingDirectory>
-                                    <timeout>900000</timeout>
-                                    <environmentVariables>
                                         <K6_OUTPUT_DIR>${k6.output.dir}</K6_OUTPUT_DIR>
                                     </environmentVariables>
                                 </configuration>

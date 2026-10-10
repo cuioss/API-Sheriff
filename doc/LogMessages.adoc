@@ -127,7 +127,6 @@ section lists only the k6-specific records, whose upstream counterparts are wrk-
 |K6Benchmark-4 |BENCHMARK |Wrote comparison summary covering %s aspect(s) to %s |Logged once when the comparative summary artifact has been written, outside the gh-pages tree
 |K6Benchmark-5 |BENCHMARK |Comparing empty-passthrough_sni run '%s' against PLAN-04 baseline '%s' |Logged once when the empty-`passthrough_sni` no-regression comparison starts, naming both summary documents it reads
 |K6Benchmark-6 |BENCHMARK |Passthrough empty-mode no-regression check passed within the %s noise band |Logged once when the empty-mode run stayed inside the no-regression noise band and the comparison passed
-|K6Benchmark-7 |BENCHMARK |Left out the k6 summary for benchmark '%s': it is marked published: false |Logged once per summary document the converter leaves out because it carries `published: false`: the document is written for the coverage step, and no benchmark entry is produced from it
 |===
 
 === ERROR Level (200-299)

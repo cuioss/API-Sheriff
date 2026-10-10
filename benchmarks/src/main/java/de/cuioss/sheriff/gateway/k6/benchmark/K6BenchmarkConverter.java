@@ -69,14 +69,6 @@ import java.util.stream.Stream;
  * {@code "90.0"}, {@code "99.0"}); only measured percentiles are emitted and missing ones are
  * never estimated or fabricated.
  *
- * <h2>The optional {@code published} member</h2>
- * A document may additionally carry {@code "published": false}. Such a document is left out: no
- * benchmark is produced from it, so it reaches neither the report nor the history, and
- * {@link K6BenchmarkLogMessages.INFO#SUMMARY_NOT_PUBLISHED} records its benchmark name. A script sets
- * the member when its run proves a property and measures nothing worth a trend, while its summary
- * document must still exist for the coverage step. Only the JSON boolean {@code false} has this
- * effect; a document without the member, or with any other value for it, converts as described above.
- *
  * @since 1.0
  */
 public class K6BenchmarkConverter implements BenchmarkConverter {
@@ -122,7 +114,6 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
     private static final String FIELD_REQUESTS_PER_SECOND = "requests_per_second";
     private static final String FIELD_ERROR_RATE = "error_rate";
     private static final String FIELD_LATENCY_MS = "latency_ms";
-    private static final String FIELD_PUBLISHED = "published";
 
     private static final String SCORE_UNIT = "ops/s";
 
@@ -177,9 +168,8 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
      * Parses one k6 summary document into a benchmark.
      *
      * @param file the k6 summary file
-     * @return the parsed benchmark, or {@code null} when the document is unparseable, omits a
-     *         mandatory field or is marked {@code published: false} — the caller skips such files
-     *         rather than emitting a partial or an unwanted benchmark
+     * @return the parsed benchmark, or {@code null} when the document is unparseable or omits a
+     *         mandatory field — the caller skips such files rather than emitting a partial benchmark
      * @throws IOException if reading the file fails
      */
     private BenchmarkData.Benchmark parseSummaryFile(Path file) throws IOException {
@@ -193,10 +183,6 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
 
         String name = requiredString(summary, FIELD_BENCHMARK_NAME, file);
         if (name == null) {
-            return null;
-        }
-        if (isMarkedUnpublished(summary)) {
-            LOGGER.info(K6BenchmarkLogMessages.INFO.SUMMARY_NOT_PUBLISHED, name);
             return null;
         }
         if (!summary.has(FIELD_REQUESTS_PER_SECOND)) {
@@ -276,16 +262,6 @@ public class K6BenchmarkConverter implements BenchmarkConverter {
      */
     private boolean isPrimitiveField(JsonObject summary, String field) {
         return summary.has(field) && summary.get(field).isJsonPrimitive();
-    }
-
-    /**
-     * Whether a summary carries {@code published} as the JSON boolean {@code false}. A string, a
-     * number, {@code null} or {@code true} under that name does not mark the document.
-     */
-    private boolean isMarkedUnpublished(JsonObject summary) {
-        return isPrimitiveField(summary, FIELD_PUBLISHED)
-                && summary.getAsJsonPrimitive(FIELD_PUBLISHED).isBoolean()
-                && !summary.getAsJsonPrimitive(FIELD_PUBLISHED).getAsBoolean();
     }
 
     private double optionalDouble(JsonObject object, String field) {
