@@ -300,17 +300,6 @@ class SealedSessionCookieCodecTest {
                     "the cookie name is bound into the associated data, so a value cannot be replayed under another name");
         }
 
-        @Test
-        @DisplayName("Should reject an unknown format version")
-        void shouldRejectUnknownVersion() throws Exception {
-            String sealed = codec.seal(payload());
-            byte[] raw = Base64.getUrlDecoder().decode(sealed);
-            raw[0] = (byte) (SealedSessionCookieCodec.FORMAT_VERSION + 1);
-
-            assertTrue(codec.unseal(Base64.getUrlEncoder().withoutPadding().encodeToString(raw)).isEmpty(),
-                    "an unknown format version is refused before any decrypt attempt");
-        }
-
         /**
          * Every header byte other than the current {@code FORMAT_VERSION}, derived from it rather than
          * listed beside it. That covers the previous version {@code 1} (the ten-field layout without

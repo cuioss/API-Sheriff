@@ -165,28 +165,60 @@ final class BffKeycloakLoginFlow {
     static final String PASSWORD = "integration-password";
 
     /**
-     * The seeded test user dedicated to the refresh suite (see {@code integration-realm.json}).
+     * The seeded test user of the suites that drive a token refresh and end no Keycloak session of
+     * the user (see {@code integration-realm.json}).
      * <p>
-     * {@code BffTokenRefreshIT} forces the {@code FAILED} refresh branch by revoking the logged-in
-     * user's sessions through the Keycloak admin API. That revocation is realm-wide for the user it
-     * names, so driving it against {@link #USERNAME} would destroy the sessions every other
-     * {@code Bff*IT} suite establishes. This second identity is what keeps the destructive step
-     * isolated to the refresh suite.
+     * It is a second identity so that those suites do not share {@link #USERNAME} with the suites of
+     * the primary instance. No suite that logs in as this user revokes, deletes or logs out a
+     * Keycloak session through the admin API: a suite that does so has a user of its own —
+     * {@link #REVOCATION_USERNAME}, {@link #REUSE_USERNAME}, {@link #BACKCHANNEL_USERNAME}. That is
+     * what lets suites that log in as this user run at the same time.
      */
     static final String REFRESH_USERNAME = "refresh-user";
 
-    /** The refresh-suite test user's password. */
+    /** The password of {@link #REFRESH_USERNAME}. */
     static final String REFRESH_PASSWORD = "refresh-password";
+
+    /**
+     * The seeded test user of {@code BffTokenRefreshIT} alone (see {@code integration-realm.json}).
+     * <p>
+     * That suite forces the {@code FAILED} refresh branch by logging the user out through the Keycloak
+     * admin API, which ends <em>every</em> Keycloak session of the user it names, in the whole realm.
+     * Against {@link #USERNAME} or {@link #REFRESH_USERNAME} it would end sessions other suites hold.
+     * No other suite logs in as this user, so the logout ends sessions of that suite only, whatever
+     * runs beside it.
+     */
+    static final String REVOCATION_USERNAME = "revocation-user";
+
+    /** The password of {@link #REVOCATION_USERNAME}. */
+    static final String REVOCATION_PASSWORD = "revocation-password";
+
+    /**
+     * The seeded test user of {@code BffRefreshReuseIT} alone (see {@code integration-realm.json}).
+     * <p>
+     * That suite finds the Keycloak session a login created as the one session the user has more
+     * after the login than before it, and then deletes it. A login of the same user by a suite running
+     * at the same time would add a second session to that difference, and the deletion could then not
+     * be aimed. No other suite logs in as this user.
+     * <p>
+     * The user's name, first name and e-mail address are no longer than those of
+     * {@link #REFRESH_USERNAME}: the suite logs in on the cookie-mode refresh instance, where they
+     * are sealed into the session cookie, and the cookie must not grow with the change of user.
+     */
+    static final String REUSE_USERNAME = "reuse-user";
+
+    /** The password of {@link #REUSE_USERNAME}. */
+    static final String REUSE_PASSWORD = "reuse-password";
 
     /**
      * The seeded test user dedicated to the back-channel logout suite (see
      * {@code integration-realm.json}).
      * <p>
-     * A third identity exists for the same reason {@link #REFRESH_USERNAME} is the second one:
      * {@code BffBackchannelLogoutIT} triggers an IdP-initiated logout through the Keycloak admin API,
-     * which is realm-wide for the user it names. Driving it against {@link #USERNAME} would destroy
-     * the sessions every other {@code Bff*IT} suite establishes, and driving it against
-     * {@link #REFRESH_USERNAME} would collide with the refresh suite's own revocation step.
+     * which is realm-wide for the user it names. Driving it against {@link #USERNAME} or
+     * {@link #REFRESH_USERNAME} would destroy the sessions other {@code Bff*IT} suites establish, and
+     * driving it against {@link #REVOCATION_USERNAME} would collide with that suite's own revocation
+     * step.
      */
     static final String BACKCHANNEL_USERNAME = "backchannel-user";
 
@@ -321,7 +353,7 @@ final class BffKeycloakLoginFlow {
      * <p>
      * The credentials are a parameter for the same reason the origin is: a suite that revokes the
      * logged-in user's sessions realm-wide needs an identity no other suite shares, so
-     * {@code BffTokenRefreshIT} authenticates as {@link #REFRESH_USERNAME}. The flow itself is
+     * {@code BffTokenRefreshIT} authenticates as {@link #REVOCATION_USERNAME}. The flow itself is
      * identical — only the credentials posted in step 3 differ.
      *
      * @param startPath     the gateway path to navigate to (a require:session route)

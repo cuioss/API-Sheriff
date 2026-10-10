@@ -32,6 +32,7 @@ import io.vertx.core.net.NetSocket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.Test;
  * the backend receives the exact ClientHello the client sent.
  */
 @DisplayName("SniFrontListener")
+@Tag("isolated-fork")
 class SniFrontListenerTest {
 
     private static final String HOST = LoopbackHost.ADDRESS;

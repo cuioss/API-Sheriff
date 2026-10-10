@@ -107,8 +107,11 @@ class FramingGateTest {
         // Arrange
         PipelineRequest request = request(HttpMethod.HEAD, Map.of("content-length", List.of("3")), 3L, true);
 
-        // Act + Assert
-        assertThrows(GatewayException.class, () -> gate.process(request));
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+        // Assert
+        assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
     }
 
     @Test
@@ -133,8 +136,11 @@ class FramingGateTest {
         PipelineRequest request = request(HttpMethod.GET, Map.of(
                 "connection", List.of("authorization")), -1L, false);
 
-        // Act + Assert
-        assertThrows(GatewayException.class, () -> gate.process(request));
+        // Act
+        GatewayException thrown = assertThrows(GatewayException.class, () -> gate.process(request));
+
+        // Assert
+        assertEquals(EventType.SECURITY_FILTER_VIOLATION, thrown.getEventType());
     }
 
     @Test

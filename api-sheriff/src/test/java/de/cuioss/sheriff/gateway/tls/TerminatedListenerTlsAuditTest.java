@@ -40,6 +40,7 @@ import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -79,6 +80,7 @@ import org.junit.jupiter.api.Test;
 @TestProfile(TerminatedListenerTlsAuditTest.KeyLessMainListenerProfile.class)
 @EnableTestLogger
 @DisplayName("Terminated main-listener TLS audit")
+@Tag("quarkus-fork")
 class TerminatedListenerTlsAuditTest {
 
     private static final String NAMED_BUCKET = "named-server-tls";

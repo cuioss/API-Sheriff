@@ -43,6 +43,7 @@ import java.util.UUID;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -106,11 +107,18 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The test is one method on purpose: the legs are successive states of the same two containers, so
  * splitting them would make each depend on the previous one's side effects through test ordering.
+ * <p>
+ * <strong>Run concurrently.</strong> The class carries the tag {@code sleep-bound} and runs in the
+ * concurrent Failsafe execution (see {@code integration-tests/pom.xml}). Its network and its two
+ * containers are named with a random suffix per run and its gateway port is used by no other suite.
+ * Of the compose stack it uses the Keycloak alone, read-only: the proxy fetches the realm's key set
+ * and the test mints one token; it starts no session a suite could end and ends none.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 @DisplayName("Late IdP: readiness is DOWN until the key set loads, then recovers fast and accepts tokens")
+@Tag("sleep-bound")
 class JwksLateIdpReadinessIT {
 
     /** The late provider's image — the same pinned nginx the compose stack's TLS fixtures run. */

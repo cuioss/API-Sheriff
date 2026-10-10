@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMou
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -95,11 +96,21 @@ import org.junit.jupiter.api.Test;
  * time against a declared lifetime, so there is no state to poll for. One rig at a time — the
  * container name and the gateway port are fixed.
  * <p>
+ * <strong>Run concurrently.</strong> The class carries the tag {@code sleep-bound} and runs in the
+ * concurrent Failsafe execution (see {@code integration-tests/pom.xml}). The short-lived gateway is
+ * this suite's own: its container name, host port and derived descriptor are used by no other suite.
+ * The control session lives on the shared {@code api-sheriff-refresh} instance, as
+ * {@link BffKeycloakLoginFlow#REFRESH_USERNAME}; no suite ends a Keycloak session of that user, and
+ * the one login made there stays far below the ten sessions that instance keeps per subject. The
+ * refresh of the control session writes a token-refreshed record to that instance's log, which is
+ * why no suite that counts those records ({@code BffClientSecretModeIT}) runs at the same time.
+ * <p>
  * The suite does not extend {@code BaseIntegrationTest}: no request goes to the primary instance.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
+@Tag("sleep-bound")
 class BffSessionAbsoluteTtlIT {
 
     /** The session route both instances serve, relaying a bearer to the echo upstream. */

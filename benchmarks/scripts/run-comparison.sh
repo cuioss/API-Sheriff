@@ -30,11 +30,15 @@
 # beside it. Disabling the dashboard therefore changes what a person can browse, never what the
 # comparison artifact is computed from.
 #
-# Prerequisite: the three-file comparison stack must be up --
-#   docker compose -f docker-compose.yml \
-#                  -f docker-compose.benchmark.yml \
-#                  -f docker-compose.apisix.yml \
-#                  --profile comparison up -d --build
+# Prerequisites, in this order:
+#   1. Build the grpc-echo fixture jar on the host, from the repository root. The grpc-echo image
+#      build copies integration-tests/target/quarkus-app and fails when it is absent:
+#        ./mvnw package -Pintegration-tests -DskipTests -pl integration-tests -am
+#   2. Bring the three-file comparison stack up, from integration-tests/:
+#        docker compose -f docker-compose.yml \
+#                       -f docker-compose.benchmark.yml \
+#                       -f docker-compose.apisix.yml \
+#                       --profile comparison up -d --build
 #
 set -euo pipefail
 
@@ -87,7 +91,7 @@ while [[ $# -gt 0 ]]; do
         --duration) DURATION="$2";   shift 2 ;;
         --vus)      VUS="$2";        shift 2 ;;
         --no-dashboard) DASHBOARD="false"; shift ;;
-        -h|--help)  sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)  sed -n '2,42p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done

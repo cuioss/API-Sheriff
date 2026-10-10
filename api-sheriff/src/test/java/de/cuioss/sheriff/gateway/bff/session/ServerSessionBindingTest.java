@@ -23,14 +23,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import lombok.experimental.Delegate;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -273,13 +283,132 @@ class ServerSessionBindingTest {
     @DisplayName("Should keep the session resolvable throughout a persist (no destroy-then-create window)")
     void shouldNotDropTheSessionWhilePersisting() {
         SessionRecord session = session(SessionRecord.newSessionId(), "access-token-1");
-        BoundSession created = binding.bind(session, NOW);
+        SessionRecord rotated = session(session.sessionId(), "access-token-2");
+        try (ExecutorService concurrentRequest = Executors.newSingleThreadExecutor()) {
+            WriteObservingStore observingStore = new WriteObservingStore(store, concurrentRequest);
+            ServerSessionBinding observedBinding = new ServerSessionBinding(observingStore, cookieCodec);
+            String requestCookie = requestCookieOf(observedBinding.bind(session, NOW));
+            observingStore.resolveAroundEveryWrite(() -> observedBinding.resolve(requestCookie, NOW));
 
-        Optional<BoundSession> persisted = binding.persist(session(session.sessionId(), "access-token-2"), NOW);
+            Optional<BoundSession> persisted = observedBinding.persist(rotated, NOW);
 
-        assertTrue(persisted.isPresent(), "the live session is updated");
-        assertTrue(binding.resolve(requestCookieOf(created), NOW).isPresent(),
-                "a concurrent resolve must never miss a rotating session");
+            assertTrue(persisted.isPresent(), "the live session is updated");
+            assertEquals(List.of(Optional.of(session), Optional.of(rotated)), observingStore.resolved(),
+                    "a concurrent resolve must never miss a rotating session: the persist makes one store "
+                            + "write, and a request resolving on another thread sees the previous record "
+                            + "before it and the rotated one after it");
+        }
+    }
+
+    /**
+     * A {@link SessionStore} that, around every write the binding makes, parks the writing thread and
+     * runs one resolve on a second thread before letting the write — and after it, the caller — go on.
+     * <p>
+     * That is every point at which another request can interleave with a {@code persist}: before the
+     * binding's first store write, between two of them, and after the last. A binding that destroyed
+     * the session and created it again would be caught between its two writes, where the resolve finds
+     * nothing. What happens <em>inside</em> one store write is not observed here; that each store
+     * operation is atomic is {@code InMemorySessionStoreTest}'s subject.
+     * <p>
+     * The hand-over is a submitted task whose result the writing thread waits for, so no thread sleeps
+     * and the interleaving is the same on every run.
+     */
+    private static final class WriteObservingStore implements SessionStore {
+
+        @Delegate(excludes = Writes.class)
+        private final SessionStore delegate;
+        private final ExecutorService secondThread;
+        private final List<Optional<SessionRecord>> resolved = new ArrayList<>();
+        private @Nullable Callable<Optional<SessionRecord>> concurrentResolve;
+
+        private WriteObservingStore(SessionStore delegate, ExecutorService secondThread) {
+            this.delegate = delegate;
+            this.secondThread = secondThread;
+        }
+
+        /** From now on, runs {@code resolve} on the second thread before and after every write. */
+        void resolveAroundEveryWrite(Callable<Optional<SessionRecord>> resolve) {
+            concurrentResolve = resolve;
+        }
+
+        /** @return what the second thread resolved, in the order it resolved it */
+        List<Optional<SessionRecord>> resolved() {
+            return List.copyOf(resolved);
+        }
+
+        @Override
+        public void create(SessionRecord session, String cookieHandle, Instant now) {
+            aroundWrite(() -> {
+                delegate.create(session, cookieHandle, now);
+                return true;
+            });
+        }
+
+        @Override
+        public boolean replaceIfPresent(SessionRecord session) {
+            return aroundWrite(() -> delegate.replaceIfPresent(session));
+        }
+
+        @Override
+        public boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle) {
+            return aroundWrite(() -> delegate.replaceAndReissueHandle(session, newCookieHandle));
+        }
+
+        @Override
+        public void destroyById(String sessionId) {
+            aroundWrite(() -> {
+                delegate.destroyById(sessionId);
+                return true;
+            });
+        }
+
+        @Override
+        public int destroyBySid(String sid) {
+            return aroundWrite(() -> delegate.destroyBySid(sid));
+        }
+
+        @Override
+        public int destroyBySub(String sub) {
+            return aroundWrite(() -> delegate.destroyBySub(sub));
+        }
+
+        private <T> T aroundWrite(Supplier<T> write) {
+            resolveOnSecondThread();
+            T result = write.get();
+            resolveOnSecondThread();
+            return result;
+        }
+
+        private void resolveOnSecondThread() {
+            Callable<Optional<SessionRecord>> resolve = concurrentResolve;
+            if (resolve == null) {
+                return;
+            }
+            try {
+                resolved.add(Awaits.connect(secondThread.submit(resolve), "the concurrent resolve to return"));
+            } catch (InterruptedException _) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while the concurrent resolve was running");
+            } catch (ExecutionException | TimeoutException e) {
+                throw new AssertionError("the concurrent resolve did not return a result", e);
+            }
+        }
+
+        /** The store writes {@link WriteObservingStore} implements itself rather than delegating. */
+        private interface Writes {
+
+            void create(SessionRecord session, String cookieHandle, Instant now);
+
+            boolean replaceIfPresent(SessionRecord session);
+
+            boolean replaceAndReissueHandle(SessionRecord session, String newCookieHandle);
+
+            void destroyById(String sessionId);
+
+            int destroyBySid(String sid);
+
+            int destroyBySub(String sub);
+        }
     }
 
     @Test

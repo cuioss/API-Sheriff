@@ -35,6 +35,7 @@ import io.vertx.core.net.NetSocket;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -44,6 +45,7 @@ import org.junit.jupiter.api.Test;
  * sockets so the backpressure and close semantics are the production ones.
  */
 @DisplayName("PassthroughRelay")
+@Tag("isolated-fork")
 class PassthroughRelayTest {
 
     private static final String HOST = LoopbackHost.ADDRESS;

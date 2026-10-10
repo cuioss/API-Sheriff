@@ -39,6 +39,7 @@ import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -76,6 +77,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
+@Tag("isolated-fork")
 class NoStoredOptionalArchTest {
 
     private static final String BASE_PACKAGE = "de.cuioss.sheriff.gateway";

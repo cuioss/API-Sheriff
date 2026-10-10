@@ -465,7 +465,7 @@ class ClientSigningKeyTest {
         @Test
         @DisplayName("Should refuse an encrypted block and name the conversion to unencrypted PKCS#8")
         void shouldRefuseAnEncryptedBlock() throws Exception {
-            Path keyFile = TestSigningKeys.writeRelabelledPrivateBlock(directory, TestSigningKeys.rsaKeyPair(),
+            Path keyFile = TestSigningKeys.writeRelabelledPrivateBlock(directory, TestSigningKeys.sharedRsaKeyPair(),
                     "ENCRYPTED PRIVATE KEY");
 
             assertContentRefusal(keyFile, "holds an ENCRYPTED PRIVATE KEY block; an encrypted key is not supported — "
@@ -475,7 +475,7 @@ class ClientSigningKeyTest {
         @Test
         @DisplayName("Should refuse a PKCS#1 RSA block and name the conversion to unencrypted PKCS#8")
         void shouldRefuseAnRsaPrivateKeyBlock() throws Exception {
-            Path keyFile = TestSigningKeys.writeRelabelledPrivateBlock(directory, TestSigningKeys.rsaKeyPair(),
+            Path keyFile = TestSigningKeys.writeRelabelledPrivateBlock(directory, TestSigningKeys.sharedRsaKeyPair(),
                     "RSA PRIVATE KEY");
 
             assertContentRefusal(keyFile, "holds a block labelled RSA PRIVATE KEY; that key format is not supported — "
@@ -624,7 +624,7 @@ class ClientSigningKeyTest {
         @Test
         @DisplayName("Should refuse an RSA private half with an EC public half")
         void shouldRefuseAnRsaPrivateHalfWithAnEcPublicHalf() throws Exception {
-            Path keyFile = TestSigningKeys.writeHalves(directory, TestSigningKeys.rsaKeyPair().getPrivate(),
+            Path keyFile = TestSigningKeys.writeHalves(directory, TestSigningKeys.sharedRsaKeyPair().getPrivate(),
                     TestSigningKeys.ecKeyPair().getPublic());
 
             assertContentRefusal(keyFile,
@@ -635,7 +635,7 @@ class ClientSigningKeyTest {
         @DisplayName("Should refuse an EC private half with an RSA public half")
         void shouldRefuseAnEcPrivateHalfWithAnRsaPublicHalf() throws Exception {
             Path keyFile = TestSigningKeys.writeHalves(directory, TestSigningKeys.ecKeyPair().getPrivate(),
-                    TestSigningKeys.rsaKeyPair().getPublic());
+                    TestSigningKeys.sharedRsaKeyPair().getPublic());
 
             assertContentRefusal(keyFile,
                     "holds a PRIVATE KEY block with an EC key and a PUBLIC KEY block that is not an EC public key");

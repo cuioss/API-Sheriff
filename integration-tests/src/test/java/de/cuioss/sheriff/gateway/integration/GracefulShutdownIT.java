@@ -29,9 +29,10 @@ import org.junit.jupiter.api.Test;
  * Verifies the runtime health and in-flight-completion properties the edge's graceful-shutdown
  * drain depends on. A black-box suite cannot signal {@code SIGTERM} to the container mid-request
  * (the failsafe harness owns the container lifecycle and stops it at teardown), so this IT asserts
- * the observable preconditions of a clean drain: the liveness and readiness probes report the
- * process healthy, and a burst of concurrent in-flight requests all complete without a dropped or
- * refused connection — exactly the requests the {@code SIGTERM} handler must be able to drain.
+ * the observable preconditions of a clean drain: the liveness probe reports the process alive, and a
+ * burst of concurrent in-flight requests all complete without a dropped or refused connection —
+ * exactly the requests the {@code SIGTERM} handler must be able to drain. The readiness probe is
+ * asserted once for the whole stack, by {@link ConfigLoadedIntegrationIT#managementHealthReportsUp()}.
  */
 class GracefulShutdownIT extends BaseIntegrationTest {
 
@@ -43,19 +44,6 @@ class GracefulShutdownIT extends BaseIntegrationTest {
         var response = givenManagement()
                 .when()
                 .get("/health/live")
-                .then()
-                .statusCode(200)
-                .extract();
-
-        assertEquals("UP", response.path("status"));
-    }
-
-    @Test
-    @DisplayName("the readiness probe reports the gateway ready")
-    void readinessUp() {
-        var response = givenManagement()
-                .when()
-                .get("/health/ready")
                 .then()
                 .statusCode(200)
                 .extract();

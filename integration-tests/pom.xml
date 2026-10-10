@@ -92,8 +92,11 @@
                  the normal build from packaging integration-tests as a Quarkus app. A
                  separate 'grpc-codegen' execution re-enables ONLY the gRPC proto codegen
                  (generate-code / generate-code-tests) so echo.proto compiles into stubs.
-                 The 'grpc-echo' profile below re-enables the 'build' goal to produce the
-                 echo fast-jar for its container image. -->
+                 The 'integration-tests' and 'jfr' profiles below each bind a
+                 'grpc-echo-build' execution of the 'build' goal, so the host reactor
+                 produces the echo fast-jar under target/quarkus-app at 'package' — before
+                 either profile's pre-integration-test executions start the stack, whose
+                 grpc-echo image build copies that directory. -->
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
@@ -183,14 +186,20 @@
             </build>
         </profile>
 
-        <!-- Packages the in-repo gRPC echo service as a Quarkus JVM fast-jar. Activated
-             only by the grpc-echo Dockerfile build stage; it re-enables the Quarkus
-             'build' goal that the normal module build deliberately leaves disabled. The
-             resulting target/quarkus-app is copied into the grpc-echo container image. -->
+        <!-- Profile for running integration tests with native image -->
         <profile>
-            <id>grpc-echo</id>
+            <id>integration-tests</id>
+            <properties>
+                <skipITs>false</skipITs>
+            </properties>
             <build>
                 <plugins>
+                    <!-- Packages the in-repo gRPC echo service as a Quarkus JVM fast-jar. It
+                         re-enables the Quarkus 'build' goal that the normal module build
+                         deliberately leaves disabled. The goal runs at 'package', so
+                         target/quarkus-app exists before the pre-integration-test executions
+                         below start the stack: the grpc-echo image build copies that directory
+                         and runs no Maven of its own. -->
                     <plugin>
                         <groupId>io.quarkus</groupId>
                         <artifactId>quarkus-maven-plugin</artifactId>
@@ -203,18 +212,7 @@
                             </execution>
                         </executions>
                     </plugin>
-                </plugins>
-            </build>
-        </profile>
 
-        <!-- Profile for running integration tests with native image -->
-        <profile>
-            <id>integration-tests</id>
-            <properties>
-                <skipITs>false</skipITs>
-            </properties>
-            <build>
-                <plugins>
                     <!-- Skip Unit Tests (Surefire) -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
@@ -224,92 +222,176 @@
                         </configuration>
                     </plugin>
 
-                    <!-- Integration Test Configuration -->
+                    <!-- Integration Test Configuration.
+
+                         The IT run is two failsafe executions, and a JUnit tag on the class
+                         decides which one runs it. What both share — which classes are ITs, the
+                         system properties, skipITs — is declared ONCE, on the plugin, so the two
+                         cannot drift apart; an execution declares only what tells it from the
+                         other. FailsafeConcurrencyContractTest reads this block and the IT
+                         sources and fails the build when the two executions stop partitioning
+                         the classes, or when a tagged class shares state the rules below name.
+
+                         default, every class WITHOUT the tag sleep-bound: one class after the
+                         other, one JVM per class — the root pom.xml's reuseForks false and
+                         failsafe's default of one fork at a time, as before the split.
+
+                         sleep-bound-concurrent, every class WITH the tag sleep-bound: one JVM per
+                         class as well, three of them at a time. These classes spend most of
+                         their time waiting on a wall clock — a token lifespan, a session
+                         lifetime, an idle window, an upstream timeout — so running them side by
+                         side costs little CPU and saves the sum of their waits.
+
+                         ORDER IS LOAD-BEARING. The default execution is declared first and Maven
+                         runs the executions of one plugin in one phase in the order of the
+                         effective POM, so every untagged class has finished before the first
+                         tagged class starts. Two things rest on it:
+
+                         1. Keycloak creates the integration realm's HS512 and AES keys on the
+                            first login after it started. Two logins arriving at the same
+                            instant on a freshly started Keycloak both generated them, and one
+                            of the two was answered invalid_code. The default execution holds
+                            every untagged Bff*IT, so dozens of logins, one at a time, have
+                            completed and the keys exist before any two logins can coincide.
+                            A run that selects ONLY tagged classes (-Dit.test=...) on a fresh
+                            stack does not have that protection.
+                         2. A tagged class never overlaps an untagged one. A suite kept out of
+                            the concurrent execution for something it shares with a tagged suite
+                            is therefore safe from it.
+
+                         The id of the first execution has to stay "default": that is the id of
+                         the execution the root pom.xml's pluginManagement declares, and the two
+                         merge. Under any other id the inherited execution would remain beside
+                         the two and run every class a second time, untagged and tagged alike.
+
+                         WHICH CLASS MAY CARRY THE TAG. One whose every assertion still holds
+                         when another tagged class runs beside it. Checked for each tagged class:
+                         the Keycloak user it logs in as and who can end that user's sessions;
+                         the gateway instances it drives and what it changes there; the
+                         container names, networks and host ports it creates; the instance log
+                         files it reads; whether it attaches a compose container to a network.
+                         Kept in the default execution although they wait on a wall clock:
+
+                         BffTokenRefreshIT, BffClientSecretModeIT, BffFapiControlsIT: each
+                           attributes a log record to its own request by counting the records of
+                           an instance log before and after it (quarkus-refresh.log,
+                           quarkus-cookie-refresh.log). The records carry no session, user or
+                           request, so one caused by a tagged suite on the same instance would
+                           satisfy the count. BffRefreshReuseIT, the longest suite that counts on
+                           both logs, is the one that runs concurrently.
+                         BffTlsRelaxationIT: connects the compose echo container to a network of
+                           its own and disconnects it again, three times per run, while every
+                           tagged suite's mediated call goes through that container.
+                         BffRefreshTransientFailureIT, BffRefreshSingleFlightIT,
+                         BffRefreshScopeWireIT: the stub identity-provider rig has one container
+                           name, one network and one port; the three exclude each other only by
+                           running one at a time.
+                         MtlsHandshakeIT, WebSocketProxyIT: timing margins too tight for CPU
+                           contention.
+
+                         A class that fails, or is flaky, only when it runs concurrently loses
+                         the tag. Do not change the test. -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <!-- Must stay the unqualified pattern. The qualified form this
+                                 replaced, **/integration/**/*IT.java, matched NONE of the IT
+                                 classes under de/cuioss/sheriff/gateway/integration/ in
+                                 failsafe 3.6.0, so `verify -Pintegration-tests` reported
+                                 "Tests run: 0" and BUILD SUCCESS while running no integration
+                                 test at all — a green lane asserting nothing, which is worse
+                                 than a red one. The pattern is deliberately NOT re-narrowed to
+                                 the integration package: every IT already lives there, so the
+                                 qualifier bought no selectivity, and an include that can
+                                 silently under-match is exactly the failure mode above. -->
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                            <!-- The mirror image of the jfr profile's exclusion below:
+                                 ImageMetadataJfrIT asserts the version label on
+                                 api-sheriff:jfr, which only the jfr lane builds. This lane
+                                 builds and tags api-sheriff:distroless, so the IT would
+                                 inspect an image this profile never produced. -->
+                            <excludes>
+                                <exclude>**/ImageMetadataJfrIT.java</exclude>
+                            </excludes>
+                            <systemPropertyVariables>
+                                <test.https.port>${test.https.port}</test.https.port>
+                                <!-- mTLS handshake suite: the dedicated api-sheriff-mtls instance
+                                     is published on 10444, and the client identities live on the
+                                     host under the certificates directory (generated by
+                                     generate-mtls-certificates.sh). Without these, MtlsHandshakeIT
+                                     falls back to null keystores / port 10443 and cannot reach the
+                                     require-client-cert listener. -->
+                                <test.mtls.port>10444</test.mtls.port>
+                                <test.mtls.client.keystore>${project.basedir}/src/main/docker/certificates/mtls-client.p12</test.mtls.client.keystore>
+                                <test.mtls.client.password>localhost-trust</test.mtls.client.password>
+                                <test.mtls.wrong.keystore>${project.basedir}/src/main/docker/certificates/mtls-wrong.p12</test.mtls.wrong.keystore>
+                                <test.mtls.wrong.password>wrong-trust</test.mtls.wrong.password>
+                                <!-- Relay-permit exhaustion regression: the dedicated
+                                     api-sheriff-ws-admission instance runs a deliberately
+                                     tiny edge_hardening admission budget and is published
+                                     on 10447. Without this, WebSocketProxyIT's exhaustion
+                                     test would fall back to the primary instance's
+                                     production-shaped caps, where its handful of sequential
+                                     upgrades can never exhaust anything and the test would
+                                     pass whether or not the permits are returned. -->
+                                <test.ws.admission.port>10447</test.ws.admission.port>
+                                <!-- Plain-HTTP management opt-out: the dedicated
+                                     api-sheriff-plain-mgmt instance publishes its management
+                                     port on 19005 and serves it over PLAIN HTTP. Without
+                                     this, ManagementPlainHttpOptOutIT would fall back to the
+                                     primary instance's HTTPS management port and its
+                                     "refuses HTTPS" assertion would be asserting the
+                                     opposite of the truth. The log directory is where the
+                                     compose stack writes the instance log the WARN
+                                     assertion greps. -->
+                                <test.plain.mgmt.management.port>19005</test.plain.mgmt.management.port>
+                                <!-- Egress hostname-verification matched control pair
+                                     (ADR-0040). Both instances dial the SAME
+                                     mismatched-tls-backend, whose certificate deliberately
+                                     does not cover the dialled service name, and differ in
+                                     exactly one gateway.yaml key:
+                                     egress_tls.upstream_verify_hostname. The verify-on
+                                     instance (10450) must refuse the upstream; the
+                                     verify-off instance (10451) must reach it. Two ports
+                                     rather than one because the knob is fixed at client
+                                     construction and so is a property of the whole gateway
+                                     process — a single instance could only ever exhibit one
+                                     side of the control. Without these, the pair would fall
+                                     back to the primary instance on 10443, which dials the
+                                     plain-HTTP go-httpbin and therefore performs no
+                                     hostname verification at all: BOTH legs would pass and
+                                     the test would assert nothing. -->
+                                <test.egress.verify.on.port>10450</test.egress.verify.on.port>
+                                <test.egress.verify.off.port>10451</test.egress.verify.off.port>
+                                <test.log.dir>${project.build.directory}/quarkus-logs</test.log.dir>
+                                <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                            </systemPropertyVariables>
+                            <skipITs>${skipITs}</skipITs>
+                        </configuration>
                         <executions>
                             <execution>
+                                <id>default</id>
                                 <goals>
                                     <goal>integration-test</goal>
                                     <goal>verify</goal>
                                 </goals>
                                 <configuration>
-                                    <!-- Must stay the unqualified pattern. The qualified form this
-                                         replaced, **/integration/**/*IT.java, matched NONE of the IT
-                                         classes under de/cuioss/sheriff/gateway/integration/ in
-                                         failsafe 3.6.0, so `verify -Pintegration-tests` reported
-                                         "Tests run: 0" and BUILD SUCCESS while running no integration
-                                         test at all — a green lane asserting nothing, which is worse
-                                         than a red one. The pattern is deliberately NOT re-narrowed to
-                                         the integration package: every IT already lives there, so the
-                                         qualifier bought no selectivity, and an include that can
-                                         silently under-match is exactly the failure mode above. -->
-                                    <includes>
-                                        <include>**/*IT.java</include>
-                                    </includes>
-                                    <!-- The mirror image of the jfr profile's exclusion below:
-                                         ImageMetadataJfrIT asserts the version label on
-                                         api-sheriff:jfr, which only the jfr lane builds. This lane
-                                         builds and tags api-sheriff:distroless, so the IT would
-                                         inspect an image this profile never produced. -->
-                                    <excludes>
-                                        <exclude>**/ImageMetadataJfrIT.java</exclude>
-                                    </excludes>
-                                    <systemPropertyVariables>
-                                        <test.https.port>${test.https.port}</test.https.port>
-                                        <!-- mTLS handshake suite: the dedicated api-sheriff-mtls instance
-                                             is published on 10444, and the client identities live on the
-                                             host under the certificates directory (generated by
-                                             generate-mtls-certificates.sh). Without these, MtlsHandshakeIT
-                                             falls back to null keystores / port 10443 and cannot reach the
-                                             require-client-cert listener. -->
-                                        <test.mtls.port>10444</test.mtls.port>
-                                        <test.mtls.client.keystore>${project.basedir}/src/main/docker/certificates/mtls-client.p12</test.mtls.client.keystore>
-                                        <test.mtls.client.password>localhost-trust</test.mtls.client.password>
-                                        <test.mtls.wrong.keystore>${project.basedir}/src/main/docker/certificates/mtls-wrong.p12</test.mtls.wrong.keystore>
-                                        <test.mtls.wrong.password>wrong-trust</test.mtls.wrong.password>
-                                        <!-- Relay-permit exhaustion regression: the dedicated
-                                             api-sheriff-ws-admission instance runs a deliberately
-                                             tiny edge_hardening admission budget and is published
-                                             on 10447. Without this, WebSocketProxyIT's exhaustion
-                                             test would fall back to the primary instance's
-                                             production-shaped caps, where its handful of sequential
-                                             upgrades can never exhaust anything and the test would
-                                             pass whether or not the permits are returned. -->
-                                        <test.ws.admission.port>10447</test.ws.admission.port>
-                                        <!-- Plain-HTTP management opt-out: the dedicated
-                                             api-sheriff-plain-mgmt instance publishes its management
-                                             port on 19005 and serves it over PLAIN HTTP. Without
-                                             this, ManagementPlainHttpOptOutIT would fall back to the
-                                             primary instance's HTTPS management port and its
-                                             "refuses HTTPS" assertion would be asserting the
-                                             opposite of the truth. The log directory is where the
-                                             compose stack writes the instance log the WARN
-                                             assertion greps. -->
-                                        <test.plain.mgmt.management.port>19005</test.plain.mgmt.management.port>
-                                        <!-- Egress hostname-verification matched control pair
-                                             (ADR-0040). Both instances dial the SAME
-                                             mismatched-tls-backend, whose certificate deliberately
-                                             does not cover the dialled service name, and differ in
-                                             exactly one gateway.yaml key:
-                                             egress_tls.upstream_verify_hostname. The verify-on
-                                             instance (10450) must refuse the upstream; the
-                                             verify-off instance (10451) must reach it. Two ports
-                                             rather than one because the knob is fixed at client
-                                             construction and so is a property of the whole gateway
-                                             process — a single instance could only ever exhibit one
-                                             side of the control. Without these, the pair would fall
-                                             back to the primary instance on 10443, which dials the
-                                             plain-HTTP go-httpbin and therefore performs no
-                                             hostname verification at all: BOTH legs would pass and
-                                             the test would assert nothing. -->
-                                        <test.egress.verify.on.port>10450</test.egress.verify.on.port>
-                                        <test.egress.verify.off.port>10451</test.egress.verify.off.port>
-                                        <test.log.dir>${project.build.directory}/quarkus-logs</test.log.dir>
-                                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                                    </systemPropertyVariables>
-                                    <skipITs>${skipITs}</skipITs>
+                                    <excludedGroups>sleep-bound</excludedGroups>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>sleep-bound-concurrent</id>
+                                <goals>
+                                    <goal>integration-test</goal>
+                                    <goal>verify</goal>
+                                </goals>
+                                <configuration>
+                                    <groups>sleep-bound</groups>
+                                    <forkCount>3</forkCount>
+                                    <reuseForks>false</reuseForks>
                                 </configuration>
                             </execution>
                         </executions>
@@ -453,6 +535,22 @@
             </properties>
             <build>
                 <plugins>
+                    <!-- Same grpc-echo-build execution as the integration-tests profile above,
+                         for the same reason: this lane starts the same stack, whose grpc-echo
+                         image build copies the host-built target/quarkus-app. -->
+                    <plugin>
+                        <groupId>io.quarkus</groupId>
+                        <artifactId>quarkus-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>grpc-echo-build</id>
+                                <goals>
+                                    <goal>build</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
                     <!-- Skip Unit Tests (Surefire) -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>

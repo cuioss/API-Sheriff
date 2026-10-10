@@ -30,9 +30,11 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests that {@link ConfigProducer} fails fast on an invalid configuration: the
- * bean producer and the startup observer both throw, and every collected violation
- * plus the abort are logged as structured ERROR records — so Quarkus exits non-zero
- * rather than serving on partial configuration. Also covers the ADR-0007 anchor
+ * bean producer throws, and every collected violation plus the abort are logged as
+ * structured ERROR records — so Quarkus exits non-zero rather than serving on partial
+ * configuration. The startup observer refusing the same broken set is asserted by
+ * {@code ConfigValidationParityTest#bootAndOfflineReportTheSameViolations}, whose
+ * {@code /config/broken} row drives {@code onStartup}. Also covers the ADR-0007 anchor
  * boot semantics: a valid anchored config boots cleanly, while an undeclared
  * squatter route inside an anchor namespace refuses boot.
  */
@@ -67,14 +69,6 @@ class ConfigFailFastTest {
 
         assertThrows(IllegalStateException.class, producer::gatewayConfig,
                 "producing a bean from a broken config must fail fast");
-    }
-
-    @Test
-    void shouldFailStartupOnBrokenConfig() throws Exception {
-        ConfigProducer producer = producerForBrokenConfig();
-
-        assertThrows(IllegalStateException.class, () -> producer.onStartup(null),
-                "startup must abort on a broken config");
     }
 
     @Test

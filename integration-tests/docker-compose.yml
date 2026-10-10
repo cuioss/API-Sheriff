@@ -245,12 +245,16 @@ services:
   # Exposes unary echo, server-streaming echo, and a deliberately-failing method
   # (non-OK grpc-status) so GrpcProxyIT can assert echo, streaming, and trailer/status
   # relay through the gateway. Reached by the gateway on the internal network as
-  # grpc-echo:9000 (separate gRPC server); no host port is published. Built from the
-  # integration-tests module via the grpc-echo Maven profile (repo-root build context).
+  # grpc-echo:9000 (separate gRPC server); no host port is published. The image only
+  # copies the fast-jar the host reactor built into ./target/quarkus-app (the
+  # grpc-echo-build execution of the integration-tests and jfr Maven profiles), so the
+  # build context is this directory and the image build fails when that directory is
+  # absent. Host command without starting the stack:
+  # ./mvnw package -Pintegration-tests -DskipTests -pl integration-tests -am
   grpc-echo:
     build:
-      context: ..
-      dockerfile: integration-tests/src/main/docker/grpc-echo/Dockerfile
+      context: .
+      dockerfile: src/main/docker/grpc-echo/Dockerfile
     networks:
       - api-sheriff
     restart: unless-stopped
@@ -403,8 +407,8 @@ services:
       # (demo-client/src/main/resources/spa, plan-11 deliverable 4). Backs the
       # /assets/demo directory asset route declared in endpoints/assets.yaml. The SPA has
       # no build step, so the authored files ARE the served files — no dist/ and no build
-      # ordering. A relative path crossing to a sibling module follows the precedent the
-      # grpc-echo service already sets in this file (context: ..).
+      # ordering. The relative path crosses to a sibling module, the same way the build
+      # context of this service does (context: ../api-sheriff).
       - ../demo-client/src/main/resources/spa:/app/demo:ro
       # Mount the dedicated log subdirectory (defaults to ./target/quarkus-logs).
       # The start-integration-container.sh script exports LOG_TARGET_DIR to this subdir

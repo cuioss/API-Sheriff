@@ -44,6 +44,7 @@ import io.smallrye.config.SmallRyeConfig;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -91,6 +92,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 @TestProfile(MountedTlsMapKeyTest.MountedTrustProfile.class)
 @DisplayName("benchmark-idp map-key resolution from the mounted deployment file (JVM)")
+@Tag("quarkus-fork")
 class MountedTlsMapKeyTest {
 
     /** The logical trust-profile name {@code gateway.yaml} declares as {@code jwks.tls_profile}. */

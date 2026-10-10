@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -41,11 +42,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 @DisplayName("PortalCatalog")
 class PortalCatalogTest {
 
-    private static int endpointCounter;
+    /** Numbers the endpoint ids; atomic, so the ids stay distinct whichever thread builds an endpoint. */
+    private static final AtomicInteger ENDPOINT_COUNTER = new AtomicInteger();
 
     private static EndpointConfig endpoint(@Nullable CatalogConfig catalog) {
-        endpointCounter++;
-        return EndpointConfig.builder().id("endpoint-" + endpointCounter).enabled(true).catalog(catalog).build();
+        return EndpointConfig.builder().id("endpoint-" + ENDPOINT_COUNTER.incrementAndGet()).enabled(true)
+                .catalog(catalog).build();
     }
 
     private static CatalogConfig catalog(String title, @Nullable Integer order) {

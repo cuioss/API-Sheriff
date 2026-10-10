@@ -36,6 +36,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -46,6 +47,7 @@ import org.junit.jupiter.api.Test;
  * {@code HttpServerResponse} is mutated exactly as production does.
  */
 @DisplayName("GrpcStatusMapper — HTTP→gRPC status mapping and trailers-only rejection render")
+@Tag("isolated-fork")
 class GrpcStatusMapperTest {
 
     private final GrpcStatusMapper mapper = new GrpcStatusMapper();

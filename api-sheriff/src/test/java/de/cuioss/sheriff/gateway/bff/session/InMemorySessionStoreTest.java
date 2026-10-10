@@ -886,7 +886,8 @@ class InMemorySessionStoreTest {
             assertTrue(resolve(store, "s1", idleDeadline.minusSeconds(1)).isPresent(),
                     "a session is live up to its idle deadline");
             assertTrue(resolve(store, "s1", idleDeadline).isEmpty(),
-                    "a session idle for the full timeout is refused although its absolute lifetime runs on");
+                    "a session idle for the full timeout is refused although its absolute lifetime runs on — "
+                            + "the resolve a second before the deadline did not count as an access");
             assertEquals(0, store.size(), "the idle session was evicted lazily on resolve");
         }
 
@@ -918,18 +919,6 @@ class InMemorySessionStoreTest {
                     "the deadline measured from creation no longer applies");
             assertTrue(resolve(store, "s1", access.plus(IDLE_TIMEOUT)).isEmpty(),
                     "the session ends one idle timeout after the recorded access");
-        }
-
-        @Test
-        @DisplayName("Should not extend the idle deadline by resolving")
-        void shouldNotExtendOnResolve() {
-            InMemorySessionStore store = new InMemorySessionStore(16, IDLE_TIMEOUT, NO_SUBJECT_BOUND, NO_LISTENER);
-            create(store, session("s1", "sub1", null, FUTURE), T0);
-
-            assertTrue(resolve(store, "s1", T0.plus(IDLE_TIMEOUT).minusSeconds(1)).isPresent());
-
-            assertTrue(resolve(store, "s1", T0.plus(IDLE_TIMEOUT)).isEmpty(),
-                    "the resolve a second before the deadline did not count as an access");
         }
 
         @Test

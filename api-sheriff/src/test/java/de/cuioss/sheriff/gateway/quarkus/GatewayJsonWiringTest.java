@@ -24,6 +24,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -38,6 +39,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  */
 @QuarkusTest
 @DisplayName("GatewayJson — the injected bean renders the corpus byte for byte")
+@Tag("quarkus-fork")
 class GatewayJsonWiringTest {
 
     private static final String CORPUS_OWNER = "de.cuioss.sheriff.gateway.bff.runtime.GatewayJsonTest";

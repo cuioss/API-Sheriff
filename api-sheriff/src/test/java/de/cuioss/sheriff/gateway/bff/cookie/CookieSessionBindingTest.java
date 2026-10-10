@@ -832,7 +832,8 @@ class CookieSessionBindingTest {
             assertTrue(idleBinding.resolve(sessionCookie, idleDeadline.minusSeconds(1)).isPresent(),
                     "live up to one idle timeout after the login");
             assertTrue(idleBinding.resolve(sessionCookie, idleDeadline).isEmpty(),
-                    "a missing activity cookie never extends the session: it ends one idle timeout after login");
+                    "a missing activity cookie never extends the session, and neither did the resolve a second "
+                            + "before the deadline: it ends one idle timeout after login");
         }
 
         @Test
@@ -906,15 +907,6 @@ class CookieSessionBindingTest {
                     "the recent access keeps the session live up to its absolute deadline");
             assertTrue(idleBinding.resolve(cookies, absoluteDeadline).isEmpty(),
                     "the session ends at the absolute deadline however recently it was accessed");
-        }
-
-        @Test
-        @DisplayName("Should not move the idle deadline by resolving")
-        void shouldNotExtendOnResolve() {
-            assertTrue(idleBinding.resolve(sessionCookie, LOGIN.plus(IDLE_TIMEOUT).minusSeconds(1)).isPresent());
-
-            assertTrue(idleBinding.resolve(sessionCookie, LOGIN.plus(IDLE_TIMEOUT)).isEmpty(),
-                    "the resolve a second before the deadline was not an access");
         }
 
         @Test

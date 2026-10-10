@@ -36,6 +36,7 @@ import jakarta.enterprise.event.Event;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -66,6 +67,7 @@ import org.junit.jupiter.api.Test;
 @QuarkusTest
 @EnableTestLogger
 @DisplayName("Management plain-HTTP audit")
+@Tag("quarkus-fork")
 class ManagementPlainHttpAuditTest {
 
     private static final int MANAGEMENT_PORT = 9000;

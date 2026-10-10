@@ -162,6 +162,10 @@ import io.restassured.response.Response;
  * when it fails part-way. {@link #close()} removes the gateway, the stub and the network and
  * disconnects the echo container, on every exit path a try-with-resources block has.
  * <p>
+ * A suite whose tests share one rig calls {@link #reset()} between them. That clears the script and
+ * the journal the tests read; it does not give the next test a gateway that has served nothing, and
+ * it must not be called while a request to the gateway is in flight.
+ * <p>
  * A test-support class: named neither {@code *IT} nor {@code *Test}, so neither Failsafe nor Surefire
  * runs it. One rig at a time — the container names, the network name and the gateway port are fixed.
  * Safe to use from several threads once started: the journal is read from the stub, and
@@ -254,6 +258,16 @@ final class StubIdentityProviderRig implements AutoCloseable {
 
     private final HttpClient adminClient = HttpClient.newBuilder().connectTimeout(ADMIN_TIMEOUT).build();
     private final Map<Endpoint, Integer> scriptedAnswers = new EnumMap<>(Endpoint.class);
+
+    /**
+     * How many recorded requests per endpoint precede the last {@link #reset()}; {@link #received}
+     * leaves them out.
+     */
+    private final Map<Endpoint, Integer> journalFloor = new EnumMap<>(Endpoint.class);
+
+    /** Counts the resets; every scripted answer belongs to the generation it was scripted in. */
+    private int scriptGeneration;
+
     private final KeyPair signingKey;
     private final String signingKeyId = UUID.randomUUID().toString();
     private final String proofKeyThumbprint;
@@ -509,16 +523,104 @@ final class StubIdentityProviderRig implements AutoCloseable {
      */
     synchronized void script(Endpoint endpoint, Answer answer) {
         Objects.requireNonNull(answer, "answer");
-        int position = scriptedAnswers.merge(endpoint, 1, Integer::sum);
+        int position = scriptedAnswers.getOrDefault(endpoint, 0) + 1;
         Map<String, Object> stub = stub(endpoint.method, endpoint.path, answer, SCRIPTED_PRIORITY);
-        stub.put("scenarioName", endpoint.name());
+        stub.put("scenarioName", scenarioName(endpoint));
         stub.put("requiredScenarioState", scenarioState(position - 1));
         stub.put("newScenarioState", scenarioState(position));
         register(stub);
+        // Counted only once the stub holds it: reset() checks the stub against this count.
+        scriptedAnswers.put(endpoint, position);
     }
 
     private static String scenarioState(int position) {
         return position == 0 ? SCENARIO_START : "answered-" + position;
+    }
+
+    /**
+     * The WireMock scenario an endpoint's script runs in. A rig that was never reset names it after the
+     * endpoint alone; every {@link #reset()} starts a scenario of its own, which WireMock begins in
+     * {@link #SCENARIO_START}, so a script filled after a reset is sequenced from its first answer.
+     */
+    private String scenarioName(Endpoint endpoint) {
+        return scriptGeneration == 0 ? endpoint.name() : endpoint.name() + "-" + scriptGeneration;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Reset
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Clears what a test reads and scripts through this rig, without restarting anything: every scripted
+     * answer is removed — a failure a test injected included, whether or not a request consumed it —
+     * and {@link #received(Endpoint)} and {@link #refreshGrants()} report only what arrives from now
+     * on. The endpoints answer from their defaults again.
+     * <p>
+     * <strong>What it does not reset.</strong> The gateway is the same process before and after. Its
+     * sessions, its caches of the provider metadata and of the key set, its connections to the stub and
+     * any refresh back-off it holds are kept, and so is its container log. A test that runs after a
+     * reset therefore runs against a gateway that has already served the tests before it; only
+     * {@link #close()} followed by {@link #start()} yields a gateway that has served nothing. The stub
+     * keeps its own request log too: the requests recorded so far are left out by this rig, not deleted
+     * from WireMock.
+     * <p>
+     * <strong>How a scripted answer is removed.</strong> The stub's mappings are listed, and the
+     * listing must show as many mappings of a scenario — the defaults belong to none — as this rig has
+     * scripted since its last reset. Each of them is deleted by its id, and the list is read again: it
+     * must then hold no scenario mapping and exactly the mappings without one it held before. A reset
+     * that cannot establish that fails here, and names what WireMock answered.
+     */
+    synchronized void reset() {
+        List<Map<String, Object>> before = mappings();
+        long scriptedBefore = before.stream().filter(StubIdentityProviderRig::isScripted).count();
+        long defaultsBefore = before.size() - scriptedBefore;
+        int scripted = scriptedAnswers.values().stream().mapToInt(Integer::intValue).sum();
+        // Without this the two checks below could pass on a listing in which no scripted answer is
+        // recognisable as one: nothing would be deleted, and nothing would be found left over.
+        assertEquals(scripted, scriptedBefore, () -> "the stub must list every answer this rig scripted since "
+                + "its last reset as a mapping of a scenario; it lists " + before.size() + " mappings");
+        for (Map<String, Object> mapping : before) {
+            if (isScripted(mapping)) {
+                adminAccepted("DELETE", "/__admin/mappings/" + mappingId(mapping));
+            }
+        }
+        List<Map<String, Object>> after = mappings();
+        long scriptedAfter = after.stream().filter(StubIdentityProviderRig::isScripted).count();
+        long defaultsAfter = after.size() - scriptedAfter;
+        assertAll("the stub's mappings after a reset",
+                () -> assertEquals(0, scriptedAfter, "no scripted answer may survive a reset"),
+                () -> assertEquals(defaultsBefore, defaultsAfter,
+                        "a reset must leave every default answer of the stub in place"));
+
+        scriptedAnswers.clear();
+        scriptGeneration++;
+        for (Endpoint endpoint : Endpoint.values()) {
+            journalFloor.merge(endpoint, received(endpoint).size(), Integer::sum);
+        }
+    }
+
+    private synchronized int journalFloor(Endpoint endpoint) {
+        return journalFloor.getOrDefault(endpoint, 0);
+    }
+
+    /** Every mapping the stub holds, the defaults and the scripted answers alike. */
+    private List<Map<String, Object>> mappings() {
+        String listed = adminAccepted("GET", "/__admin/mappings");
+        List<Map<String, Object>> mappings = new JsonPath(listed).getList("mappings");
+        assertNotNull(mappings, () -> "the stub's admin API listed no mappings: " + listed);
+        return mappings;
+    }
+
+    /** Whether a mapping is a scripted answer: those, and only those, are sequenced by a scenario. */
+    private static boolean isScripted(Map<String, Object> mapping) {
+        return mapping.get("scenarioName") != null;
+    }
+
+    private static String mappingId(Map<String, Object> mapping) {
+        Object id = mapping.get("id") != null ? mapping.get("id") : mapping.get("uuid");
+        assertNotNull(id, () -> "a listed mapping carries neither an id nor a uuid; its members are "
+                + mapping.keySet());
+        return id.toString();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -527,8 +629,9 @@ final class StubIdentityProviderRig implements AutoCloseable {
 
     /**
      * @param endpoint the endpoint
-     * @return every request the stub has recorded at the endpoint so far, in arrival order — including
-     *         a request it answered with an error or a connection reset
+     * @return every request the stub has recorded at the endpoint since the rig was started or last
+     *         {@linkplain #reset() reset}, in arrival order — including a request it answered with an
+     *         error or a connection reset
      */
     List<RecordedRequest> received(Endpoint endpoint) {
         String found = admin("POST", "/__admin/requests/find",
@@ -538,6 +641,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
         return requests.stream()
                 .map(RecordedRequest::of)
                 .sorted(Comparator.comparingLong(RecordedRequest::loggedAtMillis))
+                .skip(journalFloor(endpoint))
                 .toList();
     }
 
@@ -624,6 +728,24 @@ final class StubIdentityProviderRig implements AutoCloseable {
         }
         assertEquals(expectedStatus, response.statusCode(),
                 () -> "the stub's admin API refused " + method + " " + path + ": " + response.body());
+        return response.body();
+    }
+
+    /**
+     * Calls the admin API without a body and accepts any {@code 2xx}: {@link #reset()} depends on the
+     * call having been carried out, which it then checks on the stub's state, and not on which
+     * success status WireMock chose to report it with.
+     */
+    private String adminAccepted(String method, String path) {
+        HttpResponse<String> response;
+        try {
+            response = sendAdmin(method, path, "");
+        } catch (IOException e) {
+            throw new UncheckedIOException("the stub's admin API did not answer " + method + " " + path, e);
+        }
+        assertEquals(2, response.statusCode() / 100,
+                () -> "the stub's admin API refused " + method + " " + path + " with "
+                        + response.statusCode() + ": " + response.body());
         return response.body();
     }
 

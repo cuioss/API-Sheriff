@@ -34,6 +34,7 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.health.HealthCheck;
 import org.eclipse.microprofile.health.Readiness;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -102,6 +103,7 @@ import org.junit.jupiter.api.Test;
  */
 @QuarkusTest
 @DisplayName("Default-profile readiness with zero sheriff.token.issuers.* configured")
+@Tag("quarkus-fork")
 class DefaultProfileReadinessTest {
 
     /**

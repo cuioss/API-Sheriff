@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -67,6 +66,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -77,6 +77,7 @@ import org.junit.jupiter.api.Test;
  * abuse bounds that hold on the gRPC path without a per-protocol relaxation.
  */
 @DisplayName("GrpcDispatchStage — forced-h2 wiring, UNAVAILABLE mapping, trailer relay, GW-08 bounds")
+@Tag("isolated-fork")
 class GrpcDispatchStageTest {
 
     @Nested
@@ -91,10 +92,19 @@ class GrpcDispatchStageTest {
         }
 
         @Test
-        @DisplayName("builds with a body cap and a failure mapper")
+        @DisplayName("builds with a body cap and a failure mapper, and maps a failed dispatch through that mapper")
         void buildsWithFailureMapper() {
-            assertDoesNotThrow(() -> new GrpcDispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter())),
-                    "a body cap plus a failure mapper is a valid gRPC dispatch stage");
+            GrpcDispatchStage stage = new GrpcDispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
+            RouteRuntime route = RouteRuntime.builder().id("g").resilienceGuard(new RefusingGuard()).build();
+            Map<String, String> noHeaders = Map.of();
+            TestReadStream noBody = new TestReadStream();
+
+            GatewayException mapped = assertThrows(GatewayException.class,
+                    () -> stage.dispatch(route, HttpMethod.POST, "/svc.Service/Method", noHeaders, noBody, -1L),
+                    "a dispatch the guard fails leaves the built stage as a mapped GatewayException");
+
+            assertEquals(EventType.UPSTREAM_ERROR, mapped.getEventType(),
+                    "the stage holds the mapper it was built with: a refused upstream connection is the 502 arm");
         }
     }
 
@@ -441,6 +451,35 @@ class GrpcDispatchStageTest {
         @Override
         public ReadStream<Buffer> endHandler(Handler<Void> endHandler) {
             return this;
+        }
+    }
+
+    /**
+     * A {@link Guard} test double that fails every guarded call the way a refused upstream connection
+     * does, without running the action, so a dispatch through it never dials anything.
+     */
+    private static final class RefusingGuard implements Guard {
+
+        private static final String REFUSED = "connection refused by the upstream";
+
+        @Override
+        public <T> T call(Callable<T> action, Class<T> asType) throws ConnectException {
+            throw new ConnectException(REFUSED);
+        }
+
+        @Override
+        public <T> T call(Callable<T> action, TypeLiteral<T> asType) throws ConnectException {
+            throw new ConnectException(REFUSED);
+        }
+
+        @Override
+        public <T> T get(Supplier<T> action, Class<T> asType) {
+            throw new UnsupportedOperationException("the dispatch runs its attempt through call");
+        }
+
+        @Override
+        public <T> T get(Supplier<T> action, TypeLiteral<T> asType) {
+            throw new UnsupportedOperationException("the dispatch runs its attempt through call");
         }
     }
 

@@ -34,12 +34,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -146,17 +148,38 @@ import org.junit.jupiter.api.Test;
  * the difference to be exactly one id. That id is, by construction, the session this login created,
  * whatever other sessions earlier suites left behind.
  * <p>
- * <strong>Why the shared refresh user is safe here.</strong> Every revocation is targeted at one
- * session id this suite created itself; the suite never logs a user out realm-wide. It therefore
- * cannot end a session another suite holds, even though it authenticates as
- * {@link BffKeycloakLoginFlow#REFRESH_USERNAME} like {@code BffTokenRefreshIT} and
- * {@code BffCookieRefreshIT}. Those suites' all-sessions logouts cannot reach this one's sessions either:
- * Failsafe runs the IT classes one at a time (see {@code BffTokenRefreshIT}).
+ * <strong>A user of its own.</strong> The suite authenticates as
+ * {@link BffKeycloakLoginFlow#REUSE_USERNAME}, which no other suite logs in as. Two things rest on
+ * that. Every revocation is targeted at one session id this suite created itself, and the id is found
+ * as the one session the user gained across a login — which is exact only while nobody else logs that
+ * user in. And no other suite can end a session of this one: the one suite that logs a user out
+ * realm-wide, {@code BffTokenRefreshIT}, names a user of its own.
+ * <p>
+ * <strong>Run concurrently, and what that rests on.</strong> The class carries the tag
+ * {@code sleep-bound} and runs in the concurrent Failsafe execution (see
+ * {@code integration-tests/pom.xml}), beside other tagged suites. What it shares with them, and why
+ * that does not reach its assertions:
+ * <ul>
+ *   <li><em>The two instance logs.</em> Each record-count assertion below attributes a
+ *       {@code credential-rejected} record to one request by the count on either side of it, and the
+ *       record carries no session, user or request to tell it by. The attribution therefore holds only
+ *       while no suite running at the same time causes that record on the same instance. None does: no
+ *       other tagged suite ends a Keycloak session, so none drives a refresh that is refused, and
+ *       {@code BffTokenRefreshIT}, which does, stays in the sequential execution for this reason.
+ *       {@code FailsafeConcurrencyContractTest} fails the build when a second tagged suite names one
+ *       of the two logs.</li>
+ *   <li><em>The two refresh instances.</em> Other tagged suites hold sessions on them at the same time,
+ *       as another user. A server-mode instance keeps at most ten sessions per subject and ends the
+ *       oldest beyond that; this suite logs its user in twice there.</li>
+ * </ul>
  * <p>
  * <strong>Timing.</strong> The waits are wall-clock and deliberate, following the
  * {@code BffTokenRefreshIT} rationale: the property under test is defined in elapsed time against a
  * token lifespan, so there is no state to poll for, and Awaitility would add a dependency without
- * removing the wait. The only poll is the bounded read of a bind-mounted log file.
+ * removing the wait. The only poll is the bounded read of a bind-mounted log file. The class waits
+ * three times per run: twice in the replay test, whose second wait starts from the rotation its
+ * first one drives, and once for the two revocation tests together, whose three sessions are all
+ * logged in before it.
  * <p>
  * This suite deliberately does not extend {@code BaseIntegrationTest}: that base binds the primary
  * instance's origin, while every request here goes to one of the two refresh instances.
@@ -164,6 +187,7 @@ import org.junit.jupiter.api.Test;
  * @author API Sheriff Team
  * @since 1.0
  */
+@Tag("sleep-bound")
 class BffRefreshReuseIT {
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
@@ -215,11 +239,11 @@ class BffRefreshReuseIT {
         // Arrange: A1 seals the login's refresh token R1; the Keycloak session this login creates is
         // captured so its fate after the replay can be observed.
         String setupAdminToken = adminToken();
-        String userId = userIdOf(setupAdminToken, BffKeycloakLoginFlow.REFRESH_USERNAME);
+        String userId = userIdOf(setupAdminToken, BffKeycloakLoginFlow.REUSE_USERNAME);
         Set<String> beforeLogin = keycloakSessionIds(setupAdminToken, userId);
         Session session = BffKeycloakLoginFlow.login(MEDIATED_PATH,
                 BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                BffKeycloakLoginFlow.REUSE_USERNAME, BffKeycloakLoginFlow.REUSE_PASSWORD);
         String keycloakSessionA1 = singleNewSession(beforeLogin, keycloakSessionIds(setupAdminToken, userId));
         Map<String, String> cookieA1 = Map.copyOf(session.gatewayCookies());
 
@@ -286,34 +310,22 @@ class BffRefreshReuseIT {
     @Test
     @DisplayName("server mode: deleting one Keycloak session ends that gateway session and leaves the sibling refreshing")
     void targetedGrantRevocationEndsOnlyThatServerSession() {
-        // Arrange: two logins by one user create two Keycloak user sessions and two gateway sessions.
-        String adminToken = adminToken();
-        String userId = userIdOf(adminToken, BffKeycloakLoginFlow.REFRESH_USERNAME);
-        Set<String> beforeFirst = keycloakSessionIds(adminToken, userId);
-        Session revoked = loginToRefreshInstance();
-        String revokedKeycloakSession = singleNewSession(beforeFirst, keycloakSessionIds(adminToken, userId));
-        Set<String> beforeSecond = keycloakSessionIds(adminToken, userId);
-        Session sibling = loginToRefreshInstance();
-        String siblingKeycloakSession = singleNewSession(beforeSecond, keycloakSessionIds(adminToken, userId));
-        assertNotEquals(revokedKeycloakSession, siblingKeycloakSession,
-                "the two logins must be two distinct Keycloak sessions, or the revocation cannot be targeted");
-        String siblingBearerBefore = authorizationOf(
-                mediatedCall(sibling.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN));
-
-        // Act: revoke exactly one grant, then let both sessions reach the near-expiry window.
-        deleteKeycloakSession(adminToken, revokedKeycloakSession);
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        long rejectionsBefore = credentialRejectedRecordCount(REFRESH_INSTANCE_LOG_FILE);
-        Response revokedResponse = xhr(revoked.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
-                .then().statusCode(401)
-                .extract().response();
-        Response siblingResponse = mediatedCall(sibling.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN);
+        // Arrange + Act: two logins by one user on the server-mode instance, the first one's Keycloak
+        // session deleted, the wait into the window, then one request per session — made once, together
+        // with the cookie-mode test's login and request; see TARGETED_REVOCATIONS.
+        ObservedRevocations observed = TARGETED_REVOCATIONS.get();
+        Response revokedResponse = observed.revokedServerSession();
+        String siblingBearerBefore = authorizationOf(served(observed.siblingBeforeTheWindow()));
+        Response siblingResponse = served(observed.siblingInsideTheWindow());
 
         // Assert: the revoked session ends as a credential rejection ...
+        assertEquals(401, revokedResponse.statusCode(),
+                "the session whose Keycloak session was deleted must be answered as unauthenticated");
         assertTrue(revokedResponse.contentType().contains("application/problem+json"),
                 "a failed refresh on a non-navigation request must render RFC 9457 problem+json");
         assertClearsSessionCookie(revokedResponse);
-        assertCredentialRejectedRecordedAfter(REFRESH_INSTANCE_LOG_FILE, rejectionsBefore,
+        assertCredentialRejectedRecorded(REFRESH_INSTANCE_LOG_FILE, observed.serverRecordsBefore(),
+                observed.serverRecordsAfter(),
                 "a refresh grant whose Keycloak session was deleted must be refused as invalid_grant");
         // ... and the sibling grant of the same user was untouched and refreshed normally.
         assertNotEquals(siblingBearerBefore, authorizationOf(siblingResponse),
@@ -324,37 +336,161 @@ class BffRefreshReuseIT {
     @Test
     @DisplayName("cookie mode: deleting the Keycloak session behind a sealed cookie ends it on the next refresh")
     void idpRevokedCookieSessionEndsOnTheNextRefresh() {
-        // Arrange
-        String adminToken = adminToken();
-        String userId = userIdOf(adminToken, BffKeycloakLoginFlow.REFRESH_USERNAME);
-        Set<String> beforeLogin = keycloakSessionIds(adminToken, userId);
-        Session session = BffKeycloakLoginFlow.login(MEDIATED_PATH,
-                BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
-        String keycloakSession = singleNewSession(beforeLogin, keycloakSessionIds(adminToken, userId));
-
-        // Act: the deletion alone changes nothing observable. Outside the window the coordinator
-        // never contacts the IdP, so the wait is what forces the refresh attempt that then fails.
-        deleteKeycloakSession(adminToken, keycloakSession);
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        long rejectionsBefore = credentialRejectedRecordCount(COOKIE_REFRESH_INSTANCE_LOG_FILE);
-        Response response = xhr(session.gatewayCookies(), BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN)
-                .then().statusCode(401)
-                .extract().response();
+        // Arrange + Act: the login on the cookie-mode instance, the deletion of its Keycloak session,
+        // the wait into the window and the request — made once, together with the server-mode test's;
+        // see TARGETED_REVOCATIONS.
+        ObservedRevocations observed = TARGETED_REVOCATIONS.get();
+        Response response = observed.revokedCookieSession();
 
         // Assert
+        assertEquals(401, response.statusCode(),
+                "the sealed cookie whose Keycloak session was deleted must be answered as unauthenticated");
         assertTrue(response.contentType().contains("application/problem+json"),
                 "a failed refresh on a non-navigation request must render RFC 9457 problem+json");
         assertClearsSessionCookie(response);
-        assertCredentialRejectedRecordedAfter(COOKIE_REFRESH_INSTANCE_LOG_FILE, rejectionsBefore,
+        assertCredentialRejectedRecorded(COOKIE_REFRESH_INSTANCE_LOG_FILE, observed.cookieRecordsBefore(),
+                observed.cookieRecordsAfter(),
                 "a sealed cookie whose Keycloak session was deleted must end as a credential rejection");
+    }
+
+    // ---------------------------------------------------------------- what the two revocation tests observe once
+
+    /**
+     * What the two targeted-revocation tests read. Nothing about a gateway response is asserted when
+     * it is observed; each test asserts on the responses it reads.
+     *
+     * @param revokedServerSession   the answer to the server-mode session whose Keycloak session was
+     *                               deleted, inside its window
+     * @param serverRecordsBefore    the {@code credential-rejected} count of the server-mode instance
+     *                               log immediately before that request
+     * @param serverRecordsAfter     that count once it had risen, or the last count read; read before
+     *                               any further request was sent
+     * @param siblingBeforeTheWindow the sibling server-mode session, called right after its login
+     * @param siblingInsideTheWindow the sibling, called inside its window
+     * @param revokedCookieSession   the answer to the cookie-mode session whose Keycloak session was
+     *                               deleted, inside its window
+     * @param cookieRecordsBefore    the count of the cookie-mode instance log immediately before that
+     *                               request
+     * @param cookieRecordsAfter     that count once it had risen, or the last count read
+     */
+    private record ObservedRevocations(Response revokedServerSession, long serverRecordsBefore,
+    long serverRecordsAfter, Response siblingBeforeTheWindow, Response siblingInsideTheWindow,
+    Response revokedCookieSession, long cookieRecordsBefore, long cookieRecordsAfter) {
+    }
+
+    /**
+     * The two targeted revocations, observed on first use. The server-mode test and the cookie-mode
+     * test run on different gateway instances, write to different instance logs and name different
+     * Keycloak sessions, so their three logins are made first and one wait carries all three sessions
+     * into their near-expiry windows.
+     */
+    private static final Once<ObservedRevocations> TARGETED_REVOCATIONS = new Once<>(
+            "the two targeted revocations", BffRefreshReuseIT::observeTargetedRevocations);
+
+    /**
+     * Makes the observation of {@link #TARGETED_REVOCATIONS}.
+     * <p>
+     * <strong>What still fails here, and for both tests.</strong> The checks that make a deletion
+     * targeted are made before anything is deleted, as they were: each login must have created exactly
+     * one Keycloak session, and the two server-mode logins two distinct ones. A deletion aimed at the
+     * wrong session would not be an observation worth reading.
+     * <p>
+     * <strong>What the sibling now survives.</strong> Two deletions, not one: the Keycloak session of
+     * the other server-mode login, and that of the cookie-mode login, which belongs to another client.
+     * Both name a session that is not the sibling's.
+     * <p>
+     * Every admin call is made before the wait, with one admin token; none is made after it. The
+     * deletion alone changes nothing observable: outside the window the coordinator never contacts
+     * the IdP, so the wait is what forces the refresh attempt that then fails.
+     */
+    private static ObservedRevocations observeTargetedRevocations() {
+        String adminToken = adminToken();
+        String userId = userIdOf(adminToken, BffKeycloakLoginFlow.REUSE_USERNAME);
+
+        // Server mode: two logins by one user create two Keycloak user sessions and two gateway sessions.
+        Set<String> beforeFirst = keycloakSessionIds(adminToken, userId);
+        Session revoked = loginToRefreshInstance();
+        String revokedKeycloakSession = singleNewSession(beforeFirst, keycloakSessionIds(adminToken, userId));
+        Set<String> beforeSecond = keycloakSessionIds(adminToken, userId);
+        Session sibling = loginToRefreshInstance();
+        String siblingKeycloakSession = singleNewSession(beforeSecond, keycloakSessionIds(adminToken, userId));
+        assertNotEquals(revokedKeycloakSession, siblingKeycloakSession,
+                "the two logins must be two distinct Keycloak sessions, or the revocation cannot be targeted");
+        Response siblingBeforeTheWindow = unassertedCall(sibling.gatewayCookies(),
+                BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN);
+
+        // Cookie mode: one login on the other instance.
+        Set<String> beforeCookieLogin = keycloakSessionIds(adminToken, userId);
+        Session sealed = BffKeycloakLoginFlow.login(MEDIATED_PATH,
+                BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN,
+                BffKeycloakLoginFlow.REUSE_USERNAME, BffKeycloakLoginFlow.REUSE_PASSWORD);
+        String sealedKeycloakSession = singleNewSession(beforeCookieLogin, keycloakSessionIds(adminToken, userId));
+
+        // Revoke exactly the two grants the tests name, then let all three sessions reach the window.
+        deleteKeycloakSession(adminToken, revokedKeycloakSession);
+        deleteKeycloakSession(adminToken, sealedKeycloakSession);
+        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+
+        long serverRecordsBefore = credentialRejectedRecordCount(REFRESH_INSTANCE_LOG_FILE);
+        Response revokedServerSession = xhr(revoked.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN);
+        long serverRecordsAfter = awaitCredentialRejectedRecordAfter(REFRESH_INSTANCE_LOG_FILE, serverRecordsBefore);
+        Response siblingInsideTheWindow = unassertedCall(sibling.gatewayCookies(),
+                BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN);
+
+        long cookieRecordsBefore = credentialRejectedRecordCount(COOKIE_REFRESH_INSTANCE_LOG_FILE);
+        Response revokedCookieSession = xhr(sealed.gatewayCookies(),
+                BffKeycloakLoginFlow.COOKIE_REFRESH_GATEWAY_ORIGIN);
+        long cookieRecordsAfter = awaitCredentialRejectedRecordAfter(COOKIE_REFRESH_INSTANCE_LOG_FILE,
+                cookieRecordsBefore);
+
+        return new ObservedRevocations(revokedServerSession, serverRecordsBefore, serverRecordsAfter,
+                siblingBeforeTheWindow, siblingInsideTheWindow, revokedCookieSession, cookieRecordsBefore,
+                cookieRecordsAfter);
+    }
+
+    /**
+     * Something this class observes once per run, on first use, and several tests then read.
+     * <p>
+     * A failure to make the observation is kept as well, so the observation — and the wait inside it —
+     * is attempted once per run; every test that reads it then fails with that failure as its cause.
+     *
+     * @param <T> what is observed
+     */
+    private static final class Once<T> {
+
+        private final String what;
+        private final Supplier<T> observation;
+        private T observed;
+        private Throwable failure;
+
+        Once(String what, Supplier<T> observation) {
+            this.what = what;
+            this.observation = observation;
+        }
+
+        synchronized T get() {
+            if (observed == null && failure == null) {
+                // The catch below is deliberately wide: whatever stops the observation is kept, so it is
+                // attempted once per run and every test that reads it fails with that failure as its cause.
+                // cui-rewrite:disable InvalidExceptionUsageRecipe
+                try {
+                    observed = observation.get();
+                } catch (RuntimeException | AssertionError thrown) {
+                    failure = thrown;
+                }
+            }
+            if (failure != null) {
+                throw new AssertionError(what + " could not be observed: " + failure, failure);
+            }
+            return observed;
+        }
     }
 
     // ---------------------------------------------------------------- gateway helpers
 
     private static Session loginToRefreshInstance() {
         return BffKeycloakLoginFlow.login(MEDIATED_PATH, BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                BffKeycloakLoginFlow.REUSE_USERNAME, BffKeycloakLoginFlow.REUSE_PASSWORD);
     }
 
     private static Response mediatedCall(Map<String, String> gatewayCookies, String origin) {
@@ -362,6 +498,24 @@ class BffRefreshReuseIT {
                 .when().get(MEDIATED_PATH)
                 .then().statusCode(200)
                 .extract().response();
+    }
+
+    /** {@link #mediatedCall(Map, String)} without its status assertion, for a response a test asserts on later. */
+    private static Response unassertedCall(Map<String, String> gatewayCookies, String origin) {
+        return BffKeycloakLoginFlow.gateway(gatewayCookies, origin)
+                .when().get(MEDIATED_PATH)
+                .then().extract().response();
+    }
+
+    /**
+     * The status assertion {@link #mediatedCall(Map, String)} makes, for a response observed earlier.
+     *
+     * @param response the response
+     * @return {@code response}
+     */
+    private static Response served(Response response) {
+        assertEquals(200, response.statusCode(), "the session must be served on " + MEDIATED_PATH);
+        return response;
     }
 
     /** A non-navigation request on the mediated route, so a refused session renders problem+json. */
@@ -424,8 +578,19 @@ class BffRefreshReuseIT {
                 .count();
     }
 
-    @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded wait for a bind-mounted log append
     private static void assertCredentialRejectedRecordedAfter(String logFileName, long countBefore, String why) {
+        assertCredentialRejectedRecorded(logFileName, countBefore,
+                awaitCredentialRejectedRecordAfter(logFileName, countBefore), why);
+    }
+
+    /**
+     * Waits, for at most {@link #LOG_VISIBILITY_TIMEOUT_MILLIS}, for the {@code credential-rejected}
+     * record count of one instance log to rise above {@code countBefore}, and asserts nothing.
+     *
+     * @return the count once it had risen, or the last count read when it had not
+     */
+    @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded wait for a bind-mounted log append
+    private static long awaitCredentialRejectedRecordAfter(String logFileName, long countBefore) {
         long deadline = System.currentTimeMillis() + LOG_VISIBILITY_TIMEOUT_MILLIS;
         long observed = credentialRejectedRecordCount(logFileName);
         while (observed <= countBefore && System.currentTimeMillis() < deadline) {
@@ -437,7 +602,11 @@ class BffRefreshReuseIT {
             }
             observed = credentialRejectedRecordCount(logFileName);
         }
-        long finalObserved = observed;
+        return observed;
+    }
+
+    private static void assertCredentialRejectedRecorded(String logFileName, long countBefore, long finalObserved,
+            String why) {
         assertTrue(finalObserved > countBefore,
                 () -> why + ": expected a new WARN " + SESSION_REFRESH_FAILED_IDENTIFIER + " line with reason "
                         + CREDENTIAL_REJECTED_REASON + " in " + logFileName + " (count before the request "

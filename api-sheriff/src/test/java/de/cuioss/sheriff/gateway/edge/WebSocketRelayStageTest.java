@@ -116,6 +116,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -137,6 +138,7 @@ import org.junit.jupiter.api.Test;
  */
 @EnableGeneratorController
 @DisplayName("WebSocketRelayStage — end-to-end WebSocket dispatch over a live Vert.x server")
+@Tag("isolated-fork")
 class WebSocketRelayStageTest {
 
     private static final String ALLOWED_ORIGIN = "https://app.example";

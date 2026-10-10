@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 
@@ -101,14 +102,28 @@ import org.junit.jupiter.api.Test;
  * it replays a cookie map, exactly as {@link BffKeycloakLoginFlow} documents.
  * <p>
  * <strong>Why the realm-wide admin logout is safe to use here.</strong> The {@code FAILED} legs end
- * <em>every</em> Keycloak session of {@link BffKeycloakLoginFlow#REFRESH_USERNAME}, which
- * other suites log in as too. The suites cannot overlap: the
- * {@code integration-tests} Failsafe execution declares no {@code forkCount} (so the default of one
- * fork at a time applies), sets {@code reuseForks=false}, and configures no JUnit parallel execution,
- * so test classes run strictly one after another and every test logs in afresh. A logout therefore
- * only ever ends sessions this suite created itself. Enabling parallel IT execution would break that
- * premise, and the fix then belongs in the tests (a distinct user per suite), never in the realm's
- * rotation settings.
+ * <em>every</em> Keycloak session of the user they name, and that user is
+ * {@link BffKeycloakLoginFlow#REVOCATION_USERNAME}, which no other suite logs in as. A logout
+ * therefore only ever ends sessions this suite created itself, whichever suite runs before, after or
+ * beside it; that no longer rests on the order or the number of the Failsafe forks. Within the class
+ * the tests run one after another, in one JVM, with no JUnit parallel execution configured: the two
+ * no-wait tests log in for themselves, and the two tests of each pair read sessions their pair logged
+ * in once. The logout is issued inside the {@code FAILED} pair's observation, which runs from its two
+ * logins to its last request with no other test in between, so it ends no session a test of this
+ * class has yet to use; the sessions of tests that already finished are ended with it, unused.
+ * <p>
+ * <strong>Why this suite still runs in the sequential Failsafe execution.</strong> The user is not
+ * what keeps it there; the log is. Each {@code FAILED} leg attributes a {@code credential-rejected}
+ * record to its own request by the record count of {@code quarkus-refresh.log} on either side of
+ * that request. The record ({@code ApiSheriff-111}) carries the reason and nothing else — no
+ * session, no user, no request — so a record cannot be told from one that another suite's request
+ * caused on the same instance. {@code BffRefreshReuseIT} causes such records on this instance, and
+ * it runs in the concurrent execution ({@code sleep-bound}, see {@code integration-tests/pom.xml}).
+ * Were this suite tagged as well, a record of that suite could satisfy a count assertion here whose
+ * own request recorded nothing. So the longer of the two suites runs concurrently and this one does
+ * not; the two Failsafe executions run one after the other, so the two suites never overlap.
+ * {@code FailsafeConcurrencyContractTest} fails the build when two tagged suites name the same
+ * instance log.
  * <p>
  * <strong>The defect this suite reproduced, and its cause.</strong> Run against the live stack on
  * 2026-09-07 ({@code verify -Pintegration-tests}, 130 integration tests, of which the five below),
@@ -164,6 +179,9 @@ import org.junit.jupiter.api.Test;
  * <strong>Timing.</strong> The waits are wall-clock and deliberate: the property under test is
  * defined in terms of elapsed time against a token lifespan, so there is no state to poll for.
  * Awaitility would add a dependency without removing the wait (resolution D3), so it is not used.
+ * The class waits into the window twice per run: once for the two {@code REFRESHED} tests and once
+ * for the two {@code FAILED} tests. Each pair's two sessions are logged in before its wait, so a run
+ * observes four sessions inside their windows, as before, on two waits where there were four.
  * <p>
  * This suite deliberately does not extend {@code BaseIntegrationTest}: that base binds the primary
  * instance's origin, while every request here must go to {@link BffKeycloakLoginFlow#REFRESH_GATEWAY_ORIGIN}.
@@ -262,11 +280,11 @@ class BffTokenRefreshIT {
     @Test
     @DisplayName("REFRESHED: a call after the window opens mediates a different bearer")
     void refreshedOutcomeRotatesTheMediatedToken() {
-        Session session = loginToRefreshInstance();
-        String beforeRefresh = authorizationOf(mediatedCall(session));
-
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        Response afterRefresh = mediatedCall(session);
+        // The login on the plain route, the wait into the window and the call inside it are made once
+        // for both REFRESHED tests; see REFRESHES_INSIDE_THE_WINDOW.
+        ObservedRefreshes observed = REFRESHES_INSIDE_THE_WINDOW.get();
+        String beforeRefresh = authorizationOf(served(observed.plainBeforeTheWindow()));
+        Response afterRefresh = served(observed.plainInsideTheWindow());
 
         assertNotEquals(beforeRefresh, authorizationOf(afterRefresh),
                 "once the mediated token is within leeway of expiry the coordinator must rotate it "
@@ -296,19 +314,19 @@ class BffTokenRefreshIT {
                 .extract().response();
         BffLoginInitiationIT.assertPushedRequestRedirect(initiation, REFRESH_CLIENT_ID);
 
-        Session session = BffKeycloakLoginFlow.login(BffEndpointScopesIT.SCOPED_SESSION_PATH,
-                BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
-        String beforeRefresh = authorizationOf(mediatedCall(session, BffEndpointScopesIT.SCOPED_SESSION_PATH));
+        // The login on the scoped route is one of the two logins REFRESHES_INSIDE_THE_WINDOW makes. When
+        // the other REFRESHED test ran first, that login precedes the probe above; the probe needs no
+        // session, so what it rules out does not depend on the order.
+        ObservedRefreshes observed = REFRESHES_INSIDE_THE_WINDOW.get();
+        String beforeRefresh = authorizationOf(served(observed.scopedBeforeTheWindow()));
         Set<String> grantedAtLogin = BffEndpointScopesIT.grantedScopes(beforeRefresh);
         assertTrue(grantedAtLogin.containsAll(BffEndpointScopesIT.SCOPED_ROUTE_SCOPES),
                 "the login on the scoped route must be granted oidc.scopes united with the endpoint's "
                         + "scopes, so the refresh instance requests that route's needed set; granted "
                         + grantedAtLogin);
 
-        // Act
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        String afterRefresh = authorizationOf(mediatedCall(session, BffEndpointScopesIT.SCOPED_SESSION_PATH));
+        // Act — the call on the scoped route inside the window
+        String afterRefresh = authorizationOf(served(observed.scopedInsideTheWindow()));
 
         // Assert — the rotation is proven first, so the scope assertion is about the REFRESHED token
         // and cannot be satisfied by the login-time token merely being reused.
@@ -323,57 +341,176 @@ class BffTokenRefreshIT {
     @Test
     @DisplayName("FAILED: an XHR after IdP-side revocation is rejected 401 problem+json and clears the cookie")
     void failedOutcomeRejectsXhrAndClearsTheSession() {
-        Session session = loginToRefreshInstance();
-        revokeSessionsOf(BffKeycloakLoginFlow.REFRESH_USERNAME);
+        // The login, the revocation, the wait into the window and the request are made once for both
+        // FAILED tests, each on a session of its own; see REJECTIONS_AFTER_REVOCATION.
+        Rejection rejection = REJECTIONS_AFTER_REVOCATION.get().ofTheXhr();
+        Response response = rejection.response();
 
-        // The revocation alone changes nothing observable: outside the window the coordinator returns
-        // CURRENT without ever contacting the IdP, so the request would still succeed. The wait is
-        // what forces the refresh attempt that then fails.
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        long rejectionsBefore = credentialRejectedRecordCount();
-        Response response = BffKeycloakLoginFlow
-                .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
-                .header("Accept", "application/json")
-                .redirects().follow(false)
-                .when().get(MEDIATED_PATH)
-                .then().statusCode(401)
-                .extract().response();
-
+        assertEquals(401, response.statusCode(),
+                "a failed refresh on a non-navigation request must be answered as unauthenticated");
         assertTrue(response.contentType().contains("application/problem+json"),
                 "a failed refresh on a non-navigation request must render RFC 9457 problem+json");
         assertClearsSessionCookie(response);
-        assertCredentialRejectedRecordedAfter(rejectionsBefore);
+        assertCredentialRejectedRecorded(rejection);
     }
 
     @Test
     @DisplayName("FAILED: a navigation after IdP-side revocation is redirected 302 into the IdP and clears the cookie")
     void failedOutcomeRedirectsNavigationAndClearsTheSession() {
-        Session session = loginToRefreshInstance();
-        revokeSessionsOf(BffKeycloakLoginFlow.REFRESH_USERNAME);
+        Rejection rejection = REJECTIONS_AFTER_REVOCATION.get().ofTheNavigation();
+        Response response = rejection.response();
 
-        sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
-        long rejectionsBefore = credentialRejectedRecordCount();
-        Response response = BffKeycloakLoginFlow
-                .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
-                .header("Accept", "text/html")
-                .redirects().follow(false)
-                .when().get(MEDIATED_PATH)
-                .then().statusCode(302)
-                .extract().response();
-
+        assertEquals(302, response.statusCode(),
+                "a failed refresh on a navigation must be answered with a redirect");
         String location = response.getHeader("Location");
         assertNotNull(location, "a navigation challenge must carry a Location redirect");
         assertTrue(location.contains("/protocol/openid-connect/auth"),
                 "the navigation challenge must redirect into the OIDC authorization endpoint");
         assertClearsSessionCookie(response);
-        assertCredentialRejectedRecordedAfter(rejectionsBefore);
+        assertCredentialRejectedRecorded(rejection);
+    }
+
+    // ---------------------------------------------------------------- what is observed once
+
+    /**
+     * Two sessions, each called once before the near-expiry window opens and once inside it.
+     * Nothing is asserted when it is observed: each test asserts on the responses it reads.
+     *
+     * @param plainBeforeTheWindow  the session of a login on {@link #MEDIATED_PATH}, called right after it
+     * @param plainInsideTheWindow  the same session, called inside the window
+     * @param scopedBeforeTheWindow the session of a login on the scoped route, called on that route
+     *                              right after it
+     * @param scopedInsideTheWindow the same session, called on that route inside the window
+     */
+    private record ObservedRefreshes(Response plainBeforeTheWindow, Response plainInsideTheWindow,
+    Response scopedBeforeTheWindow, Response scopedInsideTheWindow) {
+    }
+
+    /**
+     * What one request on a session whose Keycloak session was revoked was answered with, and the
+     * {@code credential-rejected} record count on either side of that one request.
+     *
+     * @param response      the gateway's answer
+     * @param recordsBefore the count read immediately before the request was sent
+     * @param recordsAfter  the count once it had risen above {@code recordsBefore}, or the last count
+     *                      read when it had not within {@link #LOG_VISIBILITY_TIMEOUT_MILLIS}; read
+     *                      before any other request of this suite was sent
+     */
+    private record Rejection(Response response, long recordsBefore, long recordsAfter) {
+    }
+
+    /**
+     * @param ofTheXhr        the non-navigation request
+     * @param ofTheNavigation the navigation, sent after the record of the XHR had been waited for
+     */
+    private record ObservedRejections(Rejection ofTheXhr, Rejection ofTheNavigation) {
+    }
+
+    /**
+     * The {@code REFRESHED} pair. Both tests observe the same kind of event — the first call of a
+     * session inside its near-expiry window — on two sessions that owe each other nothing, so the two
+     * logins are made first and one wait carries both sessions into their windows.
+     * <p>
+     * Neither session waits less than {@value #WAIT_INTO_REFRESH_WINDOW_SECONDS} seconds between its
+     * call before the window and its call inside it. The session of the plain route waits longer, by
+     * the time the second login and its first call take, and so has that much less of the window left
+     * before its token expires at 45 seconds.
+     */
+    private static final Once<ObservedRefreshes> REFRESHES_INSIDE_THE_WINDOW = new Once<>(
+            "the two refreshes inside the window", () -> {
+                Session plain = loginToRefreshInstance();
+                Response plainBefore = unassertedCall(plain, MEDIATED_PATH);
+                Session scoped = BffKeycloakLoginFlow.login(BffEndpointScopesIT.SCOPED_SESSION_PATH,
+                        BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
+                        BffKeycloakLoginFlow.REVOCATION_USERNAME, BffKeycloakLoginFlow.REVOCATION_PASSWORD);
+                Response scopedBefore = unassertedCall(scoped, BffEndpointScopesIT.SCOPED_SESSION_PATH);
+
+                sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+                Response plainInside = unassertedCall(plain, MEDIATED_PATH);
+                Response scopedInside = unassertedCall(scoped, BffEndpointScopesIT.SCOPED_SESSION_PATH);
+                return new ObservedRefreshes(plainBefore, plainInside, scopedBefore, scopedInside);
+            });
+
+    /**
+     * The {@code FAILED} pair. Two logins, one revocation of every Keycloak session of the user — which
+     * ends both — one wait, and then one request per session.
+     * <p>
+     * The revocation alone changes nothing observable: outside the window the coordinator returns
+     * {@code CURRENT} without ever contacting the IdP, so a request would still succeed. The wait is
+     * what forces the refresh attempt that then fails.
+     * <p>
+     * <strong>The two requests are not sent back to back.</strong> Each test attributes a
+     * {@code credential-rejected} record to its own request by the count on either side of it. So the
+     * record of the first request is waited for before the second request is sent; were both sent
+     * first, the record of the second would satisfy the first test as well.
+     */
+    private static final Once<ObservedRejections> REJECTIONS_AFTER_REVOCATION = new Once<>(
+            "the two rejections after the revocation", () -> {
+                Session forTheXhr = loginToRefreshInstance();
+                Session forTheNavigation = loginToRefreshInstance();
+                revokeSessionsOf(BffKeycloakLoginFlow.REVOCATION_USERNAME);
+
+                sleepSeconds(WAIT_INTO_REFRESH_WINDOW_SECONDS);
+                Rejection ofTheXhr = rejectionOf(forTheXhr, "application/json");
+                Rejection ofTheNavigation = rejectionOf(forTheNavigation, "text/html");
+                return new ObservedRejections(ofTheXhr, ofTheNavigation);
+            });
+
+    /** One request on the mediated route, with the record count read before it and waited for after it. */
+    private static Rejection rejectionOf(Session session, String accept) {
+        long recordsBefore = credentialRejectedRecordCount();
+        Response response = BffKeycloakLoginFlow
+                .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
+                .header("Accept", accept)
+                .redirects().follow(false)
+                .when().get(MEDIATED_PATH)
+                .then().extract().response();
+        return new Rejection(response, recordsBefore, awaitCredentialRejectedRecordAfter(recordsBefore));
+    }
+
+    /**
+     * Something this class observes once per run, on first use, and several tests then read.
+     * <p>
+     * A failure to make the observation is kept as well, so the observation — and the wait inside it —
+     * is attempted once per run; every test that reads it then fails with that failure as its cause.
+     *
+     * @param <T> what is observed
+     */
+    private static final class Once<T> {
+
+        private final String what;
+        private final Supplier<T> observation;
+        private T observed;
+        private Throwable failure;
+
+        Once(String what, Supplier<T> observation) {
+            this.what = what;
+            this.observation = observation;
+        }
+
+        synchronized T get() {
+            if (observed == null && failure == null) {
+                // The catch below is deliberately wide: whatever stops the observation is kept, so it is
+                // attempted once per run and every test that reads it fails with that failure as its cause.
+                // cui-rewrite:disable InvalidExceptionUsageRecipe
+                try {
+                    observed = observation.get();
+                } catch (RuntimeException | AssertionError thrown) {
+                    failure = thrown;
+                }
+            }
+            if (failure != null) {
+                throw new AssertionError(what + " could not be observed: " + failure, failure);
+            }
+            return observed;
+        }
     }
 
     // ---------------------------------------------------------------- helpers
 
     private static Session loginToRefreshInstance() {
         return BffKeycloakLoginFlow.login(MEDIATED_PATH, BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN,
-                BffKeycloakLoginFlow.REFRESH_USERNAME, BffKeycloakLoginFlow.REFRESH_PASSWORD);
+                BffKeycloakLoginFlow.REVOCATION_USERNAME, BffKeycloakLoginFlow.REVOCATION_PASSWORD);
     }
 
     private static Response mediatedCall(Session session) {
@@ -386,6 +523,25 @@ class BffTokenRefreshIT {
                 .when().get(path)
                 .then().statusCode(200)
                 .extract().response();
+    }
+
+    /** {@link #mediatedCall(Session, String)} without its status assertion, for a response a test asserts on later. */
+    private static Response unassertedCall(Session session, String path) {
+        return BffKeycloakLoginFlow
+                .gateway(session.gatewayCookies(), BffKeycloakLoginFlow.REFRESH_GATEWAY_ORIGIN)
+                .when().get(path)
+                .then().extract().response();
+    }
+
+    /**
+     * The status assertion {@link #mediatedCall(Session, String)} makes, for a response observed earlier.
+     *
+     * @param response the response
+     * @return {@code response}
+     */
+    private static Response served(Response response) {
+        assertEquals(200, response.statusCode(), "the session must be served by the refresh instance");
+        return response;
     }
 
     /**
@@ -473,11 +629,13 @@ class BffTokenRefreshIT {
     }
 
     /**
-     * Asserts that the request just made recorded a new {@code credential-rejected} refresh failure,
-     * so the {@code FAILED} leg is green for the named disposition rather than for any session loss.
+     * Waits, for at most {@link #LOG_VISIBILITY_TIMEOUT_MILLIS}, for the {@code credential-rejected}
+     * record count to rise above {@code countBefore}, and asserts nothing.
+     *
+     * @return the count once it had risen, or the last count read when it had not
      */
     @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded wait for a bind-mounted log append
-    private static void assertCredentialRejectedRecordedAfter(long countBefore) {
+    private static long awaitCredentialRejectedRecordAfter(long countBefore) {
         long deadline = System.currentTimeMillis() + LOG_VISIBILITY_TIMEOUT_MILLIS;
         long observed = credentialRejectedRecordCount();
         while (observed <= countBefore && System.currentTimeMillis() < deadline) {
@@ -489,7 +647,17 @@ class BffTokenRefreshIT {
             }
             observed = credentialRejectedRecordCount();
         }
-        long finalObserved = observed;
+        return observed;
+    }
+
+    /**
+     * Asserts that the request of {@code rejection} recorded a new {@code credential-rejected} refresh
+     * failure, so the {@code FAILED} leg is green for the named disposition rather than for any
+     * session loss.
+     */
+    private static void assertCredentialRejectedRecorded(Rejection rejection) {
+        long countBefore = rejection.recordsBefore();
+        long finalObserved = rejection.recordsAfter();
         assertTrue(finalObserved > countBefore,
                 () -> "the IdP-side revocation must be disposed as CREDENTIAL_REJECTED: expected a new WARN "
                         + SESSION_REFRESH_FAILED_IDENTIFIER + " line with reason " + CREDENTIAL_REJECTED_REASON

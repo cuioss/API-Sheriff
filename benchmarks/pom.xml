@@ -247,7 +247,14 @@
                                 </configuration>
                             </execution>
 
-                            <!-- Build native executable and Docker image via integration-tests module -->
+                            <!-- Build native executable and Docker image via integration-tests module.
+                                 The lifecycle argument is 'package', not 'compile': the
+                                 integration-tests profile binds the grpc-echo-build execution to
+                                 'package', and it must have written
+                                 integration-tests/target/quarkus-app before
+                                 start-integration-container.sh builds the grpc-echo image, which
+                                 copies that directory and fails when it is absent. 'package' ends
+                                 before pre-integration-test, so the nested build starts no stack. -->
                             <execution>
                                 <id>maven-build-integration-tests</id>
                                 <phase>pre-integration-test</phase>
@@ -258,7 +265,7 @@
                                     <skip>${skip.container.lifecycle}</skip>
                                     <executable>../mvnw</executable>
                                     <arguments>
-                                        <argument>compile</argument>
+                                        <argument>package</argument>
                                         <argument>exec:exec@build-native-if-needed</argument>
                                         <argument>exec:exec@docker-build-distroless</argument>
                                         <argument>-Pintegration-tests</argument>

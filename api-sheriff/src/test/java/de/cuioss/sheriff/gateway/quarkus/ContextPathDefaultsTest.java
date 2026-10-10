@@ -29,6 +29,7 @@ import java.util.Properties;
 import io.quarkus.test.junit.QuarkusTest;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -118,6 +119,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  */
 @QuarkusTest
 @DisplayName("Context paths: declared in the packaged artifact, and effective at runtime")
+@Tag("quarkus-fork")
 class ContextPathDefaultsTest {
 
     /**

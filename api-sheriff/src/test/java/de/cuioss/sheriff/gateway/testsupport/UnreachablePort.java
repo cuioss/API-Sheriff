@@ -23,7 +23,9 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.BitSet;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * A loopback port that refuses connections and that no ephemeral bind can be handed — the upstream
@@ -58,10 +60,25 @@ import java.util.concurrent.TimeUnit;
  * wrong floor silently reintroduces the race. {@code UnreachablePortTest} additionally checks the
  * floor against the running kernel's actual ephemeral binds.
  *
- * <p>The search runs downward from just below the floor and returns the first port a plain,
- * non-reusing loopback bind accepts, so the result is deterministic on a quiet machine.
+ * <p>The search runs downward from just below the floor and takes each port a plain, non-reusing
+ * loopback bind accepts, skipping every port this JVM was already handed.
  *
- * <p>Thread-safe: the class is stateless.
+ * <h2>Why no port is handed out twice</h2>
+ * The edge names an upstream's circuit breaker after the upstream's host and port
+ * ({@code GatewayEdgeRoute#guardFor}), and a breaker name is registered once per JVM. Two fixtures
+ * given the same unreachable port would therefore build two edges whose breakers carry one name, and
+ * the second such breaker was observed never to open. The class remembers, for the lifetime of the
+ * JVM, every port it handed out and never answers one again, so every caller — a second test class
+ * in the same JVM, or the same fixture set up again for its next test — is given a target, and with
+ * it a breaker name, of its own.
+ *
+ * <p>The ports are not reclaimed, so one JVM can be handed at most {@value #SEARCH_SPAN} of them,
+ * less whatever in that span another process holds. A JVM that asks for more fails loudly with the
+ * number already handed out rather than answering a port a second time.
+ *
+ * <p>Thread-safe: the record of handed-out ports is read and extended under one lock that is held
+ * across the whole search, so concurrent callers are never given the same port, and a multi-port
+ * pick that cannot be satisfied claims none.
  *
  * @since 1.0
  */
@@ -76,48 +93,67 @@ public final class UnreachablePort {
     private static final String BSD_RANGE_FIRST = "net.inet.ip.portrange.first";
     private static final long SYSCTL_TIMEOUT_SECONDS = 5;
     private static final int LOWEST_UNPRIVILEGED_PORT = 1_024;
-    private static final int SEARCH_SPAN = 512;
+    /** How far below the floor the search reaches, and so how many ports one JVM can be handed. */
+    static final int SEARCH_SPAN = 512;
+
+    /** Guards {@link #HANDED_OUT}, and is held across a whole search so a pick is claimed as one unit. */
+    private static final ReentrantLock PICK_LOCK = new ReentrantLock();
+    /** Every port this JVM was already handed, by port number; read and written under {@link #PICK_LOCK}. */
+    private static final BitSet HANDED_OUT = new BitSet();
 
     private UnreachablePort() {
         // utility class
     }
 
     /**
-     * Picks a loopback port below the ephemeral range that nothing is bound to.
+     * Picks a loopback port below the ephemeral range that nothing is bound to and that this JVM was
+     * not handed before.
      *
      * @return the port number, strictly below {@link #ephemeralFloor()}
      * @throws IOException if the ephemeral range cannot be read
-     * @throws IllegalStateException if no port below the floor is free, or the floor leaves no
-     *         unprivileged port beneath it
+     * @throws IllegalStateException if no port below the floor is both free and not yet handed out, or
+     *         the floor leaves no unprivileged port beneath it
      */
     public static int pick() throws IOException {
         return pick(1)[0];
     }
 
     /**
-     * Picks {@code count} distinct loopback ports below the ephemeral range that nothing is bound to,
-     * for a fixture that needs several unreachable targets told apart (a circuit breaker per target,
-     * for instance).
+     * Picks {@code count} distinct loopback ports below the ephemeral range that nothing is bound to
+     * and that this JVM was not handed before, for a fixture that needs several unreachable targets
+     * told apart (a circuit breaker per target, for instance).
      *
      * @param count how many ports to pick, at least one
-     * @return the distinct port numbers, each strictly below {@link #ephemeralFloor()}
+     * @return the distinct port numbers, each strictly below {@link #ephemeralFloor()} and none of them
+     *         answered by an earlier call in this JVM
      * @throws IOException if the ephemeral range cannot be read
-     * @throws IllegalStateException if fewer than {@code count} ports below the floor are free, or the
-     *         floor leaves no unprivileged port beneath it
+     * @throws IllegalStateException if fewer than {@code count} ports below the floor are both free and
+     *         not yet handed out, or the floor leaves no unprivileged port beneath it; no port is
+     *         claimed in that case
      */
     public static int[] pick(int count) throws IOException {
         int floor = ephemeralFloor();
         int lowest = Math.max(LOWEST_UNPRIVILEGED_PORT, floor - SEARCH_SPAN);
         int[] ports = new int[count];
         int found = 0;
-        for (int candidate = floor - 1; candidate >= lowest && found < count; candidate--) {
-            if (isUnbound(candidate)) {
-                ports[found++] = candidate;
+        PICK_LOCK.lock();
+        try {
+            for (int candidate = floor - 1; candidate >= lowest && found < count; candidate--) {
+                if (!HANDED_OUT.get(candidate) && isUnbound(candidate)) {
+                    ports[found++] = candidate;
+                }
             }
-        }
-        if (found < count) {
-            throw new IllegalStateException("Only " + found + " of " + count + " unbound loopback ports in ["
-                    + lowest + ", " + floor + "), below the ephemeral range floor " + floor);
+            if (found < count) {
+                throw new IllegalStateException("Only " + found + " of " + count
+                        + " unbound, not yet handed out loopback ports in [" + lowest + ", " + floor
+                        + "), below the ephemeral range floor " + floor + "; this JVM was already handed "
+                        + HANDED_OUT.cardinality());
+            }
+            for (int port : ports) {
+                HANDED_OUT.set(port);
+            }
+        } finally {
+            PICK_LOCK.unlock();
         }
         return ports;
     }

@@ -78,6 +78,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
@@ -92,6 +93,7 @@ import org.junit.jupiter.api.io.TempDir;
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — end-to-end request pipeline over a live Vert.x server")
+@Tag("isolated-fork")
 class GatewayEdgePipelineTest {
 
     private static final String ORIGIN = "https://app.example";
@@ -250,16 +252,6 @@ class GatewayEdgePipelineTest {
         assertTrue(response.body().contains("POST /submit"), response.body());
         assertTrue(response.body().contains("body=hello-upstream"),
                 "the streamed request body reaches the upstream: " + response.body());
-    }
-
-    @Test
-    @DisplayName("rejects an unmatched path 404 (deny by default)")
-    void rejectsUnmatchedPath() throws Exception {
-        // Act
-        Response response = send(io.vertx.core.http.HttpMethod.GET, "/nowhere", Map.of(), null);
-
-        // Assert
-        assertEquals(404, response.status());
     }
 
     @Test

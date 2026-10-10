@@ -62,11 +62,13 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 @DisplayName("RouteRuntimeAssembler — boot-time assembly and heavy-object dedup")
+@Tag("isolated-fork")
 class RouteRuntimeAssemblerTest {
 
     private Vertx vertx;

@@ -31,6 +31,7 @@ import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -121,6 +122,7 @@ import org.junit.jupiter.api.Test;
  * @since 1.0
  */
 @DisplayName("Awaits.until must be followed by an assertion in the same test method")
+@Tag("isolated-fork")
 class AwaitsReassertionArchTest {
 
     /** The module-relative test source root; the sweep reads source text, not bytecode. */

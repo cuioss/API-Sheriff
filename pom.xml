@@ -200,7 +200,6 @@
                     <configuration>
                         <systemPropertyVariables>
                             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                            <java.util.logging.config.file>${project.build.testOutputDirectory}/logging.properties</java.util.logging.config.file>
                             <maven.home>${maven.home}</maven.home>
                             <quarkus.test.arg-line>@{argLine}</quarkus.test.arg-line>
                         </systemPropertyVariables>
@@ -224,7 +223,6 @@
                     <configuration>
                         <systemPropertyVariables>
                             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                            <java.util.logging.config.file>${project.build.testOutputDirectory}/logging.properties</java.util.logging.config.file>
                             <maven.home>${maven.home}</maven.home>
                             <quarkus.test.arg-line>@{argLine}</quarkus.test.arg-line>
                         </systemPropertyVariables>

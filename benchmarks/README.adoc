@@ -528,7 +528,16 @@ Comparison runs are *on-demand only* and are wired into no workflow and no Maven
 invokes. Running them in CI would multiply benchmark wall time by the number of targets and would
 publish comparison numbers into the baseline trend series.
 
-Start the comparison stack — this is one three-file merge, in this exact order:
+First build the `grpc-echo` fixture jar on the host, from the repository root. The `grpc-echo` image
+build copies `integration-tests/target/quarkus-app` and fails when that directory is absent:
+
+[source,bash]
+----
+./mvnw package -Pintegration-tests -DskipTests -pl integration-tests -am
+----
+
+Then start the comparison stack from `integration-tests/` — this is one three-file merge, in this
+exact order:
 
 [source,bash]
 ----
@@ -544,7 +553,8 @@ APISIX overlay cannot be launched as its own project. "Standalone" refers only t
 declarative (etcd-free) runtime mode.
 
 NOTE: Always pass `--build` when Java or configuration has changed. `up -d` without it silently
-runs a stale image.
+runs a stale image. A change to the echo service additionally needs the Maven line above again:
+`--build` only re-copies the `quarkus-app` directory already on disk, it does not rebuild the jar.
 
 Then run the comparison from `benchmarks/`:
 

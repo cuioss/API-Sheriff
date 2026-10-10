@@ -258,6 +258,77 @@
                 <groupId>io.smallrye</groupId>
                 <artifactId>jandex-maven-plugin</artifactId>
             </plugin>
+            <!-- The unit run is three surefire executions, one per fork group. Which group a test
+                 class runs in is declared on the class by a JUnit tag; a class that carries neither
+                 tag runs in the first group. The executions partition the tags: default-test
+                 excludes exactly the two tags the other two select, so no class runs twice and none
+                 is left out. SurefireForkGroupContractTest reads this block and the test sources
+                 and fails the build when that stops being true, or when a class that needs a group
+                 does not carry its tag.
+
+                 default-test, untagged classes: ONE JVM for all of them (forkCount 1, reuseForks
+                 true). This is the group for a class that boots no application, creates no Vert.x
+                 instance and changes no JVM-wide setting.
+
+                 quarkus-fork-tests, tag quarkus-fork: ONE JVM for every @QuarkusTest class. Quarkus
+                 keeps the application running between classes of one test profile and orders the
+                 classes by profile (QuarkusTestProfileAwareClassOrderer, its default), so the JVM
+                 boots the application once per profile instead of once per class.
+
+                 isolated-fork-tests, tag isolated-fork: one JVM PER CLASS (reuseForks false), the
+                 policy the root pom.xml declares for the whole reactor and the one every class in
+                 this module ran under before the split. It is kept for the users of
+                 SanMismatchedJwksServer, which replaces the JVM default trust store; for the
+                 classes that create a Vert.x instance; for the classes that set a logger level
+                 through TestLogLevel.addLogger, which stays set for whatever runs next in the same
+                 JVM; and for the architecture tests in the arch package. The four classes that draw ports from UnreachablePort all create a Vert.x
+                 instance and are therefore in this group, so the 512 ports that class can hand out
+                 per JVM are a budget per test class and not one the reused JVM has to share.
+
+                 Everything else stays as the root pom.xml's pluginManagement declares it: the
+                 JaCoCo agent on the argLine, the system properties and the timeouts. All three
+                 executions append to the one target/jacoco.exec. This plugin is declared BEFORE
+                 jacoco-maven-plugin on purpose: both bind to the test phase, and the report has to
+                 run after the last of the three executions.
+
+                 A class that fails, or is flaky, only when it shares a JVM belongs in
+                 isolated-fork. Tag it; do not change the test. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>default-test</id>
+                        <configuration>
+                            <excludedGroups>quarkus-fork,isolated-fork</excludedGroups>
+                            <forkCount>1</forkCount>
+                            <reuseForks>true</reuseForks>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>quarkus-fork-tests</id>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <groups>quarkus-fork</groups>
+                            <forkCount>1</forkCount>
+                            <reuseForks>true</reuseForks>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>isolated-fork-tests</id>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <groups>isolated-fork</groups>
+                            <forkCount>1</forkCount>
+                            <reuseForks>false</reuseForks>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <!-- JaCoCo Plugin for test coverage -->
             <plugin>
                 <groupId>org.jacoco</groupId>

@@ -80,13 +80,19 @@ import okhttp3.tls.HeldCertificate;
  *
  * Replacing the default trust store is a <strong>JVM-global</strong> mutation: for as long as it is
  * installed, nothing in this JVM trusts a public certificate authority. It is safe here only because
- * the ROOT {@code pom.xml} sets {@code <reuseForks>false</reuseForks>} on
- * {@code maven-surefire-plugin} and {@code maven-failsafe-plugin}, in {@code pluginManagement} and
- * therefore reactor-wide — so every test class gets its own forked JVM and the blast radius of this
- * mutation is one class. That setting lives in the root {@code pom.xml} rather than in
- * {@code api-sheriff/pom.xml}: the containment is inherited, not local, and this fixture would
- * become a cross-class hazard the moment fork reuse were switched on. {@link #close} restoring the
- * previous property values is the second line of defence, not the first.
+ * every test class that uses this fixture runs in a forked JVM of its own, so the blast radius of
+ * the mutation is one class. That is no longer true of every class in this module:
+ * {@code api-sheriff/pom.xml} splits the unit run into three surefire executions, and two of them
+ * reuse one JVM for many classes. A class gets a JVM of its own only by carrying
+ * {@code @Tag("isolated-fork")}, which selects it into the {@code isolated-fork-tests} execution
+ * ({@code reuseForks} false).
+ * <p>
+ * <strong>A test class that references this fixture must therefore carry that tag.</strong> The
+ * containment is declared, not inherited, and {@code SurefireForkGroupContractTest} enforces it: it
+ * fails the build for a test class that names {@code SanMismatchedJwksServer} without the tag, and
+ * for a {@code pom.xml} whose {@code isolated-fork-tests} execution no longer forks per class.
+ * {@link #close} restoring the previous property values is the second line of defence, not the
+ * first.
  *
  * <h2>Binding</h2>
  *
