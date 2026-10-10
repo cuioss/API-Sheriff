@@ -24,17 +24,16 @@ jobs:
     # Only run on merged PRs, not just closed ones
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     # Add timeout to prevent long-running jobs (increased for integration benchmarks).
-    # The -Pbenchmark profile DECLARES TWELVE k6 goals: the eight cross-gateway matrix aspects, the
-    # two retained non-matrix health benchmarks (healthLiveCheck, gatewayHealth) and the two
-    # API-Sheriff-only passthrough-relay executions (mapped relay throughput and the empty-mode
-    # no-regression run). All TWELVE of them execute: uploadLarge and websocketEcho carry a <skip>
-    # bound to their own property, but both properties are false in benchmarks/pom.xml, so both
-    # goals run. They are ordered last in the profile, so a fail-fast abort from either of them
-    # cannot discard a goal that would otherwise produce a result.
+    # The k6 goals the -Pbenchmark profile declares are not listed here: their source is
+    # benchmarks/pom.xml, and the build-generated execution manifest
+    # (benchmarks/target/benchmark-execution-manifest.json) reports which of them are enabled and
+    # run. uploadLarge and websocketEcho carry a <skip> bound to their own property and are ordered
+    # last in the profile, so a fail-fast abort from either of them cannot discard a goal that would
+    # otherwise produce a result.
     #
     # Budget. The first two terms are per-goal timings measured locally 2026-07-28 rather than
     # estimated:
-    #   * goal execution   ~16 min for the twelve goals.
+    #   * goal execution   ~16 min for the goal set measured then.
     #                      11 request-rate goals x (60s k6 window + ~10s compose/k6 start and
     #                      summary write) = ~13 min, plus uploadLarge. uploadLarge is NOT a
     #                      request-rate goal: it is transfer-bound at reduced concurrency
@@ -122,13 +121,9 @@ jobs:
       - name: Run Integration Benchmarks with k6
         id: run-benchmarks
         run: |
-          # Run k6-based integration benchmarks with native image. The -Pbenchmark profile declares
-          # twelve goals: the eight cross-gateway matrix aspects (unauth, bearer, http2,
-          # graphql, upload-1MB, upload-50MB, ws, grpc), the two retained non-matrix health
-          # benchmarks (healthLiveCheck, gatewayHealth) and the two API-Sheriff-only
-          # passthrough-relay executions (mapped and empty). All twelve execute, and each is
-          # expected to write a summary document that becomes a CI result.
-          # The on-demand APISIX comparison lane is deliberately NOT run
+          # Run k6-based integration benchmarks with native image. Every goal the execution
+          # manifest reports as enabled is expected to write a summary document that becomes a CI
+          # result. The on-demand APISIX comparison lane is deliberately NOT run
           # here. Maven still fails fast on the goals that do run, so the coverage step below
           # remains what proves which goals actually produced a result.
           echo "Running k6 integration benchmarks with native Quarkus..."

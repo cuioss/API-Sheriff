@@ -24,7 +24,7 @@ The two lanes run deliberately different sets, so a number is always attributabl
 |Lane |Executions |Contents
 
 |CI baseline (`-Pbenchmark`)
-|12
+|Per the execution manifest
 |The eight cross-gateway matrix aspects, the two retained non-matrix benchmarks `healthLiveCheck`
  and `gatewayHealth`, *plus* the two API-Sheriff-only passthrough-relay executions (`mapped` relay
  throughput and the `empty`-mode no-regression run).
@@ -164,8 +164,8 @@ runs.
 
 === Which goals actually run
 
-The CI baseline lane declares twelve goals, and all twelve execute. Being declared in `pom.xml` is
-not evidence that a goal produces a number -- a single failing goal used to let Maven's fail-fast
+The goals the CI baseline lane declares are those of the `-Pbenchmark` profile in `pom.xml`. Being
+declared there is not evidence that a goal produces a number -- a single failing goal used to let Maven's fail-fast
 discard every goal sequenced after it, so the coverage gate below, not the declaration, is what
 proves a goal ran.
 
