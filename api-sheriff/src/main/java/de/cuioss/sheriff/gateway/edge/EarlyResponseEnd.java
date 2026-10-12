@@ -43,17 +43,22 @@ import io.vertx.core.http.HttpServerRequest;
  * every {@value #POLL_MILLIS} ms through {@link InboundStreamWindow}, and the end goes ahead at the
  * first of:
  * <ol>
- *   <li>the client can send nothing more — its window is used up, or it ended or lost the stream;</li>
- *   <li>the window has not moved for {@value #QUIET_MILLIS} ms — the client is sending nothing although
- *       it could, so nothing is on the way;</li>
+ *   <li>the client can send nothing more — the stream's or the connection's window is used up, or the
+ *       client ended or lost the stream (see {@link InboundStreamWindow#sendableBytes()});</li>
+ *   <li>what the client may send has not changed for {@value #QUIET_MILLIS} ms — it is sending nothing
+ *       although it could, so nothing is on the way;</li>
  *   <li>{@value #MAX_WAIT_MILLIS} ms have passed since the wait began, whatever the stream does.</li>
  * </ol>
  * The last bound caps how long any response can be held back. The three values are constants of the
  * gateway, not configuration.
  * <p>
- * <strong>The reset follows the write, and only an open stream is reset.</strong> The reset is decided
- * once the end has been written, so a final frame held back by HTTP/2 flow control is never discarded.
- * A stream the client has ended in the meantime is complete and is not reset.
+ * <strong>The reset goes out right behind the end.</strong> The end and the reset are written in the
+ * same turn of the stream's event loop as the look that allowed them, so nothing the gateway does in
+ * between — another stream on the connection consuming its body and returning connection window — can
+ * let the client send on this stream before the reset reaches it. That holds as long as the end itself
+ * reaches the transport at once. When HTTP/2 flow control holds the final frame back instead, a reset
+ * written now would discard it; the reset then waits until that frame has been written. Either way a
+ * stream the client has ended in the meantime is complete and is not reset.
  * <p>
  * <strong>Without a view of the stream there is no wait.</strong> When {@link InboundStreamWindow}
  * cannot attach, the response is ended at once and the stream reset once that end has been written.
@@ -192,12 +197,23 @@ final class EarlyResponseEnd {
                 written.fail(endFailure);
                 return;
             }
+            if (window.localEnded()) {
+                // The final frame is in the transport's outbound buffer: the reset follows it at once.
+                resetIfOpen();
+                ended.onComplete(written);
+                return;
+            }
+            // Flow control holds the final frame back; a reset now would discard it.
             ended.onComplete(result -> window.execute(() -> {
-                if (window.remoteOpen()) {
-                    reset.run();
-                }
+                resetIfOpen();
                 written.handle(result);
             }));
+        }
+
+        private void resetIfOpen() {
+            if (window.remoteOpen()) {
+                reset.run();
+            }
         }
     }
 }

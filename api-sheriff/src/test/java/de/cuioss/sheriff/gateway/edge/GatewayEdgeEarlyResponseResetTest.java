@@ -143,8 +143,12 @@ class GatewayEdgeEarlyResponseResetTest {
     private static final int RESET_LIMIT = 20;
     /** Early-answered uploads the still-sending case sends over one connection: well above the limit. */
     private static final int SENDING_UPLOADS = 3 * RESET_LIMIT;
-    /** Uploads the still-sending case keeps in flight at once on that connection. */
-    private static final int SENDING_BATCH = 5;
+    /**
+     * Uploads the still-sending case keeps in flight at once on that connection: enough that the
+     * bodies the gateway holds back exhaust the connection's flow-control window, as many concurrent
+     * uploads on one connection do.
+     */
+    private static final int SENDING_BATCH = 10;
     /** The size of each chunk a still-sending upload writes. */
     private static final int CHUNK_BYTES = 8 * 1024;
     /** What one still-sending upload sends at most: far beyond any flow-control window. */
@@ -300,7 +304,8 @@ class GatewayEdgeEarlyResponseResetTest {
         assertAll("uploads still sending when answered early",
                 () -> assertEquals(SENDING_UPLOADS, uploads.size()),
                 () -> assertTrue(notAnswered.isEmpty(), () -> notAnswered.size()
-                        + " upload(s) were not answered whole, first: " + notAnswered.getFirst().outcome()),
+                        + " upload(s) were not answered whole: "
+                        + notAnswered.stream().map(SendingUpload::outcome).toList()),
                 () -> assertTrue(notResetByGateway.isEmpty(), () -> notResetByGateway.size()
                         + " stream(s) did not end in the gateway's NO_ERROR reset, first: "
                         + notResetByGateway.getFirst().outcome()),
@@ -640,7 +645,9 @@ class GatewayEdgeEarlyResponseResetTest {
         /** @return how this upload ended, for a failure message */
         String outcome() {
             return request.path() + ": status=" + (answer == null ? "none" : answer.response().statusCode())
-                    + ", streamEnd=" + streamEnd + ", failure=" + failure + ", sent=" + sent.get();
+                    + ", body=" + (answer == null ? "none" : answer.body())
+                    + ", streamEnd=" + streamEnd + ", failure=" + (failure == null ? null : failure.getClass().getName()
+                    + ": " + failure.getMessage().lines().findFirst().orElse("")) + ", sent=" + sent.get();
         }
     }
 

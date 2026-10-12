@@ -18,10 +18,13 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -29,6 +32,7 @@ import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
@@ -60,13 +64,17 @@ class InboundStreamWindowTest {
     private Vertx vertx;
     private HttpServer server;
     private HttpClient client;
+    /** The first request the server received. */
     private final CompletableFuture<HttpServerRequest> received = new CompletableFuture<>();
+    /** Every request the server received, in arrival order. */
+    private final List<HttpServerRequest> allReceived = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
         vertx = Vertx.vertx();
         server = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
             request.pause();
+            allReceived.add(request);
             received.complete(request);
         }).listen(0, LoopbackHost.ADDRESS), "the server to start listening");
     }
@@ -102,6 +110,58 @@ class InboundStreamWindowTest {
         assertAll("the window of a paused HTTP/2 request",
                 () -> assertEquals(new View(true, initial), before, "a fresh stream holds the whole initial window"),
                 () -> assertEquals(new View(false, 0), ended, "an ended stream lets the client send nothing more"));
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — what a client may send is bounded by the connection's window as well as the stream's")
+    void sendableIsBoundedByTheConnectionWindow() throws Exception {
+        int initial = new HttpServerOptions().getInitialSettings().getInitialWindowSize();
+        // Each portion fits its own stream window; the two together exceed the one connection window.
+        Buffer portion = Buffer.buffer(Generators.letterStrings(initial * 2 / 3, initial * 2 / 3).next());
+        HttpClientRequest first = open(HttpVersion.HTTP_2);
+        HttpClientRequest second = Awaits.connect(client.request(HttpMethod.POST, server.actualPort(),
+                LoopbackHost.ADDRESS, "/second"), "the second request to open on the same connection");
+        Awaits.connect(first.setChunked(true).sendHead(), "the first head to be sent");
+        Awaits.connect(second.setChunked(true).sendHead(), "the second head to be sent");
+        Awaits.until(() -> allReceived.size() == 2, "the server to receive both requests",
+                Awaits.CONNECT_CEILING_SECONDS);
+        InboundStreamWindow firstWindow = InboundStreamWindow.of(allReceived.get(0)).orElseThrow();
+        InboundStreamWindow secondWindow = InboundStreamWindow.of(allReceived.get(1)).orElseThrow();
+
+        first.write(portion);
+        second.write(portion);
+        Awaits.until(() -> look(firstWindow).sendable() == 0 && look(secondWindow).sendable() == 0,
+                "the connection window to be used up", Awaits.CONNECT_CEILING_SECONDS);
+
+        assertAll("two streams sharing one used-up connection window",
+                () -> assertSame(first.connection(), second.connection(), "both streams share the connection"),
+                () -> assertTrue(look(firstWindow).remoteOpen() && look(secondWindow).remoteOpen(),
+                        "neither client side has ended"),
+                () -> assertTrue(portion.length() < initial,
+                        "neither stream can have used up its own window, so the connection's bounds both"));
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — the gateway's side of the stream has ended as soon as its response end is handed over")
+    void localSideEndsWhenTheResponseEnds() throws Exception {
+        HttpClientRequest upload = open(HttpVersion.HTTP_2);
+        Awaits.connect(upload.setChunked(true).sendHead(), "the upload head to be sent");
+        HttpServerRequest request = Awaits.connect(received, "the server to receive the upload");
+        InboundStreamWindow window = InboundStreamWindow.of(request).orElseThrow();
+        CompletableFuture<Boolean> endedBefore = new CompletableFuture<>();
+        CompletableFuture<Boolean> endedInTheSameTurn = new CompletableFuture<>();
+
+        window.execute(() -> {
+            endedBefore.complete(window.localEnded());
+            request.response().end(Generators.letterStrings(4, 12).next());
+            endedInTheSameTurn.complete(window.localEnded());
+        });
+
+        assertAll("the gateway's side of the stream",
+                () -> assertFalse(Awaits.connect(endedBefore, "the look before the end")),
+                () -> assertTrue(Awaits.connect(endedInTheSameTurn, "the look right after the end"),
+                        "an end the transport accepts at once ends the gateway's side in the same turn"),
+                () -> assertTrue(look(window).remoteOpen(), "the client's side is still open"));
     }
 
     @Test

@@ -20,14 +20,21 @@ import java.util.concurrent.TimeUnit;
 
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http2.Http2ConnectionHandler;
+import io.netty.handler.codec.http2.Http2LocalFlowController;
 import io.netty.handler.codec.http2.Http2Stream;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.net.impl.ConnectionBase;
 
 /**
- * The receive side of one inbound HTTP/2 stream as the transport sees it: whether the client may still
- * send on it, and how many request-body bytes it may still send — the flow-control window the gateway
- * has granted on that stream and not yet received.
+ * One inbound HTTP/2 stream as the transport sees it: whether the client may still send on it, how many
+ * request-body bytes it may still send, and whether the gateway's side of the stream has ended.
+ * <p>
+ * <strong>What the client may still send.</strong> A client may send DATA on a stream only within both
+ * flow-control windows the gateway has granted and not yet received: the stream's own and the
+ * connection's, which every stream on the connection draws from. The smaller of the two bounds what it
+ * can send — and what it can have on the way — and when either is used up it can send nothing at all.
+ * Both windows count the {@code WINDOW_UPDATE} frames the gateway has already written, so a window that
+ * reads {@code 0} stays {@code 0} until the gateway itself grants more.
  * <p>
  * <strong>Why this reaches below Vert.x — the one place in the gateway that does.</strong> Vert.x
  * exposes no per-stream flow-control state: {@code HttpConnection#getWindowSize()} is the window of the
@@ -42,8 +49,8 @@ import io.vertx.core.net.impl.ConnectionBase;
  * the wait it would have used this for.
  * <p>
  * <strong>Thread confinement.</strong> Netty's HTTP/2 state belongs to the connection's event loop.
- * {@link #remoteOpen()} and {@link #sendableBytes()} must be called there; {@link #execute} and
- * {@link #schedule} hand work to it.
+ * {@link #remoteOpen()}, {@link #sendableBytes()} and {@link #localEnded()} must be called there;
+ * {@link #execute} and {@link #schedule} hand work to it.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -93,15 +100,31 @@ final class InboundStreamWindow {
     /**
      * Must be called on the connection's event loop.
      *
-     * @return the request-body bytes the client may still send on the stream: the receive window the
-     *         gateway has granted and not yet received, {@code 0} once the client may send nothing more
+     * @return the request-body bytes the client may still send on the stream: the smaller of the
+     *         stream's and the connection's receive window, {@code 0} once the client may send nothing
+     *         more
      */
     int sendableBytes() {
         Http2Stream stream = codec.connection().stream(streamId);
         if (stream == null || !stream.state().remoteSideOpen()) {
             return 0;
         }
-        return Math.max(0, codec.decoder().flowController().windowSize(stream));
+        Http2LocalFlowController flowControl = codec.decoder().flowController();
+        int streamWindow = flowControl.windowSize(stream);
+        int connectionWindow = flowControl.windowSize(codec.connection().connectionStream());
+        return Math.max(0, Math.min(streamWindow, connectionWindow));
+    }
+
+    /**
+     * Must be called on the connection's event loop.
+     *
+     * @return {@code true} once the gateway's side of the stream has ended — the frame carrying
+     *         {@code END_STREAM} has been handed to the transport's outbound buffer, not held back by
+     *         flow control — or the stream is gone
+     */
+    boolean localEnded() {
+        Http2Stream stream = codec.connection().stream(streamId);
+        return stream == null || !stream.state().localSideOpen();
     }
 
     /** Runs {@code task} on the connection's event loop — at once when called there. */

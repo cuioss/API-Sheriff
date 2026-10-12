@@ -395,18 +395,22 @@ request body: the upstream request still receiving it is reset, so nothing more 
 inbound stream is paused for good. A paused stream returns no flow-control window, so from then on
 the client can send no more than the window it already holds.
 . *The end waits until nothing more can arrive.* The final frame of the response -- the one carrying
-`END_STREAM` -- is held back until the client can send nothing more on the stream (its window is used
-up, or it has ended or lost the stream), or the window has not moved for 50 ms, or 1 s has passed,
-whichever comes first. A client that sees the complete response while it is still uploading resets
+`END_STREAM` -- is held back until the client can send nothing more on the stream (the stream's or the
+connection's flow-control window is used up, or it has ended or lost the stream), or what it may send
+has not changed for 50 ms, or 1 s has passed, whichever comes first. A client that sees the complete
+response while it is still uploading resets
 the stream itself, and the HTTP/2 transport counts the resets a client sends against its
 per-connection Rapid-Reset limit; a reset written while the client's data is still on the way is no
 better, because the transport answers each data frame arriving after it with a `STREAM_CLOSED` reset
 of its own and counts those against the same limit. Holding the end back until nothing is in flight
 avoids both. The wait is bounded by the 1 s cap; the three values are constants of the gateway, not
 configuration.
-. *The reset follows the write.* The stream is reset once the end has been written -- a final frame
-still held back by HTTP/2 flow control would otherwise be discarded -- and only if the client has not
-ended the stream in the meantime.
+. *The reset goes out right behind the end.* The end and the reset are written together, in the same
+step that found nothing more can arrive, so no window the gateway returns in between -- another
+stream on the connection reading its body -- can let the client send on this stream before the reset
+reaches it. Only when HTTP/2 flow control holds the final frame back does the reset wait until that
+frame has been written, since a reset written earlier would discard it. A stream the client has ended
+in the meantime is not reset.
 
 The late refusal of a body on a bodyless method (below) stays a `CANCEL` reset taken before the
 response ends, and neither the WebSocket upgrade nor the L4 passthrough relay is affected.
