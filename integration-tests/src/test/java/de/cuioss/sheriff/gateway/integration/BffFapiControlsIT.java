@@ -98,9 +98,11 @@ import org.junit.jupiter.api.Test;
  * and it must carry no record of a refused token response ({@value #TOKEN_NOT_BOUND_RECORD}).
  * <p>
  * <strong>What this suite does NOT prove.</strong> It does not show a token response being
- * <em>refused</em>: Keycloak binds every access token of these clients, so the refusal is proven at unit level
- * against a scripted identity provider ({@code BoundTokenEndpointClientTest},
- * {@code BffRuntimeProducerTest}). It does not prove that an upstream ignores {@code cnf} — the echo
+ * <em>refused</em>: Keycloak binds every access token of these clients. The refusal on the
+ * authorization-code exchange is proven against a running gateway by {@link BffUnboundTokenResponseIT},
+ * whose stub identity provider answers with an unbound token; the refusal on the refresh grant is
+ * proven at unit level ({@code BoundTokenEndpointClientTest}, {@code BffRuntimeProducerTest}). It
+ * does not prove that an upstream ignores {@code cnf} — the echo
  * upstream checks nothing. The client-secret mode is {@code BffClientSecretModeIT}'s, and generated
  * keys are {@code BffGeneratedKeysIT}'s. Like every {@code Bff*IT} it replays a cookie map and asserts
  * nothing about browser cookie policy (see {@link BffKeycloakLoginFlow}).

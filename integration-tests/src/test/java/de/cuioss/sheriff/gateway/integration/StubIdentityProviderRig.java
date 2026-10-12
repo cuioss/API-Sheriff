@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -150,8 +151,11 @@ import io.restassured.response.Response;
  * RSA key generated when the rig starts, or with the key the last {@link #replaceSigningKey()} put in
  * its place, and every access token of a token answer carries the thumbprint of the committed proof
  * key as {@code cnf.jkt}, because the gateway refuses a token response that is not bound to its own
- * proof key. The stub validates nothing: it does not check the client credential, the authorization
- * code, the PKCE verifier or the DPoP proof.
+ * proof key. The one scripted exception is the code-exchange answer of a login driven through
+ * {@link #loginCallback(String, Duration, Binding)} with a {@link Binding} other than
+ * {@link Binding#BOUND}: its access token carries no {@code cnf} claim, or the thumbprint of another
+ * committed key, so a suite can drive that refusal. The stub validates nothing: it does not check the
+ * client credential, the authorization code, the PKCE verifier or the DPoP proof.
  * <p>
  * Each endpoint answers from its script when a test has {@linkplain #script(Endpoint, Answer) filled}
  * it, one scripted answer per request in the order they were added, and from its default otherwise.
@@ -172,7 +176,9 @@ import io.restassured.response.Response;
  * {@code scope} out of the pushed authorization request the stub recorded, scripts the token answer of
  * the code exchange, and calls the gateway callback itself. Like every {@code Bff*IT} helper it replays
  * a cookie map and applies no browser cookie policy. {@link #loginStatus(String, Duration)} drives the
- * same login and reports what the callback answered instead of requiring a completed one.
+ * same login and reports what the callback answered instead of requiring a completed one, and
+ * {@link #loginCallback(String, Duration, Binding)} does the same with a code-exchange answer of a
+ * chosen binding and returns the callback's whole answer.
  *
  * <h2>Lifecycle</h2>
  *
@@ -285,6 +291,12 @@ final class StubIdentityProviderRig implements AutoCloseable {
     private static final String SIGNING_KEYS_MOUNT = "/app/signing-keys";
     private static final String PROOF_KEY_FILE = "dpop-rsa.pem";
 
+    /**
+     * A committed key that is not this gateway's proof key — the EC proof key of the primary instance —
+     * whose thumbprint {@link Binding#OTHER_KEY} binds an access token to.
+     */
+    private static final String OTHER_KEY_FILE = "dpop-ec.pem";
+
     private static final int STUB_ADMIN_PORT = 8080;
     private static final int STUB_TLS_PORT = 8443;
 
@@ -324,6 +336,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
      */
     private volatile SigningKey signingKey;
     private final String proofKeyThumbprint;
+    private final String otherKeyThumbprint;
 
     /** The stub mapping that serves the key set, by the path of each {@code jwks.url}; filled at boot. */
     private final Map<String, String> keySetMappings = new LinkedHashMap<>();
@@ -342,11 +355,15 @@ final class StubIdentityProviderRig implements AutoCloseable {
         try {
             signingKey = SigningKey.generate();
             proofKeyThumbprint = BffFapiControlsIT.publicKeyThumbprint(BffFapiControlsIT.signingKeyFile(PROOF_KEY_FILE));
+            otherKeyThumbprint = BffFapiControlsIT.publicKeyThumbprint(BffFapiControlsIT.signingKeyFile(OTHER_KEY_FILE));
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("cannot generate the stub identity provider's signing key", e);
         } catch (IOException e) {
-            throw new UncheckedIOException("cannot read the proof key " + PROOF_KEY_FILE, e);
+            throw new UncheckedIOException("cannot read the committed keys " + PROOF_KEY_FILE + " and "
+                    + OTHER_KEY_FILE, e);
         }
+        assertNotEquals(proofKeyThumbprint, otherKeyThumbprint, () -> OTHER_KEY_FILE
+                + " must be another key than the proof key " + PROOF_KEY_FILE + ", or an answer bound to it is bound");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -503,7 +520,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
      *         part
      */
     Session login(String startPath, Duration accessTokenLifetime) {
-        LoginAttempt attempt = attemptLogin(startPath, accessTokenLifetime);
+        LoginAttempt attempt = attemptLogin(startPath, accessTokenLifetime, Binding.BOUND);
         Response callback = attempt.callback();
         assertEquals(302, callback.statusCode(), () -> "the gateway must accept the stubbed login at its callback. "
                 + OneOffGatewayContainers.gatewayLog(GATEWAY));
@@ -528,11 +545,31 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * @return the status of the callback: {@code 302} for a completed login
      */
     int loginStatus(String startPath, Duration accessTokenLifetime) {
-        return attemptLogin(startPath, accessTokenLifetime).callback().statusCode();
+        return attemptLogin(startPath, accessTokenLifetime, Binding.BOUND).callback().statusCode();
+    }
+
+    /**
+     * Drives one login exactly as {@link #loginStatus(String, Duration)} does, with the code exchange
+     * answered by a token answer whose access token is bound as {@code binding} says, and returns the
+     * callback's answer unasserted — its status and the cookies it sets. It is for a suite that drives
+     * the gateway's refusal of a token response that is not bound to its proof key.
+     * <p>
+     * Everything before the callback is asserted as in {@link #login(String, Duration)}. The answer
+     * differs from the one {@link #login(String, Duration)} scripts in the {@code cnf} claim of its
+     * access token alone; its ID token still names the login's {@code nonce} and binds that access
+     * token through {@code at_hash}.
+     *
+     * @param startPath           the gateway path the login starts on, a {@code require: session} route
+     * @param accessTokenLifetime the lifetime of the access token the code exchange is answered with
+     * @param binding             how the access token of that answer is bound
+     * @return what the callback answered, not followed
+     */
+    Response loginCallback(String startPath, Duration accessTokenLifetime, Binding binding) {
+        return attemptLogin(startPath, accessTokenLifetime, Objects.requireNonNull(binding, "binding")).callback();
     }
 
     /** One login up to the callback, whose answer is returned unasserted. */
-    private LoginAttempt attemptLogin(String startPath, Duration accessTokenLifetime) {
+    private LoginAttempt attemptLogin(String startPath, Duration accessTokenLifetime, Binding binding) {
         String origin = origin();
         int pushedBefore = received(Endpoint.PUSHED_AUTHORIZATION_REQUEST).size();
         Response initiation = BffKeycloakLoginFlow.gateway(Map.of(), origin)
@@ -562,7 +599,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
                 () -> assertNotNull(scope, "scope"),
                 () -> assertEquals(origin + "/auth/callback", redirectUri, "redirect_uri"));
 
-        script(Endpoint.TOKEN, loginAnswer(scope, accessTokenLifetime, nonce));
+        script(Endpoint.TOKEN, loginAnswer(scope, accessTokenLifetime, nonce, binding));
         Response callback = BffKeycloakLoginFlow.gateway(gatewayCookies, origin)
                 .urlEncodingEnabled(false)
                 .header("Accept", "text/html")
@@ -602,7 +639,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
     Answer tokenAnswer(Collection<String> scopes, Duration accessTokenLifetime) {
         Instant now = Instant.now();
         return Answer.json(200, json(grant(String.join(" ", scopes), now, now.plus(accessTokenLifetime),
-                UUID.randomUUID().toString())));
+                UUID.randomUUID().toString(), Binding.BOUND)));
     }
 
     /**
@@ -710,11 +747,11 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * The token answer of a code exchange: {@link #grant} together with an ID token that carries the
      * login's {@code nonce} and binds the granted access token through {@code at_hash}.
      */
-    private Answer loginAnswer(String scope, Duration accessTokenLifetime, String nonce) {
+    private Answer loginAnswer(String scope, Duration accessTokenLifetime, String nonce, Binding binding) {
         Instant now = Instant.now();
         Instant expiry = now.plus(accessTokenLifetime);
         String sessionId = UUID.randomUUID().toString();
-        Map<String, Object> answer = grant(scope, now, expiry, sessionId);
+        Map<String, Object> answer = grant(scope, now, expiry, sessionId, binding);
 
         Map<String, Object> idClaims = commonClaims(now, expiry, sessionId);
         idClaims.put("aud", CLIENT_ID);
@@ -726,10 +763,20 @@ final class StubIdentityProviderRig implements AutoCloseable {
         return Answer.json(200, json(answer));
     }
 
-    /** The members of a token answer that grants {@code scope}, without an ID token. */
-    private Map<String, Object> grant(String scope, Instant now, Instant expiry, String sessionId) {
+    /**
+     * The members of a token answer that grants {@code scope}, without an ID token, whose access token
+     * is bound as {@code binding} says.
+     */
+    private Map<String, Object> grant(String scope, Instant now, Instant expiry, String sessionId,
+            Binding binding) {
         Map<String, Object> accessClaims = accessClaims(scope, now, expiry, sessionId);
-        accessClaims.put("cnf", Map.of("jkt", proofKeyThumbprint));
+        switch (binding) {
+            case BOUND -> accessClaims.put("cnf", Map.of("jkt", proofKeyThumbprint));
+            case OTHER_KEY -> accessClaims.put("cnf", Map.of("jkt", otherKeyThumbprint));
+            case CNF_ABSENT -> {
+                // No cnf claim at all: the token claims no proof key.
+            }
+        }
 
         Map<String, Object> answer = new LinkedHashMap<>();
         answer.put("access_token", sign(accessClaims));
@@ -1370,6 +1417,29 @@ final class StubIdentityProviderRig implements AutoCloseable {
             key.put("e", base64Url(unsigned(publicKey.getPublicExponent())));
             return Answer.json(200, json(Map.of("keys", List.of(key))));
         }
+    }
+
+    /**
+     * How the access token of a code-exchange answer is bound to a DPoP proof key, as
+     * {@link StubIdentityProviderRig#loginCallback(String, Duration, Binding)} scripts it. Every other
+     * token answer of the rig is {@link #BOUND}.
+     *
+     * @author API Sheriff Team
+     * @since 1.0
+     */
+    enum Binding {
+
+        /** {@code cnf.jkt} is the thumbprint of the gateway's own proof key: the token the gateway accepts. */
+        BOUND,
+
+        /** The access token carries no {@code cnf} claim at all. */
+        CNF_ABSENT,
+
+        /**
+         * {@code cnf.jkt} is the thumbprint of another committed key — the EC proof key of the primary
+         * instance — and not of this gateway's proof key.
+         */
+        OTHER_KEY
     }
 
     /**
