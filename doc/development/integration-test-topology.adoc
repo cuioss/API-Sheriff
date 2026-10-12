@@ -548,7 +548,9 @@ the Compose stack publishes its own gateway ports in, and the management interfa
 of a BFF has to be known before the container exists, because the descriptor names the gateway's own
 origin and is read at boot. The two bearer-only suites have no such constraint and take a fixed port
 for the reason the next paragraphs give. The cost of the form is that a test's gateway is reachable
-from the network the host is on while the test runs, as the Compose gateways are.
+from the network the host is on while the test runs, as the Compose gateways are. The decision and
+that accepted cost are recorded in
+link:../adr/0065-Test-started_gateways_publish_the_application_port_on_every_interface_at_a_fixed_port_and_the_management_port_on_loopback.adoc[ADR-0065].
 
 *The host constraint behind that form.* On Rancher Desktop under WSL 2 a host port number can be left
 dead. A container that publishes a dead number afterwards starts normally and answers on its other
@@ -1360,3 +1362,47 @@ the mounted directories as pills and names no file inside them, and it draws the
 stack. The leg from `toxiproxy` to `go-httpbin` exists only between the moment `HtmlErrorPageIT`
 creates its proxy and the moment it deletes it, so it is not a standing leg and is not drawn. Neither
 the diagram nor its `<desc>` narrative was edited.
+
+[#security-audit-dispositions]
+== Security-audit dispositions (PR #408)
+
+The security audit of the test rigs raised five findings against this topology. Each is either fixed
+or accepted, and an accepted one names the reason it is safe to keep.
+
+[cols="2,1,4"]
+|===
+| Finding | Disposition | Reason
+
+| Test-started gateways publish their application port on every interface
+| Accepted
+| Publishing it on loopback leaves the host port number dead after the container is removed
+  (<<test-started-host-ports>>). The decision and its accepted cost -- a test gateway is reachable from
+  the host's network at a fixed port while its test runs, carrying only committed test material -- are
+  recorded in
+  link:../adr/0065-Test-started_gateways_publish_the_application_port_on_every_interface_at_a_fixed_port_and_the_management_port_on_loopback.adoc[ADR-0065].
+
+| `ItProfileConfigBindingWiringTest` exempts the TLS-relaxation rig from its trust guards
+| Accepted
+| The exemption is named and narrow: one fixture descriptor from the trust-profile guard and one
+  launch site, `BffTlsRelaxationIT.java`, from the launch-site guard, each by its literal path. Neither
+  is unconditional -- the guard first asserts the property each exemption rests on
+  (<<tls-relaxation-rig>>, link:declared-limit-assertion-coverage.adoc[the coverage note]).
+
+| The nginx proxy image is pinned by tag only
+| Fixed
+| `BffTlsRelaxationIT` pins the proxy as
+  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10`, and
+  every other nginx reference in the integration surface carries the same digest.
+
+| The open circuit's `Retry-After` carries no jitter
+| Accepted
+| The header states the breaker's real open delay on this node by construction; a randomised value
+  would misstate it, and RFC 9110 lets a client wait longer than the minimum it is given
+  (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
+
+| The stub identity provider exposes its admin API
+| Accepted
+| The admin API is plain HTTP on a loopback port docker assigns and on no other interface, it lives
+  only as long as the test that started its rig, and no credential or secret sits behind it: the stub
+  validates nothing and signs with a key generated when the rig starts (<<stub-idp-rig>>).
+|===
