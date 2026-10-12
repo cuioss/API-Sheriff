@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The upload route whose upstream answers BEFORE it reads the request body, backing
+# Http2EarlyResponseResetIT against the primary instance.
+#
+# An HTTP/2 upload answered while its body is still open is the shape the gateway resets itself:
+# once the complete response has been written, the stream is reset with NO_ERROR, so the client is
+# told to stop sending and never resets the stream on its own. go-httpbin cannot exercise that shape
+# — it reads and echoes the whole body before it answers — so this route dials its own backend:
+# base_url resolves the EARLY_ANSWER alias, which topology.properties points at early-answer-backend,
+# an nginx that answers 200 without reading the body.
+#
+# The route rides the existing 'upload' anchor — POST, public, the anchor's 64 MiB body cap — so the
+# request shape matches the uploadSmall benchmark aspect and no anchor has to be added to any
+# gateway.yaml. It declares no limit-shaped key: the anchor's cap applies unchanged, and nothing in
+# the assertion depends on a bound of the request.
+#
+# Every gateway instance mounts this file and loads the route; only the primary instance is dialled
+# through it. The others resolve the alias to the same backend and simply never dial it.
+endpoint:
+  id: early-answer
+  enabled: true
+  base_url: EARLY_ANSWER
+  anchor: upload
+  auth:
+    require: none
+  routes:
+    # No forward block and no upstream.path: the backend answers every path with the same 200 before
+    # reading a body byte, so nothing about the forwarded request shape is asserted.
+    - id: early-answer-upload
+      match:
+        path_prefix: /upload/early-answer
+        methods: ["POST"]
