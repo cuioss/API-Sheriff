@@ -818,7 +818,7 @@ class RetryingJwksLoaderTest {
                     throw new GatewayException(EventType.CONFIG_INVALID, "simulated tls_profile resolution failure");
                 }
                 return trackedDelegate();
-            }, REFRESH_INTERVAL, NEVER_WITHIN_TEST, WINDOW, GRACE);
+            });
             initialise(loader);
             rotateSigningKey();
 

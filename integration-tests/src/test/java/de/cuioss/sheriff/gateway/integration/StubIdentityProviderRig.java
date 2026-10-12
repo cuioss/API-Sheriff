@@ -411,7 +411,6 @@ final class StubIdentityProviderRig implements AutoCloseable {
         awaitStub();
 
         Map<?, ?> descriptor = writeDerivedDescriptor(variant);
-        keySetPathByIssuer.clear();
         keySetPathByIssuer.putAll(keySetPaths(descriptor));
         registerDefaults(new LinkedHashSet<>(keySetPathByIssuer.values()));
 
@@ -927,7 +926,6 @@ final class StubIdentityProviderRig implements AutoCloseable {
         registerDefault(Endpoint.REVOCATION, Answer.of(200));
 
         Answer keySet = signingKey.keySet();
-        keySetMappings.clear();
         for (String path : keySetPaths) {
             // The id is chosen here, so replaceSigningKey() can edit exactly this mapping in place.
             String id = UUID.randomUUID().toString();

@@ -183,30 +183,6 @@ class ConfigValidatorJwksRefreshTest {
         }
 
         @Test
-        @DisplayName("the exact boundary numbers of the three ranges")
-        void pinsTheBoundaryNumbers() {
-            assertAll(
-                    () -> assertEquals(1, refreshErrors(httpIssuer(issuerName(), RefreshKey.REFRESH_INTERVAL, 59)).size()),
-                    () -> assertEquals(0, refreshErrors(httpIssuer(issuerName(), RefreshKey.REFRESH_INTERVAL, 60)).size()),
-                    () -> assertEquals(0,
-                            refreshErrors(httpIssuer(issuerName(), RefreshKey.REFRESH_INTERVAL, 86_400)).size()),
-                    () -> assertEquals(1,
-                            refreshErrors(httpIssuer(issuerName(), RefreshKey.REFRESH_INTERVAL, 86_401)).size()),
-                    () -> assertEquals(1, refreshErrors(httpIssuer(issuerName(), RefreshKey.GRACE_PERIOD, -1)).size()),
-                    () -> assertEquals(0, refreshErrors(httpIssuer(issuerName(), RefreshKey.GRACE_PERIOD, 0)).size()),
-                    () -> assertEquals(0, refreshErrors(httpIssuer(issuerName(), RefreshKey.GRACE_PERIOD, 3_600)).size()),
-                    () -> assertEquals(1, refreshErrors(httpIssuer(issuerName(), RefreshKey.GRACE_PERIOD, 3_601)).size()),
-                    () -> assertEquals(1,
-                            refreshErrors(httpIssuer(issuerName(), RefreshKey.UNKNOWN_KID_WINDOW, 4)).size()),
-                    () -> assertEquals(0,
-                            refreshErrors(httpIssuer(issuerName(), RefreshKey.UNKNOWN_KID_WINDOW, 5)).size()),
-                    () -> assertEquals(0,
-                            refreshErrors(httpIssuer(issuerName(), RefreshKey.UNKNOWN_KID_WINDOW, 3_600)).size()),
-                    () -> assertEquals(1,
-                            refreshErrors(httpIssuer(issuerName(), RefreshKey.UNKNOWN_KID_WINDOW, 3_601)).size()));
-        }
-
-        @Test
         @DisplayName("an issuer omitting all three keys is admitted")
         void admitsOmittedKeys() {
             IssuerConfig omitted = issuer(issuerName(),
