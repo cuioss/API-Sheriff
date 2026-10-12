@@ -1,0 +1,28 @@
+envelope_version=1
+sender_type=plan
+sender_id=plan-25-integration-test-evidence
+epic=kidicap-gateway-requirements
+kind=candidate-lesson
+created=2026-10-08T21:27:57Z
+
+component=plan-marshall:build-maven
+category=bug
+created=2026-10-08
+
+# Owed architecture hint: a passing Surefire summary line with skipped tests is filed as a test failure
+
+## What happened
+
+Plan plan-25-integration-test-evidence (PR #408). Twice in one plan the Maven log parser filed a `test-failure` finding for a summary line that reports no failure: `Tests run: 10, Failures: 0, Errors: 0, Skipped: 1 ... -- in Awaits`. Both findings (e6b5d8, bab3b4) were triaged as `accepted` false positives with no code change. The recurrence count of the tuple (module `maven`, class `test failure [test_failure]`, disposition `accepted`) is 2, which meets `preference_min_recurrence` (2).
+
+## Owed hint
+
+- Target `--module`: `maven` (the finding's own attribution; it names the build tool, not a module of this repository, so the pickup must decide whether the hint belongs to the project architecture or to the plan-marshall Maven log parser)
+- Enrich verb: `insight`
+- Hint text: "A Surefire class summary with Failures: 0 and Errors: 0 is a pass even when Skipped is above zero; a test-failure finding raised from such a line is a parser false positive and needs no code change."
+
+`architecture enrich` was not called: this step runs after the merge and must not leave tracked files modified on main.
+
+## Evidence
+
+- Findings e6b5d8 (2026-10-07T15:37:21Z) and bab3b4 (2026-10-07T17:45:27Z), both `accepted`.

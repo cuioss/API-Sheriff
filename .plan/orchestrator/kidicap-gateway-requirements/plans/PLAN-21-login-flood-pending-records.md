@@ -58,6 +58,16 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
    `rate_limit` stays reserved-but-inert, say so where it is documented rather than leaving it to read as
    available.
 
+> **Folded 2026-10-12 from PLAN-25's landing.** A flood test now EXISTS:
+> `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffPendingLoginBoundIT.java`,
+> added by #427 after PLAN-25's k6 version failed the post-merge benchmark. It pins the property as it is
+> TODAY — the store is bounded at 10 000 and the oldest record is evicted — which is the behaviour this
+> plan changes. So deliverable 4's integration test is an AMENDMENT of that suite, not a second flood
+> test, and the plan must expect it to go red the moment eviction stops being global. The flood must be
+> driven from the host as `localhost:10443`: the gateway answers its reserved login path only when the
+> request host equals the host of `oidc.redirect_uri`, which is what broke the k6 version. No new file
+> surface — the IT directory is already declared.
+
 ## Claim Labels
 
 - HYPOTHESIS: `PendingAuthorizationStore.InMemory` bounds at `DEFAULT_MAX_PENDING = 10_000` and evicts the oldest beyond capacity — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/` § pending-authorization store and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § store construction (verify-at-outline)

@@ -57,7 +57,7 @@ it asks for a bound, not for its removal.
 5. **Documentation**: `doc/configuration.adoc` for both new keys, and the threat model — the fetch-storm
    argument stays, now stated WITH its bound. ADR-0011 records `refreshIntervalSeconds` as "effectively
    fixed at 600 seconds today; deployments cannot tune key refresh cadence"; deliverable 2 falsifies that
-   sentence, so amend or supersede ADR-0011 in the same act (⚠ next free ordinal is **0062** — 0060 (dispatch framing) and 0061 (offline config validation) were taken after the 2026-10-05 pass; re-checked 2026-10-06 at `6788bdae` by listing `doc/adr/`. Re-list before allocating: this figure has gone stale twice).
+   sentence, so amend or supersede ADR-0011 in the same act (⚠ next free ordinal is **0063** at `fdcfaeb3` (2026-10-12) — 0062 was taken by the ADR-0005 supersession. This figure has now gone stale three times: derive the ordinal by listing `doc/adr/` at write time and treat any number written here as a hint).
 
 Split guard: 5 deliverables — well within the operator-authorized 12.
 
@@ -75,14 +75,14 @@ Split guard: 5 deliverables — well within the operator-authorized 12.
   interval and passes `first.getRefreshIntervalSeconds()` (the library default) to `RetryingJwksLoader`
   — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/TokenValidatorProducer.java:270-279`,
   orchestrator-verified at HEAD 2026-10-02.
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): TokenValidatorProducer:360-401 builder sets no refresh interval; :277-278 passes first.getRefreshIntervalSeconds() to RetryingJwksLoader
+  - verdict: corroborated | checked_at: fdcfaeb3 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: TokenValidatorProducer:276-277 still passes first.getRefreshIntervalSeconds() to RetryingJwksLoader; the builder sets no refresh interval (file changed since 6788bdae only by one removed blank import line)
 - OBSERVED: no `refresh_interval` (and no grace-period) key exists anywhere in
   `api-sheriff/src/main/resources/schema/gateway.schema.json` — zero occurrences at HEAD. So there is no
   knob today, exactly as filed.
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): gateway.schema.json jwks block (329-347) is additionalProperties false with source/url/file/allowed_egress_hosts/tls_profile only
+  - verdict: corroborated | checked_at: fdcfaeb3 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: gateway.schema.json has zero occurrences of refresh_interval or grace; the jwks block (329+) is still additionalProperties false with source/url/file/allowed_egress_hosts/tls_profile
 - OBSERVED: ADR-0011 states `refreshIntervalSeconds` is effectively fixed at 600 s and untunable by
   deployments — `doc/adr/0011-…adoc:220`.
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): ADR-0011:221 states refreshIntervalSeconds is effectively fixed at 600 s and untunable; 224-226 say the same for grace and maxRetiredKeySets
+  - verdict: corroborated | checked_at: fdcfaeb3 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: ADR-0011:221 still reads Effectively fixed at 600 seconds today; deployments cannot tune key refresh cadence
 - **RESOLVED 2026-10-05 (cleanup, re-grounded at `35f2bb37`) — the seam is IN THIS REPOSITORY.** The
   earlier hypothesis attributed both halves to the library and left an outline fork ("if the bounded fetch
   belongs in token-sheriff, that half leaves this repository"). Half of it was right and half was wrong:
@@ -94,16 +94,16 @@ Split guard: 5 deliverables — well within the operator-authorized 12.
   library's existing config field, confirmed present by `javap`:
   `HttpJwksLoaderConfig.DEFAULT_REFRESH_INTERVAL_IN_SECONDS = 600`, alongside `keyRotationGracePeriod` and
   `maxRetiredKeySets` — so the grace period of deliverable 2 is also already a library knob.
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader is the gateway's own class under api-sheriff/.../auth/ (auth/ unchanged since 35f2bb37); token-sheriff still 0.9.6 at pom:63 after the parent bump to 1.7.6
+  - verdict: corroborated | checked_at: fdcfaeb3 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: RetryingJwksLoader.java is still under api-sheriff/.../auth/ (one blank import line removed since 6788bdae); token-sheriff still 0.9.6 at pom:63
 - HYPOTHESIS: the 600 s figure is the library's `DEFAULT_REFRESH_INTERVAL_IN_SECONDS`, so deliverable 2 is
   a pass-through rather than a new scheduler — confirm/refute at the same jar § that constant
   (verify-at-outline).
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: pom:63 still pins token-sheriff 0.9.6 after the cui-quarkus-parent 1.7.6 bump; HttpJwksLoaderConfig DEFAULT_REFRESH_INTERVAL_IN_SECONDS=600 as confirmed by javap at 35f2bb37
+  - verdict: corroborated | checked_at: fdcfaeb3 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: pom:63 still pins token-sheriff 0.9.6 after the parent bump to 1.7.7; the 600 s default was confirmed by javap against that version
 - HYPOTHESIS: readiness stays `UP` through the whole window (`doc/configuration.adoc` tells operators to
   "alert on it separately"), so no readiness change is in scope and the WARN of deliverable 3 is the only
   signal added — confirm/refute at `doc/configuration.adoc` § the JWKS readiness rows and the health
   contract PLAN-13 shipped (verify-at-outline).
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: configuration.adoc:2177 still says a stalled key rotation is not visible through readiness and to alert on it separately; auth/ and the readiness check are unchanged since 35f2bb37
+  - verdict: corroborated | checked_at: fdcfaeb3 | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: configuration.adoc:2177 still says a stalled key rotation is not visible through readiness and to alert on it separately
 
 ## Expected Surface
 
@@ -130,6 +130,16 @@ Split guard: 5 deliverables — well within the operator-authorized 12.
   (verify-at-outline)
 - OBSERVED: `doc/configuration.adoc`, `doc/security-threat-model.adoc`, `doc/LogMessages.adoc`,
   `doc/adr/` (the ADR-0011 amendment)
+- OBSERVED (added 2026-10-12, from PLAN-25's landing #408):
+  `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/OneOffGatewayContainers.java` and
+  `doc/development/integration-test-topology.adoc`. A key-rotation IT needs a gateway (and probably an
+  identity provider) the test starts itself, and since #408 every test-started container goes through this
+  harness: the application port is published on all interfaces at a FIXED port, each port is listed in the
+  topology document's host-port table, and `OneOffGatewayContainersTest` fails the build if the table and
+  the sources disagree. ⛔ On this host a port number goes dead after a container with two loopback
+  publications is removed (10456, 10457, 10458, 10460, 10461 are retired; 10459 and 10462-10468 are in
+  use) — pick a fresh port, probe it alive first, and add its row. `StubIdentityProviderRig` (same
+  directory) is the existing way to serve a JWKS whose keys the test replaces mid-run
 
 ## Dependencies and Sequencing
 
