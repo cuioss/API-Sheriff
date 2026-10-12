@@ -326,9 +326,9 @@ class ResponseStageTest {
                         .compose(HttpClientRequest::send)
                         .onSuccess(upResp -> (withTrailers
                                 ? stage.relayWithTrailers(upResp, clientReq.response(), false, Map.of(), Map.of(),
-                                        Supplier::get)
+                                Supplier::get)
                                 : stage.relay(upResp, clientReq.response(), false, null, Map.of(), Map.of(),
-                                        Supplier::get))
+                                Supplier::get))
                                 .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                         .onFailure(failure -> clientReq.response().setStatusCode(502).end());
             }).listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");

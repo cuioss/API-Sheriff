@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import java.io.Serial;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
@@ -972,7 +973,7 @@ public final class DispatchStage {
      */
     static final class GatewayStreamReset extends RuntimeException {
 
-        @java.io.Serial
+        @Serial
         private static final long serialVersionUID = 1L;
 
         /** The one instance every gateway-made reset delivers. */

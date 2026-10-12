@@ -262,7 +262,7 @@ class GrpcStatusMapperTest {
 
             // Act
             HttpClientResponse response = Awaits.connect(client.request(HttpMethod.POST, server.actualPort(),
-                    LoopbackHost.ADDRESS, "/svc.Service/Method").compose(req -> req.send()),
+                            LoopbackHost.ADDRESS, "/svc.Service/Method").compose(req -> req.send()),
                     "the rendered gRPC rejection response");
 
             // Assert

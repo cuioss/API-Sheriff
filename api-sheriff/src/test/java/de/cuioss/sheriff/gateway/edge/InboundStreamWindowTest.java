@@ -31,6 +31,7 @@ import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -185,7 +186,7 @@ class InboundStreamWindowTest {
         AtomicInteger endings = new AtomicInteger();
         CompletableFuture<Boolean> resetAfterWrite = new CompletableFuture<>();
 
-        io.vertx.core.Future<Void> ended = EarlyResponseEnd.endWhenQuiet(serverRequest, () -> {
+        Future<Void> ended = EarlyResponseEnd.endWhenQuiet(serverRequest, () -> {
             endings.incrementAndGet();
             return serverRequest.response().end();
         }, () -> resetAfterWrite.complete(serverRequest.response().ended()));
