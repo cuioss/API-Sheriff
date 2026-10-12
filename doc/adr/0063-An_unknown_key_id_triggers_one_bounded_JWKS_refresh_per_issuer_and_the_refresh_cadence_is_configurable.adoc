@@ -118,12 +118,14 @@ means the request that triggers a refresh is itself always rejected.
 
 When a lookup misses and the issuer's key set is loaded, the lookup tries to claim the issuer's
 window with a single compare-and-set on the next-allowed instant. The claim that succeeds logs the
-record of section 6 and schedules one refresh; every other lookup inside the window does neither.
+record of section 6 and schedules one refresh, unless the refresh of an earlier window is still
+running; every other lookup inside the window does neither.
 
 The claim is made at trigger time, not at completion. The bound of one refresh per issuer per window
 therefore holds whatever the outcome of the fetch, the request rate and the number of distinct key
 ids, and it does not depend on anything the caller chooses. One in-flight flag additionally keeps a
-refresh from starting while the previous one is still running.
+refresh from starting while the previous one is still running: a claim made in that state logs its
+record and schedules nothing.
 
 === 4. A refresh is loaded off to the side and published only when it holds the triggering key id
 

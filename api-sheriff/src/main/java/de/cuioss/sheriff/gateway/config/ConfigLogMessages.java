@@ -479,7 +479,8 @@ public final class ConfigLogMessages {
          * <p>
          * The usual cause is a signing-key change at the identity provider that the gateway has not
          * picked up yet. For an {@code http} source the same event schedules one refresh of the key
-         * set, so tokens signed with the new key are accepted once that refresh has loaded it.
+         * set, unless the refresh of an earlier window is still running, so tokens signed with the new
+         * key are accepted once a refresh has loaded it.
          * <p>
          * <strong>Rate-limited to one record per issuer per window.</strong> Any caller can present a
          * token naming an arbitrary key id without holding a credential, so an unbounded record would

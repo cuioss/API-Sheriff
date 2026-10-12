@@ -1238,7 +1238,7 @@ never fetched would reject every token signed with a newly rotated key until the
 refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
 (link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]):
 
-* *The bound.* An unknown key id causes at most one JWKS request per issuer per window, whatever the
+* *The bound.* An unknown key id causes at most one JWKS refresh per issuer per window, whatever the
   request rate and the number of distinct key ids. The window is
   `jwks.unknown_kid_refresh_window_seconds`: 30 s by default and never below 5 s, which the
   configuration validator enforces at boot. Over an interval of length _t_ that is at most
