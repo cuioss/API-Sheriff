@@ -1391,8 +1391,21 @@ or accepted, and an accepted one names the reason it is safe to keep.
 | The nginx proxy image is pinned by tag only
 | Fixed
 | `BffTlsRelaxationIT` pins the proxy as
-  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10`, and
-  every other nginx reference in the integration surface carries the same digest.
+  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- the
+  1.27 release-line tag together with the digest of its multi-platform index -- and every other nginx
+  reference in the integration surface carries the same digest: the `passthrough-backend`,
+  `mismatched-tls-backend` and `asset-origin` services of `docker-compose.yml`, the `nginx-static`
+  fairness backend of `docker-compose.benchmark.yml`, and the late provider `JwksLateIdpReadinessIT`
+  starts. The digest is what binds; the tag is kept for readability, and all of these pins move
+  together.
+
+  *Documented exclusions.* The operator sample is the one nginx exception, and it is deliberate:
+  `deployment/compose-sample/docker-compose.yml` runs its `demo-api` service, and
+  `docker-compose.plain-http.yml` its `tls-terminator`, on the minor-line tag `nginx:1.27-alpine` so
+  that an operator picks up patch releases. The finding names the nginx proxy image, so the stack's
+  other images are outside it and are not pinned by this disposition: go-httpbin
+  (`ghcr.io/mccutchen/go-httpbin:2.23.1`) and Toxiproxy (`ghcr.io/shopify/toxiproxy:2.12.0`) stay on
+  exact release tags, and Keycloak already carries a digest beside its tag.
 
 | The open circuit's `Retry-After` carries no jitter
 | Accepted
