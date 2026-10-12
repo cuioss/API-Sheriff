@@ -90,10 +90,14 @@ found by inspection rather than by a gate.
   defect classes. Two shipped instances (`218b5c` WebSocket permit leak, fixed in `#126`; the
   body-cap derivation defect, fixed in `#131 #134`).
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: epic Open Defect 6 matches; #126 releases the WebSocket permit, #131 derives the body limit and 413; #134 is a benchmark.yml follow-up to #131
-- **OBSERVED** — the benchmark lane runs **13** k6 goals (#408 added `run-k6-pending-login-flood-benchmark`, a resource-bound proof in the post-merge lane, which has failed on every run since — epic Open Defect 17), and both formerly quarantined
-  goals are enabled (`skip.benchmark.upload.large` and `skip.benchmark.websocket.echo` both default
-  `false` in `benchmarks/pom.xml`). The lane is red at `386f3f74` — re-verify at outline rather than inheriting it.
-  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: benchmarks/pom.xml declares 13 run-k6 executions (#408 added pending-login-flood); both quarantine props still false; the lane is red since #408; claim re-scoped
+- **OBSERVED** — the benchmark lane runs **12** k6 goals and is green (run 38073671464), and both
+  formerly quarantined goals are enabled (`skip.benchmark.upload.large` and
+  `skip.benchmark.websocket.echo` both default `false` in `benchmarks/pom.xml`). **Precedent for D1:**
+  #427 moved the one resource-bound proof the lane carried — the pending-login flood — out of
+  `-Pbenchmark` into the gating Failsafe suite `BffPendingLoginBoundIT`, on the reasoning that a
+  capacity bound is a security property, not a throughput figure. D1 weighs that choice rather than
+  re-deciding it silently.
+  - verdict: corroborated | checked_at: 2657be7c4e90b9bc51b0de67aea1ca169f7c3c04 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: claim restated at 2657be7c: benchmarks/pom.xml has 12 run-k6 executions after #427; quarantine props false; benchmark run 38073671464 success; flood now BffPendingLoginBoundIT
 - **HYPOTHESIS — the benchmark lane is not currently *gating*.** It runs post-merge on the PR and does
   not block the merge itself. Confirm against `.github/workflows/benchmark.yml` (verify-at-outline).
   **If it is not gating, deliverable 1's "benchmark lane" branch carries making it gate as a stated

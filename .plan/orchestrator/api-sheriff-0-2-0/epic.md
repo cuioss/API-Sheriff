@@ -206,17 +206,7 @@ doc-only or build-light plan for the second and third slots.
 
 ## Open Defects
 
-17. **MEDIUM — NO OWNER — the post-merge benchmark has failed on every merge since #408** (added
-    2026-10-09, found at the `PLAN-V02-01` landing). Six consecutive runs, from #408 (`b7f937d3`, run
-    37846286183) to #417 (run 37933805532), fail in `run-k6-pending-login-flood-benchmark`:
-    `pending_login_flood.js` aborts in phase A because `https://api-sheriff:8443/auth/login` answers
-    `HTTP 404`. #408 changed `.github/workflows/benchmark.yml` and `benchmarks/pom.xml` and belongs
-    to no plan in this queue; the three `PLAN-V02-01` parts merged before it have green benchmark
-    runs. Why the login path is unmapped in the benchmark stack is not established. The lane does
-    not gate merges, so nothing blocked. **Seventh failure 2026-10-10 on #424**, same abort; that run
-    built and started the reworked `grpc-echo` image, so #424's benchmark-lane change works up to
-    this goal. Candidate homes: the plan behind #408, or `PLAN-V02-11`,
-    which owns the benchmark lane's purpose. While it is red, Open Defect 16 cannot be observed.
+17. > ↪ Relocated to `settled.md` § "Open Defect 17 — post-merge benchmark red since #408 (resolved 2026-10-10 by #427)" — the flood moved to `BffPendingLoginBoundIT`; benchmark green again
 
 16. **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
     `ENHANCE_YOUR_CALM` ("Maximum number of RST frames reached")** (added 2026-10-06, found at the
@@ -227,7 +217,9 @@ doc-only or build-light plan for the second and third slots.
     touches no edge, HTTP/2 or upload code — is not the cause. Where the resets come from (client
     behaviour, the gateway's upload path, or the transport's default reset-flood limit) is not
     established. The benchmark lane does not gate merges, so nothing blocked; a later benchmark run
-    may pass or fail on the same tree. `PLAN-V02-06` D8 now carries this as evidence.
+    may pass or fail on the same tree. `PLAN-V02-06` D8 now carries this as evidence. **Observable again since #427 (2026-10-10)**: run
+    38073671464 passed with 104 `ENHANCE_YOUR_CALM` lines in its log — inside the earlier 95–105 band, so
+    still near the threshold, not fixed.
 
 15. > ↪ Relocated to `settled.md` § "Open Defect 15 — snapshot deploy 401 after the Maven 3.10.0 bump (resolved 2026-10-03)" — resolved by cuioss-organization v0.35.0, verified on main
 
