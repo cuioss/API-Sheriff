@@ -453,7 +453,8 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
             // The same refusals runRetry handles. A refresh that cannot be built or started changes
             // nothing: the loaded key set stays published and the next window may try again.
-            LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built for a refresh", issuerName);
+            LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built or started for a refresh",
+                    issuerName);
         } finally {
             if (!handedToSettle) {
                 if (fresh != null) {

@@ -864,6 +864,42 @@ class RetryingJwksLoaderTest {
         }
 
         @Test
+        @DisplayName("a refresh delegate that is built but cannot be started is closed and does not switch the refresh off")
+        void refreshDelegateThatCannotBeStartedIsClosedAndReleasesTheRefresh() throws Exception {
+            // Arrange — the second delegate, which is the refresh, is built but refuses to start its load
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = loader(() -> {
+                if (builds.incrementAndGet() != 2) {
+                    return trackedDelegate();
+                }
+                TrackedLoader refusing = new TrackedLoader(httpConfig()) {
+                    @Override
+                    public CompletableFuture<LoaderStatus> initJWKSLoader(SecurityEventCounter securityEventCounter) {
+                        throw new IllegalStateException("simulated failure to start the load");
+                    }
+                };
+                built.add(refusing);
+                return refusing;
+            });
+            initialise(loader);
+            rotateSigningKey();
+
+            // Act — the refresh that cannot be started, then a lookup in the next window
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitClosed(1);
+            drainScheduler(Duration.ZERO);
+            boolean answeredAfterFailure = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent();
+            now.set(now.get().plus(WINDOW));
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+
+            // Assert — the built delegate was closed, and the next window's refresh ran
+            assertTrue(answeredAfterFailure, "the loaded delegate keeps answering after a refresh that did not start");
+            assertEquals(3, builds.get(), "the first delegate, the refresh that did not start and the next window's one");
+            loader.close();
+        }
+
+        @Test
         @DisplayName("a refresh holding the triggering key id is published and answers the next lookup")
         void refreshHoldingTheKeyIdIsPublished() throws Exception {
             // Arrange
@@ -1059,7 +1095,7 @@ class RetryingJwksLoaderTest {
     }
 
     /** The real library HTTP loader, recording that it was closed. */
-    private static final class TrackedLoader extends HttpJwksLoader {
+    private static class TrackedLoader extends HttpJwksLoader {
 
         private final AtomicBoolean closed = new AtomicBoolean();
 
