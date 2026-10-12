@@ -222,6 +222,9 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   runtime trust anchors, and config stays neutral while startup diagnostics name the concrete
   runtime key. Amendment A1: an absent or empty `allowed_egress_hosts` derives the `jwks.url` host
   as the egress allowance, while a declared list stays authoritative and is never merged with it.
+  Amendment A2: the library's refresh interval and key-rotation grace period are exposed as the
+  neutral keys `jwks.refresh_interval_seconds` and `jwks.key_rotation_grace_period_seconds`
+  (link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
   *(Status: accepted.)*
 
 | link:adr/0012-Comparative_cross-gateway_benchmarking_runs_on-demand_and_stays_segregated_from_the_CI_baseline.adoc[ADR-0012]
@@ -307,8 +310,8 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   free of framework dependencies. *(Status: accepted.)*
 |===
 
-NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035, ADR-0038, and every ADR from
-ADR-0040 through ADR-0061 are recorded in link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
+NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035, ADR-0038, every ADR from
+ADR-0040 through ADR-0061, and ADR-0063 are recorded in link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
 table as a curated entry point; a missing row is index drift, never a withdrawn decision.
 
 == Reading Order

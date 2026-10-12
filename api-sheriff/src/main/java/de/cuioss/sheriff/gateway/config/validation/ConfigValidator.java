@@ -186,6 +186,17 @@ import org.jspecify.annotations.Nullable;
  * bare IPv6 literal is not a {@code host:port} entry and is admitted). The schema declares the entries
  * unrestricted strings; this rule is the single enforcing authority.
  * <p>
+ * The JWKS refresh rule bounds the three refresh keys of an issuer's {@code jwks} block and refuses
+ * each of them on a {@code file} source, where it would parse and never act. The settled ranges are:
+ * {@code refresh_interval_seconds} {@code 60..86400}, {@code key_rotation_grace_period_seconds}
+ * {@code 0..3600} and {@code unknown_kid_refresh_window_seconds} {@code 5..3600}. The first two are
+ * handed to the token library, so both ranges were checked against what token-sheriff 0.9.6 itself
+ * accepts: its {@code HttpJwksLoaderConfig} builder admits every refresh interval of zero or more and
+ * every non-negative grace period, and declares no upper bound for either, so neither range needed
+ * narrowing and every value this rule admits is one the library accepts. The third key is
+ * gateway-owned. The schema declares the three keys as unrestricted integers; this rule is the single
+ * enforcing authority.
+ * <p>
  * The application-portal rules ({@link PortalRules}) add four more, run after every rule above: a
  * declared {@code portal.path} must be canonical, must not equal a reserved OIDC path (compared
  * host-independently, since the portal matches on any host), and must not equal an enabled
@@ -386,6 +397,18 @@ public final class ConfigValidator {
      */
     private static final Pattern HOST_WITH_PORT = Pattern.compile("[^:\\[\\]]*+:\\d++|\\[[^\\]]*+\\]:\\d++");
 
+    /** The admitted range of {@code jwks.refresh_interval_seconds}; see {@link #validateJwksRefresh}. */
+    private static final int JWKS_REFRESH_INTERVAL_MIN_SECONDS = 60;
+    private static final int JWKS_REFRESH_INTERVAL_MAX_SECONDS = 86_400;
+
+    /** The admitted range of {@code jwks.key_rotation_grace_period_seconds}. */
+    private static final int JWKS_GRACE_PERIOD_MIN_SECONDS = 0;
+    private static final int JWKS_GRACE_PERIOD_MAX_SECONDS = 3_600;
+
+    /** The admitted range of {@code jwks.unknown_kid_refresh_window_seconds}. */
+    private static final int JWKS_UNKNOWN_KID_WINDOW_MIN_SECONDS = 5;
+    private static final int JWKS_UNKNOWN_KID_WINDOW_MAX_SECONDS = 3_600;
+
     /** The only schemes an {@code allow_external} redirect location may carry. */
     private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
 
@@ -436,7 +459,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateJwksEgressHosts(gateway, errors));
+            (gateway, endpoints, topology, errors) -> validateJwksEgressHosts(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateJwksRefresh(gateway, errors));
 
     /** The core rules followed by the application-portal rules, which run after every core rule. */
     private static final List<ValidationRule> DEFAULT_RULES =
@@ -898,6 +922,85 @@ public final class ConfigValidator {
                     + "never matches — declare the bare host");
         }
         return Optional.empty();
+    }
+
+    /**
+     * Rule: the three JWKS refresh keys of an issuer are bounded, and none of them may be declared on
+     * a {@code file} source.
+     * <p>
+     * The admitted ranges are {@code refresh_interval_seconds} {@code 60..86400},
+     * {@code key_rotation_grace_period_seconds} {@code 0..3600} and
+     * {@code unknown_kid_refresh_window_seconds} {@code 5..3600}. The first two are passed through to
+     * the token library; both ranges were checked against the value checks of token-sheriff 0.9.6's
+     * {@code HttpJwksLoaderConfig} builder, which admits a refresh interval of zero or more and any
+     * non-negative grace period and declares no upper bound, so every value admitted here is a value
+     * the library accepts. The lower bound of the window is what bounds the cost of a flood of tokens
+     * naming arbitrary key ids: at most one JWKS fetch per issuer per window.
+     * <p>
+     * A {@code file} source is read once and never refreshed, so any of the three keys declared there
+     * would parse and never act; it is refused at the key's own pointer rather than silently ignored.
+     * On a {@code file} source the value itself is not range-checked — the key is refused whatever it
+     * holds.
+     * <p>
+     * An issuer without a {@code jwks} block and an absent {@code token_validation} block are skipped,
+     * and an omitted key is always admitted. Each message names the issuer's logical name — echoed
+     * through {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117) — the key and
+     * the admitted range, and never the JWKS url. Every violation of every issuer is collected in one
+     * pass, per ADR-0009.
+     */
+    private static void validateJwksRefresh(GatewayConfig gateway, List<ConfigError> errors) {
+        TokenValidationConfig tokenValidation = gateway.tokenValidation();
+        if (tokenValidation == null) {
+            return;
+        }
+        List<IssuerConfig> issuers = tokenValidation.issuers();
+        for (int index = 0; index < issuers.size(); index++) {
+            IssuerConfig issuer = issuers.get(index);
+            IssuerConfig.Jwks jwks = issuer.jwks();
+            if (jwks == null) {
+                continue;
+            }
+            boolean http = JWKS_SOURCE_HTTP.equals(jwks.source());
+            checkJwksRefreshKey(issuer, index, http, "refresh_interval_seconds", jwks.refreshIntervalSeconds(),
+                    JWKS_REFRESH_INTERVAL_MIN_SECONDS, JWKS_REFRESH_INTERVAL_MAX_SECONDS, errors);
+            checkJwksRefreshKey(issuer, index, http, "key_rotation_grace_period_seconds",
+                    jwks.keyRotationGracePeriodSeconds(), JWKS_GRACE_PERIOD_MIN_SECONDS,
+                    JWKS_GRACE_PERIOD_MAX_SECONDS, errors);
+            checkJwksRefreshKey(issuer, index, http, "unknown_kid_refresh_window_seconds",
+                    jwks.unknownKidRefreshWindowSeconds(), JWKS_UNKNOWN_KID_WINDOW_MIN_SECONDS,
+                    JWKS_UNKNOWN_KID_WINDOW_MAX_SECONDS, errors);
+        }
+    }
+
+    /**
+     * Reviews one JWKS refresh key of one issuer; see {@link #validateJwksRefresh} for the rules.
+     *
+     * @param http     whether the issuer's {@code jwks.source} is {@code http}
+     * @param key      the snake-case key as spelled in {@code gateway.yaml}
+     * @param declared the declared value, {@code null} when the key is omitted
+     */
+    // java:S107 — one call per key keeps the three ranges side by side at the single call site; a
+    // parameter object would exist for this one private helper only.
+    @SuppressWarnings("java:S107")
+    private static void checkJwksRefreshKey(IssuerConfig issuer, int index, boolean http, String key,
+            @Nullable Integer declared, int minimum, int maximum, List<ConfigError> errors) {
+        if (declared == null) {
+            return;
+        }
+        String pointer = "/token_validation/issuers/%d/jwks/%s".formatted(index, key);
+        String issuerName = renderForMessage(issuer.name());
+        if (!http) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    ("issuer '%s' declares jwks.%s on a jwks source other than http; the key applies to "
+                            + "source: http only (admitted range %d to %d) and would never act here — remove it")
+                            .formatted(issuerName, key, minimum, maximum)));
+            return;
+        }
+        if (declared < minimum || declared > maximum) {
+            errors.add(new ConfigError(GATEWAY_FILE, pointer,
+                    "issuer '%s' jwks.%s %d is outside the admitted range %d to %d"
+                            .formatted(issuerName, key, declared, minimum, maximum)));
+        }
     }
 
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {

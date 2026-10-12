@@ -69,6 +69,26 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
      *                           uses the JVM's default trust store, which is correct for a
      *                           public-CA IdP. Name a profile when the IdP presents a
      *                           certificate from an internal or corporate CA.
+     * @param refreshIntervalSeconds
+     *                           the interval, in seconds, at which the JWKS client re-fetches
+     *                           the key set in the background ({@code source: http} only),
+     *                           {@code null} when omitted. Omitted keeps the token library's
+     *                           default of 600 seconds. Admitted range: 60 to 86400. Declared on a
+     *                           {@code source: file} issuer it is refused at boot, because a file
+     *                           source has no refresh.
+     * @param keyRotationGracePeriodSeconds
+     *                           how long, in seconds, a key set replaced by a rotation keeps
+     *                           verifying tokens signed with its keys ({@code source: http} only),
+     *                           {@code null} when omitted. Omitted keeps the token library's
+     *                           default of 300 seconds. Admitted range: 0 to 3600, where 0 retires
+     *                           the replaced keys at once. Declared on a {@code source: file}
+     *                           issuer it is refused at boot.
+     * @param unknownKidRefreshWindowSeconds
+     *                           the per-issuer window, in seconds, within which a token naming an
+     *                           unknown key id triggers at most one JWKS fetch
+     *                           ({@code source: http} only), {@code null} when omitted. Omitted
+     *                           resolves to 30 seconds. Admitted range: 5 to 3600. Declared on a
+     *                           {@code source: file} issuer it is refused at boot.
      * @author API Sheriff Team
      * @since 1.0
      */
@@ -79,7 +99,10 @@ public record IssuerConfig(String name, String issuer, @Nullable String audience
     @Nullable String url,
     @Nullable String file,
     List<String> allowedEgressHosts,
-    @Nullable String tlsProfile) {
+    @Nullable String tlsProfile,
+    @Nullable Integer refreshIntervalSeconds,
+    @Nullable Integer keyRotationGracePeriodSeconds,
+    @Nullable Integer unknownKidRefreshWindowSeconds) {
 
         /**
          * Canonical constructor requiring {@code source} and defensively copying the

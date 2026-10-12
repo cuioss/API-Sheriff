@@ -71,6 +71,12 @@ import org.jspecify.annotations.Nullable;
  * {@code IssuerConfigBuilder.jwksLoader(..)} seam, so the gateway — not the library — records whether
  * a key set has actually been loaded. The same loaders back the {@link IssuerKeySetStatus} bean
  * produced alongside the validator, which is the non-fetching per-issuer view readiness reads.
+ * <p>
+ * <strong>The JWKS refresh cadence is configurable per issuer.</strong> An {@code http} source's
+ * {@code jwks.refresh_interval_seconds} and {@code jwks.key_rotation_grace_period_seconds} are passed
+ * through to the library's loader configuration, and {@code jwks.unknown_kid_refresh_window_seconds}
+ * bounds the refresh the gateway's own loader schedules when a token names a key id it does not know.
+ * Each key that is omitted keeps its default.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -255,11 +261,20 @@ public class TokenValidatorProducer {
      * a url without a host, an unresolvable {@code tls_profile}, a {@code tls_profile} together with
      * {@code jwks_verify_hostname: false}, an unsupported source) still aborts assembly. The first
      * delegate consumes that eagerly built configuration; every later delegate the wrapper builds for a
-     * retry reads a <em>fresh</em> one. An {@code http} source bounds the wrapper's retry delay by the
-     * configuration's refresh interval; a {@code file} source has no refresh and is bounded by the
-     * wrapper's own cap only.
+     * retry or an unknown-key-id refresh reads a <em>fresh</em> one.
+     * <p>
+     * <strong>The wrapper is timed by what the library was actually given.</strong> For an
+     * {@code http} source the refresh interval and the key-rotation grace period are read back from
+     * the built {@link HttpJwksLoaderConfig}, so the wrapper's retry bound and the time it keeps a
+     * replaced key set answering are the library's effective values — the declared
+     * {@code jwks.refresh_interval_seconds} and {@code jwks.key_rotation_grace_period_seconds}, or the
+     * library's own defaults when a key is omitted — and can never drift from them. The
+     * unknown-key-id window is gateway-owned: {@code jwks.unknown_kid_refresh_window_seconds}, or
+     * {@link RetryingJwksLoader#DEFAULT_UNKNOWN_KEY_ID_WINDOW} when omitted. A {@code file} source has
+     * no refresh: its retry delay is bounded by the wrapper's own cap only, and it passes a zero window
+     * and a zero grace period, which disables the unknown-key-id refresh.
      */
-    private RetryingJwksLoader toJwksLoader(IssuerConfig issuer) {
+    RetryingJwksLoader toJwksLoader(IssuerConfig issuer) {
         IssuerConfig.Jwks jwks = issuer.jwks();
         if (jwks == null) {
             throw new GatewayException(EventType.CONFIG_INVALID,
@@ -273,8 +288,11 @@ public class TokenValidatorProducer {
                 return JwksLoaderFactory.createHttpLoader(
                         config != null ? config : toHttpJwksLoaderConfig(issuer, jwks));
             };
+            Integer window = jwks.unknownKidRefreshWindowSeconds();
             return new RetryingJwksLoader(issuer.name(), factory,
-                    Duration.ofSeconds(first.getRefreshIntervalSeconds()));
+                    Duration.ofSeconds(first.getRefreshIntervalSeconds()),
+                    window == null ? RetryingJwksLoader.DEFAULT_UNKNOWN_KEY_ID_WINDOW : Duration.ofSeconds(window),
+                    first.getKeyRotationGracePeriod());
         }
         if (SOURCE_FILE.equals(jwks.source())) {
             String file = jwks.file();
@@ -283,7 +301,7 @@ public class TokenValidatorProducer {
                         ISSUER_PREFIX + issuer.name() + "' jwks source 'file' declares no file path");
             }
             return new RetryingJwksLoader(issuer.name(), () -> JwksLoaderFactory.createFileLoader(file),
-                    Duration.ZERO);
+                    Duration.ZERO, Duration.ZERO, Duration.ZERO);
         }
         throw new GatewayException(EventType.CONFIG_INVALID,
                 ISSUER_PREFIX + issuer.name() + "' declares unsupported jwks source '" + jwks.source() + "'");
@@ -345,10 +363,17 @@ public class TokenValidatorProducer {
      * combination itself, at boot, with a message naming both keys and the issuer — ahead of
      * token-sheriff's own {@link IllegalArgumentException}, which would surface as an opaque
      * builder failure rather than as a configuration error.
+     * <p>
+     * <strong>The refresh cadence is passed through only when declared.</strong> A declared
+     * {@code jwks.refresh_interval_seconds} becomes the library's background refresh interval and a
+     * declared {@code jwks.key_rotation_grace_period_seconds} its key-rotation grace period. An omitted
+     * key leaves the builder untouched, so the library's own default applies (600 seconds for the
+     * refresh interval).
      *
      * @param issuer the gateway issuer entry, for the identifier and error context
      * @param jwks   the issuer's {@code http} JWKS block
-     * @return the loader config carrying the resolved egress policy, hostname posture and trust anchors
+     * @return the loader config carrying the resolved egress policy, hostname posture, trust anchors
+     *         and refresh cadence
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the block
      *                          declares no url, declares no {@code allowed_egress_hosts} while its url
      *                          names no host (or does not parse as a URI) — the message names the
@@ -396,6 +421,17 @@ public class TokenValidatorProducer {
         }
         if (tlsProfile != null) {
             builder.sslContext(trustProfileResolver.resolve(issuer, tlsProfile));
+        }
+        // Each cadence key is passed through only when declared, so an omitted key keeps the token
+        // library's own default instead of a second copy of it kept here (ADR-0022). ConfigValidator
+        // has already bounded both values to ranges the library accepts.
+        Integer refreshIntervalSeconds = jwks.refreshIntervalSeconds();
+        if (refreshIntervalSeconds != null) {
+            builder.refreshIntervalSeconds(refreshIntervalSeconds);
+        }
+        Integer keyRotationGracePeriodSeconds = jwks.keyRotationGracePeriodSeconds();
+        if (keyRotationGracePeriodSeconds != null) {
+            builder.keyRotationGracePeriod(Duration.ofSeconds(keyRotationGracePeriodSeconds));
         }
         return builder.build();
     }
