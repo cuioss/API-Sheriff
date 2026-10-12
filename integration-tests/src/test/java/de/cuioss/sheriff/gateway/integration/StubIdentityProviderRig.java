@@ -565,7 +565,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * @return what the callback answered, not followed
      */
     Response loginCallback(String startPath, Duration accessTokenLifetime, Binding binding) {
-        return attemptLogin(startPath, accessTokenLifetime, Objects.requireNonNull(binding, "binding")).callback();
+        return attemptLogin(startPath, accessTokenLifetime, binding).callback();
     }
 
     /** One login up to the callback, whose answer is returned unasserted. */
