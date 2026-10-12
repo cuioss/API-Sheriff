@@ -112,7 +112,9 @@ final class InboundStreamWindow {
         Http2LocalFlowController flowControl = codec.decoder().flowController();
         int streamWindow = flowControl.windowSize(stream);
         int connectionWindow = flowControl.windowSize(codec.connection().connectionStream());
-        return Math.max(0, Math.min(streamWindow, connectionWindow));
+        // The smaller window, floored at zero. Clamped as one value rather than as the stream window
+        // between 0 and the connection window: Math.clamp rejects a range whose upper end is negative.
+        return Math.clamp(Math.min(streamWindow, connectionWindow), 0, Integer.MAX_VALUE);
     }
 
     /**
