@@ -903,7 +903,7 @@ public class GatewayEdgeRoute {
      * @param ending the call that ends the response, returning the future of that end
      * @return the future of the end — on the deferred path completing once the reset has been decided
      */
-    static Future<Void> endResponse(RoutingContext ctx, Supplier<Future<Void>> ending) {
+    private static Future<Void> endResponse(RoutingContext ctx, Supplier<Future<Void>> ending) {
         HttpServerRequest request = ctx.request();
         if (isHttp1(request.version()) || request.isEnded()) {
             return ending.get();
