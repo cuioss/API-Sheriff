@@ -342,6 +342,18 @@
                   "tls_profile": {
                     "type": "string",
                     "description": "Name of the logical trust profile used to verify the IdP's server certificate when fetching the JWKS over 'source: http'. This names a trust profile in API Sheriff's own vocabulary; it carries no trust material and no passwords, and the deployment binds the name to concrete trust anchors. Omitted means the JVM default trust store, which is correct for an IdP presenting a publicly-trusted certificate. Name a profile when the IdP presents a certificate from an internal or corporate CA. A named profile that the deployment does not define is refused at startup — it never silently falls back to default trust."
+                  },
+                  "refresh_interval_seconds": {
+                    "type": "integer",
+                    "description": "Interval, in seconds, at which the JWKS client re-fetches the key set in the background. Applies to 'source: http' only. Omitted keeps the token library's default of 600. Admitted range: 60 to 86400. Declared on a 'source: file' issuer it is REFUSED AT BOOT, because a file source has no refresh and the key would never act. The range is stated here in prose only: the configuration validator is the sole enforcing authority and names the issuer at boot, which is why no minimum or maximum keyword is declared."
+                  },
+                  "key_rotation_grace_period_seconds": {
+                    "type": "integer",
+                    "description": "How long, in seconds, a key set replaced by a rotation keeps verifying tokens signed with its keys. Applies to 'source: http' only. Omitted keeps the token library's default of 300. Admitted range: 0 to 3600, where 0 retires the replaced keys at once. Declared on a 'source: file' issuer it is REFUSED AT BOOT, because a file source never rotates and the key would never act. The range is stated here in prose only: the configuration validator is the sole enforcing authority and names the issuer at boot, which is why no minimum or maximum keyword is declared."
+                  },
+                  "unknown_kid_refresh_window_seconds": {
+                    "type": "integer",
+                    "description": "Per-issuer window, in seconds, within which a token naming a key id the gateway does not hold triggers at most one JWKS fetch. Applies to 'source: http' only. Omitted resolves to 30. Admitted range: 5 to 3600. Declared on a 'source: file' issuer it is REFUSED AT BOOT, because a file source is never re-fetched and the key would never act. The range is stated here in prose only: the configuration validator is the sole enforcing authority and names the issuer at boot, which is why no minimum or maximum keyword is declared."
                   }
                 }
               }
