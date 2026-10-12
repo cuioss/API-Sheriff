@@ -533,6 +533,11 @@ sources assign -- so the table is a test input, and a change to it is not a docu
 | `10469`, `10470`
 | `sheriff-idle-timeout-server` and `sheriff-idle-timeout-cookie`
 | `BffSessionIdleTimeoutIT`, one gateway per test, each with the signing-key directory mounted
+
+| `10471`
+| `sheriff-stub-idp-gateway`
+| `JwksKeyRotationIT`, through the key-rotation variant of `StubIdentityProviderRig` -- see
+  <<stub-idp-rig>>
 |===
 // end::test-started-host-ports[]
 
@@ -651,6 +656,39 @@ carries the thumbprint of the committed proof key as `cnf.jkt`, because the gate
 response that is not bound to its own proof key. The stub validates nothing. Its token endpoint
 refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
 passing unnoticed.
+
+*The key-rotation variant.* A fourth suite, `JwksKeyRotationIT`, has to replace the identity
+provider's signing key while the gateway runs and count the key-set requests that follow. It starts
+the same rig through `StubIdentityProviderRig.startForKeyRotation()`. The stub, the network, the echo
+upstream, the mounts and the container names are those of the table above; the gateway differs in two
+values:
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Descriptor
+| Derived from the same committed `sheriff-config-refresh/gateway.yaml`, with the gateway origin
+  retargeted at the port below and two keys added to the `jwks` block of the `integration-keycloak`
+  issuer: `unknown_kid_refresh_window_seconds: 5` and `key_rotation_grace_period_seconds: 300`. The
+  two keys are asserted, on the parsed documents, to be the only differences besides the origin. It is
+  written below `target/` as a file of its own and never committed.
+
+| Host ports
+| The application listener on the fixed host port `10471`, on every interface; the management
+  interface on a loopback port docker assigns.
+|===
+
+The committed descriptor declares neither key, so the gateway of the three refresh suites runs the
+30-second default window. The variant shortens the window to the lowest value the gateway admits, so
+that a suite can wait a key replacement out; `refresh_interval_seconds` is left at its 600-second
+default, so nothing the suite observes is the background refresh. One rig runs at a time, whichever
+variant: the container names and the network name are the same for both.
+
+For this suite the rig does three further things. It replaces the stub's signing key: a new key under
+a new key id, and a key set on every `jwks.url` path that holds the new key alone. It mints an access
+token for a bearer route, signed with the current key or naming a key id the stub never published.
+And it reads how many key-set requests the stub recorded for one issuer.
 
 *What guards the image.* `StubIdentityProviderWiringTest` reads committed files only. It asserts that
 the image reference has the shape `name:tag@sha256:<64 hex>`, and that the image name occurs in
@@ -978,8 +1016,10 @@ be assumed wrong:
 Readiness reports key-set *availability*, not *freshness*. Once an issuer's key set has loaded, an
 IdP whose JWKS endpoint becomes unreachable *after* that, a stalled key rotation, and an expired
 signing key do *not* take readiness `DOWN` -- the held keys stay in service. They surface as `401`s on
-the request path and as fetch errors in the container's stdout. Diagnose that class of failure from
-the container log, never from a green readiness probe.
+the request path and as fetch errors in the container's stdout. A stalled rotation has a record of its
+own: `WARN ApiSheriff-136` reports, at most once per issuer per refresh window, that a token named a
+key id no held key set contains. Diagnose that class of failure from the container log, never from a
+green readiness probe.
 ====
 
 The token-validation extension's two unqualified health probes stay excluded from the bean set

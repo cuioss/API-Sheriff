@@ -31,6 +31,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.star
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGateway;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -127,14 +128,30 @@ import io.restassured.response.Response;
  *       directory is mounted, because that descriptor names a DPoP proof key.</li>
  * </ul>
  *
+ * <h2>The key-rotation variant</h2>
+ *
+ * {@link #startForKeyRotation()} starts the same topology with two differences, both in the gateway:
+ * its application listener is published on {@value #KEY_ROTATION_APPLICATION_PORT}, and its descriptor
+ * additionally declares {@code unknown_kid_refresh_window_seconds: 5} and
+ * {@code key_rotation_grace_period_seconds: 300} in the {@code jwks} block of the issuer
+ * {@value #ROTATING_ISSUER}. The committed descriptor declares neither key, so a gateway started by
+ * {@link #start()} runs the 30-second default window; the variant shortens it to the lowest value the
+ * gateway admits, so a suite can wait a key replacement out. The derivation asserts, on the parsed
+ * documents, that those two keys are all the variant's descriptor has beyond the other one's.
+ * <p>
+ * On either variant a suite may {@linkplain #replaceSigningKey() replace the stub's signing key},
+ * mint an {@linkplain #accessToken(Collection, Duration) access token} for a bearer route and read
+ * {@linkplain #keySetRequests(String) how often an issuer's key set was fetched}.
+ *
  * <h2>What the stub serves</h2>
  *
  * The provider metadata document below the issuer, the key set on every {@code jwks.url} path the
  * descriptor names, and the {@link Endpoint endpoints} that document names. Tokens are signed with an
- * RSA key generated when the rig starts, and every access token carries the thumbprint of the
- * committed proof key as {@code cnf.jkt}, because the gateway refuses a token response that is not
- * bound to its own proof key. The stub validates nothing: it does not check the client credential, the
- * authorization code, the PKCE verifier or the DPoP proof.
+ * RSA key generated when the rig starts, or with the key the last {@link #replaceSigningKey()} put in
+ * its place, and every access token of a token answer carries the thumbprint of the committed proof
+ * key as {@code cnf.jkt}, because the gateway refuses a token response that is not bound to its own
+ * proof key. The stub validates nothing: it does not check the client credential, the authorization
+ * code, the PKCE verifier or the DPoP proof.
  * <p>
  * Each endpoint answers from its script when a test has {@linkplain #script(Endpoint, Answer) filled}
  * it, one scripted answer per request in the order they were added, and from its default otherwise.
@@ -154,7 +171,8 @@ import io.restassured.response.Response;
  * page at once. It starts a login on the gateway, reads {@code state}, {@code nonce} and the requested
  * {@code scope} out of the pushed authorization request the stub recorded, scripts the token answer of
  * the code exchange, and calls the gateway callback itself. Like every {@code Bff*IT} helper it replays
- * a cookie map and applies no browser cookie policy.
+ * a cookie map and applies no browser cookie policy. {@link #loginStatus(String, Duration)} drives the
+ * same login and reports what the callback answered instead of requiring a completed one.
  *
  * <h2>Lifecycle</h2>
  *
@@ -167,9 +185,11 @@ import io.restassured.response.Response;
  * it must not be called while a request to the gateway is in flight.
  * <p>
  * A test-support class: named neither {@code *IT} nor {@code *Test}, so neither Failsafe nor Surefire
- * runs it. One rig at a time — the container names, the network name and the gateway port are fixed.
- * Safe to use from several threads once started: the journal is read from the stub, and
- * {@link #script(Endpoint, Answer)} is serialised.
+ * runs it. One rig at a time, whichever variant — the container names and the network name are fixed,
+ * and so is the gateway port of each variant.
+ * Safe to use from several threads once started: the journal is read from the stub,
+ * {@link #script(Endpoint, Answer)} and {@link #replaceSigningKey()} are serialised, and a token is
+ * signed with one key and names that key's id, whichever replacement runs beside it.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -187,13 +207,33 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * The fixed host port of the gateway's application listener, published on every interface (see
      * {@link OneOffGatewayContainers#applicationPortPublication(int)}). The compose stack publishes
      * {@code 10443}–{@code 10455}; the one-off gateways of the other suites take {@code 10459},
-     * {@code 10462}–{@code 10464} and {@code 10466}–{@code 10468}. {@code 10461}, the port this gateway
-     * had before, is a dead host port number and is retired; the topology note says why.
+     * {@code 10462}–{@code 10464} and {@code 10466}–{@code 10470}, and the key-rotation variant of this
+     * rig takes {@link #KEY_ROTATION_APPLICATION_PORT}. {@code 10461}, the port this gateway had
+     * before, is a dead host port number and is retired; the topology note says why.
      */
     static final int APPLICATION_PORT = 10465;
 
-    /** The browser-facing origin of the rig's gateway. */
+    /**
+     * The fixed host port of the gateway {@link #startForKeyRotation()} starts, published like
+     * {@link #APPLICATION_PORT}. It is a port of its own because the descriptor names the gateway's
+     * origin, and the two variants' descriptors differ.
+     */
+    static final int KEY_ROTATION_APPLICATION_PORT = 10471;
+
+    /** The browser-facing origin of the gateway {@link #start()} starts. */
     static final String ORIGIN = "https://localhost:" + APPLICATION_PORT;
+
+    /**
+     * The configured name of the issuer whose tokens the stub signs, and the one whose {@code jwks}
+     * block the key-rotation variant adds its two keys to.
+     */
+    static final String ROTATING_ISSUER = "integration-keycloak";
+
+    /** {@code unknown_kid_refresh_window_seconds} of {@link #ROTATING_ISSUER} on the key-rotation variant. */
+    static final int KEY_ROTATION_WINDOW_SECONDS = 5;
+
+    /** {@code key_rotation_grace_period_seconds} of {@link #ROTATING_ISSUER} on the key-rotation variant. */
+    static final int KEY_ROTATION_GRACE_PERIOD_SECONDS = 300;
 
     /** The gateway container, for the log and readiness helpers of {@link OneOffGatewayContainers}. */
     static final String GATEWAY = "sheriff-stub-idp-gateway";
@@ -225,7 +265,15 @@ final class StubIdentityProviderRig implements AutoCloseable {
 
     /** Where the rig writes what it derives; a build output, never committed. */
     private static final Path WORK_DIRECTORY = Path.of("target", "stub-identity-provider");
-    private static final Path DERIVED_DESCRIPTOR = WORK_DIRECTORY.resolve("gateway.yaml");
+
+    /** The line of the committed descriptor the key-rotation keys are written after. */
+    private static final String ROTATING_ISSUER_KEY_SET_LINE =
+            "        url: " + ISSUER + "/protocol/openid-connect/certs\n";
+    private static final String WINDOW_KEY = "unknown_kid_refresh_window_seconds";
+    private static final String GRACE_PERIOD_KEY = "key_rotation_grace_period_seconds";
+    private static final String TOKEN_VALIDATION = "token_validation";
+    private static final String ISSUERS = "issuers";
+
     private static final Path KEY_STORE_DIRECTORY = WORK_DIRECTORY.resolve("tls");
     private static final String KEY_STORE_FILE = "keystore.p12";
     private static final String KEY_STORE_MOUNT = "/stub-tls";
@@ -268,9 +316,20 @@ final class StubIdentityProviderRig implements AutoCloseable {
     /** Counts the resets; every scripted answer belongs to the generation it was scripted in. */
     private int scriptGeneration;
 
-    private final KeyPair signingKey;
-    private final String signingKeyId = UUID.randomUUID().toString();
+    private final Variant variant;
+
+    /**
+     * The key the stub signs with and the key set it serves; replaced as a whole, so a token is never
+     * signed with one key under the id of another.
+     */
+    private volatile SigningKey signingKey;
     private final String proofKeyThumbprint;
+
+    /** The stub mapping that serves the key set, by the path of each {@code jwks.url}; filled at boot. */
+    private final Map<String, String> keySetMappings = new LinkedHashMap<>();
+
+    /** The path of the {@code jwks.url} of each {@code http} issuer, by its configured name; filled at boot. */
+    private final Map<String, String> keySetPathByIssuer = new LinkedHashMap<>();
 
     /** The compose echo container this rig connected to its network; empty until it is resolved. */
     private String echoContainer = "";
@@ -278,11 +337,10 @@ final class StubIdentityProviderRig implements AutoCloseable {
     /** The stub's published admin origin; empty until the stub is started. */
     private String adminOrigin = "";
 
-    private StubIdentityProviderRig() {
+    private StubIdentityProviderRig(Variant variant) {
+        this.variant = variant;
         try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            signingKey = generator.generateKeyPair();
+            signingKey = SigningKey.generate();
             proofKeyThumbprint = BffFapiControlsIT.publicKeyThumbprint(BffFapiControlsIT.signingKeyFile(PROOF_KEY_FILE));
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("cannot generate the stub identity provider's signing key", e);
@@ -302,7 +360,23 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * @return the running rig; close it to remove everything it started
      */
     static StubIdentityProviderRig start() {
-        StubIdentityProviderRig rig = new StubIdentityProviderRig();
+        return start(Variant.REFRESH);
+    }
+
+    /**
+     * Starts the key-rotation variant: the topology of {@link #start()}, with the gateway published on
+     * {@link #KEY_ROTATION_APPLICATION_PORT} and the issuer {@value #ROTATING_ISSUER} declaring an
+     * unknown-key-id refresh window of {@value #KEY_ROTATION_WINDOW_SECONDS} seconds and a key-rotation
+     * grace period of {@value #KEY_ROTATION_GRACE_PERIOD_SECONDS} seconds.
+     *
+     * @return the running rig; close it to remove everything it started
+     */
+    static StubIdentityProviderRig startForKeyRotation() {
+        return start(Variant.KEY_ROTATION);
+    }
+
+    private static StubIdentityProviderRig start(Variant variant) {
+        StubIdentityProviderRig rig = new StubIdentityProviderRig(variant);
         boolean started = false;
         try {
             rig.boot();
@@ -336,13 +410,15 @@ final class StubIdentityProviderRig implements AutoCloseable {
         adminOrigin = "http://localhost:" + publishedPort(STUB, STUB_ADMIN_PORT);
         awaitStub();
 
-        Map<?, ?> descriptor = writeDerivedDescriptor();
-        registerDefaults(keySetPaths(descriptor));
+        Map<?, ?> descriptor = writeDerivedDescriptor(variant);
+        keySetPathByIssuer.clear();
+        keySetPathByIssuer.putAll(keySetPaths(descriptor));
+        registerDefaults(new LinkedHashSet<>(keySetPathByIssuer.values()));
 
         connectToNetwork(NETWORK, echo, ECHO_SERVICE);
         startBffGateway(
-                new BffGateway(GATEWAY, NETWORK, GATEWAY, APPLICATION_PORT, DERIVED_DESCRIPTOR, "localhost.crt",
-                        "localhost.key",
+                new BffGateway(GATEWAY, NETWORK, GATEWAY, variant.applicationPort, variant.descriptor(),
+                        "localhost.crt", "localhost.key",
                         // The stub checks no credential; the descriptor only needs both references resolved.
                         List.of("OIDC_CLIENT_SECRET=stub-identity-provider-checks-no-secret",
                                 "OIDC_DPOP_KEY_FILE=" + SIGNING_KEYS_MOUNT + "/" + PROOF_KEY_FILE)),
@@ -351,7 +427,16 @@ final class StubIdentityProviderRig implements AutoCloseable {
         awaitReadiness(GATEWAY, "https://localhost:" + publishedPort(GATEWAY, 9000),
                 response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
                 "the gateway of the stub identity-provider rig to report readiness UP");
-        assertApplicationPortAnswers(GATEWAY, ORIGIN);
+        assertApplicationPortAnswers(GATEWAY, origin());
+    }
+
+    /**
+     * @return the browser-facing origin of this rig's gateway: {@link #ORIGIN} for a rig
+     *         {@link #start()} started, the origin on {@link #KEY_ROTATION_APPLICATION_PORT} for the
+     *         key-rotation variant
+     */
+    String origin() {
+        return variant.origin();
     }
 
     /**
@@ -391,6 +476,15 @@ final class StubIdentityProviderRig implements AutoCloseable {
         return docker("read the log of " + GATEWAY, "logs", GATEWAY);
     }
 
+    /**
+     * @return the instant docker last started the gateway container, as docker renders it. It stays
+     *         the same for as long as the container is neither restarted nor replaced, which is what a
+     *         suite compares it for
+     */
+    String gatewayStartedAt() {
+        return docker("read the start time of " + GATEWAY, "inspect", "--format", "{{.State.StartedAt}}", GATEWAY);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Login
     // ---------------------------------------------------------------------------------------------
@@ -410,8 +504,39 @@ final class StubIdentityProviderRig implements AutoCloseable {
      *         part
      */
     Session login(String startPath, Duration accessTokenLifetime) {
+        LoginAttempt attempt = attemptLogin(startPath, accessTokenLifetime);
+        Response callback = attempt.callback();
+        assertEquals(302, callback.statusCode(), () -> "the gateway must accept the stubbed login at its callback. "
+                + OneOffGatewayContainers.gatewayLog(GATEWAY));
+        BffKeycloakLoginFlow.assertCookiesFitBrowserBudget(callback);
+        return new Session(attempt.gatewayCookies(), callback.getDetailedCookies(),
+                BffKeycloakLoginFlow.location(callback), Map.of());
+    }
+
+    /**
+     * Drives one login exactly as {@link #login(String, Duration)} does, up to and including the
+     * callback, and reports what the callback answered instead of requiring a completed login. It is
+     * for a suite that expects the gateway to refuse a login it will accept a moment later — one whose
+     * ID token is signed with a key the gateway has not loaded yet.
+     * <p>
+     * Everything before the callback is asserted as in {@link #login(String, Duration)}: the
+     * navigation must start a login and push exactly one authorization request. Each call starts a
+     * login of its own and scripts one token answer, which the code exchange of that login consumes
+     * whether or not the gateway then accepts the tokens.
+     *
+     * @param startPath           the gateway path the login starts on, a {@code require: session} route
+     * @param accessTokenLifetime the lifetime of the access token the code exchange is answered with
+     * @return the status of the callback: {@code 302} for a completed login
+     */
+    int loginStatus(String startPath, Duration accessTokenLifetime) {
+        return attemptLogin(startPath, accessTokenLifetime).callback().statusCode();
+    }
+
+    /** One login up to the callback, whose answer is returned unasserted. */
+    private LoginAttempt attemptLogin(String startPath, Duration accessTokenLifetime) {
+        String origin = origin();
         int pushedBefore = received(Endpoint.PUSHED_AUTHORIZATION_REQUEST).size();
-        Response initiation = BffKeycloakLoginFlow.gateway(Map.of(), ORIGIN)
+        Response initiation = BffKeycloakLoginFlow.gateway(Map.of(), origin)
                 .urlEncodingEnabled(false)
                 .header("Accept", "text/html")
                 .redirects().follow(false)
@@ -436,22 +561,27 @@ final class StubIdentityProviderRig implements AutoCloseable {
                 () -> assertNotNull(state, "state"),
                 () -> assertNotNull(nonce, "nonce"),
                 () -> assertNotNull(scope, "scope"),
-                () -> assertEquals(ORIGIN + "/auth/callback", redirectUri, "redirect_uri"));
+                () -> assertEquals(origin + "/auth/callback", redirectUri, "redirect_uri"));
 
         script(Endpoint.TOKEN, loginAnswer(scope, accessTokenLifetime, nonce));
-        Response callback = BffKeycloakLoginFlow.gateway(gatewayCookies, ORIGIN)
+        Response callback = BffKeycloakLoginFlow.gateway(gatewayCookies, origin)
                 .urlEncodingEnabled(false)
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when().get(redirectUri + "?code=" + UUID.randomUUID() + "&state="
                 + URLEncoder.encode(state, StandardCharsets.UTF_8))
                 .then().extract().response();
-        assertEquals(302, callback.statusCode(), () -> "the gateway must accept the stubbed login at its callback. "
-                + OneOffGatewayContainers.gatewayLog(GATEWAY));
         gatewayCookies.putAll(callback.getCookies());
-        BffKeycloakLoginFlow.assertCookiesFitBrowserBudget(callback);
-        return new Session(gatewayCookies, callback.getDetailedCookies(), BffKeycloakLoginFlow.location(callback),
-                Map.of());
+        return new LoginAttempt(gatewayCookies, callback);
+    }
+
+    /**
+     * One login driven up to the callback.
+     *
+     * @param gatewayCookies the gateway cookie jar after the callback
+     * @param callback       what the callback answered, not followed
+     */
+    private record LoginAttempt(Map<String, String> gatewayCookies, Response callback) {
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -477,6 +607,107 @@ final class StubIdentityProviderRig implements AutoCloseable {
     }
 
     /**
+     * Mints an access token a client presents on a {@code require: bearer} route itself: issued by the
+     * stub's issuer for {@link #SUBJECT}, carrying {@code scopes} as its {@code scope} claim, and
+     * signed with the stub's current key under that key's id.
+     * <p>
+     * Unlike the access token of a {@linkplain #tokenAnswer(Collection, Duration) token answer} it
+     * carries no {@code cnf} claim: it is presented as a plain bearer, without a DPoP proof, so it must
+     * not claim to be bound to a proof key. Every call mints a new token with an identifier of its own,
+     * so a token that was never presented before cannot be answered from anything the gateway kept
+     * about an earlier one.
+     *
+     * @param scopes   the scopes of the token, in the order they are rendered; a bearer route of the
+     *                 rig's gateway needs the descriptor's {@code oidc.scopes}
+     * @param lifetime the lifetime of the token, from now
+     * @return the compact token
+     */
+    String accessToken(Collection<String> scopes, Duration lifetime) {
+        SigningKey key = signingKey;
+        return mintAccessToken(scopes, lifetime, key, key.id());
+    }
+
+    /**
+     * Mints an access token as {@link #accessToken(Collection, Duration)} does, whose header names
+     * {@code keyId} instead of the id of the key it is signed with. With an id the stub never
+     * published, it is a token the gateway can find no key for, whatever key set it loads.
+     *
+     * @param scopes   the scopes of the token
+     * @param lifetime the lifetime of the token, from now
+     * @param keyId    the {@code kid} the token's header names
+     * @return the compact token
+     */
+    String accessTokenNamingKeyId(Collection<String> scopes, Duration lifetime, String keyId) {
+        return mintAccessToken(scopes, lifetime, signingKey, Objects.requireNonNull(keyId, "keyId"));
+    }
+
+    private static String mintAccessToken(Collection<String> scopes, Duration lifetime, SigningKey key,
+            String keyId) {
+        Instant now = Instant.now();
+        Map<String, Object> claims = accessClaims(String.join(" ", scopes), now, now.plus(lifetime),
+                UUID.randomUUID().toString());
+        return sign(claims, key.pair().getPrivate(), keyId);
+    }
+
+    /** The claims of an access token that grants {@code scope}, bound to no proof key. */
+    private static Map<String, Object> accessClaims(String scope, Instant now, Instant expiry, String sessionId) {
+        Map<String, Object> claims = commonClaims(now, expiry, sessionId);
+        claims.put("aud", "account");
+        claims.put("typ", "Bearer");
+        claims.put("scope", scope);
+        return claims;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Key replacement
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * @return the id of the key the stub currently signs with, which is the one id its key set names
+     */
+    String signingKeyId() {
+        return signingKey.id();
+    }
+
+    /**
+     * Replaces the stub's signing key as an identity provider does that rotates abruptly: a new RSA key
+     * under a new id is generated, the key set on every {@code jwks.url} path the descriptor names is
+     * replaced by one that holds the new key <em>alone</em>, and every token minted from now on is
+     * signed with the new key. The previous key is published nowhere afterwards, so a gateway that
+     * still accepts a token signed with it does so from a key set it kept.
+     * <p>
+     * Each key-set mapping is edited in place and read back: the stub must then serve the new key id
+     * and no longer the previous one. A replacement the stub did not carry out fails here.
+     * <p>
+     * The gateway is not told. It learns of the new key when it next fetches the key set.
+     *
+     * @return the id of the new key
+     */
+    synchronized String replaceSigningKey() {
+        assertFalse(keySetMappings.isEmpty(), "the rig registered no key-set mapping to replace; was it started?");
+        SigningKey previous = signingKey;
+        SigningKey replacement;
+        try {
+            replacement = SigningKey.generate();
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("cannot generate the stub identity provider's next signing key", e);
+        }
+        Answer keySet = replacement.keySet();
+        for (Map.Entry<String, String> mapping : keySetMappings.entrySet()) {
+            String resource = "/__admin/mappings/" + mapping.getValue();
+            Map<String, Object> stub = stub("GET", mapping.getKey(), keySet, DEFAULT_PRIORITY);
+            stub.put("id", mapping.getValue());
+            adminAccepted("PUT", resource, json(stub));
+            String served = adminAccepted("GET", resource, "");
+            assertTrue(served.contains(replacement.id()) && !served.contains(previous.id()),
+                    () -> "after the replacement the stub must serve the new key id on " + mapping.getKey()
+                            + " and no longer the previous one; its mapping reads: " + served);
+        }
+        signingKey = replacement;
+        return replacement.id();
+    }
+
+    /**
      * The token answer of a code exchange: {@link #grant} together with an ID token that carries the
      * login's {@code nonce} and binds the granted access token through {@code at_hash}.
      */
@@ -498,10 +729,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
 
     /** The members of a token answer that grants {@code scope}, without an ID token. */
     private Map<String, Object> grant(String scope, Instant now, Instant expiry, String sessionId) {
-        Map<String, Object> accessClaims = commonClaims(now, expiry, sessionId);
-        accessClaims.put("aud", "account");
-        accessClaims.put("typ", "Bearer");
-        accessClaims.put("scope", scope);
+        Map<String, Object> accessClaims = accessClaims(scope, now, expiry, sessionId);
         accessClaims.put("cnf", Map.of("jkt", proofKeyThumbprint));
 
         Map<String, Object> answer = new LinkedHashMap<>();
@@ -634,14 +862,36 @@ final class StubIdentityProviderRig implements AutoCloseable {
      *         error or a connection reset
      */
     List<RecordedRequest> received(Endpoint endpoint) {
-        String found = admin("POST", "/__admin/requests/find",
-                json(Map.of("method", endpoint.method, "urlPath", endpoint.path)), 200);
+        return journal(endpoint.method, endpoint.path).stream().skip(journalFloor(endpoint)).toList();
+    }
+
+    /**
+     * The key-set requests of one issuer: every {@code GET} the stub has recorded on the path of that
+     * issuer's {@code jwks.url} since the rig was started, in arrival order. Each is one fetch of the
+     * issuer's key set by the gateway — nothing else dials the stub.
+     * <p>
+     * Unlike {@link #received(Endpoint)} this is not cut off by {@link #reset()}: a suite compares two
+     * readings of it.
+     *
+     * @param issuerName the configured name of an issuer of the descriptor whose {@code jwks.source} is
+     *                   {@code http}, such as {@link #ROTATING_ISSUER}
+     * @return the recorded key-set requests of that issuer
+     */
+    List<RecordedRequest> keySetRequests(String issuerName) {
+        String path = keySetPathByIssuer.get(issuerName);
+        assertNotNull(path, () -> "the descriptor names no http-sourced issuer '" + issuerName + "'; it names "
+                + keySetPathByIssuer.keySet());
+        return journal("GET", path);
+    }
+
+    /** Every request the stub has recorded for a method and a path, in arrival order. */
+    private List<RecordedRequest> journal(String method, String path) {
+        String found = admin("POST", "/__admin/requests/find", json(Map.of("method", method, "urlPath", path)), 200);
         List<Map<String, Object>> requests = new JsonPath(found).getList("requests");
         assertNotNull(requests, () -> "the stub's journal answered no request list: " + found);
         return requests.stream()
                 .map(RecordedRequest::of)
                 .sorted(Comparator.comparingLong(RecordedRequest::loggedAtMillis))
-                .skip(journalFloor(endpoint))
                 .toList();
     }
 
@@ -676,17 +926,15 @@ final class StubIdentityProviderRig implements AutoCloseable {
         registerDefault(Endpoint.TOKEN, Answer.json(400, json(Map.of("error", "invalid_grant"))));
         registerDefault(Endpoint.REVOCATION, Answer.of(200));
 
-        RSAPublicKey publicKey = (RSAPublicKey) signingKey.getPublic();
-        Map<String, Object> key = new LinkedHashMap<>();
-        key.put("kty", "RSA");
-        key.put("kid", signingKeyId);
-        key.put("use", "sig");
-        key.put("alg", "RS256");
-        key.put("n", base64Url(unsigned(publicKey.getModulus())));
-        key.put("e", base64Url(unsigned(publicKey.getPublicExponent())));
-        Answer keySet = Answer.json(200, json(Map.of("keys", List.of(key))));
+        Answer keySet = signingKey.keySet();
+        keySetMappings.clear();
         for (String path : keySetPaths) {
-            register(stub("GET", path, keySet, DEFAULT_PRIORITY));
+            // The id is chosen here, so replaceSigningKey() can edit exactly this mapping in place.
+            String id = UUID.randomUUID().toString();
+            Map<String, Object> stub = stub("GET", path, keySet, DEFAULT_PRIORITY);
+            stub.put("id", id);
+            register(stub);
+            keySetMappings.put(path, id);
         }
     }
 
@@ -737,9 +985,14 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * success status WireMock chose to report it with.
      */
     private String adminAccepted(String method, String path) {
+        return adminAccepted(method, path, "");
+    }
+
+    /** As {@link #adminAccepted(String, String)}, with a request body. */
+    private String adminAccepted(String method, String path, String body) {
         HttpResponse<String> response;
         try {
-            response = sendAdmin(method, path, "");
+            response = sendAdmin(method, path, body);
         } catch (IOException e) {
             throw new UncheckedIOException("the stub's admin API did not answer " + method + " " + path, e);
         }
@@ -793,59 +1046,126 @@ final class StubIdentityProviderRig implements AutoCloseable {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Writes the gateway descriptor: the committed refresh descriptor with its origin retargeted at
-     * {@link #ORIGIN}. The result is asserted to name the rig's origin in every key that names one and
-     * the stub as its issuer, so a change to the committed descriptor fails here instead of producing a
-     * gateway that differs from it in more than the stated way.
+     * Writes the gateway descriptor of a variant: the committed refresh descriptor with its origin
+     * retargeted at the variant's, and — for the key-rotation variant — with the two refresh keys added
+     * to the {@code jwks} block of {@value #ROTATING_ISSUER}. The result is asserted to name the rig's
+     * origin in every key that names one and the stub as its issuer, so a change to the committed
+     * descriptor fails here instead of producing a gateway that differs from it in more than the stated
+     * way.
+     * <p>
+     * The added keys are held to the same standard on the parsed documents: that one {@code jwks} block
+     * must hold each added key with its value, and the variant's descriptor without those keys must
+     * equal the retargeted one. An insertion that landed in another block, or changed anything else,
+     * fails here.
      *
      * @return the parsed derived descriptor
      */
-    private static Map<?, ?> writeDerivedDescriptor() {
+    private static Map<?, ?> writeDerivedDescriptor(Variant variant) {
+        Path derived = variant.descriptor();
+        String origin = variant.origin();
         Map<?, ?> descriptor;
         try {
             String source = Files.readString(SOURCE_DESCRIPTOR);
             assertTrue(source.contains(SOURCE_ORIGIN),
                     () -> SOURCE_DESCRIPTOR + " must name the origin " + SOURCE_ORIGIN + " the derivation retargets");
+            String retargeted = source.replace(SOURCE_ORIGIN, origin);
+            String written = withJwksKeys(retargeted, variant.rotatingIssuerJwksKeys);
             Files.createDirectories(WORK_DIRECTORY);
-            Files.writeString(DERIVED_DESCRIPTOR, source.replace(SOURCE_ORIGIN, ORIGIN));
-            Files.setPosixFilePermissions(DERIVED_DESCRIPTOR, PosixFilePermissions.fromString(FILE_MODE));
-            try (InputStream in = Files.newInputStream(DERIVED_DESCRIPTOR)) {
-                descriptor = mapping(new Yaml().load(in), DERIVED_DESCRIPTOR.toString());
+            Files.writeString(derived, written);
+            Files.setPosixFilePermissions(derived, PosixFilePermissions.fromString(FILE_MODE));
+            try (InputStream in = Files.newInputStream(derived)) {
+                descriptor = mapping(new Yaml().load(in), derived.toString());
             }
+            assertAddsOnlyTheJwksKeys(variant, retargeted, written);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot derive the gateway descriptor from " + SOURCE_DESCRIPTOR, e);
         }
         Map<?, ?> oidc = mapping(descriptor.get("oidc"), "oidc");
         Map<?, ?> csrf = mapping(mapping(oidc.get("session"), "oidc.session").get("csrf"), "oidc.session.csrf");
-        assertAll("the derived descriptor " + DERIVED_DESCRIPTOR,
+        assertAll("the derived descriptor " + derived,
                 () -> assertEquals(ISSUER, oidc.get("issuer"), "oidc.issuer must be the stub"),
                 () -> assertEquals(CLIENT_ID, oidc.get("client_id"), "oidc.client_id"),
-                () -> assertEquals(ORIGIN + "/auth/callback", oidc.get("redirect_uri"), "oidc.redirect_uri"),
+                () -> assertEquals(origin + "/auth/callback", oidc.get("redirect_uri"), "oidc.redirect_uri"),
                 () -> assertTrue(String.valueOf(mapping(oidc.get("logout"), "oidc.logout")
-                                .get("post_logout_redirect_uri")).startsWith(ORIGIN + "/"),
+                                .get("post_logout_redirect_uri")).startsWith(origin + "/"),
                         "oidc.logout.post_logout_redirect_uri must name the rig's origin"),
-                () -> assertEquals(List.of(ORIGIN), csrf.get("trusted_origins"), "oidc.session.csrf.trusted_origins"));
+                () -> assertEquals(List.of(origin), csrf.get("trusted_origins"), "oidc.session.csrf.trusted_origins"));
         return descriptor;
     }
 
     /**
-     * The path of every {@code jwks.url} the descriptor names. Each must dial the stub: a key set the
-     * gateway cannot load keeps its readiness {@code DOWN}.
+     * The descriptor text with {@code keys} written into the {@code jwks} block of
+     * {@value #ROTATING_ISSUER}, directly after its {@code url}; the text unchanged when there are none.
+     * The line the keys are written after must occur exactly once.
      */
-    private static Set<String> keySetPaths(Map<?, ?> descriptor) {
-        Object issuers = mapping(descriptor.get("token_validation"), "token_validation").get("issuers");
-        Set<String> paths = new LinkedHashSet<>();
+    private static String withJwksKeys(String descriptor, Map<String, Integer> keys) {
+        if (keys.isEmpty()) {
+            return descriptor;
+        }
+        int at = descriptor.indexOf(ROTATING_ISSUER_KEY_SET_LINE);
+        assertTrue(at >= 0 && at == descriptor.lastIndexOf(ROTATING_ISSUER_KEY_SET_LINE),
+                () -> SOURCE_DESCRIPTOR + " must hold the jwks.url line of the issuer " + ROTATING_ISSUER
+                        + " exactly once, as '" + ROTATING_ISSUER_KEY_SET_LINE.strip() + "'");
+        String indentation = ROTATING_ISSUER_KEY_SET_LINE.substring(0,
+                ROTATING_ISSUER_KEY_SET_LINE.indexOf("url:"));
+        StringBuilder added = new StringBuilder();
+        keys.forEach((key, value) -> added.append(indentation).append(key).append(": ").append(value).append('\n'));
+        int after = at + ROTATING_ISSUER_KEY_SET_LINE.length();
+        return descriptor.substring(0, after) + added + descriptor.substring(after);
+    }
+
+    /**
+     * Asserts, on the parsed documents, that a variant's descriptor is the retargeted one plus the
+     * variant's keys in the {@code jwks} block of {@value #ROTATING_ISSUER}, and nothing else.
+     *
+     * @param retargeted the committed descriptor with the origin retargeted
+     * @param written    the descriptor the variant's gateway is started over
+     */
+    private static void assertAddsOnlyTheJwksKeys(Variant variant, String retargeted, String written) {
+        Map<String, Integer> added = variant.rotatingIssuerJwksKeys;
+        Map<?, ?> withoutTheKeys = mapping(new Yaml().load(written), variant.descriptor().toString());
+        Map<?, ?> jwks = jwksOf(withoutTheKeys, ROTATING_ISSUER);
+        added.forEach((key, value) -> assertEquals(value, jwks.get(key), () -> "the jwks block of the issuer "
+                + ROTATING_ISSUER + " in " + variant.descriptor() + " must declare " + key + ": " + value));
+        added.keySet().forEach(jwks::remove);
+        Map<?, ?> expected = mapping(new Yaml().load(retargeted), "the retargeted " + SOURCE_DESCRIPTOR);
+        assertEquals(expected, withoutTheKeys, () -> variant.descriptor() + " must differ from "
+                + SOURCE_DESCRIPTOR + " in the gateway origin and in the keys " + added.keySet() + " of the issuer "
+                + ROTATING_ISSUER + ", and in nothing else");
+    }
+
+    /** The {@code jwks} block of the issuer a parsed descriptor configures under {@code name}. */
+    private static Map<?, ?> jwksOf(Map<?, ?> descriptor, String name) {
+        Object issuers = mapping(descriptor.get(TOKEN_VALIDATION), TOKEN_VALIDATION).get(ISSUERS);
         for (Object issuer : assertInstanceOf(List.class, issuers, "token_validation.issuers must be a list")) {
-            Map<?, ?> jwks = mapping(mapping(issuer, "a token_validation issuer").get("jwks"), "jwks");
+            Map<?, ?> entry = mapping(issuer, "a token_validation issuer");
+            if (name.equals(entry.get("name"))) {
+                return mapping(entry.get("jwks"), "jwks");
+            }
+        }
+        return fail("the descriptor configures no issuer named " + name);
+    }
+
+    /**
+     * The path of every {@code jwks.url} the descriptor names, by the configured name of its issuer.
+     * Each must dial the stub: a key set the gateway cannot load keeps its readiness {@code DOWN}.
+     */
+    private static Map<String, String> keySetPaths(Map<?, ?> descriptor) {
+        Object issuers = mapping(descriptor.get(TOKEN_VALIDATION), TOKEN_VALIDATION).get(ISSUERS);
+        Map<String, String> paths = new LinkedHashMap<>();
+        for (Object issuer : assertInstanceOf(List.class, issuers, "token_validation.issuers must be a list")) {
+            Map<?, ?> entry = mapping(issuer, "a token_validation issuer");
+            Map<?, ?> jwks = mapping(entry.get("jwks"), "jwks");
             if ("http".equals(jwks.get("source"))) {
                 URI url = URI.create(String.valueOf(jwks.get("url")));
                 assertEquals(IDENTITY_PROVIDER_ALIAS + ":" + STUB_TLS_PORT, url.getAuthority(),
                         () -> "every jwks.url of " + SOURCE_DESCRIPTOR + " must dial the stub, found " + url);
-                paths.add(url.getPath());
+                paths.put(String.valueOf(entry.get("name")), url.getPath());
             }
         }
-        assertTrue(paths.contains(REALM_PATH + "/protocol/openid-connect/certs"),
-                () -> "the descriptor must fetch the key set of " + ISSUER + ", found " + paths);
+        assertEquals(REALM_PATH + "/protocol/openid-connect/certs", paths.get(ROTATING_ISSUER),
+                () -> "the issuer " + ROTATING_ISSUER + " of the descriptor must fetch the key set of " + ISSUER
+                        + ", found " + paths);
         return paths;
     }
 
@@ -908,16 +1228,22 @@ final class StubIdentityProviderRig implements AutoCloseable {
         return claims;
     }
 
+    /** Signs {@code claims} with the stub's current key, under that key's id. */
     private String sign(Map<String, Object> claims) {
+        SigningKey key = signingKey;
+        return sign(claims, key.pair().getPrivate(), key.id());
+    }
+
+    private static String sign(Map<String, Object> claims, PrivateKey privateKey, String keyId) {
         Map<String, Object> header = new LinkedHashMap<>();
         header.put("alg", "RS256");
         header.put("typ", "JWT");
-        header.put("kid", signingKeyId);
+        header.put("kid", keyId);
         String signingInput = base64Url(json(header).getBytes(StandardCharsets.UTF_8)) + "."
                 + base64Url(json(claims).getBytes(StandardCharsets.UTF_8));
         try {
             Signature signature = Signature.getInstance("SHA256withRSA");
-            signature.initSign(signingKey.getPrivate());
+            signature.initSign(privateKey);
             signature.update(signingInput.getBytes(StandardCharsets.US_ASCII));
             return signingInput + "." + base64Url(signature.sign());
         } catch (GeneralSecurityException e) {
@@ -981,6 +1307,72 @@ final class StubIdentityProviderRig implements AutoCloseable {
     // ---------------------------------------------------------------------------------------------
     // Types
     // ---------------------------------------------------------------------------------------------
+
+    /**
+     * What distinguishes the gateway of one start variant from the other's: its host port, and the keys
+     * its descriptor adds to the {@code jwks} block of {@link StubIdentityProviderRig#ROTATING_ISSUER}.
+     */
+    private enum Variant {
+
+        /** The gateway of {@link StubIdentityProviderRig#start()}: the committed refresh descriptor, retargeted. */
+        REFRESH(APPLICATION_PORT, "gateway.yaml", Map.of()),
+
+        /**
+         * The gateway of {@link StubIdentityProviderRig#startForKeyRotation()}: a short refresh window
+         * and a grace period.
+         */
+        KEY_ROTATION(KEY_ROTATION_APPLICATION_PORT, "gateway-key-rotation.yaml",
+                Map.of(WINDOW_KEY, KEY_ROTATION_WINDOW_SECONDS, GRACE_PERIOD_KEY, KEY_ROTATION_GRACE_PERIOD_SECONDS));
+
+        private final int applicationPort;
+        private final String descriptorFile;
+        private final Map<String, Integer> rotatingIssuerJwksKeys;
+
+        Variant(int applicationPort, String descriptorFile, Map<String, Integer> rotatingIssuerJwksKeys) {
+            this.applicationPort = applicationPort;
+            this.descriptorFile = descriptorFile;
+            this.rotatingIssuerJwksKeys = rotatingIssuerJwksKeys;
+        }
+
+        /** The browser-facing origin of the variant's gateway. */
+        String origin() {
+            return "https://localhost:" + applicationPort;
+        }
+
+        /** Where the variant's derived descriptor is written; a build output, never committed. */
+        Path descriptor() {
+            return WORK_DIRECTORY.resolve(descriptorFile);
+        }
+    }
+
+    /**
+     * A signing key of the stub together with the id its key set publishes it under.
+     *
+     * @param pair the RSA key pair
+     * @param id   the {@code kid}
+     */
+    private record SigningKey(KeyPair pair, String id) {
+
+        /** A fresh RSA-2048 key under a random id. */
+        static SigningKey generate() throws GeneralSecurityException {
+            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+            generator.initialize(2048);
+            return new SigningKey(generator.generateKeyPair(), UUID.randomUUID().toString());
+        }
+
+        /** The key set that holds this key alone, as the answer the stub serves it with. */
+        Answer keySet() {
+            RSAPublicKey publicKey = (RSAPublicKey) pair.getPublic();
+            Map<String, Object> key = new LinkedHashMap<>();
+            key.put("kty", "RSA");
+            key.put("kid", id);
+            key.put("use", "sig");
+            key.put("alg", "RS256");
+            key.put("n", base64Url(unsigned(publicKey.getModulus())));
+            key.put("e", base64Url(unsigned(publicKey.getPublicExponent())));
+            return Answer.json(200, json(Map.of("keys", List.of(key))));
+        }
+    }
 
     /**
      * One endpoint of the stub that a test may script and read the journal of: the method it is served

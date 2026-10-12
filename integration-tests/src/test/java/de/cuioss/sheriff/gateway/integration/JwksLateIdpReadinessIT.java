@@ -93,10 +93,10 @@ import org.junit.jupiter.api.Test;
  *       first attempt is still retrying internally would be picked up by that attempt, with no
  *       gateway retry and no {@code ApiSheriff-18} to attribute it by.</li>
  *   <li><em>UP within {@value #RECOVERY_BOUND_SECONDS}s of the provider appearing</em> — see the
- *       constant for how the bound is derived. The gateway's
- *       configuration model exposes no refresh-interval key, so the issuer runs the token library's
- *       default interval, which a recovery that waited for the background refresh would have to sit
- *       out. {@code INFO ApiSheriff-18} ("loaded after N retry attempt(s)") is asserted beside the
+ *       constant for how the bound is derived. This descriptor declares no
+ *       {@code jwks.refresh_interval_seconds}, so the issuer runs the 600-second default interval,
+ *       which a recovery that waited for the background refresh would have to sit out.
+ *       {@code INFO ApiSheriff-18} ("loaded after N retry attempt(s)") is asserted beside the
  *       verdict, so the recovery is attributed to the retry path rather than inferred from timing
  *       alone.</li>
  *   <li><em>The provider's token is accepted</em> — a Keycloak-issued bearer token reaches the
@@ -134,8 +134,8 @@ class JwksLateIdpReadinessIT {
     /**
      * The fixed host port of the gateway's application listener, published on every interface (see
      * {@link OneOffGatewayContainers#applicationPortPublication(int)}). The compose stack publishes
-     * {@code 10443}–{@code 10455}; the other one-off gateways take {@code 10459}, {@code 10462}–{@code 10465},
-     * {@code 10467} and {@code 10468}.
+     * {@code 10443}–{@code 10455}; the other one-off gateways take {@code 10459}, {@code 10462}–{@code 10465}
+     * and {@code 10467}–{@code 10471}.
      */
     private static final int APPLICATION_PORT = 10466;
 
