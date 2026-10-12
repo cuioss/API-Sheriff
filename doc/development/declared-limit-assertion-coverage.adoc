@@ -949,9 +949,11 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
   -- the inventory table, the sweep pattern and the nineteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
-  equalities*, and the guarantee is exactly that: a new descriptor directory or a new
-  `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
-  updated, and a limit-shaped key fails the build *only when it makes a previously
+  equalities*, and the guarantee is exactly that: a new `sheriff-config*` directory, a new file under
+  an enumerated root (`sheriff-config*`, `reserved-path-overlap`) or a new `endpoints/*.yaml` breaks
+  the exact-inventory equality and fails the build until this note is updated -- a descriptor
+  committed under any other directory is outside both assertions until that directory is added to
+  the test's `INVENTORY_ROOTS` -- and a limit-shaped key fails the build *only when it makes a previously
   non-limit-bearing file limit-bearing* -- when it moves a file across the nineteen/eleven partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
