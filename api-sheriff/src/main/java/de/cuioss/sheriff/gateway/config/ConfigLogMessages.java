@@ -472,6 +472,35 @@ public final class ConfigLogMessages {
                 .identifier(129)
                 .template("JWKS key set for issuer '%s' not loaded — retrying in %s ms")
                 .build();
+
+        /**
+         * A token for an issuer whose key set is loaded names a key id that no key set the gateway
+         * holds for that issuer contains, so the token is rejected.
+         * <p>
+         * The usual cause is a signing-key change at the identity provider that the gateway has not
+         * picked up yet. For an {@code http} source the same event schedules one refresh of the key
+         * set, so tokens signed with the new key are accepted once that refresh has loaded it.
+         * <p>
+         * <strong>Rate-limited to one record per issuer per window.</strong> Any caller can present a
+         * token naming an arbitrary key id without holding a credential, so an unbounded record would
+         * hand that caller a log-amplification lever (ADR-0051). The record is therefore emitted only
+         * by the lookup that claims the issuer's {@code unknown_kid_refresh_window_seconds} window;
+         * every further unknown key id inside that window is logged at {@code DEBUG} only. An issuer
+         * whose refresh is disabled is limited by the default window of thirty seconds.
+         * <p>
+         * <strong>What the instant claims.</strong> It is the instant the gateway's own loader last
+         * observed a load of this issuer's key set succeed — the first load, a retry after a failed
+         * load, or an unknown-key-id refresh. The token library's background refresh replaces keys
+         * without the gateway observing it, so a recent background refresh is not reflected.
+         * <p>
+         * The template carries the configured issuer <em>name</em> and that instant only — never the
+         * JWKS URL, the key id the token named or any key material.
+         */
+        public static final LogRecord JWKS_UNKNOWN_KEY_ID = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(136)
+                .template("Token rejected for issuer '%s': it names a key id that is in no key set the gateway holds. The gateway last loaded this issuer's key set itself at %s; a background refresh by the token library is not reflected in that instant")
+                .build();
     }
 
     /**

@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Signature;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
@@ -964,6 +965,137 @@ class TokenValidatorProducerTest {
                     .egressTls(egressTls)
                     .build();
             return new TokenValidatorProducer(config, new JwksTrustProfileResolver(registry));
+        }
+    }
+
+    /**
+     * The three JWKS refresh keys, each asserted to <em>act</em> and not merely to parse: every case
+     * pairs a declaration with a matched control that differs only in the absence of that key, and the
+     * two report different effective values. Deleting the pass-through line a case covers in
+     * {@link TokenValidatorProducer} makes the declared leg report the control's value and turns that
+     * case red.
+     */
+    @Nested
+    @DisplayName("jwks refresh cadence — each key reaches the loader it configures")
+    class JwksRefreshCadence {
+
+        /** The token library's own defaults, which an omitted key must leave in effect. */
+        private static final int LIBRARY_REFRESH_INTERVAL_SECONDS = 600;
+        private static final Duration LIBRARY_KEY_ROTATION_GRACE_PERIOD = Duration.ofSeconds(300);
+
+        @Test
+        @DisplayName("refresh_interval_seconds is the library loader's refresh interval; omitted keeps 600")
+        void refreshIntervalReachesTheLibraryConfig() {
+            // Arrange
+            IssuerConfig.Jwks declaring = httpJwks().refreshIntervalSeconds(120).build();
+            IssuerConfig.Jwks omitting = httpJwks().build();
+
+            // Act
+            int declared = loaderConfigFor(declaring).getRefreshIntervalSeconds();
+            int control = loaderConfigFor(omitting).getRefreshIntervalSeconds();
+
+            // Assert
+            assertEquals(120, declared, "a declared refresh_interval_seconds must reach the library loader");
+            assertEquals(LIBRARY_REFRESH_INTERVAL_SECONDS, control,
+                    "an omitted refresh_interval_seconds must keep the library default");
+        }
+
+        @Test
+        @DisplayName("key_rotation_grace_period_seconds is the library loader's grace period; omitted keeps the default")
+        void gracePeriodReachesTheLibraryConfig() {
+            // Arrange
+            IssuerConfig.Jwks declaring = httpJwks().keyRotationGracePeriodSeconds(45).build();
+            IssuerConfig.Jwks omitting = httpJwks().build();
+
+            // Act
+            Duration declared = loaderConfigFor(declaring).getKeyRotationGracePeriod();
+            Duration control = loaderConfigFor(omitting).getKeyRotationGracePeriod();
+
+            // Assert
+            assertEquals(Duration.ofSeconds(45), declared,
+                    "a declared key_rotation_grace_period_seconds must reach the library loader");
+            assertEquals(LIBRARY_KEY_ROTATION_GRACE_PERIOD, control,
+                    "an omitted key_rotation_grace_period_seconds must keep the library default");
+        }
+
+        @Test
+        @DisplayName("a grace period of zero reaches the library loader as zero")
+        void zeroGracePeriodReachesTheLibraryConfig() {
+            // Arrange — the lower bound ConfigValidator admits must be a value the library accepts
+            IssuerConfig.Jwks declaring = httpJwks().keyRotationGracePeriodSeconds(0).build();
+
+            // Act
+            Duration declared = loaderConfigFor(declaring).getKeyRotationGracePeriod();
+
+            // Assert
+            assertEquals(Duration.ZERO, declared);
+        }
+
+        @Test
+        @DisplayName("unknown_kid_refresh_window_seconds is the gateway loader's window; omitted resolves to 30 s")
+        void windowReachesTheGatewayLoader() {
+            // Arrange
+            IssuerConfig declaring = httpIssuer(httpJwks().unknownKidRefreshWindowSeconds(7).build());
+            IssuerConfig omitting = httpIssuer(httpJwks().build());
+
+            // Act
+            try (RetryingJwksLoader declared = producerFor(declaring).toJwksLoader(declaring);
+                 RetryingJwksLoader control = producerFor(omitting).toJwksLoader(omitting)) {
+
+                // Assert
+                assertEquals(Duration.ofSeconds(7), declared.unknownKeyIdWindow(),
+                        "a declared unknown_kid_refresh_window_seconds must be the window the loader uses");
+                assertEquals(Duration.ofSeconds(30), control.unknownKeyIdWindow(),
+                        "an omitted unknown_kid_refresh_window_seconds must resolve to 30 seconds");
+            }
+        }
+
+        @Test
+        @DisplayName("the gateway loader retires a replaced key set after the library's effective grace period")
+        void gatewayLoaderUsesTheEffectiveGracePeriod() {
+            // Arrange
+            IssuerConfig declaring = httpIssuer(httpJwks().keyRotationGracePeriodSeconds(45).build());
+            IssuerConfig omitting = httpIssuer(httpJwks().build());
+
+            // Act
+            try (RetryingJwksLoader declared = producerFor(declaring).toJwksLoader(declaring);
+                 RetryingJwksLoader control = producerFor(omitting).toJwksLoader(omitting)) {
+
+                // Assert — read back from the built library config, so the two can never drift apart
+                assertEquals(Duration.ofSeconds(45), declared.keyRotationGracePeriod());
+                assertEquals(LIBRARY_KEY_ROTATION_GRACE_PERIOD, control.keyRotationGracePeriod());
+            }
+        }
+
+        @Test
+        @DisplayName("a file source disables the unknown-key-id refresh: zero window, zero grace period")
+        void fileSourceDisablesTheRefresh(@TempDir Path jwksDir) throws IOException {
+            // Arrange
+            Path jwks = Files.writeString(jwksDir.resolve("jwks.json"), InMemoryKeyMaterialHandler.createDefaultJwks());
+            IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER)
+                    .jwks(IssuerConfig.Jwks.builder().source("file").file(jwks.toString()).build())
+                    .build();
+
+            // Act
+            try (RetryingJwksLoader loader = producerFor(issuer).toJwksLoader(issuer)) {
+
+                // Assert
+                assertEquals(Duration.ZERO, loader.unknownKeyIdWindow());
+                assertEquals(Duration.ZERO, loader.keyRotationGracePeriod());
+            }
+        }
+
+        private static IssuerConfig.Jwks.JwksBuilder httpJwks() {
+            return IssuerConfig.Jwks.builder().source("http").url(JWKS_URL);
+        }
+
+        private static IssuerConfig httpIssuer(IssuerConfig.Jwks jwks) {
+            return IssuerConfig.builder().name("primary").issuer(ISSUER).jwks(jwks).build();
+        }
+
+        private static HttpJwksLoaderConfig loaderConfigFor(IssuerConfig.Jwks jwks) {
+            IssuerConfig issuer = httpIssuer(jwks);
+            return producerFor(issuer).toHttpJwksLoaderConfig(issuer, jwks);
         }
     }
 
