@@ -308,3 +308,27 @@ _Relocated 2026-10-06 by `cleanup` (operator-confirmed)._
     20261003.095107` (previous 20261002.131138), Central's snapshot metadata carries the same
     timestamp, and the "Not using credentials" warning is gone. cuioss-parent-pom and TokenSheriff
     are green on the same fix. The release path uses the same fix but has not run yet.
+
+## Open Defect 17 — post-merge benchmark red since #408 (resolved 2026-10-10 by #427)
+
+_Relocated 2026-10-12 by `cleanup`: the subject is closed and verified on `main`._
+
+17. **MEDIUM — NO OWNER — the post-merge benchmark has failed on every merge since #408** (added
+    2026-10-09, found at the `PLAN-V02-01` landing). Six consecutive runs, from #408 (`b7f937d3`, run
+    37846286183) to #417 (run 37933805532), fail in `run-k6-pending-login-flood-benchmark`:
+    `pending_login_flood.js` aborts in phase A because `https://api-sheriff:8443/auth/login` answers
+    `HTTP 404`. #408 changed `.github/workflows/benchmark.yml` and `benchmarks/pom.xml` and belongs
+    to no plan in this queue; the three `PLAN-V02-01` parts merged before it have green benchmark
+    runs. Why the login path is unmapped in the benchmark stack is not established. The lane does
+    not gate merges, so nothing blocked. **Seventh failure 2026-10-10 on #424**, same abort; that run
+    built and started the reworked `grpc-echo` image, so #424's benchmark-lane change works up to
+    this goal. Candidate homes: the plan behind #408, or `PLAN-V02-11`,
+    which owns the benchmark lane's purpose. While it is red, Open Defect 16 cannot be observed.
+    **RESOLVED 2026-10-10 by #427 (`2657be7c`).** Cause: the gateway serves its reserved login path only
+    for the host of `oidc.redirect_uri` (`localhost:10443` in the IT config), while k6 inside the compose
+    network sent `Host: api-sheriff`, so `/auth/login` fell through to the route table — the documented
+    reserved-path contract, not a gateway defect. The flood proves a capacity bound, not throughput, so it
+    left `-Pbenchmark` and became `BffPendingLoginBoundIT` in `-Pintegration-tests` (counts and
+    expectations unchanged); `pending_login_flood.js` and log record `K6Benchmark-7` are deleted; twelve
+    k6 goals remain. Verified: PR-attached benchmark run 38073671464 success; every push and merge-group
+    run on `2657be7c` success.
