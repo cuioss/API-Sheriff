@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *twenty-nine files* under `integration-tests/src/main/docker/`.
+The declared surface is *thirty files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -86,6 +86,11 @@ disk without touching this table and the guard fails.
 | `sheriff-config/topology.properties`
 | 1
 | Alias bindings only -- declares *no* limit-shaped key
+
+| `reserved-path-overlap/*.yaml`
+| 1
+| `reserved-path-overlap/auth-overlap.yaml` -- the endpoint BffReservedPathPrecedenceIT mounts in a
+  configuration directory of its own; no compose instance loads it
 |===
 // end::inventory[]
 
@@ -105,11 +110,16 @@ readiness gate would refuse it. It is a standalone, deliberately minimal documen
 beside exactly one shared endpoint file, `sheriff-config/endpoints/assets-secure.yaml`, and no
 `topology.properties`, so its route set is that single bearer-gated directory asset route.
 
-`reserved-path-overlap/auth-overlap.yaml` sits beside the surface, in a directory no gateway instance
-mounts, and declares `allowed_methods`. `BffReservedPathPrecedenceIT` copies it into a configuration
-directory it assembles and asserts that list on the wire: a `GET` on the routed path is refused
-`405`. `DescriptorInventoryWiringTest` sweeps the `sheriff-config*` directories only, so this file is
-outside its inventory by construction and is not counted in the twenty-nine.
+`reserved-path-overlap/auth-overlap.yaml` lives in a directory no compose instance mounts, because
+a shared endpoint on its new anchor would force that anchor into every committed `gateway.yaml`.
+`BffReservedPathPrecedenceIT` copies it into a configuration directory it assembles, beside a
+gateway document derived from `sheriff-config-passthrough-empty/gateway.yaml` with that one anchor
+added. It is part of the surface all the same: `DescriptorInventoryWiringTest` sweeps the
+`reserved-path-overlap` directory by name beside the `sheriff-config*` directories, so the file is
+counted in the thirty and held to the same exact-set rule as every other descriptor. It declares
+`allowed_methods`, which the sweep below matches, so it is limit-bearing; that list is asserted on
+the wire under the `allowed_methods` row of the Coverage Matrix -- a `GET` on the routed path is
+refused `405`.
 
 The sweep is a key-name pattern, applied to
 declared key names only -- never to raw file text, so the descriptors' extensive prose comments
@@ -119,7 +129,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all twenty-nine files it returns hits in exactly eighteen of them:
+Over all thirty files it returns hits in exactly nineteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -140,6 +150,7 @@ Over all twenty-nine files it returns hits in exactly eighteen of them:
 * `sheriff-config/endpoints/httpbin.yaml`
 * `sheriff-config/endpoints/secure.yaml`
 * `sheriff-config/endpoints/websocket.yaml`
+* `reserved-path-overlap/auth-overlap.yaml`
 // end::limit-bearing[]
 
 The remaining eleven -- `sheriff-config/endpoints/assets.yaml`,
@@ -149,7 +160,7 @@ The remaining eleven -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
 `sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` and `sheriff-config/topology.properties` -- declare none.
-That complement is the other half of the same claim, so asserting the eighteen exactly asserts both
+That complement is the other half of the same claim, so asserting the nineteen exactly asserts both
 halves at once.
 
 `sheriff-config/endpoints/bff-unassigned-scope.yaml` is limit-free for the same reason as
@@ -192,13 +203,13 @@ descriptor says.
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the eighteen limit-bearing paths -- and uses them
+runtime -- the inventory table, the sweep pattern and the nineteen limit-bearing paths -- and uses them
 as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-eighteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+nineteen. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -210,7 +221,8 @@ cite every line explicitly as `×4 -- base:N, cookie:N, mtls:N, ws:N`, where `ws
 the *base document only* and is inherited by the overlays as the omitted-key default. The
 `allowed_methods` row does not fit that reading: every `gateway.yaml` in the surface declares the
 key -- the nine overlays at the base's own values -- and the row cites the base document's five
-declarations rather than each document's. The documents described below that copy the base, or
+declarations rather than each document's, plus the one endpoint-level list the surface declares, in
+`reserved-path-overlap/auth-overlap.yaml`. The documents described below that copy the base, or
 stand alone, declare further base-cited keys; each paragraph says which.
 
 `sheriff-config-passthrough-empty/gateway.yaml` is deliberately *outside* that `×N` notation, and
@@ -487,10 +499,14 @@ declaration's *existence* is proven while its *boundary* is not.
 
 | `allowed_methods`
   `sheriff-config/gateway.yaml:20` (global), `:176` (graphql), `:181` (upload), `:210`
-  (assets-public), `:220` (assets-secure)
+  (assets-public), `:220` (assets-secure);
+  `reserved-path-overlap/auth-overlap.yaml:37` (endpoint, `["POST"]`)
 | Route selection / method gate
 | COVERED
-| `PipelineVerbIT` (405 plus four positive controls)
+| `PipelineVerbIT` (405 plus four positive controls); `BffReservedPathPrecedenceIT` for the
+  endpoint-level list -- a `GET` on the routed path below `/auth` is refused `405` naming `POST` as the
+  allowed verb, while the same `GET` on the reserved client JWKS path under that prefix is answered
+  `200` with the key set
 
 | `oidc.session.csrf.trusted_origins`
   `gateway.yaml` ×4 -- base:336, cookie:184, mtls:164, ws:139
@@ -886,11 +902,11 @@ enlarge exactly the hole this note has chosen to report.
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
 paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
-eighteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+nineteen paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
 *boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
 so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *eighteen already limit-bearing* files
+The consequence: adding a limit-shaped key to one of the *nineteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
 row is forced. Only a key that makes one of the remaining eleven --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
@@ -900,8 +916,8 @@ row is forced. Only a key that makes one of the remaining eleven --
 `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Eighteen of twenty-nine is the *majority* of the surface,
-so this is the ordinary case rather than an edge one: for those eighteen files the "add its row here
+Nineteen of thirty is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those nineteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
 `hsts.max_age` and the CORS allow lists are limit-shaped, the base file was already limit-bearing, and
@@ -929,14 +945,14 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (twenty-nine files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (thirty files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the eighteen limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the nineteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new descriptor directory or a new
   `endpoints/*.yaml` breaks the exact-inventory equality and fails the build until this note is
   updated, and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the eighteen/eleven partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the nineteen/eleven partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -945,7 +961,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the twenty-nine files, add its row here in the same change --
+When you add a limit-shaped key to any of the thirty files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
