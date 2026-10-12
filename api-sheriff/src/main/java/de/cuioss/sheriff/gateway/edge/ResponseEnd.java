@@ -24,9 +24,9 @@ import io.vertx.core.Future;
  * ends it to the edge instead of making that call itself.
  * <p>
  * The edge decides <em>when</em> the call runs. Usually that is at once. An HTTP/2 response answered
- * while its request body is still open is ended only once no request data can still be in flight, and
- * its stream is then reset (see {@code GatewayEdgeRoute.endResponse}); a writer cannot tell the two
- * apart and does not need to. {@link ResponseStage} and {@link GrpcStatusMapper} end every response
+ * while its request body is still open is ended only once request data stops arriving or a time cap
+ * passes, and its stream is then reset (see {@code GatewayEdgeRoute.endResponse}); a writer cannot tell
+ * the two apart and does not need to. {@link ResponseStage} and {@link GrpcStatusMapper} end every response
  * they write through this seam, so the relay and the trailers-only gRPC status pass the same rule as
  * every answer the edge writes itself.
  * <p>

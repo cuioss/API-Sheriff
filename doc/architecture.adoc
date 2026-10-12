@@ -377,13 +377,13 @@ link:security-threat-model.adoc#gw-02[GW-02] lists each clause, who enforces it 
 pins it.
 
 [[_http2_post_response_reset]]
-*An HTTP/2 response answered while the request body is still open is ended once no request data can
-still arrive, and its stream is then reset with `NO_ERROR`.* This is one rule for every response the
+*An HTTP/2 response answered while the request body is still open is ended once request data stops
+arriving or a time cap passes, and its stream is then reset with `NO_ERROR`.* This is one rule for every response the
 edge ends: a relayed response -- an upstream that answered before it read the whole body -- and every
 answer the gateway writes itself, the problem document, the HTML error page, the portal page, a
 reserved-path answer, an asset, a redirect, a short-circuit, the gRPC trailers-only status, a
 relay-failure answer and the admission `503` -- a framing rejection and a reserved-body `413` among
-them. The `NO_ERROR` reset (RFC 9113 §8.1.1) tells the client to stop sending, so it never has to
+them. The `NO_ERROR` reset (RFC 9113 §8.1) tells the client to stop sending, so it never has to
 reset the stream itself, and the connection and every other stream on it carry on. A stream whose
 body has already ended is ended normally and left alone. HTTP/1.x is unchanged -- no request there is
 reset, and a framing rejection or a reserved-body `413` retires the connection instead.
@@ -394,19 +394,21 @@ The rule runs in three steps, so the reset reaches the client neither too late n
 request body: the upstream request still receiving it is reset, so nothing more is forwarded, and the
 inbound stream is paused for good. A paused stream returns no flow-control window, so from then on
 the client can send no more than the window it already holds.
-. *The end waits until nothing more can arrive.* The final frame of the response -- the one carrying
-`END_STREAM` -- is held back until the client can send nothing more on the stream (the stream's or the
-connection's flow-control window is used up, or it has ended or lost the stream), or what it may send
-has not changed for 50 ms, or 1 s has passed, whichever comes first. A client that sees the complete
-response while it is still uploading resets
+. *The end waits until request data stops arriving.* The final frame of the response -- the one
+carrying `END_STREAM` -- is held back until the client can send nothing more on the stream (the
+stream's or the connection's flow-control window is used up, or it has ended or lost the stream), or
+what it may send has not changed for 50 ms, or 1 s has passed, whichever comes first. Only the first
+shows that no more request data can arrive; the 50 ms quiet period infers it from a client that is not
+sending, and the 1 s cap ends the wait even while request data may still be in flight. A client that
+sees the complete response while it is still uploading resets
 the stream itself, and the HTTP/2 transport counts the resets a client sends against its
 per-connection Rapid-Reset limit; a reset written while the client's data is still on the way is no
 better, because the transport answers each data frame arriving after it with a `STREAM_CLOSED` reset
-of its own and counts those against the same limit. Holding the end back until nothing is in flight
-avoids both. The wait is bounded by the 1 s cap; the three values are constants of the gateway, not
-configuration.
+of its own and counts those against the same limit. Holding the end back until the client has stopped
+sending avoids both, unless the 1 s cap ends the wait first. The three values are constants of the
+gateway, not configuration.
 . *The reset goes out right behind the end.* The end and the reset are written together, in the same
-step that found nothing more can arrive, so no window the gateway returns in between -- another
+step that let the end go ahead, so no window the gateway returns in between -- another
 stream on the connection reading its body -- can let the client send on this stream before the reset
 reaches it. Only when HTTP/2 flow control holds the final frame back does the reset wait until that
 frame has been written, since a reset written earlier would discard it. A stream the client has ended

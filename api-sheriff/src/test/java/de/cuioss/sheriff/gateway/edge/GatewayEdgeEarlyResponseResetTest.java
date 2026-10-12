@@ -92,8 +92,9 @@ import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * The one end rule of the edge, driven over a live Vert.x edge against a loopback stub upstream: an
- * HTTP/2 response answered while its request body is still open is ended once no request data can still
- * be in flight and is then followed by a {@code NO_ERROR} stream reset, and nothing else is.
+ * HTTP/2 response answered while its request body is still open is ended once request data stops
+ * arriving or a time cap passes and is then followed by a {@code NO_ERROR} stream reset, and nothing
+ * else is.
  * <p>
  * <strong>Why it matters.</strong> A client whose upload is answered before its body was sent — an
  * upstream that answers without reading the body, or any answer the gateway writes itself — is left
@@ -326,8 +327,8 @@ class GatewayEdgeEarlyResponseResetTest {
      * many more than the reset limit, over one connection. A reset written while their data is still on
      * the way would draw one {@code STREAM_CLOSED} reset from the transport per frame that arrives after
      * it, and the limit would close the connection with {@code GOAWAY ENHANCE_YOUR_CALM}. The gateway
-     * instead stops granting window, ends each response once nothing more can arrive and resets the
-     * stream then.
+     * instead stops granting window, ends each response once request data stops arriving or the time
+     * cap passes, and resets the stream then.
      */
     @Test
     @DisplayName("uploads still sending when answered early: each answered whole, then reset by the gateway; no GOAWAY")

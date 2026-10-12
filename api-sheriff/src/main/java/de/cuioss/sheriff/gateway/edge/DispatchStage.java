@@ -837,8 +837,8 @@ public final class DispatchStage {
      * stream and keeps it paused: every later {@link #resume()} or {@link #fetch(long)} — the forwarding
      * pipe's among them — is ignored. A paused HTTP/2 request returns no flow-control window to the
      * client, so from the mark on the client can send no more than the window it already holds; that
-     * is what lets the edge wait until no request data can still be in flight before it resets the
-     * stream.
+     * bound is what lets the edge's wait before the reset end once the client can send nothing more;
+     * failing that, the wait ends once request data stops arriving or a time cap passes.
      * <p>
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
      * registered from another thread; both go through the same monitor. The pause is pinned without
@@ -1133,7 +1133,8 @@ public final class DispatchStage {
         /**
          * The inbound stream ended. A body short of its declared length did not arrive whole: the
          * upstream request is aborted instead of being ended on a message shorter than its framing.
-         * After an abort the end is not passed on — the consumer has already been told the body failed.
+         * After an abort the end is not passed on — the consumer has already been told the body failed,
+         * or the gateway reset the stream itself.
          */
         private void onInboundEnd(@Nullable Void end) {
             if (abortReason.get() != null) {

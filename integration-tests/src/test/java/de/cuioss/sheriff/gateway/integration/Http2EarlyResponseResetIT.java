@@ -63,10 +63,11 @@ import org.junit.jupiter.api.Test;
  * A burst of perfectly ordinary early-answered uploads is enough to trip it either way.
  * <p>
  * <strong>What the gateway does instead.</strong> Once the answer is decided it stops reading the body
- * and stops granting flow-control window for it, holds the end of the response back until no request
- * data can still arrive (bounded), then ends it and resets the stream itself with {@code NO_ERROR}
- * (RFC 9113 §8.1.1): the client is told to stop sending, does not reset the stream on its own, and has
- * nothing in flight that would draw a {@code STREAM_CLOSED} reset.
+ * and stops granting flow-control window for it, holds the end of the response back until request data
+ * stops arriving or a time cap passes, then ends it and resets the stream itself with {@code NO_ERROR}
+ * (RFC 9113 §8.1): the client is told to stop sending and does not reset the stream on its own, and
+ * request data still in flight that would draw a {@code STREAM_CLOSED} reset is waited out, for no
+ * longer than the cap.
  * <p>
  * <strong>Why this client keeps sending.</strong> Every upload writes its body chunk after chunk, as
  * fast as flow control lets it, until its stream ends — so request data is in flight when the answer

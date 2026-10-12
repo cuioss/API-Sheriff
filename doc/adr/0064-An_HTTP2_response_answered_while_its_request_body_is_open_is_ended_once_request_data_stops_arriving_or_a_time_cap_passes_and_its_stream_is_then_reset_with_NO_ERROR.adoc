@@ -1,4 +1,4 @@
-= ADR-0064: An HTTP/2 response answered while its request body is open is ended once no request data can arrive and its stream is then reset with NO_ERROR
+= ADR-0064: An HTTP/2 response answered while its request body is open is ended once request data stops arriving or a time cap passes and its stream is then reset with NO_ERROR
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents
@@ -25,9 +25,10 @@ An HTTP/2 server may answer a request before it has read the request body. An up
 when it decides from the headers alone, and the gateway does it for every answer it writes itself to
 an upload: a problem document, an HTML error page, the portal page, a reserved-path answer, an asset,
 a redirect, a short-circuit, a gRPC trailers-only status and an admission `503`, a framing rejection
-and a reserved-body `413` among them. RFC 9113 §8.1.1 describes how such a stream should end: the
-server sends the complete response and then resets the stream with `NO_ERROR`, which tells the client
-to stop sending the rest of the request without signalling an error.
+and a reserved-body `413` among them. RFC 9113 §8.1 permits a server to end such a stream this way:
+when the response does not depend on the part of the request not yet received, the server may send the
+complete response and then reset the stream with `NO_ERROR`, which asks the client to stop sending the
+rest of the request without signalling an error.
 
 A stream left half-open after a complete response puts that decision on the client. A client that sees
 `END_STREAM` on a stream it is still uploading on typically resets that stream itself. Each such reset
@@ -54,9 +55,9 @@ response the edge ends, without touching the guard's limits.
 == Decision
 
 *Every response end on the edge passes one seam. An HTTP/2 response answered while its request body is
-still open stops reading the body at once, holds its final frame until no request data can still
-arrive, and then writes the end and a `NO_ERROR` stream reset together. Nothing else is reset, and the
-guard is left as it is.*
+still open stops reading the body at once, holds its final frame until the client can send nothing
+more, has stopped sending for a quiet period, or a hard time cap has passed, and then writes the end
+and a `NO_ERROR` stream reset together. Nothing else is reset, and the guard is left as it is.*
 
 === One seam for every response end
 
@@ -82,7 +83,7 @@ more is forwarded, and the inbound stream is paused for good. A paused HTTP/2 st
 flow-control window, so from that point the client can send no more than the window it already holds.
 That turns "is request data still on the way?" from an unknowable question into a bounded one.
 
-=== Step 2 -- the end waits until nothing more can arrive
+=== Step 2 -- the end waits until request data stops arriving
 
 The final frame of the response is held back until the first of three conditions:
 
@@ -91,6 +92,11 @@ The final frame of the response is held back until the first of three conditions
 . what the client may send has not changed for a short quiet period -- it is sending nothing although
   it could;
 . a hard time cap has passed since the wait began.
+
+Only the first condition shows that no more request data can arrive. The quiet period infers it from a
+client that is not sending, and the cap is a separate exit that ends the wait even while request data
+may still be on the way. A client that sends again after the quiet period, or is still sending when the
+cap passes, can meet the transport's `STREAM_CLOSED` resets for the frames that arrive after the reset.
 
 Both windows count, because every stream on a connection draws from the shared connection window: a
 stream whose own window is still open can send nothing once the connection window is exhausted, and
@@ -131,10 +137,12 @@ key is set or changed.
 
 === Positive
 
-* An early-answered HTTP/2 upload ends with one reset, written by the gateway, at a moment the client
-  has nothing left to send. Neither the client's resets nor the transport's own `STREAM_CLOSED` resets
-  accumulate against the Rapid-Reset limit, so a burst of early answers on one connection no longer
-  costs the connection and its sibling streams.
+* An early-answered HTTP/2 upload ends with one reset, written by the gateway, so the client's own
+  resets no longer accumulate against the Rapid-Reset limit. When the wait ends because the client can
+  send nothing more, no request data is left on the way and the transport writes no `STREAM_CLOSED`
+  resets either; the quiet period infers the same from a client that has stopped sending. A burst of
+  early answers on one connection then no longer costs the connection and its sibling streams. The
+  time cap gives no such assurance (see step 2 and Risks).
 * The guard keeps its limits and keeps meaning what it meant. The gateway stops producing traffic that
   looks like a flood instead of making the detector more tolerant of floods.
 * The rule is stated once and every writer passes it. Adding a writer cannot silently reintroduce a
@@ -235,4 +243,4 @@ signals that look like abuse, not to make the protection more tolerant of abuse.
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] -- the streaming, never-buffered body model the stop-at-once step relies on.
 * link:../architecture.adoc#_http2_post_response_reset[Architecture -- post-response reset] -- the one end rule, its three steps and the `INBOUND_BODY_ABORTED` boundary.
 * link:../security-threat-model.adoc[Threat Model] -- GW-08, the Rapid-Reset guard whose limits this decision leaves unchanged.
-* RFC 9113 §8.1.1 -- the complete-response-then-`NO_ERROR` stream end for a request body the server does not need.
+* RFC 9113 §8.1 -- permits a complete response followed by a `NO_ERROR` stream reset when the response does not depend on the rest of the request body.

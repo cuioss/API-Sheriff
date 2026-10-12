@@ -803,9 +803,9 @@ public class GatewayEdgeRoute {
      *       the next request on the same keep-alive connection.</li>
      *   <li><strong>HTTP/2 — the stream.</strong> The offending stream, its body still open, passes the
      *       one end rule (see {@link #endResponse}): the gateway stops receiving the body, and once
-     *       nothing more can arrive the {@code 413} is ended and the stream reset with
-     *       {@code NO_ERROR}. The connection and every other stream on it stay open. No
-     *       {@code Connection} header is written.</li>
+     *       its data stops arriving or the wait's time cap passes the {@code 413} is ended and the
+     *       stream reset with {@code NO_ERROR}. The connection and every other stream on it stay
+     *       open. No {@code Connection} header is written.</li>
      * </ul>
      */
     private void rejectOversizedReservedBody(RoutingContext ctx, long ceiling, String disposition) {
@@ -854,9 +854,9 @@ public class GatewayEdgeRoute {
 
     /**
      * The one rule every HTTP response end passes through: <strong>an HTTP/2 response answered while
-     * its request body is still open is ended only once no request data can still be in flight, and
-     * its stream is then reset with {@code NO_ERROR}</strong>; the connection stays open. Every writer
-     * that ends a response hands the call that ends it here instead of making it — the relay
+     * its request body is still open is ended only once request data stops arriving or a time cap
+     * passes, and its stream is then reset with {@code NO_ERROR}</strong>; the connection stays open.
+     * Every writer that ends a response hands the call that ends it here instead of making it — the relay
      * ({@link #relayOnEventLoop}, through the {@link ResponseEnd} it gives {@link ResponseStage}) and its
      * failure answer ({@link #failRelay}), the problem document, the HTML error page and the portal
      * page, the reserved-path answer, the buffered asset, the redirect, the short-circuit, the gRPC
@@ -869,8 +869,8 @@ public class GatewayEdgeRoute {
      *   <li><strong>HTTP/2, request body still open</strong> — an upstream that answered before reading
      *       the whole body, and every gateway-written answer to an upload, a framing rejection and a
      *       reserved-body {@code 413} among them. The gateway stops receiving the body at once; the end
-     *       of the response and the reset then follow together, once nothing more can arrive (see
-     *       {@link EarlyResponseEnd}).</li>
+     *       of the response and the reset then follow together, once request data stops arriving or
+     *       the time cap passes (see {@link EarlyResponseEnd}).</li>
      * </ul>
      * <p>
      * <strong>Stopping the body.</strong> The armed {@link DispatchStage.InboundBody} is marked
@@ -882,11 +882,12 @@ public class GatewayEdgeRoute {
      * the window it already holds.
      * <p>
      * <strong>Why the end waits for the data in flight.</strong> The reset tells the client to stop
-     * sending the rest of the request (RFC 9113 §8.1.1) before it sees a complete response and resets the
+     * sending the rest of the request (RFC 9113 §8.1) before it sees a complete response and resets the
      * stream itself — a client reset the Rapid-Reset guard counts. A reset written while request data is
      * still on the way would not help: the transport answers each data frame arriving after it with a
      * {@code STREAM_CLOSED} reset of its own, counted against the same limit. Holding the final frame
-     * back until no data can arrive closes both. The wait is bounded (see {@link EarlyResponseEnd}).
+     * back until request data stops arriving avoids both. The wait is capped, and at the cap request
+     * data may still be in flight (see {@link EarlyResponseEnd}).
      * <p>
      * <strong>The reset waits for the write, not for the end.</strong> A response is <em>ended</em> the
      * moment its last frame is handed to the transport, which may still hold that frame behind HTTP/2
@@ -1831,7 +1832,7 @@ public class GatewayEdgeRoute {
      * once the upstream response has been streamed, an HTTP/2 stream whose request body is still open —
      * an upstream that answered before reading the whole body — stops receiving that body, the
      * upstream request still receiving it is reset, and the end and a {@code NO_ERROR} reset follow
-     * once nothing more of the body can arrive. The relay's future completes after that.
+     * once the body stops arriving or the time cap passes. The relay's future completes after that.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
@@ -2107,8 +2108,8 @@ public class GatewayEdgeRoute {
      * Answers a request the edge refuses before or instead of processing it — the admission or
      * draining {@code 503}, an executor rejection, an exhausted WebSocket relay budget — with a bare
      * status. Called on the event loop; the end passes the one end rule ({@link #endResponse}), so an
-     * HTTP/2 upload refused here has its open stream reset with {@code NO_ERROR} once the answer has
-     * been written and nothing more of its body can arrive.
+     * HTTP/2 upload refused here has its open stream reset with {@code NO_ERROR} once its body stops
+     * arriving or the time cap passes and the answer has been written.
      */
     private static void reject(RoutingContext ctx, int status) {
         HttpServerResponse response = ctx.response();

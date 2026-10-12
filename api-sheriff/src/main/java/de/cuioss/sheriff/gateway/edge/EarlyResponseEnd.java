@@ -25,17 +25,18 @@ import io.vertx.core.Promise;
 import io.vertx.core.http.HttpServerRequest;
 
 /**
- * Ends an HTTP/2 response answered while its request body is still open: <strong>only once no request
- * data can still be in flight, and then followed by a stream reset</strong>.
+ * Ends an HTTP/2 response answered while its request body is still open: <strong>once request data stops
+ * arriving or a time cap passes, and then followed by a stream reset</strong>.
  * <p>
  * <strong>Why the end waits.</strong> The reset tells the client to stop sending the rest of the
- * request (RFC 9113 §8.1.1). It must come from the gateway and come first: a client that sees the
+ * request (RFC 9113 §8.1). It must come from the gateway and come first: a client that sees the
  * complete response on a stream it is still uploading on resets that stream itself, and enough client
  * resets on one connection trip the server's Rapid-Reset guard. But a reset written while the client
  * still has request data on the way is just as bad: each data frame that arrives after it is answered
  * by the transport with a {@code RST_STREAM(STREAM_CLOSED)}, and the transport counts its own resets
  * against the same limit. So the end of the response — its final frame, carrying {@code END_STREAM} —
- * and the reset go out together, at a moment no request data can still arrive.
+ * and the reset go out together, held back until request data has stopped arriving, for no longer than
+ * a time cap.
  * <p>
  * <strong>How that moment is found.</strong> The caller has already stopped reading the body and
  * returning flow-control window for it (see {@code DispatchStage.InboundBody#resetByGateway}), so the
@@ -46,10 +47,12 @@ import io.vertx.core.http.HttpServerRequest;
  *   <li>the client can send nothing more — the stream's or the connection's window is used up, or the
  *       client ended or lost the stream (see {@link InboundStreamWindow#sendableBytes()});</li>
  *   <li>what the client may send has not changed for {@value #QUIET_MILLIS} ms — it is sending nothing
- *       although it could, so nothing is on the way;</li>
+ *       although it could, which is taken to mean nothing is on the way;</li>
  *   <li>{@value #MAX_WAIT_MILLIS} ms have passed since the wait began, whatever the stream does.</li>
  * </ol>
- * The last bound caps how long any response can be held back. The three values are constants of the
+ * Only the first shows that no more request data can arrive; the quiet period infers it from a client
+ * that is not sending, and the cap ends the wait even while request data may still be in flight. The
+ * last bound caps how long any response can be held back. The three values are constants of the
  * gateway, not configuration.
  * <p>
  * <strong>The reset goes out right behind the end.</strong> The end and the reset are written in the
@@ -72,7 +75,7 @@ final class EarlyResponseEnd {
 
     /** How often the stream is looked at while the end waits. */
     static final long POLL_MILLIS = 10L;
-    /** How long an unmoved window means nothing is on the way. */
+    /** How long an unmoved window is taken to mean nothing is on the way. */
     static final long QUIET_MILLIS = 50L;
     /** The longest the end of a response is held back. */
     static final long MAX_WAIT_MILLIS = 1_000L;
@@ -81,9 +84,9 @@ final class EarlyResponseEnd {
     }
 
     /**
-     * Ends the response of {@code request} through {@code ending} once no request data can still be in
-     * flight on its stream, then runs {@code reset} when the stream is still open after that end was
-     * written.
+     * Ends the response of {@code request} through {@code ending} once request data has stopped
+     * arriving on its stream or the time cap has passed, then runs {@code reset} when the stream is
+     * still open after that end was written.
      *
      * @param request the HTTP/2 request whose body is still open and no longer read
      * @param ending  the call that ends the response, run exactly once
@@ -118,7 +121,8 @@ final class EarlyResponseEnd {
     }
 
     /**
-     * Decides, from successive looks at one stream, when no request data can still be in flight. Pure:
+     * Decides, from successive looks at one stream, when the end may go ahead: the client can send
+     * nothing more, has not changed what it may send for the quiet period, or the cap has passed. Pure:
      * it reads nothing but its arguments, so the rule is tested without a transport. Not thread-safe —
      * one instance serves one wait, confined to the stream's event loop.
      */
@@ -158,7 +162,7 @@ final class EarlyResponseEnd {
         }
     }
 
-    /** One wait: looks at the stream until it is quiet, then ends the response and decides the reset. */
+    /** One wait: looks at the stream until the end may go ahead, then ends the response and decides the reset. */
     private static final class Wait {
 
         private final InboundStreamWindow window;
