@@ -403,9 +403,13 @@ all pass in the same run, so the state is recorded here with the date of each ru
   `BffPendingLoginBoundIT`, in 76 seconds. The run was `verify -Pintegration-tests -pl
   integration-tests -am` on the developer build host, not in CI, on the sources that add the suite:
   285 tests, no failure, no error, none skipped.
-* *M-62 and M-64: no run of the lane is recorded here yet.* `BffUnboundTokenResponseIT` and the
-  pushed-request count of `BffRefreshScopeWireIT` are proven only once a run against the native image
-  is recorded in this list.
+* *M-62 and M-64, passed in a targeted run of the lane on 2026-10-12:* the three test methods of
+  `BffUnboundTokenResponseIT` (77 seconds) and the pushed-request count of `BffRefreshScopeWireIT`
+  (51 seconds). The run was `verify -Pintegration-tests -pl integration-tests -am` restricted with
+  `-Dit.test` to six suites on the developer build host, not in CI, on the sources that add the
+  suites: `BffUnboundTokenResponseIT`, `BffRefreshScopeWireIT`, `HtmlErrorPageIT`,
+  `JwksLateIdpReadinessIT`, `TlsPassthroughIT` and `UpstreamHostnameVerificationIT`, 20 tests, no
+  failure, no error, none skipped. It is a targeted run, not a full run of the lane.
 
 The full run before the one of 2026-10-07, on the same day, failed six tests in the suites of M-42, M-44, M-50,
 M-59 and M-60. None failed at an assertion about its property: each failed at the start of its rig,
