@@ -3674,6 +3674,11 @@ assembled at boot (SmallRye Fault Tolerance, programmatic -- ADR-0008): retry ap
 idempotent methods only (`idempotent_only` -- GET, HEAD, OPTIONS, PUT, DELETE; never POST or
 PATCH) *and* only while no request-body byte has been sent upstream.
 
+NOTE: today only `retry.enabled` takes effect. `connect_timeout_ms`, `read_timeout_ms`,
+`retry.max_attempts` and `retry.idempotent_only` are bound and validated but act on nothing: the
+guard uses fixed values. ADR-0064 records them as undecided
+(link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
+
 A route declares *no* circuit-breaker settings. The breaker in front of an upstream is the
 gateway's fixed policy
 (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):

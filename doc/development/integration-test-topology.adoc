@@ -659,9 +659,10 @@ a class that uses the rig out of the concurrent Failsafe execution: they run in 
 
 *What the stub serves.* The provider metadata document below the issuer, the key set on every
 `jwks.url` path the descriptor names, and the pushed-authorization-request, token and revocation
-endpoints. Tokens are signed with an RSA key generated when the rig starts, and by default every
-access token carries the thumbprint of the committed proof key as `cnf.jkt`, because the gateway
-refuses a token response that is not bound to its own proof key. `BffUnboundTokenResponseIT` scripts
+endpoints. Tokens are signed with an RSA key generated when the rig starts, and by default the access
+token of every token-endpoint answer carries the thumbprint of the committed proof key as `cnf.jkt`,
+because the gateway refuses a token response that is not bound to its own proof key. An access token
+the rig mints for a bearer route carries no `cnf` claim. `BffUnboundTokenResponseIT` scripts
 the other two bindings on purpose -- no `cnf` claim, and a `cnf.jkt` naming another committed key --
 to observe that refusal. The stub validates nothing. Its token endpoint
 refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
