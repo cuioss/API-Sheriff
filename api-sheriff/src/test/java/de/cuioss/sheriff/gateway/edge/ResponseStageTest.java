@@ -23,16 +23,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
@@ -384,6 +388,105 @@ class ResponseStageTest {
             Relayed answer = relayed(OWNING_NOTHING + relay);
 
             assertEquals(List.of(FIRST_LINE, OWNED_LINE, LAST_LINE), answer.headers().getAll(SET_COOKIE));
+        }
+    }
+
+    /**
+     * Both relays over a live origin whose body fails mid-stream: it writes one chunk and then drops
+     * the connection. A Vert.x pipe ends its destination when the source fails unless told not to, so
+     * a relay that left that default in place would end the client response itself — past the end
+     * rule, and before the caller's failure path could decide how the response ends. Neither relay may
+     * do that, and neither may ask the end rule to end a body that never completed.
+     */
+    @Nested
+    @DisplayName("an upstream body failing mid-stream leaves the client response to the caller on both relays")
+    class MidStreamFailure {
+
+        private static final String RELAY = "/relay";
+        private static final String WITH_TRAILERS = "/with-trailers";
+
+        private Vertx vertx;
+        private HttpClient client;
+        private HttpServer upstream;
+        private HttpServer front;
+        private Promise<Observation> observed;
+
+        /**
+         * What the front server saw once the relay future settled.
+         *
+         * @param relayFailed   whether the relay future failed
+         * @param responseEnded whether the client response had been ended by then
+         * @param endsRequested how often the relay handed an end to the end rule
+         */
+        private record Observation(boolean relayFailed, boolean responseEnded, int endsRequested) {
+        }
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            client = vertx.createHttpClient();
+            observed = Promise.promise();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(req -> req.response()
+                    .setChunked(true)
+                    .write("partial-")
+                    .onComplete(w -> req.connection().close()))
+                    .listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
+            int upstreamPort = upstream.actualPort();
+
+            ResponseStage stage = new ResponseStage(Set.of());
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> {
+                HttpServerResponse response = clientReq.response();
+                AtomicInteger endsRequested = new AtomicInteger();
+                ResponseEnd end = ending -> {
+                    endsRequested.incrementAndGet();
+                    return ending.get();
+                };
+                client.request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, "/")
+                        .compose(HttpClientRequest::send)
+                        .onSuccess(upResp -> relay(stage, clientReq.path(), upResp, response, end)
+                                .onComplete(relayed -> {
+                                    observed.tryComplete(new Observation(relayed.failed(), response.ended(),
+                                            endsRequested.get()));
+                                    if (!response.ended()) {
+                                        // Release the requesting client rather than leave it waiting.
+                                        response.reset();
+                                    }
+                                }))
+                        .onFailure(observed::tryFail);
+            }).listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(front.close(), "the relaying front server to close");
+            Awaits.teardown(upstream.close(), "the stub origin to close");
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        private static Future<Void> relay(ResponseStage stage, String path, HttpClientResponse upResp,
+                HttpServerResponse response, ResponseEnd end) {
+            return WITH_TRAILERS.equals(path)
+                    ? stage.relayWithTrailers(upResp, response, false, Map.of(), Map.of(), end)
+                    : stage.relay(upResp, response, false, null, Map.of(), Map.of(), end);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {RELAY, WITH_TRAILERS})
+        @DisplayName("the relay fails, the client response stays open and no end is requested")
+        void failedBodyLeavesTheResponseToTheCaller(String path) throws Exception {
+            // The requesting client's own outcome is the caller's to decide and is not asserted here.
+            client.request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, path)
+                    .compose(HttpClientRequest::send);
+
+            Observation seen = Awaits.connect(observed.future(), "the relay of " + path + " to settle");
+
+            assertAll("a body that failed mid-stream is not ended by the relay",
+                    () -> assertTrue(seen.relayFailed(), "the relay future reports the failed upstream body"),
+                    () -> assertFalse(seen.responseEnded(),
+                            "the client response is left open for the caller's failure path to end"),
+                    () -> assertEquals(0, seen.endsRequested(),
+                            "a truncated body is never handed to the end rule as a completed response"));
         }
     }
 

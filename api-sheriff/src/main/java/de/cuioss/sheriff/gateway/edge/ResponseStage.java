@@ -146,13 +146,15 @@ public final class ResponseStage {
 
     /**
      * Streams the upstream body to the client with the client response held open, then ends it
-     * through {@code end}. A failure of the stream fails the returned future; the pipe then ends the
-     * client response itself, so the client is never left waiting on a truncated body.
+     * through {@code end}. A failure of the stream fails the returned future and leaves the client
+     * response open: the pipe is told not to end it on either outcome, since a Vert.x pipe ends its
+     * destination on a failure by default, so the caller's failure path ends it through the same end
+     * rule instead.
      */
     private static Future<Void> pipeThenEnd(HttpClientResponse upstream, HttpServerResponse client,
             ResponseEnd end) {
         Promise<Void> relayed = Promise.promise();
-        upstream.pipe().endOnSuccess(false).to(client).onComplete(piped -> {
+        upstream.pipe().endOnComplete(false).to(client).onComplete(piped -> {
             if (piped.failed()) {
                 relayed.fail(piped.cause());
                 return;
