@@ -1,0 +1,238 @@
+= ADR-0064: An HTTP/2 response answered while its request body is open is ended once no request data can arrive and its stream is then reset with NO_ERROR
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Every response end on the edge passes one seam; an HTTP/2 response answered while its request body is still open stops reading the body at once (the upstream request is reset, the inbound stream paused so no flow-control window is returned), holds its final END_STREAM frame until the client can send nothing more, its window has been unchanged for a quiet period or a hard time cap has passed, and then writes the end and RST_STREAM(NO_ERROR) together in one event-loop turn; the gateway's own reset is marked on the inbound body and never recorded as INBOUND_BODY_ABORTED; HTTP/1.x, an ended body, the CANCEL late-body refusal, WebSocket and the L4 relay are unchanged; raising the reset limits, changing the upstream, per-writer marks, a reset straight after the write and a stream-window-only bound are rejected
+// tags: http2, edge, flow-control, stream-reset, rapid-reset, early-response, rfc9113, response-end, upload, abort-attribution, framework-seam
+// affects: api-sheriff
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+An HTTP/2 server may answer a request before it has read the request body. An upstream can do this
+when it decides from the headers alone, and the gateway does it for every answer it writes itself to
+an upload: a problem document, an HTML error page, the portal page, a reserved-path answer, an asset,
+a redirect, a short-circuit, a gRPC trailers-only status and an admission `503`, a framing rejection
+and a reserved-body `413` among them. RFC 9113 §8.1.1 describes how such a stream should end: the
+server sends the complete response and then resets the stream with `NO_ERROR`, which tells the client
+to stop sending the rest of the request without signalling an error.
+
+A stream left half-open after a complete response puts that decision on the client. A client that sees
+`END_STREAM` on a stream it is still uploading on typically resets that stream itself. Each such reset
+is a reset the client sent, and the HTTP/2 transport counts resets per connection against its
+Rapid-Reset limit. A burst of ordinary early-answered uploads on one connection is then indistinguishable
+from a reset flood: the connection is closed with `GOAWAY ENHANCE_YOUR_CALM`, and every sibling stream
+multiplexed on it fails with it.
+
+Resetting the stream from the gateway is necessary but does not settle the question on its own, because
+the moment of the reset matters in both directions:
+
+* *Too late* -- after the client has already seen the complete response -- and the client resets first.
+* *Too early* -- while request DATA frames the client has already sent are still on the way -- and the
+  transport answers every one of those frames with a `RST_STREAM(STREAM_CLOSED)` of its own. The
+  transport counts the resets it writes against the same per-connection limit, so the guard fires on
+  the server's own resets instead of the client's.
+* *Before the final frame has been written* -- when HTTP/2 flow control is still holding it back -- and
+  the reset discards the end of the response, so the client receives the status without the body.
+
+The question this record settles is therefore not "does the gateway reset an early-answered stream"
+but where the decision lives and at which moment the end and the reset are written, for every
+response the edge ends, without touching the guard's limits.
+
+== Decision
+
+*Every response end on the edge passes one seam. An HTTP/2 response answered while its request body is
+still open stops reading the body at once, holds its final frame until no request data can still
+arrive, and then writes the end and a `NO_ERROR` stream reset together. Nothing else is reset, and the
+guard is left as it is.*
+
+=== One seam for every response end
+
+A writer that has composed a response does not end it. It hands the call that ends it to the edge's
+response-end seam (`ResponseEnd`, applied by `GatewayEdgeRoute.endResponse`), and the edge decides
+when that call runs. The relay and the gRPC trailers-only status writer end their responses through
+the same seam as every answer the edge writes itself, so a new writer inherits the rule by using the
+seam rather than by remembering it. The decision has exactly two branches:
+
+* *HTTP/1.x, or a request body that has already ended* -- the response is ended at once and nothing
+  else happens. An HTTP/1.x request is never reset; where the bytes behind a rejected request cannot be
+  trusted, its connection is retired instead, as before.
+* *HTTP/2 with the request body still open* -- the three steps below.
+
+There is no per-case mark. A framing rejection and a reserved-body `413` are not special: they are
+early answers to an open body and pass the same branch.
+
+=== Step 1 -- the body is stopped at once
+
+As soon as the answer is decided, the gateway stops receiving the body. The armed inbound body is
+marked as reset by the gateway: the upstream request still receiving the body is reset, so nothing
+more is forwarded, and the inbound stream is paused for good. A paused HTTP/2 stream returns no
+flow-control window, so from that point the client can send no more than the window it already holds.
+That turns "is request data still on the way?" from an unknowable question into a bounded one.
+
+=== Step 2 -- the end waits until nothing more can arrive
+
+The final frame of the response is held back until the first of three conditions:
+
+. the client can send nothing more -- the smaller of the stream's and the connection's receive window
+  is used up, or the client has ended or lost the stream;
+. what the client may send has not changed for a short quiet period -- it is sending nothing although
+  it could;
+. a hard time cap has passed since the wait began.
+
+Both windows count, because every stream on a connection draws from the shared connection window: a
+stream whose own window is still open can send nothing once the connection window is exhausted, and
+the connection window can be refilled by the gateway reading a sibling stream. The cap bounds how long
+any response can be held back. The poll interval, the quiet period and the cap are constants of the
+gateway, not configuration.
+
+Vert.x exposes no per-stream flow-control state, so the windows are read from the Netty HTTP/2 codec
+underneath it (`InboundStreamWindow`), through exactly one Vert.x internal and otherwise public Netty
+API, read-only and on the connection's event loop. When that view cannot be attached, the seam ends
+the response at once and resets the stream once the end has been written.
+
+=== Step 3 -- the reset goes out right behind the end
+
+The end and the reset are written in the same event-loop turn as the look that allowed them, so
+nothing the gateway does in between -- another stream returning connection window -- can let the
+client send on this stream before the reset reaches it. Only when flow control holds the final frame
+back does the reset wait until that frame has been written, because a reset written earlier would
+discard it. A stream the client has ended in the meantime is complete and is not reset.
+
+=== The gateway's reset is the gateway's
+
+The mark set in step 1 lives in one place, the inbound body decorator (`DispatchStage.InboundBody`).
+It delivers one fixed gateway-reset cause to the body consumer and swallows any later transport
+failure of the same stream. The streaming body counter recognises that cause: it runs its abort action
+once -- the upstream request is reset -- but records no client abort. A gateway-made reset is
+therefore never counted, metered or logged as `INBOUND_BODY_ABORTED`; a client that drops its body
+before the response was decided still is, exactly as before.
+
+=== What the rule does not cover
+
+The late refusal of a body on a bodyless method stays a `CANCEL` reset taken before any end (see
+ADR-0060), because that response is deliberately not completed. The WebSocket upgrade and the L4
+passthrough relay are not HTTP/2 response ends and are untouched. No `quarkus.http.limits.rst-flood-*`
+key is set or changed.
+
+== Consequences
+
+=== Positive
+
+* An early-answered HTTP/2 upload ends with one reset, written by the gateway, at a moment the client
+  has nothing left to send. Neither the client's resets nor the transport's own `STREAM_CLOSED` resets
+  accumulate against the Rapid-Reset limit, so a burst of early answers on one connection no longer
+  costs the connection and its sibling streams.
+* The guard keeps its limits and keeps meaning what it meant. The gateway stops producing traffic that
+  looks like a flood instead of making the detector more tolerant of floods.
+* The rule is stated once and every writer passes it. Adding a writer cannot silently reintroduce a
+  half-open stream, and the marked special cases that used to carry the reset are gone.
+* The remaining request body is never forwarded to an upstream that has already answered, and the
+  stop is deterministic: it does not depend on how, or whether, the transport surfaces the gateway's
+  own reset to the inbound stream.
+* `INBOUND_BODY_ABORTED` keeps its meaning -- a client-caused abort -- and is not diluted by the
+  gateway's own resets.
+
+=== Negative
+
+* The final frame of an early answer on an open upload is delayed: by at most the quiet period for a
+  client that has stopped sending, and by at most the time cap for one that keeps sending into a window
+  it still holds. The delay applies only to that one case; every other response ends as it is written.
+* The transport view reaches one Vert.x internal. A Vert.x upgrade that changes it degrades the rule to
+  "end at once, reset after the write" rather than failing, which reintroduces the in-flight
+  `STREAM_CLOSED` resets for that build.
+* Resetting an HTTP/1.1 upstream request closes that upstream connection instead of returning it to
+  the pool. It is the wanted "stop forwarding", paid for with a new upstream connection per early
+  answer.
+* The response-end seam changes the contract of every writer: a writer no longer ends a response, it
+  hands over the call that does. The relay and the gRPC status writer carry that seam in their
+  signatures.
+
+=== Risks
+
+* *Reading one window only.* A simplification that bounds sendable bytes by the stream window alone
+  looks equivalent and is not: a sibling stream's connection-window update lets the client send on a
+  stream whose own window was judged quiet.
+* *Splitting the end from the reset.* Writing the reset in a later event-loop turn than the end -- for
+  instance by always waiting for the write future -- reopens the gap in which returned connection window
+  lets the client send before the reset arrives.
+* *Moving the reset back to the writers.* A per-writer reset, or a mark set only by selected paths,
+  reintroduces the half-open stream on every writer that forgets it.
+* *Treating the time cap as the normal exit.* The cap is a bound on delay, not a proof of quiescence; a
+  client that keeps sending past it may still meet transport resets. Tuning the cap down to shorten the
+  delay trades the property for latency.
+
+== Alternatives Considered
+
+*Raise or disable the Rapid-Reset limits.* Configure the transport's reset limits high enough that an
+upload burst no longer reaches them. Rejected because it weakens a connection-level protection for
+every client to accommodate a stream shape the gateway itself leaves behind. The defect is the
+half-open stream, not the limit, and a higher limit only moves the burst size at which the connection
+is lost.
+
+*Have the upstream read the body before answering.* Require or configure upstreams so they never answer
+early. Rejected because answering before the body is read is legitimate HTTP behaviour, and the gateway
+writes such answers itself on every refusal of an upload. The gateway has to end these streams
+correctly whatever the upstream does.
+
+*Keep reading the body to its end.* Drain or forward the remaining request body after the answer, so the
+client finishes its upload and the stream ends without a reset. Rejected because it forwards or
+consumes bytes the answer has already made pointless, for as long as the client takes to send them,
+and leaves the stream's lifetime under the client's control. A `NO_ERROR` reset is the protocol's own
+way of declining the rest of the body.
+
+*Reset only marked cases.* Keep a reset for selected rejections that set a mark on the request -- the
+framing rejection and the reserved-body `413` -- and leave every other answer alone. Rejected because
+the half-open stream arises from every answer to an open body, relayed or gateway-written, and a mark
+each writer must remember to set is exactly the per-copy rule that drifts.
+
+*Reset right after the end has been written.* End the response at once and reset the stream when the
+write completes. Rejected because the client may still have request data in flight at that moment,
+and each such frame draws a `STREAM_CLOSED` reset from the transport that counts against the same
+limit. It moves the trip from the client's resets to the server's own.
+
+*Bound by the stream window alone.* Wait until the stream's own window is used up or quiet. Rejected
+because the connection window is shared: once it is exhausted the stream's window says nothing, and
+when a sibling refills it the client can send on a stream already judged quiet.
+
+*Make the wait parameters configurable.* Expose the poll interval, quiet period and cap as operator
+keys. Rejected because they encode a protocol timing property, not a deployment choice: no operator
+decision makes a longer hold-back correct, and a configurable cap invites trading the property for
+latency per deployment.
+
+The rejected options either change the wrong component -- the guard, the upstream, the client's
+upload -- or place the reset at a moment the protocol does not make safe. The chosen design puts the
+decision at the one seam every response end passes, and times the reset by what the transport knows
+about the data still in flight rather than by when the gateway finished writing.
+
+== Generalisation
+
+When a protocol lets a server finish its answer while the peer is still sending, ending the exchange
+cleanly is a timing problem as much as a signalling one: the signal that tells the peer to stop must
+arrive after the peer has nothing left in flight and before the peer acts on the complete answer
+itself. The diagnostic question is: *what does the transport know about the data still on the way, and
+can the server make that amount bounded before it signals?* Withholding further credit makes it
+bounded; observing the remaining credit tells when it is exhausted; a hard cap keeps the wait finite.
+And when a protection counts signals per connection, the remedy for false trips is to stop emitting the
+signals that look like abuse, not to make the protection more tolerant of abuse.
+
+== References
+
+* link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060 -- Dispatch sends a bodyless method no body] -- the late body refusal whose `CANCEL` reset stays outside this rule.
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062 -- Platform mechanisms are preferred over hand-rolled equivalents] -- the transport view of the stream windows reaches below Vert.x because the platform exposes no per-stream flow-control state.
+* link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] -- the streaming, never-buffered body model the stop-at-once step relies on.
+* link:../architecture.adoc#_http2_post_response_reset[Architecture -- post-response reset] -- the one end rule, its three steps and the `INBOUND_BODY_ABORTED` boundary.
+* link:../security-threat-model.adoc[Threat Model] -- GW-08, the Rapid-Reset guard whose limits this decision leaves unchanged.
+* RFC 9113 §8.1.1 -- the complete-response-then-`NO_ERROR` stream end for a request body the server does not need.
