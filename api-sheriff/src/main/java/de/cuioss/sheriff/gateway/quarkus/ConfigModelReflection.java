@@ -105,7 +105,6 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         UpstreamConfig.class,
         UpstreamConfig.Retry.class,
         UpstreamConfig.NotModified.class,
-        UpstreamConfig.CircuitBreaker.class,
         AssetConfig.class,
         AssetConfig.Source.class,
         AssetDefaultsConfig.class,

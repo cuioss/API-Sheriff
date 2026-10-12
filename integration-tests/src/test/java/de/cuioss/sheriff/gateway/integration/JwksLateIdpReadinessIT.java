@@ -121,8 +121,12 @@ import org.junit.jupiter.api.Test;
 @Tag("sleep-bound")
 class JwksLateIdpReadinessIT {
 
-    /** The late provider's image — the same pinned nginx the compose stack's TLS fixtures run. */
-    private static final String PROXY_IMAGE = "nginx:1.27-alpine";
+    /**
+     * The late provider's image — the same digest-pinned nginx the compose stack's TLS fixtures run. It
+     * is read from {@link BffTlsRelaxationIT#PROXY_IMAGE} rather than restated, so the pin has one
+     * source in Java and cannot fall back to a mutable tag here while the other suites stay pinned.
+     */
+    private static final String PROXY_IMAGE = BffTlsRelaxationIT.PROXY_IMAGE;
 
     /**
      * The late provider's network alias, and the host the late issuer's {@code jwks.url} names. It is

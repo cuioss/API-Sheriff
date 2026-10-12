@@ -28,7 +28,8 @@ Two structural principles shape the layout:
 
 The model rests on a small set of adopted patterns:
 
-* *Endpoint-centric routes* with per-route timeout and circuit breaker.
+* *Endpoint-centric routes*, each dispatched behind the gateway's fixed upstream guard (timeout
+  and circuit breaker, link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
 * *Composable, bounded matchers* (path, method, host, header).
 * *Validated-then-immutable, atomic config.*
 * *Three-mode forward filtering* (positive-list, negative-list, or forward-all per dimension),
@@ -3668,12 +3669,24 @@ headers].
 
 `connect_timeout_ms` / `read_timeout_ms` are
 millisecond-precision options on the shared per-upstream-tuple data-plane client
-(link:adr/0008-data-plane-transport.adoc[ADR-0008]). `retry` and `circuit_breaker` map to the
-per-route resilience guard assembled at boot (SmallRye Fault Tolerance, programmatic --
-ADR-0008): retry applies to idempotent methods only (`idempotent_only` -- GET, HEAD, OPTIONS,
-PUT, DELETE; never POST or PATCH) *and* only while no request-body byte has been sent
-upstream; the breaker is stateless per node, opens after `failures` consecutive failures and
-half-opens after `reset_ms`
+(link:adr/0008-data-plane-transport.adoc[ADR-0008]). `retry` maps to the resilience guard
+assembled at boot (SmallRye Fault Tolerance, programmatic -- ADR-0008): retry applies to
+idempotent methods only (`idempotent_only` -- GET, HEAD, OPTIONS, PUT, DELETE; never POST or
+PATCH) *and* only while no request-body byte has been sent upstream.
+
+NOTE: today only `retry.enabled` takes effect. `connect_timeout_ms`, `read_timeout_ms`,
+`retry.max_attempts` and `retry.idempotent_only` are bound and validated but act on nothing: the
+guard uses fixed values.
+link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]
+records them as undecided.
+
+A route declares *no* circuit-breaker settings. The breaker in front of an upstream is the
+gateway's fixed policy
+(link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
+it judges a rolling window of the last 20 calls, opens when half or more of them failed, stays open
+for 5 seconds -- the `Retry-After` of the `503` it answers meanwhile -- and closes after two
+successful trial calls. Its state is per upstream target on each gateway node. An `upstream` block
+that declares `circuit_breaker` is refused at boot as an unknown key
 (see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
 written literally here -- only the alias-relative `path`.
 

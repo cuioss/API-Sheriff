@@ -45,12 +45,18 @@ import org.junit.jupiter.api.Test;
  * <em>against that note</em>.
  * <p>
  * The surface this guard covers is the one that note enumerates in its "The Enumerated Surface"
- * section: the tagged {@code inventory} block lists every committed file under the
- * {@code sheriff-config*} directories, and the tagged {@code limit-bearing} block lists the subset a
- * limit-shaped key sweep hits. Read the note for the current membership — this Javadoc deliberately
- * restates none of it. Both are load-bearing claims: every status row in the note is scoped to that
- * surface, so a descriptor the note never enumerated is not merely undocumented, it is
- * <em>invisible</em> to the whole coverage index.
+ * section: the tagged {@code inventory} block lists every committed file under the enumerated
+ * descriptor directories, and the tagged {@code limit-bearing} block lists the subset a limit-shaped
+ * key sweep hits. Read the note for the current membership — this Javadoc deliberately restates none
+ * of it. Both are load-bearing claims: every status row in the note is scoped to that surface, so a
+ * descriptor the note never enumerated is not merely undocumented, it is <em>invisible</em> to the
+ * whole coverage index.
+ * <p>
+ * <strong>The guard's reach is the enumerated directories, and only them.</strong> It walks the
+ * directories {@code INVENTORY_ROOTS} names below {@code src/main/docker} — the
+ * {@code sheriff-config*} directories and the {@code reserved-path-overlap} directory — and no other.
+ * A descriptor committed anywhere else under {@code src/main/docker} is outside both assertions; a new
+ * descriptor directory joins the surface by being added to that list and to the note together.
  * <p>
  * <strong>This guard owns no copy of either claim.</strong> It reads three AsciiDoc tagged blocks
  * out of the note at runtime — {@code inventory}, {@code limit-key-regex} and
@@ -83,6 +89,14 @@ class DescriptorInventoryWiringTest {
     private static final Path MODULE = Path.of(System.getProperty("user.dir"));
     private static final Path DOCKER = MODULE.resolve("src/main/docker");
 
+    /**
+     * The descriptor directories the inventory is walked from, as directory-name globs below
+     * {@link #DOCKER}. An enumerated list rather than one broad glob, so each root is a deliberate
+     * member of the surface — and each must match at least one directory, so a renamed or removed root
+     * fails loudly instead of silently shrinking the inventory.
+     */
+    private static final List<String> INVENTORY_ROOTS = List.of("sheriff-config*", "reserved-path-overlap");
+
     /** The note this guard derives from, relative to the repository root. */
     private static final String NOTE = "doc/development/declared-limit-assertion-coverage.adoc";
 
@@ -99,7 +113,7 @@ class DescriptorInventoryWiringTest {
     private static final Pattern MONOSPACE_SPAN = Pattern.compile("`([^`]+)`");
 
     @Test
-    @DisplayName("the committed descriptor inventory is exactly the surface the note enumerates")
+    @DisplayName("files under the enumerated descriptor directories are exactly the note's inventory block")
     void descriptorInventoryIsExactlyTheEnumeratedSurface() throws Exception {
         // Arrange — the note's own claim, parsed rather than transcribed
         Set<String> declared = declaredPaths(TAG_INVENTORY);
@@ -109,8 +123,8 @@ class DescriptorInventoryWiringTest {
 
         // Assert — exact equality, so an ADDED descriptor fails just as loudly as a removed one.
         // A floor would let a new overlay directory or a new endpoints/*.yaml slip in unrecorded.
-        assertEquals(declared, committed, "the committed descriptor inventory under " + DOCKER
-                + " no longer matches the surface enumerated in " + note()
+        assertEquals(declared, committed, "the files committed under the descriptor directories "
+                + INVENTORY_ROOTS + " of " + DOCKER + " no longer match the surface enumerated in " + note()
                 + ". Every status row in that note is scoped to this surface, so a descriptor it does"
                 + " not enumerate is invisible to the whole coverage index — add or remove the row in"
                 + " the same change that adds or removes the file. This guard reads its expectation"
@@ -119,7 +133,7 @@ class DescriptorInventoryWiringTest {
     }
 
     @Test
-    @DisplayName("no limit-shaped key lives outside the surfaces the note records as declaring one")
+    @DisplayName("in the enumerated descriptor directories, exactly the note's limit-bearing files declare a limit-shaped key")
     void limitShapedKeysLiveOnlyInTheRecordedSurfaces() throws Exception {
         // Arrange — both the sweep and the expected partition come from the note
         Pattern sweep = declaredLimitShapedKeyPattern();
@@ -145,7 +159,7 @@ class DescriptorInventoryWiringTest {
     }
 
     @Test
-    @DisplayName("the note's three marked blocks are present, non-empty and mutually consistent")
+    @DisplayName("the note's marked blocks are present and non-empty, and each limit-bearing path is an inventory path")
     void theDerivationFromTheNoteIsNotVacuous() throws Exception {
         // Arrange + Act — each accessor fails loudly on an absent note, a missing or unterminated
         // marker, an empty block, or a block that yields nothing usable
@@ -263,10 +277,10 @@ class DescriptorInventoryWiringTest {
     }
 
     /**
-     * Every committed file under a {@code sheriff-config*} directory, as slash-separated paths
-     * relative to the docker directory. The walk is recursive and unfiltered on purpose — filtering
-     * by extension would hide exactly the kind of unrecorded companion file this guard exists to
-     * catch.
+     * Every committed file under the directories {@link #INVENTORY_ROOTS} names, as slash-separated
+     * paths relative to the docker directory. The walk is recursive and unfiltered on purpose —
+     * filtering by extension would hide exactly the kind of unrecorded companion file this guard
+     * exists to catch.
      *
      * @return the committed inventory, sorted for a readable assertion diff
      * @throws IOException when the docker tree cannot be listed
@@ -274,14 +288,21 @@ class DescriptorInventoryWiringTest {
     private static Set<String> committedInventory() throws IOException {
         Set<String> inventory = new TreeSet<>();
         List<Path> roots = new ArrayList<>();
-        try (DirectoryStream<Path> directories = Files.newDirectoryStream(DOCKER, "sheriff-config*")) {
-            for (Path directory : directories) {
-                roots.add(directory);
+        for (String rootGlob : INVENTORY_ROOTS) {
+            List<Path> matched = new ArrayList<>();
+            try (DirectoryStream<Path> directories = Files.newDirectoryStream(DOCKER, rootGlob)) {
+                for (Path directory : directories) {
+                    if (Files.isDirectory(directory)) {
+                        matched.add(directory);
+                    }
+                }
             }
+            assertFalse(matched.isEmpty(), "no directory matching '" + rootGlob + "' was found under "
+                    + DOCKER + " — this inventory root would contribute nothing and its files would"
+                    + " silently leave the surface; check the module working directory, or update"
+                    + " INVENTORY_ROOTS and " + NOTE + " together");
+            roots.addAll(matched);
         }
-        assertFalse(roots.isEmpty(), "no sheriff-config* directory was found under " + DOCKER
-                + " — this guard would compare against an empty inventory; check the module working"
-                + " directory and the glob");
         for (Path root : roots) {
             try (var walk = Files.walk(root)) {
                 walk.filter(Files::isRegularFile)
