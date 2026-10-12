@@ -106,8 +106,10 @@ import org.junit.jupiter.params.provider.EnumSource;
  * {@link #uploadsStillSendingWhenAnsweredStayOnOneConnection} drives.
  * <p>
  * <strong>What the stub upstream does.</strong> A request to a path under {@value #EARLY} is answered
- * at once, before its body is read; one under {@value #HELD} is received and never answered; every
- * other request is answered {@code ok} once its body has ended. It records every request it saw, and
+ * at once, before its body is read; one under {@value #PARTIAL} is answered at once with the first
+ * chunk of a body that never ends, and its connection is then dropped, so the upstream body fails
+ * mid-stream; one under {@value #HELD} is received and never answered; every other request is
+ * answered {@code ok} once its body has ended. It records every request it saw, and
  * whether that request's body ended or failed — a failed body is how the upstream observes the gateway
  * resetting the upstream request, i.e. forwarding being stopped.
  * <p>
@@ -123,6 +125,11 @@ class GatewayEdgeEarlyResponseResetTest {
 
     /** The upstream path prefix the stub answers at once, before reading the request body. */
     private static final String EARLY = "/early";
+    /**
+     * The upstream path prefix the stub answers at once, before reading the request body, with one
+     * chunk of a body whose connection is then dropped.
+     */
+    private static final String PARTIAL = "/partial";
     /** The upstream path prefix the stub receives and never answers. */
     private static final String HELD = "/held";
     /** The route every proxied request of this fixture takes; the prefix is stripped upstream. */
@@ -161,6 +168,10 @@ class GatewayEdgeEarlyResponseResetTest {
     private int frontPort;
     /** The body the stub upstream answers an early request with. */
     private String earlyAnswer;
+    /** The one chunk of its body the stub upstream sends a partial request before failing it. */
+    private String partialChunk;
+    /** The stub upstream's connection of a partial request, once its one chunk has been written. */
+    private final CompletableFuture<HttpConnection> partialUpstreamConnection = new CompletableFuture<>();
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
     private final List<HttpServer> frontServers = new CopyOnWriteArrayList<>();
     private final List<HttpClient> httpClients = new CopyOnWriteArrayList<>();
@@ -177,6 +188,7 @@ class GatewayEdgeEarlyResponseResetTest {
         vertx = Vertx.vertx();
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         earlyAnswer = Generators.letterStrings(16, 32).next();
+        partialChunk = Generators.letterStrings(16, 32).next();
         upstreamServer = Awaits.connect(vertx.createHttpServer().requestHandler(this::handleUpstreamRequest)
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         frontPort = startEdge(new EdgeHardeningOptions());
@@ -201,6 +213,7 @@ class GatewayEdgeEarlyResponseResetTest {
         String label = request.method() + " " + request.path();
         boolean early = request.path().startsWith(EARLY);
         boolean held = request.path().startsWith(HELD);
+        boolean partial = request.path().startsWith(PARTIAL);
         upstreamStarted.add(label);
         AtomicBoolean settled = new AtomicBoolean();
         request.handler(chunk -> {
@@ -214,13 +227,16 @@ class GatewayEdgeEarlyResponseResetTest {
         request.endHandler(end -> {
             if (settled.compareAndSet(false, true)) {
                 upstreamCompleted.add(label);
-                if (!early && !held) {
+                if (!early && !held && !partial) {
                     request.response().end("ok");
                 }
             }
         });
         if (early) {
             request.response().end(earlyAnswer);
+        } else if (partial) {
+            request.response().setChunked(true).write(partialChunk)
+                    .onSuccess(written -> partialUpstreamConnection.complete(request.connection()));
         }
     }
 
@@ -257,6 +273,47 @@ class GatewayEdgeEarlyResponseResetTest {
                 () -> assertEquals(200, siblingAnswer.response().statusCode(), "the sibling stream completes"),
                 () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
                 () -> assertSame(connection, upload.request().connection()),
+                () -> assertSame(connection, after.connection(), "the further stream reuses the connection"),
+                () -> assertFalse(connectionLost.get(), "the connection must neither close nor receive GOAWAY"),
+                () -> assertEquals(0.0, errorCount(INBOUND_BODY_ABORTED),
+                        "the gateway's own reset is never metered as an aborted inbound body"),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, INBOUND_BODY_ABORTED_RECORD));
+    }
+
+    /**
+     * A relay that fails mid-stream, after the response head has been written, on an upload whose body
+     * is still open. The relay leaves the truncated response to its failure path, which ends it through
+     * the one end rule like every other response end: the client receives the end of the head-written
+     * {@code 200} and then the gateway's {@code NO_ERROR} reset, never a reset of its own, and the
+     * connection carries on. The upstream connection is dropped only once the client has received the
+     * head, so the failure is a mid-stream one and not a relay that failed to start.
+     */
+    @Test
+    @DisplayName("an upstream body failing mid-stream on an open HTTP/2 upload: the 200 ends, then a NO_ERROR reset")
+    void midStreamRelayFailureIsEndedThroughTheEndRule() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        Upload upload = startUpload(http2Client, frontPort, "POST", "/up" + PARTIAL + "-upload", Map.of());
+        HttpConnection connection = upload.request().connection();
+        AtomicBoolean connectionLost = new AtomicBoolean();
+        connection.closeHandler(closed -> connectionLost.set(true));
+        connection.goAwayHandler(goAway -> connectionLost.set(true));
+        Future<Answer> truncated = answerOf(upload.request());
+
+        Awaits.connect(upload.request().response(), "the relayed response head to arrive");
+        HttpConnection upstreamConnection = Awaits.connect(partialUpstreamConnection,
+                "the upstream to write the first chunk of its body");
+        Awaits.connect(upstreamConnection.close(), "the upstream to drop its connection mid-body");
+        Answer answer = Awaits.connect(truncated, "the truncated response to end");
+        Throwable streamEnd = Awaits.connect(upload.streamEnd(), "the edge to reset the open upload stream");
+        Answer after = sendAfter(http2Client, frontPort);
+
+        assertAll("a relay failing mid-stream on an open HTTP/2 upload",
+                () -> assertEquals(200, answer.response().statusCode(),
+                        "the head the relay wrote before the failure stands"),
+                () -> assertEquals(partialChunk, answer.body(), "the body relayed before the failure arrives"),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
+                        "the stream must be reset by the gateway with NO_ERROR"),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream is served"),
                 () -> assertSame(connection, after.connection(), "the further stream reuses the connection"),
                 () -> assertFalse(connectionLost.get(), "the connection must neither close nor receive GOAWAY"),
                 () -> assertEquals(0.0, errorCount(INBOUND_BODY_ABORTED),
