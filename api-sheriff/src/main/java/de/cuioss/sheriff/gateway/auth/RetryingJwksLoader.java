@@ -147,7 +147,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      *                     exactly when {@code retired} is
      */
     private record Snapshot(JwksLoader delegate, KeySetState state, @Nullable JwksLoader retired,
-            @Nullable Instant retiredUntil) {
+    @Nullable Instant retiredUntil) {
 
         /** The same snapshot with {@code state} for {@code delegate}; a retired delegate is kept. */
         Snapshot with(JwksLoader delegate, KeySetState state) {

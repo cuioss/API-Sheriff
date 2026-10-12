@@ -1069,7 +1069,7 @@ class TokenValidatorProducerTest {
 
         @Test
         @DisplayName("a file source disables the unknown-key-id refresh: zero window, zero grace period")
-        void fileSourceDisablesTheRefresh(@TempDir Path jwksDir) throws IOException {
+        void fileSourceDisablesTheRefresh(@TempDir Path jwksDir) throws Exception {
             // Arrange
             Path jwks = Files.writeString(jwksDir.resolve("jwks.json"), InMemoryKeyMaterialHandler.createDefaultJwks());
             IssuerConfig issuer = IssuerConfig.builder().name("primary").issuer(ISSUER)

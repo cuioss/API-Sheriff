@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.logging.LogRecord;
 
 import de.cuioss.http.client.adapter.RetryConfig;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
@@ -213,7 +214,7 @@ class RetryingJwksLoaderTest {
         return TestLoggerFactory.getTestHandler()
                 .resolveLogMessagesContaining(TestLogLevel.WARN, WARN_UNKNOWN_KEY_ID)
                 .stream()
-                .map(java.util.logging.LogRecord::getMessage)
+                .map(LogRecord::getMessage)
                 .toList();
     }
 
