@@ -245,8 +245,21 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         this.maxRetryDelay = refreshInterval.isPositive() && refreshInterval.compareTo(MAX_RETRY_DELAY) < 0
                 ? refreshInterval
                 : MAX_RETRY_DELAY;
-        JwksLoader first = Objects.requireNonNull(delegateFactory.get(), "delegate");
+        JwksLoader first = buildDelegate(delegateFactory);
         this.snapshot = new AtomicReference<>(new Snapshot(first, KeySetState.NOT_LOADED, null, null));
+    }
+
+    /**
+     * Builds one fresh delegate. Static, and handed the factory, so the constructor can call it before
+     * the instance is complete.
+     *
+     * @param delegateFactory the factory to build the delegate with
+     * @return the fresh delegate, never {@code null}
+     * @throws NullPointerException if the factory yields {@code null}; whatever the factory itself
+     *                              throws is propagated unchanged
+     */
+    private static JwksLoader buildDelegate(Supplier<JwksLoader> delegateFactory) {
+        return Objects.requireNonNull(delegateFactory.get(), "delegate");
     }
 
     /**
@@ -357,7 +370,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         }
         JwksLoader fresh;
         try {
-            fresh = Objects.requireNonNull(delegateFactory.get(), "delegate");
+            fresh = buildDelegate(delegateFactory);
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
             // The factory refused: the gateway's own loader-config assembly (url, tls_profile
             // resolution) reports GatewayException, the library's config builder and loader
@@ -379,7 +392,9 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
 
     /**
      * Handles a lookup no held key set could answer while a key set is loaded: claims the issuer's
-     * window, and on a successful claim reports the unknown key id once and schedules one refresh.
+     * window, and on a successful claim reports the unknown key id once. That claim also schedules one
+     * refresh, but only when the refresh is enabled and no refresh is still in flight: a claim made
+     * while one is in flight logs its record and schedules nothing.
      * <p>
      * The claim is made here, when the lookup arrives, and not when a refresh completes, so the bound
      * of one refresh per window holds whatever the fetch outcome. Runs on the calling request thread
@@ -429,7 +444,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             if (closed.get() || counter == null) {
                 return;
             }
-            fresh = Objects.requireNonNull(delegateFactory.get(), "delegate");
+            fresh = buildDelegate(delegateFactory);
             JwksLoader loading = fresh;
             loadingRefresh.set(loading);
             loading.initJWKSLoader(counter)
