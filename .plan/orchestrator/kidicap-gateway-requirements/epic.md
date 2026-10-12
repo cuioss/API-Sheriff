@@ -45,12 +45,13 @@ decision.
 
 <!-- ANNOTATION ZONE — hand-written, and deliberately OUTSIDE the generated table markers. -->
 
-- **PLAN-24 — launched 2026-10-12, not confirmed running.** Runs alone in practice: every other staged
-  spec overlaps it. Carries the test-harness rules PLAN-25 introduced (fixed all-interface ports, the
-  contract-tested port table, the retired dead ports).
-- **PLAN-27 (staged 2026-10-12, WS-02) — IT evidence, round two.** Tests and records. Needs PLAN-25's
-  stub identity provider, which is on `main`. Sequence it after PLAN-24: both add suites to the native
-  integration job, and two plans doing that at once is exactly what exceeded the job limit last time.
+- PLAN-24 — shipped #430. Ran alone; nothing collided.
+- **PLAN-27 — launched 2026-10-12, not confirmed running.** Re-grounded at c013781d the same day: M-64
+  is already pinned by `BffRefreshScopeWireIT`, so the plan is four live deliverables and one assertion.
+  Adds one suite (M-62) to the native integration job.
+- **PLAN-28 (staged 2026-10-12, WS-01) — PLAN-24's follow-ups.** Small. Shares `doc/adr/`,
+  `doc/configuration.adoc` and the threat model with PLAN-27, PLAN-26, PLAN-20 and PLAN-21, so it is
+  sequenced, not paired, despite touching main source nobody else does. Adds no integration suite.
 - PLAN-25 — shipped #408. The pairing note below ("pairs with anything") held for files and failed for
   the CI job's wall-clock.
 - **Flow is sequential in practice.** Every staged pair overlaps on `doc/configuration.adoc`, the schemas
@@ -112,6 +113,40 @@ decision.
   `landings/`.
 
 ## Decisions
+
+- 2026-10-12 — **PLAN-24 shipped** as PR #430 / c013781d (bounded single-flight JWKS refresh on an
+  unknown key id, three new `jwks` keys, a rate-limited WARN, `JwksKeyRotationIT`, ADR-0063; 4/4 plan
+  deliverables; 6h56m wall, 7.8M tokens). Landing record: `landings/PLAN-24.md`; `landing-check` reports
+  it complete. Corroborated against `ci pr view 430`, the commit being the tip of `origin/main`, and
+  `ci checks status` (35 checks, success, **post-merge benchmark green**, run 38268812353).
+  - **The publish rule is an approximation, shipped by operator decision.** A refreshed key set is
+    published only when it holds the key id that triggered the refresh, because token-sheriff 0.9.6
+    cannot list a key set's key ids. Invented key ids can delay pick-up of a genuine rotation until the
+    background refresh; no invalid token is accepted. The upstream accessor request is owed and unfiled.
+  - Declared surface 16 entries, realized 22 files (8 undeclared, 4 untouched): 1.4x, against 3x to 5x
+    for the earlier landings measured. The first measurement taken after a same-day re-grounding of the spec.
+- 2026-10-12 — **Drain 4: 15 messages, 15 archived, 0 invalid.** One landing reconciled. 13 candidate
+  lessons PROMOTED (`2026-10-12-16-001` to `-013`: eight for plan-marshall components, filed with
+  `--allow-foreign-store`; five for this project — messages 004 and 005 under `documentation`, 006, 009
+  and 011 under `api-sheriff`, because the store refuses the `api-sheriff:<area>` components the sender
+  wrote). None duplicates a lesson already in the store. Message 012 (`runRetry` lacks the guard
+  `runRefresh` got) STAGED as PLAN-28.
+- 2026-10-12 — **PLAN-28 staged** (WS-01, 6 deliverables): the `runRetry` guard, a log record on an
+  unanticipated `runRefresh` failure, the wall-clock decision, the documentation rows PLAN-24 did not
+  check, three simplify leftovers, and the diagnosis of the flaky `GatewayEdgeFramingCorpusTest`. One
+  production change, in `auth/`; no other staged spec touches `RetryingJwksLoader`.
+- 2026-10-12 — **PLAN-27 re-grounded at c013781d for its emit; one deliverable is already done.** All
+  nine claims stamped. Its M-64 hypothesis is CONTRADICTED: `BffRefreshScopeWireIT` already drives the
+  scope-driven refresh through the gateway on the stub. Deliverable 2 shrinks to one added assertion (no
+  authorization request is made) plus naming the test as the evidence. The nginx hypothesis is also
+  contradicted for the one file named; the remaining tag-only references are located and
+  `integration-tests/docker-compose.yml` joins the declared surface (11 → 12 entries).
+- 2026-10-12 — Fold, adding no file surface: PLAN-26's next-free ADR ordinal hint corrected to 0064
+  (0063 is PLAN-24's ADR).
+- 2026-10-12 — **PLAN-27 emitted and marked launched** (`auto_emit`), after the ledger landed so the
+  re-grounded spec is the one on `main`. In-flight set empty: no live plan directory, and no sibling
+  epic row on `origin/main` is launched or running. Second slot left EMPTY: PLAN-28 overlaps PLAN-27 on
+  `doc/adr/` and PLAN-26 on `doc/adr/`, and the WS-04 verdicts are stale.
 
 - 2026-10-12 — **PLAN-25 shipped** as PR #408 / b7f937d3 (the ten downstream-documented properties at
   IT level; 11/11 plan deliverables; 35h01m wall, 11.7M tokens). Landing record: `landings/PLAN-25.md`.
@@ -306,6 +341,14 @@ decision.
 
 > ↪ Relocated to `settled.md` § "PLAN-15 follow-ups filed as issues" — all seven are filed as #323-#329
 
+- **`RetryingJwksLoader.runRetry` has no guard against an unanticipated throwable.** `runRefresh`
+  releases its state in `finally` since #430; `runRetry` catches three exception types and nothing else
+  (read at c013781d). The consequence was not analysed by PLAN-24. Staged as PLAN-28 deliverable 1. —
+  source: inbox `jwks-unknown-kid-refresh-012.md`, `landings/PLAN-24.md`
+- **`GatewayEdgeFramingCorpusTest` is flaky and undiagnosed.** Two failures in two methods during
+  PLAN-24 (a `502` on Java 26 in CI, a 30 s timeout locally), both green on re-run, on a branch that
+  touches nothing under `gateway/edge`. It guards request framing, so re-running until green can hide a
+  regression. Staged as PLAN-28 deliverable 6. — source: lesson `2026-10-12-16-012`
 - **A configuration key that parses and does not act: `circuit_breaker.reset_ms`.** The breaker uses a
   fixed 5 s delay and never reads the per-route value (stated in PR #408's body, not re-traced by the
   orchestrator); `doc/architecture.adoc` still says in one passage that the breaker "half-opens after
@@ -480,6 +523,14 @@ decision.
 
 ## Watches
 
+- **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids.** OWED BY
+  THE OPERATOR: file the accessor request against token-sheriff (nobody has). When a release carries it,
+  stage the switch to the exact rule in `RetryingJwksLoader` and the removal of the residual from
+  ADR-0063 and threat-model GW-07. — trigger: every token-sheriff version bump; source:
+  `landings/PLAN-24.md`, lesson `2026-10-12-16-013`
+- **A same-day re-grounding seems to tighten the declared surface.** PLAN-24 realized 1.4x its
+  declaration; the earlier measurements ran roughly 3x to 5x. One data point. — trigger: PLAN-27's landing,
+  the next plan emitted straight after a re-grounding; source: `landings/PLAN-24.md`
 - **Two plans that each add integration suites collide on the native integration job's wall-clock, even
   with disjoint files.** PLAN-25 and PLAN-V02-01 were each green alone; combined they hit the job's
   35-minute limit (raised to 60 in #408, cycle shortened by #424). The disjointness gate cannot see this.

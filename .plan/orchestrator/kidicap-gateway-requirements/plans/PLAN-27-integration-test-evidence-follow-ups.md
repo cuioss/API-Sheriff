@@ -42,6 +42,24 @@ PLAN-25's landing residue and PR #408's "Known Open Items" supply deliverables 3
 
 ## Deliverables
 
+> ⚠ **RE-GROUNDED 2026-10-12 at `c013781d`, after PLAN-24 landed (#430). Two rows are smaller than
+> filed; read this before the list.**
+>
+> | # | State at `c013781d` | What remains |
+> |---|---|---|
+> | **2** (M-64) | ⛔ **already pinned** | `BffRefreshScopeWireIT.refreshGrantsCarryTheSessionScopeOnTheWire` drives exactly this on the stub: a scripted token answer narrows the active set below the grant, a call on the scoped route with a token far from expiry records exactly one further refresh grant carrying the narrowed set plus the missing scope, and the route is served with that token. What it does **not** assert is that no authorization request was made. Remaining work: add that one assertion (the count of pushed authorization requests is unchanged across the scope-driven call), name the test as the M-64 evidence in `doc/quality-report/test-quality.adoc`, and close the deliverable. Do not write a second test |
+> | **4**, nginx row | **done for the one file named** | `BffTlsRelaxationIT` pins `nginx:1.27-alpine` by digest. Tag-only references remain at `integration-tests/docker-compose.yml` (three services) and `JwksLateIdpReadinessIT` (`PROXY_IMAGE`). That is deliverable 5's "other nginx image references", now located |
+> | 1, 3, 5 | unchanged | M-62: the identifier exists (`BffLogMessages` WARN 134, `TOKEN_RESPONSE_NOT_BOUND`, emitted from `BoundTokenEndpointClient`) and no integration test scripts an unbound token answer. `circuit_breaker.reset_ms` still has no production reader |
+>
+> **`StubIdentityProviderRig` changed under this plan.** #430 grew it by 390 lines net (+464/−74): it can now
+> rotate its signing key mid-run and counts JWKS requests per issuer. Read it at HEAD before adding the
+> unbound-token answer of deliverable 1; do not work from PLAN-25's description of it.
+>
+> **A flaky test may turn this plan's CI red without cause.** `GatewayEdgeFramingCorpusTest` failed twice
+> during PLAN-24 on a branch that touches nothing under `gateway/edge`, in two different methods, and was
+> green on re-run both times (lesson `2026-10-12-16-012`). Compare against the sibling run of the same
+> commit before changing code. Its diagnosis is PLAN-28's, not this plan's.
+
 1. **M-62 — an unbound token response is refused.** An integration test in which the identity provider
    answers the code exchange with a token that is not bound to the gateway's DPoP proof key, asserting
    `400` at the callback, no session cookie, and the log record the gateway emits. Drive it on the stub
@@ -79,19 +97,29 @@ Split guard: 5 deliverables — within the operator-authorized 12.
 ## Claim Labels
 
 - OBSERVED: `BffSessionScopeParityIT` carries `refreshRestoresAScopeOfTheGrantAfterANarrowedRefresh`, `navigationNeedingARefusedScopeIsRefusedAtThePush` and `xhrNeedingARefusedScopeIsRefusedAndTheSessionSurvives` — read at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffSessionScopeParityIT.java` § those three methods, at `fdcfaeb3`
+  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: BffSessionScopeParityIT carries the three methods at 305, 340 and 379
 - OBSERVED: `StubIdentityProviderRig`, `BffRefreshScopeWireIT` and `BffPendingLoginBoundIT` exist at `fdcfaeb3` — read by listing `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/`
+  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: StubIdentityProviderRig, BffRefreshScopeWireIT and BffPendingLoginBoundIT listed in the IT directory; the rig grew by about 400 lines in #430 (signing-key rotation, per-issuer JWKS request tracking)
 - OBSERVED: `doc/architecture.adoc` says the breaker "half-opens after `reset_ms`" in its upstream-guard passage while its `503` row states a fixed `5` — read at `doc/architecture.adoc` § the circuit-breaker bullet and § the `503` error-contract row, at `fdcfaeb3`
+  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: architecture.adoc:1038 still says half-opens after reset_ms; the 503 row at 1242 states the fixed 5
 - OBSERVED: `GatewayEdgeRoute` declares `RETRY_AFTER_HEADER` and seeds it on an open-circuit `503` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § `RETRY_AFTER_HEADER`, `seedRetryAfter`
+  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: GatewayEdgeRoute:238 declares RETRY_AFTER_HEADER; seedRetryAfter called at 1914
 - HYPOTHESIS: no integration test drives an unbound token response, and the refusal is logged as ApiSheriff-134 — taken from the downstream's filing, not re-read; the orchestrator's search for the literal `134` in the log-message classes found nothing, so the identifier may be composed elsewhere. Confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/BoundTokenEndpointClient.java` § the binding check and its log call (verify-at-outline)
+  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: the identifier exists: BffLogMessages WARN 134 TOKEN_RESPONSE_NOT_BOUND, emitted at BoundTokenEndpointClient:269; in integration-tests only BffFapiControlsIT:129 names ApiSheriff-134 and no IT scripts an unbound token answer
 - HYPOTHESIS: `BffRefreshScopeWireIT` observes the `scope` parameter of a time-driven refresh only, not a refresh triggered by a route's missing scope, so M-64 is not already covered — confirm/refute at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffRefreshScopeWireIT.java` § its test methods (verify-at-outline). ⛔ If it is already covered, close deliverable 2 with the test named.
+  - verdict: contradicted | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: yes | evidence: BffRefreshScopeWireIT.refreshGrantsCarryTheSessionScopeOnTheWire already drives the scope-driven refresh through the gateway on the stub: third call on the scoped route with a far-from-expiry token records exactly one further grant carrying the narrowed set plus the missing scope and is served with it; it does not assert that no authorization request was made
 - HYPOTHESIS: `circuit_breaker.reset_ms` is parsed into the route configuration and has no reader in the breaker — taken from PR #408's body. Confirm/refute by tracing the key from `api-sheriff/src/main/resources/schema/endpoint.schema.json` § `circuit_breaker` to its production reader (verify-at-outline)
+  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: resetMs occurs under api-sheriff/src/main only in UpstreamConfig (record component and javadoc) and reset_ms only in endpoint.schema.json:234; no reader
 - HYPOTHESIS: the nginx proxy image in `BffTlsRelaxationIT` is still pinned by tag only. The orchestrator read `nginx:1.27-alpine@sha256:…` there at `fdcfaeb3`, which contradicts the PR body's finding — it was probably fixed in a later review round. Confirm/refute at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffTlsRelaxationIT.java` § the proxy image constant (verify-at-outline); if pinned, close that row of deliverable 4 as already done.
+  - verdict: contradicted | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: yes | evidence: BffTlsRelaxationIT:164 pins nginx:1.27-alpine by digest; tag-only references remain at integration-tests/docker-compose.yml:110,168,237 and JwksLateIdpReadinessIT:125
 - Verify-first clause: settle deliverable 2 first — whether the stub can put a session into the state "active set narrower than the grant" through the gateway's public surface. If it cannot, M-64 is not pinnable at IT level; say so in the quality report and file the finding rather than pinning a weaker property under the same name.
+  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: settled: the stub can produce the state. BffRefreshScopeWireIT narrows the active set below the grant with a scripted token answer (rig.tokenAnswer with the narrowed scopes) and then calls the scoped route, so M-64 is pinnable at IT level and already pinned
 
 ## Expected Surface
 
 - OBSERVED: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/` — the two new ITs, `StubIdentityProviderRig`, `HtmlErrorPageIT`, `DescriptorInventoryWiringTest`, `ItProfileConfigBindingWiringTest`, `OneOffGatewayContainers`
 - OBSERVED: `integration-tests/src/main/docker/` — stub mappings and fixtures, `reserved-path-overlap/auth-overlap.yaml`, any nginx image reference
+- OBSERVED (added 2026-10-12): `integration-tests/docker-compose.yml` — the three tag-only `nginx:1.27-alpine` image references deliverable 5 pins
 - OBSERVED: `doc/architecture.adoc` — the `reset_ms` passage
 - OBSERVED: `doc/adr/` — up to two new records
 - OBSERVED: `doc/quality-report/test-quality.adoc`, `doc/development/integration-test-topology.adoc`, `doc/development/declared-limit-assertion-coverage.adoc`

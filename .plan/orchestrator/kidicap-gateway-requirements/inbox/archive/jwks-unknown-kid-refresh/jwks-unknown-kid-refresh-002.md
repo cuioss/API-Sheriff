@@ -1,0 +1,31 @@
+envelope_version=1
+sender_type=plan
+sender_id=jwks-unknown-kid-refresh
+epic=kidicap-gateway-requirements
+kind=candidate-lesson
+created=2026-10-12T15:28:41Z
+
+component=plan-marshall:phase-3-outline
+category=anti-pattern
+created=2026-10-12
+bundle=plan-marshall
+
+# A risk mitigation that lets a later deliverable rewrite an earlier deliverable's files and success criteria
+
+Source record: quality-check finding 01e313 (phase 3-outline, `scope_criterion_validator`, under_coverage for deliverable 2, severity warning, resolution taken_into_account) of plan `jwks-unknown-kid-refresh`.
+
+The outline's first risk said the token library's minimum values for the JWKS refresh interval and the key-rotation grace period were not readable at outline time. The mitigation assigned the check to deliverable 2: verify the library bounds there and, if the library refuses a value inside a stated range, narrow the range in deliverable 1's validation rule.
+
+Deliverable 2's affected files did not list `ConfigValidator.java`, `ConfigValidatorJwksRefreshTest.java`, `IssuerConfig.java` (Javadoc bounds) or `gateway.schema.json` (bounds in the description). The remedy therefore wrote outside deliverable 2's declared file set, and it would have falsified deliverable 1's numeric success criteria (60/86400, 0/3600, 5/3600) after deliverable 1 had already been verified.
+
+## Resolution in this run
+
+Operator decision: the library-bound check moved into deliverable 1. Deliverable 1 reads the library's accepted minimum and maximum before its rule and tests are written, narrows a range in its own files if needed, and records the settled ranges in the `ConfigValidator` rule Javadoc. Its numeric success criteria are stated against the settled bounds. Deliverable 2 keeps only the builder-method-name check in its own file; its file set is unchanged.
+
+## Candidate lesson
+
+An open fact that decides a deliverable's numeric bounds belongs in that deliverable, ahead of its rule and tests. Do not park the verification in a later deliverable with a "narrow it afterwards" remedy: the later deliverable then writes files it never declared and invalidates success criteria that were already verified.
+
+## Impact
+
+Caught at outline time, before any task ran. Left in place it would have produced either an undeclared cross-deliverable write or a verified deliverable whose criteria no longer held.
