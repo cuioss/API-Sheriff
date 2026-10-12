@@ -394,6 +394,16 @@ token_validation:                  # offline bearer validation (routes with auth
         # tls_profile: corporate-idp             # logical trust profile; OMIT for a public-CA
                                    #   IdP. Names trust anchors without carrying them; the
                                    #   deployment binds the name. See "Trust profiles" below.
+        refresh_interval_seconds: 600   # OPTIONAL, source: http only. Background re-fetch of the
+                                   #   key set. 60..86400; omitted => 600
+        key_rotation_grace_period_seconds: 300   # OPTIONAL, source: http only. How long a replaced
+                                   #   key set keeps verifying its own tokens. 0..3600; omitted =>
+                                   #   the token library's default (300)
+        unknown_kid_refresh_window_seconds: 30   # OPTIONAL, source: http only. A token naming an
+                                   #   unknown key id triggers at most ONE key-set refresh per
+                                   #   issuer per window. 5..3600; omitted => 30. All three keys
+                                   #   are REFUSED AT BOOT on source: file. See "Key rotation and
+                                   #   the refresh cadence" below.
 
 oidc:                              # only used by the BFF variants (2 and 3)
   issuer: https://idp.example.com/realms/main
@@ -2134,6 +2144,24 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
   the JWKS client then uses the JVM default trust store. Name a profile when the IdP presents a
   certificate from an internal or corporate CA. See link:#_jwks_trust_profiles[Trust profiles]
   below for how a name is bound to concrete anchors.
+
+| `issuers[].jwks.refresh_interval_seconds`
+| *Optional* integer, `source: http` only. The interval, in seconds, at which the JWKS client
+  re-fetches the issuer's key set in the background. *Range `60`-`86400`; omitted, the token
+  library's default of `600` applies.* It also caps the retry delay of a failed load (see
+  link:#_jwks_readiness[Key-set loading and readiness]). Refused at boot on `source: file`.
+
+| `issuers[].jwks.key_rotation_grace_period_seconds`
+| *Optional* integer, `source: http` only. How long, in seconds, a key set that a rotation replaced
+  keeps verifying tokens signed with its keys. *Range `0`-`3600`; omitted, the token library's own
+  default applies -- `300` at the pinned library version.* `0` retires the replaced keys at once.
+  Refused at boot on `source: file`.
+
+| `issuers[].jwks.unknown_kid_refresh_window_seconds`
+| *Optional* integer, `source: http` only. The per-issuer window, in seconds, within which a token
+  naming a key id the gateway does not hold triggers at most one refresh of the key set. *Range
+  `5`-`3600`; omitted, `30` applies.* Refused at boot on `source: file`. See
+  link:#_jwks_key_rotation[Key rotation and the refresh cadence] below.
 |===
 
 The BFF variants do *not* read this block: they validate the tokens they retrieve against the
@@ -2176,7 +2204,8 @@ a later background-refresh failure keeps the loaded keys in service and readines
 held keys still validate the tokens they signed. An identity provider that becomes unreachable after
 boot, or a stalled key rotation, is therefore not visible through readiness; alert on it separately
 (link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
-Amendment A1]).
+Amendment A1]). A stalled rotation has a log record to alert on: `WARN ApiSheriff-136`, described
+under link:#_jwks_key_rotation[Key rotation and the refresh cadence].
 
 *Readiness does not verify issuer reachability.* A BFF `oidc.session.mode: server` deployment adds
 `oidc: server` and `issuer_reachability: unverified` to the payload -- on `UP` and `DOWN` alike, with
@@ -2185,6 +2214,101 @@ and sends no request of its own, and the key-set state above cannot stand in for
 set stays loaded through later refresh failures, and a missing one says nothing about the network.
 Read `jwks` and `issuers_loaded` for what readiness does know; a bearer-only deployment carries no
 `issuer_reachability` datum.
+
+[[_jwks_key_rotation]]
+==== Key rotation and the refresh cadence
+
+Three optional keys of an `http`-sourced issuer's `jwks` block decide how quickly the gateway follows
+a signing-key change at the identity provider, and how long it keeps accepting the previous key
+(link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
+
+[cols="2,1,1,3", options="header"]
+|===
+| Key | Default | Range | Effect
+
+| `refresh_interval_seconds`
+| `600`
+| `60`-`86400`
+| The interval of the background re-fetch of the key set. The default is the token library's and is
+  not restated by the gateway: an omitted key passes nothing to the library.
+
+| `key_rotation_grace_period_seconds`
+| the token library's (`300` at the pinned version)
+| `0`-`3600`
+| How long a replaced key set keeps verifying the tokens its keys signed. `0` drops the replaced
+  keys at once.
+
+| `unknown_kid_refresh_window_seconds`
+| `30`
+| `5`-`3600`
+| The per-issuer window of the refresh described below.
+|===
+
+[source,yaml]
+----
+token_validation:
+  issuers:
+    - name: main
+      issuer: https://idp.example.com/realms/main
+      jwks:
+        source: http
+        url: https://idp.example.com/realms/main/protocol/openid-connect/certs
+        refresh_interval_seconds: 300            # re-fetch every five minutes
+        key_rotation_grace_period_seconds: 600   # previous key accepted for ten more minutes
+        unknown_kid_refresh_window_seconds: 10   # at most one on-demand refresh per ten seconds
+----
+
+*Boot refusals.* A value outside its range is refused at boot with `ApiSheriff-200` at
+`/token_validation/issuers/<index>/jwks/<key>`; the message names the issuer, the key, the value and
+the admitted range, and never the JWKS URL. The schema declares the three keys as integers without
+bounds, so a non-integer is refused by the schema and an out-of-range integer by the validator. Each
+of the three keys declared on a `source: file` issuer is refused at boot at the same pointer,
+whatever value it holds: a file source is read once and never re-fetched, so the key would parse and
+never act. Every violation of every issuer is reported in one pass.
+
+*What happens when a token names an unknown key id.* The lookup that verifies a token never fetches.
+It is answered from the key sets the gateway holds at that moment -- the current one, then a
+replaced one still inside its grace period -- so a token naming a key id neither holds is rejected
+`401`. When the issuer's key set is loaded, that same lookup tries to claim the issuer's window:
+
+* *The first unknown key id in a window* logs `WARN ApiSheriff-136` and schedules one refresh of the
+  key set, off the request thread -- unless the refresh of an earlier window is still running, in
+  which case none is added. The request that triggered it is still answered `401`.
+* *Every further unknown key id inside the window* schedules nothing and is logged at `DEBUG` only.
+  The window is claimed when the token arrives, not when the refresh completes, so the bound holds
+  whatever the refresh's outcome, the request rate and the number of distinct key ids.
+* *The refresh replaces the key set only if it holds the key id that triggered it.* A refresh that
+  fails, or that loads a key set without that key id, changes nothing: the loaded key set and a
+  replaced one in its grace period both stay in service.
+* *A replaced key set stays in service for the grace period.* Tokens signed with the previous key
+  are accepted until `key_rotation_grace_period_seconds` has passed, then the replaced key set is
+  dropped. At most one replaced key set is held per issuer: a second replacement inside the grace
+  period drops the older one.
+
+A token signed with a new key is therefore accepted once a refresh it triggered has loaded that key:
+after the fetch when the window was free, and after at most one further window when it was not. A
+client that receives `401` for such a token succeeds by retrying. A refresh triggered by a token that
+names a key id the identity provider never published is discarded even when the key set it fetched
+holds a newly rotated key; that key is then picked up by the next window a token signed with it
+claims or, at the latest, by the background refresh.
+
+The same key sets verify the ID token of a BFF login whose issuer is declared in this block, so a
+login whose ID token is signed with a new key recovers the same way.
+
+*`ApiSheriff-136` is the signal of a stalled rotation.* Readiness stays `UP` throughout: the gateway
+holds a loaded key set, and readiness reports availability, not freshness (see above). The record
+names the issuer's configured `name` and the instant the gateway's own loader last saw a load of that
+issuer's key set succeed -- the first load, a retry after a failed load, or a refresh triggered by an
+unknown key id. The token library's background refresh is not reflected in that instant. The record
+is emitted at most once per issuer per window and never carries the JWKS URL, the key id or key
+material. One record after a key change is expected; a record in every window means tokens keep
+naming a key the identity provider's key set does not serve -- check the provider's published key
+set and the issuer's `jwks.url` -- or that a caller is presenting tokens with invented key ids (see
+link:security-threat-model.adoc#gw-07-jwks-refresh[the threat model]).
+
+*A `file` source.* A `file`-sourced issuer has nothing to fetch, so no refresh is scheduled for it.
+A token naming a key id its key set does not hold is still rejected and still reported by
+`ApiSheriff-136`, at most once per 30 seconds per issuer.
 
 [[_jwks_trust_profiles]]
 ==== Trust profiles (`jwks.tls_profile`)

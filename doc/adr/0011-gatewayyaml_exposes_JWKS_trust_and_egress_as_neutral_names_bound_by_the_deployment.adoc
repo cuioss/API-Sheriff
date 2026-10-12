@@ -7,7 +7,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: gateway.yaml is API Sheriff's own configuration language, so the JWKS issuer surface exposes egress and TLS trust as framework-neutral names (allowed_egress_hosts, tls_profile) that carry no trust material; exactly one mapping component binds a logical trust-profile name to concrete runtime trust anchors, and config stays neutral while startup diagnostics name the concrete runtime key. AMENDED (A1): an absent or empty allowed_egress_hosts no longer preserves the no-exemption default — the gateway derives the single host of jwks.url as the egress allowance, a non-empty list stays authoritative and host-exact and is never merged with that host, blank and host:port entries and a hostless jwks.url are refused at boot, and the accepted trade-off is that the jwks.url host is exempt from the private-address check in every deployment while certificate trust is unchanged; tls_profile and the mapping seam are unchanged.
+// summary: gateway.yaml is API Sheriff's own configuration language, so the JWKS issuer surface exposes egress and TLS trust as framework-neutral names (allowed_egress_hosts, tls_profile) that carry no trust material; exactly one mapping component binds a logical trust-profile name to concrete runtime trust anchors, and config stays neutral while startup diagnostics name the concrete runtime key. AMENDED (A1): an absent or empty allowed_egress_hosts no longer preserves the no-exemption default — the gateway derives the single host of jwks.url as the egress allowance, a non-empty list stays authoritative and host-exact and is never merged with that host, blank and host:port entries and a hostless jwks.url are refused at boot, and the accepted trade-off is that the jwks.url host is exempt from the private-address check in every deployment while certificate trust is unchanged; tls_profile and the mapping seam are unchanged. AMENDED (A2): two of the deferred knobs, refreshIntervalSeconds and keyRotationGracePeriod, are now exposed as the neutral per-issuer keys jwks.refresh_interval_seconds and jwks.key_rotation_grace_period_seconds, bounded at boot, refused on a file source and passed to the library only when declared so an omitted key keeps the library default; every other deferred knob, maxRetiredKeySets included, stays deferred.
 // tags: configuration-surface, jwks, token-validation, tls-trust, layering, secrets-handling, boot-sequence, portability
 // affects: api-sheriff
 // supersedes:
@@ -218,12 +218,20 @@ an oversight:
 | Production-significant. Retry behaviour on a failed JWKS fetch is not configurable.
 
 | `refreshIntervalSeconds`
-| Production-significant. Effectively fixed at 600 seconds today; deployments cannot tune key
+| *No longer deferred -- exposed by <<amendment-a2,Amendment A2>>* as
+  `jwks.refresh_interval_seconds`. The original note, kept as the record of the decision: the knob
+  was production-significant and effectively fixed at 600 seconds, so deployments could not tune key
   refresh cadence.
 
-| `keyRotationGracePeriod`, `maxRetiredKeySets`
-| Production-significant. Tolerance for IdP key rotation is not configurable, which matters for
-  IdPs that rotate aggressively.
+| `keyRotationGracePeriod`
+| *No longer deferred -- exposed by <<amendment-a2,Amendment A2>>* as
+  `jwks.key_rotation_grace_period_seconds`. The original note, kept as the record of the decision:
+  tolerance for IdP key rotation was not configurable, which matters for IdPs that rotate
+  aggressively.
+
+| `maxRetiredKeySets`
+| Production-significant, and still deferred. The other half of the tolerance for IdP key rotation
+  is not configurable.
 
 | `wellKnownUri`
 | Discovery-based issuer configuration; the gateway requires an explicit JWKS URL instead.
@@ -300,6 +308,52 @@ link:../configuration.adoc#_token_validation[the configuration reference], and t
 of the trade-off is recorded under GW-05 and BFF-07 of
 link:../security-threat-model.adoc#gw-05[the security threat model].
 
+[[amendment-a2]]
+== Amendment A2: the refresh interval and the key-rotation grace period are exposed
+
+*Two rows of the deferred-knobs table are overtaken; the decision of this ADR stands.* The table
+recorded `refreshIntervalSeconds` and `keyRotationGracePeriod` as production-significant gaps and
+prescribed the discipline for closing one: a neutral key named for what API Sheriff means, with a
+default that preserves current behaviour. Both knobs are now exposed under that discipline, as keys
+of `token_validation.issuers[].jwks`:
+
+[cols="2,2,1,1", options="header"]
+|===
+| Key | Library knob | Range | Omitted
+
+| `refresh_interval_seconds`
+| `refreshIntervalSeconds`
+| `60`-`86400`
+| the library default, 600 seconds
+
+| `key_rotation_grace_period_seconds`
+| `keyRotationGracePeriod`
+| `0`-`3600`
+| the library default
+|===
+
+* *Neutral names.* Both keys are spelled in `gateway.yaml`'s own snake-case vocabulary and state
+  their unit. Neither the keys nor the schema name the library or its builder.
+* *Current behaviour is preserved.* A key is passed to the library's loader configuration only when
+  it is declared. An omitted key leaves the builder untouched, so the library's own default applies
+  and the gateway keeps no second copy of it. An issuer that declares neither key behaves as it did
+  before either existed.
+* *Bounded at boot, by the gateway.* A value outside its range is a boot refusal naming the issuer,
+  the key and the range, in line with section 4. The ranges are the gateway's: the library admits
+  every non-negative value for both knobs, so every value the gateway admits is one the library
+  accepts, and the gateway refuses values the library would take.
+* *Refused where they cannot act.* Either key on a `source: file` issuer is a boot refusal. A file
+  source is read once and never refreshed, so the key would parse and change nothing.
+
+This amendment supersedes one statement above: the table's note that the refresh interval is
+"effectively fixed at 600 seconds". It supersedes nothing else. `maxRetiredKeySets` and every other
+row of the table stay deferred, and the discipline for exposing them is unchanged.
+
+The two keys were exposed together with a third, gateway-owned one that has no library counterpart,
+and with the bounded refresh it governs. That decision, and the reason the key-rotation grace period
+needs a gateway-side counterpart once the gateway replaces a loader itself, is recorded in
+link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063].
+
 == References
 
 * link:../configuration.adoc[Configuration reference] -- the `token_validation` surface, the
@@ -309,5 +363,7 @@ link:../security-threat-model.adoc#gw-05[the security threat model].
   egress guard, the derived allowance of Amendment A1 and its accepted trade-off
 * link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
   -- the posture on upstream security defaults, which Amendment A1 does not engage
+* link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]
+  -- the bounded refresh on an unknown key id, and the two keys Amendment A2 exposes
 * link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
   runtime-specific assembly at the boundary rather than in the framework-agnostic core
