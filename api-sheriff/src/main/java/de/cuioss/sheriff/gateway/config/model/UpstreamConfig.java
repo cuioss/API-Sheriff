@@ -25,6 +25,9 @@ import org.jspecify.annotations.Nullable;
  * optional overrides of the resolved endpoint/global {@code upstream_defaults};
  * an absent toggle inherits the resolved value. The effective values are
  * materialized once by the route-table builder.
+ * <p>
+ * The block carries no circuit-breaker settings: the breaker in front of an upstream is
+ * the gateway's fixed policy (ADR-0064).
  *
  * @param path             the upstream path appended to the alias base path, joined on
  *                         exactly one {@code /} (ADR-0004 Amendment A2); the request
@@ -38,7 +41,6 @@ import org.jspecify.annotations.Nullable;
  * @param readTimeoutMs    the read timeout in milliseconds, {@code null} when omitted
  * @param retry            the retry settings, {@code null} when omitted
  * @param notModified      the HTTP-304 not-modified settings, {@code null} when omitted
- * @param circuitBreaker   the circuit-breaker settings, {@code null} when omitted
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -50,8 +52,7 @@ public record UpstreamConfig(
 @Nullable Integer connectTimeoutMs,
 @Nullable Integer readTimeoutMs,
 @Nullable Retry retry,
-@Nullable NotModified notModified,
-@Nullable CircuitBreaker circuitBreaker) {
+@Nullable NotModified notModified) {
 
     /**
      * Per-route retry settings.
@@ -79,18 +80,5 @@ public record UpstreamConfig(
      */
     // cui-rewrite:disable AnnotationNewlineFormat
     public record NotModified(@Nullable Boolean enabled) {
-    }
-
-    /**
-     * Per-route circuit-breaker settings.
-     *
-     * @param failures the failure threshold before opening, {@code null} when omitted
-     * @param resetMs  the reset window in milliseconds, {@code null} when omitted
-     * @author API Sheriff Team
-     * @since 1.0
-     */
-    // cui-rewrite:disable AnnotationNewlineFormat
-    @Builder
-    public record CircuitBreaker(@Nullable Integer failures, @Nullable Integer resetMs) {
     }
 }

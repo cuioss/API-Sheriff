@@ -312,7 +312,6 @@ class ConfigModelContractTest {
                 .readTimeoutMs(5000)
                 .retry(new UpstreamConfig.Retry(true, 3, true))
                 .notModified(new UpstreamConfig.NotModified(true))
-                .circuitBreaker(new UpstreamConfig.CircuitBreaker(5, 30000))
                 .build();
     }
 
@@ -560,10 +559,6 @@ class ConfigModelContractTest {
                     voCase("UpstreamConfig.NotModified", new UpstreamConfig.NotModified(true),
                             new UpstreamConfig.NotModified(true),
                             new UpstreamConfig.NotModified(false)),
-                    voCase("UpstreamConfig.CircuitBreaker",
-                            new UpstreamConfig.CircuitBreaker(5, 30000),
-                            new UpstreamConfig.CircuitBreaker(5, 30000),
-                            new UpstreamConfig.CircuitBreaker(1, 1)),
                     voCase("RateLimitConfig", new RateLimitConfig(100, 200),
                             new RateLimitConfig(100, 200),
                             new RateLimitConfig(1, 1)));

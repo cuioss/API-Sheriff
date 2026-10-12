@@ -638,13 +638,23 @@ nominated header relayed to the client — an internal, deliberately hop-scoped 
 `FramingGate.rejectFramingHeaderStrip` rejects only `Connection` tokens naming the nine
 `PROTECTED_HEADERS`; every other nominated name passes.
 
-=== DP-2 — Per-upstream resilience/transport configuration is parsed but inert
+=== DP-2 — Per-upstream resilience/transport configuration is parsed but inert (circuit-breaker half RESOLVED)
 
 [cols="1,4"]
 |===
 |Severity |MEDIUM — Confidence HIGH — Category: false-security / correctness
-|Location |`edge/GatewayEdgeRoute.java:1518-1541` (guardFor), `:1291-1303` (clientFor); `config/model/UpstreamConfig.java:43-47,87`
+|Location |`edge/GatewayEdgeRoute.java` (`guardFor`, `clientFor`); `config/model/UpstreamConfig.java`
 |===
+
+*The circuit-breaker half is resolved by removal.* The breaker is recorded as the gateway's fixed
+policy
+(link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]),
+and `upstream.circuit_breaker` is gone from the model, the endpoint schema and the native reflection
+registration: a descriptor that still declares it is refused at boot as an unknown key, and
+`ConfigModelContractTest` pins that refusal so the key cannot return inert. *The other half stays
+open:* `connect_timeout_ms`, `read_timeout_ms`, `retry.max_attempts` and `retry.idempotent_only`
+still bind and act on nothing, and ADR-0064 records them as undecided. The finding as originally
+written follows.
 
 `UpstreamConfig` binds `connect_timeout_ms`, `read_timeout_ms`, `retry.max_attempts`,
 `circuit_breaker.failures`, `circuit_breaker.reset_ms`; nothing consumes them. `guardFor`

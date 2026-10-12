@@ -487,6 +487,28 @@ class ConfigLoaderTest {
                                         path_prefix: /orders
                                 """,
                         "/endpoint/auth/session_fallback"),
+                // upstream.circuit_breaker is removed, not renamed: no code ever read it, and the
+                // breaker in front of an upstream is the gateway's fixed policy (ADR-0064). A lingering
+                // declaration must fail the boot rather than parse and act nowhere — this row is what
+                // keeps the key from coming back inert.
+                Arguments.of("a removed circuit_breaker block in a route's upstream block",
+                        """
+                                endpoint:
+                                  id: orders
+                                  base_url: ORDERS
+                                  auth:
+                                    require: bearer
+                                  routes:
+                                    - id: orders-read
+                                      match:
+                                        path_prefix: /orders
+                                      upstream:
+                                        path: /v1/orders
+                                        circuit_breaker:
+                                          failures: 5
+                                          reset_ms: 30000
+                                """,
+                        "/routes/0/upstream"),
                 // AS-3: a matcher carries exactly one path form, so declaring both is refused at load.
                 Arguments.of("a matcher declaring both path and path_prefix",
                         """

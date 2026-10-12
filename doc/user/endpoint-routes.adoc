@@ -136,7 +136,9 @@ endpoint:
         connect_timeout_ms: 2000
         read_timeout_ms: 5000
         retry: { max_attempts: 3, idempotent_only: true }
-        circuit_breaker: { failures: 5, reset_ms: 30000 }
+                                   # no circuit_breaker key: the breaker is the gateway's fixed
+                                   #   policy (20-call window, ratio 0.5, 5 s open) and a route
+                                   #   declares none -- the key is refused at boot (ADR-0064)
       rate_limit: { requests_per_second: 100, burst: 20 }   # reserved; feature deferred
 ----
 
