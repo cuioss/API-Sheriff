@@ -272,7 +272,7 @@ class GrpcDispatchStageTest {
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
                             .relayWithTrailers(upResp, clientReq.response(), false, Map.of(),
-                                    Map.of(FRAME_OPTIONS, "DENY", CSP, GATEWAY_POLICY))
+                                    Map.of(FRAME_OPTIONS, "DENY", CSP, GATEWAY_POLICY), Supplier::get)
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");

@@ -462,8 +462,8 @@ class GatewayEdgeRouteTest {
                     .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
-                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, () -> new ResponseStage(Set.of())
-                            .relay(ended, ctx.response(), false, null, Map.of(), Map.of()))));
+                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(Set.of())
+                            .relay(ended, ctx.response(), false, null, Map.of(), Map.of(), end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the relaying front server to start listening");
@@ -520,7 +520,7 @@ class GatewayEdgeRouteTest {
                     }))
                     .onSuccess(received -> {
                         pausedUpstream.set(received);
-                        GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), received, () -> {
+                        GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), received, _ -> {
                             throw new IllegalStateException("the relay could not be started");
                         });
                     }));
@@ -565,12 +565,12 @@ class GatewayEdgeRouteTest {
     }
 
     /**
-     * A relay that completes hands its future to the edge's one post-write reset decision: an HTTP/2
-     * request whose body is still open when the relayed response has been written is then reset with
+     * A relay ends its response through the edge's one end rule: an HTTP/2 request whose body is still
+     * open when the upstream response has been streamed is answered whole and then reset with
      * {@code NO_ERROR}, so the client is told to stop sending instead of resetting the stream itself.
      */
     @Nested
-    @DisplayName("a relay that completes passes the post-write reset decision")
+    @DisplayName("a relay that completes ends its response through the one end rule")
     class RelayCompletion {
 
         @Test
@@ -591,8 +591,8 @@ class GatewayEdgeRouteTest {
                         return received;
                     }))
                     .onSuccess(received -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), received,
-                            () -> new ResponseStage(Set.of())
-                                    .relay(received, ctx.response(), false, null, Map.of(), Map.of())
+                            end -> new ResponseStage(Set.of())
+                                    .relay(received, ctx.response(), false, null, Map.of(), Map.of(), end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),

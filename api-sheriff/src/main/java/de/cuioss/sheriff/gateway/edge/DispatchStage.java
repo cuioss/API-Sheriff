@@ -823,24 +823,32 @@ public final class DispatchStage {
      * registered later, so a consumer that subscribes late still learns that the body failed — and
      * {@link ByteCappedBodyStream} then aborts the upstream request instead of leaving it open.
      * <p>
-     * <strong>The single place a gateway-made reset is recorded.</strong> When the edge resets an
-     * HTTP/2 stream itself, after a complete response, while the request body is still open, it marks
-     * this decorator {@linkplain #resetByGateway() reset by the gateway} first. The decorator then
-     * delivers the fixed {@link GatewayStreamReset} cause — to the failure handler registered at that
-     * moment, or to one registered later — in place of a client failure, and from then on swallows
-     * every further failure of the stream, so the transport error the reset itself may surface is never
-     * replayed as a client failure. {@link ByteCappedBodyStream} answers that cause by stopping the
-     * forwarding without recording a client abort.
+     * <strong>The single place a gateway-made reset is recorded.</strong> When the edge has decided the
+     * answer to an HTTP/2 request whose body is still open, it marks this decorator
+     * {@linkplain #resetByGateway() reset by the gateway} before it ends the response and then resets
+     * the stream. The decorator then delivers the fixed {@link GatewayStreamReset} cause — to the
+     * failure handler registered at that moment, or to one registered later — in place of a client
+     * failure, and from then on swallows every further failure of the stream, so the transport error the
+     * reset itself may surface is never replayed as a client failure. {@link ByteCappedBodyStream}
+     * answers that cause by stopping the forwarding without recording a client abort.
+     * <p>
+     * <strong>A body the gateway reset is never read again.</strong> The mark also pauses the inbound
+     * stream and keeps it paused: every later {@link #resume()} or {@link #fetch(long)} — the forwarding
+     * pipe's among them — is ignored. A paused HTTP/2 request returns no flow-control window to the
+     * client, so from the mark on the client can send no more than the window it already holds; that
+     * is what lets the edge wait until no request data can still be in flight before it resets the
+     * stream.
      * <p>
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
-     * registered from another thread; both go through the same monitor.
+     * registered from another thread; both go through the same monitor. The pause is pinned without
+     * holding that monitor: a resume racing the mark is followed by a pause again.
      */
     static final class InboundBody implements ReadStream<Buffer> {
 
         private final ReadStream<Buffer> delegate;
         private @Nullable Throwable failure;
         private @Nullable Handler<Throwable> failureHandler;
-        private boolean resetByGateway;
+        private volatile boolean resetByGateway;
 
         private InboundBody(ReadStream<Buffer> delegate) {
             this.delegate = delegate;
@@ -874,17 +882,21 @@ public final class DispatchStage {
         }
 
         /**
-         * Records that the gateway itself ended this stream after its response was written. When no
-         * failure was recorded before, the fixed {@link GatewayStreamReset#INSTANCE} is delivered —
-         * now to the registered failure handler, or later to the one registered next — so the consumer
-         * stops forwarding the body. Every failure of the stream from now on is swallowed. Idempotent;
-         * a failure recorded before the mark stays the one a later handler is replayed.
+         * Records that the gateway itself ends this stream: its answer is decided while the body is
+         * still open. The inbound stream is paused for good, so no further body is read and no further
+         * flow-control window is returned to the client. When no failure was recorded before, the
+         * fixed {@link GatewayStreamReset#INSTANCE} is delivered — now to the registered failure
+         * handler, or later to the one registered next — so the consumer stops forwarding the body.
+         * Every failure of the stream from now on is swallowed. Idempotent; a failure recorded before
+         * the mark stays the one a later handler is replayed.
          */
-        synchronized void resetByGateway() {
-            if (resetByGateway) {
-                return;
-            }
+        void resetByGateway() {
             resetByGateway = true;
+            delegate.pause();
+            deliverGatewayReset();
+        }
+
+        private synchronized void deliverGatewayReset() {
             if (failure != null) {
                 return;
             }
@@ -915,16 +927,31 @@ public final class DispatchStage {
             return this;
         }
 
+        /** Resumes the inbound stream, unless the gateway reset it — then it stays paused. */
         @Override
         public ReadStream<Buffer> resume() {
-            delegate.resume();
+            if (!resetByGateway) {
+                delegate.resume();
+                repinPause();
+            }
             return this;
         }
 
+        /** Fetches from the inbound stream, unless the gateway reset it — then it stays paused. */
         @Override
         public ReadStream<Buffer> fetch(long amount) {
-            delegate.fetch(amount);
+            if (!resetByGateway) {
+                delegate.fetch(amount);
+                repinPause();
+            }
             return this;
+        }
+
+        /** Pauses the stream again when the gateway's mark landed while it was being resumed. */
+        private void repinPause() {
+            if (resetByGateway) {
+                delegate.pause();
+            }
         }
 
         @Override
@@ -935,8 +962,8 @@ public final class DispatchStage {
     }
 
     /**
-     * The fixed cause {@link InboundBody#resetByGateway()} delivers when the gateway itself reset an
-     * HTTP/2 stream after a complete response while its request body was still open. It is not a
+     * The fixed cause {@link InboundBody#resetByGateway()} delivers when the gateway itself ends an
+     * HTTP/2 stream it answered while the request body was still open. It is not a
      * failure of the client: {@link ByteCappedBodyStream} stops forwarding on it without recording a
      * client abort, so it never becomes an {@link EventType#INBOUND_BODY_ABORTED}.
      * <p>
@@ -952,7 +979,7 @@ public final class DispatchStage {
         static final GatewayStreamReset INSTANCE = new GatewayStreamReset();
 
         private GatewayStreamReset() {
-            super("The gateway reset the request stream after its complete response", null, false, false);
+            super("The gateway ended the request stream it answered before the body ended", null, false, false);
         }
     }
 
@@ -980,7 +1007,7 @@ public final class DispatchStage {
      * warning.
      * <p>
      * <strong>A gateway-made reset is not.</strong> An inbound failure carrying the
-     * {@link GatewayStreamReset} cause — the edge reset the stream itself after a complete response
+     * {@link GatewayStreamReset} cause — the edge ends the stream itself, its answer decided
      * (see {@link InboundBody#resetByGateway()}) — claims the same single abort and runs the abort
      * action, so the upstream request is reset and forwarding stops, but it records no client abort
      * ({@link #clientAbort()} stays {@code null}) and is not propagated to the consumer as a failure.

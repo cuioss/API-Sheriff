@@ -32,9 +32,10 @@ import org.jspecify.annotations.Nullable;
  * Stage 7 — the streamed response relay.
  * <p>
  * The upstream status and (hop-by-hop-stripped) headers are copied to the client response, then the
- * upstream body is <strong>streamed back with backpressure</strong> via Vert.x
- * {@link HttpClientResponse#pipeTo(io.vertx.core.streams.WriteStream) pipeTo} — the body is never
- * materialized. Header rules:
+ * upstream body is <strong>streamed back with backpressure</strong> via a Vert.x
+ * {@link HttpClientResponse#pipe() pipe} — the body is never materialized — and the client response is
+ * then ended through the edge's {@link ResponseEnd}, the one rule every response end passes. Header
+ * rules:
  * <ul>
  *   <li><strong>Connection-specific headers</strong> plus the length/framing headers Vert.x
  *       recomputes are stripped in the response direction, per the shared
@@ -118,15 +119,17 @@ public final class ResponseStage {
      * @param setHeaders         the set-mode gateway headers, overwriting an upstream value of the same name
      * @param defaultHeaders     the default-mode gateway headers, added only for a name the upstream
      *                           response did not carry
-     * @return a future completing when the body has been fully streamed
+     * @param end                ends the client response once the upstream body has been streamed
+     * @return a future completing when the body has been fully streamed and the response ended
      */
     public Future<Void> relay(HttpClientResponse upstream, HttpServerResponse client,
             boolean notModifiedEnabled, @Nullable LocationRewriter locationRewriter,
-            Map<String, String> setHeaders, Map<String, String> defaultHeaders) {
+            Map<String, String> setHeaders, Map<String, String> defaultHeaders, ResponseEnd end) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(client, "client");
         Objects.requireNonNull(setHeaders, "setHeaders");
         Objects.requireNonNull(defaultHeaders, "defaultHeaders");
+        Objects.requireNonNull(end, "end");
 
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
@@ -138,7 +141,25 @@ public final class ResponseStage {
         }
         applyGatewayHeaders(upstream, client, setHeaders, defaultHeaders);
         applyResponseFraming(upstream, client);
-        return upstream.pipeTo(client);
+        return pipeThenEnd(upstream, client, end);
+    }
+
+    /**
+     * Streams the upstream body to the client with the client response held open, then ends it
+     * through {@code end}. A failure of the stream fails the returned future; the pipe then ends the
+     * client response itself, so the client is never left waiting on a truncated body.
+     */
+    private static Future<Void> pipeThenEnd(HttpClientResponse upstream, HttpServerResponse client,
+            ResponseEnd end) {
+        Promise<Void> relayed = Promise.promise();
+        upstream.pipe().endOnSuccess(false).to(client).onComplete(piped -> {
+            if (piped.failed()) {
+                relayed.fail(piped.cause());
+                return;
+            }
+            end.end(client::end).onComplete(relayed);
+        });
+        return relayed.future();
     }
 
     /**
@@ -180,9 +201,9 @@ public final class ResponseStage {
      * response trailers (or, in the trailers-only case, the leading headers). The status and filtered
      * headers are copied exactly as {@link #relay}, then the body is streamed with the client response
      * held open ({@code endOnComplete(false)}); once the upstream body — and therefore its trailers —
-     * has fully arrived, the upstream trailers are copied onto the client response and it is ended, so
-     * the client observes the gRPC status. The response is set chunked so trailers are framed on an
-     * HTTP/1.1 client (HTTP/2 ignores the flag and frames trailers natively).
+     * has fully arrived, the upstream trailers are copied onto the client response and it is ended
+     * through {@code end}, so the client observes the gRPC status. The response is set chunked so
+     * trailers are framed on an HTTP/1.1 client (HTTP/2 ignores the flag and frames trailers natively).
      *
      * @param upstream           the upstream response (body + trailers still streaming)
      * @param client             the client response write stream
@@ -190,14 +211,18 @@ public final class ResponseStage {
      * @param setHeaders         the set-mode gateway headers, overwriting an upstream value of the same name
      * @param defaultHeaders     the default-mode gateway headers, added only for a name the upstream
      *                           response did not carry in its leading headers
-     * @return a future completing when the body and trailers have been fully relayed
+     * @param end                ends the client response once the trailers have been copied onto it
+     * @return a future completing when the body and trailers have been fully relayed and the response
+     *         ended
      */
     public Future<Void> relayWithTrailers(HttpClientResponse upstream, HttpServerResponse client,
-            boolean notModifiedEnabled, Map<String, String> setHeaders, Map<String, String> defaultHeaders) {
+            boolean notModifiedEnabled, Map<String, String> setHeaders, Map<String, String> defaultHeaders,
+            ResponseEnd end) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(client, "client");
         Objects.requireNonNull(setHeaders, "setHeaders");
         Objects.requireNonNull(defaultHeaders, "defaultHeaders");
+        Objects.requireNonNull(end, "end");
 
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
@@ -218,13 +243,7 @@ public final class ResponseStage {
             for (Map.Entry<String, String> trailer : upstream.trailers()) {
                 client.putTrailer(trailer.getKey(), trailer.getValue());
             }
-            client.end().onComplete(ended -> {
-                if (ended.succeeded()) {
-                    relayed.complete();
-                } else {
-                    relayed.fail(ended.cause());
-                }
-            });
+            end.end(client::end).onComplete(relayed);
         });
         return relayed.future();
     }

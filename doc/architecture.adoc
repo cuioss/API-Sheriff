@@ -369,28 +369,47 @@ A framing rejection also ends what it arrived on, and what that is depends on th
 HTTP/1.x it is the connection: the `400` carries `Connection: close`, the connection is closed once
 it is written, and a request already queued behind the rejected one is neither processed nor
 forwarded. On HTTP/2 it is the offending stream alone: the `400` carries no connection-specific
-header, the stream is reset with `NO_ERROR` once it is written -- even when its body has already
-ended -- and the other streams of that connection and the connection itself carry on. The HTTP
+header, a stream whose body is still open is reset with `NO_ERROR` once it is written (see
+<<_http2_post_response_reset>>), and the other streams of that connection and the connection itself
+carry on. The HTTP
 transport refuses some shapes before the gate runs, with a bare `400`;
 link:security-threat-model.adoc#gw-02[GW-02] lists each clause, who enforces it and the test that
 pins it.
 
 [[_http2_post_response_reset]]
-*An HTTP/2 response that ends while the request body is still open is followed by a `NO_ERROR`
-stream reset.* This is one rule for every response the edge ends: a relayed response -- an upstream
-that answered before it read the whole body -- and every answer the gateway writes itself, the
-problem document, the HTML error page, the portal page, a reserved-path answer, an asset, a redirect,
-a short-circuit, the gRPC trailers-only status, a relay-failure answer and the admission `503`. Once
-the complete response has been written, an HTTP/2 stream whose request body has not ended is reset
-with `NO_ERROR` (RFC 9113 §8.1.1): the client is told to stop sending and never has to reset the
-stream itself, and the connection and every other stream on it carry on. The upstream request still
-receiving that body is reset with it, so nothing more is forwarded. A stream whose body has already
-ended is left alone. The framing rejection above and the reserved-body `413` are one case of the
-same rule: they are marked to reset their stream after the answer whether or not the body has ended.
-HTTP/1.x is unchanged -- no request there is reset, and a framing rejection or a reserved-body `413`
-retires the connection instead. The late refusal of a body on a bodyless method (below) stays a
-`CANCEL` reset taken before the response ends, and neither the WebSocket upgrade nor the L4
-passthrough relay is affected.
+*An HTTP/2 response answered while the request body is still open is ended once no request data can
+still arrive, and its stream is then reset with `NO_ERROR`.* This is one rule for every response the
+edge ends: a relayed response -- an upstream that answered before it read the whole body -- and every
+answer the gateway writes itself, the problem document, the HTML error page, the portal page, a
+reserved-path answer, an asset, a redirect, a short-circuit, the gRPC trailers-only status, a
+relay-failure answer and the admission `503` -- a framing rejection and a reserved-body `413` among
+them. The `NO_ERROR` reset (RFC 9113 §8.1.1) tells the client to stop sending, so it never has to
+reset the stream itself, and the connection and every other stream on it carry on. A stream whose
+body has already ended is ended normally and left alone. HTTP/1.x is unchanged -- no request there is
+reset, and a framing rejection or a reserved-body `413` retires the connection instead.
+
+The rule runs in three steps, so the reset reaches the client neither too late nor too early:
+
+. *The body is stopped at once.* As soon as the answer is decided, the gateway stops reading the
+request body: the upstream request still receiving it is reset, so nothing more is forwarded, and the
+inbound stream is paused for good. A paused stream returns no flow-control window, so from then on
+the client can send no more than the window it already holds.
+. *The end waits until nothing more can arrive.* The final frame of the response -- the one carrying
+`END_STREAM` -- is held back until the client can send nothing more on the stream (its window is used
+up, or it has ended or lost the stream), or the window has not moved for 50 ms, or 1 s has passed,
+whichever comes first. A client that sees the complete response while it is still uploading resets
+the stream itself, and the HTTP/2 transport counts the resets a client sends against its
+per-connection Rapid-Reset limit; a reset written while the client's data is still on the way is no
+better, because the transport answers each data frame arriving after it with a `STREAM_CLOSED` reset
+of its own and counts those against the same limit. Holding the end back until nothing is in flight
+avoids both. The wait is bounded by the 1 s cap; the three values are constants of the gateway, not
+configuration.
+. *The reset follows the write.* The stream is reset once the end has been written -- a final frame
+still held back by HTTP/2 flow control would otherwise be discarded -- and only if the client has not
+ended the stream in the meantime.
+
+The late refusal of a body on a bodyless method (below) stays a `CANCEL` reset taken before the
+response ends, and neither the WebSocket upgrade nor the L4 passthrough relay is affected.
 
 [[_dispatch_body_framing]]
 *A bodyless method carries no body upstream, and a declared length frames the forwarded body.* The
@@ -421,10 +440,10 @@ upstream failure: no security warning is logged, the route's circuit breaker doe
 failure, and it is never retried. `INFO` `ApiSheriff-22` records it, latched per route, and
 `sheriff_errors_total` counts every occurrence under `event="INBOUND_BODY_ABORTED"`. A body that
 keeps arriving past the route's `max_body_bytes` cap is the separate `CONTENT_TOO_LARGE` (`413`).
-The gateway's own post-response reset (<<_http2_post_response_reset>>) is not one: it also resets
-the upstream request, but it is marked as the gateway's on the inbound body before it is issued, so
-neither it nor the transport error it may surface on the inbound stream is recorded as
-`INBOUND_BODY_ABORTED`.
+The gateway's own reset of an early-answered stream (<<_http2_post_response_reset>>) is not one: it
+also resets the upstream request, but it is marked as the gateway's on the inbound body before the
+response is ended, so neither it nor the transport error it may surface on the inbound stream is
+recorded as `INBOUND_BODY_ABORTED`.
 
 Not counted as a failure is not the same as not recorded. Like every dispatch the client ended -- a
 body over the cap, a body byte on a bodyless method, a body that disagrees with its declared length

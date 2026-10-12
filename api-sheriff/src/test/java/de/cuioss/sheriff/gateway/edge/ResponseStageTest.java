@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
@@ -220,7 +221,7 @@ class ResponseStageTest {
                     .compose(HttpClientRequest::send)
                     .onSuccess(upResp -> responseStage
                             .relay(upResp, clientReq.response(), false, null, Map.of(FRAME_OPTIONS, "DENY"),
-                                    Map.of(CSP, GATEWAY_POLICY))
+                                    Map.of(CSP, GATEWAY_POLICY), Supplier::get)
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
@@ -324,8 +325,10 @@ class ResponseStageTest {
                 client.request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, "/")
                         .compose(HttpClientRequest::send)
                         .onSuccess(upResp -> (withTrailers
-                                ? stage.relayWithTrailers(upResp, clientReq.response(), false, Map.of(), Map.of())
-                                : stage.relay(upResp, clientReq.response(), false, null, Map.of(), Map.of()))
+                                ? stage.relayWithTrailers(upResp, clientReq.response(), false, Map.of(), Map.of(),
+                                        Supplier::get)
+                                : stage.relay(upResp, clientReq.response(), false, null, Map.of(), Map.of(),
+                                        Supplier::get))
                                 .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                         .onFailure(failure -> clientReq.response().setStatusCode(502).end());
             }).listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");

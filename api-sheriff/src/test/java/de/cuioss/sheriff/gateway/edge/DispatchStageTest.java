@@ -444,6 +444,38 @@ class DispatchStageTest {
         }
 
         @Test
+        @DisplayName("a reset pauses the body for good: a later resume or fetch — the pipe's — does not read it again")
+        void resetPausesTheBodyForGood() {
+            subscribe();
+            inbound.resume();
+
+            inbound.resetByGateway();
+            boolean pausedByTheReset = source.paused();
+            inbound.resume();
+            inbound.fetch(1);
+
+            assertAll("a body the gateway reset",
+                    () -> assertTrue(pausedByTheReset, "the reset pauses the inbound stream"),
+                    () -> assertTrue(source.paused(), "a resume or fetch after the reset leaves it paused"));
+        }
+
+        @Test
+        @DisplayName("without a reset, resume and fetch reach the inbound stream as before")
+        void withoutAResetResumeAndFetchReachTheStream() {
+            subscribe();
+            inbound.pause();
+
+            inbound.resume();
+            boolean pausedAfterResume = source.paused();
+            inbound.pause();
+            inbound.fetch(1);
+
+            assertAll("a body the gateway did not reset",
+                    () -> assertFalse(pausedAfterResume, "a resume reaches the inbound stream"),
+                    () -> assertFalse(source.paused(), "a fetch reaches the inbound stream"));
+        }
+
+        @Test
         @DisplayName("the gateway-reset cause carries no stack trace and is one shared instance")
         void gatewayResetCauseIsStacklessAndShared() {
             AtomicReference<@Nullable Throwable> delivered = new AtomicReference<>();
@@ -1620,7 +1652,8 @@ class DispatchStageTest {
             }
             clientContext.runOnContext(_ -> {
                 try {
-                    responseStage.relay(response, request.response(), false, null, Map.of(), Map.of())
+                    responseStage.relay(response, request.response(), false, null, Map.of(), Map.of(),
+                                    java.util.function.Supplier::get)
                             .onFailure(failure -> abandon(request, failure));
                 } catch (IllegalStateException relayStartFailure) {
                     abandon(request, relayStartFailure);
@@ -1720,7 +1753,14 @@ class DispatchStageTest {
         private volatile @Nullable Handler<Throwable> exceptionHandler;
         private volatile @Nullable Handler<Void> endHandler;
         private volatile boolean resumed;
+        /** Whether the stream is paused now: set by {@link #pause()}, cleared by a resume or a fetch. */
+        private volatile boolean paused;
         private volatile @Nullable Buffer onResume;
+
+        /** @return {@code true} while the last call that changed the flow was a pause */
+        boolean paused() {
+            return paused;
+        }
 
         /** Emits {@code buffer} the moment a consumer resumes the stream, before {@link #resume()} returns. */
         void emitOnResume(Buffer buffer) {
@@ -1769,12 +1809,14 @@ class DispatchStageTest {
 
         @Override
         public ReadStream<Buffer> pause() {
+            paused = true;
             return this;
         }
 
         @Override
         public ReadStream<Buffer> resume() {
             resumed = true;
+            paused = false;
             Buffer pending = onResume;
             if (pending != null) {
                 onResume = null;
@@ -1785,6 +1827,7 @@ class DispatchStageTest {
 
         @Override
         public ReadStream<Buffer> fetch(long amount) {
+            paused = false;
             return this;
         }
 

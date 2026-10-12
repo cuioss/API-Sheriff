@@ -109,14 +109,15 @@ public final class GrpcStatusMapper {
      * @param response      the client response
      * @param eventType     the rejection event type
      * @param stageHeaders  the stage-0 security headers accumulated on the request
-     * @return the future completing once the rejection has been written, or empty when the response
-     *         was left untouched; a caller that ends the stream afterwards waits for it
+     * @param end           ends the composed response
+     * @return the future of that end, or empty when the response was left untouched
      */
     public Optional<Future<Void>> renderRejection(HttpServerResponse response, EventType eventType,
-            Map<String, String> stageHeaders) {
+            Map<String, String> stageHeaders, ResponseEnd end) {
         Objects.requireNonNull(response, "response");
         Objects.requireNonNull(eventType, "eventType");
         Objects.requireNonNull(stageHeaders, "stageHeaders");
+        Objects.requireNonNull(end, "end");
         if (response.ended() || response.headWritten()) {
             return Optional.empty();
         }
@@ -125,7 +126,7 @@ public final class GrpcStatusMapper {
         response.putHeader("content-type", GRPC_CONTENT_TYPE);
         response.putHeader(GRPC_STATUS_HEADER, Integer.toString(toGrpcStatus(eventType)));
         response.putHeader(GRPC_MESSAGE_HEADER, grpcMessage(eventType));
-        return Optional.of(response.end());
+        return Optional.of(end.end(response::end));
     }
 
     private static String grpcMessage(EventType eventType) {

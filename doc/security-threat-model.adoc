@@ -1248,8 +1248,9 @@ inherit this requirement.
 resets a client sends per connection, so a legitimate client that resets every upload stream answered
 before its body was sent -- as a Go client does -- would reach the guard's limit on an ordinary
 upload burst and lose the connection with every sibling stream. The gateway therefore resets every
-early-answered HTTP/2 stream itself: once the complete response has been written, a stream whose
-request body is still open is reset with `NO_ERROR`
+early-answered HTTP/2 stream itself: a stream whose request body is still open stops being read, and
+once no more of its body can arrive -- bounded to at most 1 s -- the complete response is ended and the
+stream reset with `NO_ERROR`
 (link:architecture.adoc#_http2_post_response_reset[Architecture -- post-response reset]), so such
 a client is told to stop sending and does not have to reset the stream itself. The guard itself is
 untouched: no
