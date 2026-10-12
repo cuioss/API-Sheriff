@@ -519,8 +519,8 @@ sources assign -- so the table is a test input, and a change to it is not a docu
 
 | `10465`
 | `sheriff-stub-idp-gateway`
-| `BffRefreshScopeWireIT`, `BffRefreshSingleFlightIT` and `BffRefreshTransientFailureIT`, through
-  `StubIdentityProviderRig` -- see <<stub-idp-rig>>
+| `BffRefreshScopeWireIT`, `BffRefreshSingleFlightIT`, `BffRefreshTransientFailureIT` and
+  `BffUnboundTokenResponseIT`, through `StubIdentityProviderRig` -- see <<stub-idp-rig>>
 
 | `10466`
 | `late-idp-gateway-<suffix>`
@@ -603,12 +603,18 @@ takes a port docker assigns on every interface.
 [#stub-idp-rig]
 === The stub identity-provider rig
 
-Three suites have to see, or to decide, what the identity provider is sent and what it answers: the
+Four suites have to see, or to decide, what the identity provider is sent and what it answers: the
 `scope` of a refresh grant (`BffRefreshScopeWireIT`), the number of refresh grants a burst of requests
-causes (`BffRefreshSingleFlightIT`), and a token endpoint that fails once (`BffRefreshTransientFailureIT`).
-The Compose Keycloak shows a test none of the three. The suites share one rig,
-`StubIdentityProviderRig`, in which a WireMock container stands in for the identity provider. Each
-test starts a rig of its own and closes it.
+causes (`BffRefreshSingleFlightIT`), a token endpoint that fails once (`BffRefreshTransientFailureIT`),
+and a code exchange answered with an access token that is not bound to the gateway's proof key
+(`BffUnboundTokenResponseIT`). The Compose Keycloak shows a test none of the four. The suites share
+one rig, `StubIdentityProviderRig`, in which a WireMock container stands in for the identity provider.
+Each test of the three refresh suites starts a rig of its own and closes it; `BffUnboundTokenResponseIT`
+starts one rig for the class and resets the stub before each of its logins.
+
+Every suite on the rig shares its fixed container names, network name and host ports, so no two of
+them may run at once. None carries the `sleep-bound` tag, and `FailsafeConcurrencyContractTest` keeps
+a class that uses the rig out of the concurrent Failsafe execution: they run in the sequential one.
 
 [cols="1,3"]
 |===
@@ -653,13 +659,15 @@ test starts a rig of its own and closes it.
 
 *What the stub serves.* The provider metadata document below the issuer, the key set on every
 `jwks.url` path the descriptor names, and the pushed-authorization-request, token and revocation
-endpoints. Tokens are signed with an RSA key generated when the rig starts, and every access token
-carries the thumbprint of the committed proof key as `cnf.jkt`, because the gateway refuses a token
-response that is not bound to its own proof key. The stub validates nothing. Its token endpoint
+endpoints. Tokens are signed with an RSA key generated when the rig starts, and by default every
+access token carries the thumbprint of the committed proof key as `cnf.jkt`, because the gateway
+refuses a token response that is not bound to its own proof key. `BffUnboundTokenResponseIT` scripts
+the other two bindings on purpose -- no `cnf` claim, and a `cnf.jkt` naming another committed key --
+to observe that refusal. The stub validates nothing. Its token endpoint
 refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
 passing unnoticed.
 
-*The key-rotation variant.* A fourth suite, `JwksKeyRotationIT`, has to replace the identity
+*The key-rotation variant.* A further suite, `JwksKeyRotationIT`, has to replace the identity
 provider's signing key while the gateway runs and count the key-set requests that follow. It starts
 the same rig through `StubIdentityProviderRig.startForKeyRotation()`. The stub, the network, the echo
 upstream, the mounts and the container names are those of the table above; the gateway differs in two
@@ -681,7 +689,7 @@ values:
   interface on a loopback port docker assigns.
 |===
 
-The committed descriptor declares neither key, so the gateway of the three refresh suites runs the
+The committed descriptor declares neither key, so the gateway of the four suites above runs the
 30-second default window. The variant shortens the window to the lowest value the gateway admits, so
 that a suite can wait a key replacement out; `refresh_interval_seconds` is left at its 600-second
 default, so nothing the suite observes is the background refresh. One rig runs at a time, whichever
