@@ -415,26 +415,39 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     /**
      * One unknown-key-id refresh: builds a fresh delegate and loads it without publishing it, so the
      * current delegate keeps answering until the outcome is known. Runs on the scheduler only.
+     * <p>
+     * The in-flight flag is released on every path that does not hand the fresh delegate to
+     * {@link #settleRefresh}, whatever ended it. A refresh is started by any caller that presents an
+     * unknown key id, so a flag left set by a failure nobody anticipated would switch the refresh off
+     * for this issuer until the next restart, and nothing would report it.
      */
     private void runRefresh(String kid) {
-        SecurityEventCounter counter = eventCounter.get();
-        if (closed.get() || counter == null) {
-            refreshInFlight.set(false);
-            return;
-        }
-        JwksLoader fresh;
+        JwksLoader fresh = null;
+        boolean handedToSettle = false;
         try {
+            SecurityEventCounter counter = eventCounter.get();
+            if (closed.get() || counter == null) {
+                return;
+            }
             fresh = Objects.requireNonNull(delegateFactory.get(), "delegate");
+            JwksLoader loading = fresh;
+            loadingRefresh.set(loading);
+            loading.initJWKSLoader(counter)
+                    .whenComplete((status, failure) -> settleRefresh(loading, kid, failure == null ? status : null));
+            handedToSettle = true;
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
-            // The same refusals runRetry handles. A refresh that cannot be built changes nothing: the
-            // loaded key set stays published and the next window may try again.
+            // The same refusals runRetry handles. A refresh that cannot be built or started changes
+            // nothing: the loaded key set stays published and the next window may try again.
             LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built for a refresh", issuerName);
-            refreshInFlight.set(false);
-            return;
+        } finally {
+            if (!handedToSettle) {
+                if (fresh != null) {
+                    loadingRefresh.compareAndSet(fresh, null);
+                    closeDelegate(fresh);
+                }
+                refreshInFlight.set(false);
+            }
         }
-        loadingRefresh.set(fresh);
-        fresh.initJWKSLoader(counter)
-                .whenComplete((status, failure) -> settleRefresh(fresh, kid, failure == null ? status : null));
     }
 
     /**

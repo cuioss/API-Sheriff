@@ -837,6 +837,33 @@ class RetryingJwksLoaderTest {
         }
 
         @Test
+        @DisplayName("a refresh build that fails in a way nobody anticipated does not switch the refresh off")
+        void unanticipatedRefreshBuildFailureReleasesTheRefresh() throws Exception {
+            // Arrange — the second build, which is the refresh, fails with a type the loader does not
+            // name among the refusals it expects from the factory
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = loader(() -> {
+                if (builds.incrementAndGet() == 2) {
+                    throw new UnsupportedOperationException("simulated unanticipated factory failure");
+                }
+                return trackedDelegate();
+            });
+            initialise(loader);
+            rotateSigningKey();
+
+            // Act — the failed refresh, then a lookup in the next window
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            drainScheduler(Duration.ZERO);
+            now.set(now.get().plus(WINDOW));
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+
+            // Assert — the next window's refresh ran, so the first failure left no in-flight claim behind
+            assertEquals(3, builds.get(), "the first delegate, the failed refresh and the next window's one");
+            loader.close();
+        }
+
+        @Test
         @DisplayName("a refresh holding the triggering key id is published and answers the next lookup")
         void refreshHoldingTheKeyIdIsPublished() throws Exception {
             // Arrange
