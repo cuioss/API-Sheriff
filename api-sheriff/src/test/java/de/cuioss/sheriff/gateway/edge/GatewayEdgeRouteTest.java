@@ -95,6 +95,7 @@ import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
+import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -112,6 +113,7 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.PoolOptions;
 import io.vertx.core.http.RequestOptions;
+import io.vertx.core.http.StreamResetException;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
@@ -555,6 +557,69 @@ class GatewayEdgeRouteTest {
                                 "the single pooled upstream connection must be free again for the next request"));
             } finally {
                 Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the relaying front server to close");
+                Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+                Awaits.teardown(upstream.close(), "the stub upstream to close");
+            }
+        }
+    }
+
+    /**
+     * A relay that completes hands its future to the edge's one post-write reset decision: an HTTP/2
+     * request whose body is still open when the relayed response has been written is then reset with
+     * {@code NO_ERROR}, so the client is told to stop sending instead of resetting the stream itself.
+     */
+    @Nested
+    @DisplayName("a relay that completes passes the post-write reset decision")
+    class RelayCompletion {
+
+        @Test
+        @DisplayName("HTTP/2 — a completed relay of a request whose body is still open ends in a NO_ERROR reset")
+        void completedRelayOfAnOpenUploadEndsInANoErrorReset() throws Exception {
+            String answer = Generators.letterStrings(4, 12).next();
+            HttpServer upstream = Awaits.connect(vertx.createHttpServer()
+                            .requestHandler(request -> request.response().end(answer))
+                            .listen(0, LoopbackHost.ADDRESS),
+                    "the stub upstream to start listening");
+            HttpClient upstreamClient = vertx.createHttpClient();
+            CompletableFuture<Boolean> bodyOpenWhenRelayed = new CompletableFuture<>();
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> upstreamClient
+                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .compose(request -> request.send().map(received -> {
+                        received.pause();
+                        return received;
+                    }))
+                    .onSuccess(received -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), received,
+                            () -> new ResponseStage(Set.of())
+                                    .relay(received, ctx.response(), false, null, Map.of(), Map.of())
+                                    .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
+            HttpServer front = Awaits.connect(
+                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the relaying front server to start listening");
+            HttpClient client = vertx.createHttpClient(new HttpClientOptions()
+                    .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
+            try {
+                HttpClientRequest upload = Awaits.connect(client.request(io.vertx.core.http.HttpMethod.POST,
+                        front.actualPort(), LoopbackHost.ADDRESS, "/upload"), "the upload stream to open");
+                CompletableFuture<Throwable> streamEnded = new CompletableFuture<>();
+                upload.exceptionHandler(streamEnded::complete);
+                Awaits.connect(upload.setChunked(true).write(Generators.letterStrings(4, 12).next()),
+                        "the first part of the upload to be sent");
+
+                String relayed = Awaits.connect(upload.response()
+                                .compose(response -> response.body().map(body -> response.statusCode() + " " + body)),
+                        "the relayed answer to arrive whole");
+                Throwable streamEnd = Awaits.connect(streamEnded, "the edge to reset the open upload stream");
+
+                assertAll("a completed relay of an open HTTP/2 upload",
+                        () -> assertEquals("200 " + answer, relayed, "the relayed response arrives whole first"),
+                        () -> assertTrue(Awaits.connect(bodyOpenWhenRelayed, "the relay to complete"),
+                                "the request body must still have been open when the relay completed"),
+                        () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
+                                "the stream is reset with NO_ERROR after the relay completed"));
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP/2 client to close");
                 Awaits.teardown(front.close(), "the relaying front server to close");
                 Awaits.teardown(upstreamClient.close(), "the upstream client to close");
                 Awaits.teardown(upstream.close(), "the stub upstream to close");

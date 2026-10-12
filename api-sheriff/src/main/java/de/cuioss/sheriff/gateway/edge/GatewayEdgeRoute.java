@@ -294,9 +294,11 @@ public class GatewayEdgeRoute {
      * answer is written on (see {@link #markFramingRejection}). The virtual-thread hop carries only the
      * {@link RoutingContext}, so the marker rides on it to the event-loop writer. */
     private static final String RETIRE_CONNECTION_KEY = "sheriff.retireconnection";
-    /** Set once a framing rejection has fallen on an HTTP/2 request: the writer that answers it then
-     * ends that one stream and leaves the connection open (see {@link #markFramingRejection}). Rides on
-     * the {@link RoutingContext} for the same reason as {@link #RETIRE_CONNECTION_KEY}. */
+    /** Set once a framing rejection — or a reserved-body {@code 413} — has fallen on an HTTP/2 request:
+     * its stream is then reset after the answer whether or not the request body has ended, the one
+     * case of the post-write reset rule that does not depend on the body (see
+     * {@link #endStreamOnceWritten}). Rides on the {@link RoutingContext} for the same reason as
+     * {@link #RETIRE_CONNECTION_KEY}. */
     private static final String END_STREAM_KEY = "sheriff.endstream";
     /** Holds the flag a bodyless request's late body refusal sets (see {@link #lateBodyRefusal}): the
      * response it reset is never ended afterwards by a relay failure. */
@@ -307,8 +309,9 @@ public class GatewayEdgeRoute {
     private static final long HTTP2_CANCEL = 0x8L;
     /** Holds the request body armed in {@link #handle} as a {@link DispatchStage.InboundBody}, so the
      * upstream dispatch — which runs after the virtual-thread hop — streams the body through the
-     * decorator that remembers an inbound failure. Absent on the reserved-body path, which reads its
-     * body itself and never dispatches upstream. */
+     * decorator that remembers an inbound failure, and so that {@link #endStreamOnceWritten} can mark
+     * the stream as reset by the gateway before it resets it. Absent on the reserved-body path, which
+     * reads its body itself and never dispatches upstream. */
     private static final String INBOUND_BODY_KEY = "sheriff.inboundbody";
     /** The fixed disposition the aborted-inbound-body record carries; nothing the client supplied. */
     private static final String INBOUND_BODY_ABORTED_DISPOSITION = "body-stream-failed";
@@ -800,10 +803,12 @@ public class GatewayEdgeRoute {
      *       {@code Connection: close} and the connection is closed once it has been written (see
      *       {@link #retireConnectionAfterResponse}), because unread body bytes would otherwise frame
      *       the next request on the same keep-alive connection.</li>
-     *   <li><strong>HTTP/2 — the stream.</strong> Only the offending stream is ended once the
-     *       {@code 413} has been written (see {@link #endMarkedStreamOnceWritten}); the stream reset
-     *       discards whatever body the client still sends, and the connection and every other stream
-     *       on it stay open. No {@code Connection} header is written.</li>
+     *   <li><strong>HTTP/2 — the stream.</strong> The request is marked under {@link #END_STREAM_KEY},
+     *       so the offending stream is reset with {@code NO_ERROR} once the {@code 413} has been
+     *       written, whether or not its body has ended — the marked case of the one post-write reset
+     *       rule (see {@link #endStreamOnceWritten}). The reset discards whatever body the client still
+     *       sends, and the connection and every other stream on it stay open. No {@code Connection}
+     *       header is written.</li>
      * </ul>
      */
     private void rejectOversizedReservedBody(RoutingContext ctx, long ceiling, String disposition) {
@@ -827,7 +832,7 @@ public class GatewayEdgeRoute {
      * before the response is ended.
      * <p>
      * It has two callers, both for an HTTP/1.x request only — an HTTP/2 rejection ends just its
-     * stream instead (see {@link #endMarkedStreamOnceWritten}) — and both retire the connection because
+     * stream instead (see {@link #endStreamOnceWritten}) — and both retire the connection because
      * the bytes behind the rejected request cannot be trusted to frame the next one:
      * <ul>
      *   <li>a {@code 413} reserved-body rejection, on BOTH of its paths (the pre-read
@@ -853,32 +858,68 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Ends the HTTP/2 stream of a request marked under {@link #END_STREAM_KEY}, once its response has
-     * been written, and leaves its connection open; a no-op for every other request. Called by the
-     * gateway-originated error writers — the problem document's, the HTML error page's and the gRPC
-     * trailers-only status's — on the event loop with the future of the call that ended the
-     * response.
+     * The one post-write stream decision every HTTP response end passes through: <strong>an HTTP/2
+     * response that ends while its request body is still open is followed by a stream reset with
+     * {@code NO_ERROR}</strong>, and the connection stays open. Called on the event loop with the
+     * future of the call that ended the response, by every writer that ends one — the relay
+     * ({@link #relayOnEventLoop}, on a relay that completed) and its failure answer
+     * ({@link #failRelay}), the problem document, the HTML error page and the portal page, the
+     * reserved-path answer, the buffered asset, the redirect, the short-circuit, the gRPC
+     * trailers-only status and the admission {@code 503}.
      * <p>
-     * The stream is reset with {@code NO_ERROR} after the complete response (RFC 9113 §8.1.1): the
-     * client is told to stop sending the rest of the request, and whatever it still sends on that
+     * The decision is taken inside the completion callback of {@code written}, on the event loop:
+     * <ul>
+     *   <li><strong>HTTP/1.x</strong> — nothing. A request there is never reset; where the bytes
+     *       behind a rejected request cannot be trusted, its connection is retired instead
+     *       ({@link #retireMarkedConnection}).</li>
+     *   <li><strong>HTTP/2, request marked under {@link #END_STREAM_KEY}</strong> (a framing rejection,
+     *       a reserved-body {@code 413}) — the stream is reset, whether or not the body has ended.</li>
+     *   <li><strong>HTTP/2, request body still open</strong> — the stream is reset. An upstream that
+     *       answered before reading the whole body, and every gateway-written answer to an upload,
+     *       end here.</li>
+     *   <li><strong>HTTP/2, request body ended</strong> — nothing: the stream is already complete.</li>
+     * </ul>
+     * <p>
+     * The reset tells the client to stop sending the rest of the request after the complete response
+     * (RFC 9113 §8.1.1), so it never has to reset the stream itself; whatever it still sends on that
      * stream is discarded by the transport. Every other stream multiplexed on the connection is
      * untouched. No {@code Connection} header is written — it is a connection-specific field HTTP/2
      * forbids.
+     * <p>
+     * <strong>The reset is the gateway's, not the client's.</strong> Immediately before it, the armed
+     * {@link DispatchStage.InboundBody} is marked as {@linkplain DispatchStage.InboundBody#resetByGateway()
+     * reset by the gateway}: the upstream request still receiving the body is reset — its forwarding
+     * stops — and the reset is never recorded as an {@link EventType#INBOUND_BODY_ABORTED}, nor is the
+     * transport error it may surface on the inbound stream.
      * <p>
      * <strong>The reset waits for the write, not for the end.</strong> A response is <em>ended</em> the
      * moment its last frame is handed to the transport, which may still hold that frame behind HTTP/2
      * flow control; a reset written then discards it, and the client receives the status with no
      * body. {@code written} completes only once the last frame has left the flow controller, so the
      * reset follows the complete response in every interleaving. A write that fails has left no
-     * response to protect, and the stream is reset all the same.
+     * response to protect, and the decision is taken all the same.
+     * <p>
+     * Not routed through here: the late body refusal of a bodyless request ({@link #lateBodyRefusal},
+     * which resets with {@code CANCEL} before any end), the WebSocket upgrade and the L4 passthrough
+     * relay.
      *
      * @param ctx     the request whose response was just ended
      * @param written the future of the call that ended the response
      */
-    private static void endMarkedStreamOnceWritten(RoutingContext ctx, Future<Void> written) {
-        if (ctx.get(END_STREAM_KEY) != null) {
-            written.onComplete(result -> ctx.response().reset(HTTP2_NO_ERROR));
+    private static void endStreamOnceWritten(RoutingContext ctx, Future<Void> written) {
+        if (isHttp1(ctx.request().version())) {
+            return;
         }
+        written.onComplete(result -> {
+            if (ctx.get(END_STREAM_KEY) == null && ctx.request().isEnded()) {
+                return;
+            }
+            DispatchStage.InboundBody armed = ctx.get(INBOUND_BODY_KEY);
+            if (armed != null) {
+                armed.resetByGateway();
+            }
+            ctx.response().reset(HTTP2_NO_ERROR);
+        });
     }
 
     private static boolean isHttp1(HttpVersion version) {
@@ -900,12 +941,13 @@ public class GatewayEdgeRoute {
      * <p>
      * <strong>HTTP/2 — the stream.</strong> Each request is framed by the transport on its own stream,
      * so a rejected request says nothing about its siblings. Only the rejected stream is ended: the
-     * {@code 400} is written, the stream is then reset, and nothing further arriving on it is
-     * processed. The connection stays open, it is never recorded as retired, and every other stream on
-     * it completes normally.
+     * {@code 400} is written, the stream is then reset with {@code NO_ERROR} — whether or not its body
+     * has ended, the marked case of the one post-write reset rule — and nothing further arriving on it
+     * is processed. The connection stays open, it is never recorded as retired, and every other stream
+     * on it completes normally.
      * <p>
      * The connection mark is acted on by {@link #retireMarkedConnection}, the stream mark by
-     * {@link #endMarkedStreamOnceWritten}. The gate itself is unchanged: the
+     * {@link #endStreamOnceWritten}. The gate itself is unchanged: the
      * rejection is rethrown as it was raised and is metered, logged and rendered like every other
      * {@link EventType#SECURITY_FILTER_VIOLATION}.
      *
@@ -923,9 +965,11 @@ public class GatewayEdgeRoute {
     /**
      * Marks how much of the inbound transport a framing rejection ends, by the negotiated HTTP
      * version, exactly as {@link #rejectFramingAndRetire} describes: an HTTP/1.x connection is
-     * recorded as retired at once and the answer retires it; an HTTP/2 request has only its own
-     * stream ended after the answer. Shared by the framing gate and by the dispatch, which refuses a
-     * body the headers did not declare (see {@link #dispatchRefusingOnFraming}).
+     * recorded as retired at once and the answer retires it; an HTTP/2 request is marked under
+     * {@link #END_STREAM_KEY}, so its own stream is reset after the answer even when its body has
+     * already ended (see {@link #endStreamOnceWritten}). Shared by the framing gate and by the
+     * dispatch, which refuses a body the headers did not declare (see
+     * {@link #dispatchRefusingOnFraming}).
      */
     private void markFramingRejection(RoutingContext ctx) {
         if (isHttp1(ctx.request().version())) {
@@ -940,7 +984,7 @@ public class GatewayEdgeRoute {
      * Applies the connection mark {@link #rejectFramingAndRetire} left on the request: retires the
      * HTTP/1.x connection; a no-op for every other request. Called by the gateway-originated error
      * writers on the event loop, immediately before they end the response. The HTTP/2 stream mark is
-     * applied after the response was ended instead, by {@link #endMarkedStreamOnceWritten}.
+     * applied after the response was written instead, by {@link #endStreamOnceWritten}.
      */
     private static void retireMarkedConnection(RoutingContext ctx) {
         if (ctx.get(RETIRE_CONNECTION_KEY) != null) {
@@ -1299,7 +1343,7 @@ public class GatewayEdgeRoute {
                 response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
             }
             retireMarkedConnection(ctx);
-            endMarkedStreamOnceWritten(ctx, response.end(portal.body()));
+            endStreamOnceWritten(ctx, response.end(portal.body()));
         });
     }
 
@@ -1440,7 +1484,7 @@ public class GatewayEdgeRoute {
             response.locationOptional().ifPresent(location -> httpResponse.putHeader(LOCATION_HEADER, location));
             // Multiple Set-Cookie headers must each be a distinct header line (never a comma-joined value).
             response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
-            response.jsonBodyOptional().ifPresentOrElse(httpResponse::end, httpResponse::end);
+            endStreamOnceWritten(ctx, response.jsonBodyOptional().map(httpResponse::end).orElseGet(httpResponse::end));
         });
     }
 
@@ -1707,7 +1751,7 @@ public class GatewayEdgeRoute {
             // so they win any name collision.
             stageHeaders.forEach(response::putHeader);
             served.headers().forEach(response::putHeader);
-            endMarkedStreamOnceWritten(ctx, response.end(Buffer.buffer(served.body())));
+            endStreamOnceWritten(ctx, response.end(Buffer.buffer(served.body())));
         });
     }
 
@@ -1786,6 +1830,12 @@ public class GatewayEdgeRoute {
      * reset. For a response that already ended the reset is a no-op. A failure the relay reports on its
      * future goes to {@code failRelay} as described above; the upstream exchange is not reset on that
      * path.
+     * <p>
+     * <strong>A relay that completes passes the post-write reset decision.</strong> The relay's future
+     * completes once the client response has been ended and written, so a successful one is handed to
+     * {@link #endStreamOnceWritten}: an HTTP/2 stream whose request body is still open — an upstream
+     * that answered before reading the whole body — is then reset with {@code NO_ERROR}, and the
+     * upstream request still receiving that body is reset with it.
      *
      * @param ctx             the request whose response the relay writes
      * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
@@ -1795,23 +1845,48 @@ public class GatewayEdgeRoute {
     static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, HttpClientResponse upstream,
             Supplier<Future<Void>> relay) {
         ctx.vertx().runOnContext(v -> {
-            Future<Void> relayed;
-            // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
-            // must be answered, so no narrower catch is correct. The failure is not swallowed — it is
-            // handed to failRelay exactly like a failure the relay reports on its future.
-            // cui-rewrite:disable InvalidExceptionUsageRecipe
-            try {
-                applyStageSetCookies(ctx.response(), stageSetCookies);
-                relayed = relay.get();
-            } catch (RuntimeException startFailure) {
-                // Nothing consumes the paused upstream response once the relay did not start: release it.
-                upstream.request().reset();
-                relayed = Future.failedFuture(startFailure);
-            }
-            relayed.onFailure(failure -> failRelay(ctx, failure));
+            Future<Void> relayed = startRelay(ctx, stageSetCookies, upstream, relay);
+            relayed.onComplete(result -> {
+                if (result.succeeded()) {
+                    endStreamOnceWritten(ctx, relayed);
+                } else {
+                    failRelay(ctx, result.cause());
+                }
+            });
         });
     }
 
+    /**
+     * Starts the relay on the event loop, turning a failure thrown while starting it into a failed
+     * future after releasing the paused upstream response (see {@link #relayOnEventLoop}).
+     */
+    private static Future<Void> startRelay(RoutingContext ctx, List<String> stageSetCookies,
+            HttpClientResponse upstream, Supplier<Future<Void>> relay) {
+        // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
+        // must be answered, so no narrower catch is correct. The failure is not swallowed — it is
+        // handed to failRelay exactly like a failure the relay reports on its future.
+        // cui-rewrite:disable InvalidExceptionUsageRecipe
+        try {
+            applyStageSetCookies(ctx.response(), stageSetCookies);
+            return relay.get();
+        } catch (RuntimeException startFailure) {
+            // Nothing consumes the paused upstream response once the relay did not start: release it.
+            upstream.request().reset();
+            return Future.failedFuture(startFailure);
+        }
+    }
+
+    /**
+     * Answers a relay that failed: a {@code 502} when the response head was not yet written, otherwise
+     * the end of the truncated response, so the client is never left waiting. The future of that
+     * {@code end()} passes the post-write reset decision ({@link #endStreamOnceWritten}) like every other
+     * response end: an HTTP/2 stream whose request body is still open is reset with {@code NO_ERROR}
+     * once it has been written. A response a late body refusal reset ({@link #lateBodyRefusal}) is
+     * never ended here.
+     *
+     * @param ctx     the request whose relay failed
+     * @param failure the relay's failure, logged at {@code DEBUG} only
+     */
     private static void failRelay(RoutingContext ctx, Throwable failure) {
         LOGGER.debug(failure, "Response relay failed: %s", failure.getMessage());
         ctx.vertx().runOnContext(v -> {
@@ -1832,7 +1907,7 @@ public class GatewayEdgeRoute {
                 response.headers().remove(CONTENT_LENGTH_HEADER);
                 response.setStatusCode(BAD_GATEWAY);
             }
-            response.end();
+            endStreamOnceWritten(ctx, response.end());
         });
     }
 
@@ -1878,7 +1953,7 @@ public class GatewayEdgeRoute {
                         SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), answer.vary()));
             }
             response.putHeader(LOCATION_HEADER, answer.location());
-            response.end();
+            endStreamOnceWritten(ctx, response.end());
         });
     }
 
@@ -1894,7 +1969,7 @@ public class GatewayEdgeRoute {
             response.setStatusCode(status);
             responseHeaders.forEach(response::putHeader);
             applyStageSetCookies(response, setCookies);
-            response.end();
+            endStreamOnceWritten(ctx, response.end());
         });
     }
 
@@ -1918,10 +1993,10 @@ public class GatewayEdgeRoute {
             List<String> setCookies = request.responseSetCookies();
             ctx.vertx().runOnContext(v -> {
                 applyStageSetCookies(ctx.response(), setCookies);
-                // A framing rejection ends its stream on a gRPC route as on every other: the
-                // trailers-only status first, then the reset.
+                // The trailers-only status passes the post-write reset decision like every other
+                // answer: the status is written first, then an open or marked stream is reset.
                 grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders)
-                        .ifPresent(written -> endMarkedStreamOnceWritten(ctx, written));
+                        .ifPresent(written -> endStreamOnceWritten(ctx, written));
             });
             return;
         }
@@ -2009,7 +2084,7 @@ public class GatewayEdgeRoute {
             applyStageSetCookies(response, setCookies);
             response.putHeader("Content-Type", PROBLEM_JSON);
             retireMarkedConnection(ctx);
-            endMarkedStreamOnceWritten(ctx, response.end(body));
+            endStreamOnceWritten(ctx, response.end(body));
         });
     }
 
@@ -2041,10 +2116,17 @@ public class GatewayEdgeRoute {
         return body.append('}').toString();
     }
 
+    /**
+     * Answers a request the edge refuses before or instead of processing it — the admission or
+     * draining {@code 503}, an executor rejection, an exhausted WebSocket relay budget — with a bare
+     * status. Called on the event loop; the end passes the post-write reset decision
+     * ({@link #endStreamOnceWritten}), so an HTTP/2 upload refused here has its open stream reset with
+     * {@code NO_ERROR} once the answer has been written.
+     */
     private static void reject(RoutingContext ctx, int status) {
         HttpServerResponse response = ctx.response();
         if (!response.ended()) {
-            response.setStatusCode(status).end();
+            endStreamOnceWritten(ctx, response.setStatusCode(status).end());
         }
     }
 

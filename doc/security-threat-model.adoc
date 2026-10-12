@@ -1244,6 +1244,18 @@ over-limit connections; re-derive Content-Length on any downgrade; never forward
 proxies gRPC over upstream h2 -- both the terminated and forced-h2-upstream sides
 inherit this requirement.
 
+*Note -- early-answered uploads do not feed the reset count.* The Rapid-Reset guard counts the
+resets a client sends per connection, so a legitimate client that resets every upload stream answered
+before its body was sent -- as a Go client does -- would reach the guard's limit on an ordinary
+upload burst and lose the connection with every sibling stream. The gateway therefore resets every
+early-answered HTTP/2 stream itself: once the complete response has been written, a stream whose
+request body is still open is reset with `NO_ERROR`
+(link:architecture.adoc#_http2_post_response_reset[Architecture -- post-response reset]), so such
+a client is told to stop sending and does not have to reset the stream itself. The guard itself is
+untouched: no
+`quarkus.http.limits.rst-flood-*` key is set or changed, and this note does not change the status
+below.
+
 *Status:* GAP. Quarkus/Netty ship some Rapid-Reset mitigation, but stream-reset rate limiting
 and CONTINUATION bounds must be verified and pinned, and h2c-upgrade non-forwarding asserted.
 This spans both the terminated h2 edge and the forced-h2 gRPC upstream.
