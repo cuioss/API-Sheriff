@@ -45,6 +45,14 @@ decision.
 
 <!-- ANNOTATION ZONE — hand-written, and deliberately OUTSIDE the generated table markers. -->
 
+- **PLAN-24 — launched 2026-10-12, not confirmed running.** Runs alone in practice: every other staged
+  spec overlaps it. Carries the test-harness rules PLAN-25 introduced (fixed all-interface ports, the
+  contract-tested port table, the retired dead ports).
+- **PLAN-27 (staged 2026-10-12, WS-02) — IT evidence, round two.** Tests and records. Needs PLAN-25's
+  stub identity provider, which is on `main`. Sequence it after PLAN-24: both add suites to the native
+  integration job, and two plans doing that at once is exactly what exceeded the job limit last time.
+- PLAN-25 — shipped #408. The pairing note below ("pairs with anything") held for files and failed for
+  the CI job's wall-clock.
 - **Flow is sequential in practice.** Every staged pair overlaps on `doc/configuration.adoc`, the schemas
   or `GatewayEdgeRoute.java`, so `parallelization_scope` 2 has never yielded a second slot. Both landings
   also expanded their real surface ~3x beyond the declaration, so a `disjoint` verdict here is weak
@@ -104,6 +112,48 @@ decision.
   `landings/`.
 
 ## Decisions
+
+- 2026-10-12 — **PLAN-25 shipped** as PR #408 / b7f937d3 (the ten downstream-documented properties at
+  IT level; 11/11 plan deliverables; 35h01m wall, 11.7M tokens). Landing record: `landings/PLAN-25.md`.
+  The first landing since the ledger relocation to arrive over the inbox channel, and `landing-check`
+  reports it complete. Corroborated against `ci pr view 408` and the commit's ancestry on `origin/main`.
+  - **The post-merge benchmark FAILED and stayed red for nine merges.** The pending-login flood shipped as
+    a k6 goal that had never run against a stack; inside the compose network it sent `Host: api-sheriff`,
+    and the gateway answers its reserved login path only for the host of `oidc.redirect_uri`. #427 moved
+    the flood into the suite as `BffPendingLoginBoundIT`; the benchmark is green again (run 38073671464).
+    Not a gateway defect. The plan's own PR had listed "M-41 against a stack" as an unticked box.
+  - **The tests-only rule bent once**, by operator decision: `Retry-After: 5` on the open-circuit `503`.
+    The spec's STOP-and-file rule was not followed for that row.
+  - **D5's blocked rows shipped** by a scoped, named exemption in `ItProfileConfigBindingWiringTest` —
+    the "decision, not a test detail" the 2026-10-05 cleanup said it needed, taken by the operator.
+  - **The override pairing with `api-sheriff-0-2-0/PLAN-V02-01` collided as predicted, plus once in a way
+    no surface can predict** — see the new Watch on the integration job's wall-clock.
+- 2026-10-12 — **Drain 3: 18 messages, 18 archived, 0 invalid.** One landing reconciled; 15 candidate
+  lessons PROMOTED to the lessons corpus (`2026-10-12-07-001` to `-015`: ten for plan-marshall components,
+  filed with `--allow-foreign-store`, five for this project's own components); one DISCARDED (`-006`, the
+  gate rewriting 282 untouched files — fixed once on `main` by #415); `kidicap-gateway-downstream-013`
+  STAGED as PLAN-27. Promotion over discard, unlike 2026-09-21: the corpus now holds project-component
+  lessons (`2026-10-02-12-007`, `-008`), so the earlier "not that shape" ground no longer holds. Message
+  `-014` was promoted with a marked correction — its sender flagged one of its own observations as wrong,
+  and the orchestrator re-ran the three `pr comments` argument forms to confirm.
+- 2026-10-12 — **PLAN-27 staged** (WS-02, 5 deliverables): the downstream's two new IT requests (M-62
+  unbound DPoP token response refused; M-64 scope-driven refresh through the gateway) plus PLAN-25's
+  leftovers — the two decisions `adr-propose` never saw, the five security-audit findings left pending
+  triage, and the test-hygiene items #408 names. Alternative considered: fold M-62/M-64 into PLAN-24 or
+  PLAN-21 because they share the IT directory — rejected, neither is about JWKS or the login flood.
+- 2026-10-12 — **PLAN-24 emitted and marked launched** (`auto_emit`). The in-flight set is empty
+  repo-wide: on `origin/main` PLAN-V02-01 is `shipped` (#409/#410/#412) and no sibling row is launched or
+  running. PLAN-24's six claims were re-checked and re-stamped at `fdcfaeb3`, all corroborated. Its
+  Expected Surface gained `OneOffGatewayContainers.java` and the topology document (14→16), because every
+  test-started container now goes through that harness and its contract-tested port table. Second slot
+  left EMPTY: every other staged spec overlaps PLAN-24 (PLAN-26 on 3 entries, PLAN-27 on 4, PLAN-21 on 7,
+  PLAN-20 on 10). ⚠ The gate was read as the standard states it — disjointness against plans IN FLIGHT.
+  Read literally, `orchestrate.md` refuses any candidate with any overlap row, and every spec here has
+  rows against shipped and merely-staged specs, so that reading can never emit anything in this epic.
+- 2026-10-12 — Folds, both adding no file surface: PLAN-21 told that the flood test exists and must be
+  amended, not duplicated; PLAN-20 given the downstream's two step-up observations (`step_up_url` returns
+  to the API URL; under PAR an unknown scope is refused at the push as `400 invalid_request`). ADR
+  next-free ordinal corrected again, 0062→0063, in PLAN-24 and PLAN-26.
 
 - 2026-10-06 — **Cleanup at `6788bdae`: 28 claims re-grounded across the five staged specs, none newly
   contradicted, four specs corrected.** Twenty commits had landed since the last pass (`35f2bb37`), three of
@@ -256,12 +306,29 @@ decision.
 
 > ↪ Relocated to `settled.md` § "PLAN-15 follow-ups filed as issues" — all seven are filed as #323-#329
 
+- **A configuration key that parses and does not act: `circuit_breaker.reset_ms`.** The breaker uses a
+  fixed 5 s delay and never reads the per-route value (stated in PR #408's body, not re-traced by the
+  orchestrator); `doc/architecture.adoc` still says in one passage that the breaker "half-opens after
+  `reset_ms`". Staged as PLAN-27 deliverable 3. — source: `landings/PLAN-25.md`
+- PLAN-25 merged with `adr-propose` never run and five security-audit findings "pending triage" (test
+  ports on all interfaces, the TLS-relaxation guard exemption, the nginx image pin, `Retry-After` without
+  jitter, the stub IdP's admin API). Staged as PLAN-27 deliverables 3 and 4. The nginx row looks already
+  fixed: `BffTlsRelaxationIT` pins tag and digest at `fdcfaeb3`. — source: `landings/PLAN-25.md`
+- **The shared ledger worktree was 23 commits behind `origin/main`** when this drain ran, so the sibling
+  epics' queue rows it holds were stale: it showed PLAN-V02-01 as `launched` while `main` has it
+  `shipped`. `corpus cross-check` and the `next` gate read the worktree, so they judged the in-flight set
+  from stale rows; the orchestrator read the rows from `origin/main` by hand instead. The next `land`
+  resyncs the tree. Mechanism (another session lands the sibling ledger from elsewhere and this tree is
+  never pulled) is plugin-side. — observed 2026-10-12
+
 - **ADR-0050** (portal / HTML error pages, from PLAN-16) was committed with status **Proposed**.
   Accepting it is an operator decision on repository source — outside the orchestrator's write boundary.
   — source: `landings/PLAN-16.md`
 - Two product gaps PLAN-16 shipped knowingly, both carried in PR #343: an error response that can be
   negotiated to HTML or JSON sends no `Vary: Accept` (the HTML variant is `no-store`, so the risk is a
-  shared-cache mismatch on the JSON variant), and no unit test covers the 504 upstream-timeout error page.
+  shared-cache mismatch on the JSON variant), and no unit test covers the 504 upstream-timeout error page
+  (**the 504 half is CLOSED 2026-10-12**: PLAN-25's `HtmlErrorPageIT` pins the 503 and 504 pages at IT
+  level; the `Vary: Accept` half stays open).
   Small; fold into a later plan touching that surface rather than staging one. — source:
   `landings/PLAN-16.md`
 - Project config housekeeping, both operator actions: `marshal.json` is older than the installed
@@ -412,6 +479,31 @@ decision.
   token" and "revoke at the IdP" mean. — observed 2026-10-02 by the orchestrator
 
 ## Watches
+
+- **Two plans that each add integration suites collide on the native integration job's wall-clock, even
+  with disjoint files.** PLAN-25 and PLAN-V02-01 were each green alone; combined they hit the job's
+  35-minute limit (raised to 60 in #408, cycle shortened by #424). The disjointness gate cannot see this.
+  Before pairing any two of PLAN-24, PLAN-27, PLAN-21 and PLAN-20, check the job's current duration
+  against its limit. — trigger: every `next` selection that fills a second slot; source:
+  `landings/PLAN-25.md`, lesson `2026-10-12-07-005`
+- **Tests the downstream cites as its evidence — do not remove or rename unnoticed.** PLAN-25's nine
+  suites (`BffReservedPathPrecedenceIT`, `BffRefreshSingleFlightIT`, `BffRefreshScopeWireIT`,
+  `BffRefreshTransientFailureIT`, `BffTlsRelaxationIT`, `HtmlErrorPageIT`, `BffSessionAbsoluteTtlIT`,
+  `BffSessionInstanceIsolationIT`, `BffPendingLoginBoundIT`), the six the PLAN-25 spec lists as already
+  pinned, and for M-61 `BffSessionScopeParityIT.navigationNeedingARefusedScopeIsRefusedAtThePush` and
+  `.xhrNeedingARefusedScopeIsRefusedAndTheSessionSurvives`. — trigger: any plan refactoring the IT
+  directory; source: inbox `kidicap-gateway-downstream-012.md`, `-013.md`
+- **The downstream is on 0.2.4** and reports PLAN-19 (`session_fallback`), PLAN-23 (session-route scopes,
+  `step_up_url`) and #377 (PAR/DPoP, in client-secret mode) working against Keycloak 26.7.4, with two
+  workarounds removed. This settles the "tell the downstream" half of the fired release watch below for
+  those items. Two things it noticed and did not request: the default
+  `oidc.client_authentication.jwks_path` (`/auth/jwks`) lies outside a build-time context path, like
+  `login.default_return_url`'s default; and with a pushed request Keycloak adds a `302` to its own
+  `login-actions` address before the form. — trigger: any plan touching reserved-path defaults; source:
+  inbox `kidicap-gateway-downstream-013.md`
+- Declared surface versus footprint, fifth measurement: PLAN-25 declared 8 entries and touched 40 files
+  (14 undeclared, 2 untouched), but 26 of the 40 sat inside its two declared directories. Directory
+  declarations absorb growth that file lists do not. — source: `landings/PLAN-25.md`
 
 - **The "0.2.2 release" trigger named by five watches below has FIRED — three times over.** Tags 0.2.2,
   0.2.3 and 0.2.4 exist (observed 2026-10-06). The actions those watches owe are: the breaking-change

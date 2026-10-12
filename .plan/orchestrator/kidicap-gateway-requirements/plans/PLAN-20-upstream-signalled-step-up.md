@@ -122,6 +122,23 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
    contract test against a repeat. Nothing to do; left in place as a numbered record of the fold and its
    retirement rather than silently deleted.
 
+> **Folded 2026-10-12 from `kidicap-gateway-downstream-013.md`** (the downstream on 0.2.4, measured against
+> Keycloak 26.7.4). Two observations bear on this plan and on no other:
+>
+> - **`step_up_url` returns to the refused API URL.** PLAN-23's step-up path takes its scopes from the route
+>   behind `returnUrl` and returns to that same `returnUrl`, which for an SPA is not a usable landing. The
+>   downstream works around it for gateway-declared scopes with a surface route; it says the gap matters
+>   exactly for a backend-signalled scope — this plan. Deliverable 3's completion signal to the opener is
+>   therefore the requirement, not an option: do not reuse the return-to-`returnUrl` behaviour.
+> - **With a pushed request, an unknown or unassigned scope is refused at the PUSH, as `400
+>   invalid_request` ("Invalid scopes"), not as `invalid_scope`.** The flow in Source and deliverable 4 were
+>   written before PAR (#377) and expect `error=invalid_scope` on the callback. Under PAR the refusal
+>   arrives before any redirect, with a different error code. Deliverable 4 must handle the refusal where
+>   it now occurs; `BffSessionScopeParityIT.navigationNeedingARefusedScopeIsRefusedAtThePush` shows the
+>   gateway-declared leg doing so.
+>
+> Neither adds a file surface: both land in files this spec already declares.
+
 ## Claim Labels
 
 - OBSERVED: `BffRuntime.stepUpCoordinator()` has no production caller — the only references are `BffRuntimeProducerTest`; grep over `api-sheriff/src/main` at 93a4b3e finds the accessor's declaration and nothing else — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/BffRuntime.java` § `stepUpCoordinator`

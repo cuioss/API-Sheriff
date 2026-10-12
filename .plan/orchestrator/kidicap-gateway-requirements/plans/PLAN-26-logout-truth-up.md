@@ -41,7 +41,7 @@ because the component is this project's own.
 > |---|---|---|
 > | **1** | **mostly done** | `doc/security-threat-model.adoc` already carries a *"Not delivered: token revocation at logout"* paragraph (1904-1910), added by PLAN-23's own merge `e445e299`. The hook is still a no-op (`BffRuntimeProducer.buildLogoutEndpoint:1092-1096` passes `sessionRecord -> {}`). What still OVER-CLAIMS is narrower than filed: the **Control line (1871)** says the gateway revokes the refresh-token family, and the **summary row (2955)** reads `COVERED (server)` with no revocation caveat. Correct those two lines — do not rewrite the section |
 > | **3** | ⛔ **already done** | The accepted cookie-mode residual is already documented with its bound and mitigations (1912-1928) and the summary row already reads `PARTIAL-accepted (cookie: a response in flight can outlast the logout)`. ADR-0018 and ADR-0057 record it too. CodeRabbit's Medium rating is therefore already disposed of in the record. **Drop this deliverable** unless the re-read finds the bound understated |
-> | **5** | ordinal moved | the next free ADR ordinal is **0062** (re-checked 2026-10-06 at `6788bdae`) — 0058 (PAR/DPoP), 0059 (routing), **0060 (dispatch framing)** and **0061 (offline config validation)** are taken. The filing's "do not take 0053" warning is stale, and so was this row's own 0060 |
+> | **5** | ordinal moved | the next free ADR ordinal is **0063** (re-checked 2026-10-12 at `fdcfaeb3`; 0062 is the ADR-0005 supersession) — 0058 (PAR/DPoP), 0059 (routing), **0060 (dispatch framing)** and **0061 (offline config validation)** are taken. The filing's "do not take 0053" warning is stale, and so was this row's own 0060 |
 > | 2, 4 | unchanged | the revocation-seam decision and the problem+json ADR still stand; no ADR states either rule at HEAD (ADR-0059 mentions an extension member only inside a rejected alias) |
 >
 > ⚠ **Line references re-measured 2026-10-06 at `6788bdae`** — #386 added ~59 lines above this section of the
@@ -77,7 +77,7 @@ because the component is this project's own.
    `oidc.step_up.path`, `oidc.login.path` and `oidc.user_info.path` (refusing query, fragment, backslash,
    control characters, whitespace). The ADR check suggests an **ADR-0018 amendment** rather than a new
    record; evaluate both and take the one that keeps the reserved-path model in one place.
-   ⚠ The next free ordinal is **0062** (0053 and 0056–0061 taken — re-checked 2026-10-06 at `6788bdae`); confirm by listing `doc/adr/` rather than
+   ⚠ The next free ordinal is **0063** (0053 and 0056–0062 taken — re-checked 2026-10-12 at `fdcfaeb3`); confirm by listing `doc/adr/` rather than
    trusting `manage-adr scan`, whose success payload omits the duplicate population entirely (plan-marshall
    lesson `2026-10-02-13-00x`; this is how `main` carried two ADR-0053 files for a week).
 
