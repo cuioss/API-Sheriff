@@ -313,6 +313,11 @@ public final class SealedSessionCookieCodec {
 
     /**
      * Seals a payload into the cookie value.
+     * <p>
+     * A successful seal is not logged here: only the caller knows whether the seal is the creating
+     * write of a login or a re-seal after a refresh, step-up or widening, and the two are logged at
+     * different levels ({@code CookieSessionBinding}). Only the over-budget refusal is logged by the
+     * codec itself.
      *
      * @param payload the session payload to seal
      * @return the base64url-encoded sealed cookie value
@@ -343,7 +348,6 @@ public final class SealedSessionCookieCodec {
             LOGGER.warn(BffLogMessages.WARN.COOKIE_SIZE_BUDGET_EXCEEDED, encoded.length());
             throw new CookieSizeBudgetExceededException(encoded.length(), maxCookieValueBytes);
         }
-        LOGGER.info(BffLogMessages.INFO.COOKIE_SESSION_SEALED, encoded.length());
         return encoded;
     }
 
