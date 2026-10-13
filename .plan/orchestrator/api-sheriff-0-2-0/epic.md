@@ -76,6 +76,13 @@ would otherwise force a retrofit.
   they wait on the same release. **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
   half and runs after V02-23.
+- **`PLAN-V02-21` shipped 2026-10-13** as #439 (`48e8d5a6`): D1, D2, D3 and D5; D4 (`ImageMetadataIT`)
+  declined by the operator at refine. `integration-tests/docker-compose.yml` now has two YAML
+  anchors (`x-gateway-hardening`, `x-gateway-backend-deps`) merged into all twelve gateway services,
+  and `start-integration-container.sh` selects readiness targets positively (`^api-sheriff`) and
+  emits `port …` rows: any plan adding a gateway service or a compose port merges the anchors and
+  follows that row format (`PLAN-V02-23` D8, `PLAN-V02-12`'s held D3). Landing:
+  `landings/PLAN-V02-21.md`.
 - **Every ADR-authoring plan** (V02-04, V02-06, V02-11, V02-12): the next free ordinal on
   `origin/main` at `09edaea9` is `0067` — `0063`–`0065` came from the `kidicap-gateway-requirements`
   epic (#430 and its siblings), `0066` from the spin-off #431. Ordinals move fast; derive at write time. ADR-0005 is `Superseded by ADR-0062`; ADR-0018,
@@ -348,6 +355,12 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **`PLAN-V02-21` DOCUMENTATION LEFTOVERS, NONE STAGED** (added 2026-10-13, from the landing).
+  ADR-0031 line 115 still says the integration stack runs "seven gateway instances"; there are twelve.
+  `demo-client/scripts/start-dev-environment.sh` keeps a literal `120` for its Keycloak wait (lines
+  244–255), against the amended ADR-0031's one-named-constant rule. Natural home for the script:
+  `PLAN-V02-22`, which already declares that file; fold both at its outline.
 
 - **HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS, NONE STAGED** (added 2026-10-13). The `main` push
   `Maven Build` on `09edaea9` (#431, run 38364519502) failed in `build (25)`:
