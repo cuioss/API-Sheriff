@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: A host-side bring-up gate restates neither scheme, published port nor management context path -- it derives all three from the resolved Compose model via the service's management-scheme and management-root-path labels -- and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a readiness assertion behind it -- a single shot in the integration stack, a bounded poll in the operator sample.
+// summary: A host-side bring-up gate restates neither scheme, published port nor management context path -- it derives all three from the resolved Compose model, the scheme and context path via the service's management-scheme and management-root-path labels and the port from the service's published ports -- while the host is the fixed host-side invariant localhost; and it asserts readiness rather than liveness. The waiting is delegated to the image's own container health check, whose cadence is declared once in the Dockerfile and consumed by compose up --wait; the host keeps a --wait-timeout bound and a readiness assertion behind it -- a single shot in the integration stack, a bounded poll in the operator sample. Every host-side wait that still polls takes its attempt count from one named constant declared once in its script.
 // tags: readiness, bring-up, integration-tests, compose-model, probe-derivation, container-health
 // affects: integration-tests, demo-client
 // supersedes:
@@ -61,8 +61,16 @@ its management interface speaks, and the management context path that interface
 is served beneath, from the model -- the scheme and the context path each via an
 explicit per-service label (`de.cuioss.sheriff.management-scheme` and
 `de.cuioss.sheriff.management-root-path`) rather than by inferring either from a
-name or a port number. No
-host and no *published* host port is restated in the script. The container-side
+name or a port number. No *published* host port, no scheme and no context path is
+restated in the script.
+
+The host is the one part of the probe target that is spelled out, and deliberately so:
+every probe addresses the literal `localhost`. The probe runs on the Docker host, and
+the management interfaces serve a certificate bundle issued for `localhost`, so the
+host is an invariant of where the probe runs rather than a per-service fact the model
+could supply. There is nothing for a derivation to read.
+
+The container-side
 management port remains a fixed literal, used as the selector that picks the
 management binding out of each service's port list; that is a stable
 platform-level contract rather than a per-instance fact, so it is not a
@@ -141,6 +149,17 @@ to its 30-second cap (1 + 2 + 4 + 8 + 16 + 30 = 61 s), with the rest as slack. I
 bounds the wait and never widens what counts as ready, and the integration stack,
 which does supply the ordering guarantee, keeps the single shot.
 
+Some waits are still host-side polls, because there is no baked health check to
+delegate them to: the integration stack's Keycloak gate and its backend gates
+(go-httpbin, and nginx-static under the benchmark overlay), the operator sample's
+bounded readiness wait, and demo-client's waits. Each such gate takes its attempt
+count from one named constant, declared once in its script and handed to the loop --
+`KEYCLOAK_WAIT_ATTEMPTS` and `BACKEND_WAIT_ATTEMPTS` in
+`start-integration-container.sh`, which passes both to its single `wait_for_url`
+helper, and `READY_ATTEMPTS` in `start-sample.sh`. The count is never restated as a
+literal in the loop bound, the exhaustion check and the progress message, where the
+copies could be re-tuned apart.
+
 **Scope note.** These amendments describe the integration stack's
 `start-integration-container.sh` and the operator sample's `start-sample.sh`.
 `demo-client/scripts/start-dev-environment.sh` is **unchanged** and still
@@ -149,6 +168,14 @@ not all run an image carrying a baked health check, so it has nothing to delegat
 the waiting to. The `affects: demo-client` metadata above therefore remains
 correct, and the measured-and-recorded retry-budget rule still governs there in its
 original form.
+
+All three scripts were checked against the derivation rule, the `localhost`
+invariant and the named-constant wording above. `start-integration-container.sh` and
+`start-sample.sh` follow them as written. `start-dev-environment.sh` follows the
+derivation rule and the `localhost` invariant, and declares its gateway budget once
+as `GATEWAY_READY_ATTEMPTS`, but its Keycloak gate deviates from the named-constant
+wording: that wait restates its 120-attempt budget as literals in the loop range, the
+exhaustion check and the progress message.
 
 == Consequences
 
@@ -197,9 +224,9 @@ original form.
   materially safer than a duplicated literal -- both stay correct when the model
   changes -- but the `--wait-timeout` value is a genuine duplicate: the two can be
   re-tuned apart, and only a shared library would make them one. The amendment
-  shrinks this rather than removing it -- one bound per script in the integration stack, a bound and a
-  derived poll budget in the operator sample -- and the third script, demo-client's, still carries the
-  original budget.
+  shrinks this rather than removing it -- in the integration stack a bound plus the named poll budgets
+  of its Keycloak and backend gates, in the operator sample a bound and a derived poll budget -- and
+  the third script, demo-client's, still carries the original budget.
 * **The single-shot assertion now races the key-set fetch, bounded by the stack.**
   Readiness waits for every issuer's JWKS key set, which a liveness-shaped health check
   cannot see. The single shot therefore holds only while the identity provider serves
