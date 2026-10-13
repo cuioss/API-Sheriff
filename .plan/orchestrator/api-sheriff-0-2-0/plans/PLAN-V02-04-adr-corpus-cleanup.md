@@ -73,11 +73,12 @@ filename, never by a number quoted here.
    of them for shipped work. That makes this a sweep, not a spot-fix; re-count at outline. ADR-0059
    and ADR-0060 are among them; both decisions have shipped.
 
-   **One known untrue sentence:** ADR-0008 says timeouts *"are transport options on the shared Vert.x
-   client (connect/read per upstream tuple), not fault-tolerance timeouts"*, but
-   `GatewayEdgeRoute.guardFor` applies a 30-second fault-tolerance timeout
-   (`withTimeout().duration(30, ChronoUnit.SECONDS)`). Amend or supersede that sentence; check the
-   rest of ADR-0008 against the resilience guard while there.
+   **ADR-0008 is not this plan's to correct.** Its untrue timeout sentence (*"Timeouts are transport
+   options on the shared Vert.x client … not fault-tolerance timeouts"*, line 82-83) belongs to
+   kidicap `PLAN-29` D6, because that plan's wire-or-remove decision on `connect_timeout_ms` /
+   `read_timeout_ms` is what decides the true sentence. The breaker half was already fixed by #433
+   (ADR-0008 Amendment A2). Classify ADR-0008's status like any other record; if `PLAN-29` has
+   landed by outline, check its amendment against the code, otherwise leave the sentence alone.
 
    **`0005`** (framework-agnostic core) reads `Superseded by ADR-0062`; `PLAN-V02-01` landed that
    supersession (#410). Classify both records like any other. `PLAN-V02-01` also amended `0018`,
@@ -110,9 +111,6 @@ filename, never by a number quoted here.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032 and 0033 each own an ordinal
 - OBSERVED: `0005-module-structure.adoc` reads `Superseded by ADR-0062` (landed by `PLAN-V02-01`), and `0027` is `Proposed` and not re-opened, so V02-09 has not pre-empted this audit — confirm again at outline (verify-at-outline)
   - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 0005 Status reads Superseded by ADR-0062 (#410); 0027 still Proposed and untouched; claim, body and dependencies re-scoped
-
-- OBSERVED: ADR-0008's statement that timeouts are transport options and not fault-tolerance timeouts is contradicted by the shipped resilience guard — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § `guardFor` (`withTimeout().duration(30, ChronoUnit.SECONDS)`), on `origin/main` at `84afdba0`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.guardFor withTimeout().duration(30, SECONDS); ADR-0008 still says timeouts are transport options; 0008 unchanged
 
 ## Expected Surface
 

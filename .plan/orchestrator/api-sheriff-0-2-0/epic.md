@@ -75,7 +75,8 @@ would otherwise force a retrofit.
   and device authorization included. Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1, so
   they wait on the same release. **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
-  half and runs after V02-23.
+  half and runs after V02-23. Since the 2026-10-13 dedup it is also an overlay of `PLAN-V02-15`'s
+  BFF sample and extends that plan's CI login proof, so it runs after V02-15 as well.
 - **`PLAN-V02-21` shipped 2026-10-13** as #439 (`48e8d5a6`): D1, D2, D3 and D5; D4 (`ImageMetadataIT`)
   declined by the operator at refine. `integration-tests/docker-compose.yml` now has two YAML
   anchors (`x-gateway-hardening`, `x-gateway-backend-deps`) merged into all twelve gateway services,
@@ -354,7 +355,12 @@ doc-only or build-light plan for the second and third slots.
   the HTTP/1.1 path shares, so whether it changed the flake's rate is not established; watch the next
   push runs before attributing either way. **Second sighting (2026-10-13):** #437 (kidicap
   `PLAN-28`) reports a CI-only 502 in the same corpus on `soleTransferEncodingNotExactlyChunked`, not
-  reproduced locally, which it calls "partly related to #431" and leaves unexplained. Owner when it recurs: whichever plan next touches `edge/` (`PLAN-V02-06`), or a dedicated
+  reproduced locally, which it calls "partly related to #431" and leaves unexplained. **Earlier
+  sightings (kidicap `PLAN-24`):** a `502` on Java 26 in CI and a 30 s timeout locally, in two
+  methods; PLAN-28 could not reproduce either on Java 25 and did not run Java 26; #431 reworked the
+  timeout's path, so that half may be gone (kidicap lesson `2026-10-12-16-012`). It guards request
+  framing, so re-running until green can hide a regression. **This is the only entry tracking the
+  flake across both epics** (kidicap's Open Defect now points here). Owner when it recurs: whichever plan next touches `edge/` (`PLAN-V02-06`), or a dedicated
   fix. Reproduce with `-XX:ActiveProcessorCount=1`.
 
 - **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy

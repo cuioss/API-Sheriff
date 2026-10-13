@@ -30,6 +30,10 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
    strip applied to one call site still leaks on every trailers-carrying response. Fix the shared
    filter — or the shared response-direction policy `ConnectionHeaders.RESPONSE_STRIP` that both
    paths read, which is the more natural home — and prove both paths with a test each.
+   `PLAN-V02-23` (runs first) already routes every response relay path (HTTP, gRPC trailers,
+   WebSocket upgrade) through one response-header predicate for its `Set-Cookie` policy, with a test
+   per path. Reuse that predicate and its path coverage; add the identity-header strip to it rather
+   than re-deriving which paths exist.
 2. **Security response headers default-on**: HSTS / `X-Content-Type-Options: nosniff` /
    `X-Frame-Options` apply by a secure default posture, remaining per-config overridable (do not force
    them where a route legitimately opts out). Today `SecurityHeadersStage` emits each only when the

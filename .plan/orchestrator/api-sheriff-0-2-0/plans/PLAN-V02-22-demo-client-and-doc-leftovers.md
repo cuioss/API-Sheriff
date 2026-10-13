@@ -37,6 +37,10 @@ negative control proves.
    `demo-client/playwright.config.js` requires three variables at load time that only the Maven
    execution supplies, so the printed command fails at once. Print a command that sets them, or
    have the config fall back to the development defaults when they are absent, and say which.
+   Scope it to the two `PLAYWRIGHT_BASE_URL_*` variables: the third, `KEYCLOAK_HOST_URL`, is read only
+   by `hostResolverRule()`, which `PLAN-V02-12`'s held half deletes together with
+   `--host-resolver-rules`. If that half has landed by outline, the variable is gone; if not, leave it
+   required rather than giving it a default that V02-12 then removes.
 
    Already in place, not this plan's work: the same script gates on `/health/ready` with one named
    budget (`GATEWAY_READY_ATTEMPTS=30`), and `doc/README.adoc` no longer carries the "fully adapted"

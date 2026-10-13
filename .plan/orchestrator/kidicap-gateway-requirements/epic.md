@@ -414,12 +414,10 @@ decision.
 
 > ↪ Relocated to `settled.md` § "PLAN-15 follow-ups filed as issues" — all seven are filed as #323-#329
 
-- **`GatewayEdgeFramingCorpusTest` is flaky and still unexplained.** Two failures in two methods during
-  PLAN-24 (a `502` on Java 26 in CI, a 30 s timeout locally). PLAN-28 could not reproduce either on
-  Java 25 and did not run Java 26. The timeout's path was reworked by #431, so it may be gone; the `502`
-  has no explanation. The sibling epic `api-sheriff-0-2-0` watches the same test (a red main-branch build
-  on 09edaea9). No plan owns it. It guards request framing, so re-running until green can hide a
-  regression. — source: lesson `2026-10-12-16-012`, `landings/PLAN-28.md`
+- **`GatewayEdgeFramingCorpusTest` flake — tracked in ONE place: `api-sheriff-0-2-0` epic.md, Watch
+  "HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS"**, which holds both sightings (#431's main push run and
+  PLAN-28's CI-only 502), the owner (`PLAN-V02-06`, or a dedicated fix when it recurs) and the
+  reproduction recipe. Report new sightings there, not here. — consolidated 2026-10-13
 - **Early upstream answers on an HTTP/1.1 upstream exhaust the gateway's local ports and open the
   circuit breaker.** Introduced by #431: the gateway resets the upstream request, which closes the
   connection and holds a local port for 60 s. Measured once, locally: past about 470 early answers per

@@ -111,7 +111,9 @@ PRs if needed (D1–D5 code first, D6–D8 record, docs and IT second), never in
      would widen the cookie to sibling hosts. `Path` is left as sent: the gateway forwards paths
      unchanged, so an upstream's `Path` already matches what the browser sees.
    - Cover every response path that relays upstream headers: HTTP proxy, gRPC and the WebSocket
-     upgrade response.
+     upgrade response — through **one** response-header predicate that every path calls, with a test
+     per path. `PLAN-V02-05` D1 later adds its identity-header strip to the same predicate and reuses
+     these tests, so build it as the shared seam, not a cookie-only special case.
 
 5. **A gateway-side same-origin check on every route that forwards cookies.**
    - `origin` and `referer` stay in the never-forward set (ADR-0037), and `Sec-Fetch-*` crosses only

@@ -97,6 +97,9 @@ sample exists to save.**
    Minimum: the stack comes up and one `require: session` route completes a login. Reuse
    `scripts/start-sample.sh` as the bring-up path. **Say plainly whether the check is a smoke test or
    a real flow**; a green that only asserts container start would be a vacuous positive control.
+   This is the project's **one** BFF sample login proof: `PLAN-V02-12`'s held D3 (the `/auth`-fronted
+   Keycloak variant) is built later as an overlay of this sample and extends this check, so shape the
+   bring-up and the check so a variant can reuse them.
 
 5. **Resolve the browser-vs-container issuer address, and do not invent an answer.**
 

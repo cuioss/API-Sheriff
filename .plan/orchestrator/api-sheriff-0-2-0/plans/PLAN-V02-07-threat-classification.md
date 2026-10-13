@@ -27,7 +27,9 @@ State is in-process and single-node; a SIEM owns cross-node correlation.
 2. **Two-tier signal / campaign threshold.** Per-request violation → WARN + Micrometer counter
    (existing behaviour, unchanged). Window score ≥ configurable threshold → a single **ALERT** event.
    **Stated as its own line item** — the dedup-per-client-window is what prevents alert fatigue and is
-   exactly what an outline abstracts away.
+   exactly what an outline abstracts away. **One scan raises one alert:** `PLAN-V02-06`'s recon-bucket
+   trip event (its D3/D4) is an *input* to this score, not a second alert beside it. State in the
+   outline how the two relate, and test that a scanner tripping both produces exactly one ALERT.
 3. **ECS/OCSF-shaped structured emission** for the ALERT: a stable field set (`event.category`,
    `event.severity`, `source.ip`, an ATT&CK technique id, and the contributing per-category breakdown),
    emitted as a structured log record — pure formatting, no new runtime dependency.
