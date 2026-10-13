@@ -255,7 +255,7 @@ final class OneOffGatewayContainers {
      * @param applicationHostPort the fixed host port the application listener is published on, on every
      *                            interface; the port of the gateway origin its descriptor names. It
      *                            also fixes the management host port
-     * @param descriptor         the overlay {@code gateway.yaml}; must carry
+     * @param descriptor          the overlay {@code gateway.yaml}; must carry
      *                            {@link PosixFilePermission#OTHERS_READ}
      * @param certificate         the file name, in the certificates directory, of the server
      *                            certificate the application listener presents
