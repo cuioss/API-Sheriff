@@ -45,6 +45,7 @@ import java.util.logging.LogRecord;
 
 import de.cuioss.http.client.adapter.RetryConfig;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -105,6 +106,9 @@ class RetryingJwksLoaderTest {
     /** A grace period no test outlives: a replaced delegate stays retired for the whole test. */
     private static final Duration GRACE = Duration.ofSeconds(300);
     private static final String WARN_UNKNOWN_KEY_ID = "Token rejected for issuer '" + ISSUER_NAME + "'";
+    /** The identifier of the WARN an unanticipated refresh failure records. */
+    private static final String WARN_REFRESH_FAILED =
+            ConfigLogMessages.WARN.JWKS_REFRESH_FAILED.resolveIdentifierString();
 
     private MockWebServer server;
     /** The key set the endpoint serves; a test replaces it to play a signing-key change. */
@@ -953,9 +957,11 @@ class RetryingJwksLoaderTest {
             loader.getKeyInfo(ROTATED_KEY_ID);
             awaitRotatedKeyPublished(loader);
 
-            // Assert
+            // Assert — an anticipated refusal stays DEBUG: it records no unexpected-failure WARN
             assertTrue(answeredAfterRefusal, "the loaded delegate keeps answering after a refused build");
             assertEquals(3, builds.get(), "the first delegate, the refused refresh and the next window's one");
+            assertTrue(warningsContaining(WARN_REFRESH_FAILED).isEmpty(),
+                    "an anticipated refusal is not reported as an unexpected refresh failure");
             loader.close();
         }
 
@@ -983,6 +989,15 @@ class RetryingJwksLoaderTest {
 
             // Assert — the next window's refresh ran, so the first failure left no in-flight claim behind
             assertEquals(3, builds.get(), "the first delegate, the failed refresh and the next window's one");
+            // ... and the failure was reported exactly once, by issuer name only
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, WARN_REFRESH_FAILED);
+            String warning = warningsContaining(WARN_REFRESH_FAILED).getFirst();
+            assertTrue(warning.contains("'" + ISSUER_NAME + "'"), "the WARN names the issuer: " + warning);
+            assertFalse(warning.contains(ROTATED_KEY_ID), "the WARN never carries the triggering key id");
+            assertFalse(warning.contains(JWKS_PATH), "the WARN never carries the JWKS path");
+            assertFalse(warning.contains(String.valueOf(server.getPort())), "the WARN never carries the JWKS port");
+            assertFalse(warning.contains("simulated unanticipated factory failure"),
+                    "the WARN never carries the failure's message");
             loader.close();
         }
 

@@ -502,6 +502,32 @@ public final class ConfigLogMessages {
                 .identifier(136)
                 .template("Token rejected for issuer '%s': it names a key id that is in no key set the gateway holds. The gateway last loaded this issuer's key set itself at %s; a background refresh by the token library is not reflected in that instant")
                 .build();
+
+        /**
+         * A refresh of an issuer's key set that {@link #JWKS_UNKNOWN_KEY_ID} scheduled ended on a
+         * failure the gateway does not anticipate, before its load could be judged.
+         * <p>
+         * The refresh changed nothing: the key set already in service stays in service, and the next
+         * unknown key id after the current window may schedule another refresh. What the record
+         * reports is that a key change at the identity provider may not have been picked up in this
+         * window, which nothing else reports — readiness stays {@code UP} throughout. The anticipated
+         * refusals of a refresh (a loader configuration the gateway or the token library refuses)
+         * stay {@code DEBUG}, and so does a refresh whose load completed but was discarded.
+         * <p>
+         * <strong>Bounded per issuer per window.</strong> A refresh is scheduled only by the lookup
+         * that claims the issuer's {@code unknown_kid_refresh_window_seconds} window, so this record
+         * appears at most once per issuer per window, however many tokens name unknown key ids
+         * (ADR-0051).
+         * <p>
+         * The template carries the configured issuer <em>name</em> only — never the key id that
+         * triggered the refresh, the JWKS URL, a host, or the failure's message, which is not under
+         * the gateway's control and may carry a URL.
+         */
+        public static final LogRecord JWKS_REFRESH_FAILED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(137)
+                .template("JWKS key set refresh for issuer '%s' ended unexpectedly — the key set already in service stays in service, and the next unknown key id after the current window may schedule another refresh")
+                .build();
     }
 
     /**

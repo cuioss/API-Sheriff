@@ -468,14 +468,28 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * The in-flight flag is released on every path that does not hand the fresh delegate to
      * {@link #settleRefresh}, whatever ended it. A refresh is started by any caller that presents an
      * unknown key id, so a flag left set by a failure nobody anticipated would switch the refresh off
-     * for this issuer until the next restart, and nothing would report it.
+     * for this issuer until the next restart.
+     * <p>
+     * Such a failure switches nothing off any more, but it still means a key change at the identity
+     * provider may go unnoticed until the next window, and nothing else reports that. Every exit that
+     * is neither handed to {@link #settleRefresh}, nor one of the anticipated refusals
+     * ({@link GatewayException}, {@link IllegalArgumentException}, {@link IllegalStateException}, which
+     * stay {@code DEBUG}), nor the return of a closed wrapper therefore records
+     * {@link ConfigLogMessages.WARN#JWKS_REFRESH_FAILED} once, from the same {@code finally} that
+     * releases the flag — so an error is covered without catching {@link Throwable}, and one refresh
+     * yields at most one record. The claim bounds refreshes to one per issuer per window, so the
+     * record is bounded the same way.
      */
     private void runRefresh(String kid) {
         JwksLoader fresh = null;
         boolean handedToSettle = false;
+        // True on every exit the WARN must not report: handed to settleRefresh, an anticipated
+        // refusal, or a closed wrapper. Only a failure nobody anticipated leaves it false.
+        boolean accountedFor = false;
         try {
             SecurityEventCounter counter = eventCounter.get();
             if (closed.get() || counter == null) {
+                accountedFor = true;
                 return;
             }
             fresh = buildDelegate(delegateFactory);
@@ -484,11 +498,13 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             loading.initJWKSLoader(counter)
                     .whenComplete((status, failure) -> settleRefresh(loading, kid, failure == null ? status : null));
             handedToSettle = true;
+            accountedFor = true;
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
             // The same refusals runRetry handles. A refresh that cannot be built or started changes
             // nothing: the loaded key set stays published and the next window may try again.
             LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built or started for a refresh",
                     issuerName);
+            accountedFor = true;
         } finally {
             if (!handedToSettle) {
                 if (fresh != null) {
@@ -496,6 +512,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
                     closeDelegate(fresh);
                 }
                 refreshInFlight.set(false);
+            }
+            if (!accountedFor) {
+                // A failure nobody anticipated is escaping onto the scheduler thread, which records
+                // nothing of it. The record names the issuer only: the throwable's message is not
+                // under the gateway's control and may carry a URL.
+                LOGGER.warn(ConfigLogMessages.WARN.JWKS_REFRESH_FAILED, issuerName);
             }
         }
     }
