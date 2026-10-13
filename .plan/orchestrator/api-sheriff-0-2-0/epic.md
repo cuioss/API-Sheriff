@@ -73,7 +73,9 @@ would otherwise force a retrofit.
   2026-10-13: the pin is `0.9.6`, the newest TokenSheriff tag; `ClientConfiguration` on TokenSheriff
   `main` models only `issuer`; and no open TokenSheriff issue requests the override, so **filing it is
   owed by the operator**. Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1, so
-  they wait on the same release.
+  they wait on the same release. **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
+  (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
+  half and runs after V02-23.
 - **Every ADR-authoring plan** (V02-04, V02-06, V02-11, V02-12): the next free ordinal on
   `origin/main` at `09edaea9` is `0067` — `0063`–`0065` came from the `kidicap-gateway-requirements`
   epic (#430 and its siblings), `0066` from the spin-off #431. Ordinals move fast; derive at write time. ADR-0005 is `Superseded by ADR-0062`; ADR-0018,
@@ -113,7 +115,7 @@ would otherwise force a retrofit.
 |---|---|---|
 | WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16 |
 | WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18 |
-| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13 |
+| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
 | WS-05 | Integration and Test Fidelity | PLAN-V02-09, PLAN-V02-10, PLAN-V02-11 |
 
@@ -183,6 +185,19 @@ needs no translation.
   successful attack class on session management — the plan's most important deliverable; unfixed
   findings are reported to the operator only. `PLAN-V02-01` grows to seven deliverables, unsplit.
 
+- **2026-10-13 — the absolute `Cookie` strip is a bug; cookies become an operator policy (`PLAN-V02-23`).**
+  Operator ruling on `PLAN-V02-12`'s finding (inbox `-001`): "removing all cookies is a bug". Settled
+  in discussion after a survey of other gateways (Kong/Traefik/NGINX forward all; KrakenD opts in per
+  endpoint, all-or-nothing; Duende BFF strips the whole header) and an adversarial review. Policy:
+  `none` / `all` / a YAML list of names, resolved gateway → anchor → endpoint → route with whole-block
+  replacement; default `none`; global `all` refused; API Sheriff's own cookies never reach an upstream
+  under any policy; the same policy limits which cookies an upstream may set, and `Domain` is dropped
+  from relayed `Set-Cookie`; a gateway-side same-origin check guards every cookie-forwarding route
+  (Envoy model); `headers_allow: [Cookie]` and `set_headers` naming `Cookie` become boot errors.
+  **ADR-0037 is rewritten in place, not superseded** (it is still `Proposed`). User docs are part of
+  the plan. Eight deliverables, proceeding unsplit: the two directions, the CSRF guard and the record
+  are one contract.
+
 ## Sequencing Constraints
 
 Derived at the 2026-08-08 re-grounding. These bound every `next` emit; disjointness alone is not
@@ -190,6 +205,7 @@ sufficient.
 
 | Chain | Order | Why |
 |---|---|---|
+| cookie policy | **(V02-12 first PR + V02-21) → V02-23 → every other staged plan** | Operator direction 2026-10-13: the cookie fix is the next plan emitted once both running plans land. V02-12's held D3 (`/auth`-fronted Keycloak) follows V02-23. Not with V02-04 (V02-23 rewrites ADR-0037). |
 | oidc / `BffRuntimeProducer` | **V02-08 → V02-12 → V02-09** | All three write the `oidc` block and the BFF assembly point. V02-08 first: it is the larger reshaping and settles the RFC 9207 `iss` constraint V02-12 inherits. |
 | rejection taxonomy | **V02-13 → V02-06 → V02-07** | V02-13 re-cuts `EventCategory` and makes `renderProblem` content-negotiating at all five call sites. V02-06's uniform-404 branch edits those same sites; V02-07 weights the resulting taxonomy. |
 | sample vs. model | **V02-12 → V02-15** | V02-15 D5 defers the browser-vs-container issuer address to V02-12 rather than letting a sample become the de-facto specification. |
