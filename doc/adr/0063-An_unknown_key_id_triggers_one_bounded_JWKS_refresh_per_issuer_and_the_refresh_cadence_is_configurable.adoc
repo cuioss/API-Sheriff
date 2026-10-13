@@ -50,9 +50,11 @@ Three structural facts constrain the answer:
   a gateway-owned loader that records whether a key set is loaded and retries a failed load
   (link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027
   Amendment A1]). Every read through that wrapper is non-fetching, and readiness reads its state.
+
 * *The library offers no public re-fetch.* The only way to fetch a key set again outside the
   library's own timer is to build a fresh library loader and load it. A fresh loader knows the
   identity provider's current keys and none of the previous ones.
+
 * *The cadence is the library's unless the gateway exposes it.* The library's refresh interval and
   its key-rotation grace period are knobs of its loader configuration, which the gateway surface
   exposes only by deliberate decision
@@ -185,24 +187,30 @@ stalled one. A stalled rotation is visible through the record of section 6, not 
 
 * An abrupt signing-key change at the identity provider is followed within about one window instead
   of one background refresh interval, on bearer routes and on BFF logins alike, with no restart.
+
 * The cost an uncredentialed caller can impose through invented key ids is bounded per issuer by a
   number the operator sets and the validator floors: at most `floor(t / window) + 1` refreshes over
   an interval `t`.
+
 * A flood of invented key ids cannot change which keys the gateway accepts.
 * Tokens signed with the previous key stay valid for the grace period across an on-demand refresh.
 * The refresh cadence and the rotation tolerance are tunable per issuer, and a deployment that
   declares nothing behaves as before.
+
 * No request thread and no readiness probe performs or awaits a JWKS request.
 
 === Negative
 
 * The request that triggers a refresh is rejected, and so is every token signed with the new key
   until the refresh has loaded it. A client must retry.
+
 * The wrapper holds up to three library loaders for one issuer for a time: the current one, a
   replaced one inside its grace period, and one loading. A replaced loader is closed only at its
   grace deadline, and keeps its own background refresh until then.
+
 * The window is a second timing parameter beside the refresh interval, and its default of 30 seconds
   is a compromise between pick-up latency and the cost bound, not a derived value.
+
 * The instant in the record is easy to misread as the age of the keys. The record's text and the
   log catalogue state what it is.
 
@@ -217,9 +225,11 @@ stalled one. A stalled rotation is visible through the record of section 6, not 
   publishing whatever a refresh fetched, is the unconditional swap rejected below. Closing this
   residual exactly requires the token library to expose which key ids a loaded key set holds, which
   token-sheriff 0.9.6 does not: a loader only answers a lookup for a named key id.
+
 * *One refresh is one library load, not always one request.* Against an identity provider that does
   not answer, the HTTP client beneath the library retries the fetch itself within that one load. The
   per-window bound counts refreshes; the in-flight flag keeps them from overlapping.
+
 * *The integration proof runs a shortened window.* The native-image suite declares a 5-second window
   and a 300-second grace period and observes one gateway and one issuer. It does not prove the
   30-second default, the end of the grace period, or a refresh whose fetch fails; those are covered
@@ -314,19 +324,26 @@ of refresh and retry are as decided.
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
   -- the neutral JWKS configuration surface; its Amendment A2 records the two library knobs this
   decision exposes
+
 * link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
   -- upstream defaults are kept, not restated: an omitted cadence key passes nothing to the library
+
 * link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
   -- Amendment A1: the gateway-owned loader, its non-fetching reads and the readiness contract this
   decision keeps
+
 * link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033]
   -- an omitted key is a nullable component of the configuration model
+
 * link:0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]
   -- the rule a record reachable by an uncredentialed caller follows
+
 * link:../configuration.adoc#_jwks_key_rotation[Configuration reference] -- the three keys, their
   boot refusals and the operator view of a key change
+
 * link:../security-threat-model.adoc#gw-07-jwks-refresh[Security threat model] -- the bound, what a
   flood cannot do, and the accepted residual
+
 * link:../LogMessages.adoc#apisheriff-136[Log messages] -- `ApiSheriff-136`
 * link:../development/integration-test-topology.adoc#stub-idp-rig[Integration test topology] -- the
   key-rotation variant of the stub identity-provider rig

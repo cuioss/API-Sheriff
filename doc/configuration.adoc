@@ -2165,8 +2165,10 @@ link:variants/01-base-gateway.adoc[Variant 1]. Required when any route's *effect
   link:#_jwks_key_rotation[Key rotation and the refresh cadence] below.
 |===
 
-The BFF variants do *not* read this block: they validate the tokens they retrieve against the
-issuer configured in link:#_oidc[`oidc`].
+The BFF variants read this block too. The tokens a BFF retrieves -- the access and ID tokens of a
+login, a widening or a refresh -- are validated by the same validator this block configures, and a
+back-channel logout token is verified against the same issuers' key sets. A BFF gateway therefore
+declares the issuer configured in link:#_oidc[`oidc`] here as well.
 
 [[_jwks_readiness]]
 ==== Key-set loading and readiness
@@ -4702,6 +4704,22 @@ control, which is the rule above doing exactly the work it was added for.
   `jwks.url`, because that host is the derived egress allowance; a `jwks.url` without a host fails
   the boot with `CONFIG_INVALID`, naming the issuer but never the URL (see the
   link:#_token_validation[`allowed_egress_hosts`] field reference).
+
+* A declared `token_validation.issuers[].jwks.refresh_interval_seconds` outside `60`-`86400` fails
+  the boot at `/token_validation/issuers/<index>/jwks/refresh_interval_seconds`, naming the issuer,
+  the key and the admitted range but never the JWKS URL.
+
+* A declared `token_validation.issuers[].jwks.key_rotation_grace_period_seconds` outside `0`-`3600`
+  fails the boot at its own pointer, with the same message shape.
+
+* A declared `token_validation.issuers[].jwks.unknown_kid_refresh_window_seconds` outside `5`-`3600`
+  fails the boot at its own pointer, with the same message shape.
+
+* Each of those three keys declared on a `source: file` issuer fails the boot at its own pointer,
+  whatever value it holds: a file source is read once and never re-fetched, so the key would parse
+  and never act. Every violation of every issuer is reported in one pass (see
+  link:#_jwks_key_rotation[Key rotation and the refresh cadence]).
+
 * `security_headers.cors` with a wildcard origin and `allow_credentials: true` is rejected. `cors`
   is accepted in the global `security_headers` block only; a `cors` key inside an anchor's
   `security_headers` block fails the boot at schema load.
