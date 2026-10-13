@@ -36,10 +36,16 @@ import javax.crypto.spec.SecretKeySpec;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.BoundSession;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding.IdpDestruction;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -62,6 +68,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * the access notification returns an activity cookie at most once per interval and never a session
  * cookie; an idle timeout below 60 seconds re-issues at half of itself, so activity keeps such a
  * session alive and its absence ends it; and the clearing list clears both cookies.
+ * <p>
+ * Finally it pins the log level of a seal: the login's creating write is the one {@code INFO}
+ * ({@code ApiSheriff-15}) of a cookie-mode session, while a re-seal through {@code persist} or
+ * {@code persistReissuingCookie} is a {@code DEBUG} diagnostic only.
  */
 class CookieSessionBindingTest {
 
@@ -270,6 +280,58 @@ class CookieSessionBindingTest {
             assertTrue(binding.resolve(null, LOGIN).isEmpty());
             assertTrue(binding.resolve("other=1", LOGIN).isEmpty());
             assertTrue(binding.resolve(tampered, LOGIN).isEmpty(), "a tampered cookie is no session, never an error");
+        }
+    }
+
+    /**
+     * The seal is logged at the level its path owes: {@code INFO} once per login, {@code DEBUG} for
+     * every re-seal. The {@code DEBUG} records of the gateway are opened by {@link SheriffDebugCapture},
+     * which the root level alone does not do.
+     */
+    @Nested
+    @EnableTestLogger(rootLevel = TestLogLevel.DEBUG)
+    @ExtendWith(SheriffDebugCapture.class)
+    @DisplayName("Seal log level")
+    class SealLogLevel {
+
+        private static final String SEALED_RECORD = "Cookie-mode session sealed";
+        private static final String RESEALED_DIAGNOSTIC = "Cookie-mode session re-sealed";
+
+        @Test
+        @DisplayName("Should log the login's seal once at INFO, carrying only the sealed-value length")
+        void shouldLogTheLoginSealAtInfo() {
+            BoundSession bound = binding.bind(session(ACCESS_TOKEN, LOGIN.plus(TTL)), LOGIN);
+
+            String cookie = cookieHeaderOf(bound);
+            String sealedValue = cookie.substring(cookie.indexOf('=') + 1);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                    SEALED_RECORD + " (" + sealedValue.length() + " bytes)");
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.DEBUG, RESEALED_DIAGNOSTIC);
+        }
+
+        @Test
+        @DisplayName("Should log a re-seal through persist at DEBUG only, never as the login's INFO")
+        void shouldLogThePersistResealAtDebugOnly() {
+            SessionRecord updated = resealable("rotated-access-token");
+            TestLoggerFactory.getTestHandler().clearRecords();
+
+            reseal(updated, LOGIN.plusSeconds(60));
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, SEALED_RECORD);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.DEBUG, RESEALED_DIAGNOSTIC);
+        }
+
+        @Test
+        @DisplayName("Should log a re-seal through persistReissuingCookie at DEBUG only, never as the login's INFO")
+        void shouldLogTheReissuingResealAtDebugOnly() {
+            SessionRecord updated = resealable("widened-access-token");
+            TestLoggerFactory.getTestHandler().clearRecords();
+
+            binding.persistReissuingCookie(updated, LOGIN.plusSeconds(60))
+                    .orElseThrow(() -> new AssertionError("the stateless binding never reports a session gone"));
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, SEALED_RECORD);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.DEBUG, RESEALED_DIAGNOSTIC);
         }
     }
 

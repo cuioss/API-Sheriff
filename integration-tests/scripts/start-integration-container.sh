@@ -8,6 +8,13 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ROOT_DIR="$(dirname "$PROJECT_DIR")"
 APP_TARGET_DIR="${ROOT_DIR}/api-sheriff/target"
 
+# The retry budgets of the host-side waits that still poll, one attempt per second. Each budget is
+# declared once, here, and handed to wait_for_url — never restated in a loop, a message or a comment.
+# The gateway instances are not polled by this script at all: Compose waits on their baked HEALTHCHECK
+# (see the two-layer gate below).
+KEYCLOAK_WAIT_ATTEMPTS=120
+BACKEND_WAIT_ATTEMPTS=30
+
 # shellcheck source=lib-docker-compose.sh
 source "${SCRIPT_DIR}/lib-docker-compose.sh"
 
@@ -186,6 +193,14 @@ fi
 # serves health at /health/ready under no prefix at all, so its root-path column is deliberately
 # discarded below and its own literal is kept.
 #
+# The same model also yields the published host port of every other host-side target the script
+# names: Keycloak's HTTPS port (the console URL printed at the end), go-httpbin's port (the upstream
+# wait) and, when the benchmark overlay is composed, nginx-static's port (the static-backend wait).
+# Those come out as separate "port <service> <container_port> <published_port>" rows, so the host port
+# a service publishes is never restated here either. The HOST stays the literal localhost on every
+# probe: the probes run on the Docker host, and the management interfaces serve a certificate bundle
+# issued for localhost, so it is an invariant of where the probe runs rather than a fact to derive.
+#
 # The block runs BEFORE the first `compose up` on purpose: a model this script cannot read is a
 # failure worth having in two seconds rather than after Keycloak has booted.
 echo "⏳ Discovering probe targets from the Compose model..."
@@ -198,6 +213,20 @@ ROOT_PATH_LABEL = "de.cuioss.sheriff.management-root-path"
 MANAGEMENT_CONTAINER_PORT = "9000"
 IDP_SERVICE = "keycloak"
 GATEWAY_PREFIX = "api-sheriff"
+# The non-management host ports the script names, as (service, container port, required). An
+# optional service yields a row only when the resolved model contains it — nginx-static exists only
+# under the benchmark overlay.
+HOST_PORTS = (
+    (IDP_SERVICE, "8443", True),
+    ("go-httpbin", "8080", True),
+    ("nginx-static", "8080", False),
+)
+
+
+def published_ports(spec, container_port):
+    return [port.get("published") for port in (spec.get("ports") or [])
+            if str(port.get("target")) == container_port and port.get("published")]
+
 
 try:
     model = json.load(sys.stdin)
@@ -222,8 +251,7 @@ for name in sorted(selected):
     labels = spec.get("labels") or {}
     scheme = labels.get(SCHEME_LABEL)
     root_path = labels.get(ROOT_PATH_LABEL)
-    published = [port.get("published") for port in (spec.get("ports") or [])
-                 if str(port.get("target")) == MANAGEMENT_CONTAINER_PORT and port.get("published")]
+    published = published_ports(spec, MANAGEMENT_CONTAINER_PORT)
     usable = True
     if scheme not in ("http", "https"):
         problems.append("%s: missing or invalid %s label (got %r)" % (name, SCHEME_LABEL, scheme))
@@ -252,6 +280,20 @@ for name in sorted(selected):
         # absolute), so the trim can no longer collapse it to a whitespace-only column.
         rows.append("%s %s %s %s" % (name, scheme, published[0], root_path))
 
+# The port rows lead with the literal "port", which no service name above can collide with: the
+# management rows are keycloak or api-sheriff*, and the shell selects each kind by its own prefix.
+for service, container_port, required in HOST_PORTS:
+    if service not in all_services:
+        if required:
+            problems.append("%s: service not found in the resolved Compose model" % service)
+        continue
+    published = published_ports(all_services[service], container_port)
+    if len(published) != 1:
+        problems.append("%s: expected exactly one host port published against container port %s, "
+                        "found %r" % (service, container_port, published))
+        continue
+    rows.append("port %s %s %s" % (service, container_port, published[0]))
+
 if problems:
     sys.exit("probe-target discovery failed:\n  " + "\n  ".join(problems))
 
@@ -263,9 +305,55 @@ fi
 
 # Split the derived rows by role, mirroring demo-client/scripts/start-dev-environment.sh's
 # IDP_TARGET / GATEWAY_TARGETS split. The IdP row drives the Keycloak wait and the Keycloak banner
-# entry; the api-sheriff* rows drive the gateway readiness loop and the Application URLs banner.
+# entry; the api-sheriff* rows drive the gateway readiness loop and the Application URLs banner; the
+# port rows are read one port at a time through derived_port below. Each kind is selected POSITIVELY
+# by its own prefix — selecting the gateways as "everything that is not keycloak" would sweep the port
+# rows into the readiness loop as well.
 KEYCLOAK_TARGET="$(printf '%s\n' "$DISCOVERED_TARGETS" | grep "^keycloak ")"
-READINESS_TARGETS="$(printf '%s\n' "$DISCOVERED_TARGETS" | grep -v "^keycloak ")"
+READINESS_TARGETS="$(printf '%s\n' "$DISCOVERED_TARGETS" | grep "^api-sheriff")"
+
+# Prints the host port SERVICE publishes against CONTAINER_PORT, read off the discovered port rows, or
+# nothing when the model has no such row. An awk field match rather than grep: set -e is active, and a
+# grep that matches nothing exits non-zero and would abort the script — the optional nginx-static row
+# is legitimately absent outside benchmark mode.
+derived_port() {
+    printf '%s\n' "$DISCOVERED_TARGETS" \
+        | awk -v service="$1" -v target="$2" '$1 == "port" && $2 == service && $3 == target { print $4 }'
+}
+
+KEYCLOAK_HTTPS_PORT="$(derived_port keycloak 8443)"
+UPSTREAM_PORT="$(derived_port go-httpbin 8080)"
+
+# Polls URL once per second with the curl options held in the array named OPTS_NAME, up to ATTEMPTS
+# times, and returns once it answers. On the last failed attempt it names the URL, points at SERVICE's
+# Compose log and exits the script — a failed wait is a failed bring-up. The options are passed by
+# array NAME, through ${!name[@]} indirection rather than a nameref, because the shebang's /bin/bash
+# is 3.2 on macOS hosts and namerefs need 4.3.
+#
+# This is the one polling loop in the script; every host-side wait goes through it.
+wait_for_url() {
+    local url="$1"
+    local opts_ref="$2[@]"
+    local opts=("${!opts_ref}")
+    local attempts="$3"
+    local label="$4"
+    local service="$5"
+    local attempt
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if curl "${opts[@]}" "${url}" > /dev/null 2>&1; then
+            echo "✅ ${label} is ready!"
+            return 0
+        fi
+        if [ "$attempt" -eq "$attempts" ]; then
+            echo "❌ ${label} did not answer ${url} within ${attempts} attempts"
+            echo "Check logs with: ${COMPOSE_BASE} logs ${service}"
+            exit 1
+        fi
+        echo "⏳ Waiting for ${label}... (attempt ${attempt}/${attempts})"
+        sleep 1
+    done
+}
+
 # The trailing _ discards Keycloak's management-root-path column deliberately: Keycloak serves
 # /health/ready directly on the management port under no root-path prefix, so the gateway root path
 # its label carries for label-set uniformity must NOT be spliced in here.
@@ -280,7 +368,7 @@ KEYCLOAK_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
 if [[ "$KC_MGMT_SCHEME" == "https" ]]; then
     # -k is load-bearing on an HTTPS management interface: it serves a self-signed localhost bundle,
     # and without it curl fails certificate validation and this wait degrades into a silent
-    # 120-attempt timeout against a perfectly healthy container.
+    # KEYCLOAK_WAIT_ATTEMPTS timeout against a perfectly healthy container.
     KEYCLOAK_PROBE_OPTS+=(-k)
 fi
 
@@ -298,56 +386,30 @@ echo "🐳 Starting Keycloak first (the Quarkus $MODE gateway starts only after 
 
 # Wait for Keycloak to be ready first
 echo "⏳ Waiting for Keycloak to be ready (management ${KC_MGMT_SCHEME} on ${KC_MGMT_PORT})..."
-for i in {1..120}; do
-    if curl "${KEYCLOAK_PROBE_OPTS[@]}" "${KEYCLOAK_HEALTH_URL}" > /dev/null 2>&1; then
-        echo "✅ Keycloak is ready!"
-        break
-    fi
-    if [ "$i" -eq 120 ]; then
-        echo "❌ Keycloak did not answer ${KEYCLOAK_HEALTH_URL} within 120 attempts"
-        echo "Check logs with: ${COMPOSE_BASE} logs keycloak"
-        exit 1
-    fi
-    echo "⏳ Waiting for Keycloak... (attempt $i/120)"
-    sleep 1
-done
+wait_for_url "${KEYCLOAK_HEALTH_URL}" KEYCLOAK_PROBE_OPTS "${KEYCLOAK_WAIT_ATTEMPTS}" "Keycloak" keycloak
 
 # Keycloak is ready — now bring up the gateway and the remaining containers.
 echo "🐳 Starting the gateway ($MODE) and remaining containers..."
 (cd "${PROJECT_DIR}" && $COMPOSE_CMD up -d)
 
+# The plain-HTTP backends: -f so an error status is not mistaken for readiness, and no -k.
+BACKEND_PROBE_OPTS=(-sf --connect-timeout 2 --max-time 5)
+
 # Wait for the go-httpbin upstream backend (proxy target) to be ready
 echo "⏳ Waiting for go-httpbin upstream to be ready..."
-for i in {1..30}; do
-    if curl -sf --connect-timeout 2 --max-time 5 http://localhost:18080/status/200 > /dev/null 2>&1; then
-        echo "✅ go-httpbin upstream is ready!"
-        break
-    fi
-    if [ "$i" -eq 30 ]; then
-        echo "❌ go-httpbin upstream failed to start within 30 attempts"
-        echo "Check logs with: ${COMPOSE_BASE} logs go-httpbin"
-        exit 1
-    fi
-    echo "⏳ Waiting for go-httpbin... (attempt $i/30)"
-    sleep 1
-done
+wait_for_url "http://localhost:${UPSTREAM_PORT}/status/200" BACKEND_PROBE_OPTS "${BACKEND_WAIT_ATTEMPTS}" \
+    "go-httpbin upstream" go-httpbin
 
 # Wait for the static nginx backend (benchmark mode only)
 if [[ "${BENCHMARK_MODE:-false}" == "true" ]]; then
+    STATIC_BACKEND_PORT="$(derived_port nginx-static 8080)"
+    if [[ -z "$STATIC_BACKEND_PORT" ]]; then
+        echo "❌ Benchmark mode, but the resolved Compose model publishes no nginx-static port 8080"
+        exit 1
+    fi
     echo "⏳ Waiting for nginx-static backend to be ready..."
-    for i in {1..30}; do
-        if curl -sf --connect-timeout 2 --max-time 5 http://localhost:18081/ > /dev/null 2>&1; then
-            echo "✅ nginx-static backend is ready!"
-            break
-        fi
-        if [ "$i" -eq 30 ]; then
-            echo "❌ nginx-static backend failed to start within 30 attempts"
-            echo "Check logs with: ${COMPOSE_BASE} logs nginx-static"
-            exit 1
-        fi
-        echo "⏳ Waiting for nginx-static... (attempt $i/30)"
-        sleep 1
-    done
+    wait_for_url "http://localhost:${STATIC_BACKEND_PORT}/" BACKEND_PROBE_OPTS "${BACKEND_WAIT_ATTEMPTS}" \
+        "nginx-static backend" nginx-static
 fi
 
 # Capture everything a failed bring-up needs to be diagnosed from CI artifacts alone: the container
@@ -501,7 +563,7 @@ while read -r GATEWAY_SERVICE GATEWAY_MGMT_SCHEME GATEWAY_MGMT_PORT GATEWAY_MGMT
     GATEWAY_MGMT_ROOT="$(normalize_root_path "${GATEWAY_MGMT_ROOT}")"
     echo "  🔍 ${GATEWAY_SERVICE} management: ${GATEWAY_MGMT_SCHEME}://localhost:${GATEWAY_MGMT_PORT}${GATEWAY_MGMT_ROOT}/health (metrics at ${GATEWAY_MGMT_ROOT}/metrics)"
 done <<< "$READINESS_TARGETS"
-echo "  🔑 Keycloak:       https://localhost:1443/auth"
+echo "  🔑 Keycloak:       https://localhost:${KEYCLOAK_HTTPS_PORT}/auth"
 echo ""
 echo "🧪 Quick test commands (an https:// management port serves a self-signed cert — -k is required there):"
 # Printed from the SAME derived Keycloak row the wait above probed, so this cannot drift from what

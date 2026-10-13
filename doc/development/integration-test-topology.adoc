@@ -1483,9 +1483,10 @@ or accepted, and an accepted one names the reason it is safe to keep.
 | `BffTlsRelaxationIT` pins the proxy as
   `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- the
   1.27 release-line tag together with the digest of its multi-platform index -- and every other nginx
-  reference in the integration surface carries the same digest: the `passthrough-backend`,
-  `mismatched-tls-backend`, `asset-origin` and `early-answer-backend` services of
-  `docker-compose.yml`, the `nginx-static`
+  reference in the integration surface carries the same digest: the `mismatched-tls-backend`,
+  `asset-origin` and `early-answer-backend` services of `docker-compose.yml`, the `FROM` line of
+  `integration-tests/src/main/docker/passthrough-backend/Dockerfile` -- the fixture image the
+  `passthrough-backend` service is built from, with `openssl` installed at build time -- the `nginx-static`
   fairness backend of `docker-compose.benchmark.yml`, and the late provider `JwksLateIdpReadinessIT`
   starts. The digest is what binds; the tag is kept for readability, and all of these pins move
   together.

@@ -101,8 +101,11 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * A cookie-mode session was sealed into its {@code Set-Cookie}. The template carries only
-         * the bounded sealed-value length — never the sealed value, the key, or any token material.
+         * A {@code mode: cookie} login sealed its new session into its {@code Set-Cookie} — the
+         * creating write, logged by {@code CookieSessionBinding.bind} and nowhere else, so it fires
+         * once per login only. A refresh, step-up or widening re-seals the session too, but is
+         * logged at {@code DEBUG} only. The template carries only the bounded sealed-value length —
+         * never the sealed value, the key, or any token material.
          */
         public static final LogRecord COOKIE_SESSION_SEALED = LogRecordModel.builder()
                 .prefix(PREFIX)

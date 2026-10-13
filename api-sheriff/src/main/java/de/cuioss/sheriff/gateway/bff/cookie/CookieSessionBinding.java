@@ -26,9 +26,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+import de.cuioss.sheriff.gateway.bff.BffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec.CookieSizeBudgetExceededException;
 import de.cuioss.sheriff.gateway.bff.session.SessionBinding;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
+import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -103,6 +105,8 @@ import org.jspecify.annotations.Nullable;
  */
 public final class CookieSessionBinding implements SessionBinding {
 
+    private static final CuiLogger LOGGER = new CuiLogger(CookieSessionBinding.class);
+
     /** The parameter name the null checks of a session argument report. */
     private static final String SESSION_PARAMETER = "session";
 
@@ -170,6 +174,27 @@ public final class CookieSessionBinding implements SessionBinding {
                 : ACTIVITY_COOKIE_INTERVAL;
     }
 
+    /**
+     * Seals a fresh login into the session's first {@code Set-Cookie} — the creating write of the
+     * session (ADR-0018).
+     * <p>
+     * The login anchors the absolute lifetime at {@code now} and mints the session's one nonce; no
+     * other method mints one.
+     * <p>
+     * <strong>The one {@code INFO} of a cookie-mode session's life.</strong> This is the only call
+     * site of {@link BffLogMessages.INFO#COOKIE_SESSION_SEALED}, so the record fires once per login
+     * and counts logins. A re-seal through {@link #persist} — a refresh, and through
+     * {@link #persistReissuingCookie} a step-up or a widening — is logged at {@code DEBUG} only. The
+     * record carries the sealed-value length and nothing else: never the sealed value, the sealing key
+     * or any token material.
+     * <p>
+     * Thread-safe: the method reads only its arguments and the immutable collaborators.
+     *
+     * @param session the session established by the login
+     * @param now     the login instant, which anchors the session's absolute lifetime
+     * @return the sealed session and its single {@code Set-Cookie}
+     * @throws IllegalStateException when the sealed value exceeds the cookie size budget
+     */
     @Override
     public BoundSession bind(SessionRecord session, Instant now) {
         Objects.requireNonNull(session, SESSION_PARAMETER);
@@ -177,7 +202,10 @@ public final class CookieSessionBinding implements SessionBinding {
         // A fresh login anchors the absolute lifetime at this instant and mints the session's one
         // nonce. Minting here — once, on the login path only — is what makes two logins by the same
         // subject within a single clock second resolve to distinct identities.
-        return seal(payloadOf(session, now, newSessionNonce()), now);
+        SealedSessionPayload payload = payloadOf(session, now, newSessionNonce());
+        String sealedValue = sealValue(payload);
+        LOGGER.info(BffLogMessages.INFO.COOKIE_SESSION_SEALED, sealedValue.length());
+        return toBoundSession(payload, sealedValue, now);
     }
 
     @Override
@@ -230,6 +258,12 @@ public final class CookieSessionBinding implements SessionBinding {
      * the absolute deadline, even when a logout response has already cleared the browser's previous
      * one (see the class documentation).
      * <p>
+     * <strong>Logged at {@code DEBUG} only.</strong> A re-seal is not a new session: it is reached
+     * from every refresh and, through {@link #persistReissuingCookie}, from every step-up and
+     * widening, so it records only an ad-hoc {@code DEBUG} diagnostic carrying the sealed-value
+     * length. The catalogued {@link BffLogMessages.INFO#COOKIE_SESSION_SEALED} is reserved for the
+     * login's creating write in {@link #bind}.
+     * <p>
      * Thread-safe: the method reads only its arguments and the immutable collaborators.
      *
      * @param updated the session carrying the new token material
@@ -252,7 +286,10 @@ public final class CookieSessionBinding implements SessionBinding {
                     "cookie-mode session record carries no sessionNonce — cannot re-seal without changing "
                             + "the derived session identity");
         }
-        return Optional.of(seal(payloadOf(updated, loginInstant, sessionNonce), now));
+        SealedSessionPayload payload = payloadOf(updated, loginInstant, sessionNonce);
+        String sealedValue = sealValue(payload);
+        LOGGER.debug("Cookie-mode session re-sealed (%s bytes)", sealedValue.length());
+        return Optional.of(toBoundSession(payload, sealedValue, now));
     }
 
     /**
@@ -337,15 +374,23 @@ public final class CookieSessionBinding implements SessionBinding {
         return List.of(codec.toClearingSetCookieHeader(), activityCodec.toClearingSetCookieHeader());
     }
 
-    private BoundSession seal(SealedSessionPayload payload, Instant now) {
-        String sealedValue;
+    /**
+     * Seals {@code payload} into its cookie value. The value is returned rather than wrapped straight
+     * into a {@link BoundSession} so the caller can log its length at the level the caller's path
+     * owes — {@code INFO} for the login in {@link #bind}, {@code DEBUG} for a re-seal in
+     * {@link #persist} — without the value itself ever reaching a log.
+     */
+    private String sealValue(SealedSessionPayload payload) {
         try {
-            sealedValue = codec.seal(payload);
+            return codec.seal(payload);
         } catch (CookieSizeBudgetExceededException overBudget) {
             // The browser would silently drop a cookie this large, so the session could never be
             // resolved again — fail loudly rather than hand back a binding that cannot work.
             throw new IllegalStateException("cookie-mode session exceeds the cookie size budget", overBudget);
         }
+    }
+
+    private BoundSession toBoundSession(SealedSessionPayload payload, String sealedValue, Instant now) {
         SessionRecord bound = toSessionRecord(payload);
         return new BoundSession(bound,
                 List.of(codec.toSetCookieHeader(sealedValue, payload.loginInstant(), now)));

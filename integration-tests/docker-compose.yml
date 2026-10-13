@@ -1,6 +1,44 @@
 # API Sheriff Integration Tests - Production-Grade Configuration
 # Purpose: Test with production-equivalent settings to catch issues early
 
+# The two extension fields below are declared once and merged into all twelve api-sheriff* services
+# with the YAML merge key. Every reader of this file resolves that key: Compose itself (and with it the
+# `config` model the bring-up scripts derive their probe targets from), and every surefire wiring
+# test, all of which construct the document through SnakeYAML's load path, which flattens `<<` before
+# any test sees a service. A reader that walks the raw node graph instead would see neither merge —
+# keep it that way, or the keys must go back to being repeated per service.
+
+# OWASP runtime hardening (production-grade), carried by every api-sheriff* gateway instance:
+# no privilege escalation, all capabilities dropped (principle of least privilege) and a read-only root
+# filesystem. Each service keeps its own tmpfs for the temporary files that read-only root needs.
+x-gateway-hardening: &gateway-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+
+# The two TLS fixtures every api-sheriff* gateway instance waits on, merged INSIDE each service's own
+# depends_on map. It cannot ride on x-gateway-hardening: a YAML merge is shallow, so a service's own
+# depends_on key would replace one carried by that anchor instead of combining with it.
+#
+# Every instance mounts the shared sheriff-config directory — an overlay replaces gateway.yaml only —
+# so every one DECLARES, and loads at boot, the routes of endpoints/untrusted.yaml (UNTRUSTED_UPSTREAM,
+# passthrough-backend:8443) and endpoints/upstream-fault.yaml (FAULT_UPSTREAM, toxiproxy:8667),
+# whatever its overlay says; the primary and api-sheriff-plain-mgmt additionally relay
+# tls.passthrough_sni to passthrough-backend and toxiproxy:8666. Reaching a backend here means
+# declaring a route to it, not a test happening to exercise that route, so all twelve gate on both.
+#
+# For the api-sheriff-egress-verify-* pair the gate is load-bearing beyond start order:
+# passthrough-backend is the origin of their chain-trust control (TOPOLOGY_UNTRUSTED), and a refusal
+# from a listener that is not up yet would read exactly like the chain-trust refusal that leg asserts,
+# so the control would pass without ever having dialled.
+x-gateway-backend-deps: &gateway-backend-deps
+  passthrough-backend:
+    condition: service_healthy
+  toxiproxy:
+    condition: service_healthy
+
 services:
   keycloak:
     # NOTE: Dependabot cannot automatically update this image version.
@@ -17,8 +55,11 @@ services:
     # TLS as its only listener. The label exists so a host-side readiness probe can derive the whole
     # probe URL — scheme AND published port — from this model instead of restating either;
     # demo-client/scripts/start-dev-environment.sh consumes it for all three demo services in ONE
-    # loop rather than carrying a keycloak-shaped special case. It is inert for the landed
-    # integration-tests bring-up, whose discovery filters on the api-sheriff* name prefix.
+    # loop rather than carrying a keycloak-shaped special case, and
+    # integration-tests/scripts/start-integration-container.sh selects Keycloak beside the
+    # api-sheriff* services in its discovery and derives the Keycloak wait's scheme and port from it
+    # the same way. That script also reads Keycloak's published HTTPS port (container port 8443) off
+    # the resolved model, as a `port` row, for the console URL it prints.
     #
     # The management-root-path label below is carried for label-set uniformity across every labelled
     # service, but it is INERT FOR KEYCLOAK and must not be read as a derivable truth about it:
@@ -107,18 +148,21 @@ services:
   # The cert is generated at container start (least infrastructure: no pre-provisioned key material),
   # mirroring the self-signed convention the certificates/ scripts use for the terminated listener.
   #
-  # The image is pinned by content digest, the same one docker-compose.benchmark.yml and
-  # BffTlsRelaxationIT.PROXY_IMAGE bind: a minor-line tag stays mutable and every patch republish
-  # moves it. Move all nginx pins of the integration surface together; the tag is kept for
-  # readability only.
+  # The image is a test-only fixture built from src/main/docker/passthrough-backend/Dockerfile, the
+  # same way grpc-echo is built. It installs openssl at BUILD time, so nothing is fetched from a
+  # package index when the container starts and its start-up needs no network beyond the compose
+  # network. The nginx pin lives in that Dockerfile's FROM line: the content digest
+  # docker-compose.benchmark.yml and BffTlsRelaxationIT.PROXY_IMAGE bind as well. Move all nginx pins
+  # of the integration surface together.
   passthrough-backend:
-    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    build:
+      context: .
+      dockerfile: src/main/docker/passthrough-backend/Dockerfile
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -e
-        apk add --no-cache openssl >/dev/null 2>&1
         openssl req -x509 -newkey rsa:2048 -nodes -days 730 \
           -keyout /etc/nginx/passthrough-backend.key \
           -out /etc/nginx/passthrough-backend.crt \
@@ -170,7 +214,7 @@ services:
   #
   # No host port is published — it is reached only by the gateways on the internal compose network.
   mismatched-tls-backend:
-    # Digest-pinned, the same pin as passthrough-backend above.
+    # Digest-pinned, the same pin as the FROM line of passthrough-backend's fixture Dockerfile.
     image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     volumes:
       - ./src/main/docker/certificates:/etc/nginx/certificates:ro
@@ -240,7 +284,7 @@ services:
   # SSRF-controlled egress and re-serves them under the response envelope. No host
   # port is published — it is reached only by the gateway on the compose network.
   asset-origin:
-    # Digest-pinned, the same pin as passthrough-backend above.
+    # Digest-pinned, the same pin as the FROM line of passthrough-backend's fixture Dockerfile.
     image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     volumes:
       - ./src/main/docker/asset-origin:/usr/share/nginx/html:ro
@@ -417,8 +461,12 @@ services:
     # until the gRPC echo upstream is accepting connections, otherwise the first
     # streaming IT can race the upstream's boot. early-answer-backend gates the same way,
     # and only here: this is the one instance Http2EarlyResponseResetIT dials it through.
-    # The other upstreams retain the prior service_started semantics.
+    # The two TLS fixtures passthrough-backend and toxiproxy are health-gated as well, on every
+    # gateway instance, through the x-gateway-backend-deps anchor merged first — see that anchor
+    # for why all twelve gate on both. keycloak, go-httpbin and asset-origin retain
+    # service_started.
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -458,16 +506,11 @@ services:
       # compose run mounting the same subdir rather than the whole target tree.
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
 
-    # OWASP Security hardening (production-grade)
-    security_opt:
-      - no-new-privileges:true
+    # OWASP runtime hardening (no-new-privileges, cap_drop ALL, read-only root), declared once at
+    # the x-gateway-hardening anchor and shared by every gateway instance.
+    <<: *gateway-hardening
 
-    # Drop all capabilities (principle of least privilege)
-    cap_drop:
-      - ALL
-
-    # Read-only filesystem with tmpfs for temporary files (production setting)
-    read_only: true
+    # tmpfs for the temporary files the read-only root filesystem cannot hold (production setting)
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
 
@@ -550,6 +593,7 @@ services:
       # service, whose gateway.yaml has the same oidc block. See that service's comment.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -567,11 +611,7 @@ services:
       - ./src/main/docker/signing-keys:/app/signing-keys:ro
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -635,6 +675,7 @@ services:
       # sessions and is never a production key.
       - SESSION_ENCRYPTION_KEY=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -657,11 +698,7 @@ services:
       # per-project difference is the base URL.
       - ../demo-client/src/main/resources/spa:/app/demo:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -731,6 +768,7 @@ services:
       # rather than merely that both are present.
       - SESSION_ENCRYPTION_KEY=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -748,11 +786,7 @@ services:
       - ./src/main/docker/signing-keys:/app/signing-keys:ro
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -811,6 +845,7 @@ services:
       # whose gateway.yaml has the same oidc block.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -828,11 +863,7 @@ services:
       - ./src/main/docker/signing-keys:/app/signing-keys:ro
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -914,6 +945,7 @@ services:
       # (oidc.sender_constraint.key_file) — see the primary api-sheriff service.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -931,11 +963,7 @@ services:
       - ./src/main/docker/signing-keys:/app/signing-keys:ro
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -1010,6 +1038,7 @@ services:
       # whose gateway.yaml carries the same oidc block.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -1027,11 +1056,7 @@ services:
       - ./src/main/docker/signing-keys:/app/signing-keys:ro
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     # Identical to the primary instance's budget, per ADR-0012: the empty-mode arm is compared
@@ -1128,6 +1153,7 @@ services:
       # (oidc.sender_constraint.key_file) — see the primary api-sheriff service.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -1147,11 +1173,7 @@ services:
       # The /assets/static route the IT's positive control fetches is served from this directory.
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     # 256M rather than the suite-serving instances' 512M: this instance serves four assertions against
@@ -1245,6 +1267,7 @@ services:
       # whose gateway.yaml carries the same oidc block.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -1255,12 +1278,9 @@ services:
         condition: service_healthy
       # The only instances that gate on this backend. Its listener must be up before the assertion
       # runs, or a connection refusal would be indistinguishable from the hostname refusal under test.
+      # The chain-trust control's origin, passthrough-backend, is gated through the merged
+      # x-gateway-backend-deps anchor — see it for why that gate matters to this pair in particular.
       mismatched-tls-backend:
-        condition: service_healthy
-      # The chain-trust control's origin (TOPOLOGY_UNTRUSTED). Gated for the same reason as the
-      # backend above: a refusal from a listener that is not up yet would be read as the chain-trust
-      # refusal the third leg asserts, and the control would pass without ever having dialled.
-      passthrough-backend:
         condition: service_healthy
     volumes:
       - ./src/main/docker/certificates:/app/certificates:ro
@@ -1271,11 +1291,7 @@ services:
       - ./src/main/docker/signing-keys:/app/signing-keys:ro
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -1341,6 +1357,7 @@ services:
       # (oidc.sender_constraint.key_file) — see the primary api-sheriff service.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -1351,9 +1368,6 @@ services:
         condition: service_healthy
       mismatched-tls-backend:
         condition: service_healthy
-      # The chain-trust control's origin — gated in lockstep with the verify-on leg.
-      passthrough-backend:
-        condition: service_healthy
     volumes:
       - ./src/main/docker/certificates:/app/certificates:ro
       # Shared config dir, then overlay ONLY gateway.yaml with the verify-off variant.
@@ -1363,11 +1377,7 @@ services:
       - ./src/main/docker/signing-keys:/app/signing-keys:ro
       - ./src/main/docker/assets:/app/assets:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -1452,6 +1462,7 @@ services:
       # is not read by this instance: with a secret configured there is no such key.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-rsa.pem
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -1474,11 +1485,7 @@ services:
       # serves from this mount — without it a post-logout return would 404.
       - ../demo-client/src/main/resources/spa:/app/demo:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
@@ -1566,6 +1573,7 @@ services:
       # never a production key.
       - SESSION_ENCRYPTION_KEY=Y29va2llLXJlZnJlc2gtc2VhbGluZy1rZXktMDEyMzQ=
     depends_on:
+      <<: *gateway-backend-deps
       keycloak:
         condition: service_started
       go-httpbin:
@@ -1587,11 +1595,7 @@ services:
       # serves from this mount — without it a post-logout return would 404.
       - ../demo-client/src/main/resources/spa:/app/demo:ro
       - ${LOG_TARGET_DIR:-./target/quarkus-logs}:/logs:rw
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
+    <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     deploy:
