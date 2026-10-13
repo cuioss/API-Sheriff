@@ -63,7 +63,9 @@ import io.restassured.response.Response;
  *       with the stack's signing-key directory mounted as well.</li>
  * </ul>
  * Both shapes publish alike: the application listener on a fixed host port on every interface (see
- * {@link #applicationPortPublication(int)}), the management port on a loopback port docker assigns.
+ * {@link #applicationPortPublication(int)}), the management port on a fixed host port on loopback,
+ * derived from the application port (see {@link #managementPortPublication(int)}). No gateway this
+ * harness starts takes a host port docker assigns.
  * <p>
  * <strong>The publication rule.</strong> No container this harness starts may carry two loopback
  * publications, or one loopback publication while it is attached to two networks: on Rancher Desktop
@@ -144,8 +146,12 @@ final class OneOffGatewayContainers {
     private static final String LONG_PUBLISH_OPTION = "--publish";
     private static final String NETWORK_OPTION = "--network";
 
-    /** The management port of a one-off gateway: on loopback, on a host port docker assigns. */
-    private static final String MANAGEMENT_PORT_PUBLICATION = "127.0.0.1::9000";
+    /**
+     * The distance between a one-off gateway's fixed application host port and its fixed management
+     * host port: application port {@code 10464} pairs with management port {@code 19464}. See
+     * {@link #managementHostPort(int)}.
+     */
+    static final int MANAGEMENT_PORT_OFFSET = 9000;
 
     /** The host-address prefixes of a publication that is bound to loopback. */
     private static final List<String> LOOPBACK_HOSTS = List.of("127.", "localhost:", "[::1]:");
@@ -178,8 +184,8 @@ final class OneOffGatewayContainers {
      * Starts a one-off gateway over a standalone descriptor. The environment mirrors a compose gateway
      * instance whose descriptor declares no {@code passthrough_sni}, so Quarkus terminates TLS directly
      * on 8443. The application listener is published on {@code applicationHostPort} on every interface
-     * and the management port on a loopback port docker assigns — one loopback publication, as
-     * {@link #assertLeavesNoDeadHostPort(String, List, int)} demands.
+     * and the management port on its fixed loopback partner, {@link #managementHostPort(int)} — one
+     * loopback publication, as {@link #assertLeavesNoDeadHostPort(String, List, int)} demands.
      * <p>
      * The descriptor must be readable by others before the container starts, and this is asserted
      * rather than assumed: the image runs as its own non-root user, whose uid differs from the build's,
@@ -194,7 +200,8 @@ final class OneOffGatewayContainers {
      *                            the gateway image reads it as a different uid than the build that
      *                            wrote or checked it out
      * @param applicationHostPort the fixed host port the application listener is published on, on every
-     *                            interface; unique among the gateways that can run at the same time
+     *                            interface; unique among the gateways that can run at the same time.
+     *                            It also fixes the management host port
      */
     static void startGateway(String gateway, String network, Path descriptor, int applicationHostPort) {
         List<String> arguments = gatewayRunArguments(gateway, network, descriptor, applicationHostPort);
@@ -220,7 +227,7 @@ final class OneOffGatewayContainers {
                 "--name", gateway,
                 NETWORK_OPTION, network,
                 PUBLISH_OPTION, applicationPortPublication(applicationHostPort),
-                PUBLISH_OPTION, MANAGEMENT_PORT_PUBLICATION,
+                PUBLISH_OPTION, managementPortPublication(applicationHostPort),
                 "-e", "QUARKUS_PROFILE=it",
                 // Binds the benchmark-idp trust profile the issuer names to the stack's trust store.
                 "-e", "QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties",
@@ -246,8 +253,9 @@ final class OneOffGatewayContainers {
      *                            topology aliases of the shared configuration and Keycloak resolve
      * @param networkAlias        the name other containers of that network reach the gateway under
      * @param applicationHostPort the fixed host port the application listener is published on, on every
-     *                            interface; the port of the gateway origin its descriptor names
-     * @param descriptor          the overlay {@code gateway.yaml}; must carry
+     *                            interface; the port of the gateway origin its descriptor names. It
+     *                            also fixes the management host port
+     * @param descriptor         the overlay {@code gateway.yaml}; must carry
      *                            {@link PosixFilePermission#OTHERS_READ}
      * @param certificate         the file name, in the certificates directory, of the server
      *                            certificate the application listener presents
@@ -368,7 +376,7 @@ final class OneOffGatewayContainers {
                 NETWORK_OPTION, gateway.network(),
                 "--network-alias", gateway.networkAlias(),
                 PUBLISH_OPTION, applicationPortPublication(gateway.applicationHostPort()),
-                PUBLISH_OPTION, MANAGEMENT_PORT_PUBLICATION,
+                PUBLISH_OPTION, managementPortPublication(gateway.applicationHostPort()),
                 "-e", "QUARKUS_PROFILE=it",
                 "-e", "QUARKUS_CONFIG_LOCATIONS=/app/certificates/benchmark-idp-trust.properties",
                 "-e", "QUARKUS_HTTP_SSL_CERTIFICATE_FILES=/app/certificates/" + gateway.certificate(),
@@ -425,6 +433,45 @@ final class OneOffGatewayContainers {
      */
     static String applicationPortPublication(int applicationHostPort) {
         return applicationHostPort + ":8443";
+    }
+
+    /**
+     * The fixed loopback host port a one-off gateway's management interface is published on: its
+     * application host port plus {@value #MANAGEMENT_PORT_OFFSET}. Because the application ports of
+     * the gateways that can run at the same time are distinct, so are their management ports, and the
+     * host-port table of {@code doc/development/integration-test-topology.adoc} lists each pair.
+     *
+     * @param applicationHostPort the fixed application host port of the gateway
+     * @return the management host port paired with it
+     */
+    static int managementHostPort(int applicationHostPort) {
+        return applicationHostPort + MANAGEMENT_PORT_OFFSET;
+    }
+
+    /**
+     * The {@code docker run -p} value that publishes a one-off gateway's management interface:
+     * {@code 127.0.0.1:<port>:9000}, on loopback, at the fixed port {@link #managementHostPort(int)}
+     * pairs with the application port.
+     * <p>
+     * <strong>Why loopback.</strong> The application port is already published on every interface, so
+     * this is the container's one loopback publication — the most
+     * {@link #assertLeavesNoDeadHostPort(String, List, int)} admits — and the management interface,
+     * which reports readiness and metrics, stays off the host's network.
+     * <p>
+     * <strong>Why fixed rather than assigned by docker.</strong> A full integration run on Rancher
+     * Desktop under WSL 2 saw the gateway of {@code BffReservedPathPrecedenceIT} start, its log report
+     * the management interface listening, and every connection to the loopback port docker had
+     * assigned refused for the whole 90-second readiness budget, while every fixed application port of
+     * the run answered. Docker hands its ports out of the host's ephemeral range in sequence, and
+     * earlier test containers had already left numbers of that range in an unknown state; a fixed
+     * number above the Compose stack's own management ports is one no earlier container of the run
+     * has published.
+     *
+     * @param applicationHostPort the fixed application host port of the gateway
+     * @return the publication, in {@code docker run -p} form
+     */
+    static String managementPortPublication(int applicationHostPort) {
+        return "127.0.0.1:" + managementHostPort(applicationHostPort) + ":9000";
     }
 
     /**
@@ -763,9 +810,9 @@ final class OneOffGatewayContainers {
     }
 
     /**
-     * Restarts a one-off gateway and reads its management port again. Docker assigns an ephemeral host
-     * port anew when a container starts, so the port published before the restart is not the one the
-     * restarted gateway answers on; a fixed host port stays as it was.
+     * Restarts a one-off gateway and reads its management port again from docker rather than assuming
+     * it. The port is fixed ({@link #managementPortPublication(int)}), so the value read back is the one
+     * published before the restart; reading it confirms the restarted container still publishes it.
      *
      * @param gateway the container name
      * @return the loopback host port the management interface is published on after the restart
@@ -897,9 +944,9 @@ final class OneOffGatewayContainers {
      * origin its application port is published on. Any HTTP answer satisfies it; a connection that is
      * refused, reset or never answered fails it, with the port mapping and the gateway log.
      * <p>
-     * The readiness poll reaches the management port, which is published on a host port docker
-     * assigns. The application port is published on a fixed one and is reached there over a different
-     * mapping, so readiness {@code UP} says nothing about it. This is the check for that second mapping.
+     * The readiness poll reaches the management port, which is published on loopback. The application
+     * port is published on every interface and is reached over a different mapping, so readiness
+     * {@code UP} says nothing about it. This is the check for that second mapping.
      * It is made once and is not a wait: it turns an unreachable application port into a failure of the
      * rig's start that names the port, instead of a socket error in whichever test request comes first.
      * <p>

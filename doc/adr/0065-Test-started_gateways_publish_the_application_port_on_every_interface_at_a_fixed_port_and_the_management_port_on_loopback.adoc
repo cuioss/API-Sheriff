@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: A gateway an integration test starts itself publishes its application listener on every interface at a fixed host port and its management interface on a loopback port docker assigns, and joins exactly one network; a container attached to a second network publishes no port at all. Loopback publication of both ports was rejected because removing such a container leaves its host port numbers dead on the Rancher Desktop/WSL 2 host, and compose instances were rejected because these gateways need a lifetime, a readiness state or a descriptor no compose service can carry. The accepted cost is that a test gateway is reachable from the host's network at fixed ports while the test runs; it carries only committed test material.
+// summary: A gateway an integration test starts itself publishes its application listener on every interface at a fixed host port and its management interface on loopback at a fixed host port derived from it (the application port plus 9000), and joins exactly one network; a container attached to a second network publishes no port at all. Loopback publication of both ports was rejected because removing such a container leaves its host port numbers dead on the Rancher Desktop/WSL 2 host, a management port docker assigns was rejected after a full run in which the assigned loopback number refused every connection to a gateway that was up, and compose instances were rejected because these gateways need a lifetime, a readiness state or a descriptor no compose service can carry. The accepted cost is that a test gateway is reachable from the host's network at fixed ports while the test runs; it carries only committed test material.
 // tags: integration-tests, docker, host-ports, port-publication, test-topology, security-audit
 // affects: integration-tests, documentation
 // supersedes:
@@ -47,12 +47,15 @@ how many networks it may sit, so that the harness never produces either shape.
 == Decision
 
 *A gateway a test starts publishes its application listener on every interface at a fixed host port,
-and its management interface on a loopback port docker assigns. It joins exactly one network.*
+and its management interface on loopback at a fixed host port derived from the first. It joins
+exactly one network.*
 
 * The application listener is published as `<port>:8443`, on every interface, at a fixed port taken
   from the test-started range. This is the form the Compose stack publishes its own gateway ports in.
-* The management interface is published as `127.0.0.1::9000`, on a loopback port docker assigns; the
-  suite reads the assigned port back before it polls readiness.
+* The management interface is published as `127.0.0.1:<port + 9000>:9000`, on loopback, at the
+  application port plus 9000 -- `10464` pairs with `19464`. Distinct application ports therefore give
+  distinct management ports, and the one allocation covers both. The suite reads the published port
+  back before it polls readiness.
 * The container joins one network: the Compose network, or a dedicated network of the rig it belongs
   to.
 * A container that must be attached to a second network -- a proxy that dials the Compose Keycloak
@@ -68,7 +71,18 @@ gateway answers, so a dead number fails the start with a message naming it.
 
 The fixed ports, the containers that take them and the port numbers retired by the defect are listed
 in the integration-test topology note, whose table is read by `OneOffGatewayContainersTest` and
-compared with the ports the sources assign.
+compared with the ports the sources assign and, for the management column, with the port the harness
+derives.
+
+*Amendment -- the management port is fixed.* The decision first published the management interface
+as `127.0.0.1::9000`, on a loopback port docker assigned. A full integration run on the Rancher
+Desktop/WSL 2 host then failed `BffReservedPathPrecedenceIT` at its start: the gateway's log reported
+the management interface listening, and every readiness request to the assigned loopback port was
+refused for the whole 90-second budget, while every fixed application port of the run answered and
+the suite was green on its own. The assigned number came from the host's ephemeral range, which the
+earlier containers of the run had been drawing from in sequence. The management port was moved to a
+fixed number for that reason. The shape the dead-port rule governs is unchanged: one loopback
+publication on one network.
 
 == Consequences
 
@@ -97,7 +111,10 @@ compared with the ports the sources assign.
   stricter than another host needs.
 * A fixed port in the test-started range can collide with a Compose instance added later. The
   topology note's table is the allocator for this range, and the Compose file is the allocator for
-  its own.
+  its own. The derived management ports (`19459` and up) lie above the Compose stack's management
+  ports (`19000` to `19011`); a Compose instance published there would collide in the same way.
+* Which property of the docker-assigned number refused the connection was not established. Fixing
+  the number removes the assignment from the path; it does not explain the refusal.
 
 == Alternatives Considered
 
@@ -121,6 +138,12 @@ as well would leave no fixed numbers to allocate and none to retire. A BFF's des
 origin and is read at boot, so the port must be known before the container is created. Rejected for
 the BFF gateways; the bearer-only gateways keep the same fixed form so that every test-started
 gateway publishes alike.
+
+*Publishing the management port on a loopback port docker assigns.* This was the decision's first
+form: the management port needs no fixed number, since nothing reads it before the container exists,
+and an assigned number needs no allocation. Rejected after the run recorded in the amendment above,
+in which the assigned number refused every connection to a gateway that was up. A number derived
+from the application port costs no allocation of its own.
 
 == References
 

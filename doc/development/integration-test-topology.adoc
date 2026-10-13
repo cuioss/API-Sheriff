@@ -440,8 +440,8 @@ it adds no row to the instance table and nothing to the diagram.
 
 | Host ports
 | The application listener on the fixed host port `10462`, published on every interface as the
-  Compose stack publishes its own gateway ports; the management interface on a loopback port docker
-  assigns.
+  Compose stack publishes its own gateway ports; the management interface on the fixed loopback port
+  `19462`.
 
 | Mounts
 | The certificates, the shared configuration with the derived descriptor laid over it, the assets and
@@ -515,60 +515,87 @@ The table below is enclosed in a `test-started-host-ports` tagged block, which
 sources assign -- so the table is a test input, and a change to it is not a documentation-only commit.
 
 // tag::test-started-host-ports[]
-[cols="1,2,3"]
+[cols="1,1,2,3"]
 |===
-| Host port | Gateway container | Suite
+| Application port | Management port | Gateway container | Suite
 
 | `10459`
+| `19459`
 | `sheriff-absolute-ttl`
 | `BffSessionAbsoluteTtlIT` -- see <<short-ttl-gateway>>
 
 | `10462`
+| `19462`
 | `sheriff-generated-keys`
 | `BffGeneratedKeysIT` -- see <<generated-keys-gateway>>
 
 | `10463`
+| `19463`
 | `sheriff-tls-relaxation-gateway`
 | `BffTlsRelaxationIT` -- see <<tls-relaxation-rig>>
 
 | `10464`
+| `19464`
 | `sheriff-reserved-path-overlap`
 | `BffReservedPathPrecedenceIT` -- see <<reserved-path-gateway>>
 
 | `10465`
+| `19465`
 | `sheriff-stub-idp-gateway`
 | `BffRefreshScopeWireIT`, `BffRefreshSingleFlightIT`, `BffRefreshTransientFailureIT` and
   `BffUnboundTokenResponseIT`, through `StubIdentityProviderRig` -- see <<stub-idp-rig>>
 
 | `10466`
+| `19466`
 | `late-idp-gateway-<suffix>`
 | `JwksLateIdpReadinessIT`
 
 | `10467`, `10468`
+| `19467`, `19468`
 | `jwks-egress-mismatch-gateway-<suffix>` and its control, `jwks-egress-mismatch-control-<suffix>`
 | `JwksEgressMismatchIT`, which runs the two side by side
 
 | `10469`, `10470`
+| `19469`, `19470`
 | `sheriff-idle-timeout-server` and `sheriff-idle-timeout-cookie`
 | `BffSessionIdleTimeoutIT`, one gateway per test, each with the signing-key directory mounted
 
 | `10471`
+| `19471`
 | `sheriff-stub-idp-gateway`
 | `JwksKeyRotationIT`, through the key-rotation variant of `StubIdentityProviderRig` -- see
   <<stub-idp-rig>>
 |===
 // end::test-started-host-ports[]
 
-*How they are published.* Every one of these gateways publishes two ports: the application listener
-as `<port>:8443` on every interface (`OneOffGatewayContainers.applicationPortPublication`), the form
-the Compose stack publishes its own gateway ports in, and the management interface as
-`127.0.0.1::9000`, on a loopback port docker assigns and the suite reads back. The application port
-of a BFF has to be known before the container exists, because the descriptor names the gateway's own
-origin and is read at boot. The two bearer-only suites have no such constraint and take a fixed port
-for the reason the next paragraphs give. The cost of the form is that a test's gateway is reachable
-from the network the host is on while the test runs, as the Compose gateways are. The decision and
-that accepted cost are recorded in
+*How they are published.* Every one of these gateways publishes two ports, both on fixed host ports:
+the application listener as `<port>:8443` on every interface
+(`OneOffGatewayContainers.applicationPortPublication`), the form the Compose stack publishes its own
+gateway ports in, and the management interface as `127.0.0.1:<port + 9000>:9000` on loopback
+(`OneOffGatewayContainers.managementPortPublication`). The management port is derived from the
+application port, so it is fixed by the same allocation and is distinct wherever the application
+ports are; the second column of the table lists it, and `OneOffGatewayContainersTest` checks that
+column against the derivation. The suite still reads the published management port back from docker
+before it polls readiness. The application port of a BFF has to be known before the container exists,
+because the descriptor names the gateway's own origin and is read at boot. The two bearer-only suites
+have no such constraint and take a fixed port for the reason the next paragraphs give. The cost of
+the form is that a test's gateway is reachable from the network the host is on while the test runs,
+as the Compose gateways are. The decision and that accepted cost are recorded in
 link:../adr/0065-Test-started_gateways_publish_the_application_port_on_every_interface_at_a_fixed_port_and_the_management_port_on_loopback.adoc[ADR-0065].
+
+*Why the management port is fixed as well.* The management interface used to be published as
+`127.0.0.1::9000`, on a loopback port docker assigned. In a full integration run on Rancher Desktop
+under WSL 2 the gateway of `BffReservedPathPrecedenceIT` started, its log reported the management
+interface listening on `9000`, and every readiness request to the port docker had assigned was
+refused for the whole 90-second budget -- no slow answer and no `503`, a refused connection each
+time -- while every fixed application port of the run answered. The suite was green when run on its
+own. Docker hands out assigned ports from the host's ephemeral range in sequence, and earlier
+containers of the same run had already published, and left, numbers of that range. Which property of
+the assigned number refused the connection was not established; what is established is that it was
+a number docker chose and not one the harness controls. The fixed management ports lie in `19459` to
+`19471`, above the Compose stack's own management ports (`19000` to `19011`) and well below the
+default Linux ephemeral range (`32768` to `60999`) docker assigns from, and no earlier container of a
+run publishes them.
 
 *The host constraint behind that form.* On Rancher Desktop under WSL 2 a host port number can be left
 dead. A container that publishes a dead number afterwards starts normally and answers on its other
@@ -588,9 +615,11 @@ constraint was observed on that host only.
 *The rule the harness follows.* No container a test starts carries two loopback publications, or one
 loopback publication while it is attached to two networks:
 
-* a gateway publishes one port on every interface and one on loopback, and joins one network;
+* a gateway publishes one port on every interface and one on loopback, both at fixed host ports, and
+  joins one network;
 * the stub identity provider publishes its admin port on loopback and nothing else, and joins one
-  network;
+  network. That admin port is the one host port of a test-started container docker still assigns;
+  no run has yet seen it refused, and it moves to a fixed number the first time one does;
 * the two containers that are attached to a second network -- the identity-provider proxy of
   `BffTlsRelaxationIT` and the late provider of `JwksLateIdpReadinessIT` -- publish no port at all.
 
@@ -616,7 +645,8 @@ gateway published both of its ports on loopback: `10456` of `BffGeneratedKeysIT`
 `BffReservedPathPrecedenceIT`. The two bearer-only suites published both of their ports on loopback
 ports docker assigned. By the measurement above each such gateway left its two numbers dead; those
 lie in the range docker assigns from and are not recorded, which is why no test-started container
-takes a port docker assigns on every interface.
+takes a port docker assigns on every interface, and why no test-started gateway takes one on loopback
+either.
 
 [#stub-idp-rig]
 === The stub identity-provider rig
@@ -672,7 +702,7 @@ a class that uses the rig out of the concurrent Failsafe execution: they run in 
 
 | Host ports
 | The application listener on the fixed host port `10465`, on every interface; the management
-  interface on a loopback port docker assigns.
+  interface on the fixed loopback port `19465`.
 |===
 
 *What the stub serves.* The provider metadata document below the issuer, the key set on every
@@ -705,7 +735,7 @@ values:
 
 | Host ports
 | The application listener on the fixed host port `10471`, on every interface; the management
-  interface on a loopback port docker assigns.
+  interface on the fixed loopback port `19471`.
 |===
 
 The committed descriptor declares neither key, so the gateway of the four suites above runs the
@@ -769,7 +799,7 @@ gateway that reaches Keycloak through that proxy only.
 
 | Host ports
 | The application listener on the fixed host port `10463`, on every interface; the management
-  interface on a loopback port docker assigns.
+  interface on the fixed loopback port `19463`.
 |===
 
 *The certificate and the descriptor of each leg.* A leg says something about hostname matching only
@@ -848,7 +878,7 @@ declares one short enough to wait out in a test, so the short lifetime needs an 
 
 | Host ports
 | The application listener on the fixed host port `10459`, on every interface; the management
-  interface on a loopback port docker assigns.
+  interface on the fixed loopback port `19459`.
 |===
 
 [#reserved-path-gateway]
@@ -883,7 +913,7 @@ route. So the suite starts a gateway over a configuration of its own, once for t
 
 | Host ports
 | The application listener on the fixed host port `10464`, on every interface; the management
-  interface on a loopback port docker assigns.
+  interface on the fixed loopback port `19464`.
 |===
 
 *Why the fixture is not mounted into the shared directory.* Every gateway mounts the shared
