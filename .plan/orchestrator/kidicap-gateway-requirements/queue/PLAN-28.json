@@ -2,8 +2,8 @@
   "id": "PLAN-28",
   "slug": "jwks-refresh-follow-ups",
   "workstream": "WS-01",
-  "status": "launched",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "jwks-refresh-follow-ups",
   "pr": "",
   "landing": "",
   "seq": 16

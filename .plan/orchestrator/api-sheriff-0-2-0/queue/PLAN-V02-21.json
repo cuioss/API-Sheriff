@@ -2,8 +2,8 @@
   "id": "PLAN-V02-21",
   "slug": "unread-review-findings",
   "workstream": "WS-05",
-  "status": "launched",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "plan-v02-21-unread-review-findings",
   "pr": "",
   "landing": "",
   "seq": 21
