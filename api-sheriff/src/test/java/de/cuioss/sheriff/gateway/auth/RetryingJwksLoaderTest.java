@@ -1377,7 +1377,7 @@ class RetryingJwksLoaderTest {
     enum RefreshBuildFailure {
         /** The gateway's own config-assembly refusal: anticipated, so it stays {@code DEBUG}. */
         ANTICIPATED_REFUSAL(0, "simulated tls_profile resolution failure",
-            message -> new GatewayException(EventType.CONFIG_INVALID, message)),
+            text -> new GatewayException(EventType.CONFIG_INVALID, text)),
         /** A type the loader does not name among the refusals it expects from the factory. */
         UNANTICIPATED(1, "simulated unanticipated factory failure", UnsupportedOperationException::new);
 
