@@ -59,8 +59,9 @@ would otherwise force a retrofit.
   free. Its realized footprint reached `edge/`, `pipeline/`, `events/`, `config/validation/` and
   `quarkus/` beyond its declared surface, so every staged spec touching those packages re-reads them
   at outline.
-- **Every ADR-authoring plan** (V02-04, V02-06, V02-11, V02-12), note added 2026-10-09: the next free
-  ordinal on `origin/main` at `386f3f74` is `0063`. ADR-0005 is `Superseded by ADR-0062`; ADR-0018,
+- **Every ADR-authoring plan** (V02-04, V02-06, V02-11, V02-12): the next free ordinal on
+  `origin/main` at `09edaea9` is `0067` — `0063`–`0065` came from the `kidicap-gateway-requirements`
+  epic (#430 and its siblings), `0066` from the spin-off #431. Ordinals move fast; derive at write time. ADR-0005 is `Superseded by ADR-0062`; ADR-0018,
   ADR-0051 and ADR-0057 were amended by `PLAN-V02-01`.
 - **Test-cycle rework landed outside the queue (2026-10-10)** — #414 (`9aac0bca`, the analysis) and
   #424 (`9f9dc6f9`, nine of its ten proposals; the analysis document deleted again), from the direct
@@ -208,7 +209,13 @@ doc-only or build-light plan for the second and third slots.
 
 17. > ↪ Relocated to `settled.md` § "Open Defect 17 — post-merge benchmark red since #408 (resolved 2026-10-10 by #427)" — the flood moved to `BffPendingLoginBoundIT`; benchmark green again
 
-16. **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
+16. **FIX LANDED 2026-10-13, CONFIRMING — #431 (`09edaea9`, ADR-0066), a spin-off plan outside this
+    queue: the gateway now resets early-answered HTTP/2 streams itself with `NO_ERROR`, so clients no
+    longer reset them and trip the Rapid-Reset guard.** First post-merge benchmark run 38364519750:
+    success, **0** `ENHANCE_YOUR_CALM` lines (103 on the run before, 149 on #433's failed run
+    38307102339). Relocate once two more green runs show 0. `PLAN-V02-06` D8 keeps the `gw-08` bound
+    itself; its spec now says that path must stay out of any reset count.
+    Original entry: **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
     `ENHANCE_YOUR_CALM` ("Maximum number of RST frames reached")** (added 2026-10-06, found at the
     `PLAN-V02-14` landing). Run 37430198468 on #387 failed `run-k6-upload-small-benchmark`: 134
     `POST /upload/small` requests were refused this way and the `checks` / `http_req_failed` thresholds
@@ -310,6 +317,16 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS, NONE STAGED** (added 2026-10-13). The `main` push
+  `Maven Build` on `09edaea9` (#431, run 38364519502) failed in `build (25)`:
+  `GatewayEdgeFramingCorpusTest.wellFramedControl` — *"the drain request must be proxied: HTTP/1.1
+  502 Bad Gateway"*; 1 of 899 in the isolated fork, `build (26)` cancelled after it. The merge-group
+  run on the same tree passed. This is the HTTP/1.1 drain 502 that stayed open after #403 fixed the
+  HTTP/2 framing flake and predates #431. #431 did edit `GatewayEdgeRoute` and `ResponseStage`, which
+  the HTTP/1.1 path shares, so whether it changed the flake's rate is not established; watch the next
+  push runs before attributing either way. Owner when it recurs: whichever plan next touches `edge/` (`PLAN-V02-06`), or a dedicated
+  fix. Reproduce with `-XX:ActiveProcessorCount=1`.
 
 - **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy
   key-material generators from TokenSheriff, proposal 7) and #423 (IT concurrency not realised: the
