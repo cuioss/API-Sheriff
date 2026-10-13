@@ -46,12 +46,15 @@ decision.
 <!-- ANNOTATION ZONE — hand-written, and deliberately OUTSIDE the generated table markers. -->
 
 - PLAN-24 — shipped #430. Ran alone; nothing collided.
-- **PLAN-27 — launched 2026-10-12, not confirmed running.** Re-grounded at c013781d the same day: M-64
-  is already pinned by `BffRefreshScopeWireIT`, so the plan is four live deliverables and one assertion.
-  Adds one suite (M-62) to the native integration job.
-- **PLAN-28 (staged 2026-10-12, WS-01) — PLAN-24's follow-ups.** Small. Shares `doc/adr/`,
-  `doc/configuration.adoc` and the threat model with PLAN-27, PLAN-26, PLAN-20 and PLAN-21, so it is
-  sequenced, not paired, despite touching main source nobody else does. Adds no integration suite.
+- PLAN-27 — shipped #433. Ran alone; nothing collided. Its post-merge benchmark run failed (Open
+  Defects). The native integration job took about 20 minutes with its one new suite.
+- **PLAN-28 (staged 2026-10-12, WS-01, launched 2026-10-13) — PLAN-24's follow-ups, plus three
+  intermittent failures.** 8 deliverables. Shares `doc/adr/`, `doc/configuration.adoc` and the threat
+  model with PLAN-26, PLAN-20, PLAN-21 and PLAN-29, so it runs alone. Adds no integration suite, but
+  needs full integration runs and benchmark runs for its diagnoses.
+- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** Changes the dispatch path
+  (`GatewayEdgeRoute`), so it is sequenced AFTER PLAN-28, whose deliverables 6 and 8 diagnose
+  intermittent failures on that path. Carries two wire-or-remove decisions for the operator at outline.
 - PLAN-25 — shipped #408. The pairing note below ("pairs with anything") held for files and failed for
   the CI job's wall-clock.
 - **Flow is sequential in practice.** Every staged pair overlaps on `doc/configuration.adoc`, the schemas
@@ -114,6 +117,35 @@ decision.
 
 ## Decisions
 
+- 2026-10-13 — **PLAN-27 shipped** as PR #433 / 128fd07e (M-62 pinned by the new `BffUnboundTokenResponseIT`;
+  M-64 completed by one assertion in `BffRefreshScopeWireIT`; ADR-0064 removes the per-route
+  `upstream.circuit_breaker` block, ADR-0065 records the test-port topology; five audit findings
+  dispositioned; four hygiene items; 9/9 plan deliverables; 4h37m wall, 5.8M tokens). Landing record:
+  `landings/PLAN-27.md`; `landing-check` reports it complete. Corroborated against `ci pr view 433`, the
+  commit being the tip of `origin/main`, and the merged diff (28 files).
+  - ⛔ **The post-merge benchmark run failed** (run 38307102339, `upload_small`, 15.66% errors, HTTP/2
+    `GOAWAY` with "Maximum number of RST frames reached"). Cause not established; #433 changes no
+    dispatch code and the four runs before it were green. Recorded as an Open Defect and **folded into
+    PLAN-28 as deliverable 8**; expected surface updated in the same edit (+2 entries:
+    `upload_small.js`; `httpbin.yaml` and `benchmarks/pom.xml` as a hypothesis).
+  - **Drain 5** (2026-10-13, at 128fd07e): 9 messages scanned, 9 archived, 0 invalid. Inbox EMPTY
+    (live 0, no closed sender, invalid 0).
+    - `-001` (finding, four upstream keys parse and act on nothing): corroborated, **staged as PLAN-29**
+      (`upstream-inert-keys`, WS-02).
+    - `-002` promoted as lesson `2026-10-13-06-001` (a guard narrowed, its prose claim left); `-003`
+      **folded** into that lesson as its cost (it is the same defect's procedural consequence); adds no
+      file surface.
+    - `-004` promoted as `2026-10-13-06-002`; `-005` as `2026-10-13-06-003` (both `documentation`).
+    - `-006` promoted as `2026-10-13-06-004` (plan-marshall, guessed verb); `-007` **folded** into it as
+      the second occurrence (guessed flag); adds no file surface.
+    - `-008` promoted as `2026-10-13-06-005` (plan-marshall, finalize re-runs after a doc-only commit).
+    - `-009` (landing): reconciled.
+  - **Resolved by #433 and removed from Open Defects:** the inert `circuit_breaker.reset_ms` key
+    (removed, ADR-0064) and PLAN-25's unrun `adr-propose` plus five untriaged audit findings.
+  - **Folds:** PLAN-26's next-free ADR ordinal hint corrected to 0066; PLAN-28 re-grounded at 128fd07e
+    (both verdicts re-stamped; #433 touches none of its main-source or edge-test files).
+  - **PLAN-28 emitted** the same day, after this ledger landed. In-flight set empty at the gate.
+
 - 2026-10-12 — **PLAN-24 shipped** as PR #430 / c013781d (bounded single-flight JWKS refresh on an
   unknown key id, three new `jwks` keys, a rate-limited WARN, `JwksKeyRotationIT`, ADR-0063; 4/4 plan
   deliverables; 6h56m wall, 7.8M tokens). Landing record: `landings/PLAN-24.md`; `landing-check` reports
@@ -135,6 +167,10 @@ decision.
   unanticipated `runRefresh` failure, the wall-clock decision, the documentation rows PLAN-24 did not
   check, three simplify leftovers, and the diagnosis of the flaky `GatewayEdgeFramingCorpusTest`. One
   production change, in `auth/`; no other staged spec touches `RetryingJwksLoader`.
+- 2026-10-12 — **PLAN-28 widened by operator request: a second possibly flaky test.** Deliverable 7
+  asks whether `BffReservedPathPrecedenceIT` is flaky (one local failure in a full run during PLAN-24,
+  green on a targeted re-run; never red in CI). Reproduce first, in a full run. Expected surface +1 entry
+  (10 → 11). 7 deliverables.
 - 2026-10-12 — **PLAN-27 re-grounded at c013781d for its emit; one deliverable is already done.** All
   nine claims stamped. Its M-64 hypothesis is CONTRADICTED: `BffRefreshScopeWireIT` already drives the
   scope-driven refresh through the gateway on the stub. Deliverable 2 shrinks to one added assertion (no
@@ -349,14 +385,17 @@ decision.
   PLAN-24 (a `502` on Java 26 in CI, a 30 s timeout locally), both green on re-run, on a branch that
   touches nothing under `gateway/edge`. It guards request framing, so re-running until green can hide a
   regression. Staged as PLAN-28 deliverable 6. — source: lesson `2026-10-12-16-012`
-- **A configuration key that parses and does not act: `circuit_breaker.reset_ms`.** The breaker uses a
-  fixed 5 s delay and never reads the per-route value (stated in PR #408's body, not re-traced by the
-  orchestrator); `doc/architecture.adoc` still says in one passage that the breaker "half-opens after
-  `reset_ms`". Staged as PLAN-27 deliverable 3. — source: `landings/PLAN-25.md`
-- PLAN-25 merged with `adr-propose` never run and five security-audit findings "pending triage" (test
-  ports on all interfaces, the TLS-relaxation guard exemption, the nginx image pin, `Retry-After` without
-  jitter, the stub IdP's admin API). Staged as PLAN-27 deliverables 3 and 4. The nginx row looks already
-  fixed: `BffTlsRelaxationIT` pins tag and digest at `fdcfaeb3`. — source: `landings/PLAN-25.md`
+- **The post-merge benchmark run of #433 failed: `upload_small`, 15.66% errors.** Run 38307102339 on
+  128fd07e. 149 requests ended with HTTP/2 `GOAWAY`, `ENHANCE_YOUR_CALM`, "Maximum number of RST frames
+  reached", from 15 s into the run; every other benchmark in the run was clean and the job was green
+  after #427, #429, #430 and #432. #433 changes no dispatch code. Not diagnosed, not re-run. Staged as
+  PLAN-28 deliverable 8. OWED BY THE OPERATOR if a quicker answer is wanted: re-run the job. — source:
+  `landings/PLAN-27.md`
+- **Four upstream keys parse and act on nothing**: `connect_timeout_ms`, `read_timeout_ms`,
+  `retry.max_attempts`, `retry.idempotent_only` (read at 128fd07e: bound in `UpstreamConfig`, no reader;
+  the guard uses a fixed 30 s timeout and two retries). The user guide marks them inert;
+  `doc/architecture.adoc` and `doc/variants/01-base-gateway.adoc` do not. Staged as PLAN-29. — source:
+  inbox `integration-test-evidence-follow-ups-001.md`, `landings/PLAN-27.md`
 - **The shared ledger worktree was 23 commits behind `origin/main`** when this drain ran, so the sibling
   epics' queue rows it holds were stale: it showed PLAN-V02-01 as `launched` while `main` has it
   `shipped`. `corpus cross-check` and the `next` gate read the worktree, so they judged the in-flight set
@@ -529,8 +568,11 @@ decision.
   ADR-0063 and threat-model GW-07. — trigger: every token-sheriff version bump; source:
   `landings/PLAN-24.md`, lesson `2026-10-12-16-013`
 - **A same-day re-grounding seems to tighten the declared surface.** PLAN-24 realized 1.4x its
-  declaration; the earlier measurements ran roughly 3x to 5x. One data point. — trigger: PLAN-27's landing,
-  the next plan emitted straight after a re-grounding; source: `landings/PLAN-24.md`
+  declaration; the earlier measurements ran roughly 3x to 5x. PLAN-27, also re-grounded on its emit day,
+  realized 28 files against 12 entries (several of them directories); 8 of its 10 undeclared files follow
+  from one wire-or-remove decision the spec left to the plan. Two data points: re-grounding helps, an
+  open decision in the spec does not get declared. PLAN-29 therefore declares both outcomes. — trigger:
+  PLAN-28's and PLAN-29's landings; source: `landings/PLAN-24.md`, `landings/PLAN-27.md`
 - **Two plans that each add integration suites collide on the native integration job's wall-clock, even
   with disjoint files.** PLAN-25 and PLAN-V02-01 were each green alone; combined they hit the job's
   35-minute limit (raised to 60 in #408, cycle shortened by #424). The disjointness gate cannot see this.
@@ -540,7 +582,8 @@ decision.
 - **Tests the downstream cites as its evidence — do not remove or rename unnoticed.** PLAN-25's nine
   suites (`BffReservedPathPrecedenceIT`, `BffRefreshSingleFlightIT`, `BffRefreshScopeWireIT`,
   `BffRefreshTransientFailureIT`, `BffTlsRelaxationIT`, `HtmlErrorPageIT`, `BffSessionAbsoluteTtlIT`,
-  `BffSessionInstanceIsolationIT`, `BffPendingLoginBoundIT`), the six the PLAN-25 spec lists as already
+  `BffSessionInstanceIsolationIT`, `BffPendingLoginBoundIT`), PLAN-27's `BffUnboundTokenResponseIT`
+  (M-62) and `BffRefreshScopeWireIT.refreshGrantsCarryTheSessionScopeOnTheWire` (M-64), the six the PLAN-25 spec lists as already
   pinned, and for M-61 `BffSessionScopeParityIT.navigationNeedingARefusedScopeIsRefusedAtThePush` and
   `.xhrNeedingARefusedScopeIsRefusedAndTheSessionSurvives`. — trigger: any plan refactoring the IT
   directory; source: inbox `kidicap-gateway-downstream-012.md`, `-013.md`

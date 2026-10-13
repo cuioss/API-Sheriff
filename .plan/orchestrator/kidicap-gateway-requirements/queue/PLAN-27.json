@@ -2,9 +2,9 @@
   "id": "PLAN-27",
   "slug": "integration-test-evidence-follow-ups",
   "workstream": "WS-02",
-  "status": "launched",
-  "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "status": "shipped",
+  "plan_marshall_plan_id": "integration-test-evidence-follow-ups",
+  "pr": "#433",
+  "landing": "landings/PLAN-27.md",
   "seq": 15
 }
