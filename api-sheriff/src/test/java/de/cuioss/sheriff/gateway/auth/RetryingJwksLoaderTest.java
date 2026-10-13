@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -116,8 +117,18 @@ class RetryingJwksLoaderTest {
             new AtomicReference<>(InMemoryKeyMaterialHandler.createDefaultJwks());
     /** When set, the endpoint holds every response until the latch opens. */
     private final AtomicReference<CountDownLatch> responseGate = new AtomicReference<>();
-    /** The instant every loader built by this fixture reads; a test moves it to cross a window. */
+    /**
+     * The wall clock every loader built by this fixture reads. It supplies only the last-loaded
+     * instant the unknown-key-id WARN reports; a test steps it to show that neither the window nor
+     * the grace deadline follows it.
+     */
     private final AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-01-01T00:00:00Z"));
+    /**
+     * The monotonic nanosecond reading every loader built by this fixture reads; a test advances it to
+     * cross a window or a grace deadline. It starts at an arbitrary value, because only the difference
+     * between two readings carries meaning.
+     */
+    private final AtomicLong nanos = new AtomicLong(1_000_000_000L);
     /**
      * The per-test scheduler the loaders built by this fixture retry on; the one production-timing
      * test uses the shared production scheduler instead. It is held as the concrete pool so a test
@@ -187,12 +198,23 @@ class RetryingJwksLoaderTest {
         return loader(delegateFactory, refreshInterval, initialRetryDelay, WINDOW, GRACE);
     }
 
-    /** The full fixture loader: the test's own scheduler and the test's own clock. */
+    /** The full fixture loader: the test's own scheduler and the test's own two clocks. */
     private RetryingJwksLoader loader(Supplier<JwksLoader> delegateFactory, Duration refreshInterval,
             Duration initialRetryDelay, Duration unknownKeyIdWindow, Duration keyRotationGracePeriod) {
         InstantSource clock = now::get;
         return new RetryingJwksLoader(ISSUER_NAME, delegateFactory, refreshInterval, unknownKeyIdWindow,
-                keyRotationGracePeriod, initialRetryDelay, scheduler, clock);
+                keyRotationGracePeriod, initialRetryDelay, scheduler, clock, nanos::get);
+    }
+
+    /** Advances the monotonic clock alone by {@code elapsed}: the window and the grace deadline move. */
+    private void tick(Duration elapsed) {
+        nanos.addAndGet(elapsed.toNanos());
+    }
+
+    /** Lets {@code elapsed} pass on both clocks, as real time does when the wall clock does not step. */
+    private void elapse(Duration elapsed) {
+        tick(elapsed);
+        now.set(now.get().plus(elapsed));
     }
 
     /**
@@ -720,7 +742,9 @@ class RetryingJwksLoaderTest {
     /**
      * The refresh an unknown key id schedules. Every leg runs the real library loader against the
      * local endpoint; the delegates are {@link TrackedLoader}s so a test can tell which one was
-     * closed, the clock is the fixture's own, and the refresh runs on the fixture's scheduler.
+     * closed, both clocks are the fixture's own, and the refresh runs on the fixture's scheduler. The
+     * window and the grace deadline are crossed on the monotonic clock; the wall clock is stepped only
+     * to show that neither follows it.
      */
     @Nested
     @DisplayName("bounded refresh on an unknown key id")
@@ -789,7 +813,7 @@ class RetryingJwksLoaderTest {
             RetryingJwksLoader loader = refreshingLoader();
             initialise(loader);
             Instant loadedAt = now.get();
-            now.set(loadedAt.plusSeconds(5));
+            elapse(Duration.ofSeconds(5));
 
             // Act — the first window
             for (int i = 0; i < 1000; i++) {
@@ -809,7 +833,7 @@ class RetryingJwksLoaderTest {
             assertFalse(warning.contains(String.valueOf(server.getPort())), "the JWKS url is never logged: " + warning);
 
             // Act — one millisecond before the window ends nothing more is admitted
-            now.set(loadedAt.plusSeconds(5).plus(WINDOW).minusMillis(1));
+            elapse(WINDOW.minusMillis(1));
             for (int i = 1000; i < 2000; i++) {
                 loader.getKeyInfo("invented-" + i);
             }
@@ -817,7 +841,7 @@ class RetryingJwksLoaderTest {
             assertEquals(2, built.size(), "a lookup inside the claimed window builds nothing");
 
             // Act — the second window admits exactly one more
-            now.set(loadedAt.plusSeconds(5).plus(WINDOW));
+            elapse(Duration.ofMillis(1));
             for (int i = 2000; i < 3000; i++) {
                 loader.getKeyInfo("invented-" + i);
             }
@@ -953,7 +977,7 @@ class RetryingJwksLoaderTest {
             loader.getKeyInfo(ROTATED_KEY_ID);
             drainScheduler(Duration.ZERO);
             boolean answeredAfterRefusal = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent();
-            now.set(now.get().plus(WINDOW));
+            tick(WINDOW);
             loader.getKeyInfo(ROTATED_KEY_ID);
             awaitRotatedKeyPublished(loader);
 
@@ -983,7 +1007,7 @@ class RetryingJwksLoaderTest {
             // Act — the failed refresh, then a lookup in the next window
             loader.getKeyInfo(ROTATED_KEY_ID);
             drainScheduler(Duration.ZERO);
-            now.set(now.get().plus(WINDOW));
+            tick(WINDOW);
             loader.getKeyInfo(ROTATED_KEY_ID);
             awaitRotatedKeyPublished(loader);
 
@@ -1027,7 +1051,7 @@ class RetryingJwksLoaderTest {
             awaitClosed(1);
             drainScheduler(Duration.ZERO);
             boolean answeredAfterFailure = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent();
-            now.set(now.get().plus(WINDOW));
+            tick(WINDOW);
             loader.getKeyInfo(ROTATED_KEY_ID);
             awaitRotatedKeyPublished(loader);
 
@@ -1062,24 +1086,23 @@ class RetryingJwksLoaderTest {
         @DisplayName("the replaced delegate answers its own key id until the grace deadline and is closed after it")
         void replacedDelegateAnswersUntilTheGraceDeadline() throws Exception {
             // Arrange — a grace period the scheduler reaches within the test. The deadline a lookup
-            // honours is read from the fixture's clock; the closing of the replaced delegate is run by
-            // the scheduler after the same period of real time, so the period is long enough for the
-            // in-grace lookup below to run well before the scheduler gets there.
+            // honours is read from the fixture's monotonic clock; the closing of the replaced delegate
+            // is run by the scheduler after the same period of real time, so the period is long enough
+            // for the in-grace lookup below to run well before the scheduler gets there.
             Duration grace = Duration.ofSeconds(2);
             RetryingJwksLoader loader = refreshingLoader(WINDOW, grace);
             initialise(loader);
             rotateSigningKey();
             loader.getKeyInfo(ROTATED_KEY_ID);
             awaitRotatedKeyPublished(loader);
-            Instant swappedAt = now.get();
 
             // Act + Assert — inside the grace period the previous key id still verifies
-            now.set(swappedAt.plus(grace).minusMillis(1));
+            tick(grace.minusMillis(1));
             assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
                     "a token signed with the replaced key is still accepted inside the grace period");
 
             // Act + Assert — at the deadline it no longer does, and the replaced delegate is closed
-            now.set(swappedAt.plus(grace));
+            tick(Duration.ofMillis(1));
             assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isEmpty(),
                     "the replaced key set stops answering at the grace deadline");
             awaitClosed(0);
@@ -1120,7 +1143,7 @@ class RetryingJwksLoaderTest {
                     .replace(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID, secondRotation));
 
             // Act — the next window replaces the key set again
-            now.set(now.get().plus(WINDOW));
+            tick(WINDOW);
             loader.getKeyInfo(secondRotation);
             Awaits.until(() -> loader.getKeyInfo(secondRotation).isPresent(), "the second refresh to be published",
                     Awaits.CONNECT_CEILING_SECONDS);
@@ -1164,7 +1187,7 @@ class RetryingJwksLoaderTest {
             CountDownLatch gate = new CountDownLatch(1);
             responseGate.set(gate);
             int requestsBefore = server.getRequestCount();
-            now.set(now.get().plus(WINDOW));
+            tick(WINDOW);
             loader.getKeyInfo("invented");
             Awaits.until(() -> server.getRequestCount() > requestsBefore, "the refresh to reach the endpoint",
                     Awaits.CONNECT_CEILING_SECONDS);
@@ -1228,6 +1251,126 @@ class RetryingJwksLoaderTest {
             // Assert
             assertEquals(Duration.ofSeconds(7), loader.unknownKeyIdWindow());
             assertEquals(Duration.ofSeconds(11), loader.keyRotationGracePeriod());
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a backward wall-clock step neither re-opens nor extends a claimed window")
+        void backwardWallClockStepMovesNoWindow() throws Exception {
+            // Arrange — one window claimed; the endpoint keeps serving the loaded key set, so the
+            // window's refresh is discarded
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            loader.getKeyInfo("invented-0");
+            awaitClosed(1);
+            drainScheduler(Duration.ZERO);
+
+            // Act — the wall clock steps back by an hour inside the window
+            now.set(now.get().minus(Duration.ofHours(1)));
+            loader.getKeyInfo("invented-1");
+            drainScheduler(Duration.ZERO);
+            int builtInsideTheWindow = built.size();
+
+            // Act — the window's length passes on the monotonic clock; the wall clock stays an hour back
+            tick(WINDOW);
+            loader.getKeyInfo("invented-2");
+            awaitClosed(2);
+            drainScheduler(Duration.ZERO);
+
+            // Assert
+            assertEquals(2, builtInsideTheWindow, "the step does not re-open the claimed window");
+            assertEquals(3, built.size(),
+                    "the window ends one window after its claim, not one window plus the step");
+            assertEquals(2, unknownKeyIdWarnings().size(), "one WARN per window");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a forward wall-clock step neither shortens the grace period nor opens the window early")
+        void forwardWallClockStepMovesNoDeadline() throws Exception {
+            // Arrange — one replacement done: the window is claimed and the replaced delegate retired
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            rotateSigningKey();
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+
+            // Act — the wall clock steps forward past the grace period and the window together
+            now.set(now.get().plus(GRACE).plus(WINDOW).plusSeconds(1));
+            boolean retiredAnswers = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent();
+            loader.getKeyInfo("invented");
+            drainScheduler(Duration.ZERO);
+
+            // Assert
+            assertTrue(retiredAnswers, "the replaced key set still answers: the grace period is not cut short");
+            assertEquals(2, built.size(), "the claimed window is not opened early: no refresh is built");
+            assertEquals(1, unknownKeyIdWarnings().size(), "no second WARN inside the claimed window");
+
+            // Act + Assert — the grace period ends once its length has passed on the monotonic clock.
+            // That lookup falls into a new window, so it claims a refresh, which the endpoint's key set
+            // does not satisfy; it is awaited so nothing is left running when the loader closes.
+            tick(GRACE);
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isEmpty(),
+                    "the replaced key set stops answering at the monotonic grace deadline");
+            awaitClosed(2);
+            drainScheduler(Duration.ZERO);
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("the WARN reports the wall-clock instant of the last load, whatever the monotonic clock reads")
+        void warnReportsTheWallClockLastLoadedInstant() throws Exception {
+            // Arrange — the refresh that replaces the key set loads at a known wall-clock instant
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            rotateSigningKey();
+            Instant refreshedAt = now.get().plusSeconds(10);
+            now.set(refreshedAt);
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+
+            // Act — the next window is claimed after the wall clock stepped back by an hour
+            tick(WINDOW);
+            now.set(refreshedAt.minus(Duration.ofHours(1)));
+            loader.getKeyInfo("invented");
+            awaitClosed(2);
+            drainScheduler(Duration.ZERO);
+
+            // Assert — the second window's WARN names the instant the refresh loaded at
+            List<String> warnings = unknownKeyIdWarnings();
+            assertEquals(2, warnings.size(), () -> "one WARN per window, got " + warnings);
+            String second = warnings.get(1);
+            assertTrue(second.contains("itself at " + refreshedAt + ";"), second);
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a claimed window holds across a wrap of the nanosecond counter")
+        void windowHoldsAcrossACounterWrap() throws Exception {
+            // Arrange — the counter is half a window short of its wrap, so the claimed window ends past it
+            nanos.set(Long.MAX_VALUE - WINDOW.toNanos() / 2);
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            loader.getKeyInfo("invented-0");
+            awaitClosed(1);
+            drainScheduler(Duration.ZERO);
+
+            // Act — still short of the wrap, inside the window
+            tick(Duration.ofSeconds(1));
+            loader.getKeyInfo("invented-1");
+            drainScheduler(Duration.ZERO);
+            int builtInsideTheWindow = built.size();
+
+            // Act — past the wrap, one window after the claim
+            tick(WINDOW.minusSeconds(1));
+            loader.getKeyInfo("invented-2");
+            awaitClosed(2);
+            drainScheduler(Duration.ZERO);
+
+            // Assert
+            assertEquals(2, builtInsideTheWindow,
+                    "a lookup inside the window builds nothing, although the window's end has wrapped");
+            assertEquals(3, built.size(), "the window ends one window after its claim, across the wrap");
             loader.close();
         }
     }

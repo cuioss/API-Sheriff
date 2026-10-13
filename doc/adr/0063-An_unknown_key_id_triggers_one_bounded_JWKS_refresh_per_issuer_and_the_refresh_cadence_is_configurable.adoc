@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A token naming a key id the gateway does not hold schedules at most one JWKS refresh per issuer per window (jwks.unknown_kid_refresh_window_seconds, 5-3600, default 30), claimed when the token arrives and never run on a request thread; the refresh loads a fresh library loader off to the side and publishes it only when it holds the triggering key id, the replaced loader keeps answering for its own keys until the key-rotation grace period ends, and a WARN rate-limited by the same window names the issuer and the gateway's own last load. The background refresh interval (jwks.refresh_interval_seconds, 60-86400, library default 600) and the grace period (jwks.key_rotation_grace_period_seconds, 0-3600, library default) are passed to the token library only when declared. All three keys are refused at boot on a file source; readiness is unchanged.
+// summary: A token naming a key id the gateway does not hold schedules at most one JWKS refresh per issuer per window (jwks.unknown_kid_refresh_window_seconds, 5-3600, default 30), claimed when the token arrives and never run on a request thread; the refresh loads a fresh library loader off to the side and publishes it only when it holds the triggering key id, the replaced loader keeps answering for its own keys until the key-rotation grace period ends, and a WARN rate-limited by the same window names the issuer and the gateway's own last load. The background refresh interval (jwks.refresh_interval_seconds, 60-86400, library default 600) and the grace period (jwks.key_rotation_grace_period_seconds, 0-3600, library default) are passed to the token library only when declared. All three keys are refused at boot on a file source; readiness is unchanged. AMENDED (A1): the refresh window and the grace deadline are measured on a monotonic clock, because both are durations the gateway enforces rather than instants it reports, so a wall-clock step neither lengthens the refresh blackout nor cuts the grace period short; the last-load instant in ApiSheriff-136 stays on the wall clock because it is reported as an instant.
 // tags: jwks, token-validation, key-rotation, configuration-surface, denial-of-service, log-amplification, readiness, boot-sequence
 // affects: api-sheriff, integration-tests, documentation
 // supersedes:
@@ -117,9 +117,10 @@ means the request that triggers a refresh is itself always rejected.
 === 3. One claim per issuer per window, made when the token arrives
 
 When a lookup misses and the issuer's key set is loaded, the lookup tries to claim the issuer's
-window with a single compare-and-set on the next-allowed instant. The claim that succeeds logs the
-record of section 6 and schedules one refresh, unless the refresh of an earlier window is still
-running; every other lookup inside the window does neither.
+window with a single compare-and-set on the next-allowed reading of a monotonic clock
+(<<amendment-a1,Amendment A1>>). The claim that succeeds logs the record of section 6 and schedules
+one refresh, unless the refresh of an earlier window is still running; every other lookup inside the
+window does neither.
 
 The claim is made at trigger time, not at completion. The bound of one refresh per issuer per window
 therefore holds whatever the outcome of the fetch, the request rate and the number of distinct key
@@ -145,7 +146,8 @@ A fresh library loader knows only the keys the identity provider serves at that 
 alone would reject, at once, every token signed with the previous key -- the gateway would trade one
 outage for another and void the grace period the same configuration makes tunable. The replaced
 loader is therefore kept as a second, non-fetching lookup until the key-rotation grace period has
-passed, and is then dropped and closed. At most one replaced loader exists per issuer: a second
+passed, measured on the same monotonic clock as the window (<<amendment-a1,Amendment A1>>), and is
+then dropped and closed. At most one replaced loader exists per issuer: a second
 replacement inside the grace period closes the older one. A grace period of zero closes the replaced
 loader at once.
 
@@ -271,6 +273,41 @@ an operator can act on it, in the log.
 
 The unifying principle: work an uncredentialed caller can trigger is bounded by something the caller
 does not choose, and it changes held security state only when it produces what was asked for.
+
+[[amendment-a1]]
+== Amendment A1: the refresh window and the grace deadline are measured on a monotonic clock
+
+*Both timing bounds of this decision are durations, so they are measured on a clock that only moves
+forward; the decision itself stands.* The window of section 3 and the grace deadline of section 5
+were read from the wall clock as instants. Neither is an instant the gateway reports: each is a
+duration the gateway enforces, counted from a moment it observed itself. A wall clock can step --
+through a time synchronisation correction, an operator setting it, or a virtual machine resuming --
+and a duration read across a step is wrong by the size of the step.
+
+*A backward step lengthens the refresh blackout.* A claimed window ends at an instant on the wall
+clock. Moving that clock back moves the end of the window away by the step, so no unknown key id may
+claim a refresh for that much longer, and an abrupt key change at the identity provider is picked up
+correspondingly later.
+
+*A forward step cuts the grace period short.* A replaced loader answers until an instant on the wall
+clock. Moving that clock forward brings the deadline closer by the step, so tokens signed with the
+previous key are rejected before the configured grace period has passed. A forward step of more than
+the grace period ends it at once.
+
+The window and the grace deadline are therefore read from a monotonic nanosecond clock, and two
+readings are compared by their difference, so a wrap of the counter cannot open or close either
+bound. A wall-clock step in either direction moves neither of them. The bound of one refresh per
+issuer per window, the grace period an operator configures and the scheduled retirement of a replaced
+loader all keep the length they were declared with.
+
+*The record keeps its wall-clock instant.* The instant `WARN ApiSheriff-136` carries (section 6) is
+reported, not enforced: an operator compares it with other timestamps, so it stays on the wall clock
+and still reads as a point in time. It is the one time value of this decision that is an instant.
+
+This amendment supersedes one statement above: that the claim of section 3 is a compare-and-set on
+the next-allowed instant. Sections 3 and 5 are worded for the current behaviour. Nothing else
+changes: the configuration keys, their ranges and defaults, the record, readiness and the exclusion
+of refresh and retry are as decided.
 
 == References
 
