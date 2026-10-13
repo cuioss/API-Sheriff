@@ -65,7 +65,8 @@
       "effort": {
         "default": "level-5",
         "verification-feedback": "level-5"
-      }
+      },
+      "worktree_setup_commands": []
     },
     "phase-6-finalize": {
       "max_iterations": 5,
@@ -83,8 +84,10 @@
         "default:finalize-step-security-audit": {
           "lane": "full"
         },
-        "default:pre-submission-self-review": {
-          "drop_review_on_scope_gate": false,
+        "default:functional-review": {
+          "lane": "standard"
+        },
+        "default:code-review": {
           "lane": "standard"
         },
         "default:architecture-refresh": {
@@ -383,7 +386,7 @@
       "no_plan_body_days": 7,
       "build_results_days": 5
     },
-    "provisioned_version": "0.1.1818",
-    "config_seed_fingerprint": "28c7d1c8"
+    "provisioned_version": "0.1.1916",
+    "config_seed_fingerprint": "a2efc4ac"
   }
 }
