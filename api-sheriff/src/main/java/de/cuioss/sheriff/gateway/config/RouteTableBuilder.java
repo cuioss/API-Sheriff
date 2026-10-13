@@ -322,7 +322,7 @@ public final class RouteTableBuilder {
      * {@code scopes} alone when no {@code oidc} block is configured. The union is additive by
      * construction — an endpoint can add scopes but never remove an {@code oidc.scopes} member.
      * It is the single derivation the bearer {@code insufficient_scope} check, the session-route
-     * login request and the {@code /auth/login?returnUrl=} resolution all read.
+     * login request and the {@code /bff/login?returnUrl=} resolution all read.
      *
      * @param gateway  the bound gateway document supplying {@code oidc.scopes}
      * @param endpoint the route's owning endpoint supplying its additive {@code scopes}

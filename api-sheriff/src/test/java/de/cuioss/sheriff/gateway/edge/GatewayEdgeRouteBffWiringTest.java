@@ -944,7 +944,7 @@ class GatewayEdgeRouteBffWiringTest {
     class ClientJwksAtTheEdge {
 
         /** The path the endpoint is reserved at when {@code jwks_path} is omitted — {@link #fullOidc()} omits it. */
-        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        private static final String DEFAULT_JWKS_PATH = "/bff/jwks";
         private static final String ROUTED_CONTROL_PATH = "/auth/not-reserved";
         /** A path outside the {@code /auth} route that nothing reserves: the gateway does not know it. */
         private static final String UNKNOWN_PATH = "/not-a-route";

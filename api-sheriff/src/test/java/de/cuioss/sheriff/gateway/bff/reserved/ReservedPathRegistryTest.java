@@ -59,7 +59,7 @@ class ReservedPathRegistryTest {
      * default is a documented contract of the configuration surface, so a change of the constant must
      * turn these tests red rather than follow it.
      */
-    private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+    private static final String DEFAULT_JWKS_PATH = "/bff/jwks";
 
     private static ReservedPathRegistry fullyConfigured() {
         OidcConfig.Logout logout = OidcConfig.Logout.builder()
@@ -382,7 +382,7 @@ class ReservedPathRegistryTest {
         }
 
         @ParameterizedTest(name = "\"{0}\" is not the client JWKS path")
-        @ValueSource(strings = {"/auth", "/auth/", "/auth/jwk", "/auth/jwks/", "/auth/jwks.json", "/auth/jwks/keys"})
+        @ValueSource(strings = {"/bff", "/bff/", "/bff/jwk", "/bff/jwks/", "/bff/jwks.json", "/bff/jwks/keys"})
         @DisplayName("Should not match a prefix, a sibling or an extension of the client JWKS path")
         void shouldNotMatchAPrefixOrSibling(String path) {
             ReservedPathRegistry registry = ReservedPathRegistry.from(withRedirectUri().build());

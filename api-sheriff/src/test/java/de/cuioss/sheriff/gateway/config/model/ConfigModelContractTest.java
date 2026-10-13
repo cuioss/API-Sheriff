@@ -1801,7 +1801,7 @@ class ConfigModelContractTest {
          * default is a documented contract of the configuration surface, so a change of the constant
          * must turn these tests red rather than follow it.
          */
-        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        private static final String DEFAULT_JWKS_PATH = "/bff/jwks";
 
         private static OidcConfig.ClientAuthenticationSettings keyFileOnly() {
             return OidcConfig.ClientAuthenticationSettings.builder().keyFile(KEY_FILE).build();

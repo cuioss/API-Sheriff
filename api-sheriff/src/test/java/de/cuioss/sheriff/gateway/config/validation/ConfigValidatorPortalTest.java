@@ -161,7 +161,7 @@ class ConfigValidatorPortalTest {
         private static final String LOGIN = "/session/login";
         private static final String STEP_UP = "/session/step-up";
         /** The path the client JWKS endpoint is reserved at when {@code jwks_path} is omitted. */
-        private static final String DEFAULT_CLIENT_JWKS = "/auth/jwks";
+        private static final String DEFAULT_CLIENT_JWKS = "/bff/jwks";
         private static final String DECLARED_CLIENT_JWKS = "/keys/client";
 
         private OidcConfig oidc() {
