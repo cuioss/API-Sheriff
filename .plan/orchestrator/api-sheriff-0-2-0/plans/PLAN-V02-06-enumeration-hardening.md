@@ -112,12 +112,15 @@ must work through that negotiation, not around it.
    as this deliverable's, so close them here and flip `gw-02` with `gw-08`, or report which clause
    remains open.
 
-   **Legitimate traffic already hits the reset bound.** The post-merge benchmark's
-   `run-k6-upload-small-benchmark` sees the gateway send `GOAWAY` `ENHANCE_YOUR_CALM` (*"Maximum number
-   of RST frames reached"*) on `POST /upload/small` under 50 virtual users — 95 to 134 times per run
-   since at least #382, and enough to fail the run on #387 (Open Defect 16). Find where the resets come
-   from before choosing a bound: a reset-rate limit that trips on an ordinary upload workload is the
-   wrong limit, and this benchmark is the regression test for whatever is chosen.
+   **Legitimate upload traffic and the reset bound.** The transport's Rapid-Reset guard counts the
+   resets a client sends per connection. Clients that reset every stream the gateway answered before
+   the request body ended used to reach it on an ordinary upload burst (`GOAWAY` `ENHANCE_YOUR_CALM`
+   in `run-k6-upload-small-benchmark`, Open Defect 16). #431 (`09edaea9`, ADR-0066) closed that
+   source: the gateway now ends such a stream itself with `RST_STREAM(NO_ERROR)`
+   (`edge/EarlyResponseEnd`, `edge/InboundStreamWindow`), and the threat model's `gw-08` section
+   carries a note that early-answered uploads do not feed the reset count. `gw-08` itself is still
+   `GAP`. Any reset-rate bound this deliverable adds must keep that path out of its count, and the
+   upload benchmark plus `Http2EarlyResponseResetIT` are its regression tests.
 
    Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
    `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives
@@ -170,6 +173,7 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 - `doc/architecture.adoc`, `doc/adr/` — the substrate ADR (D6); `benchmarks/**` — the upload benchmark as D8's regression check
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EdgeHardeningOptions.java` — D8: the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcDispatchStage.java` — D8: its Javadoc claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EarlyResponseEnd.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/InboundStreamWindow.java` — D8: the early-response `NO_ERROR` reset path (#431, ADR-0066) that a reset-rate bound must not count; read, edited only if the bound needs a hook there
 
 ## Dependencies and Sequencing
 
