@@ -133,8 +133,20 @@ must work through that negotiation, not around it.
 
    Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; a client
    `HTTP2-Settings` header is not forwarded upstream; an h2→h1 downgrade path re-derives framing.
+9. **`rate_limit` says what it is: planned, not implemented** (operator ruling 2026-10-13). The
+   per-route key stays in `endpoint.schema.json` and `RateLimitConfig`, and nothing enforces it. It
+   must no longer be silent: a route that sets `rate_limit` logs a boot WARN naming the route and
+   stating that no rate limit is applied (a `LogRecord` in the WARN range, documented in
+   `doc/LogMessages.adoc`), with a test that goes red if the WARN is removed. Align every document on
+   one wording — planned, not implemented, no `429` today — replacing both "out of scope" and
+   "deferred": `README.adoc` (~264), `doc/configuration.adoc` § `rate_limit` (~3927) and its line ~153,
+   `doc/architecture.adoc` (the `429` row ~1291 and the gRPC note ~1399), `doc/user/endpoint-routes.adoc`
+   (example ~146, table ~801), `doc/user/README.adoc` (~26) and ADR-0016's "reserved `429` (rate
+   limiting, out of scope)" (~51). State in this plan's architecture doc that a future `rate_limit`
+   implementation builds on this plan's per-source mechanism (D3/D7). Grep for every other mention
+   at outline; line numbers are as of `ce21001b`.
 
-**Split-guard.** Eight deliverables — past the presumptive split threshold, proceeding unsplit. D8 is
+**Split-guard.** Nine deliverables — past the presumptive split threshold, within the operator-authorized 12, proceeding unsplit. D9 is small and independent; it goes with whichever half ships first. D8 is
 the weakest fit and shares no code with D1/D2; it is the first candidate to peel off. **Split line if
 outline finds the scope too heavy: D1+D2 (the oracle and its timing) | D3+D4+D7 (the substrate and its
 contract) | D8 alone.** D5 and D6 follow whichever half they test and document. Never split between D3
@@ -182,6 +194,10 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EdgeHardeningOptions.java` — D8: the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcDispatchStage.java` — D8: its Javadoc claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EarlyResponseEnd.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/InboundStreamWindow.java` — D8: the early-response `NO_ERROR` reset path (#431, ADR-0066) that a reset-rate bound must not count; read, edited only if the bound needs a hook there
+
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RateLimitConfig.java` — D9: the reserved key, read by nothing on the request path
+- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D9: the boot WARN for a set `rate_limit` (or the route-table build, whichever already emits per-route boot WARNs; verify-at-outline)
+- OBSERVED: `README.adoc`, `doc/user/README.adoc`, `doc/adr/0016-grpc-trailers-only-rejection-mapping.adoc` — D9 wording alignment (`doc/configuration.adoc`, `doc/architecture.adoc`, `doc/user/endpoint-routes.adoc`, `doc/LogMessages.adoc` are D9 sites too)
 
 ## Dependencies and Sequencing
 
