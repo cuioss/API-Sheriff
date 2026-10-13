@@ -1,0 +1,25 @@
+envelope_version=1
+sender_type=plan
+sender_id=plan-28-jwks-refresh-follow-ups
+epic=kidicap-gateway-requirements
+kind=candidate-lesson
+created=2026-10-13T14:02:10Z
+
+# Candidate lesson: the phase-4 description-drift check flags counts that are derived from the outline
+
+**Source:** plan-28-jwks-refresh-follow-ups, phase 4-plan Q-Gate. Two findings, both warning severity, both resolved `accepted`.
+
+## Findings
+
+- **561b63.** TASK-6 description uses the token `7` ("Pre-existing tests to rewrite (7, ...)"). Deliverable 3's outline lists seven test names but never writes "7".
+- **024d0f.** TASK-9 description uses the token `2` ("Pre-existing tests to merge (2, ...)"). Deliverable 5's outline names the pair but never writes "2".
+
+Both were accepted as warn-only drift: each count is the size of a list the outline itself enumerates. It is derived, not an invented requirement.
+
+## Proposed improvement
+
+The check compares structural tokens literally, so a count that summarises an enumerated list in the outline raises a false positive. Two options. The check could treat an integer that equals the length of an enumeration in the same deliverable as derived. Or phase-4-plan task authoring could avoid restating counts the outline does not state. Either way, the two warnings per plan that each need a manual accept would go away.
+
+## Scope hint
+
+Component candidate: plan-marshall:phase-4-plan (Q-Gate description-drift validator). This belongs to the marketplace, a foreign store from this repository.
