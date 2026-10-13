@@ -1,8 +1,8 @@
 === 2026-10-13 STATE at 09edaea9 (cleanup grounded at 2657be7c; main moved 6 commits since). This anchor states current state only; older paragraphs are in the ledger's git history. ===
 
-SHIPPED (11): V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19. RUNNING (operator-confirmed 2026-10-13, both in 2-refine): V02-21 (plan-v02-21-unread-review-findings) and V02-12 (plan-v02-12-idp-addressing-model). STAGED (9): V02-04, -05, -06, -07, -09, -11, -15, -20, -22. Third slot deliberately empty while kidicap PLAN-28 is in flight (operator choice).
+SHIPPED (11): V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19. RUNNING (operator-confirmed 2026-10-13, both in 2-refine): V02-21 (plan-v02-21-unread-review-findings) and V02-12 (plan-v02-12-idp-addressing-model). STAGED (10): V02-23 (NEW, cookie forwarding policy - NEXT after both running plans land), V02-04, -05, -06, -07, -09, -11, -15, -20, -22. Third slot deliberately empty while kidicap PLAN-28 is in flight (operator choice).
 
-INBOX: empty (108 archived).
+INBOX: empty (110 archived). Drain 2026-10-13: V02-12 -002 folded (D5-D7 held for a token-sheriff-client release covering revocation; filing the upstream issue is owed by the operator); -001 promoted to PLAN-V02-23 after discussion.
 
 CLEANUP 2026-10-12: delta since 386f3f74 is #425 (org workflows v0.41.0, pins only) and #427 (pending-login flood moved from -Pbenchmark to BffPendingLoginBoundIT). One claim restated (V02-11: 12 k6 goals, lane green, #427 as D1 precedent). 22/22 rows and specs reconcile, 0 blocking, 0 indeterminate surfaces. Restart verdict: ready.
 
@@ -18,4 +18,4 @@ READ BEFORE EMITTING:
 
 OPEN: Open Defect 16 (fix landed via #431, confirming: relocate after two more 0-GOAWAY benchmark runs). Open Defect 14 (#201, V02-11). Open Defect 12 (RouteRuntimeAssembler dead allocation; no owner). Open Defect 17 resolved by #427 (relocated to settled.md). Watches: HTTP/1.1 drain 502 flake (GatewayEdgeFramingCorpusTest, red main push on 09edaea9, merge-group green); V02-01 D7 residue; test-cycle rework residue (#422, #423, shared-wait sampling, ConfigValidator anchor order). A /marshall-steward run is owed.
 
-NEXT ACTION: when V02-21 or V02-12 lands, run analyze (inbox drain). V02-21 and V02-12 share 3 files (deployment/compose-sample/scripts/start-sample.sh, ADR-0031, integration-tests/docker-compose.yml): whichever merges second rebases. Held: V02-22 (never with V02-12), V02-15 and V02-09 (after V02-12), V02-07 (after V02-06), V02-04/-05/-06/-11/-20 (multi-file overlap with kidicap PLAN-28). Re-run next once PLAN-28 or either launched plan lands.
+NEXT ACTION: when V02-21 or V02-12 lands, run analyze (inbox drain); once BOTH have landed, emit PLAN-V02-23 first (operator direction), before any other staged plan. V02-21 and V02-12 share 3 files (deployment/compose-sample/scripts/start-sample.sh, ADR-0031, integration-tests/docker-compose.yml): whichever merges second rebases. Held: V02-22 (never with V02-12), V02-15 and V02-09 (after V02-12), V02-07 (after V02-06), V02-04/-05/-06/-11/-20 (multi-file overlap with kidicap PLAN-28). Re-run next once PLAN-28 or either launched plan lands.
