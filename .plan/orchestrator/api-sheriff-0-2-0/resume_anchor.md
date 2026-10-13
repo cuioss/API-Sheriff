@@ -1,6 +1,6 @@
 === 2026-10-13 STATE at 09edaea9 (cleanup grounded at 2657be7c; main moved 6 commits since). This anchor states current state only; older paragraphs are in the ledger's git history. ===
 
-SHIPPED (11): V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19. RUNNING: none. STAGED (11): V02-04, -05, -06, -07, -09, -11, -12, -15, -20, -21, -22. All three slots are free; nothing runs alone any more.
+SHIPPED (11): V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19. LAUNCHED 2026-10-13 (auto_emit, awaiting operator-confirmed start): V02-21 and V02-12. STAGED (9): V02-04, -05, -06, -07, -09, -11, -15, -20, -22. Third slot deliberately empty while kidicap PLAN-28 is in flight (operator choice).
 
 INBOX: empty (108 archived).
 
@@ -18,4 +18,4 @@ READ BEFORE EMITTING:
 
 OPEN: Open Defect 16 (fix landed via #431, confirming: relocate after two more 0-GOAWAY benchmark runs). Open Defect 14 (#201, V02-11). Open Defect 12 (RouteRuntimeAssembler dead allocation; no owner). Open Defect 17 resolved by #427 (relocated to settled.md). Watches: HTTP/1.1 drain 502 flake (GatewayEdgeFramingCorpusTest, red main push on 09edaea9, merge-group green); V02-01 D7 residue; test-cycle rework residue (#422, #423, shared-wait sampling, ConfigValidator anchor order). A /marshall-steward run is owed.
 
-NEXT ACTION: /plan-orchestrator next slug=api-sheriff-0-2-0 to fill the three slots.
+NEXT ACTION: when the operator confirms each start, transition V02-21 / V02-12 to running and stamp the plan id. V02-21 and V02-12 share 3 files (deployment/compose-sample/scripts/start-sample.sh, ADR-0031, integration-tests/docker-compose.yml): whichever merges second rebases. Held: V02-22 (never with V02-12), V02-15 and V02-09 (after V02-12), V02-07 (after V02-06), V02-04/-05/-06/-11/-20 (multi-file overlap with kidicap PLAN-28). Re-run next once PLAN-28 or either launched plan lands.
