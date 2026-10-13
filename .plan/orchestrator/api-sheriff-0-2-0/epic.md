@@ -247,24 +247,7 @@ doc-only or build-light plan for the second and third slots.
 
 17. > ↪ Relocated to `settled.md` § "Open Defect 17 — post-merge benchmark red since #408 (resolved 2026-10-10 by #427)" — the flood moved to `BffPendingLoginBoundIT`; benchmark green again
 
-16. **FIX LANDED 2026-10-13, CONFIRMING — #431 (`09edaea9`, ADR-0066), a spin-off plan outside this
-    queue: the gateway now resets early-answered HTTP/2 streams itself with `NO_ERROR`, so clients no
-    longer reset them and trip the Rapid-Reset guard.** First post-merge benchmark run 38364519750:
-    success, **0** `ENHANCE_YOUR_CALM` lines (103 on the run before, 149 on #433's failed run
-    38307102339). Relocate once two more green runs show 0. `PLAN-V02-06` D8 keeps the `gw-08` bound
-    itself; its spec now says that path must stay out of any reset count.
-    Original entry: **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
-    `ENHANCE_YOUR_CALM` ("Maximum number of RST frames reached")** (added 2026-10-06, found at the
-    `PLAN-V02-14` landing). Run 37430198468 on #387 failed `run-k6-upload-small-benchmark`: 134
-    `POST /upload/small` requests were refused this way and the `checks` / `http_req_failed` thresholds
-    were crossed. The same `GOAWAY` appears 95–105 times in each of the three preceding, passing
-    runs (#382, #385, #386), so the benchmark has been near its threshold for a while and #387 — which
-    touches no edge, HTTP/2 or upload code — is not the cause. Where the resets come from (client
-    behaviour, the gateway's upload path, or the transport's default reset-flood limit) is not
-    established. The benchmark lane does not gate merges, so nothing blocked; a later benchmark run
-    may pass or fail on the same tree. `PLAN-V02-06` D8 now carries this as evidence. **Observable again since #427 (2026-10-10)**: run
-    38073671464 passed with 104 `ENHANCE_YOUR_CALM` lines in its log — inside the earlier 95–105 band, so
-    still near the threshold, not fixed.
+16. > ↪ Relocated to `settled.md` § "Open Defect 16 — upload benchmark HTTP/2 GOAWAY ENHANCE_YOUR_CALM (resolved 2026-10-13 by #431)" — gateway resets early-answered streams itself (ADR-0066); five clean runs
 
 15. > ↪ Relocated to `settled.md` § "Open Defect 15 — snapshot deploy 401 after the Maven 3.10.0 bump (resolved 2026-10-03)" — resolved by cuioss-organization v0.35.0, verified on main
 
@@ -369,7 +352,9 @@ doc-only or build-light plan for the second and third slots.
   run on the same tree passed. This is the HTTP/1.1 drain 502 that stayed open after #403 fixed the
   HTTP/2 framing flake and predates #431. #431 did edit `GatewayEdgeRoute` and `ResponseStage`, which
   the HTTP/1.1 path shares, so whether it changed the flake's rate is not established; watch the next
-  push runs before attributing either way. Owner when it recurs: whichever plan next touches `edge/` (`PLAN-V02-06`), or a dedicated
+  push runs before attributing either way. **Second sighting (2026-10-13):** #437 (kidicap
+  `PLAN-28`) reports a CI-only 502 in the same corpus on `soleTransferEncodingNotExactlyChunked`, not
+  reproduced locally, which it calls "partly related to #431" and leaves unexplained. Owner when it recurs: whichever plan next touches `edge/` (`PLAN-V02-06`), or a dedicated
   fix. Reproduce with `-XX:ActiveProcessorCount=1`.
 
 - **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy
