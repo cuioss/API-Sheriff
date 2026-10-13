@@ -10,6 +10,10 @@ workstream: WS-01
 > brief.
 > Staged 2026-10-12 from inbox message `jwks-unknown-kid-refresh-012.md` and from PLAN-24's landing
 > (`landings/PLAN-24.md`, message `jwks-unknown-kid-refresh-015.md`).
+> Re-grounded 2026-10-13 at `128fd07e`, after PLAN-27 landed (#433): #433 touches neither
+> `RetryingJwksLoader` nor anything under `gateway/edge`, so deliverables 1 to 7 stand as written. It did
+> change `doc/configuration.adoc` (deliverable 4 edits it: read it at HEAD) and took ADR ordinals 0064
+> and 0065. Deliverable 8 was added the same day from #433's failed post-merge benchmark run.
 
 ## Objective
 
@@ -62,22 +66,43 @@ background.
    regression. Find the cause. If it is the test's own setup (a listener not ready, a connection not
    released), fix the test. ⛔ If it is a defect in the gateway's edge, STOP and file a finding to the
    epic inbox: that is its own plan.
+7. **Establish whether `BffReservedPathPrecedenceIT` is flaky too** (added 2026-10-12 by operator
+   request). It was the single failure in PLAN-24's one full local integration run (273 of 274), on a
+   branch that does not touch it, and was green on a targeted re-run. That is one occurrence, local only;
+   CI was green on both pushed heads and in the merge queue. Reproduce it first: run the full suite, not
+   the test alone, since the failure appeared only in a full run and may depend on what ran before it on
+   a shared stack. If it reproduces, find the cause and fix the test; if it does not after a reasonable
+   number of full runs, record that and close the row. The same STOP rule applies as in deliverable 6.
+
+8. **Diagnose the failed `upload_small` benchmark** (added 2026-10-13). The post-merge benchmark run of
+   #433 (run 38307102339, on `128fd07e`) failed in `run-k6-upload-small-benchmark`: 15.66% of 33,473
+   requests failed, 149 of them with `http2: server sent GOAWAY and closed the connection …
+   ErrCode=ENHANCE_YOUR_CALM, debug="Maximum number of RST frames reached"`, starting 15 seconds into the
+   60-second run. The eight benchmarks before it in the same run had no errors, and the same job was
+   green after #427, #429, #430 and #432. #433 changes no code on the dispatch path. Establish why the
+   gateway's HTTP/2 listener counted enough stream resets to close connections: what made the client
+   reset streams (see Claim Labels), and whether that is the benchmark's doing or the gateway answering
+   uploads early. Re-run the benchmark first to learn whether it reproduces. If the cause is the script
+   or the stack's setup, fix that. ⛔ The same STOP rule as deliverable 6: a defect in the gateway's edge
+   is its own plan. This deliverable and deliverable 6 may share a cause (both are intermittent failures
+   of request-body handling on HTTP/2); say so if they do.
 
 **Not in this plan:** replacing the "holds the triggering key id" publish rule with an exact comparison of
 key ids. That needs an accessor token-sheriff 0.9.6 does not have; the upstream request is the
 operator's to file, and the epic carries it as a Watch.
 
-Split guard: 6 deliverables — within the operator-authorized 12.
+Split guard: 8 deliverables — within the operator-authorized 12.
 
 ## Claim Labels
 
 - OBSERVED: `runRefresh` releases `refreshInFlight` in a `finally` block and `runRetry` has no `finally`; `runRetry` catches `GatewayException`, `IllegalArgumentException` and `IllegalStateException` only, and its comment states that an escaping failure "would silently end the retry sequence" — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java` § `runRetry`, `runRefresh`, at `c013781d`
-  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: RetryingJwksLoader at c013781d: runRetry (366) has a three-type catch and no finally; runRefresh (439) releases refreshInFlight in finally (458-466)
+  - verdict: corroborated | checked_at: 128fd07e | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: RetryingJwksLoader is unchanged between c013781d and 128fd07e (not in the diff of #433): runRetry has a three-type catch and no finally; runRefresh releases refreshInFlight in finally
 - OBSERVED: `GatewayEdgeFramingCorpusTest` exists at `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeFramingCorpusTest.java` — read by listing the tree at `c013781d`
-  - verdict: corroborated | checked_at: c013781d | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: listed in the tree at c013781d
+  - verdict: corroborated | checked_at: 128fd07e | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: GatewayEdgeFramingCorpusTest is in the tree at 128fd07e and untouched by #433
 - HYPOTHESIS: `runRetry` holds state of its own that an escaping throwable leaves set, as the sender's wording implies. The orchestrator's read found no in-flight flag in `runRetry` itself; what is lost may be only the retry sequence. Confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java` § `runRetry`, `scheduleRetry`, `load` (verify-at-outline)
 - HYPOTHESIS: the validation-rules summary and the threat model's validation matrix lack rows for the three new keys, and a sentence in `doc/configuration.adoc` says BFF variants do not read `token_validation` — taken from the landing message, which says these "were not checked". The orchestrator's search for that sentence did not find it. Confirm/refute at `doc/configuration.adoc` § the validation-rules summary and `doc/security-threat-model.adoc` § the validation matrix (verify-at-outline). ⛔ If nothing is missing, close deliverable 4's rows as already done.
 - HYPOTHESIS: both failures of `GatewayEdgeFramingCorpusTest` come from the raw-socket test setup and not from the gateway — the sender's own guess, undiagnosed. Confirm/refute at `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeFramingCorpusTest.java` § the two named methods and the upstream fixture they share (verify-at-outline)
+- HYPOTHESIS: the stream resets come from the client abandoning uploads the gateway answered before the body was fully sent, and the listener's reset-frame limit is the HTTP/2 rapid-reset guard doing its job — the orchestrator's guess from the error text alone; nothing was read. Confirm/refute at `benchmarks/src/main/resources/k6-scripts/upload_small.js`, `integration-tests/src/main/docker/sheriff-config/endpoints/httpbin.yaml` § `httpbin-upload-small`, and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EdgeHardeningOptions.java` § the HTTP/2 settings (verify-at-outline)
 - Verify-first clause: settle deliverable 1's consequence before writing its fix — reproduce in a unit test what happens to later retries when the factory throws an unanticipated throwable. The fix and the test follow from that observation.
 
 ## Expected Surface
@@ -88,6 +113,9 @@ Split guard: 6 deliverables — within the operator-authorized 12.
 - OBSERVED: `doc/adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc`
 - OBSERVED: `doc/adr/0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc`
 - OBSERVED: `doc/configuration.adoc`, `doc/security-threat-model.adoc`
+- OBSERVED (added 2026-10-12): `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffReservedPathPrecedenceIT.java` — deliverable 7
+- OBSERVED (added 2026-10-13): `benchmarks/src/main/resources/k6-scripts/upload_small.js` — deliverable 8
+- HYPOTHESIS (added 2026-10-13): `integration-tests/src/main/docker/sheriff-config/endpoints/httpbin.yaml` and `benchmarks/pom.xml` — only if deliverable 8's cause is the benchmark route or its execution settings (verify-at-outline)
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/ConfigLogMessages.java` and `doc/LogMessages.adoc` — only if deliverable 2 resolves to a WARN or ERROR record. PLAN-24's unknown-key-id WARN lives in `ConfigLogMessages`, not in `ApiSheriffLogMessages` as its spec expected (verify-at-outline)
 - HYPOTHESIS: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/` — other files of the edge test fixture, if the flake's cause is in a shared helper (verify-at-outline)
 
@@ -97,7 +125,13 @@ Split guard: 6 deliverables — within the operator-authorized 12.
 - Overlaps with: PLAN-20, PLAN-21, PLAN-26 and PLAN-27 on `doc/configuration.adoc`,
   `doc/security-threat-model.adoc` and `doc/adr/`. No main-source overlap with any of them:
   `RetryingJwksLoader` is touched by no other staged spec.
-- Adds no integration suite, so it does not lengthen the native integration job.
+- Adds no integration suite, so it does not lengthen the native integration job. Deliverable 7 needs
+  full local integration runs (36 to 59 minutes each; pass `--timeout 4500`, lesson `2026-10-12-16-006`).
+- Overlaps PLAN-21 on the IT directory through deliverable 7's one file. PLAN-27 has landed (#433).
+- Deliverable 8 needs benchmark runs (`verify -Pbenchmark -pl benchmarks -am`, about 14 minutes of Maven
+  time in CI), on top of deliverable 7's full integration runs.
+- PLAN-29 (the four inert upstream keys) is sequenced AFTER this plan, so that the dispatch path does not
+  change under deliverables 6 and 8.
 - **If a test fails against shipped behaviour outside deliverable 1, STOP and file a finding** to the
   epic inbox rather than widening this plan.
 
