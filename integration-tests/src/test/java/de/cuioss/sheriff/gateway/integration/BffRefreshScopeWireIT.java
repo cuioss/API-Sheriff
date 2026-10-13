@@ -59,7 +59,11 @@ import org.junit.jupiter.api.Test;
  *       not used in its place. The stub answers with a token far from expiry.</li>
  *   <li>The third call is on the scoped route. The token is not near expiry, the route's scope is
  *       missing from the active set and lies inside the granted set, so the gateway refreshes for the
- *       scope. The <em>third recorded grant</em> carries the narrowed set plus the missing scope.</li>
+ *       scope. The <em>third recorded grant</em> carries the narrowed set plus the missing scope, and
+ *       the stub records no pushed authorization request across that call. ADR-0058 makes every
+ *       authorization request a pushed one, so the unchanged count, together with the call being
+ *       served {@code 200} without a redirect, shows that the scope was obtained without any browser
+ *       authorization round trip. This step is the evidence for M-64.</li>
  *   <li>Control: a fourth call, on the plain route, records no further grant — the three counted
  *       above are refreshes the session's state caused, and a session that needs nothing asks for
  *       nothing.</li>
@@ -147,7 +151,11 @@ class BffRefreshScopeWireIT {
             assertNotEquals(afterFirstRefresh, afterSecondRefresh, "the second refresh must rotate the bearer");
 
             rig.script(Endpoint.TOKEN, rig.tokenAnswer(NARROWED_PLUS_MISSING_SCOPES, FAR_FROM_EXPIRY));
+            int pushedBeforeScopeRefresh = rig.received(Endpoint.PUSHED_AUTHORIZATION_REQUEST).size();
             String afterScopeRefresh = mediatedBearer(session, SCOPED_SESSION_PATH);
+            assertEquals(pushedBeforeScopeRefresh, rig.received(Endpoint.PUSHED_AUTHORIZATION_REQUEST).size(),
+                    "the scope-driven refresh must obtain the missing scope without pushing an authorization "
+                            + "request: every authorization request is a pushed one, so none was made");
             List<RecordedRequest> afterThirdCall = rig.refreshGrants();
             assertEquals(3, afterThirdCall.size(), "the call on the scoped route must record exactly one "
                     + "further grant: its token is far from expiry, so only the missing scope causes it");

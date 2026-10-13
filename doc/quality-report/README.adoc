@@ -103,8 +103,9 @@ The findings that matter most, in priority order:
    (GET-exempt). Doc-admitted in ADR-0015/threat model, but the largest genuinely open hole for
    a BFF deployment using WebSockets.
 4. *Parsed-but-inert configuration keys* (DP-2, DP-10, BFF-1, MEDIUM): per-upstream
-   `connect_timeout_ms` / `read_timeout_ms` / `retry.max_attempts` / `circuit_breaker.*` bind but
-   nothing consumes them (contradicting ADR-0008); `rate_limit` is documented-inert; the RFC 9470
+   `connect_timeout_ms` / `read_timeout_ms` / `retry.max_attempts` / `retry.idempotent_only` bind
+   but nothing consumes them (contradicting ADR-0008) — the `circuit_breaker.*` half of DP-2 is
+   resolved by removal (ADR-0064); `rate_limit` is documented-inert; the RFC 9470
    step-up coordinator is fully built and never invoked. Exactly the "key that parses is not a
    key that acts" class the project's own CLAUDE.md warns about.
 5. *Silent YAML config traps* (CFG-2, CFG-3, MEDIUM): duplicate keys last-win and trailing YAML

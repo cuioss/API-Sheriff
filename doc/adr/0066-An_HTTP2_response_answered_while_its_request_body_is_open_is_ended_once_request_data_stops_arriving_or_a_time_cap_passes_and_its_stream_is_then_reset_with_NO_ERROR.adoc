@@ -1,4 +1,4 @@
-= ADR-0064: An HTTP/2 response answered while its request body is open is ended once request data stops arriving or a time cap passes and its stream is then reset with NO_ERROR
+= ADR-0066: An HTTP/2 response answered while its request body is open is ended once request data stops arriving or a time cap passes and its stream is then reset with NO_ERROR
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents

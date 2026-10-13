@@ -1,0 +1,171 @@
+= ADR-0064: The upstream guard is fixed in the gateway and a route declares no circuit_breaker settings
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: The circuit breaker in front of every upstream is a fixed policy of the gateway -- a rolling window of 20 calls, a failure ratio of 0.5, an open delay of 5 s (BREAKER_RESET_SECONDS) and two successful trials to close -- and a route declares no circuit_breaker settings; the upstream.circuit_breaker block, which parsed and acted on nothing, is removed. The Retry-After of the open circuit's 503 is that same delay by construction and carries no jitter. Wiring the keys and keeping them inert were both rejected. The other upstream keys that parse and act on nothing (connect_timeout_ms, read_timeout_ms, retry.max_attempts, retry.idempotent_only) are out of scope and stay open.
+// tags: resilience, circuit-breaker, upstream, retry-after, configuration, smallrye-fault-tolerance, inert-configuration
+// affects: api-sheriff, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+This decision amends link:0008-data-plane-transport.adoc[ADR-0008] where it says the guard is
+assembled from `upstream.circuit_breaker` (ADR-0008, Amendment A2).
+
+== Context
+
+Every proxied dispatch runs inside a SmallRye Fault Tolerance guard built at boot in the edge
+layer: a circuit breaker, an upstream timeout and, on a route that enables it, a retry. The
+configuration model let a route declare the breaker's shape -- `upstream.circuit_breaker.failures`
+and `upstream.circuit_breaker.reset_ms` -- and the schema admitted both. Neither value was read by
+anything that builds the guard. The breaker every route actually ran was the one the edge layer
+spells out in code.
+
+A configuration key that parses and acts on nothing is worse than an absent key on a security
+gateway. An operator who declares `failures: 3` reads a tighter breaker into the deployment than
+the one in force, and no boot message, no test and no metric says otherwise. The question is
+therefore not how to tune the breaker but where its shape is decided: by the gateway, or by each
+route.
+
+A second question rides on the first. An open circuit answers `503` with a `Retry-After` header.
+The value of that header is a statement about the breaker -- how long it stays open -- so it is
+correct only if it is derived from the same place the breaker's delay is.
+
+== Decision
+
+=== The breaker is a fixed policy of the gateway
+
+*The circuit breaker in front of an upstream is the gateway's own fixed policy. A route declares no
+circuit-breaker settings.*
+
+The policy is:
+
+[cols="1,1,3", options="header"]
+|===
+| Property | Value | Meaning
+
+| Rolling window
+| 20 calls
+| The breaker judges the most recent 20 dispatches to the upstream (SmallRye
+  `requestVolumeThreshold`). Below that volume it does not open.
+
+| Failure ratio
+| 0.5
+| It opens when half or more of the calls in the window failed.
+
+| Open delay
+| 5 s
+| It stays open for `BREAKER_RESET_SECONDS` = 5 seconds, then lets trial calls through.
+
+| Close threshold
+| 2 successes
+| Two successful trial calls close it again; a failed trial opens it for another delay.
+|===
+
+Only an upstream failure counts as a failure. A dispatch the client itself ended -- a body-cap
+breach, an aborted inbound body, a body on a bodyless method, a body that disagrees with its
+declared length -- is a gateway rejection the breaker skips and records as a success, because
+SmallRye has no neutral outcome. State transitions surface as WARN records and metrics.
+
+One guard serves every route that dials the same upstream target with the same retry setting, so
+the breaker's state is per upstream target on this node, not per route. Nothing is shared between
+gateway nodes.
+
+The `upstream.circuit_breaker` block, the model record behind it and its native-image reflection
+registration are removed. Under the pre-1.0 rule nothing is deprecated: a descriptor that still
+declares the block is refused at boot by the schema, which admits no unknown member in an
+`upstream` block. That refusal is the intended answer to a deployment that relied on the key,
+because the key never acted.
+
+=== The `Retry-After` of an open circuit is the breaker's delay, without jitter
+
+The `503` an open circuit answers carries `Retry-After: 5`. The value is `BREAKER_RESET_SECONDS`
+by construction: one constant is both the breaker's open delay and the header's value, so the hint
+a client is given cannot drift from the window the breaker applies.
+
+The header carries no jitter. It states the breaker's real window on this node, and a randomised
+value would make it misstate that window to every client that reads it. Spreading retries out is
+the client's responsibility: RFC 9110 §10.2.3 defines `Retry-After` as the minimum time the client
+is asked to wait, and permits a client to wait longer. The security-audit finding that the header
+carries no jitter is accepted on this basis.
+
+=== What this decision does not settle
+
+The other per-route upstream keys share the defect the breaker keys had and are not decided here:
+
+* `connect_timeout_ms` and `read_timeout_ms` are bound into the model and read by nothing. The
+  upstream client is built without a connect or idle timeout, and the guard applies a fixed 30 s
+  timeout to every dispatch.
+* `retry.max_attempts` and `retry.idempotent_only` are bound and read by nothing. Only
+  `retry.enabled` acts; a route that enables retry gets two retries 100 ms apart, gated by the
+  stream-aware retry predicate.
+
+Each of them needs its own decision -- wire it, or remove it -- and is recorded as open in the
+code-correctness report until it gets one.
+
+== Consequences
+
+=== Positive
+
+* Every key in the `upstream` block that remains either acts or is recorded as an open defect. An
+  operator can no longer declare a breaker shape the gateway does not run.
+* The breaker's shape is stated once, in the code that builds it, and documented as the gateway's
+  policy rather than as a per-route default.
+* A client reading `Retry-After` on an open circuit is told the window the breaker applies, by
+  construction.
+
+=== Negative
+
+* A route cannot be given a breaker more or less sensitive than the gateway's. An upstream that
+  needs a different shape needs a code change and a new decision.
+* A deployment descriptor that declares `upstream.circuit_breaker` stops booting. The key never
+  acted, so the refusal changes no runtime behaviour, but it is a breaking change to the accepted
+  configuration surface.
+
+=== Risks
+
+* Many clients honouring the same `Retry-After` can retry together when the delay ends. The
+  breaker's half-open state admits trial calls and opens again on a failed one, so a synchronised
+  retry wave meets a breaker that is still protecting the upstream; spreading the wave is left to
+  the clients.
+* Breaker state is per node. A fleet of gateways in front of one upstream opens and closes its
+  breakers independently, and the `Retry-After` each node sends describes its own breaker only.
+
+== Alternatives Considered
+
+*Wiring the keys.* `failures` and `reset_ms` would be read when the guard is built, and a route
+could tune its breaker. That is a change of runtime behaviour, not a correction of documentation:
+it introduces per-route breaker shapes, needs a decision on how `failures` (a count) maps onto a
+ratio-based rolling window, and makes the `Retry-After` value per route. It belongs in a plan of its
+own, if a deployment ever needs it. Rejected here because nothing currently needs a breaker shape
+other than the gateway's.
+
+*Keeping the keys and leaving them inert.* The schema and the model would stay as they are, with
+documentation stating that the keys have no effect. Rejected: a key that parses but does not act is
+exactly the false-security class this decision removes, and documentation is not read where a
+descriptor is written.
+
+*Adding jitter to `Retry-After`.* A randomised value around the delay would spread clients that
+retry exactly when told. Rejected because the header would then misstate the breaker's window,
+and because the clients that need spreading are the ones that implement their own backoff anyway.
+
+== References
+
+* link:0008-data-plane-transport.adoc[ADR-0008] -- the data-plane transport and the guard this
+  decision amends
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062] --
+  the platform-mechanism rule SmallRye Fault Tolerance is used under
+* link:../architecture.adoc#_downstream_client[Architecture -- Downstream Client] -- the resilience
+  description and the `503` error row
+* link:../quality-report/code-correctness.adoc[Code Correctness Report] -- DP-2, the inert upstream
+  keys
+* link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] --
+  why a key that parses is not a key that acts
+* https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3[RFC 9110 §10.2.3 -- Retry-After]

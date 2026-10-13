@@ -242,7 +242,9 @@ neutralised fixtures — a technique, not a smell.
 A downstream consumer documents gateway behaviour to its operators, and points each statement at a
 test. It filed seventeen properties, each under an id of its own: six it found pinned at integration
 level, eleven proven at unit level only. Those eleven are pinned here, all in Failsafe suites of
-`integration-tests`. The ids are the downstream's. A refactoring that removes one of the tests below un-proves a statement another
+`integration-tests`. A later filing, made once the downstream had adopted 0.2.4, added two properties
+it cannot measure itself, M-62 and M-64, which are pinned here as well, and named two existing tests
+as its evidence for M-61. The ids are the downstream's. A refactoring that removes one of the tests below un-proves a statement another
 project makes to its operators, so the rows are recorded where a reviewer will look.
 
 === Pinned by the suites added for them
@@ -311,6 +313,26 @@ provider whose certificate does not name the dialled host.
 after the back-off.
 |`BffRefreshTransientFailureIT.serviceUnavailableKeepsTheSessionAndRetriesAfterTheBackOff` and
 `BffRefreshTransientFailureIT.connectionResetKeepsTheSessionAndRetriesAfterTheBackOff`
+
+|M-62
+|A token response whose access token is not bound to the gateway's DPoP proof key is refused: `400`
+at the callback, no session, and the `ApiSheriff-134` record.
+|`BffUnboundTokenResponseIT.accessTokenWithoutConfirmationIsRefused` (no `cnf` claim, reason
+`cnf-absent`) and `BffUnboundTokenResponseIT.accessTokenBoundToAnotherKeyIsRefused` (`cnf.jkt` naming
+another key, reason `cnf-mismatch`), with `BffUnboundTokenResponseIT.accessTokenBoundToTheProofKeyCompletesTheLogin`
+as the control. The suite runs on the stub identity provider, because Keycloak binds every token it
+issues to the stack's clients. It drives the code-exchange leg only; the refusal of an unbound answer
+to a refresh grant stays proven at unit level, in `BoundTokenEndpointClientTest` and
+`BffRuntimeProducerTest`.
+
+|M-64
+|A session whose active scope set lacks a route scope that lies inside its granted set obtains it by a
+refresh, without a browser round trip.
+|`BffRefreshScopeWireIT.refreshGrantsCarryTheSessionScopeOnTheWire`, the suite added for M-44. Its
+third call is the scope-driven refresh: the recorded grant carries the narrowed set plus the missing
+scope, the call is served `200` without a redirect, and the count of pushed authorization requests is
+unchanged across it. Every authorization request is a pushed one (ADR-0058), so the unchanged count is
+the absence of an authorization round trip. No second test was written.
 |===
 
 No leg has been stopped as a finding. One correction to the gateway is recorded in the M-51 row.
@@ -350,6 +372,15 @@ restart.
 `BffEndpointScopesIT.loginInitiationForScopedTargetIsGrantedTheEndpointScope`. Both observe the
 granted scope, not the requested one: the authorization request is pushed, so its scope does not
 appear in the authorization URL.
+
+|M-61
+|A request needing a scope the identity provider refuses is refused, and the session is left as it
+was.
+|`BffSessionScopeParityIT.navigationNeedingARefusedScopeIsRefusedAtThePush` (a navigation is answered
+`502` at the refused push, without a redirect) and
+`BffSessionScopeParityIT.xhrNeedingARefusedScopeIsRefusedAndTheSessionSurvives` (an XHR is answered
+`403` with a `step_up_url`). No work was asked: the downstream cites both as its evidence, and the row
+is recorded so that neither is removed unnoticed.
 |===
 
 The filing also asked for a correction of the `BffRefreshReuseIT` class Javadoc, on the reading that
@@ -372,6 +403,13 @@ all pass in the same run, so the state is recorded here with the date of each ru
   `BffPendingLoginBoundIT`, in 76 seconds. The run was `verify -Pintegration-tests -pl
   integration-tests -am` on the developer build host, not in CI, on the sources that add the suite:
   285 tests, no failure, no error, none skipped.
+* *M-62 and M-64, passed in a targeted run of the lane on 2026-10-12:* the three test methods of
+  `BffUnboundTokenResponseIT` (77 seconds) and the pushed-request count of `BffRefreshScopeWireIT`
+  (51 seconds). The run was `verify -Pintegration-tests -pl integration-tests -am` restricted with
+  `-Dit.test` to six suites on the developer build host, not in CI, on the sources that add the
+  suites: `BffUnboundTokenResponseIT`, `BffRefreshScopeWireIT`, `HtmlErrorPageIT`,
+  `JwksLateIdpReadinessIT`, `TlsPassthroughIT` and `UpstreamHostnameVerificationIT`, 20 tests, no
+  failure, no error, none skipped. It is a targeted run, not a full run of the lane.
 
 The full run before the one of 2026-10-07, on the same day, failed six tests in the suites of M-42, M-44, M-50,
 M-59 and M-60. None failed at an assertion about its property: each failed at the start of its rig,

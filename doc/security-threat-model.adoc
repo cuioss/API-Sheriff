@@ -78,7 +78,8 @@ CVE-2022-21449 ECDSA "psychic signature" (`r|s == 0` rejected before the JDK ver
 the configured/discovered endpoint *only* (token-supplied `jku`/`x5u`/`jwk` ignored) behind
 an `EgressPolicy` that blocks loopback/link-local/cloud-metadata on the initial fetch *and
 every refresh* (DNS-rebinding-safe), with TTL cache, rotation grace, and unknown-`kid` that
-cannot drive a fetch storm; the 4-arg `AccessTokenRequest(token, headers, uri, method)` for
+cannot drive a fetch storm (the gateway's own loader adds one refresh on an unknown key id, and
+<<gw-07-jwks-refresh,GW-07>> states the bound that keeps it from becoming one); the 4-arg `AccessTokenRequest(token, headers, uri, method)` for
 DPoP; server-side DPoP proof validation + replay cache; a Quarkus JWKS-readiness health
 check; an RFC 9457 exception mapper that interpolates no secret/message. It ships a
 `generators`-classifier test-jar with adversarial token/key corpora (`JkuX5uAttackTest`,
@@ -272,7 +273,9 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 | B1 Client->edge
 | *Spoofing* forwarding identity -> <<gw-04>>. *Tampering* with framing/encoding ->
   <<gw-02>>, <<gw-01>>. *DoS* (slowloris, h2 abuse, decompression) -> <<gw-07>>, <<gw-08>>; an
-  unauthenticated login request driving an outbound request to the identity provider -> <<bff-20>>.
+  unauthenticated login request driving an outbound request to the identity provider -> <<bff-20>>;
+  a token naming an arbitrary key id driving a JWKS request to the identity provider ->
+  <<gw-07-jwks-refresh,GW-07>>.
   *Info disclosure* via error paths -> <<gw-12>>.
 
 | B2 edge->pipeline
@@ -1224,6 +1227,68 @@ the entry at PARTIAL rather than COVERED.
 `max_body_bytes` aborts mid-stream without full buffering; concurrent large requests do not
 grow heap without bound (admission cap holds); an oversized/alias-bomb config fails boot
 gracefully.
+
+[#gw-07-jwks-refresh]
+*A token naming an unknown key id drives at most one JWKS refresh per issuer per window.* The key id
+in a token's header is read before the signature can be checked, so any caller -- without holding a
+credential -- can present tokens that name arbitrary key ids for a configured issuer. A gateway that
+fetched the key set on each of them would let that caller aim its own request rate at the identity
+provider's JWKS endpoint and at the gateway's outbound connections (a fetch storm). A gateway that
+never fetched would reject every token signed with a newly rotated key until the next background
+refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
+(link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]):
+
+* *The bound.* An unknown key id causes at most one JWKS refresh per issuer per window, whatever the
+  request rate and the number of distinct key ids. The window is
+  `jwks.unknown_kid_refresh_window_seconds`: 30 s by default and never below 5 s, which the
+  configuration validator enforces at boot. Over an interval of length _t_ that is at most
+  `floor(t / window) + 1` refreshes per issuer. The window is claimed by one atomic step when the
+  token arrives, not when a refresh completes, so a failing or slow fetch does not widen the bound,
+  and no refresh starts while the previous one is still running. One refresh is one load of the key
+  set by the token library: against a provider that answers it is one request, and against one that
+  does not, the HTTP client's own bounded retries of that load belong to the same refresh.
+* *The request thread never fetches.* The lookup that triggered the refresh is answered from the key
+  sets held at that moment, so the flood ties up no request thread on the identity provider's
+  latency. The refresh is started from a scheduler, never from a request thread.
+* *A flood cannot evict valid keys.* A refreshed key set replaces the loaded one only when it holds
+  the key id that triggered the refresh. A refresh triggered by an invented key id is discarded, so
+  it displaces neither the loaded key set nor a replaced one still inside its key-rotation grace
+  period, and it cannot end that grace period early. A failed refresh changes nothing either and
+  does not start the failed-load retry.
+* *The record is not a log-amplification lever.* `WARN ApiSheriff-136` is emitted by the request
+  that claims the window and by no other, so it is bounded by the same window: at most one record
+  per issuer per window, every repeat at `DEBUG` (CWE-779,
+  link:adr/0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]).
+  It carries the issuer's configured name and an instant, never the key id the caller chose, the
+  JWKS URL or key material.
+
+Where the refresh may go is unchanged: it is a load by the same library loader configuration as the
+first one, so the egress allowance of <<gw-05>> and the TLS posture of <<gw-06>> apply to it as they
+do to every other JWKS fetch. A `file`-sourced issuer has nothing to fetch and schedules no refresh.
+
+*Residual (accepted).* Two limits remain. Within one window after an abrupt key change, tokens signed
+with the new key are rejected: the request that triggers the refresh is itself answered `401`, and
+when the window was already claimed the next refresh waits for it to pass. And a caller who keeps
+presenting invented key ids can claim an issuer's window ahead of legitimate tokens. The refresh such
+a claim triggers is discarded even when the key set it fetched holds a newly rotated key, so for as
+long as that caller wins the claim, the new key is picked up only by a window a token signed with it
+claims or, at the latest, by the background refresh. In that worst case the gateway behaves as it
+would without the on-demand refresh; the flood buys a delay of the rotation pick-up bounded by
+`jwks.refresh_interval_seconds`, never the acceptance of a token and never the loss of a key that
+was valid. Closing this residual exactly requires the token library to expose which key ids a loaded
+key set holds, which token-sheriff 0.9.6 does not: a loader only answers a lookup for a named key
+id. A replaced key set is closed only when its grace period ends, so until then its loader
+keeps running its own background refresh beside the current one; at most one replaced key set is
+held per issuer.
+
+*Status of this control:* COVERED. `RetryingJwksLoaderTest` drives the window, the discarded and the
+published refresh, the grace period and the record with a controlled clock and scheduler, and
+`ConfigValidatorJwksRefreshTest` pins the 5 s floor. Against the native image, `JwksKeyRotationIT`
+sends 200 requests naming 200 distinct invented key ids over more than one window and asserts that
+the identity provider recorded no more key-set requests, and the gateway no more `ApiSheriff-136`
+records, than `floor(elapsed / window) + 1`, and that a token signed with the current key and one
+signed with the replaced key are both still accepted afterwards. That suite runs a 5 s window and
+does not prove the 30 s default, the expiry of the grace period, or a refresh whose fetch fails.
 
 [#gw-08]
 === GW-08 -- HTTP/2 & gRPC abuse (Rapid Reset, CONTINUATION flood, downgrade smuggling, h2c)

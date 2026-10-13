@@ -537,8 +537,8 @@ sources assign -- so the table is a test input, and a change to it is not a docu
 
 | `10465`
 | `sheriff-stub-idp-gateway`
-| `BffRefreshScopeWireIT`, `BffRefreshSingleFlightIT` and `BffRefreshTransientFailureIT`, through
-  `StubIdentityProviderRig` -- see <<stub-idp-rig>>
+| `BffRefreshScopeWireIT`, `BffRefreshSingleFlightIT`, `BffRefreshTransientFailureIT` and
+  `BffUnboundTokenResponseIT`, through `StubIdentityProviderRig` -- see <<stub-idp-rig>>
 
 | `10466`
 | `late-idp-gateway-<suffix>`
@@ -551,6 +551,11 @@ sources assign -- so the table is a test input, and a change to it is not a docu
 | `10469`, `10470`
 | `sheriff-idle-timeout-server` and `sheriff-idle-timeout-cookie`
 | `BffSessionIdleTimeoutIT`, one gateway per test, each with the signing-key directory mounted
+
+| `10471`
+| `sheriff-stub-idp-gateway`
+| `JwksKeyRotationIT`, through the key-rotation variant of `StubIdentityProviderRig` -- see
+  <<stub-idp-rig>>
 |===
 // end::test-started-host-ports[]
 
@@ -561,7 +566,9 @@ the Compose stack publishes its own gateway ports in, and the management interfa
 of a BFF has to be known before the container exists, because the descriptor names the gateway's own
 origin and is read at boot. The two bearer-only suites have no such constraint and take a fixed port
 for the reason the next paragraphs give. The cost of the form is that a test's gateway is reachable
-from the network the host is on while the test runs, as the Compose gateways are.
+from the network the host is on while the test runs, as the Compose gateways are. The decision and
+that accepted cost are recorded in
+link:../adr/0065-Test-started_gateways_publish_the_application_port_on_every_interface_at_a_fixed_port_and_the_management_port_on_loopback.adoc[ADR-0065].
 
 *The host constraint behind that form.* On Rancher Desktop under WSL 2 a host port number can be left
 dead. A container that publishes a dead number afterwards starts normally and answers on its other
@@ -614,12 +621,18 @@ takes a port docker assigns on every interface.
 [#stub-idp-rig]
 === The stub identity-provider rig
 
-Three suites have to see, or to decide, what the identity provider is sent and what it answers: the
+Four suites have to see, or to decide, what the identity provider is sent and what it answers: the
 `scope` of a refresh grant (`BffRefreshScopeWireIT`), the number of refresh grants a burst of requests
-causes (`BffRefreshSingleFlightIT`), and a token endpoint that fails once (`BffRefreshTransientFailureIT`).
-The Compose Keycloak shows a test none of the three. The suites share one rig,
-`StubIdentityProviderRig`, in which a WireMock container stands in for the identity provider. Each
-test starts a rig of its own and closes it.
+causes (`BffRefreshSingleFlightIT`), a token endpoint that fails once (`BffRefreshTransientFailureIT`),
+and a code exchange answered with an access token that is not bound to the gateway's proof key
+(`BffUnboundTokenResponseIT`). The Compose Keycloak shows a test none of the four. The suites share
+one rig, `StubIdentityProviderRig`, in which a WireMock container stands in for the identity provider.
+Each test of the three refresh suites starts a rig of its own and closes it; `BffUnboundTokenResponseIT`
+starts one rig for the class and resets the stub before each of its logins.
+
+Every suite on the rig shares its fixed container names, network name and host ports, so no two of
+them may run at once. None carries the `sleep-bound` tag, and `FailsafeConcurrencyContractTest` keeps
+a class that uses the rig out of the concurrent Failsafe execution: they run in the sequential one.
 
 [cols="1,3"]
 |===
@@ -664,11 +677,47 @@ test starts a rig of its own and closes it.
 
 *What the stub serves.* The provider metadata document below the issuer, the key set on every
 `jwks.url` path the descriptor names, and the pushed-authorization-request, token and revocation
-endpoints. Tokens are signed with an RSA key generated when the rig starts, and every access token
-carries the thumbprint of the committed proof key as `cnf.jkt`, because the gateway refuses a token
-response that is not bound to its own proof key. The stub validates nothing. Its token endpoint
+endpoints. Tokens are signed with an RSA key generated when the rig starts, and by default the access
+token of every token-endpoint answer carries the thumbprint of the committed proof key as `cnf.jkt`,
+because the gateway refuses a token response that is not bound to its own proof key. An access token
+the rig mints for a bearer route carries no `cnf` claim. `BffUnboundTokenResponseIT` scripts
+the other two bindings on purpose -- no `cnf` claim, and a `cnf.jkt` naming another committed key --
+to observe that refusal. The stub validates nothing. Its token endpoint
 refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
 passing unnoticed.
+
+*The key-rotation variant.* A further suite, `JwksKeyRotationIT`, has to replace the identity
+provider's signing key while the gateway runs and count the key-set requests that follow. It starts
+the same rig through `StubIdentityProviderRig.startForKeyRotation()`. The stub, the network, the echo
+upstream, the mounts and the container names are those of the table above; the gateway differs in two
+values:
+
+[cols="1,3"]
+|===
+| What | Value
+
+| Descriptor
+| Derived from the same committed `sheriff-config-refresh/gateway.yaml`, with the gateway origin
+  retargeted at the port below and two keys added to the `jwks` block of the `integration-keycloak`
+  issuer: `unknown_kid_refresh_window_seconds: 5` and `key_rotation_grace_period_seconds: 300`. The
+  two keys are asserted, on the parsed documents, to be the only differences besides the origin. It is
+  written below `target/` as a file of its own and never committed.
+
+| Host ports
+| The application listener on the fixed host port `10471`, on every interface; the management
+  interface on a loopback port docker assigns.
+|===
+
+The committed descriptor declares neither key, so the gateway of the four suites above runs the
+30-second default window. The variant shortens the window to the lowest value the gateway admits, so
+that a suite can wait a key replacement out; `refresh_interval_seconds` is left at its 600-second
+default, so nothing the suite observes is the background refresh. One rig runs at a time, whichever
+variant: the container names and the network name are the same for both.
+
+For this suite the rig does three further things. It replaces the stub's signing key: a new key under
+a new key id, and a key set on every `jwks.url` path that holds the new key alone. It mints an access
+token for a bearer route, signed with the current key or naming a key id the stub never published.
+And it reads how many key-set requests the stub recorded for one issuer.
 
 *What guards the image.* `StubIdentityProviderWiringTest` reads committed files only. It asserts that
 the image reference has the shape `name:tag@sha256:<64 hex>`, and that the image name occurs in
@@ -996,8 +1045,10 @@ be assumed wrong:
 Readiness reports key-set *availability*, not *freshness*. Once an issuer's key set has loaded, an
 IdP whose JWKS endpoint becomes unreachable *after* that, a stalled key rotation, and an expired
 signing key do *not* take readiness `DOWN` -- the held keys stay in service. They surface as `401`s on
-the request path and as fetch errors in the container's stdout. Diagnose that class of failure from
-the container log, never from a green readiness probe.
+the request path and as fetch errors in the container's stdout. A stalled rotation has a record of its
+own: `WARN ApiSheriff-136` reports, at most once per issuer per refresh window, that a token named a
+key id no held key set contains. Diagnose that class of failure from the container log, never from a
+green readiness probe.
 ====
 
 The token-validation extension's two unqualified health probes stay excluded from the bean set
@@ -1371,3 +1422,61 @@ the compose-network rectangle; and the lengthened footer caption still ends insi
 The one tight spot is the `6`-pixel clearance the arrow keeps from each neighbouring box -- legible
 on both themes, and the only gap in the first column the leg can take without bending. Rendered PNGs
 are verification artifacts and are not committed.
+
+[#security-audit-dispositions]
+== Security-audit dispositions (PR #408)
+
+The security audit of the test rigs raised five findings against this topology. Each is either fixed
+or accepted, and an accepted one names the reason it is safe to keep.
+
+[cols="2,1,4"]
+|===
+| Finding | Disposition | Reason
+
+| Test-started gateways publish their application port on every interface
+| Accepted
+| Publishing it on loopback leaves the host port number dead after the container is removed
+  (<<test-started-host-ports>>). The decision and its accepted cost -- a test gateway is reachable from
+  the host's network at a fixed port while its test runs, carrying only committed test material -- are
+  recorded in
+  link:../adr/0065-Test-started_gateways_publish_the_application_port_on_every_interface_at_a_fixed_port_and_the_management_port_on_loopback.adoc[ADR-0065].
+
+| `ItProfileConfigBindingWiringTest` exempts the TLS-relaxation rig from its trust guards
+| Accepted
+| The exemption is named and narrow: one fixture descriptor from the trust-profile guard and one
+  launch site, `BffTlsRelaxationIT.java`, from the launch-site guard, each by its literal path. Neither
+  is unconditional -- the guard first asserts the property each exemption rests on
+  (<<tls-relaxation-rig>>, link:declared-limit-assertion-coverage.adoc[the coverage note]).
+
+| The nginx proxy image is pinned by tag only
+| Fixed
+| `BffTlsRelaxationIT` pins the proxy as
+  `nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10` -- the
+  1.27 release-line tag together with the digest of its multi-platform index -- and every other nginx
+  reference in the integration surface carries the same digest: the `passthrough-backend`,
+  `mismatched-tls-backend`, `asset-origin` and `early-answer-backend` services of
+  `docker-compose.yml`, the `nginx-static`
+  fairness backend of `docker-compose.benchmark.yml`, and the late provider `JwksLateIdpReadinessIT`
+  starts. The digest is what binds; the tag is kept for readability, and all of these pins move
+  together.
+
+  *Documented exclusions.* The operator sample is the one nginx exception, and it is deliberate:
+  `deployment/compose-sample/docker-compose.yml` runs its `demo-api` service, and
+  `docker-compose.plain-http.yml` its `tls-terminator`, on the minor-line tag `nginx:1.27-alpine` so
+  that an operator picks up patch releases. The finding names the nginx proxy image, so the stack's
+  other images are outside it and are not pinned by this disposition: go-httpbin
+  (`ghcr.io/mccutchen/go-httpbin:2.23.1`) and Toxiproxy (`ghcr.io/shopify/toxiproxy:2.12.0`) stay on
+  exact release tags, and Keycloak already carries a digest beside its tag.
+
+| The open circuit's `Retry-After` carries no jitter
+| Accepted
+| The header states the breaker's real open delay on this node by construction; a randomised value
+  would misstate it, and RFC 9110 lets a client wait longer than the minimum it is given
+  (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
+
+| The stub identity provider exposes its admin API
+| Accepted
+| The admin API is plain HTTP on a loopback port docker assigns and on no other interface, it lives
+  only as long as the test that started its rig, and no credential or secret sits behind it: the stub
+  validates nothing and signs with a key generated when the rig starts (<<stub-idp-rig>>).
+|===

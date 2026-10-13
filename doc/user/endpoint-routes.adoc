@@ -133,10 +133,16 @@ endpoint:
                                    #   "Upstream path" below)
         rewrite_location: false    # default false. true maps an upstream Location pointing
                                    #   inside this route's upstream back onto /api/orders
-        connect_timeout_ms: 2000
-        read_timeout_ms: 5000
+        connect_timeout_ms: 2000   # INERT today: parsed, read by nothing -- every
+        read_timeout_ms: 5000      #   dispatch runs under the guard's fixed 30 s timeout
         retry: { max_attempts: 3, idempotent_only: true }
-        circuit_breaker: { failures: 5, reset_ms: 30000 }
+                                   # INERT today: only retry.enabled acts (two retries,
+                                   #   100 ms apart); max_attempts and idempotent_only are
+                                   #   read by nothing. All four keys are open decisions --
+                                   #   see ADR-0064 "What this decision does not settle"
+                                   # no circuit_breaker key: the breaker is the gateway's fixed
+                                   #   policy (20-call window, ratio 0.5, 5 s open) and a route
+                                   #   declares none -- the key is refused at boot (ADR-0064)
       rate_limit: { requests_per_second: 100, burst: 20 }   # reserved; feature deferred
 ----
 

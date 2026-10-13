@@ -74,7 +74,9 @@ are native to the Vert.x client that already runs the gateway's edge.
   from `upstream.retry` / `upstream.circuit_breaker` (attempt count, breaker `failures` /
   `reset_ms`), invoked around the dispatch call in the framework-bound *edge* layer -- the
   ADR-0005 boundary stays intact, the framework-agnostic core carries only the resolved
-  policy values. Breaker state transitions surface as WARN LogRecords and metrics.
+  policy values. Breaker state transitions surface as WARN LogRecords and metrics. (The breaker
+  half of this point is amended by <<_amendment_a2>>: the breaker is a fixed policy of the gateway
+  and `upstream.circuit_breaker` is removed.)
 * *Retry is stream-aware gateway policy, enforced before the guard*: an attempt is retried
   only when the method is idempotent *and zero request-body bytes have been sent upstream*.
   No replay buffering in the initial release. Timeouts are transport options on the shared
@@ -117,6 +119,20 @@ client headers, which belongs with the mode model rather than here, so it is pin
 characterization test and left open. A route that must withhold the validators under a
 permissive posture names them in `headers_deny`.
 
+[[_amendment_a2]]
+=== Amendment A2 -- the breaker is not assembled from `upstream.circuit_breaker`
+
+The decision above says the guard is assembled from `upstream.circuit_breaker` (`failures` /
+`reset_ms`). It never was: the breaker every route runs is a fixed policy of the gateway, and the
+two keys parsed and acted on nothing.
+link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]
+records that policy as the decision -- a rolling window of 20 calls, a failure ratio of 0.5, an open
+delay of 5 s that is also the `Retry-After` of the open circuit's `503`, and two successful trials
+to close -- removes the `upstream.circuit_breaker` block, and records that one guard serves every
+route dialing the same upstream target with the same retry setting rather than one guard per
+route. The timeout and retry keys this decision also names are not settled by that amendment; see
+ADR-0064, "What this decision does not settle".
+
 == Consequences
 
 * gRPC and WebSocket get trailers, upgrade streams, and h2 natively -- no transport swap was
@@ -147,6 +163,8 @@ permissive posture names them in `headers_deny`.
   the three forward modes the conditional validators now cross under
 * link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037] --
   the gateway-owned header sets, and the `not_modified` decision Amendment A1 records
+* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064] --
+  the fixed breaker policy Amendment A2 records
 * https://quarkus.io/guides/smallrye-fault-tolerance[Quarkus -- SmallRye Fault Tolerance]
   (programmatic API)
 * https://vertx.io/docs/vertx-core/java/#_making_requests[Vert.x HttpClient] -- streams,

@@ -1,0 +1,30 @@
+envelope_version=1
+sender_type=plan
+sender_id=jwks-unknown-kid-refresh
+epic=kidicap-gateway-requirements
+kind=candidate-lesson
+created=2026-10-12T15:29:01Z
+
+component=api-sheriff:doc-adr
+category=bug
+created=2026-10-12
+
+# ADR-0063 section 3 stated "a successful claim schedules one refresh" without the in-flight condition
+
+Source record: review-bot finding 6f0590 (pr-comment, CodeRabbit inline comment on PR #430, `doc/adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc` line 126, resolution fixed, fix task TASK-8, fix commit f77de777) of plan `jwks-unknown-kid-refresh`.
+
+ADR-0063 section 3 said that the claim that succeeds logs the record of section 6 and schedules one refresh. The code does something narrower. In `RetryingJwksLoader.onUnknownKeyId` a successful claim of the window always logs the record, and schedules a refresh only when no refresh is still in flight. A claim can succeed while an earlier refresh is running, and the in-flight guard then schedules nothing.
+
+The reviewer's claim was verified against `RetryingJwksLoader.onUnknownKeyId` before it was accepted.
+
+## Resolution in this run
+
+TASK-8 states the condition in ADR-0063 section 3 on both the claim sentence and the in-flight sentence, in the plan's own wording with the same content as the suggestion.
+
+## Candidate lesson
+
+When an ADR describes a behaviour guarded by two independent conditions (here: the per-issuer window claim and the in-flight guard), each sentence that names an effect must carry every condition that effect depends on. Writing the ADR from the design intent ("one refresh per window") rather than from the final method body dropped the second guard. Re-read the decision text against the implemented method once the code is final.
+
+## Impact
+
+Documentation only; the code was correct. Slipped past the plan's own review and was caught by the review bot.

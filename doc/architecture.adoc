@@ -1073,16 +1073,20 @@ The upstream client is split by plane
   connection pool per *distinct upstream target tuple* (resolved host + connect/read timeouts
   + TLS context), options assembled once at boot; timeouts are millisecond-precision client
   options.
-* *Resilience -- SmallRye Fault Tolerance, programmatic.* One guard per route, built at boot
-  from `upstream.retry` / `upstream.circuit_breaker` and invoked around the dispatch call in
-  the framework-bound edge layer (no annotations, no CDI interception on the hot path; the
-  configuration model carries only the resolved policy values and stays free of framework types
-  under the pre-boot rule of
+* *Resilience -- SmallRye Fault Tolerance, programmatic.* One guard per upstream target and retry
+  setting, shared by every route that dials that target with that setting, built at boot and
+  invoked around the dispatch call in the framework-bound edge layer (no annotations, no CDI
+  interception on the hot path; the configuration model carries only the resolved `retry.enabled`
+  flag and stays free of framework types under the pre-boot rule of
   link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[ADR-0062]).
-  Retry is *stream-aware*: an attempt is
+  Retry is *stream-aware*: on a route with `retry.enabled`, an attempt is
   retried only for an idempotent method *and only when zero request-body bytes have been sent
-  upstream* -- there is no replay buffer. The breaker is stateless per node: opens after the
-  configured consecutive failures, half-opens after `reset_ms`; state transitions surface as
+  upstream* -- there is no replay buffer. The circuit breaker is the gateway's fixed policy and a
+  route declares no breaker settings
+  (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
+  it judges a rolling window of the last 20 calls, opens when half or more of them failed, stays
+  open for `BREAKER_RESET_SECONDS` = 5 s, and closes after two successful trial calls. Its state is
+  per upstream target on this node, and state transitions surface as
   WARN LogRecords and metrics. Only upstream failures count as failures: a dispatch the client
   itself ended -- a body-cap breach, an aborted inbound body (<<_aborted_inbound_body>>), a body
   byte on a bodyless method, or a body that disagrees with its declared length
@@ -1286,7 +1290,7 @@ The consolidated status mapping:
 | `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>), and the connection and its other streams carry on | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
-| `503` | Circuit breaker open -- the upstream was not called. The response carries `Retry-After` with the seconds the breaker stays open: the fixed `5` the gateway's upstream guard applies, whatever `circuit_breaker.reset_ms` a route declares | `UPSTREAM`
+| `503` | Circuit breaker open -- the upstream was not called. The response carries `Retry-After` with the seconds the breaker stays open: the fixed `5` of the gateway's upstream guard, without jitter (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]) | `UPSTREAM`
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
 |===
 

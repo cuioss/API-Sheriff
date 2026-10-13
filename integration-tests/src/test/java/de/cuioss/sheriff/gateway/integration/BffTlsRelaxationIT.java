@@ -158,7 +158,8 @@ class BffTlsRelaxationIT {
      * The container it names is handed the certificates directory, fronts every identity-provider call
      * of the gateway under test and runs the serving control's client, so a tag that is moved to
      * another image must not change what runs. {@code StubIdentityProviderWiringTest} holds the shape
-     * of the reference, which is why the constant is visible to the package.
+     * of the reference and {@code JwksLateIdpReadinessIT} starts its late provider on it, which is why
+     * the constant is visible to the package: it is the one source of the nginx pin in Java.
      */
     static final String PROXY_IMAGE =
             "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10";

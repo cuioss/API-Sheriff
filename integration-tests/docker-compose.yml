@@ -106,8 +106,13 @@ services:
   # mid-stream fault test. No host port is published — it is reached only inside the compose network.
   # The cert is generated at container start (least infrastructure: no pre-provisioned key material),
   # mirroring the self-signed convention the certificates/ scripts use for the terminated listener.
+  #
+  # The image is pinned by content digest, the same one docker-compose.benchmark.yml and
+  # BffTlsRelaxationIT.PROXY_IMAGE bind: a minor-line tag stays mutable and every patch republish
+  # moves it. Move all nginx pins of the integration surface together; the tag is kept for
+  # readability only.
   passthrough-backend:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     entrypoint:
       - /bin/sh
       - -c
@@ -165,7 +170,8 @@ services:
   #
   # No host port is published — it is reached only by the gateways on the internal compose network.
   mismatched-tls-backend:
-    image: nginx:1.27-alpine
+    # Digest-pinned, the same pin as passthrough-backend above.
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     volumes:
       - ./src/main/docker/certificates:/etc/nginx/certificates:ro
     entrypoint:
@@ -234,7 +240,8 @@ services:
   # SSRF-controlled egress and re-serves them under the response envelope. No host
   # port is published — it is reached only by the gateway on the compose network.
   asset-origin:
-    image: nginx:1.27-alpine
+    # Digest-pinned, the same pin as passthrough-backend above.
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     volumes:
       - ./src/main/docker/asset-origin:/usr/share/nginx/html:ro
     networks:

@@ -93,10 +93,10 @@ import org.junit.jupiter.api.Test;
  *       first attempt is still retrying internally would be picked up by that attempt, with no
  *       gateway retry and no {@code ApiSheriff-18} to attribute it by.</li>
  *   <li><em>UP within {@value #RECOVERY_BOUND_SECONDS}s of the provider appearing</em> — see the
- *       constant for how the bound is derived. The gateway's
- *       configuration model exposes no refresh-interval key, so the issuer runs the token library's
- *       default interval, which a recovery that waited for the background refresh would have to sit
- *       out. {@code INFO ApiSheriff-18} ("loaded after N retry attempt(s)") is asserted beside the
+ *       constant for how the bound is derived. This descriptor declares no
+ *       {@code jwks.refresh_interval_seconds}, so the issuer runs the 600-second default interval,
+ *       which a recovery that waited for the background refresh would have to sit out.
+ *       {@code INFO ApiSheriff-18} ("loaded after N retry attempt(s)") is asserted beside the
  *       verdict, so the recovery is attributed to the retry path rather than inferred from timing
  *       alone.</li>
  *   <li><em>The provider's token is accepted</em> — a Keycloak-issued bearer token reaches the
@@ -121,8 +121,12 @@ import org.junit.jupiter.api.Test;
 @Tag("sleep-bound")
 class JwksLateIdpReadinessIT {
 
-    /** The late provider's image — the same pinned nginx the compose stack's TLS fixtures run. */
-    private static final String PROXY_IMAGE = "nginx:1.27-alpine";
+    /**
+     * The late provider's image — the same digest-pinned nginx the compose stack's TLS fixtures run. It
+     * is read from {@link BffTlsRelaxationIT#PROXY_IMAGE} rather than restated, so the pin has one
+     * source in Java and cannot fall back to a mutable tag here while the other suites stay pinned.
+     */
+    private static final String PROXY_IMAGE = BffTlsRelaxationIT.PROXY_IMAGE;
 
     /**
      * The late provider's network alias, and the host the late issuer's {@code jwks.url} names. It is
@@ -134,8 +138,8 @@ class JwksLateIdpReadinessIT {
     /**
      * The fixed host port of the gateway's application listener, published on every interface (see
      * {@link OneOffGatewayContainers#applicationPortPublication(int)}). The compose stack publishes
-     * {@code 10443}–{@code 10455}; the other one-off gateways take {@code 10459}, {@code 10462}–{@code 10465},
-     * {@code 10467} and {@code 10468}.
+     * {@code 10443}–{@code 10455}; the other one-off gateways take {@code 10459}, {@code 10462}–{@code 10465}
+     * and {@code 10467}–{@code 10471}.
      */
     private static final int APPLICATION_PORT = 10466;
 

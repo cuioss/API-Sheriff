@@ -117,7 +117,10 @@ public final class ApiSheriffLogMessages {
                 .template("Security filter rejected a request on route '%s': failure type %s")
                 .build();
 
-        /** The circuit breaker opened for an upstream after consecutive failures. */
+        /**
+         * The circuit breaker opened for an upstream: half or more of its last 20 calls failed (the
+         * gateway's fixed breaker policy, ADR-0064).
+         */
         public static final LogRecord CIRCUIT_BREAKER_OPEN = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(103)

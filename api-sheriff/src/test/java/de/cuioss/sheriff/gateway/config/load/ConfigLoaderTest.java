@@ -214,6 +214,64 @@ class ConfigLoaderTest {
                 () -> "expected an error pointing at the key, got: " + exception.errors());
     }
 
+    /** One {@code http} issuer whose {@code jwks} block ends with {@code jwksMembers}. */
+    private static String gatewayWithJwksMembers(String jwksMembers) {
+        return """
+                version: 1
+                token_validation:
+                  issuers:
+                    - name: "primary"
+                      issuer: "https://issuer.example.com"
+                      jwks:
+                        source: "http"
+                        url: "https://issuer.example.com/jwks"
+                %s
+                """.formatted(jwksMembers.indent(8).stripTrailing());
+    }
+
+    @Test
+    void bindsTheThreeDeclaredJwksRefreshKeys() throws Exception {
+        writeConfig("gateway.yaml", gatewayWithJwksMembers("""
+                refresh_interval_seconds: 900
+                key_rotation_grace_period_seconds: 120
+                unknown_kid_refresh_window_seconds: 15
+                """));
+
+        IssuerConfig.Jwks jwks = loader(Map.of()).load(IGNORE_DEFAULTED).gateway().tokenValidation().issuers()
+                .getFirst().jwks();
+
+        assertAll("each snake-case key binds to its own component",
+                () -> assertEquals(900, jwks.refreshIntervalSeconds()),
+                () -> assertEquals(120, jwks.keyRotationGracePeriodSeconds()),
+                () -> assertEquals(15, jwks.unknownKidRefreshWindowSeconds()));
+    }
+
+    @Test
+    void leavesTheOmittedJwksRefreshKeysAbsent() throws Exception {
+        writeConfig("gateway.yaml", gatewayWithJwksMembers("allowed_egress_hosts: [\"issuer.example.com\"]"));
+
+        IssuerConfig.Jwks jwks = loader(Map.of()).load(IGNORE_DEFAULTED).gateway().tokenValidation().issuers()
+                .getFirst().jwks();
+
+        assertAll("control: nothing is bound when a key is not declared",
+                () -> assertNull(jwks.refreshIntervalSeconds()),
+                () -> assertNull(jwks.keyRotationGracePeriodSeconds()),
+                () -> assertNull(jwks.unknownKidRefreshWindowSeconds()));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"refresh_interval_seconds", "key_rotation_grace_period_seconds",
+            "unknown_kid_refresh_window_seconds"})
+    void schemaRefusesAJwksRefreshKeyThatIsNotAnInteger(String key) throws Exception {
+        writeConfig("gateway.yaml", gatewayWithJwksMembers(key + ": \"soon\""));
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+        assertTrue(exception.errors().stream().anyMatch(error -> error.pointer().contains(key)),
+                () -> "expected an error pointing at the key, got: " + exception.errors());
+    }
+
     @Test
     void reportsMissingEnvSecretWithPointer() throws Exception {
         copyFixtureAs("/config/valid/gateway.yaml", "gateway.yaml");
@@ -429,6 +487,28 @@ class ConfigLoaderTest {
                                         path_prefix: /orders
                                 """,
                         "/endpoint/auth/session_fallback"),
+                // upstream.circuit_breaker is removed, not renamed: no code ever read it, and the
+                // breaker in front of an upstream is the gateway's fixed policy (ADR-0064). A lingering
+                // declaration must fail the boot rather than parse and act nowhere — this row is what
+                // keeps the key from coming back inert.
+                Arguments.of("a removed circuit_breaker block in a route's upstream block",
+                        """
+                                endpoint:
+                                  id: orders
+                                  base_url: ORDERS
+                                  auth:
+                                    require: bearer
+                                  routes:
+                                    - id: orders-read
+                                      match:
+                                        path_prefix: /orders
+                                      upstream:
+                                        path: /v1/orders
+                                        circuit_breaker:
+                                          failures: 5
+                                          reset_ms: 30000
+                                """,
+                        "/routes/0/upstream"),
                 // AS-3: a matcher carries exactly one path form, so declaring both is refused at load.
                 Arguments.of("a matcher declaring both path and path_prefix",
                         """

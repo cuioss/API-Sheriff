@@ -781,7 +781,7 @@ class SheriffMetricsTest {
         private IssuerConfig issuer(String name, String realm) {
             String base = "https://idp.internal.example.com/realms/" + realm;
             IssuerConfig.Jwks jwks = new IssuerConfig.Jwks("http",
-                    base + "/protocol/openid-connect/certs", null, List.of(), null);
+                    base + "/protocol/openid-connect/certs", null, List.of(), null, null, null, null);
             return new IssuerConfig(name, base, null, jwks);
         }
 
