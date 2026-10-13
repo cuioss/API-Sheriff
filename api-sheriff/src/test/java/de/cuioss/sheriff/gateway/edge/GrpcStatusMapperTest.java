@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
@@ -225,9 +228,10 @@ class GrpcStatusMapperTest {
             CompletableFuture<Optional<Future<Void>>> renderedAgain = new CompletableFuture<>();
             server = Awaits.connect(vertx.createHttpServer()
                     .requestHandler(req -> {
-                        rendered.complete(mapper.renderRejection(req.response(), EventType.SCOPE_MISSING, Map.of()));
-                        renderedAgain.complete(
-                                mapper.renderRejection(req.response(), EventType.SCOPE_MISSING, Map.of()));
+                        rendered.complete(mapper.renderRejection(req.response(), EventType.SCOPE_MISSING, Map.of(),
+                                Supplier::get));
+                        renderedAgain.complete(mapper.renderRejection(req.response(), EventType.SCOPE_MISSING,
+                                Map.of(), Supplier::get));
                     })
                     .listen(0, LoopbackHost.ADDRESS), "the rendering server to start listening");
 
@@ -243,9 +247,35 @@ class GrpcStatusMapperTest {
             assertTrue(untouched.isEmpty(), "a response that is already ended is left untouched");
         }
 
+        @Test
+        @DisplayName("ends the composed rejection only through the end it is handed, exactly once")
+        void endsTheRejectionThroughTheHandedEnd() throws Exception {
+            // Arrange — an end that records it was used, then ends the response as handed
+            AtomicInteger ends = new AtomicInteger();
+            server = Awaits.connect(vertx.createHttpServer()
+                    .requestHandler(req -> mapper.renderRejection(req.response(), EventType.SCOPE_MISSING, Map.of(),
+                            ending -> {
+                                ends.incrementAndGet();
+                                return ending.get();
+                            }))
+                    .listen(0, LoopbackHost.ADDRESS), "the rendering server to start listening");
+
+            // Act
+            HttpClientResponse response = Awaits.connect(client.request(HttpMethod.POST, server.actualPort(),
+                            LoopbackHost.ADDRESS, "/svc.Service/Method").compose(req -> req.send()),
+                    "the rendered gRPC rejection response");
+
+            // Assert
+            assertAll("a rejection ended through the handed end",
+                    () -> assertEquals(1, ends.get(), "the response is ended through the handed end, once"),
+                    () -> assertEquals(Integer.toString(GrpcStatusMapper.PERMISSION_DENIED),
+                            response.getHeader("grpc-status")));
+        }
+
         private HttpClientResponse render(EventType eventType, Map<String, String> stageHeaders) throws Exception {
             server = Awaits.connect(vertx.createHttpServer()
-                    .requestHandler(req -> mapper.renderRejection(req.response(), eventType, stageHeaders))
+                    .requestHandler(req -> mapper.renderRejection(req.response(), eventType, stageHeaders,
+                            Supplier::get))
                     .listen(0, LoopbackHost.ADDRESS), "the rendering server to start listening");
             int port = server.actualPort();
             return Awaits.connect(client.request(HttpMethod.POST, port, LoopbackHost.ADDRESS, "/svc.Service/Method")
@@ -257,7 +287,7 @@ class GrpcStatusMapperTest {
     @DisplayName("rejects a null response on render")
     void rejectsNullResponse() {
         assertThrows(NullPointerException.class,
-                () -> mapper.renderRejection(null, EventType.SCOPE_MISSING, Map.of()),
+                () -> mapper.renderRejection(null, EventType.SCOPE_MISSING, Map.of(), Supplier::get),
                 "the render requires a non-null response");
     }
 }

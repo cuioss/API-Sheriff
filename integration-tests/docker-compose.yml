@@ -248,6 +248,38 @@ services:
       - api-sheriff
     restart: unless-stopped
 
+  # Upstream that answers BEFORE it reads the request body, backing the /upload/early-answer route
+  # (sheriff-config/endpoints/early-answer.yaml, alias EARLY_ANSWER) that Http2EarlyResponseResetIT
+  # drives against the primary instance. The default stack needs it because go-httpbin reads and
+  # echoes the whole body before it answers, so no other upstream here ever answers an upload early —
+  # and an HTTP/2 upload answered while its body is still open is exactly the shape the gateway
+  # resets itself with NO_ERROR.
+  #
+  # The two mounted files are SHARED with the benchmark overlay's nginx-static
+  # (docker-compose.benchmark.yml), and so is the image, pinned by the same content digest:
+  # nginx-static.conf answers `return 200` without reading the body, and body-limits.conf keeps the
+  # unread remainder draining under lingering_close instead of resetting the connection. Every gateway
+  # instance loads the route; only the primary dials it. No host port is published — it is reached
+  # only by the gateway on the internal compose network.
+  early-answer-backend:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    volumes:
+      - ./nginx/nginx-static.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./src/main/docker/nginx/body-limits.conf:/etc/nginx/conf.d/00-body-limits.conf:ro
+    networks:
+      - api-sheriff
+    restart: unless-stopped
+    healthcheck:
+      # Same probe shape as the other nginx fixtures: `nginx -t` proves the mounted config parses,
+      # `nc -z` proves the port actually ACCEPTS connections. The primary instance gates on
+      # service_healthy here, so a config-only probe could release it against a socket that still
+      # refuses, and the IT would then observe an upstream failure instead of an early answer.
+      test: ["CMD-SHELL", "nginx -t && nc -z -w 2 127.0.0.1 8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   # In-repo Quarkus gRPC echo upstream backing the gRPC integration-test matrix.
   # Exposes unary echo, server-streaming echo, and a deliberately-failing method
   # (non-OK grpc-status) so GrpcProxyIT can assert echo, streaming, and trailer/status
@@ -383,8 +415,9 @@ services:
 
     # Map form so grpc-echo can gate on service_healthy — the gateway must not start
     # until the gRPC echo upstream is accepting connections, otherwise the first
-    # streaming IT can race the upstream's boot. The other upstreams retain the prior
-    # service_started semantics.
+    # streaming IT can race the upstream's boot. early-answer-backend gates the same way,
+    # and only here: this is the one instance Http2EarlyResponseResetIT dials it through.
+    # The other upstreams retain the prior service_started semantics.
     depends_on:
       keycloak:
         condition: service_started
@@ -393,6 +426,8 @@ services:
       asset-origin:
         condition: service_started
       grpc-echo:
+        condition: service_healthy
+      early-answer-backend:
         condition: service_healthy
 
     volumes:

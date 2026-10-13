@@ -59,8 +59,8 @@ import org.junit.jupiter.api.Test;
  * Retarget a published port and the ITs silently address the primary gateway, which dials
  * plain-HTTP {@code go-httpbin} and performs no hostname verification at all.
  * <p>
- * None of those failures is visible from inside the ITs, and each takes a full native build and a
- * nine-container stack to discover. This guard parses the committed descriptors and catches them in
+ * None of those failures is visible from inside the ITs, and each takes a full native build and the
+ * whole compose stack to discover. This guard parses the committed descriptors and catches them in
  * seconds — it starts no container and reaches no network.
  * <p>
  * <strong>The single-variable claim is asserted by construction, not by an enumerated exception
@@ -344,7 +344,7 @@ class EgressVerifyActivationWiringTest {
 
         // The origin must be one whose certificate cannot be an anchor of the bound truststore. That
         // is structural for passthrough-backend — it generates its own self-signed certificate at
-        // container start — which is why it is reused rather than a tenth service being added.
+        // container start — which is why it is reused rather than an eleventh service being added.
         assertTrue(offUntrusted.contains(UNTRUSTED_ORIGIN_SERVICE), UNTRUSTED_VARIABLE + " must name "
                 + UNTRUSTED_ORIGIN_SERVICE + ", whose certificate is generated at container start and"
                 + " therefore chains to nothing any committed truststore holds, was: " + offUntrusted);
@@ -380,7 +380,7 @@ class EgressVerifyActivationWiringTest {
                         + " alias, which is what " + UNTRUSTED_VARIABLE + " binds");
         assertNotNull(topology().getProperty(UNTRUSTED_ALIAS),
                 UNTRUSTED_ALIAS + " must be declared in sheriff-config/topology.properties; an"
-                        + " unresolvable alias fails the boot of all nine instances, not just the pair");
+                        + " unresolvable alias fails the boot of all twelve instances, not just the pair");
         List<String> prefixes = routePrefixes(block);
         assertTrue(prefixes.contains(UNTRUSTED_ROUTE_PREFIX),
                 UNTRUSTED_ENDPOINT + " must declare a route matching " + UNTRUSTED_ROUTE_PREFIX

@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import java.io.Serial;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.Objects;
@@ -823,14 +824,32 @@ public final class DispatchStage {
      * registered later, so a consumer that subscribes late still learns that the body failed — and
      * {@link ByteCappedBodyStream} then aborts the upstream request instead of leaving it open.
      * <p>
+     * <strong>The single place a gateway-made reset is recorded.</strong> When the edge has decided the
+     * answer to an HTTP/2 request whose body is still open, it marks this decorator
+     * {@linkplain #resetByGateway() reset by the gateway} before it ends the response and then resets
+     * the stream. The decorator then delivers the fixed {@link GatewayStreamReset} cause — to the
+     * failure handler registered at that moment, or to one registered later — in place of a client
+     * failure, and from then on swallows every further failure of the stream, so the transport error the
+     * reset itself may surface is never replayed as a client failure. {@link ByteCappedBodyStream}
+     * answers that cause by stopping the forwarding without recording a client abort.
+     * <p>
+     * <strong>A body the gateway reset is never read again.</strong> The mark also pauses the inbound
+     * stream and keeps it paused: every later {@link #resume()} or {@link #fetch(long)} — the forwarding
+     * pipe's among them — is ignored. A paused HTTP/2 request returns no flow-control window to the
+     * client, so from the mark on the client can send no more than the window it already holds; that
+     * bound is what lets the edge's wait before the reset end once the client can send nothing more;
+     * failing that, the wait ends once request data stops arriving or a time cap passes.
+     * <p>
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
-     * registered from another thread; both go through the same monitor.
+     * registered from another thread; both go through the same monitor. The pause is pinned without
+     * holding that monitor: a resume racing the mark is followed by a pause again.
      */
     static final class InboundBody implements ReadStream<Buffer> {
 
         private final ReadStream<Buffer> delegate;
         private @Nullable Throwable failure;
         private @Nullable Handler<Throwable> failureHandler;
+        private volatile boolean resetByGateway;
 
         private InboundBody(ReadStream<Buffer> delegate) {
             this.delegate = delegate;
@@ -850,11 +869,41 @@ public final class DispatchStage {
         }
 
         private synchronized void onFailure(Throwable cause) {
+            if (resetByGateway) {
+                // The gateway ended this stream itself: whatever the transport surfaces for it now is
+                // the echo of that reset, not a client failure.
+                return;
+            }
             if (failure == null) {
                 failure = cause;
             }
             if (failureHandler != null) {
                 failureHandler.handle(cause);
+            }
+        }
+
+        /**
+         * Records that the gateway itself ends this stream: its answer is decided while the body is
+         * still open. The inbound stream is paused for good, so no further body is read and no further
+         * flow-control window is returned to the client. When no failure was recorded before, the
+         * fixed {@link GatewayStreamReset#INSTANCE} is delivered — now to the registered failure
+         * handler, or later to the one registered next — so the consumer stops forwarding the body.
+         * Every failure of the stream from now on is swallowed. Idempotent; a failure recorded before
+         * the mark stays the one a later handler is replayed.
+         */
+        void resetByGateway() {
+            resetByGateway = true;
+            delegate.pause();
+            deliverGatewayReset();
+        }
+
+        private synchronized void deliverGatewayReset() {
+            if (failure != null) {
+                return;
+            }
+            failure = GatewayStreamReset.INSTANCE;
+            if (failureHandler != null) {
+                failureHandler.handle(GatewayStreamReset.INSTANCE);
             }
         }
 
@@ -879,22 +928,59 @@ public final class DispatchStage {
             return this;
         }
 
+        /** Resumes the inbound stream, unless the gateway reset it — then it stays paused. */
         @Override
         public ReadStream<Buffer> resume() {
-            delegate.resume();
+            if (!resetByGateway) {
+                delegate.resume();
+                repinPause();
+            }
             return this;
         }
 
+        /** Fetches from the inbound stream, unless the gateway reset it — then it stays paused. */
         @Override
         public ReadStream<Buffer> fetch(long amount) {
-            delegate.fetch(amount);
+            if (!resetByGateway) {
+                delegate.fetch(amount);
+                repinPause();
+            }
             return this;
+        }
+
+        /** Pauses the stream again when the gateway's mark landed while it was being resumed. */
+        private void repinPause() {
+            if (resetByGateway) {
+                delegate.pause();
+            }
         }
 
         @Override
         public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
             delegate.endHandler(endHandler);
             return this;
+        }
+    }
+
+    /**
+     * The fixed cause {@link InboundBody#resetByGateway()} delivers when the gateway itself ends an
+     * HTTP/2 stream it answered while the request body was still open. It is not a
+     * failure of the client: {@link ByteCappedBodyStream} stops forwarding on it without recording a
+     * client abort, so it never becomes an {@link EventType#INBOUND_BODY_ABORTED}.
+     * <p>
+     * One shared, immutable instance: the cause carries no request-specific state, no stack trace and
+     * no suppressed exceptions, and is never thrown.
+     */
+    static final class GatewayStreamReset extends RuntimeException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        /** The one instance every gateway-made reset delivers. */
+        static final GatewayStreamReset INSTANCE = new GatewayStreamReset();
+
+        private GatewayStreamReset() {
+            super("The gateway ended the request stream it answered before the body ended", null, false, false);
         }
     }
 
@@ -910,15 +996,22 @@ public final class DispatchStage {
      * that did not arrive whole is therefore never completed towards the upstream: the upstream
      * request is reset at once, which on HTTP/1.x closes that upstream connection instead of returning
      * it to the pool, and on HTTP/2 resets the one stream. The abort action runs at most once per
-     * stream, whichever of the two triggers fires first.
+     * stream, whichever trigger fires first.
      * <p>
-     * <strong>Either abort is recorded as client-caused.</strong> The trigger that fires first leaves a
-     * {@link GatewayException} behind — {@link EventType#CONTENT_TOO_LARGE} for the cap breach,
-     * {@link EventType#INBOUND_BODY_ABORTED} for the failed inbound stream — readable through
-     * {@link #clientAbort()} from any thread, and set before the abort action runs. The dispatch that
-     * owns this stream reports that exception in place of the transport error its own abort caused.
-     * A failed inbound stream is a client-caused termination, not a security filter violation: it is
-     * reported under its own event so an ordinary dropped upload raises no security warning.
+     * <strong>A client-caused abort is recorded as such.</strong> When the trigger that fires first is
+     * the client's, it leaves a {@link GatewayException} behind — {@link EventType#CONTENT_TOO_LARGE}
+     * for the cap breach, {@link EventType#INBOUND_BODY_ABORTED} for the failed inbound stream —
+     * readable through {@link #clientAbort()} from any thread, and set before the abort action runs.
+     * The dispatch that owns this stream reports that exception in place of the transport error its
+     * own abort caused. A failed inbound stream is a client-caused termination, not a security filter
+     * violation: it is reported under its own event so an ordinary dropped upload raises no security
+     * warning.
+     * <p>
+     * <strong>A gateway-made reset is not.</strong> An inbound failure carrying the
+     * {@link GatewayStreamReset} cause — the edge ends the stream itself, its answer decided
+     * (see {@link InboundBody#resetByGateway()}) — claims the same single abort and runs the abort
+     * action, so the upstream request is reset and forwarding stops, but it records no client abort
+     * ({@link #clientAbort()} stays {@code null}) and is not propagated to the consumer as a failure.
      * <p>
      * <strong>A declared length is held exactly.</strong> When the request declares a length, the
      * upstream frames the message by it, so the same running count also bounds the body to exactly
@@ -955,10 +1048,12 @@ public final class DispatchStage {
         private @Nullable Handler<Void> endHandler;
         /**
          * The single abort claim: the trigger whose {@code compareAndSet} from {@code null} succeeds owns
-         * the abort. The inbound failure may be replayed on the thread that registers the failure handler
-         * while chunks arrive on the event loop, so the claim must be atomic across both callbacks.
+         * the abort and leaves its reason behind — a {@link GatewayException} for a client-caused abort,
+         * the {@link GatewayStreamReset} cause for a gateway-made reset. The inbound failure may be
+         * replayed on the thread that registers the failure handler while chunks arrive on the event
+         * loop, so the claim must be atomic across both callbacks.
          */
-        private final AtomicReference<@Nullable GatewayException> clientAbort = new AtomicReference<>();
+        private final AtomicReference<@Nullable Throwable> abortReason = new AtomicReference<>();
 
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, Runnable abortAction) {
             this(delegate, maxBytes, NO_DECLARED_LENGTH, abortAction, length -> {
@@ -986,10 +1081,18 @@ public final class DispatchStage {
 
         /**
          * The inbound stream failed: abort the upstream request first, then report the failure, so the
-         * consumer never sees a failed body whose upstream request is still open.
+         * consumer never sees a failed body whose upstream request is still open. The
+         * {@link GatewayStreamReset} cause is the gateway's own reset, not a failure: it aborts the
+         * upstream request through the same single claim, records no client abort and is not reported.
          */
         private void onInboundFailure(Throwable failure) {
-            if (clientAbort.compareAndSet(null,
+            if (failure instanceof GatewayStreamReset gatewayReset) {
+                if (abortReason.compareAndSet(null, gatewayReset)) {
+                    abortAction.run();
+                }
+                return;
+            }
+            if (abortReason.compareAndSet(null,
                     new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure))) {
                 abortAction.run();
             }
@@ -998,15 +1101,15 @@ public final class DispatchStage {
 
         /**
          * @return the client-caused reason this stream aborted the upstream request, or {@code null}
-         *         while it has not aborted it
+         *         while it has not aborted it or when the gateway's own reset aborted it
          */
         @Nullable
         GatewayException clientAbort() {
-            return clientAbort.get();
+            return abortReason.get() instanceof GatewayException clientCaused ? clientCaused : null;
         }
 
         private void onChunk(Buffer chunk) {
-            if (clientAbort.get() != null) {
+            if (abortReason.get() != null) {
                 return;
             }
             bytesSeen += chunk.length();
@@ -1030,15 +1133,16 @@ public final class DispatchStage {
         /**
          * The inbound stream ended. A body short of its declared length did not arrive whole: the
          * upstream request is aborted instead of being ended on a message shorter than its framing.
-         * After an abort the end is not passed on — the consumer has already been told the body failed.
+         * After an abort the end is not passed on — the consumer has already been told the body failed,
+         * or the gateway reset the stream itself.
          */
         private void onInboundEnd(@Nullable Void end) {
-            if (clientAbort.get() != null) {
+            if (abortReason.get() != null) {
                 return;
             }
             if (declaredLength >= 0 && bytesSeen < declaredLength) {
                 GatewayException shortBody = new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_SHORT);
-                if (clientAbort.compareAndSet(null, shortBody)) {
+                if (abortReason.compareAndSet(null, shortBody)) {
                     abortAction.run();
                     propagateFailure(shortBody);
                 }
@@ -1053,7 +1157,7 @@ public final class DispatchStage {
         /** Stops the inbound stream, and — when this is the first abort — resets the upstream request. */
         private void refuse(GatewayException reason) {
             delegate.pause();
-            if (clientAbort.compareAndSet(null, reason)) {
+            if (abortReason.compareAndSet(null, reason)) {
                 abortAction.run();
                 propagateFailure(reason);
             }

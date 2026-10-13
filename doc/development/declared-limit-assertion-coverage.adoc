@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *thirty files* under `integration-tests/src/main/docker/`.
+The declared surface is *thirty-one files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -66,12 +66,13 @@ disk without touching this table and the guard fails.
   `sheriff-config-ws-admission/gateway.yaml`
 
 | `sheriff-config/endpoints/*.yaml`
-| 15
+| 16
 | `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
   `sheriff-config/endpoints/bff-scoped.yaml`,
   `sheriff-config/endpoints/bff-session.yaml`,
   `sheriff-config/endpoints/bff-session-websocket.yaml`,
-  `sheriff-config/endpoints/bff-unassigned-scope.yaml`, `sheriff-config/endpoints/grpc.yaml`,
+  `sheriff-config/endpoints/bff-unassigned-scope.yaml`,
+  `sheriff-config/endpoints/early-answer.yaml`, `sheriff-config/endpoints/grpc.yaml`,
   `sheriff-config/endpoints/httpbin.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
   `sheriff-config/endpoints/portal-hidden.yaml`,
   `sheriff-config/endpoints/secure.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
@@ -116,7 +117,7 @@ a shared endpoint on its new anchor would force that anchor into every committed
 gateway document derived from `sheriff-config-passthrough-empty/gateway.yaml` with that one anchor
 added. It is part of the surface all the same: `DescriptorInventoryWiringTest` sweeps the
 `reserved-path-overlap` directory by name beside the `sheriff-config*` directories, so the file is
-counted in the thirty and held to the same exact-set rule as every other descriptor. It declares
+counted in the thirty-one and held to the same exact-set rule as every other descriptor. It declares
 `allowed_methods`, which the sweep below matches, so it is limit-bearing; that list is asserted on
 the wire under the `allowed_methods` row of the Coverage Matrix -- a `GET` on the routed path is
 refused `405`.
@@ -129,7 +130,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all thirty files it returns hits in exactly nineteen of them:
+Over all thirty-one files it returns hits in exactly nineteen of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -153,9 +154,9 @@ Over all thirty files it returns hits in exactly nineteen of them:
 * `reserved-path-overlap/auth-overlap.yaml`
 // end::limit-bearing[]
 
-The remaining eleven -- `sheriff-config/endpoints/assets.yaml`,
+The remaining twelve -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/assets-secure.yaml`, `sheriff-config/endpoints/bff-scoped.yaml`,
-`sheriff-config/endpoints/bff-unassigned-scope.yaml`,
+`sheriff-config/endpoints/bff-unassigned-scope.yaml`, `sheriff-config/endpoints/early-answer.yaml`,
 `sheriff-config/endpoints/origin-headers.yaml`, `sheriff-config/endpoints/portal-hidden.yaml`,
 `sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
 `sheriff-config/endpoints/upstream-fault.yaml`,
@@ -172,6 +173,15 @@ on a `require: session` route and on the SESSION branch of a `session_fallback` 
 assertion is about a scope the identity provider will not grant, not about a bound on the request.
 A `forward` allow/deny list or a body cap there would make the file limit-bearing and owe a Coverage
 Matrix row.
+
+`sheriff-config/endpoints/early-answer.yaml` is limit-free because the assertion it backs is about
+how a response ends, not about a bound on the request. Its single route rides the `upload` anchor and
+inherits that anchor's body cap without restating it, and it declares only `endpoint`, `id`,
+`enabled`, `base_url`, `anchor`, `auth`, `require`, `routes`, `match`, `path_prefix` and `methods`,
+none of which matches the sweep. Its alias in `sheriff-config/topology.properties`, `EARLY_ANSWER`,
+matches no alternative of the sweep either. The route backs `Http2EarlyResponseResetIT`, which drives
+uploads its upstream answers before reading the body and asserts the gateway's own `NO_ERROR` stream
+reset after each answer.
 
 `sheriff-config/endpoints/origin-headers.yaml` is limit-free for the same structural reason as
 `untrusted.yaml`: none of its seven routes bounds a request. Three back response-path assertions
@@ -908,15 +918,15 @@ so the assertion's granularity is the file and never the key.
 
 The consequence: adding a limit-shaped key to one of the *nineteen already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
-row is forced. Only a key that makes one of the remaining eleven --
+row is forced. Only a key that makes one of the remaining twelve --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
 `sheriff-config/endpoints/bff-scoped.yaml`, `sheriff-config/endpoints/bff-unassigned-scope.yaml`,
-`sheriff-config/endpoints/origin-headers.yaml`,
+`sheriff-config/endpoints/early-answer.yaml`, `sheriff-config/endpoints/origin-headers.yaml`,
 `sheriff-config/endpoints/portal-hidden.yaml`, `sheriff-config/endpoints/secure-scoped.yaml`,
 `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Nineteen of thirty is the *majority* of the surface,
+Nineteen of thirty-one is the *majority* of the surface,
 so this is the ordinary case rather than an edge one: for those nineteen files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
@@ -945,7 +955,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
   one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
   is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (thirty files, named) *and machine-checked against
+. *The enumerated surface is stated explicitly* (thirty-one files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
   -- the inventory table, the sweep pattern and the nineteen limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
@@ -954,7 +964,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   the exact-inventory equality and fails the build until this note is updated -- a descriptor
   committed under any other directory is outside both assertions until that directory is added to
   the test's `INVENTORY_ROOTS` -- and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the nineteen/eleven partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the nineteen/twelve partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -963,7 +973,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the thirty files, add its row here in the same change --
+When you add a limit-shaped key to any of the thirty-one files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix

@@ -51,6 +51,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
@@ -351,6 +352,141 @@ class DispatchStageTest {
             Buffer joined = Buffer.buffer();
             forwarded.forEach(joined::appendBuffer);
             return joined.toString();
+        }
+    }
+
+    /**
+     * The decorator pair the edge's post-response reset goes through: {@link DispatchStage.InboundBody}
+     * records that the gateway reset the stream and delivers the fixed gateway-reset cause, and the
+     * {@link DispatchStage.ByteCappedBodyStream} over it stops forwarding on that cause without
+     * recording a client abort.
+     */
+    @Nested
+    @DisplayName("gateway-made stream reset through the inbound-body decorator pair")
+    class GatewayReset {
+
+        private final TestReadStream source = new TestReadStream();
+        private final DispatchStage.InboundBody inbound = DispatchStage.InboundBody.arm(source);
+        private final List<Buffer> forwarded = new ArrayList<>();
+        private final AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
+        private final AtomicInteger aborts = new AtomicInteger();
+
+        /** Subscribes a byte-capped body to the armed decorator, as the dispatch does. */
+        private DispatchStage.ByteCappedBodyStream subscribe() {
+            DispatchStage.ByteCappedBodyStream capped = new DispatchStage.ByteCappedBodyStream(inbound, BODY_CAP,
+                    DispatchStage.NO_DECLARED_LENGTH, aborts::incrementAndGet, _ -> {
+                        // The forwarded count feeds the retry gate, which these cases do not exercise.
+                    });
+            capped.handler(forwarded::add);
+            capped.exceptionHandler(failure::set);
+            return capped;
+        }
+
+        @Test
+        @DisplayName("a reset after the body is subscribed aborts the upstream request once and records no client abort")
+        void resetAfterSubscriptionAbortsWithoutAClientAbort() {
+            DispatchStage.ByteCappedBodyStream capped = subscribe();
+            source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+
+            inbound.resetByGateway();
+            source.emit(Buffer.buffer(Generators.letterStrings(2, 6).next()));
+
+            assertAll("a gateway reset of a subscribed body",
+                    () -> assertEquals(1, aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertNull(capped.clientAbort(), "a gateway-made reset is never a client abort"),
+                    () -> assertNull(failure.get(), "the gateway reset is not reported to the consumer as a failure"),
+                    () -> assertEquals(1, forwarded.size(), "nothing is forwarded after the reset"));
+        }
+
+        @Test
+        @DisplayName("a reset before the body is subscribed reaches the later subscriber the same way")
+        void resetBeforeSubscriptionIsReplayedToTheLaterSubscriber() {
+            inbound.resetByGateway();
+
+            DispatchStage.ByteCappedBodyStream capped = subscribe();
+
+            assertAll("a gateway reset before subscription",
+                    () -> assertEquals(1, aborts.get(), "the later subscriber still resets the upstream request once"),
+                    () -> assertNull(capped.clientAbort(), "a gateway-made reset is never a client abort"),
+                    () -> assertNull(failure.get(), "the gateway reset is not reported to the consumer as a failure"));
+        }
+
+        @Test
+        @DisplayName("a transport failure after the reset is swallowed, never replayed as a client failure")
+        void transportFailureAfterTheResetIsSwallowed() {
+            DispatchStage.ByteCappedBodyStream capped = subscribe();
+            inbound.resetByGateway();
+
+            source.fail(new IllegalStateException(Generators.letterStrings(4, 12).next()));
+            inbound.resetByGateway();
+
+            assertAll("a transport failure surfacing after the gateway reset",
+                    () -> assertEquals(1, aborts.get(), "the upstream request is reset once, not again"),
+                    () -> assertNull(capped.clientAbort(), "the echo of the gateway's own reset is no client abort"),
+                    () -> assertNull(failure.get(), "the echo of the gateway's own reset is never propagated"));
+        }
+
+        @Test
+        @DisplayName("a genuine inbound failure without a gateway reset still records INBOUND_BODY_ABORTED")
+        void genuineFailureStillRecordsTheClientAbort() {
+            DispatchStage.ByteCappedBodyStream capped = subscribe();
+            IllegalStateException clientDrop = new IllegalStateException(Generators.letterStrings(4, 12).next());
+
+            source.fail(clientDrop);
+            inbound.resetByGateway();
+
+            GatewayException clientAbort = capped.clientAbort();
+            assertAll("a genuine inbound failure",
+                    () -> assertEquals(EventType.INBOUND_BODY_ABORTED,
+                            assertInstanceOf(GatewayException.class, clientAbort).getEventType()),
+                    () -> assertSame(clientDrop, failure.get(), "the genuine failure reaches the consumer"),
+                    () -> assertEquals(1, aborts.get(),
+                            "a gateway reset after the client abort does not reset the upstream request again"));
+        }
+
+        @Test
+        @DisplayName("a reset pauses the body for good: a later resume or fetch — the pipe's — does not read it again")
+        void resetPausesTheBodyForGood() {
+            subscribe();
+            inbound.resume();
+
+            inbound.resetByGateway();
+            boolean pausedByTheReset = source.paused();
+            inbound.resume();
+            inbound.fetch(1);
+
+            assertAll("a body the gateway reset",
+                    () -> assertTrue(pausedByTheReset, "the reset pauses the inbound stream"),
+                    () -> assertTrue(source.paused(), "a resume or fetch after the reset leaves it paused"));
+        }
+
+        @Test
+        @DisplayName("without a reset, resume and fetch reach the inbound stream as before")
+        void withoutAResetResumeAndFetchReachTheStream() {
+            subscribe();
+            inbound.pause();
+
+            inbound.resume();
+            boolean pausedAfterResume = source.paused();
+            inbound.pause();
+            inbound.fetch(1);
+
+            assertAll("a body the gateway did not reset",
+                    () -> assertFalse(pausedAfterResume, "a resume reaches the inbound stream"),
+                    () -> assertFalse(source.paused(), "a fetch reaches the inbound stream"));
+        }
+
+        @Test
+        @DisplayName("the gateway-reset cause carries no stack trace and is one shared instance")
+        void gatewayResetCauseIsStacklessAndShared() {
+            AtomicReference<@Nullable Throwable> delivered = new AtomicReference<>();
+            inbound.exceptionHandler(delivered::set);
+
+            inbound.resetByGateway();
+
+            assertAll("the gateway-reset cause",
+                    () -> assertSame(DispatchStage.GatewayStreamReset.INSTANCE, delivered.get()),
+                    () -> assertEquals(0, DispatchStage.GatewayStreamReset.INSTANCE.getStackTrace().length));
         }
     }
 
@@ -1517,7 +1653,8 @@ class DispatchStageTest {
             }
             clientContext.runOnContext(_ -> {
                 try {
-                    responseStage.relay(response, request.response(), false, null, Map.of(), Map.of())
+                    responseStage.relay(response, request.response(), false, null, Map.of(), Map.of(),
+                            Supplier::get)
                             .onFailure(failure -> abandon(request, failure));
                 } catch (IllegalStateException relayStartFailure) {
                     abandon(request, relayStartFailure);
@@ -1617,7 +1754,14 @@ class DispatchStageTest {
         private volatile @Nullable Handler<Throwable> exceptionHandler;
         private volatile @Nullable Handler<Void> endHandler;
         private volatile boolean resumed;
+        /** Whether the stream is paused now: set by {@link #pause()}, cleared by a resume or a fetch. */
+        private volatile boolean paused;
         private volatile @Nullable Buffer onResume;
+
+        /** @return {@code true} while the last call that changed the flow was a pause */
+        boolean paused() {
+            return paused;
+        }
 
         /** Emits {@code buffer} the moment a consumer resumes the stream, before {@link #resume()} returns. */
         void emitOnResume(Buffer buffer) {
@@ -1666,12 +1810,14 @@ class DispatchStageTest {
 
         @Override
         public ReadStream<Buffer> pause() {
+            paused = true;
             return this;
         }
 
         @Override
         public ReadStream<Buffer> resume() {
             resumed = true;
+            paused = false;
             Buffer pending = onResume;
             if (pending != null) {
                 onResume = null;
@@ -1682,6 +1828,7 @@ class DispatchStageTest {
 
         @Override
         public ReadStream<Buffer> fetch(long amount) {
+            paused = false;
             return this;
         }
 

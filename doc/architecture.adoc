@@ -369,10 +369,53 @@ A framing rejection also ends what it arrived on, and what that is depends on th
 HTTP/1.x it is the connection: the `400` carries `Connection: close`, the connection is closed once
 it is written, and a request already queued behind the rejected one is neither processed nor
 forwarded. On HTTP/2 it is the offending stream alone: the `400` carries no connection-specific
-header, the stream is reset once it is written, and the other streams of that connection and the
-connection itself carry on. The HTTP transport refuses some shapes before the gate runs, with a bare
-`400`; link:security-threat-model.adoc#gw-02[GW-02] lists each clause, who enforces it and the test
-that pins it.
+header, a stream whose body is still open is reset with `NO_ERROR` once it is written (see
+<<_http2_post_response_reset>>), and the other streams of that connection and the connection itself
+carry on. The HTTP
+transport refuses some shapes before the gate runs, with a bare `400`;
+link:security-threat-model.adoc#gw-02[GW-02] lists each clause, who enforces it and the test that
+pins it.
+
+[[_http2_post_response_reset]]
+*An HTTP/2 response answered while the request body is still open is ended once request data stops
+arriving or a time cap passes, and its stream is then reset with `NO_ERROR`.* This is one rule for every response the
+edge ends: a relayed response -- an upstream that answered before it read the whole body -- and every
+answer the gateway writes itself, the problem document, the HTML error page, the portal page, a
+reserved-path answer, an asset, a redirect, a short-circuit, the gRPC trailers-only status, a
+relay-failure answer and the admission `503` -- a framing rejection and a reserved-body `413` among
+them. The `NO_ERROR` reset (RFC 9113 §8.1) tells the client to stop sending, so it never has to
+reset the stream itself, and the connection and every other stream on it carry on. A stream whose
+body has already ended is ended normally and left alone. HTTP/1.x is unchanged -- no request there is
+reset, and a framing rejection or a reserved-body `413` retires the connection instead.
+
+The rule runs in three steps, so the reset reaches the client neither too late nor too early:
+
+. *The body is stopped at once.* As soon as the answer is decided, the gateway stops reading the
+request body: the upstream request still receiving it is reset, so nothing more is forwarded, and the
+inbound stream is paused for good. A paused stream returns no flow-control window, so from then on
+the client can send no more than the window it already holds.
+. *The end waits until request data stops arriving.* The final frame of the response -- the one
+carrying `END_STREAM` -- is held back until the client can send nothing more on the stream (the
+stream's or the connection's flow-control window is used up, or it has ended or lost the stream), or
+what it may send has not changed for 50 ms, or 1 s has passed, whichever comes first. Only the first
+shows that no more request data can arrive; the 50 ms quiet period infers it from a client that is not
+sending, and the 1 s cap ends the wait even while request data may still be in flight. A client that
+sees the complete response while it is still uploading resets
+the stream itself, and the HTTP/2 transport counts the resets a client sends against its
+per-connection Rapid-Reset limit; a reset written while the client's data is still on the way is no
+better, because the transport answers each data frame arriving after it with a `STREAM_CLOSED` reset
+of its own and counts those against the same limit. Holding the end back until the client has stopped
+sending avoids both, unless the 1 s cap ends the wait first. The three values are constants of the
+gateway, not configuration.
+. *The reset goes out right behind the end.* The end and the reset are written together, in the same
+step that let the end go ahead, so no window the gateway returns in between -- another
+stream on the connection reading its body -- can let the client send on this stream before the reset
+reaches it. Only when HTTP/2 flow control holds the final frame back does the reset wait until that
+frame has been written, since a reset written earlier would discard it. A stream the client has ended
+in the meantime is not reset.
+
+The late refusal of a body on a bodyless method (below) stays a `CANCEL` reset taken before the
+response ends, and neither the WebSocket upgrade nor the L4 passthrough relay is affected.
 
 [[_dispatch_body_framing]]
 *A bodyless method carries no body upstream, and a declared length frames the forwarded body.* The
@@ -403,6 +446,10 @@ upstream failure: no security warning is logged, the route's circuit breaker doe
 failure, and it is never retried. `INFO` `ApiSheriff-22` records it, latched per route, and
 `sheriff_errors_total` counts every occurrence under `event="INBOUND_BODY_ABORTED"`. A body that
 keeps arriving past the route's `max_body_bytes` cap is the separate `CONTENT_TOO_LARGE` (`413`).
+The gateway's own reset of an early-answered stream (<<_http2_post_response_reset>>) is not one: it
+also resets the upstream request, but it is marked as the gateway's on the inbound body before the
+response is ended, so neither it nor the transport error it may surface on the inbound stream is
+recorded as `INBOUND_BODY_ABORTED`.
 
 Not counted as a failure is not the same as not recorded. Like every dispatch the client ended -- a
 body over the cap, a body byte on a bodyless method, a body that disagrees with its declared length
@@ -1240,7 +1287,7 @@ The consolidated status mapping:
 | `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`); live session lacking one on a non-navigation request when no refresh can obtain it (no `WWW-Authenticate`; the problem body carries the extension members `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`, while a navigation is redirected into a widening of the session instead -- see <<_scope_enforcement>>); failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `ROUTING`
 | `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `ROUTING`
-| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is ended, and the connection and its other streams carry on | `INPUT_VALIDATION`
+| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>), and the connection and its other streams carry on | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called. The response carries `Retry-After` with the seconds the breaker stays open: the fixed `5` of the gateway's upstream guard, without jitter (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]) | `UPSTREAM`
