@@ -27,7 +27,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
@@ -65,21 +67,25 @@ import org.jspecify.annotations.Nullable;
  * resources with it), publishes it, closes the one it replaced, and loads it. Retries stop at the first
  * loaded key set, after which the successful delegate's own background refresh keeps the keys current.
  * Attempts are strictly sequential — the next one is scheduled only once the previous one has
- * completed — so at most one is in flight per issuer, whatever the request rate.
+ * completed — so at most one is in flight per issuer, whatever the request rate. Every attempt that
+ * ends while the wrapper is open continues the sequence: an attempt whose delegate cannot be built,
+ * whose replaced delegate cannot be closed or whose load cannot be started counts as a failed attempt
+ * and schedules the next one, whatever was thrown. The sequence therefore ends only at a loaded key
+ * set or at {@link #close()}, never silently on the scheduler thread.
  * <p>
  * <strong>Bounded refresh on an unknown key id.</strong> An identity provider that replaces its signing
  * key abruptly issues tokens naming a key id the loaded key set does not hold, and the library's
  * background refresh picks the new key up only at its next interval. A lookup that neither the current
  * nor a retired delegate can answer therefore tries to claim the issuer's refresh window. The claim is
- * one compare-and-set on the next-allowed instant and is made when the lookup arrives, so at most one
- * refresh is scheduled per issuer per window whatever its outcome, the request rate and the number of
- * distinct key ids presented — any caller can present a token naming an arbitrary key id, so the bound
- * must not depend on what is asked for. The claimed refresh runs on the scheduler: it builds a fresh
- * delegate and loads it <em>off to the side</em>, while the current delegate keeps answering. A load
- * that fails, completes exceptionally, or yields a key set that does not hold the triggering key id
- * closes the fresh delegate and changes nothing, so a flood of invented key ids can neither displace
- * the loaded key set nor start the failed-load retry. Only a fresh delegate that holds the triggering
- * key id is published.
+ * one compare-and-set on the next-allowed reading of a monotonic clock and is made when the lookup
+ * arrives, so at most one refresh is scheduled per issuer per window whatever its outcome, the request
+ * rate and the number of distinct key ids presented — any caller can present a token naming an
+ * arbitrary key id, so the bound must not depend on what is asked for. The claimed refresh runs on the
+ * scheduler: it builds a fresh delegate and loads it <em>off to the side</em>, while the current
+ * delegate keeps answering. A load that fails, completes exceptionally, or yields a key set that does
+ * not hold the triggering key id closes the fresh delegate and changes nothing, so a flood of invented
+ * key ids can neither displace the loaded key set nor start the failed-load retry. Only a fresh
+ * delegate that holds the triggering key id is published.
  * <p>
  * <strong>The replaced key set stays valid for the grace period.</strong> A fresh library loader knows
  * only the identity provider's current keys, so publishing it would at once reject every token signed
@@ -88,6 +94,12 @@ import org.jspecify.annotations.Nullable;
  * dropped and closed on the scheduler. At most one retired delegate exists per issuer: a second
  * replacement inside the grace period closes the older one. A grace period of zero retires the replaced
  * delegate at once.
+ * <p>
+ * <strong>Durations are measured on a monotonic clock.</strong> The unknown-key-id window and the
+ * grace deadline are durations this wrapper enforces, not instants it reports, so both are read from a
+ * monotonic nanosecond source and compared overflow-safely. A step of the wall clock therefore neither
+ * lengthens nor shortens either of them. The last-loaded instant reported in the unknown-key-id WARN is
+ * the one value read from the wall clock, because it is reported as an instant.
  * <p>
  * <strong>Refresh and retry never overlap.</strong> A refresh is claimed only while a key set is
  * loaded, and the retry sequence — its pending attempt included — exists only while none is, so the
@@ -143,11 +155,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      *                     outcome of the last completed attempt
      * @param retired      the delegate an unknown-key-id refresh replaced, still answering lookups for
      *                     its own key ids; {@code null} when there is none
-     * @param retiredUntil the instant from which {@code retired} no longer answers; {@code null}
-     *                     exactly when {@code retired} is
+     * @param retiredUntil the monotonic-clock reading, in nanoseconds, from which {@code retired} no
+     *                     longer answers; meaningful only while {@code retired} is non-{@code null},
+     *                     and {@code 0} otherwise
      */
     private record Snapshot(JwksLoader delegate, KeySetState state, @Nullable JwksLoader retired,
-    @Nullable Instant retiredUntil) {
+    long retiredUntil) {
 
         /** The same snapshot with {@code state} for {@code delegate}; a retired delegate is kept. */
         Snapshot with(JwksLoader delegate, KeySetState state) {
@@ -156,7 +169,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
 
         /** The same snapshot without its retired delegate. */
         Snapshot withoutRetired() {
-            return new Snapshot(delegate, state, null, null);
+            return new Snapshot(delegate, state, null, 0L);
         }
     }
 
@@ -179,12 +192,16 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     private final Duration keyRotationGracePeriod;
     private final ScheduledExecutorService scheduler;
     private final InstantSource clock;
+    private final LongSupplier monotonicClock;
     private final AtomicReference<Snapshot> snapshot;
     private final AtomicReference<@Nullable SecurityEventCounter> eventCounter = new AtomicReference<>();
     private final AtomicReference<@Nullable ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<@Nullable ScheduledFuture<?>> pendingRetirement = new AtomicReference<>();
-    /** The earliest instant at which the next unknown key id may claim the window. */
-    private final AtomicReference<Instant> nextClaimAllowed = new AtomicReference<>(Instant.MIN);
+    /**
+     * The earliest monotonic-clock reading, in nanoseconds, at which the next unknown key id may claim
+     * the window. Starts at the reading taken at construction, so the first claim is admitted.
+     */
+    private final AtomicLong nextClaimAllowed;
     /** The instant this wrapper last observed a load attempt yield a key set. */
     private final AtomicReference<@Nullable Instant> lastLoaded = new AtomicReference<>();
     /** The fresh delegate of a refresh that is still loading off to the side. */
@@ -211,11 +228,11 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     RetryingJwksLoader(String issuerName, Supplier<JwksLoader> delegateFactory, Duration refreshInterval,
             Duration unknownKeyIdWindow, Duration keyRotationGracePeriod) {
         this(issuerName, delegateFactory, refreshInterval, unknownKeyIdWindow, keyRotationGracePeriod,
-                INITIAL_RETRY_DELAY, SharedScheduler.INSTANCE, InstantSource.system());
+                INITIAL_RETRY_DELAY, SharedScheduler.INSTANCE, InstantSource.system(), System::nanoTime);
     }
 
     /**
-     * The full constructor, exposing the retry timing, the scheduler and the clock to tests.
+     * The full constructor, exposing the retry timing, the scheduler and both clocks to tests.
      *
      * @param issuerName             the configured issuer's logical name, for diagnostics only
      * @param delegateFactory        builds a fresh library loader; invoked once here, eagerly
@@ -226,14 +243,17 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * @param initialRetryDelay      the delay before the first retry
      * @param scheduler              the scheduler running the retries, the refreshes and the retirement
      *                               of a replaced delegate
-     * @param clock                  the source of the instants the window, the grace deadline and the
-     *                               last-loaded instant are read from
+     * @param clock                  the source of the last-loaded instant, the one value this wrapper
+     *                               reports as an instant
+     * @param monotonicClock         a monotonic nanosecond source ({@link System#nanoTime()} in
+     *                               production) the unknown-key-id window and the grace deadline are
+     *                               measured on; only the difference between two readings is meaningful
      */
-    // The eight parameters are the loader's complete timing surface; tests need each one separately.
+    // The nine parameters are the loader's complete timing surface; tests need each one separately.
     @SuppressWarnings("java:S107")
     RetryingJwksLoader(String issuerName, Supplier<JwksLoader> delegateFactory, Duration refreshInterval,
             Duration unknownKeyIdWindow, Duration keyRotationGracePeriod, Duration initialRetryDelay,
-            ScheduledExecutorService scheduler, InstantSource clock) {
+            ScheduledExecutorService scheduler, InstantSource clock, LongSupplier monotonicClock) {
         this.issuerName = Objects.requireNonNull(issuerName, "issuerName");
         this.delegateFactory = Objects.requireNonNull(delegateFactory, "delegateFactory");
         Objects.requireNonNull(refreshInterval, "refreshInterval");
@@ -242,23 +262,25 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         this.initialRetryDelay = Objects.requireNonNull(initialRetryDelay, "initialRetryDelay");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.monotonicClock = Objects.requireNonNull(monotonicClock, "monotonicClock");
+        this.nextClaimAllowed = new AtomicLong(monotonicClock.getAsLong());
         this.maxRetryDelay = refreshInterval.isPositive() && refreshInterval.compareTo(MAX_RETRY_DELAY) < 0
                 ? refreshInterval
                 : MAX_RETRY_DELAY;
-        JwksLoader first = buildDelegate(delegateFactory);
-        this.snapshot = new AtomicReference<>(new Snapshot(first, KeySetState.NOT_LOADED, null, null));
+        JwksLoader first = buildDelegate();
+        this.snapshot = new AtomicReference<>(new Snapshot(first, KeySetState.NOT_LOADED, null, 0L));
     }
 
     /**
-     * Builds one fresh delegate. Static, and handed the factory, so the constructor can call it before
-     * the instance is complete.
+     * Builds one fresh delegate from {@link #delegateFactory}. The constructor calls it as well, once
+     * the factory field is assigned; it reads no other field, so the incomplete instance is safe to
+     * use there.
      *
-     * @param delegateFactory the factory to build the delegate with
      * @return the fresh delegate, never {@code null}
      * @throws NullPointerException if the factory yields {@code null}; whatever the factory itself
      *                              throws is propagated unchanged
      */
-    private static JwksLoader buildDelegate(Supplier<JwksLoader> delegateFactory) {
+    private JwksLoader buildDelegate() {
         return Objects.requireNonNull(delegateFactory.get(), "delegate");
     }
 
@@ -349,7 +371,15 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         return status == null ? LoaderStatus.ERROR : status;
     }
 
+    /**
+     * Schedules retry number {@code retry}, unless the wrapper is closed. The closed state is read
+     * both before scheduling and again after the future is published, so a {@link #close()} racing
+     * this call cannot leave a retry behind.
+     */
     private void scheduleRetry(int retry) {
+        if (closed.get()) {
+            return;
+        }
         Duration delay = backoffDelay(retry, initialRetryDelay, maxRetryDelay);
         LOGGER.warn(ConfigLogMessages.WARN.JWKS_KEY_SET_RETRY, issuerName, delay.toMillis());
         pendingRetry.set(scheduler.schedule(() -> runRetry(retry), delay.toMillis(), TimeUnit.MILLISECONDS));
@@ -362,32 +392,54 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     /**
      * One retry: builds a fresh delegate, publishes it in place of the current one, closes the
      * replaced delegate, and loads the fresh one. Runs on the scheduler only.
+     * <p>
+     * Every exit that neither hands the fresh delegate's load to {@link #settle} nor finds the wrapper
+     * closed schedules exactly one next attempt, whatever ended it. There is no in-flight flag to
+     * release here: what an escaping failure would cost is the retry sequence itself, because nothing
+     * else ever schedules the next attempt and the issuer would stay {@link KeySetState#FAILED} until
+     * the next restart. The anticipated refusals ({@link GatewayException},
+     * {@link IllegalArgumentException}, {@link IllegalStateException}) schedule from their own catch;
+     * any other failure — a {@code null} delegate, or any other exception or error from building the
+     * delegate, from closing the replaced one or from starting the load — schedules from the
+     * {@code finally} and still propagates. A closed wrapper schedules nothing on any path.
      */
     private void runRetry(int retry) {
         SecurityEventCounter counter = eventCounter.get();
         if (closed.get() || counter == null) {
             return;
         }
-        JwksLoader fresh;
+        boolean continued = false;
         try {
-            fresh = buildDelegate(delegateFactory);
+            JwksLoader fresh = buildDelegate();
+            Snapshot replaced = snapshot.getAndUpdate(current -> current.with(fresh, current.state()));
+            closeDelegate(replaced.delegate());
+            if (closed.get()) {
+                closeDelegate(fresh);
+                return;
+            }
+            load(fresh, counter, retry);
+            continued = true;
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
             // The factory refused: the gateway's own loader-config assembly (url, tls_profile
             // resolution) reports GatewayException, the library's config builder and loader
-            // construction report IllegalArgumentException / IllegalStateException. Count it as a
-            // failed attempt and keep retrying — never let it escape onto the scheduler thread,
-            // which would silently end the retry sequence.
-            LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built for retry %s", issuerName, retry);
+            // construction report IllegalArgumentException / IllegalStateException — the same
+            // refusals runRefresh expects, here too from closing the replaced delegate or starting
+            // the load. Count it as a failed attempt and keep retrying.
+            LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built or started for retry %s",
+                    issuerName, retry);
+            // Set before scheduling, so a scheduler that refuses cannot make the finally try again.
+            continued = true;
             scheduleRetry(retry + 1);
-            return;
+        } finally {
+            if (!continued && !closed.get()) {
+                // A failure nobody anticipated is escaping onto the scheduler thread. Keep the
+                // sequence alive; the scheduleRetry WARN already reports the episode, so the
+                // issuer name and the retry number are all this records.
+                LOGGER.debug("JWKS retry %s for issuer '%s' ended unexpectedly; scheduling the next attempt",
+                        retry, issuerName);
+                scheduleRetry(retry + 1);
+            }
         }
-        Snapshot replaced = snapshot.getAndUpdate(current -> current.with(fresh, current.state()));
-        closeDelegate(replaced.delegate());
-        if (closed.get()) {
-            closeDelegate(fresh);
-            return;
-        }
-        load(fresh, counter, retry);
     }
 
     /**
@@ -407,10 +459,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             return;
         }
         boolean refreshEnabled = unknownKeyIdWindow.isPositive();
-        Instant now = clock.instant();
-        Instant allowed = nextClaimAllowed.get();
-        Instant next = now.plus(refreshEnabled ? unknownKeyIdWindow : DEFAULT_UNKNOWN_KEY_ID_WINDOW);
-        if (now.isBefore(allowed) || !nextClaimAllowed.compareAndSet(allowed, next)) {
+        long now = monotonicClock.getAsLong();
+        long allowed = nextClaimAllowed.get();
+        long next = now + (refreshEnabled ? unknownKeyIdWindow : DEFAULT_UNKNOWN_KEY_ID_WINDOW).toNanos();
+        // Monotonic readings are compared by their difference, never directly, so a wrap of the
+        // nanosecond counter cannot open or close the window.
+        if (now - allowed < 0 || !nextClaimAllowed.compareAndSet(allowed, next)) {
             LOGGER.debug("Unknown key id for issuer '%s' inside an already claimed window", issuerName);
             return;
         }
@@ -434,27 +488,43 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * The in-flight flag is released on every path that does not hand the fresh delegate to
      * {@link #settleRefresh}, whatever ended it. A refresh is started by any caller that presents an
      * unknown key id, so a flag left set by a failure nobody anticipated would switch the refresh off
-     * for this issuer until the next restart, and nothing would report it.
+     * for this issuer until the next restart.
+     * <p>
+     * Such a failure switches nothing off any more, but it still means a key change at the identity
+     * provider may go unnoticed until the next window, and nothing else reports that. Every exit that
+     * is neither handed to {@link #settleRefresh}, nor one of the anticipated refusals
+     * ({@link GatewayException}, {@link IllegalArgumentException}, {@link IllegalStateException}, which
+     * stay {@code DEBUG}), nor the return of a closed wrapper therefore records
+     * {@link ConfigLogMessages.WARN#JWKS_REFRESH_FAILED} once, from the same {@code finally} that
+     * releases the flag — so an error is covered without catching {@link Throwable}, and one refresh
+     * yields at most one record. The claim bounds refreshes to one per issuer per window, so the
+     * record is bounded the same way.
      */
     private void runRefresh(String kid) {
         JwksLoader fresh = null;
         boolean handedToSettle = false;
+        // True on every exit the WARN must not report: handed to settleRefresh, an anticipated
+        // refusal, or a closed wrapper. Only a failure nobody anticipated leaves it false.
+        boolean accountedFor = false;
         try {
             SecurityEventCounter counter = eventCounter.get();
             if (closed.get() || counter == null) {
+                accountedFor = true;
                 return;
             }
-            fresh = buildDelegate(delegateFactory);
+            fresh = buildDelegate();
             JwksLoader loading = fresh;
             loadingRefresh.set(loading);
             loading.initJWKSLoader(counter)
                     .whenComplete((status, failure) -> settleRefresh(loading, kid, failure == null ? status : null));
             handedToSettle = true;
+            accountedFor = true;
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
             // The same refusals runRetry handles. A refresh that cannot be built or started changes
             // nothing: the loaded key set stays published and the next window may try again.
             LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built or started for a refresh",
                     issuerName);
+            accountedFor = true;
         } finally {
             if (!handedToSettle) {
                 if (fresh != null) {
@@ -462,6 +532,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
                     closeDelegate(fresh);
                 }
                 refreshInFlight.set(false);
+            }
+            if (!accountedFor) {
+                // A failure nobody anticipated is escaping onto the scheduler thread, which records
+                // nothing of it. The record names the issuer only: the throwable's message is not
+                // under the gateway's control and may carry a URL.
+                LOGGER.warn(ConfigLogMessages.WARN.JWKS_REFRESH_FAILED, issuerName);
             }
         }
     }
@@ -493,12 +569,12 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
      * that was already retired is closed, so at most one exists.
      */
     private void publishRefreshed(JwksLoader fresh) {
-        Instant now = clock.instant();
         boolean retain = keyRotationGracePeriod.isPositive();
-        lastLoaded.set(now);
+        lastLoaded.set(clock.instant());
+        long retiredUntil = retain ? monotonicClock.getAsLong() + keyRotationGracePeriod.toNanos() : 0L;
         Snapshot replaced = snapshot.getAndUpdate(current -> retain
-                ? new Snapshot(fresh, KeySetState.LOADED, current.delegate(), now.plus(keyRotationGracePeriod))
-                : new Snapshot(fresh, KeySetState.LOADED, null, null));
+                ? new Snapshot(fresh, KeySetState.LOADED, current.delegate(), retiredUntil)
+                : new Snapshot(fresh, KeySetState.LOADED, null, 0L));
         cancel(pendingRetirement.getAndSet(null));
         JwksLoader olderRetired = replaced.retired();
         if (olderRetired != null) {
@@ -582,8 +658,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             return key;
         }
         JwksLoader retired = current.retired();
-        Instant retiredUntil = current.retiredUntil();
-        if (retired != null && retiredUntil != null && clock.instant().isBefore(retiredUntil)) {
+        if (retired != null && monotonicClock.getAsLong() - current.retiredUntil() < 0) {
             Optional<KeyInfo> retiredKey = retired.getKeyInfo(kid);
             if (retiredKey.isPresent()) {
                 return retiredKey;

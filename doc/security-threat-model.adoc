@@ -1255,12 +1255,19 @@ refresh, 600 seconds by default. The gateway refreshes, and bounds the refresh
   it displaces neither the loaded key set nor a replaced one still inside its key-rotation grace
   period, and it cannot end that grace period early. A failed refresh changes nothing either and
   does not start the failed-load retry.
+
+* *A clock step moves neither bound.* The window and the grace deadline of
+  `jwks.key_rotation_grace_period_seconds` (`0`-`3600`) are durations the gateway enforces, so both
+  are measured on a monotonic clock, never on the wall clock. A backward step of the wall clock
+  therefore cannot lengthen the refresh blackout, and a forward step cannot open the window early or
+  end the grace period before tokens signed with the previous key have had their configured time.
+
 * *The record is not a log-amplification lever.* `WARN ApiSheriff-136` is emitted by the request
   that claims the window and by no other, so it is bounded by the same window: at most one record
   per issuer per window, every repeat at `DEBUG` (CWE-779,
   link:adr/0051-A_rejection_on_an_unauthenticated_reserved_endpoint_is_recorded_from_a_closed_vocabulary_at_a_level_keyed_on_attacker-reachability.adoc[ADR-0051]).
-  It carries the issuer's configured name and an instant, never the key id the caller chose, the
-  JWKS URL or key material.
+  It carries the issuer's configured name and the wall-clock instant of the gateway's last load of
+  the key set, never the key id the caller chose, the JWKS URL or key material.
 
 Where the refresh may go is unchanged: it is a load by the same library loader configuration as the
 first one, so the egress allowance of <<gw-05>> and the TLS posture of <<gw-06>> apply to it as they
@@ -1282,7 +1289,8 @@ keeps running its own background refresh beside the current one; at most one rep
 held per issuer.
 
 *Status of this control:* COVERED. `RetryingJwksLoaderTest` drives the window, the discarded and the
-published refresh, the grace period and the record with a controlled clock and scheduler, and
+published refresh, the grace period, steps of the wall clock in both directions and the record with
+controlled clocks and scheduler, and
 `ConfigValidatorJwksRefreshTest` pins the 5 s floor. Against the native image, `JwksKeyRotationIT`
 sends 200 requests naming 200 distinct invented key ids over more than one window and asserts that
 the identity provider recorded no more key-set requests, and the gateway no more `ApiSheriff-136`
@@ -3347,6 +3355,7 @@ outstanding hardening work (next section).
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
+| <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED

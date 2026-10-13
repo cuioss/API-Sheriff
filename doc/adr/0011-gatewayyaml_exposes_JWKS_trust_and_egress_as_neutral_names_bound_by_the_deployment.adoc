@@ -1,7 +1,9 @@
 = ADR-0011: gateway.yaml exposes JWKS trust and egress as neutral names bound by the deployment
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
@@ -39,6 +41,7 @@ in its ordinary deployment shapes:
   reach a Kubernetes ClusterIP IdP (10.96.0.0/12), any Docker-network deployment, or an on-prem
   IdP on RFC1918. That is backwards for a gateway, whose normal position is inside the same
   private network as the identity provider it trusts.
+
 * *TLS trust.* The JWKS client verifies the IdP's server certificate against the JVM default trust
   store. An IdP fronted by an internal or corporate CA -- or a cluster-internal IdP using the
   cluster's own authority -- therefore fails PKIX path building. The key set never loads and every
@@ -74,6 +77,7 @@ Three mechanisms realise this.
 * `allowed_egress_hosts` -- a host-exact SSRF egress allowlist. Absent or empty preserves
   `EgressPolicy.secureDefault()`; each entry exempts exactly one host, with no wildcard or suffix
   form.
+
 * `tls_profile` -- the name of a logical trust profile used to verify the IdP's certificate.
   Absent means the JVM default trust store, preserving prior behaviour exactly.
 
@@ -120,12 +124,16 @@ request.
 
 * API Sheriff can validate tokens against the IdP deployments it will actually be placed next to:
   cluster-internal, Docker-network, and on-prem behind an internal CA.
+
 * Trust-store passwords never appear in `gateway.yaml`. The document operators edit, review, and
   commit stays secret-free.
+
 * API Sheriff does not re-implement key-store loading, format handling, or rotation; it consumes
   the runtime's result rather than growing a second, weaker implementation.
+
 * The same `gateway.yaml` moves across environments that bind one profile name to different
   anchors, with no edit.
+
 * A change of runtime invalidates one component, not every user's configuration.
 * Both widenings are opt-in and default-preserving: an issuer that omits them behaves exactly as
   it did before either existed, so the secure default is never widened by accident.
@@ -139,6 +147,7 @@ exempted. It still holds for `tls_profile`.
 * Configuring a private-network IdP behind an internal CA requires editing *two* places -- the
   profile name in `gateway.yaml` and the binding in deployment configuration. The indirection is
   the cost of portability and secret separation.
+
 * The binding is not visible in `gateway.yaml`, so a reader of that document alone cannot tell
   which anchors a profile resolves to. The startup diagnostic and the configuration documentation
   are the compensating mechanisms.
@@ -150,6 +159,7 @@ exempted. It still holds for `tls_profile`.
   private-network IdP behind an internal CA needs both, and configuring only one yields a failure
   that looks like the other. Mitigated by documenting the pair together and by their distinct,
   specific error messages.
+
 * *Egress widening is a real attack-surface increase.* Each `allowed_egress_hosts` entry exempts a
   host from an SSRF guard. Mitigated by host-exactness (no wildcard or suffix form), so the
   widening cannot be broadened by a typo, and by defaulting to no exemption at all.
@@ -269,11 +279,13 @@ refuse-to-start posture is unchanged.
 * *Absent or empty derives the allowance.* The gateway passes exactly one host to the JWKS loader's
   egress allowance: the host of the issuer's own `jwks.url`, spelled as the URL spells it, with any
   port dropped. The issuer's key endpoint is then reachable wherever it resolves.
+
 * *A declared list is authoritative.* A non-empty list is passed as declared, entry by entry,
   host-exact with no wildcard or suffix form, and the `jwks.url` host is never merged into it. A list
   naming a different host keeps the `jwks.url` host refused whenever it resolves to a private address.
   Declaring the list is how an operator pins the allowance, so that a later `jwks.url` edit to another
   host fails closed instead of silently moving the exemption.
+
 * *Unusable declarations are boot refusals.* A blank or whitespace-only entry and a `host:port` entry
   of an `http` issuer are refused at boot, naming the entry; a bare IPv6 literal is admitted. An
   `http` issuer that declares no list and whose `jwks.url` names no host has nothing to derive from
@@ -334,14 +346,17 @@ of `token_validation.issuers[].jwks`:
 
 * *Neutral names.* Both keys are spelled in `gateway.yaml`'s own snake-case vocabulary and state
   their unit. Neither the keys nor the schema name the library or its builder.
+
 * *Current behaviour is preserved.* A key is passed to the library's loader configuration only when
   it is declared. An omitted key leaves the builder untouched, so the library's own default applies
   and the gateway keeps no second copy of it. An issuer that declares neither key behaves as it did
   before either existed.
+
 * *Bounded at boot, by the gateway.* A value outside its range is a boot refusal naming the issuer,
   the key and the range, in line with section 4. The ranges are the gateway's: the library admits
   every non-negative value for both knobs, so every value the gateway admits is one the library
   accepts, and the gateway refuses values the library would take.
+
 * *Refused where they cannot act.* Either key on a `source: file` issuer is a boot refusal. A file
   source is read once and never refreshed, so the key would parse and change nothing.
 
@@ -359,11 +374,15 @@ link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the
 * link:../configuration.adoc[Configuration reference] -- the `token_validation` surface, the
   `allowed_egress_hosts` and `tls_profile` field contracts, and the trust-profile mapping,
   worked example, and failure mode
+
 * link:../security-threat-model.adoc[Security threat model] -- GW-05 and BFF-07, which record the
   egress guard, the derived allowance of Amendment A1 and its accepted trade-off
+
 * link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
   -- the posture on upstream security defaults, which Amendment A1 does not engage
+
 * link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]
   -- the bounded refresh on an unknown key id, and the two keys Amendment A2 exposes
+
 * link:0005-module-structure.adoc[ADR-0005] -- the framework-bound edge seam that keeps
   runtime-specific assembly at the boundary rather than in the framework-agnostic core

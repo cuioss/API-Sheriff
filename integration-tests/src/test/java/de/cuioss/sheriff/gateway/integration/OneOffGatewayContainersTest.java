@@ -66,10 +66,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>
  * <strong>The documented host ports.</strong> {@link DocumentedHostPorts} reads the host-port table of
  * {@code doc/development/integration-test-topology.adoc} out of the note at runtime and compares it
- * with the ports the same sources assign. It holds no copy of either side: the ports come from the
- * sources' own declarations and the expectation from the note, so the table cannot fall behind a
- * suite that adds or moves a port. It compares what is declared; whether a port is free on a host is
- * not something a source scan can say.
+ * with the ports the same sources assign, and its management column with the loopback port the
+ * harness pairs with each application port. It holds no copy of either side: the ports come from the
+ * sources' own declarations and the harness, and the expectation from the note, so the table cannot
+ * fall behind a suite that adds or moves a port. It compares what is declared; whether a port is free
+ * on a host is not something a source scan can say.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -156,6 +157,22 @@ class OneOffGatewayContainersTest {
             }
         }
         return published;
+    }
+
+    /**
+     * Whether a {@code -p} value leaves the host port to docker: a bare container port ({@code 9000}),
+     * or an address with an empty host port ({@code 127.0.0.1::9000}, {@code [::1]::9000}).
+     */
+    private static boolean leavesHostPortToDocker(String publication) {
+        String withoutIpv6Host = publication.startsWith("[")
+                ? publication.substring(publication.indexOf(']') + 1)
+                : publication;
+        String[] parts = withoutIpv6Host.split(":", -1);
+        return switch (parts.length) {
+            case 1 -> true;
+            case 2 -> parts[0].isEmpty();
+            default -> parts[parts.length - 2].isEmpty();
+        };
     }
 
     @Nested
@@ -260,10 +277,45 @@ class OneOffGatewayContainersTest {
                     "harness-test-network", descriptor, 10498);
 
             assertAll("bearer-only gateway",
-                    () -> assertEquals(List.of("10498:8443", SECOND_LOOPBACK), published(arguments)),
+                    () -> assertEquals(List.of("10498:8443", "127.0.0.1:19498:9000"), published(arguments)),
                     () -> assertEquals(1, arguments.stream().filter("--network"::equals).count(),
                             "the gateway joins exactly one network"),
                     () -> assertEquals(OneOffGatewayContainers.IMAGE, arguments.getLast()));
+        }
+
+        @ParameterizedTest(name = "application port {0}")
+        @ValueSource(ints = {10459, 10464, 10471})
+        @DisplayName("a gateway publishes its management interface on loopback at the application port plus the offset")
+        void managementPortIsTheFixedPartnerOfTheApplicationPort(int applicationHostPort) {
+            int expected = applicationHostPort + OneOffGatewayContainers.MANAGEMENT_PORT_OFFSET;
+
+            String publication = OneOffGatewayContainers.managementPortPublication(applicationHostPort);
+
+            assertAll("management publication",
+                    () -> assertEquals(expected, OneOffGatewayContainers.managementHostPort(applicationHostPort)),
+                    () -> assertEquals("127.0.0.1:" + expected + ":9000", publication),
+                    () -> assertEquals(List.of(publication),
+                            OneOffGatewayContainers.loopbackPublications(List.of("-p", publication)),
+                            "the management publication is a loopback publication"));
+        }
+
+        @Test
+        @DisplayName("no gateway the harness starts leaves a host port for docker to assign")
+        void gatewaysPublishOnlyFixedHostPorts() throws Exception {
+            Path descriptor = writeReadableByOthers("fixed-ports/descriptor.yaml", DESCRIPTOR_CONTENT);
+            List<String> publications = new ArrayList<>(published(OneOffGatewayContainers.gatewayRunArguments(
+                    "harness-test-bearer-gateway", "harness-test-network", descriptor, 10498)));
+            publications.addAll(published(
+                    OneOffGatewayContainers.bffGatewayRunArguments(gatewayOver(descriptor), List.of(), List.of())));
+
+            List<String> assigned = publications.stream().filter(OneOffGatewayContainersTest::leavesHostPortToDocker)
+                    .toList();
+
+            assertAll("fixed host ports",
+                    () -> assertEquals(4, publications.size(), () -> "publications: " + publications),
+                    () -> assertEquals(List.of(), assigned, "a host port docker assigns is drawn from the host's "
+                            + "ephemeral range, where an earlier container of the run may have left the number "
+                            + "unusable; a gateway publishes on fixed host ports only"));
         }
 
         @Test
@@ -370,7 +422,8 @@ class OneOffGatewayContainersTest {
 
         private static final String TABLE_DELIMITER = "|===";
         private static final String CELL_SEPARATOR = "|";
-        private static final List<String> HEADER = List.of("Host port", "Gateway container", "Suite");
+        private static final List<String> HEADER =
+                List.of("Application port", "Management port", "Gateway container", "Suite");
 
         /** Backtick-delimited span — the table writes every port and every class name as monospace. */
         private static final Pattern MONOSPACE_SPAN = Pattern.compile("`([^`]+)`");
@@ -429,9 +482,29 @@ class OneOffGatewayContainersTest {
         }
 
         @Test
-        @DisplayName("no host port stands in the table twice")
+        @DisplayName("each row's management ports are the harness's fixed partners of its application ports")
+        void managementPortsArePairedWithTheApplicationPorts() throws Exception {
+            List<String> mismatched = new ArrayList<>();
+            for (Row row : rows()) {
+                List<Integer> paired = row.ports().stream().map(OneOffGatewayContainers::managementHostPort).toList();
+                if (!paired.equals(row.managementPorts())) {
+                    mismatched.add("application " + row.ports() + " lists management " + row.managementPorts()
+                            + ", the harness publishes " + paired);
+                }
+            }
+
+            assertEquals(List.of(), mismatched, () -> "the management column of the '" + TAG + "' block of " + NOTE
+                    + " must list, in order, the loopback port OneOffGatewayContainers.managementHostPort pairs "
+                    + "with each application port of the row");
+        }
+
+        @Test
+        @DisplayName("no host port stands in the table twice, in either column")
         void tablePortsAreDistinct() throws Exception {
-            List<Integer> ports = documentedPorts();
+            List<Integer> ports = new ArrayList<>(documentedPorts());
+            for (Row row : rows()) {
+                ports.addAll(row.managementPorts());
+            }
 
             List<Integer> repeated = ports.stream()
                     .filter(port -> ports.indexOf(port) != ports.lastIndexOf(port)).distinct().toList();
@@ -473,9 +546,10 @@ class OneOffGatewayContainersTest {
         }
 
         /**
-         * The rows of the note's host-port table: the ports of the first cell and the class names of
-         * the third. Fails when the note or its tagged block is missing, when the block holds no
-         * table of the expected three columns, and when a row gives no port or names no class.
+         * The rows of the note's host-port table: the application ports of the first cell, the
+         * management ports of the second and the class names of the last. Fails when the note or its
+         * tagged block is missing, when the block holds no table of the expected columns, and when a
+         * row gives no port in either port cell or names no class.
          */
         private static List<Row> rows() throws IOException {
             Path note = note();
@@ -507,14 +581,19 @@ class OneOffGatewayContainersTest {
             List<Row> rows = new ArrayList<>();
             for (int index = columns; index < cells.size(); index += columns) {
                 String portCell = cells.get(index);
+                String managementCell = cells.get(index + 1);
                 String suiteCell = cells.get(index + columns - 1);
                 List<Integer> ports = spans(portCell, PORT_NUMBER).stream().map(Integer::valueOf).toList();
+                List<Integer> managementPorts =
+                        spans(managementCell, PORT_NUMBER).stream().map(Integer::valueOf).toList();
                 Set<String> classes = new TreeSet<>(spans(suiteCell, CLASS_NAME));
                 assertFalse(ports.isEmpty(), () -> "a row of the table in " + note
                         + " gives no host port in its first cell: " + portCell);
+                assertFalse(managementPorts.isEmpty(), () -> "a row of the table in " + note
+                        + " gives no management port in its second cell: " + managementCell);
                 assertFalse(classes.isEmpty(), () -> "a row of the table in " + note
                         + " names no class in its suite cell: " + suiteCell);
-                rows.add(new Row(ports, classes));
+                rows.add(new Row(ports, managementPorts, classes));
             }
             return rows;
         }
@@ -588,8 +667,11 @@ class OneOffGatewayContainersTest {
             return assignments;
         }
 
-        /** A row of the host-port table: the ports of its first cell, the class names of its last. */
-        private record Row(List<Integer> ports, Set<String> classes) {
+        /**
+         * A row of the host-port table: the application ports of its first cell, the management ports
+         * of its second, the class names of its last.
+         */
+        private record Row(List<Integer> ports, List<Integer> managementPorts, Set<String> classes) {
         }
 
         /** A fixed host port and the class whose source assigns it. */
@@ -726,9 +808,9 @@ class OneOffGatewayContainersTest {
             List<String> arguments = OneOffGatewayContainers.bffGatewayRunArguments(
                     gatewayOver(descriptor), List.of(), List.of());
 
-            assertEquals(List.of("10499:8443", "127.0.0.1::9000"), published(arguments),
+            assertEquals(List.of("10499:8443", "127.0.0.1:19499:9000"), published(arguments),
                     "the application port carries no host address, so it is not bound to loopback alone; "
-                            + "the management port stays on a loopback port docker assigns");
+                            + "the management port is on loopback, at the fixed port paired with the application port");
         }
 
         @Test

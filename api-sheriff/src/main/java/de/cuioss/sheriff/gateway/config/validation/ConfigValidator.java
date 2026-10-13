@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -186,15 +187,10 @@ import org.jspecify.annotations.Nullable;
  * bare IPv6 literal is not a {@code host:port} entry and is admitted). The schema declares the entries
  * unrestricted strings; this rule is the single enforcing authority.
  * <p>
- * The JWKS refresh rule bounds the three refresh keys of an issuer's {@code jwks} block and refuses
- * each of them on a {@code file} source, where it would parse and never act. The settled ranges are:
- * {@code refresh_interval_seconds} {@code 60..86400}, {@code key_rotation_grace_period_seconds}
- * {@code 0..3600} and {@code unknown_kid_refresh_window_seconds} {@code 5..3600}. The first two are
- * handed to the token library, so both ranges were checked against what token-sheriff 0.9.6 itself
- * accepts: its {@code HttpJwksLoaderConfig} builder admits every refresh interval of zero or more and
- * every non-negative grace period, and declares no upper bound for either, so neither range needed
- * narrowing and every value this rule admits is one the library accepts. The third key is
- * gateway-owned. The schema declares the three keys as unrestricted integers; this rule is the single
+ * The JWKS refresh rule bounds the refresh keys of an issuer's {@code jwks} block and refuses each of
+ * them on a {@code file} source, where it would parse and never act. The keys and their settled ranges
+ * are defined once, by {@link JwksRefreshKey}, whose Javadoc records why every range is one the token
+ * library accepts. The schema declares the keys as unrestricted integers; this rule is the single
  * enforcing authority.
  * <p>
  * The application-portal rules ({@link PortalRules}) add four more, run after every rule above: a
@@ -396,18 +392,6 @@ public final class ConfigValidator {
      * the delimiters that follow them, so no give-back could ever succeed.
      */
     private static final Pattern HOST_WITH_PORT = Pattern.compile("[^:\\[\\]]*+:\\d++|\\[[^\\]]*+\\]:\\d++");
-
-    /** The admitted range of {@code jwks.refresh_interval_seconds}; see {@link #validateJwksRefresh}. */
-    private static final int JWKS_REFRESH_INTERVAL_MIN_SECONDS = 60;
-    private static final int JWKS_REFRESH_INTERVAL_MAX_SECONDS = 86_400;
-
-    /** The admitted range of {@code jwks.key_rotation_grace_period_seconds}. */
-    private static final int JWKS_GRACE_PERIOD_MIN_SECONDS = 0;
-    private static final int JWKS_GRACE_PERIOD_MAX_SECONDS = 3_600;
-
-    /** The admitted range of {@code jwks.unknown_kid_refresh_window_seconds}. */
-    private static final int JWKS_UNKNOWN_KID_WINDOW_MIN_SECONDS = 5;
-    private static final int JWKS_UNKNOWN_KID_WINDOW_MAX_SECONDS = 3_600;
 
     /** The only schemes an {@code allow_external} redirect location may carry. */
     private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
@@ -925,19 +909,14 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: the three JWKS refresh keys of an issuer are bounded, and none of them may be declared on
-     * a {@code file} source.
+     * Rule: the JWKS refresh keys of an issuer are bounded, and none of them may be declared on a
+     * {@code file} source.
      * <p>
-     * The admitted ranges are {@code refresh_interval_seconds} {@code 60..86400},
-     * {@code key_rotation_grace_period_seconds} {@code 0..3600} and
-     * {@code unknown_kid_refresh_window_seconds} {@code 5..3600}. The first two are passed through to
-     * the token library; both ranges were checked against the value checks of token-sheriff 0.9.6's
-     * {@code HttpJwksLoaderConfig} builder, which admits a refresh interval of zero or more and any
-     * non-negative grace period and declares no upper bound, so every value admitted here is a value
-     * the library accepts. The lower bound of the window is what bounds the cost of a flood of tokens
-     * naming arbitrary key ids: at most one JWKS fetch per issuer per window.
+     * The keys and the range each admits are defined once, by {@link JwksRefreshKey}, whose Javadoc
+     * records why each range is safe to hand to the token library; this rule iterates that definition
+     * rather than restating it.
      * <p>
-     * A {@code file} source is read once and never refreshed, so any of the three keys declared there
+     * A {@code file} source is read once and never refreshed, so any of the keys declared there
      * would parse and never act; it is refused at the key's own pointer rather than silently ignored.
      * On a {@code file} source the value itself is not range-checked — the key is refused whatever it
      * holds.
@@ -961,32 +940,27 @@ public final class ConfigValidator {
                 continue;
             }
             boolean http = JWKS_SOURCE_HTTP.equals(jwks.source());
-            checkJwksRefreshKey(issuer, index, http, "refresh_interval_seconds", jwks.refreshIntervalSeconds(),
-                    JWKS_REFRESH_INTERVAL_MIN_SECONDS, JWKS_REFRESH_INTERVAL_MAX_SECONDS, errors);
-            checkJwksRefreshKey(issuer, index, http, "key_rotation_grace_period_seconds",
-                    jwks.keyRotationGracePeriodSeconds(), JWKS_GRACE_PERIOD_MIN_SECONDS,
-                    JWKS_GRACE_PERIOD_MAX_SECONDS, errors);
-            checkJwksRefreshKey(issuer, index, http, "unknown_kid_refresh_window_seconds",
-                    jwks.unknownKidRefreshWindowSeconds(), JWKS_UNKNOWN_KID_WINDOW_MIN_SECONDS,
-                    JWKS_UNKNOWN_KID_WINDOW_MAX_SECONDS, errors);
+            for (JwksRefreshKey refreshKey : JwksRefreshKey.values()) {
+                checkJwksRefreshKey(issuer, index, http, refreshKey, refreshKey.declaredIn(jwks), errors);
+            }
         }
     }
 
     /**
      * Reviews one JWKS refresh key of one issuer; see {@link #validateJwksRefresh} for the rules.
      *
-     * @param http     whether the issuer's {@code jwks.source} is {@code http}
-     * @param key      the snake-case key as spelled in {@code gateway.yaml}
-     * @param declared the declared value, {@code null} when the key is omitted
+     * @param http       whether the issuer's {@code jwks.source} is {@code http}
+     * @param refreshKey the key under review, carrying its {@code gateway.yaml} spelling and admitted range
+     * @param declared   the declared value, {@code null} when the key is omitted
      */
-    // java:S107 — one call per key keeps the three ranges side by side at the single call site; a
-    // parameter object would exist for this one private helper only.
-    @SuppressWarnings("java:S107")
-    private static void checkJwksRefreshKey(IssuerConfig issuer, int index, boolean http, String key,
-            @Nullable Integer declared, int minimum, int maximum, List<ConfigError> errors) {
+    private static void checkJwksRefreshKey(IssuerConfig issuer, int index, boolean http, JwksRefreshKey refreshKey,
+            @Nullable Integer declared, List<ConfigError> errors) {
         if (declared == null) {
             return;
         }
+        String key = refreshKey.key();
+        int minimum = refreshKey.minimum();
+        int maximum = refreshKey.maximum();
         String pointer = "/token_validation/issuers/%d/jwks/%s".formatted(index, key);
         String issuerName = renderForMessage(issuer.name());
         if (!http) {
@@ -1000,6 +974,81 @@ public final class ConfigValidator {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "issuer '%s' jwks.%s %d is outside the admitted range %d to %d"
                             .formatted(issuerName, key, declared, minimum, maximum)));
+        }
+    }
+
+    /**
+     * The JWKS refresh keys of an issuer's {@code jwks} block, each with the inclusive range of seconds
+     * it admits — the single definition both {@link #validateJwksRefresh} enforces and the boot-validation
+     * list of {@code doc/configuration.adoc} is bound to by a contract test, so a key added here or a range
+     * changed here fails that test until the documentation moves with it.
+     * <p>
+     * {@link #REFRESH_INTERVAL} and {@link #KEY_ROTATION_GRACE_PERIOD} are handed to the token library;
+     * both ranges were checked against the value checks of token-sheriff 0.9.6's
+     * {@code HttpJwksLoaderConfig} builder, which admits a refresh interval of zero or more and any
+     * non-negative grace period and declares no upper bound, so every value admitted here is a value the
+     * library accepts. {@link #UNKNOWN_KID_REFRESH_WINDOW} is gateway-owned; its lower bound is what bounds
+     * the cost of a flood of tokens naming arbitrary key ids: at most one JWKS fetch per issuer per window.
+     * <p>
+     * The constants are immutable, so the type is safe for concurrent use.
+     *
+     * @since 1.0
+     */
+    public enum JwksRefreshKey {
+
+        /** {@code refresh_interval_seconds}: the cadence of the scheduled background JWKS refresh. */
+        REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400, IssuerConfig.Jwks::refreshIntervalSeconds),
+
+        /** {@code key_rotation_grace_period_seconds}: how long a key rotated out of the JWKS stays accepted. */
+        KEY_ROTATION_GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600,
+                IssuerConfig.Jwks::keyRotationGracePeriodSeconds),
+
+        /** {@code unknown_kid_refresh_window_seconds}: the minimum spacing of refreshes an unknown key id triggers. */
+        UNKNOWN_KID_REFRESH_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
+                IssuerConfig.Jwks::unknownKidRefreshWindowSeconds);
+
+        private final String key;
+        private final int minimum;
+        private final int maximum;
+        private final Function<IssuerConfig.Jwks, @Nullable Integer> reader;
+
+        JwksRefreshKey(String key, int minimum, int maximum, Function<IssuerConfig.Jwks, @Nullable Integer> reader) {
+            this.key = key;
+            this.minimum = minimum;
+            this.maximum = maximum;
+            this.reader = reader;
+        }
+
+        /**
+         * The key as spelled under an issuer's {@code jwks} block in {@code gateway.yaml}.
+         *
+         * @return the snake-case key name
+         */
+        public String key() {
+            return key;
+        }
+
+        /**
+         * The smallest value the key admits, in seconds.
+         *
+         * @return the inclusive lower bound
+         */
+        public int minimum() {
+            return minimum;
+        }
+
+        /**
+         * The largest value the key admits, in seconds.
+         *
+         * @return the inclusive upper bound
+         */
+        public int maximum() {
+            return maximum;
+        }
+
+        /** The value {@code jwks} declares for this key, {@code null} when the key is omitted. */
+        private @Nullable Integer declaredIn(IssuerConfig.Jwks jwks) {
+            return reader.apply(jwks);
         }
     }
 
