@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.LogRecord;
 
@@ -959,45 +960,15 @@ class RetryingJwksLoaderTest {
             loader.close();
         }
 
-        @Test
-        @DisplayName("a refresh that cannot be built changes nothing, and the next window tries again")
-        void refusedRefreshBuildChangesNothing() throws Exception {
-            // Arrange — the second build, which is the refresh, is refused by the factory
+        @ParameterizedTest
+        @EnumSource(RefreshBuildFailure.class)
+        @DisplayName("a refresh that cannot be built changes nothing, the next window tries again, and only an unanticipated failure warns")
+        void failedRefreshBuildChangesNothingAndReleasesTheRefresh(RefreshBuildFailure failure) throws Exception {
+            // Arrange — the second build, which is the refresh, fails as the case prescribes
             AtomicInteger builds = new AtomicInteger();
             RetryingJwksLoader loader = loader(() -> {
                 if (builds.incrementAndGet() == 2) {
-                    throw new GatewayException(EventType.CONFIG_INVALID, "simulated tls_profile resolution failure");
-                }
-                return trackedDelegate();
-            });
-            initialise(loader);
-            rotateSigningKey();
-
-            // Act — the refused refresh, then a lookup in the next window
-            loader.getKeyInfo(ROTATED_KEY_ID);
-            drainScheduler(Duration.ZERO);
-            boolean answeredAfterRefusal = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent();
-            tick(WINDOW);
-            loader.getKeyInfo(ROTATED_KEY_ID);
-            awaitRotatedKeyPublished(loader);
-
-            // Assert — an anticipated refusal stays DEBUG: it records no unexpected-failure WARN
-            assertTrue(answeredAfterRefusal, "the loaded delegate keeps answering after a refused build");
-            assertEquals(3, builds.get(), "the first delegate, the refused refresh and the next window's one");
-            assertTrue(warningsContaining(WARN_REFRESH_FAILED).isEmpty(),
-                    "an anticipated refusal is not reported as an unexpected refresh failure");
-            loader.close();
-        }
-
-        @Test
-        @DisplayName("a refresh build that fails in a way nobody anticipated does not switch the refresh off")
-        void unanticipatedRefreshBuildFailureReleasesTheRefresh() throws Exception {
-            // Arrange — the second build, which is the refresh, fails with a type the loader does not
-            // name among the refusals it expects from the factory
-            AtomicInteger builds = new AtomicInteger();
-            RetryingJwksLoader loader = loader(() -> {
-                if (builds.incrementAndGet() == 2) {
-                    throw new UnsupportedOperationException("simulated unanticipated factory failure");
+                    throw failure.raise();
                 }
                 return trackedDelegate();
             });
@@ -1007,21 +978,28 @@ class RetryingJwksLoaderTest {
             // Act — the failed refresh, then a lookup in the next window
             loader.getKeyInfo(ROTATED_KEY_ID);
             drainScheduler(Duration.ZERO);
+            boolean answeredAfterFailure = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent();
             tick(WINDOW);
             loader.getKeyInfo(ROTATED_KEY_ID);
             awaitRotatedKeyPublished(loader);
 
-            // Assert — the next window's refresh ran, so the first failure left no in-flight claim behind
+            // Assert — the loaded delegate kept answering, and the next window's refresh ran, so the
+            // failure left no in-flight claim behind
+            assertTrue(answeredAfterFailure, "the loaded delegate keeps answering after a failed refresh build");
             assertEquals(3, builds.get(), "the first delegate, the failed refresh and the next window's one");
-            // ... and the failure was reported exactly once, by issuer name only
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, WARN_REFRESH_FAILED);
-            String warning = warningsContaining(WARN_REFRESH_FAILED).getFirst();
-            assertTrue(warning.contains("'" + ISSUER_NAME + "'"), "the WARN names the issuer: " + warning);
-            assertFalse(warning.contains(ROTATED_KEY_ID), "the WARN never carries the triggering key id");
-            assertFalse(warning.contains(JWKS_PATH), "the WARN never carries the JWKS path");
-            assertFalse(warning.contains(String.valueOf(server.getPort())), "the WARN never carries the JWKS port");
-            assertFalse(warning.contains("simulated unanticipated factory failure"),
-                    "the WARN never carries the failure's message");
+            // ... an anticipated refusal stays DEBUG, an unanticipated failure is reported exactly once,
+            // and a report names the issuer only
+            List<String> warnings = warningsContaining(WARN_REFRESH_FAILED);
+            assertEquals(failure.expectedWarnings, warnings.size(),
+                    () -> failure + " records " + failure.expectedWarnings + " unexpected-refresh-failure WARN(s), got "
+                            + warnings);
+            for (String warning : warnings) {
+                assertTrue(warning.contains("'" + ISSUER_NAME + "'"), "the WARN names the issuer: " + warning);
+                assertFalse(warning.contains(ROTATED_KEY_ID), "the WARN never carries the triggering key id");
+                assertFalse(warning.contains(JWKS_PATH), "the WARN never carries the JWKS path");
+                assertFalse(warning.contains(String.valueOf(server.getPort())), "the WARN never carries the JWKS port");
+                assertFalse(warning.contains(failure.message), "the WARN never carries the failure's message");
+            }
             loader.close();
         }
 
@@ -1390,6 +1368,35 @@ class RetryingJwksLoaderTest {
         REPLACED_DELEGATE_CLOSE_THROWS,
         /** The fresh delegate, already published, throws synchronously when its load is started. */
         LOAD_START_THROWS
+    }
+
+    /**
+     * How an unknown-key-id refresh fails to be built, and how many unexpected-refresh-failure WARNs
+     * that failure records.
+     */
+    enum RefreshBuildFailure {
+        /** The gateway's own config-assembly refusal: anticipated, so it stays {@code DEBUG}. */
+        ANTICIPATED_REFUSAL(0, "simulated tls_profile resolution failure",
+                message -> new GatewayException(EventType.CONFIG_INVALID, message)),
+        /** A type the loader does not name among the refusals it expects from the factory. */
+        UNANTICIPATED(1, "simulated unanticipated factory failure", UnsupportedOperationException::new);
+
+        /** The number of unexpected-refresh-failure WARNs the failure records. */
+        final int expectedWarnings;
+        /** The failure's message, which no WARN may carry. */
+        final String message;
+        private final Function<String, RuntimeException> failure;
+
+        RefreshBuildFailure(int expectedWarnings, String message, Function<String, RuntimeException> failure) {
+            this.expectedWarnings = expectedWarnings;
+            this.message = message;
+            this.failure = failure;
+        }
+
+        /** @return a fresh instance of the failure, for the factory to throw */
+        RuntimeException raise() {
+            return failure.apply(message);
+        }
     }
 
     /** The real library HTTP loader, recording that it was closed. */

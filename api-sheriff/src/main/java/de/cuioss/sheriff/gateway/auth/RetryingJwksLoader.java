@@ -267,20 +267,20 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         this.maxRetryDelay = refreshInterval.isPositive() && refreshInterval.compareTo(MAX_RETRY_DELAY) < 0
                 ? refreshInterval
                 : MAX_RETRY_DELAY;
-        JwksLoader first = buildDelegate(delegateFactory);
+        JwksLoader first = buildDelegate();
         this.snapshot = new AtomicReference<>(new Snapshot(first, KeySetState.NOT_LOADED, null, 0L));
     }
 
     /**
-     * Builds one fresh delegate. Static, and handed the factory, so the constructor can call it before
-     * the instance is complete.
+     * Builds one fresh delegate from {@link #delegateFactory}. The constructor calls it as well, once
+     * the factory field is assigned; it reads no other field, so the incomplete instance is safe to
+     * use there.
      *
-     * @param delegateFactory the factory to build the delegate with
      * @return the fresh delegate, never {@code null}
      * @throws NullPointerException if the factory yields {@code null}; whatever the factory itself
      *                              throws is propagated unchanged
      */
-    private static JwksLoader buildDelegate(Supplier<JwksLoader> delegateFactory) {
+    private JwksLoader buildDelegate() {
         return Objects.requireNonNull(delegateFactory.get(), "delegate");
     }
 
@@ -410,7 +410,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         }
         boolean continued = false;
         try {
-            JwksLoader fresh = buildDelegate(delegateFactory);
+            JwksLoader fresh = buildDelegate();
             Snapshot replaced = snapshot.getAndUpdate(current -> current.with(fresh, current.state()));
             closeDelegate(replaced.delegate());
             if (closed.get()) {
@@ -512,7 +512,7 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
                 accountedFor = true;
                 return;
             }
-            fresh = buildDelegate(delegateFactory);
+            fresh = buildDelegate();
             JwksLoader loading = fresh;
             loadingRefresh.set(loading);
             loading.initJWKSLoader(counter)
