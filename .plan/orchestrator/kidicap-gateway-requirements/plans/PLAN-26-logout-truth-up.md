@@ -77,6 +77,10 @@ because the component is this project's own.
    `oidc.step_up.path`, `oidc.login.path` and `oidc.user_info.path` (refusing query, fragment, backslash,
    control characters, whitespace). The ADR check suggests an **ADR-0018 amendment** rather than a new
    record; evaluate both and take the one that keeps the reserved-path model in one place.
+   ⛔ **Not before `api-sheriff-0-2-0` `PLAN-V02-12`'s first PR has landed.** That plan is rewriting this
+   same rule right now: one shape-plus-canonical-form check (`validateReservedPath`) for every reserved
+   path, which moves to `/bff/*`. Write the ADR against that unified rule. This plan is the rule's only
+   ADR owner; V02-12's held ADR (frontchannel/backchannel split) references it and does not restate it.
    ⚠ The next free ordinal is **0067** (0053 and 0056–0066 taken — re-checked 2026-10-13 at `48e8d5a6`); confirm by listing `doc/adr/` rather than
    trusting `manage-adr scan`, whose success payload omits the duplicate population entirely (plan-marshall
    lesson `2026-10-02-13-00x`; this is how `main` carried two ADR-0053 files for a week).
@@ -125,7 +129,12 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
 
 ## Dependencies and Sequencing
 
-- Depends on: PLAN-23 — landed (#369).
+- Depends on: PLAN-23 — landed (#369). Deliverable 5 also waits on `api-sheriff-0-2-0` `PLAN-V02-12`'s
+  first PR (the reserved-path rule it records is being rewritten there).
+- If deliverable 2 decides to implement RFC 7009 revocation on logout, it hits the external
+  `revocation_endpoint` problem that holds `PLAN-V02-12` D5–D7 (TokenSheriff#800: in the container
+  deployments the advertised revocation endpoint is the IdP's external origin). The implementation then
+  waits on that token-sheriff-client release too; this plan still owns it.
 - Overlaps with: PLAN-20 (`doc/adr/`, `doc/configuration.adoc`, `doc/security-threat-model.adoc`,
   `doc/user/bff-session.adoc`) and PLAN-21 (the same docs). Documentation-only overlap, but on the SAME
   threat-model and ADR files, so it is sequenced against both rather than paired.

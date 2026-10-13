@@ -42,7 +42,11 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
    independent cookie value. The real choice is therefore between: (a) establishing a stable pre-login
    client identity independent of any one pending record (a long-lived cookie set before the first
    initiation) and capping per that identity, or (b) an address-based rate limit on the initiation and
-   callback paths, or (c) a combination. The security argument belongs in the record — the store must stay
+   callback paths, or (c) a combination. ⛔ **Options (b) and (c) consume `api-sheriff-0-2-0`
+   `PLAN-V02-06`'s per-source substrate (its D3/D7 contract: a per-source leaky bucket that admits
+   weighted events) — they do not build a second per-address limiter.** If this plan has to run before
+   V02-06 lands, the ADR records why the substrate is not reused (ADR-0062 requires a reason for every
+   hand-rolled component), and V02-06 then absorbs this limiter rather than standing beside it. The security argument belongs in the record — the store must stay
    bounded, and an unauthenticated path must not become a memory lever; option (a) itself adds a cookie an
    unauthenticated caller can discard, so its cap must degrade to (b) rather than fail open.
 2. Implement the chosen mechanism in the pending-authorization store and its producer wiring, keeping the
@@ -54,9 +58,9 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
    bound still holds under a flood; an integration test for the acceptance criterion (concurrent login
    survives a flood from another client).
 5. Documentation: `doc/user/bff-session.adoc` and `doc/configuration.adoc` for any new key;
-   `doc/security-threat-model.adoc` for the DoS surface of the unauthenticated login path — and, if
-   `rate_limit` stays reserved-but-inert, say so where it is documented rather than leaving it to read as
-   available.
+   `doc/security-threat-model.adoc` for the DoS surface of the unauthenticated login path. (`rate_limit`
+   is already documented as not implemented — `doc/configuration.adoc` § `rate_limit` and
+   `doc/user/endpoint-routes.adoc` — so there is nothing to add for it.)
 
 > **Folded 2026-10-12 from PLAN-25's landing.** A flood test now EXISTS:
 > `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffPendingLoginBoundIT.java`,
@@ -122,6 +126,7 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 
 - Depends on: none functionally; shares the BFF login surface with PLAN-14 and PLAN-20, so it is sequenced against whichever is in flight
 - Overlaps with: PLAN-14 (`LoginFlow`, `BffRuntimeProducer`), PLAN-20 (`BffRuntimeProducer`, reserved endpoints), PLAN-19 (session branch)
+- Consumes (options b/c): `api-sheriff-0-2-0` `PLAN-V02-06`'s per-source substrate — sequence after it when either option is chosen
 - Adjacent to: PLAN-20's browser step-up also creates authorization requests — the chosen cap must not throttle a legitimate step-up
 
 ## Hand-Off Command

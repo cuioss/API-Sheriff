@@ -44,7 +44,9 @@ Promoted lesson `2026-10-13-06-003` carries the documentation side.
    `maxRetries(2)` and `idempotent_only` governs what `DispatchStage.allowsRetryAfter` already vets;
    state the bounds `ConfigValidator` enforces.
 4. **Plan DP-6 with the timeout half.** The quality report says the 30 s guard timeout strands a pooled
-   upstream connection when it fires. Confirm or refute it against the code first. If it holds and the
+   upstream connection when it fires. Confirm or refute it against the code first — after `PLAN-30`
+   lands, against the connection lifecycle `PLAN-30` chose for gateway-initiated resets, since both
+   concern the same abort sites and DP-6 must not get a second, different mechanism. If it holds and the
    timeout decision is "wire", fix it here; if it holds and the decision is "remove", record it as still
    open with the reason. ⛔ If the fix reaches beyond the dispatch guard and the upstream client, STOP
    and file a finding to the epic inbox.
@@ -53,7 +55,10 @@ Promoted lesson `2026-10-13-06-003` carries the documentation side.
    stalls; a wired attempt count against an upstream that fails a counted number of times. Add the rows
    to `doc/development/declared-limit-assertion-coverage.adoc`.
 6. **Make the documentation say what the gateway does.** `doc/architecture.adoc` (the `504` row and the
-   `DEADLINE_EXCEEDED` row name the two timeout keys as the cause), `doc/adr/0008-data-plane-transport.adoc`,
+   `DEADLINE_EXCEEDED` row name the two timeout keys as the cause), `doc/adr/0008-data-plane-transport.adoc`
+   (its sentence that timeouts are "transport options … not fault-tolerance timeouts" is untrue beside the
+   guard's 30 s timeout; this plan is that sentence's only owner — `api-sheriff-0-2-0` `PLAN-V02-04`
+   defers to it — and #433's Amendment A2 already settled the breaker half),
    `doc/configuration.adoc` (the upstream section, its inert-key note, and the validation-rules line on
    the two timeouts), `doc/user/endpoint-routes.adoc` (the example marked "INERT today"),
    `doc/variants/01-base-gateway.adoc` (an example still carrying `read_timeout_ms: 5000` with no note),

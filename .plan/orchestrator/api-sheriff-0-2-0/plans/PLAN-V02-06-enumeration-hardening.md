@@ -60,9 +60,14 @@ must work through that negotiation, not around it.
 3. **Per-client 404-rate detection substrate** — a NEW shared component: a per-source leaky bucket over
    4xx recon codes (400/403/404), keyed by source (+ host), with static-resource exclusion, that trips
    on a configurable threshold. In-memory / single-node by decision; emits its trip event for external
-   correlation. `PLAN-V02-07` and, in the `api-sheriff-0-3-0` epic, `PLAN-V03-01` (honeypot) consume it.
+   correlation. Its consumers: `PLAN-V02-07`; in the `api-sheriff-0-3-0` epic, `PLAN-V03-01`
+   (honeypot); in the `kidicap-gateway-requirements` epic, `PLAN-21` (an address-based limit on the
+   BFF login-initiation and callback paths, if that plan picks it). **This is the gateway's one
+   per-source limiter** — no consumer builds a second one.
 4. **Response on trip**: soft throttle / tarpit-lite or temporary local block of a tripped source
-   (config-driven), plus a structured security event (feeds the signal system).
+   (config-driven), plus a structured security event (feeds the signal system). **This plan owns the
+   block/ban primitive and any delay primitive.** Build the delay non-blocking (a Vert.x timer, no held
+   thread) so `PLAN-V03-01` can apply it to decoy hits instead of writing its own tarpit.
 5. **Tests** (oracle closed for unauth, honest codes for auth, bucket trips on a scan pattern, static
    resources excluded).
 6. **Architecture documentation + ADR** — **stated as its own named line item**. Document the NEW
@@ -79,7 +84,8 @@ must work through that negotiation, not around it.
    bucket. The contract states, at minimum: the per-source (+ host) keying and its cardinality bound;
    how an arbitrary weighted event is admitted (not only 4xx recon codes); the sliding-window/bucket
    semantics and their configuration; the strike/ban state transitions and their query API; and the
-   structured emit shape a consumer formats from. **`PLAN-V02-07`'s weights and window are the named
+   structured emit shape a consumer formats from — kept raw: ECS/OCSF formatting is `PLAN-V02-07` D3's,
+   not this plan's. **`PLAN-V02-07`'s weights and window are the named
    first consumer — design against that consumer explicitly**, and record which of its needs the
    contract deliberately does not serve, so that plan can work around them rather than discover them.
    A substrate `PLAN-V02-07` must generalise on arrival is this deliverable failing.
@@ -89,13 +95,16 @@ must work through that negotiation, not around it.
    The full requirement: rate-limit stream creation and reset per connection (not only concurrent
    streams, which bounds a different thing); bound total CONTINUATION/header-frame size and count
    per stream and drop over-limit connections; re-derive `Content-Length` on any h2→h1 downgrade;
-   never forward a client's `Upgrade`/`Connection` (h2c) headers to the backend. API Sheriff
+   never forward a client's h2c upgrade headers to the backend. API Sheriff
    terminates h2 via ALPN and proxies gRPC over upstream h2, so both sides inherit this requirement.
 
    **Part of it is already in place.** `edge/EdgeHardeningOptions` bounds header size, initial-line
-   length, chunk size and idle timeout on every listener. It does not set `maxConcurrentStreams`,
-   does not rate-bound stream resets, and does not strip h2c `Upgrade` — that is this deliverable's
-   remaining scope. `GrpcDispatchStage`'s Javadoc claims the `gw-08` bounds hold on the gRPC path
+   length, chunk size and idle timeout on every listener. `Upgrade` and `Connection` are already in
+   `ConnectionHeaders.REQUEST_STRIP` (#185, pinned in `ConnectionHeadersTest`), so the h2c strip is
+   done except for `HTTP2-Settings`, which nothing strips. Remaining scope: `maxConcurrentStreams`, a
+   stream-reset rate bound, CONTINUATION bounds, the `HTTP2-Settings` strip, and checking whether
+   ADR-0060's declared-length framing (#385) already re-derives `Content-Length` on h2→h1 (if it
+   does, pin it with a test rather than re-implement it). `GrpcDispatchStage`'s Javadoc claims the `gw-08` bounds hold on the gRPC path
    while the threat model says `GAP`; reconcile the two.
 
    **This deliverable is a weak fit for the plan and is recorded as one.** It sits here because D7's
@@ -122,9 +131,8 @@ must work through that negotiation, not around it.
    `GAP`. Any reset-rate bound this deliverable adds must keep that path out of its count, and the
    upload benchmark plus `Http2EarlyResponseResetIT` are its regression tests.
 
-   Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; client
-   `Upgrade: h2c`/`Connection` headers are not forwarded upstream; an h2→h1 downgrade path re-derives
-   framing.
+   Test: a Rapid-Reset/CONTINUATION-flood load does not exhaust CPU/memory; a client
+   `HTTP2-Settings` header is not forwarded upstream; an h2→h1 downgrade path re-derives framing.
 
 **Split-guard.** Eight deliverables — past the presumptive split threshold, proceeding unsplit. D8 is
 the weakest fit and shares no code with D1/D2; it is the first candidate to peel off. **Split line if

@@ -48,11 +48,14 @@ the load-bearing assertion, because a blocking sleep would turn the defence into
    paths; a match produces a high signal-to-noise structured security event (OWASP "high S/N"). Decoy
    responses are indistinguishable from a normal miss (uniform-404 per PLAN-18) so the decoy is not
    itself a tell.
-2. **Non-blocking tarpit.** A configurable delayed response via a Vert.x timer (`setTimer`) — **stated
-   as its own line item** because the non-blocking property is load-bearing: a blocking sleep would
-   consume a virtual thread per probe and become a self-inflicted DoS.
-3. **Per-source strike-ban.** Repeated decoy hits from one source escalate to a temporary local block,
-   built on PLAN-18's per-client substrate (not a second store).
+2. **Tarpit on decoy hits.** Apply a configurable delay to decoy responses — **stated as its own line
+   item** because the non-blocking property is load-bearing: a blocking sleep would consume a virtual
+   thread per probe and become a self-inflicted DoS. The delay primitive is `PLAN-V02-06`'s (its D4, built
+   on a Vert.x timer); this deliverable applies it to decoys and does not write a second one. Only if
+   V02-06 shipped no non-blocking delay does this plan add it — inside V02-06's substrate, not beside it.
+3. **Decoy hits feed the per-source strike-ban.** Repeated decoy hits from one source escalate to a
+   temporary local block. The block/ban primitive is `PLAN-V02-06`'s (D4, with its D7 contract); this
+   deliverable admits decoy hits into it as heavily weighted events and adds no ban state of its own.
 4. **Crawler / scanner allowlist.** Known-good crawlers and authorized security scanners (PCI ASV, etc.)
    are exempt from ban/tarpit — **stated as its own line item** (false-positive control; operational and
    sometimes contractual).

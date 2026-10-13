@@ -88,7 +88,10 @@ Both advertise the same issuer string.
    origin and one authority. Keycloak runs with `--hostname https://{gw}/auth` (a full URL
    including the context path is supported) plus `proxy-headers=xforwarded`; `http-relative-path`
    is the alternative seam. **No IdP goes into any shipped image** — this is deployment sample
-   material only, in the same class as `deployment/compose-sample`.
+   material only. **It is an overlay or variant of `deployment/compose-sample`, not a second
+   standalone sample:** `PLAN-V02-15` owns the BFF-capable sample and its CI login proof, and this
+   deliverable builds on that sample and extends that proof (allowlist and `/admin/` canonicalization
+   test included) rather than bringing its own Keycloak stack and login rig.
 
    **Expose an allowlist, never a catch-all.** Per the vendor's own recommendations:
    `/realms/`, `/resources/` (without it the login UI is broken), `/.well-known/`, and `/lb-check`
