@@ -4715,7 +4715,7 @@ control, which is the rule above doing exactly the work it was added for.
 * A declared `token_validation.issuers[].jwks.unknown_kid_refresh_window_seconds` outside `5`-`3600`
   fails the boot at its own pointer, with the same message shape.
 
-* Each of those three keys declared on a `source: file` issuer fails the boot at its own pointer,
+* Each of those keys declared on a `source: file` issuer fails the boot at its own pointer,
   whatever value it holds: a file source is read once and never re-fetched, so the key would parse
   and never act. Every violation of every issuer is reported in one pass (see
   link:#_jwks_key_rotation[Key rotation and the refresh cadence]).

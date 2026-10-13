@@ -57,6 +57,7 @@ import com.networknt.schema.SpecificationVersion;
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.config.validation.ConfigValidator.JwksRefreshKey;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -67,13 +68,15 @@ import org.junit.jupiter.params.provider.MethodSource;
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Ten shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Eleven shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
  * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
  * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
- * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — and those two
+ * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — those two
  * schemas each additionally list the
- * authentication posture set carried by {@link Require}. A restated list has no mechanical tie to its source, so
+ * authentication posture set carried by {@link Require}, and the boot-validation list of
+ * {@code doc/configuration.adoc} names the JWKS refresh keys and the range each admits, carried by
+ * {@link JwksRefreshKey}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
  * still reads as authoritative while describing a gateway that no longer exists. The project's own review policy
  * treats a hardcoded list mirroring a set defined elsewhere as a defect unless it is derived from
@@ -472,6 +475,39 @@ class DocumentedSetsContractTest {
             "default", "deprecated", "examples", "readOnly", "writeOnly", "$comment", ERROR_MESSAGE_KEYWORD);
 
     private static final Pattern BACKTICKED = Pattern.compile("`([^`]+)`");
+
+    /**
+     * Anchor for each JWKS refresh-key bullet of {@code doc/configuration.adoc}'s boot-validation list
+     * ("A declared `token_validation.issuers[].jwks.refresh_interval_seconds` outside `60`-`86400` …").
+     * Its first occurrence opens the list this guard reads, and every occurrence inside the list must
+     * carry the whole key-and-range shape of {@link #JWKS_REFRESH_BULLET}: a bullet reworded out of that
+     * shape fails the guard rather than silently dropping out of the extracted set.
+     */
+    private static final String JWKS_REFRESH_BULLET_ANCHOR = "A declared `token_validation.issuers[].jwks.";
+
+    /**
+     * Anchor for the bullet closing the JWKS refresh-key list: the refusal of every refresh key on a
+     * {@code source: file} issuer. It is searched for after the first {@link #JWKS_REFRESH_BULLET_ANCHOR},
+     * so the list cannot lose its closing refusal without this guard failing on it.
+     */
+    private static final String JWKS_REFRESH_FILE_REFUSAL_ANCHOR =
+            "keys declared on a `source: file` issuer fails the boot";
+
+    /**
+     * One JWKS refresh-key bullet: the {@link #JWKS_REFRESH_BULLET_ANCHOR}, the key, and the inclusive
+     * range written as two backticked bounds joined by a hyphen. Prose wraps freely, so every space of
+     * the anchor and between the key and its range matches any run of whitespace.
+     */
+    private static final Pattern JWKS_REFRESH_BULLET = Pattern.compile(whitespaceTolerant(JWKS_REFRESH_BULLET_ANCHOR)
+            + "([a-z_]++)`\\s++outside\\s++`(\\d++)`-`(\\d++)`");
+
+    /** {@link #JWKS_REFRESH_BULLET_ANCHOR} alone, counting the bullets that open with it whatever follows. */
+    private static final Pattern JWKS_REFRESH_BULLET_OPENING = Pattern.compile(
+            whitespaceTolerant(JWKS_REFRESH_BULLET_ANCHOR));
+
+    /** {@link #JWKS_REFRESH_FILE_REFUSAL_ANCHOR}, matched whitespace-tolerantly. */
+    private static final Pattern JWKS_REFRESH_FILE_REFUSAL = Pattern.compile(
+            whitespaceTolerant(JWKS_REFRESH_FILE_REFUSAL_ANCHOR));
 
     @Test
     @DisplayName("doc/configuration.adoc enumerates exactly the built-in asset extensions, and states their count")
@@ -1067,7 +1103,152 @@ class DocumentedSetsContractTest {
                         + " is pinned by combinatorInsideArrayItemsIsRefused");
     }
 
+    @Test
+    @DisplayName("doc/configuration.adoc's boot-validation list names exactly the JWKS refresh keys and their ranges")
+    void configurationAdocStatesTheJwksRefreshKeyRanges() throws Exception {
+        // Arrange
+        String document = read(CONFIGURATION_ADOC);
+
+        // Act — the raw bullet count comes back alongside the map: the map collapses a key listed
+        // twice, so only that count can observe the duplicate
+        DocumentedRanges documented = documentedJwksRefreshRanges(document, CONFIGURATION_ADOC.toString());
+
+        // Assert
+        assertFalse(documented.ranges().isEmpty(), CONFIGURATION_ADOC + ": anchor \"" + JWKS_REFRESH_BULLET_ANCHOR
+                + "\" matched but yielded no refresh key — the guard would pass vacuously");
+        assertEquals(jwksRefreshRanges(), documented.ranges(),
+                CONFIGURATION_ADOC + " names the JWKS refresh keys and their admitted ranges in its boot-validation"
+                        + " list, which are authoritatively defined by ConfigValidator.JwksRefreshKey, and has"
+                        + " drifted from them. An operator reading a stale range declares a value the boot refuses,"
+                        + " or never learns of a key the boot bounds");
+        assertEquals(JwksRefreshKey.values().length, documented.rawCount(),
+                CONFIGURATION_ADOC + " lists a different number of JWKS refresh-key bullets than"
+                        + " ConfigValidator.JwksRefreshKey declares. The count is taken over the raw bullets rather"
+                        + " than over the de-duplicated map, so a key listed twice fails here even though the"
+                        + " equality above still holds");
+    }
+
+    @Test
+    @DisplayName("the JWKS refresh-key guard detects a documented range that diverges from ConfigValidator")
+    void divergedJwksRefreshRangeIsDetected() throws Exception {
+        // Arrange — the negative control: a copy of the shipped document whose first refresh-key bullet
+        // states a lower bound one above the one ConfigValidator enforces
+        String shipped = read(CONFIGURATION_ADOC);
+        Matcher bullet = JWKS_REFRESH_BULLET.matcher(shipped);
+        assertTrue(bullet.find(), CONFIGURATION_ADOC + ": no bullet matches the JWKS refresh-key shape, so the"
+                + " negative control has no range to alter");
+        String drifted = shipped.substring(0, bullet.start(2)) + (Integer.parseInt(bullet.group(2)) + 1)
+                + shipped.substring(bullet.end(2));
+        String label = CONFIGURATION_ADOC + " with the lower bound of '" + bullet.group(1) + "' raised by one";
+
+        // Act
+        DocumentedRanges shippedRanges = documentedJwksRefreshRanges(shipped, CONFIGURATION_ADOC.toString());
+        DocumentedRanges driftedRanges = documentedJwksRefreshRanges(drifted, label);
+
+        // Assert — the precondition first: the shipped document matches, so the mismatch below is caused
+        // by the alteration alone
+        assertEquals(jwksRefreshRanges(), shippedRanges.ranges(),
+                "the negative control needs the shipped document and ConfigValidator to agree before altering a"
+                        + " range; they already disagree, which the JWKS refresh-key guard reports in detail");
+        assertNotEquals(jwksRefreshRanges(), driftedRanges.ranges(),
+                "the documented JWKS refresh ranges still equal ConfigValidator's after a documented bound was"
+                        + " changed, so the guard cannot detect a range that drifted from the validator");
+    }
+
+    @Test
+    @DisplayName("the JWKS refresh-key guard refuses a bullet reworded out of the key-and-range shape")
+    void jwksRefreshBulletOutOfShapeIsRefused() throws Exception {
+        // Arrange — a bullet that still opens with the anchor but no longer states its range in the
+        // extracted shape must fail the guard, not shrink the documented set into a quiet pass
+        String shipped = read(CONFIGURATION_ADOC);
+        Matcher bullet = JWKS_REFRESH_BULLET.matcher(shipped);
+        assertTrue(bullet.find(), CONFIGURATION_ADOC + ": no bullet matches the JWKS refresh-key shape, so the"
+                + " control has no bullet to reword");
+        String bulletText = bullet.group();
+        String reworded = shipped.substring(0, bullet.start())
+                + bulletText.replaceFirst("outside", "beyond") + shipped.substring(bullet.end());
+        String label = CONFIGURATION_ADOC + " with the '" + bullet.group(1) + "' bullet reworded";
+
+        // Act
+        AssertionError refusal = assertThrows(AssertionError.class,
+                () -> documentedJwksRefreshRanges(reworded, label),
+                "the JWKS refresh-key guard accepted " + label + " instead of refusing it, so a reworded bullet"
+                        + " would silently drop its key from the documented set");
+
+        // Assert
+        assertTrue(refusal.getMessage() != null && refusal.getMessage().contains("key-and-range shape"),
+                "the JWKS refresh-key guard refused " + label + ", but not for the reason under test. Observed: "
+                        + refusal.getMessage());
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
+
+    /**
+     * The JWKS refresh keys and ranges a document's boot-validation list states: every bullet from the
+     * first {@link #JWKS_REFRESH_BULLET_ANCHOR} up to the {@link #JWKS_REFRESH_FILE_REFUSAL_ANCHOR} bullet
+     * that closes the list.
+     * <p>
+     * Fails closed in three ways: when either anchor is gone, when the closing refusal no longer follows
+     * the opening bullet, and when a bullet opening with the anchor does not carry the whole
+     * {@link #JWKS_REFRESH_BULLET} shape — the last is what keeps a reworded bullet from quietly leaving
+     * the extracted map smaller than the list it was read from.
+     *
+     * @param document the document text
+     * @param label    the document label used in every failure message
+     * @return each documented key mapped to its documented {@code minimum-maximum} range, and the number
+     *         of bullets that produced the map
+     */
+    private static DocumentedRanges documentedJwksRefreshRanges(String document, String label) {
+        Span open = anchorSpan(document, JWKS_REFRESH_BULLET_ANCHOR, label);
+        Matcher close = JWKS_REFRESH_FILE_REFUSAL.matcher(document);
+        if (!close.find(open.end())) {
+            return fail(label + ": the anchor \"" + JWKS_REFRESH_FILE_REFUSAL_ANCHOR + "\" no longer follows the"
+                    + " first \"" + JWKS_REFRESH_BULLET_ANCHOR + "\" bullet, so the JWKS refresh-key list has lost"
+                    + " the refusal that closes it. Restore the sentence, or update the anchor constant in"
+                    + " DocumentedSetsContractTest to match the rewritten wording.");
+        }
+        String list = document.substring(open.start(), close.start());
+        Map<String, String> ranges = new TreeMap<>();
+        int rawCount = 0;
+        Matcher bullet = JWKS_REFRESH_BULLET.matcher(list);
+        while (bullet.find()) {
+            ranges.put(bullet.group(1), bullet.group(2) + "-" + bullet.group(3));
+            rawCount++;
+        }
+        long opened = JWKS_REFRESH_BULLET_OPENING.matcher(list).results().count();
+        if (opened != rawCount) {
+            return fail(label + ": " + opened + " bullets of the JWKS refresh-key list open with \""
+                    + JWKS_REFRESH_BULLET_ANCHOR + "\" but only " + rawCount + " state their key-and-range shape"
+                    + " (\"<key>` outside `<minimum>`-`<maximum>`\"); a bullet reworded out of that shape would"
+                    + " otherwise drop its key from the documented set without failing this guard");
+        }
+        return new DocumentedRanges(ranges, rawCount);
+    }
+
+    /**
+     * The JWKS refresh keys {@link JwksRefreshKey} declares, each mapped to its admitted range written
+     * the way the document writes it, sorted by key.
+     *
+     * @return each key's {@code gateway.yaml} spelling mapped to its {@code minimum-maximum} range
+     */
+    private static Map<String, String> jwksRefreshRanges() {
+        Map<String, String> ranges = new TreeMap<>();
+        for (JwksRefreshKey key : JwksRefreshKey.values()) {
+            ranges.put(key.key(), key.minimum() + "-" + key.maximum());
+        }
+        return ranges;
+    }
+
+    /**
+     * A key-to-range enumeration lifted out of a document, alongside the number of entries the extraction
+     * actually saw — counted before the map collapses a repeated key, for the reason {@link TokenList}
+     * carries its own raw count.
+     *
+     * @param ranges   each documented key mapped to its documented range
+     * @param rawCount how many entries were read before de-duplication
+     */
+    private record DocumentedRanges(Map<String, String> ranges, int rawCount) {
+    }
 
     /**
      * Drives a deliberately unmodelled schema through the array-key derivation and asserts it is
@@ -1590,14 +1771,24 @@ class DocumentedSetsContractTest {
      * @return where the first occurrence of the anchor starts and ends
      */
     private static Span anchorSpan(String text, String anchor, String document) {
-        String regex = Arrays.stream(anchor.split(" ")).map(Pattern::quote).collect(Collectors.joining("\\s+"));
-        Matcher matcher = Pattern.compile(regex).matcher(text);
+        Matcher matcher = Pattern.compile(whitespaceTolerant(anchor)).matcher(text);
         if (!matcher.find()) {
             return fail(document + ": the anchor \"" + anchor + "\" is gone, so this contract guard no"
                     + " longer reaches the enumeration it protects. Restore the sentence, or update the"
                     + " anchor constant in DocumentedSetsContractTest to match the rewritten wording.");
         }
         return new Span(matcher.start(), matcher.end());
+    }
+
+    /**
+     * A regular expression matching a literal anchor fragment with any run of whitespace standing for
+     * each of its spaces, every other character matched literally.
+     *
+     * @param anchor the literal anchor fragment
+     * @return the whitespace-tolerant regular expression
+     */
+    private static String whitespaceTolerant(String anchor) {
+        return Arrays.stream(anchor.split(" ")).map(Pattern::quote).collect(Collectors.joining("\\s+"));
     }
 
     /**
