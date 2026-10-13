@@ -205,6 +205,13 @@ needs no translation.
   **ADR-0037 is rewritten in place, not superseded** (it is still `Proposed`). User docs are part of
   the plan. Eight deliverables, proceeding unsplit: the two directions, the CSRF guard and the record
   are one contract.
+- **2026-10-13 — `rate_limit` is planned for later: kept, but no longer silent (`PLAN-V02-06` D9).**
+  Operator ruling. The key stays in the endpoint schema, still not implemented, but setting it logs a
+  boot WARN, and every document says the same thing: planned, not implemented, no `429` today. This
+  replaces both wordings on `main` ("out of scope", from `6acbadac`, and "deferred"). Its future
+  implementation builds on `PLAN-V02-06`'s per-source mechanism, as its own plan after V02-06 lands;
+  none is staged yet. Rejected: removing the key now (the PLAN-29 / ADR-0064 route), and wiring it into
+  V02-06 (which already carries eight deliverables).
 
 ## Sequencing Constraints
 

@@ -1,4 +1,4 @@
-=== 2026-10-13 STATE at 28ccebbc (cross-epic dedup cleanup). This anchor states current state only; older paragraphs are in the ledger's git history. ===
+=== 2026-10-13 STATE at ce21001b (cross-epic dedup cleanup landed as #445; rate_limit ruling). This anchor states current state only; older paragraphs are in the ledger's git history. ===
 
 SHIPPED (12): V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19, -21 (#439, landings/PLAN-V02-21.md). RUNNING: V02-12 (plan-v02-12-idp-addressing-model, in 5-execute, no commits yet; first PR = D1, D2, D4; D3 held until after V02-23 and V02-15; D5-D7 held for TokenSheriff#800). STAGED (10): V02-23 (cookie forwarding policy - NEXT after V02-12's first PR lands), V02-04, -05, -06, -07, -09, -11, -15, -20, -22. kidicap PLAN-28 shipped (#437); its duplicate run (jwks-refresh-follow-ups) was closed unmerged and its worktree removed.
 
@@ -11,7 +11,7 @@ DEDUP 2026-10-13 (operator: no duplicates across epics). Every staged spec in th
 - ADR-0008 timeout sentence: kidicap PLAN-29 D6 (V02-04 D3 dropped it). Reserved-path boot-rule ADR: kidicap PLAN-26 D5, after V02-12's first PR.
 - V02-22 D2 scoped to the two PLAYWRIGHT_BASE_URL_* variables (V02-12's held half deletes the third).
 - GatewayEdgeFramingCorpusTest flake: tracked only in this epic's Watch (kidicap's entry is a pointer).
-Open gap, no owner: rate_limit is another accepted-and-ignored key (documented as such); no spec decides wire-or-remove.
+rate_limit (operator ruling 2026-10-13): planned for later, kept reserved; V02-06 D9 adds a boot WARN when it is set and aligns every doc on "planned, not implemented". Its implementation is a future plan on V02-06's mechanism, not staged.
 
 READ BEFORE EMITTING:
 - DUPLICATE-RUN GUARD (lesson 2026-10-13-18-001): before emitting a spec, check gh for an open or merged PR naming its plan id or slug, landings/PLAN-NN.md, and a live worktree for it; transition the row to running at emission, not on report-back.
