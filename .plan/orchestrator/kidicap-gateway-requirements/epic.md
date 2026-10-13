@@ -154,7 +154,7 @@ decision.
   - **The publish rule is an approximation, shipped by operator decision.** A refreshed key set is
     published only when it holds the key id that triggered the refresh, because token-sheriff 0.9.6
     cannot list a key set's key ids. Invented key ids can delay pick-up of a genuine rotation until the
-    background refresh; no invalid token is accepted. The upstream accessor request is owed and unfiled.
+    background refresh; no invalid token is accepted. The upstream accessor request is filed as cuioss/TokenSheriff#801 (2026-10-13).
   - Declared surface 16 entries, realized 22 files (8 undeclared, 4 untouched): 1.4x, against 3x to 5x
     for the earlier landings measured. The first measurement taken after a same-day re-grounding of the spec.
 - 2026-10-12 — **Drain 4: 15 messages, 15 archived, 0 invalid.** One landing reconciled. 13 candidate
@@ -562,8 +562,8 @@ decision.
 
 ## Watches
 
-- **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids.** OWED BY
-  THE OPERATOR: file the accessor request against token-sheriff (nobody has). When a release carries it,
+- **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids.** Filed
+  upstream 2026-10-13 as cuioss/TokenSheriff#801. When a release carries it,
   stage the switch to the exact rule in `RetryingJwksLoader` and the removal of the residual from
   ADR-0063 and threat-model GW-07. — trigger: every token-sheriff version bump; source:
   `landings/PLAN-24.md`, lesson `2026-10-12-16-013`

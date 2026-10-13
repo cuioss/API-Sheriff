@@ -71,8 +71,8 @@ would otherwise force a retrofit.
   `https://localhost:1443`, and the operator does not accept dialling that from the container as a
   residual. Only a released artifact is consumed: no SNAPSHOT, no gateway-side stand-in. Verified
   2026-10-13: the pin is `0.9.6`, the newest TokenSheriff tag; `ClientConfiguration` on TokenSheriff
-  `main` models only `issuer`; and no open TokenSheriff issue requests the override, so **filing it is
-  owed by the operator**. Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1, so
+  `main` models only `issuer`. **Filed upstream 2026-10-13 as cuioss/TokenSheriff#800**, revocation
+  and device authorization included. Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1, so
   they wait on the same release. **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
   half and runs after V02-23.
