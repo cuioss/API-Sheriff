@@ -48,13 +48,16 @@ decision.
 - PLAN-24 — shipped #430. Ran alone; nothing collided.
 - PLAN-27 — shipped #433. Ran alone; nothing collided. Its post-merge benchmark run failed (Open
   Defects). The native integration job took about 20 minutes with its one new suite.
-- **PLAN-28 (staged 2026-10-12, WS-01, launched 2026-10-13) — PLAN-24's follow-ups, plus three
-  intermittent failures.** 8 deliverables. Shares `doc/adr/`, `doc/configuration.adoc` and the threat
-  model with PLAN-26, PLAN-20, PLAN-21 and PLAN-29, so it runs alone. Adds no integration suite, but
-  needs full integration runs and benchmark runs for its diagnoses.
-- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** Changes the dispatch path
-  (`GatewayEdgeRoute`), so it is sequenced AFTER PLAN-28, whose deliverables 6 and 8 diagnose
-  intermittent failures on that path. Carries two wire-or-remove decisions for the operator at outline.
+- PLAN-28 — shipped #437. Ran alone. Three fixes, three records, two diagnoses that ended without a
+  fix (one of them became PLAN-30).
+- **PLAN-30 (staged 2026-10-13, WS-02) — early upstream answers exhaust local ports and open the
+  breaker.** A defect introduced by #431, with an availability consequence. Runs NEXT, before PLAN-29:
+  both change `GatewayEdgeRoute` and `DispatchStage`. Carries one design decision for the operator at
+  outline (drain versus reset on an HTTP/1.1 upstream). Check the sibling epic's ledger for a plan on
+  the same path before its outline.
+- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** Sequenced AFTER PLAN-30. Its
+  line references into `GatewayEdgeRoute` are stale since #431: run `cleanup` before emitting it. Carries
+  two wire-or-remove decisions for the operator at outline.
 - PLAN-25 — shipped #408. The pairing note below ("pairs with anything") held for files and failed for
   the CI job's wall-clock.
 - **Flow is sequential in practice.** Every staged pair overlaps on `doc/configuration.adoc`, the schemas
@@ -116,6 +119,40 @@ decision.
   `landings/`.
 
 ## Decisions
+
+- 2026-10-13 — **PLAN-28 shipped** as PR #437 / 82f2d7d8 (`runRetry` guarded so the JWKS retry sequence
+  survives an unanticipated throwable; WARN 137 `JWKS_REFRESH_FAILED`; the refresh window and grace
+  deadline moved to a monotonic clock, ADR-0063 Amendment A1; documentation rows plus a contract test
+  guarding them; `BffReservedPathPrecedenceIT`'s flakiness traced to a docker-assigned management port
+  and fixed; 8/8 plan deliverables; 7h03m wall, 6.0M tokens). Landing record: `landings/PLAN-28.md`;
+  `landing-check` reports it complete. Corroborated against `ci pr view 437`, the merged diff (14 files)
+  and `ci checks status` (35 checks, success, **post-merge benchmark green**, run 38407570839).
+  - **Two deliverables are diagnoses without a fix.** `GatewayEdgeFramingCorpusTest` did not reproduce
+    and stays unexplained. The `upload_small` failure turned out to be two failures: the original
+    (#433's red run) was fixed by #431 from outside the plan; a second, introduced by #431, was found on
+    the merged branch and filed under the STOP rule.
+  - **Drain 6** (2026-10-13, at 48e8d5a6): 8 messages scanned, 8 archived, 0 invalid. Inbox EMPTY
+    (live 0, no closed sender, invalid 0).
+    - `-001` (finding, early upstream answers exhaust local ports and open the circuit breaker):
+      **staged as PLAN-30** (`early-answer-upstream-port-exhaustion`, WS-02). The orchestrator
+      corroborated the code and ADR-0066's stated consequence; the measurements are the sender's.
+    - `-002` promoted as lesson `2026-10-13-14-001` (`api-sheriff`); `-003` as `2026-10-13-14-002`
+      (`integration-tests`); `-005` as `2026-10-13-14-004` (`documentation`).
+    - `-004` promoted as `2026-10-13-14-003` and `-006` as `2026-10-13-14-005` (both plan-marshall).
+    - `-007` (guessed verbs and flags again): **folded** into lesson `2026-10-13-06-004` as a
+      recurrence one plan later; adds no file surface.
+    - `-008` (landing): reconciled.
+  - **Resolved and removed from Open Defects:** the missing `runRetry` guard (#437) and #433's failed
+    benchmark run (its cause fixed by #431; the two runs since are green).
+  - **PLAN-28's row carried the wrong plan id** (`jwks-refresh-follow-ups`, stamped by another session);
+    corrected to `plan-28-jwks-refresh-follow-ups`, the value in the landing's own facts.
+  - **The ledger checkout was 7 commits behind `origin/main`** when this drain started, and another
+    session had landed this epic's `running` row and anchor through #436 and #440. This session's own
+    unlanded copies of those three files were dropped as superseded and the checkout fast-forwarded
+    before any write.
+  - **Folds:** PLAN-26's next-free ADR ordinal hint corrected to 0067 (0066 taken by #431); adds no
+    file surface.
+  - **Not emitted:** the operator asked for analyze and land only. Next candidate is PLAN-30.
 
 - 2026-10-13 — **PLAN-27 shipped** as PR #433 / 128fd07e (M-62 pinned by the new `BffUnboundTokenResponseIT`;
   M-64 completed by one assertion in `BffRefreshScopeWireIT`; ADR-0064 removes the per-route
@@ -377,20 +414,23 @@ decision.
 
 > ↪ Relocated to `settled.md` § "PLAN-15 follow-ups filed as issues" — all seven are filed as #323-#329
 
-- **`RetryingJwksLoader.runRetry` has no guard against an unanticipated throwable.** `runRefresh`
-  releases its state in `finally` since #430; `runRetry` catches three exception types and nothing else
-  (read at c013781d). The consequence was not analysed by PLAN-24. Staged as PLAN-28 deliverable 1. —
-  source: inbox `jwks-unknown-kid-refresh-012.md`, `landings/PLAN-24.md`
-- **`GatewayEdgeFramingCorpusTest` is flaky and undiagnosed.** Two failures in two methods during
-  PLAN-24 (a `502` on Java 26 in CI, a 30 s timeout locally), both green on re-run, on a branch that
-  touches nothing under `gateway/edge`. It guards request framing, so re-running until green can hide a
-  regression. Staged as PLAN-28 deliverable 6. — source: lesson `2026-10-12-16-012`
-- **The post-merge benchmark run of #433 failed: `upload_small`, 15.66% errors.** Run 38307102339 on
-  128fd07e. 149 requests ended with HTTP/2 `GOAWAY`, `ENHANCE_YOUR_CALM`, "Maximum number of RST frames
-  reached", from 15 s into the run; every other benchmark in the run was clean and the job was green
-  after #427, #429, #430 and #432. #433 changes no dispatch code. Not diagnosed, not re-run. Staged as
-  PLAN-28 deliverable 8. OWED BY THE OPERATOR if a quicker answer is wanted: re-run the job. — source:
-  `landings/PLAN-27.md`
+- **`GatewayEdgeFramingCorpusTest` is flaky and still unexplained.** Two failures in two methods during
+  PLAN-24 (a `502` on Java 26 in CI, a 30 s timeout locally). PLAN-28 could not reproduce either on
+  Java 25 and did not run Java 26. The timeout's path was reworked by #431, so it may be gone; the `502`
+  has no explanation. The sibling epic `api-sheriff-0-2-0` watches the same test (a red main-branch build
+  on 09edaea9). No plan owns it. It guards request framing, so re-running until green can hide a
+  regression. — source: lesson `2026-10-12-16-012`, `landings/PLAN-28.md`
+- **Early upstream answers on an HTTP/1.1 upstream exhaust the gateway's local ports and open the
+  circuit breaker.** Introduced by #431: the gateway resets the upstream request, which closes the
+  connection and holds a local port for 60 s. Measured once, locally: past about 470 early answers per
+  second the breaker opens and the upstream is cut off for up to a minute (40% errors). CI's benchmark
+  is green, by the sender's reading only because its runner is slower. Staged as PLAN-30. — source:
+  inbox `plan-28-jwks-refresh-follow-ups-001.md`, `landings/PLAN-28.md`
+- **Documentation left open by PLAN-28** (the sender's statement, not re-read): two stale
+  `token_validation` mentions in `doc/configuration.adoc` (around line 2213 and the YAML example comment
+  near line 380); the `IssuerConfig.Jwks` Javadoc repeats the three refresh ranges unguarded; the
+  contract test does not cover the documented restriction to the `http` source. No plan owns these. —
+  source: `landings/PLAN-28.md`
 - **Four upstream keys parse and act on nothing**: `connect_timeout_ms`, `read_timeout_ms`,
   `retry.max_attempts`, `retry.idempotent_only` (read at 128fd07e: bound in `UpstreamConfig`, no reader;
   the guard uses a fixed 30 s timeout and two retries). The user guide marks them inert;
