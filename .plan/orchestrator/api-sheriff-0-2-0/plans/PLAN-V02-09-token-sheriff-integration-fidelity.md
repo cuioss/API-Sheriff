@@ -188,7 +188,9 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 
 ## Dependencies and Sequencing
 
-- Depends on: **`PLAN-V02-12`.** Both write `BffRuntimeProducer` and the `oidc` block, and this plan
+- Depends on: **`PLAN-V02-12`, including its held D5–D7.** Those wait for a `token-sheriff-client`
+  release with a back-channel/discovery override that also covers revocation (epic queue annotation,
+  2026-10-13), so this plan waits on that release too, not only on V02-12's first PR. Both write `BffRuntimeProducer` and the `oidc` block, and this plan
   goes after it. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058); scope D3's discovery probe
   against the PAR-and-DPoP login it introduced. Never concurrent with `PLAN-V02-20`, which writes the
   same block.

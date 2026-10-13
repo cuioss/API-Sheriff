@@ -59,6 +59,21 @@ would otherwise force a retrofit.
   free. Its realized footprint reached `edge/`, `pipeline/`, `events/`, `config/validation/` and
   `quarkus/` beyond its declared surface, so every staged spec touching those packages re-reads them
   at outline.
+- **`PLAN-V02-12` running in two halves (operator rulings 2026-10-13, inbox `-002`).** D1–D4 ship
+  now as the first of two PRs: the reserved BFF paths move to `/bff/*`, userinfo becomes
+  `/bff/session`, the client-auth JWKS default becomes `/bff/jwks`, the `bff` / `bff-session` sample
+  anchors are renamed, and the canonical-form check covers login, user_info and step_up. **D5–D7 are on
+  hold** (token-sheriff bump, `oidc.discovery_url`, identity repoint plus removal of
+  `--host-resolver-rules`, ADR). They wait for a **`token-sheriff-client` release** carrying a
+  back-channel/discovery override. That override must also cover RFC 7009 revocation (and device
+  authorization) **without rewriting discovery metadata** (RFC 8414 §3.3). On Keycloak 26.5.7 with
+  `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`, `revocation_endpoint` stays on the external
+  `https://localhost:1443`, and the operator does not accept dialling that from the container as a
+  residual. Only a released artifact is consumed: no SNAPSHOT, no gateway-side stand-in. Verified
+  2026-10-13: the pin is `0.9.6`, the newest TokenSheriff tag; `ClientConfiguration` on TokenSheriff
+  `main` models only `issuer`; and no open TokenSheriff issue requests the override, so **filing it is
+  owed by the operator**. Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1, so
+  they wait on the same release.
 - **Every ADR-authoring plan** (V02-04, V02-06, V02-11, V02-12): the next free ordinal on
   `origin/main` at `09edaea9` is `0067` — `0063`–`0065` came from the `kidicap-gateway-requirements`
   epic (#430 and its siblings), `0066` from the spin-off #431. Ordinals move fast; derive at write time. ADR-0005 is `Superseded by ADR-0062`; ADR-0018,

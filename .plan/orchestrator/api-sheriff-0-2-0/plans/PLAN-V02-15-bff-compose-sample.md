@@ -137,7 +137,9 @@ pre-commit process.
 
 ## Dependencies and Sequencing
 
-- Depends on: **`PLAN-V02-12` (idp-addressing-model)**, for D5. This is the one genuine dependency,
+- Depends on: **`PLAN-V02-12` (idp-addressing-model)**, for D5 — and specifically on its held second
+  half (D5–D7), which waits for a `token-sheriff-client` release with a back-channel/discovery
+  override (epic queue annotation, 2026-10-13). This is the one genuine dependency,
   and ignoring it produces a sample that hard-codes the wrong answer. The plan is emittable earlier
   only if D5 is explicitly deferred, which defers the one deliverable that keeps the sample from
   becoming the de-facto addressing specification. Prefer sequencing after `PLAN-V02-12` over
