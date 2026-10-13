@@ -65,7 +65,11 @@ import org.jspecify.annotations.Nullable;
  * resources with it), publishes it, closes the one it replaced, and loads it. Retries stop at the first
  * loaded key set, after which the successful delegate's own background refresh keeps the keys current.
  * Attempts are strictly sequential — the next one is scheduled only once the previous one has
- * completed — so at most one is in flight per issuer, whatever the request rate.
+ * completed — so at most one is in flight per issuer, whatever the request rate. Every attempt that
+ * ends while the wrapper is open continues the sequence: an attempt whose delegate cannot be built,
+ * whose replaced delegate cannot be closed or whose load cannot be started counts as a failed attempt
+ * and schedules the next one, whatever was thrown. The sequence therefore ends only at a loaded key
+ * set or at {@link #close()}, never silently on the scheduler thread.
  * <p>
  * <strong>Bounded refresh on an unknown key id.</strong> An identity provider that replaces its signing
  * key abruptly issues tokens naming a key id the loaded key set does not hold, and the library's
@@ -349,7 +353,15 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
         return status == null ? LoaderStatus.ERROR : status;
     }
 
+    /**
+     * Schedules retry number {@code retry}, unless the wrapper is closed. The closed state is read
+     * both before scheduling and again after the future is published, so a {@link #close()} racing
+     * this call cannot leave a retry behind.
+     */
     private void scheduleRetry(int retry) {
+        if (closed.get()) {
+            return;
+        }
         Duration delay = backoffDelay(retry, initialRetryDelay, maxRetryDelay);
         LOGGER.warn(ConfigLogMessages.WARN.JWKS_KEY_SET_RETRY, issuerName, delay.toMillis());
         pendingRetry.set(scheduler.schedule(() -> runRetry(retry), delay.toMillis(), TimeUnit.MILLISECONDS));
@@ -362,32 +374,54 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
     /**
      * One retry: builds a fresh delegate, publishes it in place of the current one, closes the
      * replaced delegate, and loads the fresh one. Runs on the scheduler only.
+     * <p>
+     * Every exit that neither hands the fresh delegate's load to {@link #settle} nor finds the wrapper
+     * closed schedules exactly one next attempt, whatever ended it. There is no in-flight flag to
+     * release here: what an escaping failure would cost is the retry sequence itself, because nothing
+     * else ever schedules the next attempt and the issuer would stay {@link KeySetState#FAILED} until
+     * the next restart. The anticipated refusals ({@link GatewayException},
+     * {@link IllegalArgumentException}, {@link IllegalStateException}) schedule from their own catch;
+     * any other failure — a {@code null} delegate, or any other exception or error from building the
+     * delegate, from closing the replaced one or from starting the load — schedules from the
+     * {@code finally} and still propagates. A closed wrapper schedules nothing on any path.
      */
     private void runRetry(int retry) {
         SecurityEventCounter counter = eventCounter.get();
         if (closed.get() || counter == null) {
             return;
         }
-        JwksLoader fresh;
+        boolean continued = false;
         try {
-            fresh = buildDelegate(delegateFactory);
+            JwksLoader fresh = buildDelegate(delegateFactory);
+            Snapshot replaced = snapshot.getAndUpdate(current -> current.with(fresh, current.state()));
+            closeDelegate(replaced.delegate());
+            if (closed.get()) {
+                closeDelegate(fresh);
+                return;
+            }
+            load(fresh, counter, retry);
+            continued = true;
         } catch (GatewayException | IllegalArgumentException | IllegalStateException failure) {
             // The factory refused: the gateway's own loader-config assembly (url, tls_profile
             // resolution) reports GatewayException, the library's config builder and loader
-            // construction report IllegalArgumentException / IllegalStateException. Count it as a
-            // failed attempt and keep retrying — never let it escape onto the scheduler thread,
-            // which would silently end the retry sequence.
-            LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built for retry %s", issuerName, retry);
+            // construction report IllegalArgumentException / IllegalStateException — the same
+            // refusals runRefresh expects, here too from closing the replaced delegate or starting
+            // the load. Count it as a failed attempt and keep retrying.
+            LOGGER.debug(failure, "JWKS loader for issuer '%s' could not be built or started for retry %s",
+                    issuerName, retry);
+            // Set before scheduling, so a scheduler that refuses cannot make the finally try again.
+            continued = true;
             scheduleRetry(retry + 1);
-            return;
+        } finally {
+            if (!continued && !closed.get()) {
+                // A failure nobody anticipated is escaping onto the scheduler thread. Keep the
+                // sequence alive; the scheduleRetry WARN already reports the episode, so the
+                // issuer name and the retry number are all this records.
+                LOGGER.debug("JWKS retry %s for issuer '%s' ended unexpectedly; scheduling the next attempt",
+                        retry, issuerName);
+                scheduleRetry(retry + 1);
+            }
         }
-        Snapshot replaced = snapshot.getAndUpdate(current -> current.with(fresh, current.state()));
-        closeDelegate(replaced.delegate());
-        if (closed.get()) {
-            closeDelegate(fresh);
-            return;
-        }
-        load(fresh, counter, retry);
     }
 
     /**

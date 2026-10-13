@@ -39,6 +39,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.LogRecord;
 
@@ -65,12 +66,15 @@ import mockwebserver3.Dispatcher;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
 import mockwebserver3.RecordedRequest;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Tests for {@link RetryingJwksLoader}: the gateway-owned loader records whether a key set was
@@ -209,13 +213,18 @@ class RetryingJwksLoaderTest {
         }, level + " log containing '" + part + "'", Awaits.CONNECT_CEILING_SECONDS);
     }
 
-    /** The formatted unknown-key-id WARN records logged so far, read off the test log handler. */
-    private static List<String> unknownKeyIdWarnings() {
+    /** The formatted WARN records logged so far that contain {@code part}, read off the test log handler. */
+    private static List<String> warningsContaining(String part) {
         return TestLoggerFactory.getTestHandler()
-                .resolveLogMessagesContaining(TestLogLevel.WARN, WARN_UNKNOWN_KEY_ID)
+                .resolveLogMessagesContaining(TestLogLevel.WARN, part)
                 .stream()
                 .map(LogRecord::getMessage)
                 .toList();
+    }
+
+    /** The formatted unknown-key-id WARN records logged so far. */
+    private static List<String> unknownKeyIdWarnings() {
+        return warningsContaining(WARN_UNKNOWN_KEY_ID);
     }
 
     private static LoaderStatus initialise(RetryingJwksLoader loader) throws Exception {
@@ -465,6 +474,120 @@ class RetryingJwksLoaderTest {
             assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
             awaitLog(TestLogLevel.WARN, "JWKS key set for issuer '" + ISSUER_NAME + "' not loaded — retrying in 100 ms");
             loader.close();
+        }
+
+        /**
+         * A loader whose first load fails at the endpoint and whose first retry then fails at
+         * {@code escape}, with a failure the loader does not anticipate; every other build yields an
+         * ordinary HTTP delegate, and the endpoint serves the key set from the second fetch on.
+         *
+         * @param builds        counts every delegate the loader asks for
+         * @param beforeFailing runs on the scheduler thread immediately before the failure is raised,
+         *                      with the loader under test
+         */
+        private RetryingJwksLoader escapingLoader(RetryEscape escape, AtomicInteger builds,
+                Consumer<RetryingJwksLoader> beforeFailing) {
+            failuresBeforeSuccess.set(1);
+            AtomicReference<RetryingJwksLoader> self = new AtomicReference<>();
+            Runnable failing = () -> beforeFailing.accept(self.get());
+            RetryingJwksLoader loader = loader(() -> switch (builds.incrementAndGet()) {
+                case 1 -> escape == RetryEscape.REPLACED_DELEGATE_CLOSE_THROWS
+                        ? closeFailingDelegate(failing)
+                        : JwksLoaderFactory.createHttpLoader(httpConfig());
+                case 2 -> firstRetryDelegate(escape, failing);
+                default -> JwksLoaderFactory.createHttpLoader(httpConfig());
+            }, REFRESH_INTERVAL, FAST);
+            self.set(loader);
+            return loader;
+        }
+
+        /** The delegate the first retry asks for, failing as {@code escape} prescribes. */
+        private @Nullable JwksLoader firstRetryDelegate(RetryEscape escape, Runnable failing) {
+            return switch (escape) {
+                case FACTORY_YIELDS_NULL -> {
+                    failing.run();
+                    yield null;
+                }
+                case FACTORY_THROWS_UNCHECKED -> {
+                    failing.run();
+                    throw new UnsupportedOperationException("simulated unanticipated factory failure");
+                }
+                case FACTORY_THROWS_ERROR -> {
+                    failing.run();
+                    throw new LinkageError("simulated unanticipated factory error");
+                }
+                case REPLACED_DELEGATE_CLOSE_THROWS -> JwksLoaderFactory.createHttpLoader(httpConfig());
+                case LOAD_START_THROWS -> new TrackedLoader(httpConfig()) {
+                    @Override
+                    public CompletableFuture<LoaderStatus> initJWKSLoader(SecurityEventCounter securityEventCounter) {
+                        failing.run();
+                        throw new UnsupportedOperationException("simulated failure to start the load");
+                    }
+                };
+            };
+        }
+
+        /** A first delegate whose close, which the first retry performs, fails unanticipated. */
+        private JwksLoader closeFailingDelegate(Runnable failing) {
+            return new TrackedLoader(httpConfig()) {
+                @Override
+                public void close() {
+                    super.close();
+                    failing.run();
+                    throw new UnsupportedOperationException("simulated failure to close the replaced delegate");
+                }
+            };
+        }
+
+        @ParameterizedTest
+        @EnumSource(RetryEscape.class)
+        @DisplayName("a retry that fails in a way nobody anticipated is followed by exactly one further retry")
+        void unanticipatedRetryFailureContinuesTheSequence(RetryEscape escape) throws Exception {
+            // Arrange — the endpoint fails the first load, the first retry fails at the escape point,
+            // and the second retry builds an ordinary delegate that loads
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = escapingLoader(escape, builds, _ -> {
+                // the loader stays open
+            });
+
+            // Act
+            initialise(loader);
+            Awaits.until(() -> loader.keySetState() == KeySetState.LOADED, "key set loaded by the second retry",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            drainScheduler(FAST.multipliedBy(4));
+
+            // Assert — the failed retry left one continuation behind, and only one: a second one would
+            // have built a fourth delegate and logged a second 100 ms WARN
+            assertEquals(LoaderStatus.OK, loader.getLoaderStatus());
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
+                    "the second retry's delegate answers key lookups through the wrapper");
+            assertEquals(3, builds.get(), "the first delegate, the failed retry's and the second retry's");
+            assertEquals(2, server.getRequestCount(), "the first load and the second retry; the failed one fetched nothing");
+            assertEquals(1, warningsContaining("retrying in 100 ms").size(),
+                    "exactly one continuation is scheduled from the failed retry");
+            assertFalse(loader.retryPending(), "retries stop at the first loaded key set");
+            loader.close();
+        }
+
+        @ParameterizedTest
+        @EnumSource(RetryEscape.class)
+        @DisplayName("a retry that fails in a way nobody anticipated after the loader was closed schedules nothing")
+        void unanticipatedRetryFailureAfterCloseSchedulesNothing(RetryEscape escape) throws Exception {
+            // Arrange — the loader is closed on the scheduler thread immediately before the failure is
+            // raised: a close() racing the retry
+            AtomicInteger builds = new AtomicInteger();
+            RetryingJwksLoader loader = escapingLoader(escape, builds, RetryingJwksLoader::close);
+
+            // Act — the barrier is due long after the first retry, so the retry has run when it returns
+            initialise(loader);
+            drainScheduler(FAST.multipliedBy(6));
+
+            // Assert
+            assertEquals(2, builds.get(), "the first delegate and the failed retry's; nothing after the close");
+            assertTrue(warningsContaining("retrying in 100 ms").isEmpty(), "a closed loader schedules no next attempt");
+            assertTrue(scheduler.getQueue().isEmpty(), "nothing is left on the scheduler");
+            assertFalse(loader.retryPending());
+            assertEquals(1, server.getRequestCount(), "only the first load fetched");
         }
 
         @Test
@@ -1092,6 +1215,23 @@ class RetryingJwksLoaderTest {
             assertEquals(Duration.ofSeconds(11), loader.keyRotationGracePeriod());
             loader.close();
         }
+    }
+
+    /**
+     * Where a retry fails in a way the loader does not anticipate: every member raises a failure
+     * outside the refusals the loader expects from its factory.
+     */
+    enum RetryEscape {
+        /** The factory yields {@code null}, which the loader refuses with a NullPointerException. */
+        FACTORY_YIELDS_NULL,
+        /** The factory throws an unchecked exception of a type the loader does not name. */
+        FACTORY_THROWS_UNCHECKED,
+        /** The factory throws an error. */
+        FACTORY_THROWS_ERROR,
+        /** Closing the delegate the retry replaces throws. */
+        REPLACED_DELEGATE_CLOSE_THROWS,
+        /** The fresh delegate, already published, throws synchronously when its load is started. */
+        LOAD_START_THROWS
     }
 
     /** The real library HTTP loader, recording that it was closed. */
