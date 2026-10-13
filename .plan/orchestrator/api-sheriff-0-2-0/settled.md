@@ -332,3 +332,28 @@ _Relocated 2026-10-12 by `cleanup`: the subject is closed and verified on `main`
     expectations unchanged); `pending_login_flood.js` and log record `K6Benchmark-7` are deleted; twelve
     k6 goals remain. Verified: PR-attached benchmark run 38073671464 success; every push and merge-group
     run on `2657be7c` success.
+
+## Open Defect 16 — upload benchmark HTTP/2 GOAWAY ENHANCE_YOUR_CALM (resolved 2026-10-13 by #431)
+
+_Relocated 2026-10-13 by `analyze`: the fix is confirmed on five consecutive runs._
+
+16. **FIX LANDED 2026-10-13, CONFIRMING — #431 (`09edaea9`, ADR-0066), a spin-off plan outside this
+    queue: the gateway now resets early-answered HTTP/2 streams itself with `NO_ERROR`, so clients no
+    longer reset them and trip the Rapid-Reset guard.** First post-merge benchmark run 38364519750:
+    success, **0** `ENHANCE_YOUR_CALM` lines (103 on the run before, 149 on #433's failed run
+    38307102339). Relocate once two more green runs show 0. `PLAN-V02-06` D8 keeps the `gw-08` bound
+    itself; its spec now says that path must stay out of any reset count.
+    Original entry: **MEDIUM — OWNER: `PLAN-V02-06` D8 — the post-merge upload benchmark fails on HTTP/2 `GOAWAY`
+    `ENHANCE_YOUR_CALM` ("Maximum number of RST frames reached")** (added 2026-10-06, found at the
+    `PLAN-V02-14` landing). Run 37430198468 on #387 failed `run-k6-upload-small-benchmark`: 134
+    `POST /upload/small` requests were refused this way and the `checks` / `http_req_failed` thresholds
+    were crossed. The same `GOAWAY` appears 95–105 times in each of the three preceding, passing
+    runs (#382, #385, #386), so the benchmark has been near its threshold for a while and #387 — which
+    touches no edge, HTTP/2 or upload code — is not the cause. Where the resets come from (client
+    behaviour, the gateway's upload path, or the transport's default reset-flood limit) is not
+    established. The benchmark lane does not gate merges, so nothing blocked; a later benchmark run
+    may pass or fail on the same tree. `PLAN-V02-06` D8 now carries this as evidence. **Observable again since #427 (2026-10-10)**: run
+    38073671464 passed with 104 `ENHANCE_YOUR_CALM` lines in its log — inside the earlier 95–105 band, so
+    still near the threshold, not fixed.
+    **CONFIRMED 2026-10-13:** 0 `ENHANCE_YOUR_CALM` lines in each of the five post-merge benchmark runs
+    since #431 (38364519750, 38370104773, 38380688567, 38401958753, 38409700336), all success.

@@ -40,7 +40,8 @@ touched although declared: `ImageMetadataIT` and `integration-tests/pom.xml` (D4
 - Merged through the merge queue; the merge-group `Maven Build` and `Integration Tests` runs succeeded.
 - Post-merge on `48e8d5a6`, checked 2026-10-13: `Maven Build`, `Config Validation`, `Demo Client E2E`
   and Scorecard push runs **success**; the push `Integration Tests` run and the PR-attached
-  Performance Benchmark run 38409700336 were **still in progress** when this was written.
+  Performance Benchmark run 38409700336 also **success** (confirmed later the same day; 0 HTTP/2
+  `GOAWAY` resets in the benchmark).
 
 ## Reconciliation Actions
 
@@ -57,4 +58,3 @@ touched although declared: `ImageMetadataIT` and `integration-tests/pom.xml` (D4
 - **`demo-client/scripts/start-dev-environment.sh` keeps a literal `120`** for its Keycloak wait
   (lines 244–255), contrary to the amended ADR-0031's one-named-constant rule. Recorded as a Watch;
   `PLAN-V02-22` (demo client) is the natural home.
-- Post-merge `Integration Tests` and benchmark results on `48e8d5a6` — confirm at the next analyze.
