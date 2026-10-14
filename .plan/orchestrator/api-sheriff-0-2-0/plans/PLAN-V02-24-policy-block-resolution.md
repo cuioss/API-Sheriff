@@ -58,8 +58,9 @@ change; part (a) is not.
 4. **The override WARN keeps its meaning: "both scopes declare the block"** (operator decision). It is
    derived from the declaration for every block that opts in, not hand-coded per block; the opt-in set
    is part of deliverable 1's proposal. The `auth` floor stays a floor (an anchor's auth cannot be
-   replaced by a weaker one) and is expressed in the declaration rather than in a separate validator
-   method, if that can be done without changing which configurations are refused.
+   replaced by a weaker one). **Leave `ConfigValidator.validateAnchorAuthFloor` where it is**: `PLAN-V02-26`
+   runs in parallel and owns where validator rules live. If the floor can be derived from the declaration,
+   say so in the ADR and leave the move to whichever of the two plans merges second.
 5. **Config records get Lombok `@Builder`; tests stop constructing them positionally** (operator
    decision). 24 of the 41 classes in `config/model/` carry `@Builder` at `5490144f`; `AuthConfig` is
    constructed positionally 104 times in 8 test files. Add `@Builder` to the scope and policy-block
@@ -95,7 +96,6 @@ diff characters. Natural split: PR 1 = deliverables 2, 5, 6 (behaviour-neutral);
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/` — the scope and policy-block records, `ResolvedRoute`
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — `validateAnchorAuthFloor` only, if deliverable 4 moves the floor
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigModelReflection.java`
 - OBSERVED: `api-sheriff/src/main/resources/schema/gateway.schema.json`, `api-sheriff/src/main/resources/schema/endpoint.schema.json`
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/` — the positional constructions, `config/DocumentedSetsContractTest`, `config/model/ConfigModelContractTest`, `RouteTableBuilder` tests
@@ -104,9 +104,16 @@ diff characters. Natural split: PR 1 = deliverables 2, 5, 6 (behaviour-neutral);
 
 ## Dependencies and Sequencing
 
-- Depends on: `PLAN-V02-12`'s second PR (adds the `oidc` back-channel-origin key to `OidcConfig`,
-  `gateway.schema.json` and `ConfigValidator`) and kidicap `PLAN-32` having landed.
-- Before: `PLAN-V02-25` and `PLAN-V02-26`, then the re-grounded `PLAN-V02-23`, then `PLAN-V02-27`.
+- **Emitted 2026-10-14 in parallel with `PLAN-V02-26`** (operator: "emit the refactor plans, what can be run
+  in parallel sensibly"). The two are disjoint as long as this plan does not touch `ConfigValidator`
+  (see deliverable 4).
+- Concurrent with `PLAN-V02-12`'s second PR (the `oidc` back-channel-origin key, not yet started at
+  emission): it adds a field to `OidcConfig` and `gateway.schema.json` and checks to `ConfigValidator`.
+  Whichever merges second rebases (operator rule, 2026-10-14). Re-fetch `origin/main` before outline and
+  before push.
+- No dependency on kidicap `PLAN-32` (it works in `edge/`, this plan in `config/`).
+- Before: `PLAN-V02-25` (builds the merged per-route type on this mechanism), then the re-grounded
+  `PLAN-V02-23`, then `PLAN-V02-27`.
 - Holds every staged plan that adds or changes a policy block until it lands: `PLAN-V02-05`, `-06`,
   `-07`, `-20`, `-23`.
 

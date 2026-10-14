@@ -76,7 +76,8 @@ deliverable 1 first and the extractions second.
 
 - Depends on: `PLAN-V02-24` (its resolution mechanism builds the merged type's policy half) and kidicap
   `PLAN-32` (early-answer IT fix, in `GatewayEdgeRoute`) having landed.
-- Parallel with `PLAN-V02-26` (validator split): disjoint surfaces.
+- Parallel with `PLAN-V02-26` (validator split) if that is still running: disjoint surfaces. Emitted once
+  V02-24 and kidicap PLAN-32 have both landed.
 - Before: the re-grounded `PLAN-V02-23`, then `PLAN-V02-27`. Holds every staged plan editing `edge/**`:
   `PLAN-V02-05`, `-06`, `-07`.
 
