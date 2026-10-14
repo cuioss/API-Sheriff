@@ -118,9 +118,14 @@ public final class ConfigLogMessages {
     public static final class WARN {
 
         /**
-         * A route replaces an anchor-provided non-auth policy block (wholesale
-         * replacement). Logged so a weakening override is always an explicit, audited
-         * choice (ADR-0007).
+         * A route's anchor declares a policy block and a nearer scope — the route's endpoint or the
+         * route itself — declares it too, so the nearer declaration replaces the anchor's wholesale.
+         * Logged so a weakening override is always an explicit, audited choice (ADR-0007).
+         * <p>
+         * Which blocks are announced is derived from the descriptors, not listed here: every
+         * {@link PolicyBlock} whose {@link PolicyBlock#overrideWarn()} flag is set opts in, and the
+         * record is emitted at most once per route and opted-in block. The last template argument
+         * is the block's yaml key.
          */
         public static final LogRecord ANCHOR_POLICY_OVERRIDDEN = LogRecordModel.builder()
                 .prefix(PREFIX)

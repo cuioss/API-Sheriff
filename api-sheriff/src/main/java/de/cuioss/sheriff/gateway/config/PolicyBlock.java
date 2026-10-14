@@ -80,8 +80,9 @@ import org.jspecify.annotations.Nullable;
  *                     {@code null} / an empty list when that scope does not declare it); iterated in
  *                     {@link Scope} order
  * @param fallback     what the block resolves to when no scope declares it
- * @param overrideWarn whether replacing an anchor-declared block from a nearer scope is announced
- *                     as a boot WARN
+ * @param overrideWarn whether replacing an anchor-declared block from a nearer scope (endpoint or
+ *                     route) is announced as a boot WARN; opted in by {@link #ALLOWED_METHODS} and
+ *                     {@link #SECURITY_FILTER} only
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -107,19 +108,21 @@ Map<Scope, Function<ScopeChain, @Nullable T>> accessors, Fallback<T> fallback, b
 
     /**
      * {@code allowed_methods}: declarable at gateway, anchor and endpoint; an empty list is not a
-     * declaration. When no scope declares one, every standard HTTP method is allowed.
+     * declaration. When no scope declares one, every standard HTTP method is allowed. An endpoint
+     * list replacing the anchor's is announced by the override WARN.
      */
     public static final PolicyBlock<List<HttpMethod>> ALLOWED_METHODS = new PolicyBlock<>("allowed_methods",
             Map.of(Scope.GATEWAY, atGateway(GatewayConfig::allowedMethods),
                     Scope.ANCHOR, atAnchor(AnchorConfig::allowedMethods),
                     Scope.ENDPOINT, atEndpoint(EndpointConfig::allowedMethods)),
             new Fallback.Value<>(STANDARD_ALLOWED_METHODS),
-            false);
+            true);
 
     /**
      * {@code security_filter}: declarable at anchor, endpoint and route; {@code null} when none
      * declares one (the profile then comes from {@code security_defaults}). There is no gateway
-     * scope: {@code security_defaults} owns the gateway-wide profile.
+     * scope: {@code security_defaults} owns the gateway-wide profile. An endpoint or route block
+     * replacing the anchor's is announced by the override WARN.
      */
     public static final PolicyBlock<@Nullable SecurityFilterConfig> SECURITY_FILTER =
             new PolicyBlock<>("security_filter",
@@ -127,7 +130,7 @@ Map<Scope, Function<ScopeChain, @Nullable T>> accessors, Fallback<T> fallback, b
                             Scope.ENDPOINT, atEndpoint(EndpointConfig::securityFilter),
                             Scope.ROUTE, atRoute(RouteConfig::securityFilter)),
                     new Fallback.None<>(),
-                    false);
+                    true);
 
     /** {@code security_headers}: declarable at gateway and anchor; {@code null} when neither declares one. */
     public static final PolicyBlock<@Nullable SecurityHeadersConfig> SECURITY_HEADERS =

@@ -151,9 +151,12 @@ class PolicyBlockTest {
         }
 
         @Test
-        @DisplayName("No descriptor opts into the override WARN")
-        void shouldNotOptIntoTheOverrideWarn() {
-            assertTrue(PolicyBlock.ALL.stream().noneMatch(PolicyBlock::overrideWarn));
+        @DisplayName("Exactly allowed_methods and security_filter opt into the override WARN")
+        void shouldOptExactlyTheDecidedBlocksIntoTheOverrideWarn() {
+            Set<String> optedIn = PolicyBlock.ALL.stream().filter(PolicyBlock::overrideWarn)
+                    .map(PolicyBlock::yamlKey).collect(Collectors.toSet());
+
+            assertEquals(Set.of("allowed_methods", "security_filter"), optedIn);
         }
 
         @Test

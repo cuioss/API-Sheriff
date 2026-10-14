@@ -64,6 +64,7 @@ import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -1101,6 +1102,114 @@ class RouteTableBuilderTest {
                     () -> assertEquals(endpointFilter, resolved),
                     () -> assertNull(resolved.profile(), "the anchor profile does not survive the endpoint block"),
                     () -> assertNull(resolved.maxBodyBytes(), "the anchor cap does not survive the endpoint block"));
+        }
+    }
+
+    /**
+     * The override WARN is derived from the descriptors: a block whose descriptor opts in is announced
+     * when the route's anchor declares it and a nearer scope declares it too, once per route and
+     * block; nothing else is announced.
+     */
+    @Nested
+    @DisplayName("Anchor-override WARN derived from the descriptor opt-in")
+    class AnchorOverrideWarn {
+
+        /** The identifier every override WARN carries; absent from the log when none was emitted. */
+        private static final String OVERRIDE_WARN_ID = "ApiSheriff-101";
+
+        private GatewayConfig gatewayWithAnchor(AuthConfig auth, @Nullable SecurityFilterConfig filter,
+                @Nullable List<HttpMethod> methods) {
+            return gateway().anchors(Map.of("api", anchor("api", "/api", auth, filter, methods, null))).build();
+        }
+
+        private RouteConfig.RouteConfigBuilder apiRoute() {
+            return RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET));
+        }
+
+        private void build(GatewayConfig config, EndpointConfig endpoint) {
+            builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+        }
+
+        private static String overrideOf(String block) {
+            return "Route 'r' overrides anchor 'api' " + block + " policy";
+        }
+
+        @Test
+        @DisplayName("Should WARN when an endpoint allowed_methods list replaces the anchor's")
+        void shouldWarnOnEndpointAllowedMethodsOverride() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .allowedMethods(List.of(HttpMethod.GET)).routes(List.of(apiRoute().build())).build();
+
+            build(gatewayWithAnchor(auth(Require.BEARER), null, List.of(HttpMethod.GET, HttpMethod.POST)), endpoint);
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("allowed_methods"));
+        }
+
+        @Test
+        @DisplayName("Should WARN when a route security_filter replaces the anchor's")
+        void shouldWarnOnRouteSecurityFilterOverride() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(apiRoute().securityFilter(filter("lenient")).build())).build();
+
+            build(gatewayWithAnchor(auth(Require.BEARER), filter("strict"), null), endpoint);
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("security_filter"));
+        }
+
+        @Test
+        @DisplayName("Should WARN when an endpoint security_filter replaces the anchor's")
+        void shouldWarnOnEndpointSecurityFilterOverride() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").securityFilter(filter("lenient"))
+                    .routes(List.of(apiRoute().build())).build();
+
+            build(gatewayWithAnchor(auth(Require.BEARER), filter("strict"), null), endpoint);
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("security_filter"));
+        }
+
+        @Test
+        @DisplayName("Should WARN exactly once when both the endpoint and the route replace the anchor security_filter")
+        void shouldWarnOnceWhenEndpointAndRouteBothOverride() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").securityFilter(filter("lenient"))
+                    .routes(List.of(apiRoute().securityFilter(filter("paranoid")).build())).build();
+
+            build(gatewayWithAnchor(auth(Require.BEARER), filter("strict"), null), endpoint);
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("security_filter"));
+        }
+
+        @Test
+        @DisplayName("Should not WARN when only the anchor declares the opted-in blocks")
+        void shouldNotWarnWhenOnlyTheAnchorDeclares() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(apiRoute().build())).build();
+
+            build(gatewayWithAnchor(auth(Require.BEARER), filter("strict"), List.of(HttpMethod.GET)), endpoint);
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, OVERRIDE_WARN_ID);
+        }
+
+        @Test
+        @DisplayName("Should not WARN when only a nearer scope declares the opted-in blocks")
+        void shouldNotWarnWhenOnlyANearerScopeDeclares() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").securityFilter(filter("lenient"))
+                    .allowedMethods(List.of(HttpMethod.GET))
+                    .routes(List.of(apiRoute().securityFilter(filter("paranoid")).build())).build();
+
+            build(gatewayWithAnchor(auth(Require.BEARER), null, null), endpoint);
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, OVERRIDE_WARN_ID);
+        }
+
+        @Test
+        @DisplayName("Should not WARN for auth, which does not opt in, declared at the anchor and the route")
+        void shouldNotWarnForAuthOverride() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(apiRoute().auth(auth(Require.BEARER)).build())).build();
+
+            build(gatewayWithAnchor(auth(Require.BEARER), null, null), endpoint);
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, OVERRIDE_WARN_ID);
         }
     }
 

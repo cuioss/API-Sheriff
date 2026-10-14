@@ -82,8 +82,9 @@ import org.jspecify.annotations.Nullable;
  * (gateway → anchor → endpoint → route, nearest declared scope wins, wholesale replacement —
  * ADR-0007) — and it is resolved here, once, so the request pipeline never re-implements
  * a chain and never consults an anchor. The effective posture of each
- * route is emitted to the boot log; a non-auth override that replaces an
- * anchor-provided block is logged as a boot WARN.
+ * route is emitted to the boot log; an endpoint- or route-level declaration replacing an
+ * anchor-provided block is logged as a boot WARN for every block whose descriptor opts in
+ * ({@link PolicyBlock#overrideWarn()}).
  * <p>
  * The collaborators are supplied as method arguments and the builder carries no
  * framework imports: the offline configuration check runs it through
@@ -230,7 +231,7 @@ public final class RouteTableBuilder {
         List<HttpMethod> allowedMethods = PolicyBlock.ALLOWED_METHODS.resolve(chain);
         SecurityFilterConfig securityFilter = PolicyBlock.SECURITY_FILTER.resolve(chain);
         SecurityHeadersConfig securityHeaders = PolicyBlock.SECURITY_HEADERS.resolve(chain);
-        warnOnWeakeningOverride(route, endpoint, anchor);
+        warnOnAnchorOverride(chain);
         UpstreamDefaultsConfig defaults = PolicyBlock.UPSTREAM_DEFAULTS.resolve(chain);
         UpstreamConfig routeUpstream = route.upstream();
         UpstreamConfig.Retry retry = routeUpstream == null ? null : routeUpstream.retry();
@@ -533,19 +534,39 @@ public final class RouteTableBuilder {
                 .orElse(SecurityProfile.DEFAULT_PROFILE);
     }
 
-    private static void warnOnWeakeningOverride(RouteConfig route, EndpointConfig endpoint,
-            @Nullable AnchorConfig anchor) {
+    /**
+     * Announces every anchor-declared block a nearer scope replaces wholesale. The rule is derived
+     * from the descriptors, not restated per block: for each {@link PolicyBlock} that opts in
+     * ({@link PolicyBlock#overrideWarn()}), one {@link ConfigLogMessages.WARN#ANCHOR_POLICY_OVERRIDDEN}
+     * is emitted when the route's anchor declares the block <em>and</em> at least one nearer scope —
+     * endpoint or route — declares it too. A route whose endpoint and route both replace the anchor
+     * block is announced once, not twice. An unanchored route has no anchor policy to override.
+     *
+     * @param chain the route's scope chain
+     */
+    private static void warnOnAnchorOverride(PolicyBlock.ScopeChain chain) {
+        AnchorConfig anchor = chain.anchor();
         if (anchor == null) {
             return;
         }
-        if (anchor.securityFilter() != null && route.securityFilter() != null) {
-            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchor.name(),
-                    "security_filter");
+        for (PolicyBlock<?> block : PolicyBlock.ALL) {
+            if (block.overrideWarn() && replacesAnchor(block.declaringScopes(chain))) {
+                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, chain.route().id(), anchor.name(),
+                        block.yamlKey());
+            }
         }
-        if (!anchor.allowedMethods().isEmpty() && !endpoint.allowedMethods().isEmpty()) {
-            LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, route.id(), anchor.name(),
-                    "allowed_methods");
-        }
+    }
+
+    /**
+     * Whether a set of declaring scopes holds the anchor together with a nearer scope, so the nearer
+     * declaration replaces the anchor's.
+     *
+     * @param declaring the scopes declaring one block for one route
+     * @return {@code true} when the anchor and at least one nearer scope declare the block
+     */
+    private static boolean replacesAnchor(Set<PolicyBlock.Scope> declaring) {
+        return declaring.contains(PolicyBlock.Scope.ANCHOR)
+                && declaring.stream().anyMatch(scope -> scope.compareTo(PolicyBlock.Scope.ANCHOR) > 0);
     }
 
     /**
