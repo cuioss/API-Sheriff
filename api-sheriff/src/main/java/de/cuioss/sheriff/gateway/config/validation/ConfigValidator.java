@@ -15,13 +15,19 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.declaredAnchorName;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.resolveAnchor;
+
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
@@ -30,9 +36,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
@@ -58,9 +62,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
@@ -77,6 +79,9 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.RouteMatchingRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
+import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import de.cuioss.sheriff.gateway.http.LocationPathReview;
 import de.cuioss.tools.logging.CuiLogger;
@@ -87,6 +92,14 @@ import org.jspecify.annotations.Nullable;
  * expressed structurally in the D2 JSON Schemas, aggregating every violation in a
  * single pass.
  * <p>
+ * The validator is the orchestration of ONE ordered rule list, {@code DEFAULT_RULES}: one entry per
+ * rule, in the order the violations are reported. That list is the only place that decides the
+ * order. A rule body lives in the concern class of the {@code rule} package that owns its
+ * configuration block ({@link PortalRules} for the application portal, for example) or — for a
+ * concern not yet extracted — as a private method of this class, registered at its position all the
+ * same. The helpers every rule shares (the reporting file and pointer, the CWE-117-safe echo of a
+ * configured value, anchor resolution) live once, in {@link RuleSupport}.
+ * <p>
  * Each rule is a {@link ValidationRule}; {@link #validate} executes them all and
  * returns the combined, file- and path-annotated {@link ConfigError} list — never
  * stopping at the first problem. Disabled endpoints have already been dropped by the
@@ -96,15 +109,6 @@ import org.jspecify.annotations.Nullable;
  * {@code CONNECT}) are enforced upstream by the schema and the {@link HttpMethod}
  * enum, which cannot represent those verbs, so no post-binding rule is needed for
  * them.
- * <p>
- * The header-matcher consistency refusal runs directly after route disjointness: a
- * {@code match.headers} matcher must not declare {@code present: false} together with
- * {@code value}, because {@code present: false} forbids the header the value requires and the
- * two compose with AND, so such a matcher could never match and its route would be silently dead.
- * The same refusal covers two matchers of one route that name the same header (compared exactly as
- * the runtime normalises the names, lower-cased under {@link Locale#ROOT}) and can never hold
- * together — two differing values, or one requiring the
- * header while the other forbids it — because every matcher of a route must hold.
  * <p>
  * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
  * existence, route/namespace membership agreement, anchor-namespace coverage (no route
@@ -186,18 +190,6 @@ import org.jspecify.annotations.Nullable;
  * configured is never matched by the reserved endpoint. Both refusals are reported on the key's own
  * JSON pointer.
  * <p>
- * The JWKS egress-allowlist refusal adds one more: every {@code allowed_egress_hosts} entry of an
- * {@code http}-sourced issuer must be usable as the host-exact exemption token-sheriff's SSRF egress
- * guard matches on, so a blank or whitespace-only entry and a {@code host:port} entry are refused (a
- * bare IPv6 literal is not a {@code host:port} entry and is admitted). The schema declares the entries
- * unrestricted strings; this rule is the single enforcing authority.
- * <p>
- * The JWKS refresh rule bounds the refresh keys of an issuer's {@code jwks} block and refuses each of
- * them on a {@code file} source, where it would parse and never act. The keys and their settled ranges
- * are defined once, by {@link JwksRefreshKey}, whose Javadoc records why every range is one the token
- * library accepts. The schema declares the keys as unrestricted integers; this rule is the single
- * enforcing authority.
- * <p>
  * The application-portal rules ({@link PortalRules}) add four more, run after every rule above: a
  * declared {@code portal.path} must be canonical, must not equal a reserved OIDC path (compared
  * host-independently, since the portal matches on any host), and must not equal an enabled
@@ -222,12 +214,10 @@ public final class ConfigValidator {
     private static final CuiLogger LOGGER = new CuiLogger(ConfigValidator.class);
 
     private static final int SUPPORTED_VERSION = 1;
-    private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String PASSTHROUGH_SNI_POINTER = "/tls/passthrough_sni";
     private static final String ANCHORS_POINTER = "/anchors";
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
     private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
-    private static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
     private static final String FORWARDED_TRUSTED_POINTER = "/forwarded/trusted_proxies";
     private static final String EDGE_HARDENING_ADMISSION_POINTER = "/edge_hardening/admission_cap";
     private static final String EDGE_HARDENING_WEBSOCKET_POINTER = "/edge_hardening/websocket_relay_cap";
@@ -395,31 +385,20 @@ public final class ConfigValidator {
      */
     private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(MEDIA_TYPE_TOKEN);
 
-    /** The cap on the offending value a refusal message echoes back to the operator. */
-    private static final int ECHOED_VALUE_MAX_LENGTH = 60;
-
-    /** The {@code jwks.source} whose {@code allowed_egress_hosts} feed token-sheriff's egress guard. */
-    private static final String JWKS_SOURCE_HTTP = "http";
-
-    /**
-     * An {@code allowed_egress_hosts} entry carrying a port, matched against the WHOLE entry
-     * ({@link java.util.regex.Matcher#matches()}): a single-colon {@code name:digits} form, or a
-     * bracketed {@code [v6]:digits} form. The name part of the first alternative excludes every colon,
-     * so a bare IPv6 literal such as {@code fd00::1} — whose second colon cannot be followed by digits
-     * only — never matches. Every quantifier is possessive; the character classes are disjoint from
-     * the delimiters that follow them, so no give-back could ever succeed.
-     */
-    private static final Pattern HOST_WITH_PORT = Pattern.compile("[^:\\[\\]]*+:\\d++|\\[[^\\]]*+\\]:\\d++");
-
     /** The only schemes an {@code allow_external} redirect location may carry. */
     private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
 
-    private static final List<ValidationRule> CORE_RULES = List.of(
+    /**
+     * The built-in rules, one entry per rule, in the order their violations are reported. The
+     * application-portal rules run after every other rule.
+     */
+    private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRouteIdUniqueness(endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateRouteDisjointness(endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateHeaderMatcherConsistency(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateRouteDisjointness(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateHeaderMatcherConsistency(endpoints,
+                    errors),
             (gateway, endpoints, topology, errors) -> validateBaseUrlResolvable(endpoints, topology, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorPrefixDisjointness(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateAnchorReferencesExist(gateway, endpoints, errors),
@@ -431,7 +410,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateSecurityProfileMinimal(gateway, endpoints, errors),
             ConfigValidator::validateTerminalAction,
-            (gateway, endpoints, topology, errors) -> validateMethodMembership(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateMethodMembership(gateway, endpoints,
+                    errors),
             (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateContentSecurityPolicy(gateway, errors),
@@ -461,12 +441,13 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateJwksEgressHosts(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateJwksRefresh(gateway, errors));
-
-    /** The core rules followed by the application-portal rules, which run after every core rule. */
-    private static final List<ValidationRule> DEFAULT_RULES =
-            Stream.concat(CORE_RULES.stream(), PortalRules.RULES.stream()).toList();
+            (gateway, endpoints, topology, errors) -> TokenValidationRules.validateJwksEgressHosts(gateway, errors),
+            (gateway, endpoints, topology, errors) -> TokenValidationRules.validateJwksRefresh(gateway, errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validatePortalPathCanonical(gateway, errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validatePortalPathNotReserved(gateway, errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validatePortalPathNotExactRoute(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validateCatalogEntries(endpoints, errors));
 
     private final List<ValidationRule> rules;
 
@@ -655,7 +636,7 @@ public final class ConfigValidator {
      * whatever this rule permits.
      * <p>
      * The refusal names the offending extension and value, because an operator cannot fix a typo
-     * they cannot see. The value is rendered through {@link #renderForMessage} rather than echoed
+     * they cannot see. The value is rendered through {@link RuleSupport#renderForMessage} rather than echoed
      * raw: a {@link ConfigError} is emitted into the boot ERROR log, so echoing an unescaped CR/LF
      * would forge log lines (CWE-117) through the very key this rule constrains.
      * <p>
@@ -679,29 +660,6 @@ public final class ConfigValidator {
                                 .formatted(entry.getKey(), renderForMessage(value))));
             }
         }
-    }
-
-    /**
-     * Renders an offending configuration value for a refusal message: every character outside
-     * printable ASCII — CR and LF above all — becomes a {@code \\uXXXX} escape, and the result is
-     * capped at {@link #ECHOED_VALUE_MAX_LENGTH}. The operator still sees what they typed; the boot
-     * ERROR log cannot be line-forged by it.
-     */
-    private static String renderForMessage(String value) {
-        StringBuilder rendered = new StringBuilder();
-        int limit = Math.min(value.length(), ECHOED_VALUE_MAX_LENGTH);
-        for (int index = 0; index < limit; index++) {
-            char current = value.charAt(index);
-            if (current >= 0x20 && current < 0x7F) {
-                rendered.append(current);
-            } else {
-                rendered.append("\\u%04X".formatted((int) current));
-            }
-        }
-        if (value.length() > limit) {
-            rendered.append("...");
-        }
-        return rendered.toString();
     }
 
     /**
@@ -831,7 +789,7 @@ public final class ConfigValidator {
      * an absolute URL only on the {@code redirect_uri} origin, and a scheme-relative, backslash, blank
      * or unparseable value is refused. With no {@code redirect_uri} there is no origin to compare an
      * absolute value against, so only a gateway-relative path is admitted. The value is echoed
-     * through {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117).
+     * through {@link RuleSupport#renderForMessage}, so it cannot forge boot log lines (CWE-117).
      */
     private static void validateDefaultReturnUrl(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();
@@ -861,215 +819,6 @@ public final class ConfigValidator {
         }
     }
 
-    /**
-     * Rule: every {@code allowed_egress_hosts} entry of an {@code http}-sourced issuer must name a
-     * bare host.
-     * <p>
-     * Each entry is handed to token-sheriff's egress guard, which exempts exactly the host it names
-     * from the private-address refusal and matches it host-exact — the port of the JWKS url plays no
-     * part. Two shapes can therefore never match anything, and an operator declaring one believes an
-     * exemption is in force that no fetch ever meets:
-     * <ul>
-     *   <li>a <strong>blank or whitespace-only</strong> entry names no host at all;</li>
-     *   <li>a <strong>{@code host:port}</strong> entry — a single-colon {@code name:digits} form or a
-     *       bracketed {@code [v6]:digits} form ({@link #HOST_WITH_PORT}) — names a host the guard never
-     *       compares against. A bare IPv6 literal such as {@code fd00::1} is a host, not a
-     *       {@code host:port} pair, and is admitted.</li>
-     * </ul>
-     * The host part is never compared with the {@code jwks.url} host: a non-empty list is
-     * authoritative, and whether it names the key endpoint's host is the operator's decision. Because
-     * an explicit list replaces the allowance otherwise derived from {@code jwks.url}, an unusable
-     * entry is refused at boot rather than left to fail every JWKS fetch at runtime.
-     * <p>
-     * A {@code file} issuer (its list feeds no egress guard), an issuer without a {@code jwks} block
-     * and an absent {@code token_validation} block are skipped. The offending entry and the issuer
-     * name are echoed through {@link #renderForMessage}, so a hostile value cannot forge boot log
-     * lines (CWE-117). Every offending entry is collected rather than failing on the first, per
-     * ADR-0009.
-     */
-    private static void validateJwksEgressHosts(GatewayConfig gateway, List<ConfigError> errors) {
-        TokenValidationConfig tokenValidation = gateway.tokenValidation();
-        if (tokenValidation == null) {
-            return;
-        }
-        List<IssuerConfig> issuers = tokenValidation.issuers();
-        for (int index = 0; index < issuers.size(); index++) {
-            IssuerConfig issuer = issuers.get(index);
-            IssuerConfig.Jwks jwks = issuer.jwks();
-            if (jwks == null || !JWKS_SOURCE_HTTP.equals(jwks.source())) {
-                continue;
-            }
-            String pointer = "/token_validation/issuers/%d/jwks/allowed_egress_hosts".formatted(index);
-            for (String entry : jwks.allowedEgressHosts()) {
-                jwksEgressHostRefusal(entry).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                        "issuer '%s' jwks.allowed_egress_hosts entry '%s' is refused: %s"
-                                .formatted(renderForMessage(issuer.name()), renderForMessage(entry), reason))));
-            }
-        }
-    }
-
-    /**
-     * The shape review of one {@code allowed_egress_hosts} entry; see {@link #validateJwksEgressHosts}
-     * for the rules and why each exists.
-     *
-     * @return the refusal reason, or empty when the entry names a bare host
-     */
-    private static Optional<String> jwksEgressHostRefusal(String entry) {
-        if (entry.isBlank()) {
-            return Optional.of("a blank entry names no host to exempt from the SSRF egress guard — remove it, "
-                    + "or omit allowed_egress_hosts to derive the host of jwks.url");
-        }
-        if (HOST_WITH_PORT.matcher(entry).matches()) {
-            return Optional.of("the allowlist matches hosts only (host-exact), so an entry carrying a port "
-                    + "never matches — declare the bare host");
-        }
-        return Optional.empty();
-    }
-
-    /**
-     * Rule: the JWKS refresh keys of an issuer are bounded, and none of them may be declared on a
-     * {@code file} source.
-     * <p>
-     * The keys and the range each admits are defined once, by {@link JwksRefreshKey}, whose Javadoc
-     * records why each range is safe to hand to the token library; this rule iterates that definition
-     * rather than restating it.
-     * <p>
-     * A {@code file} source is read once and never refreshed, so any of the keys declared there
-     * would parse and never act; it is refused at the key's own pointer rather than silently ignored.
-     * On a {@code file} source the value itself is not range-checked — the key is refused whatever it
-     * holds.
-     * <p>
-     * An issuer without a {@code jwks} block and an absent {@code token_validation} block are skipped,
-     * and an omitted key is always admitted. Each message names the issuer's logical name — echoed
-     * through {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117) — the key and
-     * the admitted range, and never the JWKS url. Every violation of every issuer is collected in one
-     * pass, per ADR-0009.
-     */
-    private static void validateJwksRefresh(GatewayConfig gateway, List<ConfigError> errors) {
-        TokenValidationConfig tokenValidation = gateway.tokenValidation();
-        if (tokenValidation == null) {
-            return;
-        }
-        List<IssuerConfig> issuers = tokenValidation.issuers();
-        for (int index = 0; index < issuers.size(); index++) {
-            IssuerConfig issuer = issuers.get(index);
-            IssuerConfig.Jwks jwks = issuer.jwks();
-            if (jwks == null) {
-                continue;
-            }
-            boolean http = JWKS_SOURCE_HTTP.equals(jwks.source());
-            for (JwksRefreshKey refreshKey : JwksRefreshKey.values()) {
-                checkJwksRefreshKey(issuer, index, http, refreshKey, refreshKey.declaredIn(jwks), errors);
-            }
-        }
-    }
-
-    /**
-     * Reviews one JWKS refresh key of one issuer; see {@link #validateJwksRefresh} for the rules.
-     *
-     * @param http       whether the issuer's {@code jwks.source} is {@code http}
-     * @param refreshKey the key under review, carrying its {@code gateway.yaml} spelling and admitted range
-     * @param declared   the declared value, {@code null} when the key is omitted
-     */
-    private static void checkJwksRefreshKey(IssuerConfig issuer, int index, boolean http, JwksRefreshKey refreshKey,
-            @Nullable Integer declared, List<ConfigError> errors) {
-        if (declared == null) {
-            return;
-        }
-        String key = refreshKey.key();
-        int minimum = refreshKey.minimum();
-        int maximum = refreshKey.maximum();
-        String pointer = "/token_validation/issuers/%d/jwks/%s".formatted(index, key);
-        String issuerName = renderForMessage(issuer.name());
-        if (!http) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    ("issuer '%s' declares jwks.%s on a jwks source other than http; the key applies to "
-                            + "source: http only (admitted range %d to %d) and would never act here — remove it")
-                            .formatted(issuerName, key, minimum, maximum)));
-            return;
-        }
-        if (declared < minimum || declared > maximum) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    "issuer '%s' jwks.%s %d is outside the admitted range %d to %d"
-                            .formatted(issuerName, key, declared, minimum, maximum)));
-        }
-    }
-
-    /**
-     * The JWKS refresh keys of an issuer's {@code jwks} block, each with the inclusive range of seconds
-     * it admits — the single definition both {@link #validateJwksRefresh} enforces and the boot-validation
-     * list of {@code doc/configuration.adoc} is bound to by a contract test, so a key added here or a range
-     * changed here fails that test until the documentation moves with it.
-     * <p>
-     * {@link #REFRESH_INTERVAL} and {@link #KEY_ROTATION_GRACE_PERIOD} are handed to the token library;
-     * both ranges were checked against the value checks of token-sheriff 0.9.6's
-     * {@code HttpJwksLoaderConfig} builder, which admits a refresh interval of zero or more and any
-     * non-negative grace period and declares no upper bound, so every value admitted here is a value the
-     * library accepts. {@link #UNKNOWN_KID_REFRESH_WINDOW} is gateway-owned; its lower bound is what bounds
-     * the cost of a flood of tokens naming arbitrary key ids: at most one JWKS fetch per issuer per window.
-     * <p>
-     * The constants are immutable, so the type is safe for concurrent use.
-     *
-     * @since 1.0
-     */
-    public enum JwksRefreshKey {
-
-        /** {@code refresh_interval_seconds}: the cadence of the scheduled background JWKS refresh. */
-        REFRESH_INTERVAL("refresh_interval_seconds", 60, 86_400, IssuerConfig.Jwks::refreshIntervalSeconds),
-
-        /** {@code key_rotation_grace_period_seconds}: how long a key rotated out of the JWKS stays accepted. */
-        KEY_ROTATION_GRACE_PERIOD("key_rotation_grace_period_seconds", 0, 3_600,
-                IssuerConfig.Jwks::keyRotationGracePeriodSeconds),
-
-        /** {@code unknown_kid_refresh_window_seconds}: the minimum spacing of refreshes an unknown key id triggers. */
-        UNKNOWN_KID_REFRESH_WINDOW("unknown_kid_refresh_window_seconds", 5, 3_600,
-                IssuerConfig.Jwks::unknownKidRefreshWindowSeconds);
-
-        private final String key;
-        private final int minimum;
-        private final int maximum;
-        private final Function<IssuerConfig.Jwks, @Nullable Integer> reader;
-
-        JwksRefreshKey(String key, int minimum, int maximum, Function<IssuerConfig.Jwks, @Nullable Integer> reader) {
-            this.key = key;
-            this.minimum = minimum;
-            this.maximum = maximum;
-            this.reader = reader;
-        }
-
-        /**
-         * The key as spelled under an issuer's {@code jwks} block in {@code gateway.yaml}.
-         *
-         * @return the snake-case key name
-         */
-        public String key() {
-            return key;
-        }
-
-        /**
-         * The smallest value the key admits, in seconds.
-         *
-         * @return the inclusive lower bound
-         */
-        public int minimum() {
-            return minimum;
-        }
-
-        /**
-         * The largest value the key admits, in seconds.
-         *
-         * @return the inclusive upper bound
-         */
-        public int maximum() {
-            return maximum;
-        }
-
-        /** The value {@code jwks} declares for this key, {@code null} when the key is omitted. */
-        private @Nullable Integer declaredIn(IssuerConfig.Jwks jwks) {
-            return reader.apply(jwks);
-        }
-    }
-
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         Set<String> seen = new HashSet<>();
         for (EndpointConfig endpoint : endpoints) {
@@ -1088,233 +837,6 @@ public final class ConfigValidator {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "duplicate route id: " + route.id()));
                 }
-            }
-        }
-    }
-
-    /**
-     * Rule: no two enabled routes share a path matcher without being distinguished by host, method,
-     * or a header matcher. The disjointness check runs here in the all-violations pass rather than
-     * being thrown during route-table assembly (ADR-0009 single-reporter principle).
-     * <ul>
-     *   <li>Two prefix routes collide when their normalized {@code match.path_prefix} values are
-     *       equal — prefix normalization makes {@code /api} and {@code /api/} collide.</li>
-     *   <li>Two exact routes collide when their {@code match.path} strings are equal. An exact path
-     *       is compared un-normalized, so {@code /a} and {@code /a/} are distinct addresses and do
-     *       not collide.</li>
-     *   <li>An exact route never collides with a prefix route, even for the same string: the exact
-     *       route is selected first by design, and the prefix route keeps serving every other path
-     *       below it.</li>
-     * </ul>
-     * A header matcher distinguishes two routes when both name the same header (compared exactly as
-     * the runtime normalises the names — see {@link #runtimeHeaderName}) and either both declare a
-     * {@code value} and the values differ (compared case-sensitively), or one matcher requires the
-     * header — it declares
-     * {@code present: true} or a {@code value} — while the other forbids it with
-     * {@code present: false}. So an exact {@code value} and {@code present: false} are disjoint, while
-     * {@code value} vs {@code present: true}, {@code present: true} vs {@code present: true} and
-     * {@code present: false} vs {@code present: false} collide. These are exactly the pairs the
-     * compiled route matcher can never select for the same request, so the precedence this rule
-     * certifies never depends on declaration order.
-     */
-    private static void validateRouteDisjointness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        List<RouteWithOwner> routes = flattenRoutes(endpoints);
-        for (int i = 0; i < routes.size(); i++) {
-            for (int j = i + 1; j < routes.size(); j++) {
-                checkRoutePairDisjoint(routes.get(i), routes.get(j), errors);
-            }
-        }
-    }
-
-    /**
-     * @return every enabled-or-not route across every endpoint, each paired with the endpoint that
-     *         declares it — the flat population the pairwise disjointness check iterates
-     */
-    private static List<RouteWithOwner> flattenRoutes(List<EndpointConfig> endpoints) {
-        List<RouteWithOwner> routes = new ArrayList<>();
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                routes.add(new RouteWithOwner(endpoint, route));
-            }
-        }
-        return routes;
-    }
-
-    /**
-     * Records a disjointness violation for one route pair, or returns having found none. The three
-     * refusals are applied in the order the rule states them: two routes of different match forms
-     * never collide, two routes with different collision keys never collide, and two routes a host,
-     * method or header matcher tells apart never collide.
-     */
-    private static void checkRoutePairDisjoint(RouteWithOwner first, RouteWithOwner second, List<ConfigError> errors) {
-        MatchConfig firstMatch = first.route().match();
-        MatchConfig secondMatch = second.route().match();
-        if (firstMatch.isExact() != secondMatch.isExact()) {
-            return;
-        }
-        String firstKey = disjointnessKey(firstMatch);
-        if (!firstKey.equals(disjointnessKey(secondMatch)) || !overlaps(firstMatch, secondMatch)) {
-            return;
-        }
-        String kind = firstMatch.isExact() ? "path" : "prefix";
-        errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
-                "routes '%s' and '%s' share %s '%s' and are not disjoint".formatted(
-                        first.route().id(), second.route().id(), kind, firstKey)));
-    }
-
-    /**
-     * The key two same-form routes collide on: the exact path verbatim, or the normalized prefix.
-     */
-    private static String disjointnessKey(MatchConfig match) {
-        return match.isExact() ? match.matchKey() : RouteTableBuilder.normalizePrefix(match.matchKey());
-    }
-
-    private record RouteWithOwner(EndpointConfig endpoint, RouteConfig route) {
-    }
-
-    private static boolean overlaps(MatchConfig first, MatchConfig second) {
-        return hostsOverlap(first, second) && methodsOverlap(first, second) && !headersDistinguish(first, second);
-    }
-
-    private static boolean hostsOverlap(MatchConfig first, MatchConfig second) {
-        String firstHost = first.host();
-        String secondHost = second.host();
-        if (firstHost == null || secondHost == null) {
-            return true;
-        }
-        return firstHost.equalsIgnoreCase(secondHost);
-    }
-
-    private static boolean methodsOverlap(MatchConfig first, MatchConfig second) {
-        return first.methods().isEmpty() || second.methods().isEmpty()
-                || !Collections.disjoint(first.methods(), second.methods());
-    }
-
-    private static boolean headersDistinguish(MatchConfig first, MatchConfig second) {
-        for (HeaderMatcher headerA : first.headers()) {
-            for (HeaderMatcher headerB : second.headers()) {
-                if (neverHoldTogether(headerA, headerB)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Whether no request can satisfy both matchers: they name the same header (their
-     * {@link #runtimeHeaderName runtime names} are equal) and either declare differing values or one
-     * requires the header the other forbids. Across two routes this makes the routes disjoint; within
-     * one route it makes the route dead, since every matcher of a route must hold.
-     */
-    private static boolean neverHoldTogether(HeaderMatcher headerA, HeaderMatcher headerB) {
-        return runtimeHeaderName(headerA).equals(runtimeHeaderName(headerB))
-                && (valuesDistinguish(headerA, headerB) || presenceContradicts(headerA, headerB));
-    }
-
-    /**
-     * The name a header matcher reads at runtime: its configured name lower-cased under
-     * {@link Locale#ROOT}, exactly the normalisation {@code RouteMatcher.from} applies before the
-     * matcher looks the name up in the lower-case-keyed request header map.
-     * <p>
-     * Every comparison of two {@code match.headers} names in this validator goes through here, never
-     * through {@link String#equalsIgnoreCase}. The two disagree outside ASCII: {@code equalsIgnoreCase}
-     * folds case per character, so a name spelled with U+0130 (capital I with dot above) where another
-     * has a plain {@code I} equals it, while full {@code Locale.ROOT} lower-casing maps U+0130 to
-     * {@code i} plus a combining dot and so yields two different names. Judging names by per-character
-     * folding would let this validator certify two routes disjoint, or refuse a route as dead, on the
-     * strength of a name equality the runtime never sees.
-     */
-    private static String runtimeHeaderName(HeaderMatcher header) {
-        return header.name().toLowerCase(Locale.ROOT);
-    }
-
-    private static boolean valuesDistinguish(HeaderMatcher headerA, HeaderMatcher headerB) {
-        String valueA = headerA.value();
-        String valueB = headerB.value();
-        return valueA != null && valueB != null && !valueA.equals(valueB);
-    }
-
-    /**
-     * Whether one matcher requires the header another one forbids — no request can satisfy both, so
-     * the two routes can never match the same request.
-     */
-    private static boolean presenceContradicts(HeaderMatcher headerA, HeaderMatcher headerB) {
-        return (requiresPresence(headerA) && forbidsPresence(headerB))
-                || (requiresPresence(headerB) && forbidsPresence(headerA));
-    }
-
-    /**
-     * A matcher requires the header when it declares {@code present: true} or a {@code value} — an
-     * exact value can only match a header that is there.
-     */
-    private static boolean requiresPresence(HeaderMatcher header) {
-        return header.value() != null || Boolean.TRUE.equals(header.present());
-    }
-
-    private static boolean forbidsPresence(HeaderMatcher header) {
-        return Boolean.FALSE.equals(header.present());
-    }
-
-    /**
-     * Rule: a header matcher must not declare {@code present: false} together with {@code value}.
-     * <p>
-     * {@code present: false} forbids the header while {@code value} requires it, and the two compose
-     * with AND, so such a matcher can never hold: its route is silently dead. The boot refuses it
-     * rather than letting the declaration stand inert. {@code present: true} with {@code value} is
-     * coherent (the value already implies presence) and stays valid.
-     * <p>
-     * The rule also judges every pair of matchers within one route that name the same header
-     * (compared exactly as {@code RouteMatcher} normalises the names — see
-     * {@link #runtimeHeaderName}). Every matcher of a route must hold, so a pair that can never hold
-     * together — both declare a value and the values
-     * differ, or one requires the header ({@code value} or {@code present: true}) while the other
-     * forbids it ({@code present: false}) — leaves the route silently dead, and the boot refuses it
-     * with one error per conflicting pair. Redundant but compatible pairs ({@code value} with
-     * {@code present: true}, identical values, or matching presence flags) stay valid.
-     * <p>
-     * Header names are echoed through {@link #renderForMessage}, so they cannot forge boot log lines
-     * (CWE-117). Every violation collects into the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateHeaderMatcherConsistency(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                List<HeaderMatcher> headers = route.match().headers();
-                for (int i = 0; i < headers.size(); i++) {
-                    HeaderMatcher header = headers.get(i);
-                    if (forbidsPresence(header) && header.value() != null) {
-                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                                ("route '%s' declares header matcher '%s' with both present: false and value; "
-                                        + "present: false forbids the header while value requires it, so the "
-                                        + "matcher can never match — drop value, or declare present: true")
-                                        .formatted(route.id(), renderForMessage(header.name()))));
-                    }
-                    checkSameNameMatchersCompatible(endpoint, route, header, headers.subList(i + 1, headers.size()),
-                            errors);
-                }
-            }
-        }
-    }
-
-    /**
-     * Refuses every matcher in {@code laterHeaders} that names the same header as {@code header} and
-     * can never hold together with it — one error per conflicting pair, so each pair of one route is
-     * reported exactly once.
-     */
-    private static void checkSameNameMatchersCompatible(EndpointConfig endpoint, RouteConfig route,
-            HeaderMatcher header, List<HeaderMatcher> laterHeaders, List<ConfigError> errors) {
-        for (HeaderMatcher other : laterHeaders) {
-            if (neverHoldTogether(header, other)) {
-                String conflict = valuesDistinguish(header, other)
-                        ? "they require different values"
-                        : "one requires the header while the other forbids it";
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                        ("route '%s' declares header matchers '%s' and '%s' that can never hold together: %s; "
-                                + "header names compare lower-cased, as the runtime reads them, and every "
-                                + "matcher of a route must hold, so the route can never match — drop one "
-                                + "matcher, or make them agree")
-                                .formatted(route.id(), renderForMessage(header.name()),
-                                        renderForMessage(other.name()), conflict)));
             }
         }
     }
@@ -1947,7 +1469,7 @@ public final class ConfigValidator {
      *       Opting in emits {@link ConfigLogMessages.WARN#REDIRECT_EXTERNAL_TARGET_ALLOWED}, naming
      *       the route but never the location.</li>
      * </ul>
-     * Refusal messages echo the value through {@link #renderForMessage}, so a hostile value cannot
+     * Refusal messages echo the value through {@link RuleSupport#renderForMessage}, so a hostile value cannot
      * forge boot log lines (CWE-117).
      * <p>
      * <strong>Query hand-off.</strong> {@code keep_query} together with {@code allow_external} is
@@ -2117,23 +1639,6 @@ public final class ConfigValidator {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "asset route '%s' upstream alias '%s' does not resolve in the topology"
                                     .formatted(route.id(), alias)));
-                }
-            }
-        }
-    }
-
-    private static void validateMethodMembership(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                Set<HttpMethod> allowed = effectiveAllowedMethods(gateway, endpoint,
-                        resolveAnchor(gateway, endpoint, route));
-                for (HttpMethod method : route.match().methods()) {
-                    if (!allowed.contains(method)) {
-                        errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                                "route '%s' matches method %s outside the effective allowed_methods"
-                                        .formatted(route.id(), method)));
-                    }
                 }
             }
         }
@@ -2624,7 +2129,7 @@ public final class ConfigValidator {
      * authority. It applies in both session modes, because both emit the configured name. An omitted
      * key is never refused — it resolves to {@link SessionCookieCodec#DEFAULT_COOKIE_NAME}.
      * <p>
-     * The offending value is echoed through {@link #renderForMessage}, so a name carrying CR/LF cannot
+     * The offending value is echoed through {@link RuleSupport#renderForMessage}, so a name carrying CR/LF cannot
      * forge boot ERROR log lines (CWE-117). All failed requirements of one name are reported in a
      * single violation, collected into the shared list; the rule never fails fast (ADR-0009).
      */
@@ -2922,7 +2427,7 @@ public final class ConfigValidator {
      * <ol>
      *   <li><strong>Shape</strong> ({@link #isAbsoluteGatewayPath}): an absolute gateway path starting
      *       with a single {@code /}, carrying no query, no fragment, no backslash, no control character
-     *       and no whitespace. The refused value is echoed through {@link #renderForMessage}, so it
+     *       and no whitespace. The refused value is echoed through {@link RuleSupport#renderForMessage}, so it
      *       cannot forge boot log lines (CWE-117).</li>
      *   <li><strong>Canonical form</strong> ({@link #canonicalReservedPathRefusal}), checked once the
      *       shape holds: no {@code //}, no dot segment, no matrix parameter ({@code ;}) and no
@@ -3188,16 +2693,6 @@ public final class ConfigValidator {
         return normalized.isEmpty() ? null : normalized;
     }
 
-    private static @Nullable String declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
-        return route.anchor() != null ? route.anchor() : endpoint.anchor();
-    }
-
-    private static @Nullable AnchorConfig resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route) {
-        String name = declaredAnchorName(endpoint, route);
-        return name == null ? null : gateway.anchors().get(name);
-    }
-
     /**
      * The route's effective auth, resolved through the wholesale
      * {@code route → endpoint → declared-anchor} replacement chain (ADR-0007) — the
@@ -3219,20 +2714,6 @@ public final class ConfigValidator {
     private static Require effectiveRequire(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route) {
         AuthConfig auth = effectiveAuth(gateway, endpoint, route);
         return auth == null ? Require.NONE : auth.require();
-    }
-
-    private static Set<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
-            @Nullable AnchorConfig anchor) {
-        if (!endpoint.allowedMethods().isEmpty()) {
-            return EnumSet.copyOf(endpoint.allowedMethods());
-        }
-        if (anchor != null && !anchor.allowedMethods().isEmpty()) {
-            return EnumSet.copyOf(anchor.allowedMethods());
-        }
-        if (!gateway.allowedMethods().isEmpty()) {
-            return EnumSet.copyOf(gateway.allowedMethods());
-        }
-        return EnumSet.allOf(HttpMethod.class);
     }
 
     /**
@@ -3265,9 +2746,5 @@ public final class ConfigValidator {
         return prefixContains(container, candidate)
                 && !RouteTableBuilder.normalizePrefix(container)
                 .equals(RouteTableBuilder.normalizePrefix(candidate));
-    }
-
-    private static String endpointFile(EndpointConfig endpoint) {
-        return "endpoints/" + endpoint.id() + ".yaml";
     }
 }

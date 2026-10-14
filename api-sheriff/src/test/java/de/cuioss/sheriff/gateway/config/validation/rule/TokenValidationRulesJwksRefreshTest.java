@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.config.validation;
+package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,6 +31,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
@@ -42,7 +43,8 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
- * Tests for the {@link ConfigValidator} rule that bounds the three JWKS refresh keys of
+ * Tests for the {@link TokenValidationRules} rule the {@link ConfigValidator} runs that bounds the three
+ * JWKS refresh keys of
  * {@code token_validation.issuers[].jwks} — {@code refresh_interval_seconds},
  * {@code key_rotation_grace_period_seconds} and {@code unknown_kid_refresh_window_seconds} — and
  * refuses each of them on a {@code file} source.
@@ -56,7 +58,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — jwks refresh keys: ranges and file-source refusal")
-class ConfigValidatorJwksRefreshTest {
+class TokenValidationRulesJwksRefreshTest {
 
     private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String POINTER_PREFIX = "/token_validation/issuers/";

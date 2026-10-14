@@ -14,12 +14,24 @@
  * limitations under the License.
  */
 /**
- * The {@link de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule} contract:
- * the functional interface a single cross-cutting configuration rule implements,
- * appending a {@link de.cuioss.sheriff.gateway.config.load.ConfigError} per violation to
- * the shared accumulator so the
- * {@link de.cuioss.sheriff.gateway.config.validation.ConfigValidator} can report every
- * violation in one pass.
+ * The home of the boot-time configuration rules, grouped by concern.
+ * <ul>
+ *   <li>{@link de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule} is the contract every
+ *       rule implements: it appends a {@link de.cuioss.sheriff.gateway.config.load.ConfigError} per
+ *       violation to the shared accumulator, so the
+ *       {@link de.cuioss.sheriff.gateway.config.validation.ConfigValidator} can report every violation
+ *       in one pass.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport} holds the helpers every
+ *       rule shares: the reporting file and pointer, the CWE-117-safe echo of a configured value, and
+ *       anchor resolution.</li>
+ *   <li>One {@code {Concern}Rules} class per concern — for example
+ *       {@link de.cuioss.sheriff.gateway.config.validation.rule.PortalRules} — owns the rule bodies
+ *       that judge one configuration block, each a stateless {@code public static validateXxx}
+ *       method. A concern class publishes no rule list of its own: the validator's single ordered list
+ *       registers each rule and decides the reporting order.</li>
+ * </ul>
+ * Where a new rule goes, how it is registered and where its tests live is described on the
+ * contributor page {@code doc/development/boot-validation-rules.adoc}.
  *
  * @author API Sheriff Team
  * @since 1.0

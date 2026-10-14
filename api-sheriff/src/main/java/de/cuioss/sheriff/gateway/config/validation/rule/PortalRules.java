@@ -15,6 +15,10 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -67,8 +71,6 @@ import lombok.experimental.UtilityClass;
 @UtilityClass
 public class PortalRules {
 
-    private static final String GATEWAY_FILE = "gateway.yaml";
-
     /** The JSON pointer of {@code portal.path} in {@code gateway.yaml}. */
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
@@ -81,16 +83,6 @@ public class PortalRules {
 
     private static final String SLASH = "/";
     private static final String DOUBLE_SLASH = "//";
-
-    /**
-     * The portal rules in their reporting order, for registration in the configuration validator's
-     * default rule set.
-     */
-    public static final List<ValidationRule> RULES = List.of(
-            (gateway, endpoints, topology, errors) -> validatePortalPathCanonical(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validatePortalPathNotReserved(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validatePortalPathNotExactRoute(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateCatalogEntries(endpoints, errors));
 
     /**
      * Rule 1: {@code portal.path} must be a canonical gateway path.
@@ -129,7 +121,9 @@ public class PortalRules {
     }
 
     /**
-     * Rule 3: {@code portal.path} must not equal an enabled endpoint's exact-route match path.
+     * Rule 3: {@code portal.path} must not equal an enabled endpoint's exact-route match path. The
+     * colliding route's id and its endpoint's id are echoed through
+     * {@link RuleSupport#renderForMessage} (CWE-117).
      *
      * @param gateway          the bound gateway document
      * @param enabledEndpoints the endpoints filtered to those enabled
@@ -150,7 +144,7 @@ public class PortalRules {
                     errors.add(new ConfigError(GATEWAY_FILE, PORTAL_PATH_POINTER,
                             ("portal.path equals the exact route '%s' of endpoint '%s'; the portal is answered "
                                     + "before the route table, so that route would be unreachable")
-                                    .formatted(route.id(), endpoint.id())));
+                                    .formatted(renderForMessage(route.id()), renderForMessage(endpoint.id()))));
                 }
             }
         }
@@ -158,7 +152,8 @@ public class PortalRules {
 
     /**
      * Rule 4: every enabled endpoint's {@code catalog.entry} must be an origin-relative path on the
-     * gateway's own origin.
+     * gateway's own origin. The endpoint's id is echoed through {@link RuleSupport#renderForMessage}
+     * (CWE-117).
      *
      * @param enabledEndpoints the endpoints filtered to those enabled
      * @param errors           the shared error accumulator
@@ -170,7 +165,7 @@ public class PortalRules {
                 entryRefusal(catalog.entry()).ifPresent(reason -> errors.add(new ConfigError(
                         endpointFile(endpoint), CATALOG_ENTRY_POINTER,
                         "catalog.entry of endpoint '%s' points outside the gateway's own origin: %s"
-                                .formatted(endpoint.id(), reason))));
+                                .formatted(renderForMessage(endpoint.id()), reason))));
             }
         }
     }
@@ -228,9 +223,5 @@ public class PortalRules {
             end = fragment;
         }
         return reference.substring(0, end);
-    }
-
-    private static String endpointFile(EndpointConfig endpoint) {
-        return "endpoints/" + endpoint.id() + ".yaml";
     }
 }

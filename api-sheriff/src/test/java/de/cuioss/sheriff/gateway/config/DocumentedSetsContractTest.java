@@ -57,7 +57,7 @@ import com.networknt.schema.SpecificationVersion;
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
-import de.cuioss.sheriff.gateway.config.validation.ConfigValidator.JwksRefreshKey;
+import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules.JwksRefreshKey;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -1118,12 +1118,12 @@ class DocumentedSetsContractTest {
                 + "\" matched but yielded no refresh key — the guard would pass vacuously");
         assertEquals(jwksRefreshRanges(), documented.ranges(),
                 CONFIGURATION_ADOC + " names the JWKS refresh keys and their admitted ranges in its boot-validation"
-                        + " list, which are authoritatively defined by ConfigValidator.JwksRefreshKey, and has"
+                        + " list, which are authoritatively defined by TokenValidationRules.JwksRefreshKey, and has"
                         + " drifted from them. An operator reading a stale range declares a value the boot refuses,"
                         + " or never learns of a key the boot bounds");
         assertEquals(JwksRefreshKey.values().length, documented.rawCount(),
                 CONFIGURATION_ADOC + " lists a different number of JWKS refresh-key bullets than"
-                        + " ConfigValidator.JwksRefreshKey declares. The count is taken over the raw bullets rather"
+                        + " TokenValidationRules.JwksRefreshKey declares. The count is taken over the raw bullets rather"
                         + " than over the de-duplicated map, so a key listed twice fails here even though the"
                         + " equality above still holds");
     }

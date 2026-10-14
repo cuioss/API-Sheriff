@@ -894,7 +894,7 @@ single-variable control); the derived host (with a control on another `jwks.url`
 explicit-list-wins rule, the hostless-`jwks.url` refusal, and a real dial against the local
 SAN-mismatched JWKS fixture that an explicit list naming another host refuses while the derived
 allowance reaches it, are pinned by `TokenValidatorProducerTest`; the blank / `host:port` boot
-refusals by `ConfigValidatorJwksEgressTest`.
+refusals by `TokenValidationRulesJwksEgressTest`.
 
 [#gw-06]
 === GW-06 -- TLS/SNI fail-open, upstream cert verification, mTLS bypass
@@ -1294,7 +1294,7 @@ held per issuer.
 *Status of this control:* COVERED. `RetryingJwksLoaderTest` drives the window, the discarded and the
 published refresh, the grace period, steps of the wall clock in both directions and the record with
 controlled clocks and scheduler, and
-`ConfigValidatorJwksRefreshTest` pins the 5 s floor. Against the native image, `JwksKeyRotationIT`
+`TokenValidationRulesJwksRefreshTest` pins the 5 s floor. Against the native image, `JwksKeyRotationIT`
 sends 200 requests naming 200 distinct invented key ids over more than one window and asserts that
 the identity provider recorded no more key-set requests, and the gateway no more `ApiSheriff-136`
 records, than `floor(elapsed / window) + 1`, and that a token signed with the current key and one
@@ -3341,7 +3341,7 @@ review refuses, for every enabled endpoint. The refusal names the endpoint and n
 The rendered `href` is HTML-escaped (<<html-01>>). The portal's own login link carries the portal path
 as a fixed `returnUrl`, which the login endpoint's same-origin rule governs (<<bff-02>>).
 
-*Status:* COVERED. `ConfigValidatorPortalTest` pins every refused spelling and the admitted forms.
+*Status:* COVERED. `PortalRulesTest` pins every refused spelling and the admitted forms.
 
 *Assertion.* A catalog `entry` that is not an origin-relative path on the gateway's own origin fails
 the boot.

@@ -86,9 +86,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link ConfigValidator}: one negative case per enforced cross-cutting
  * rule (including the ADR-0007 anchor / effective-auth rules, namespace coverage among them), the D5
- * boot-time hardening rules (real-CIDR {@code trusted_proxies} parsing with
- * full-space rejection and broad-prefix boot-WARN, and the same-prefix
- * route-disjointness rule moved here from {@code RouteTableBuilder}), the structural
+ * boot-time hardening rule (real-CIDR {@code trusted_proxies} parsing with
+ * full-space rejection and broad-prefix boot-WARN), the structural
  * {@code TRACE}/{@code CONNECT} rejection, the fail-closed ADR-0024 {@code profile: minimal}
  * refusal on effectively-authenticated and BFF routes, and the single-pass aggregation
  * contract that reports every violation together rather than stopping at the first.
@@ -1011,18 +1010,6 @@ class ConfigValidatorTest {
         }
 
         @Test
-        @DisplayName("Should reject a route matching a method outside the effective allowed_methods")
-        void shouldRejectMethodOutsideEffectiveAllowedMethods() {
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(HttpMethod.GET),
-                    route("orders-post", HttpMethod.POST));
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-
-            assertHasError(errors, "/endpoint/routes", "outside the effective allowed_methods");
-        }
-
-        @Test
         @DisplayName("Should accept a millisecond-precision upstream timeout")
         void shouldAcceptMillisecondPrecisionTimeout() {
             RouteConfig route = RouteConfig.builder()
@@ -1128,46 +1115,6 @@ class ConfigValidatorTest {
                                 .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
                         () -> cidr + " is within the broad-prefix threshold and must not emit " + identifier);
             }
-        }
-
-        @Test
-        @DisplayName("Should reject two enabled routes sharing a normalized prefix and overlapping on method")
-        void shouldRejectNonDisjointSamePrefixRoutes() {
-            RouteConfig first = RouteConfig.builder().id("first").match(match("/api", HttpMethod.GET)).build();
-            RouteConfig second = RouteConfig.builder().id("second").match(match("/api", HttpMethod.GET)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), first, second);
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-
-            assertHasError(errors, "/endpoint/routes", "share prefix '/api' and are not disjoint");
-        }
-
-        @Test
-        @DisplayName("Should collide '/api' with '/api/' in the same-prefix disjointness rule after normalization")
-        void shouldCollideTrailingSlashPrefixInDisjointness() {
-            RouteConfig first = RouteConfig.builder().id("first").match(match("/api", HttpMethod.GET)).build();
-            RouteConfig second = RouteConfig.builder().id("second").match(match("/api/", HttpMethod.GET)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), first, second);
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-
-            assertHasError(errors, "/endpoint/routes", "are not disjoint");
-        }
-
-        @Test
-        @DisplayName("Should accept two same-prefix routes made disjoint by method")
-        void shouldAcceptSamePrefixRoutesDisjointByMethod() {
-            RouteConfig reader = RouteConfig.builder().id("reader").match(match("/api", HttpMethod.GET)).build();
-            RouteConfig writer = RouteConfig.builder().id("writer").match(match("/api", HttpMethod.POST)).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), reader, writer);
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-
-            assertTrue(errors.stream().noneMatch(e -> e.message().contains("not disjoint")),
-                    () -> "method-disjoint same-prefix routes must not collide, got: " + errors);
         }
 
         @Test
