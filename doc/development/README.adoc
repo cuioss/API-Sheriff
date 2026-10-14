@@ -73,9 +73,8 @@ to *run* the finished gateway).
   processor.
 
 | link:boot-validation-rules.adoc[Boot Validation Rules -- Where a New Rule Goes]
-| How `ConfigValidator` orchestrates one ordered rule list, the concern map that assigns each of
-  the 51 boot rules to one of 16 concern classes, and how to add a rule, register it and place its
-  tests.
+| How `ConfigValidator` orchestrates one ordered rule list, the concern map that assigns each boot
+  rule to one concern class, and how to add a rule, register it and place its tests.
 
 | link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split]
 | The Vert.x `NetServer` front architecture, the accept-time L4/L7 split, the internal-handoff

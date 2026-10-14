@@ -50,102 +50,98 @@ shape genuinely cannot express, and record why.
 
 == The concern map
 
-The 51 rules group into 16 concern classes. Positions are the 1-based positions in
-`DEFAULT_RULES`. "Extracted" means the concern class exists and owns the rule bodies; "private in
-`ConfigValidator`" means the rules are still private methods there, at the positions shown.
+Every rule in `DEFAULT_RULES` belongs to exactly one concern class below. The map names each rule's
+owner; how many rules there are, and the order they run in, is read from `DEFAULT_RULES` itself,
+which is the only record of both. "Extracted" means the concern class exists and owns the rule
+bodies; "private in `ConfigValidator`" means the rules are still private methods there.
 
 [cols="2,4,3,2"]
 |===
-| Concern class | Rules (position) | Configuration surface | State
+| Concern class | Rules | Configuration surface | State
 
 | `TopologyRules`
-| `validateVersion` (1), `validateEndpointIdUniqueness` (2), `validateRouteIdUniqueness` (3),
-  `validateBaseUrlResolvable` (6)
+| `validateVersion`, `validateEndpointIdUniqueness`, `validateRouteIdUniqueness`,
+  `validateBaseUrlResolvable`
 | `version`, endpoint and route ids, `endpoint.base_url`
 | private in `ConfigValidator`
 
 | `RouteMatchingRules`
-| `validateRouteDisjointness` (4), `validateHeaderMatcherConsistency` (5),
-  `validateMethodMembership` (17)
+| `validateRouteDisjointness`, `validateHeaderMatcherConsistency`, `validateMethodMembership`
 | `match.*`, effective `allowed_methods`
 | extracted
 
 | `AnchorRules`
-| `validateAnchorPrefixDisjointness` (7), `validateAnchorReferencesExist` (8),
-  `validateAnchorNamespaceMembership` (9), `validateAnchorAuthFloor` (11),
-  `validateAccessAuthMatrix` (14)
+| `validateAnchorPrefixDisjointness`, `validateAnchorReferencesExist`,
+  `validateAnchorNamespaceMembership`, `validateAnchorAuthFloor`, `validateAccessAuthMatrix`
 | `anchors.*`, endpoint and route `anchor`
 | private in `ConfigValidator`
 
 | `AuthRules`
-| `validateRouteAuthResolvable` (10), `validateEffectiveAuth` (12), `validateSessionFallback` (13),
-  `validateEndpointScopesNeedAuthentication` (44)
+| `validateRouteAuthResolvable`, `validateEffectiveAuth`, `validateSessionFallback`,
+  `validateEndpointScopesNeedAuthentication`
 | `auth.*`, `endpoint.scopes`
 | private in `ConfigValidator`
 
 | `LimitRules`
-| `validateSecurityProfileMinimal` (15), `validateEdgeHardening` (38),
-  `validateAuthorizationHeaderValueLength` (39)
+| `validateSecurityProfileMinimal`, `validateEdgeHardening`, `validateAuthorizationHeaderValueLength`
 | `security_filter.profile`, `security_defaults`, `edge_hardening`
 | private in `ConfigValidator`
 
 | `TerminalActionRules`
-| `validateTerminalAction` (16), `validateAssetIndexAndFallback` (37)
+| `validateTerminalAction`, `validateAssetIndexAndFallback`
 | route `asset` / `redirect` / `upstream` exclusivity
 | private in `ConfigValidator`
 
 | `EdgeRules`
-| `validateForwardedTrust` (18), `validatePassthroughHostCollision` (33),
-  `validatePassthroughAliasResolvable` (34)
+| `validateForwardedTrust`, `validatePassthroughHostCollision`, `validatePassthroughAliasResolvable`
 | `forwarded.trusted_proxies`, `tls.passthrough_sni`
 | private in `ConfigValidator`
 
 | `HeaderRules`
-| `validateCors` (19), `validateContentSecurityPolicy` (20), `validateHeaderModes` (21)
+| `validateCors`, `validateContentSecurityPolicy`, `validateHeaderModes`
 | `security_headers` (global and anchor)
 | private in `ConfigValidator`
 
 | `OidcSessionRules`
-| `validateSessionMode` (22), `validateSessionMaxSessions` (23), `validateSessionIdleTimeout` (24),
-  `validateSessionMaxSessionsPerSubject` (25), `validateSessionMaxCookieSize` (26),
-  `validateSessionCookieName` (27)
+| `validateSessionMode`, `validateSessionMaxSessions`, `validateSessionIdleTimeout`,
+  `validateSessionMaxSessionsPerSubject`, `validateSessionMaxCookieSize`,
+  `validateSessionCookieName`
 | `oidc.session.*`
 | private in `ConfigValidator`
 
 | `OidcClientRules`
-| `validateClientAuthentication` (28), `validateDefaultReturnUrl` (45)
+| `validateClientAuthentication`, `validateDefaultReturnUrl`
 | `oidc.client_secret`, `oidc.client_authentication.key_file`, `oidc.login.default_return_url`
 | private in `ConfigValidator`
 
 | `ReservedPathRules`
-| `validateClientJwksPath` (29), `validateUserInfo` (30), `validateLoginPath` (31),
-  `validateStepUpPath` (32)
+| `validateClientJwksPath`, `validateUserInfo`, `validateLoginPath`, `validateStepUpPath`
 | the reserved OIDC endpoint paths
 | private in `ConfigValidator`
 
 | `ProtocolRules`
-| `validateWebSocketConfig` (35), `validateRewriteLocationProtocol` (36)
+| `validateWebSocketConfig`, `validateRewriteLocationProtocol`
 | `protocol`, `websocket`, `upstream.rewrite_location`
 | private in `ConfigValidator`
 
 | `AssetDefaultsRules`
-| `validateAssetContentTypesAddOnly` (40), `validateAssetContentTypeValues` (41)
+| `validateAssetContentTypesAddOnly`, `validateAssetContentTypeValues`
 | `asset_defaults.content_types`
 | private in `ConfigValidator`
 
 | `ForwardingRules`
-| `validateForwardModeExclusivity` (42), `validateTokenRelayForwardConflict` (43)
+| `validateForwardModeExclusivity`, `validateTokenRelayForwardConflict`
 | route `forward` block against `auth.token_relay`
 | private in `ConfigValidator`
 
 | `TokenValidationRules`
-| `validateJwksEgressHosts` (46), `validateJwksRefresh` (47)
+| `validateJwksEgressHosts`, `validateJwksRefresh`
 | `token_validation.issuers[].jwks`
 | extracted
 
 | `PortalRules`
-| `validatePortalPathCanonical` (48), `validatePortalPathNotReserved` (49),
-  `validatePortalPathNotExactRoute` (50), `validateCatalogEntries` (51)
+| `validatePortalPathCanonical`, `validatePortalPathNotReserved`,
+  `validatePortalPathNotExactRoute`, `validateCatalogEntries`
 | `portal`, endpoint `catalog`
 | extracted
 |===

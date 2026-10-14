@@ -122,7 +122,8 @@ public class PortalRules {
 
     /**
      * Rule 3: {@code portal.path} must not equal an enabled endpoint's exact-route match path. The
-     * colliding route's id is echoed through {@link RuleSupport#renderForMessage} (CWE-117).
+     * colliding route's id and its endpoint's id are echoed through
+     * {@link RuleSupport#renderForMessage} (CWE-117).
      *
      * @param gateway          the bound gateway document
      * @param enabledEndpoints the endpoints filtered to those enabled
@@ -143,7 +144,7 @@ public class PortalRules {
                     errors.add(new ConfigError(GATEWAY_FILE, PORTAL_PATH_POINTER,
                             ("portal.path equals the exact route '%s' of endpoint '%s'; the portal is answered "
                                     + "before the route table, so that route would be unreachable")
-                                    .formatted(renderForMessage(route.id()), endpoint.id())));
+                                    .formatted(renderForMessage(route.id()), renderForMessage(endpoint.id()))));
                 }
             }
         }
@@ -151,7 +152,8 @@ public class PortalRules {
 
     /**
      * Rule 4: every enabled endpoint's {@code catalog.entry} must be an origin-relative path on the
-     * gateway's own origin.
+     * gateway's own origin. The endpoint's id is echoed through {@link RuleSupport#renderForMessage}
+     * (CWE-117).
      *
      * @param enabledEndpoints the endpoints filtered to those enabled
      * @param errors           the shared error accumulator
@@ -163,7 +165,7 @@ public class PortalRules {
                 entryRefusal(catalog.entry()).ifPresent(reason -> errors.add(new ConfigError(
                         endpointFile(endpoint), CATALOG_ENTRY_POINTER,
                         "catalog.entry of endpoint '%s' points outside the gateway's own origin: %s"
-                                .formatted(endpoint.id(), reason))));
+                                .formatted(renderForMessage(endpoint.id()), reason))));
             }
         }
     }
