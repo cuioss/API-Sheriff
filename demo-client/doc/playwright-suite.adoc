@@ -27,7 +27,7 @@ configuration -- not in any production example. See <<_the_demo_is_excluded_from
 == Why the Demo Exists
 
 The gateway's server-session and cookie-session BFF variants expose a browser-facing contract:
-gateway-owned reserved paths under `/auth`, an XHR identity probe, an operator-capped claim
+gateway-owned reserved paths under `/bff/*`, an XHR identity probe, an operator-capped claim
 allowlist, and an RP-initiated logout round-trip. That contract had two gaps before this module:
 
 * *No executable browser proof.* The landed integration tests drive the contract from Java, through
@@ -147,8 +147,8 @@ action decided in link:../../doc/adr/0014-asset-serving-terminal-action.adoc[ADR
 a side-car static-file container, and that is the load-bearing decision in the whole module.
 
 *Same-origin is what makes the contract observable.* The gateway's reserved paths are exact-match
-paths on the OIDC host -- `/auth/login`, `/auth/callback`, `/auth/userinfo`, `/auth/logout`,
-`/auth/logout/return`. The session cookie is `HttpOnly` and scoped to that origin. A SPA served from
+paths on the OIDC host -- `/bff/login`, `/bff/callback`, `/bff/session`, `/bff/logout`,
+`/bff/logout/return`. The session cookie is `HttpOnly` and scoped to that origin. A SPA served from
 any other origin would have to reach those paths cross-origin, which changes what is being tested:
 cookies stop riding along on a plain `fetch`, CSRF enters the picture as a separate configuration
 exercise, and the top-level login navigation crosses an origin boundary the real deployment shape

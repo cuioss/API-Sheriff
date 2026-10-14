@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Demo-client /auth/userinfo probe — the XHR identity probe and the four
+  Demo-client /bff/session probe — the XHR identity probe and the four
   identity-disclosure states the claims parameter selects. Time flows downward.
   theme-handling: A (theme-neutral)
   see  pm-documents:ref-svg-diagrams/standards/diagram-type-sequence.md
@@ -9,7 +9,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">Demo-client userinfo probe and the four identity-disclosure states</title>
-  <desc id="desc">A time-ordered exchange between the demo single-page application and API Sheriff over the reserved /auth/userinfo path. Without a session the probe answers 401 application/problem+json and never redirects. With a live session the claims query parameter selects one of four outcomes: omitted yields the curated default view of sub and preferred_username, an explicit list yields only the named claims, an asterisk yields the full operator-allowlisted view, and a claim outside the allowlist is refused 403 even though the identity provider issued it. Every response carries Cache-Control no-store.</desc>
+  <desc id="desc">A time-ordered exchange between the demo single-page application and API Sheriff over the reserved /bff/session path. Without a session the probe answers 401 application/problem+json and never redirects. With a live session the claims query parameter selects one of four outcomes: omitted yields the curated default view of sub and preferred_username, an explicit list yields only the named claims, an asterisk yields the full operator-allowlisted view, and a claim outside the allowlist is refused 403 even though the identity provider issued it. Every response carries Cache-Control no-store.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -47,7 +47,7 @@
 
   <!-- 1. anonymous probe -->
   <line class="arrow" x1="175" y1="120" x2="520" y2="120" marker-end="url(#arrow)"/>
-  <text x="350" y="112" class="arrow-lbl">fetch('/auth/userinfo') &#183; no session</text>
+  <text x="350" y="112" class="arrow-lbl">fetch('/bff/session') &#183; no session</text>
   <line class="arrow-return" x1="520" y1="156" x2="175" y2="156" marker-end="url(#arrow)"/>
   <text x="350" y="148" class="arrow-lbl">401 application/problem+json &#183; never a redirect</text>
 
@@ -56,25 +56,25 @@
 
   <!-- 2. curated default view -->
   <line class="arrow" x1="175" y1="232" x2="520" y2="232" marker-end="url(#arrow)"/>
-  <text x="350" y="224" class="arrow-lbl">fetch('/auth/userinfo')</text>
+  <text x="350" y="224" class="arrow-lbl">fetch('/bff/session')</text>
   <line class="arrow-return" x1="520" y1="268" x2="175" y2="268" marker-end="url(#arrow)"/>
   <text x="350" y="260" class="arrow-lbl">200 &#183; sub, preferred_username + session</text>
 
   <!-- 3. explicit selection -->
   <line class="arrow" x1="175" y1="316" x2="520" y2="316" marker-end="url(#arrow)"/>
-  <text x="350" y="308" class="arrow-lbl">fetch('/auth/userinfo?claims=email')</text>
+  <text x="350" y="308" class="arrow-lbl">fetch('/bff/session?claims=email')</text>
   <line class="arrow-return" x1="520" y1="352" x2="175" y2="352" marker-end="url(#arrow)"/>
   <text x="350" y="344" class="arrow-lbl">200 &#183; email only</text>
 
   <!-- 4. full allowlisted view -->
   <line class="arrow" x1="175" y1="400" x2="520" y2="400" marker-end="url(#arrow)"/>
-  <text x="350" y="392" class="arrow-lbl">fetch('/auth/userinfo?claims=*')</text>
+  <text x="350" y="392" class="arrow-lbl">fetch('/bff/session?claims=*')</text>
   <line class="arrow-return" x1="520" y1="436" x2="175" y2="436" marker-end="url(#arrow)"/>
   <text x="350" y="428" class="arrow-lbl">200 &#183; sub, preferred_username, email, groups</text>
 
   <!-- 5. allowlist cap -->
   <line class="arrow" x1="175" y1="484" x2="520" y2="484" marker-end="url(#arrow)"/>
-  <text x="350" y="476" class="arrow-lbl">fetch('/auth/userinfo?claims=given_name')</text>
+  <text x="350" y="476" class="arrow-lbl">fetch('/bff/session?claims=given_name')</text>
   <line class="arrow-return" x1="520" y1="520" x2="175" y2="520" marker-end="url(#arrow)"/>
   <text x="350" y="512" class="arrow-lbl">403 &#183; claim outside the operator allowlist</text>
 

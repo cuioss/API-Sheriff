@@ -56,7 +56,7 @@ and shared with the session-based variant:
   unchanged, and a refresh ends the session.
 * *Key-based client authentication, by default.* The gateway authenticates to the IdP with
   `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
-  gateway path, `/auth/jwks` by default, answered on every host -- and the IdP fetches it from there.
+  gateway path, `/bff/jwks` by default, answered on every host -- and the IdP fetches it from there.
 
 Each of the two keys is either read from a PEM file the configuration names by path, or generated at
 startup when no file is named.
@@ -326,10 +326,10 @@ oidc:
     key_file: /etc/sheriff/keys/client-auth.pem   # the same file on every replica
   sender_constraint:             # DPoP proof key; every access token is bound to it
     key_file: /etc/sheriff/keys/dpop.pem          # the same file on every replica
-  redirect_uri: https://gw.example.com/auth/callback
+  redirect_uri: https://gw.example.com/bff/callback
   scopes: [openid, profile]      # requested on every login; endpoints add their own (additive)
   session:
-    mode: cookie                 # encrypted cookie, no store (this variant)
+    mode: cookie                # encrypted cookie, no store (this variant)
     cookie_name: __Host-sheriff
     encryption_key: ${SHERIFF_SESSION_KEY}   # AES-256-GCM key; optional -- omit to generate on startup
     ttl_seconds: 3600            # absolute lifetime from login

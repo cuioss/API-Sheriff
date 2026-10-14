@@ -10,7 +10,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">Demo-client logout round-trip and the 401 re-probe that proves it</title>
-  <desc id="desc">A time-ordered exchange showing the logout legs the demo single-page application participates in. The application hands the logout to the browser as a top-level navigation to /auth/logout. API Sheriff destroys the server-side session and clears the session cookie as the authoritative step before any identity-provider leg, then redirects to the end-session endpoint. The provider round-trip is elided and returns the browser to the state-verified /auth/logout/return, from which the gateway redirects to the configured final_redirect naming a concrete public file. A final same-origin fetch of /auth/userinfo answering 401 is the authoritative proof the session is gone; a rendered landing page proves only that a static file was served.</desc>
+  <desc id="desc">A time-ordered exchange showing the logout legs the demo single-page application participates in. The application hands the logout to the browser as a top-level navigation to /bff/logout. API Sheriff destroys the server-side session and clears the session cookie as the authoritative step before any identity-provider leg, then redirects to the end-session endpoint. The provider round-trip is elided and returns the browser to the state-verified /bff/logout/return, from which the gateway redirects to the configured final_redirect naming a concrete public file. A final same-origin fetch of /bff/session answering 401 is the authoritative proof the session is gone; a rendered landing page proves only that a static file was served.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -53,11 +53,11 @@
 
   <!-- 1. SPA hands the logout to the browser -->
   <line class="arrow" x1="140" y1="120" x2="495" y2="120" marker-end="url(#arrow)"/>
-  <text x="320" y="112" class="arrow-lbl">window.location.assign('/auth/logout')</text>
+  <text x="320" y="112" class="arrow-lbl">window.location.assign('/bff/logout')</text>
 
   <!-- 2. browser -> gateway -->
   <line class="arrow" x1="500" y1="164" x2="855" y2="164" marker-end="url(#arrow)"/>
-  <text x="680" y="156" class="arrow-lbl">GET /auth/logout (top-level navigation)</text>
+  <text x="680" y="156" class="arrow-lbl">GET /bff/logout (top-level navigation)</text>
 
   <!-- gateway note: the authoritative local step, anchored inside the gutter -->
   <text x="844" y="196" class="note-end">destroy server-side session</text>
@@ -71,11 +71,11 @@
   <!-- elided IdP end-session round-trip -->
   <rect class="ref-frame" x="500" y="296" width="360" height="54" rx="6"/>
   <text x="680" y="318" class="arrow-lbl">IdP end-session round-trip &#8212; not redrawn</text>
-  <text x="680" y="336" class="arrow-lbl">the browser returns to /auth/logout/return</text>
+  <text x="680" y="336" class="arrow-lbl">the browser returns to /bff/logout/return</text>
 
   <!-- 4. browser -> gateway logout return -->
   <line class="arrow" x1="500" y1="386" x2="855" y2="386" marker-end="url(#arrow)"/>
-  <text x="680" y="378" class="arrow-lbl">GET /auth/logout/return?state (state-verified)</text>
+  <text x="680" y="378" class="arrow-lbl">GET /bff/logout/return?state (state-verified)</text>
 
   <!-- 5. gateway -> browser final_redirect -->
   <line class="arrow-return" x1="855" y1="430" x2="500" y2="430" marker-end="url(#arrow)"/>
@@ -91,7 +91,7 @@
 
   <!-- 8. the authoritative re-probe -->
   <line class="arrow" x1="140" y1="562" x2="855" y2="562" marker-end="url(#arrow)"/>
-  <text x="680" y="554" class="arrow-lbl">fetch('/auth/userinfo') &#8212; the re-probe that proves it</text>
+  <text x="680" y="554" class="arrow-lbl">fetch('/bff/session') &#8212; the re-probe that proves it</text>
 
   <!-- 9. gateway -> SPA 401 -->
   <line class="arrow-return" x1="855" y1="606" x2="140" y2="606" marker-end="url(#arrow)"/>

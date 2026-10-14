@@ -2388,7 +2388,7 @@ drives every leg, so requesting and checking cannot drift apart
 link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]):
 
 * *Login scope minimization.* A login requests the `neededScopes` of the route it is for -- the
-  session route a navigation hit, or the authenticated route a `/auth/login?returnUrl=` target
+  session route a navigation hit, or the authenticated route a `/bff/login?returnUrl=` target
   lands on -- and `oidc.scopes` alone otherwise. An endpoint's extra scopes are asked for only when
   a login is for that endpoint, not on every login. `endpoint.scopes` is additive: an endpoint
   cannot remove a global scope, and declaring scopes on an all-`require: none` endpoint is refused
@@ -2441,7 +2441,7 @@ link:adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_t
   the `acr` leg, not the `oidc.step_up.path` scope widening of <<bff-17>>.
 
 *Assertion.* A navigation login on a scoped session route carries exactly `oidc.scopes ∪
-endpoint.scopes`, and `/auth/login?returnUrl=` to an unauthenticated target carries exactly
+endpoint.scopes`, and `/bff/login?returnUrl=` to an unauthenticated target carries exactly
 `oidc.scopes` (`BffEndpointScopesIT`, `ReturnTargetScopesTest`); a bearer token lacking an endpoint
 scope is `403 insufficient_scope` with no upstream contact while one covering it is `200`
 (`BearerScopeIT`, `AuthenticationStageTest`); a refresh after a scoped login keeps the endpoint scope
@@ -2787,7 +2787,7 @@ set is served over TLS). No standards guidance on request forgery through a clie
 URL was found; the concern is recorded here from the mechanism.
 
 *Control -- what the endpoint discloses.* `ClientJwksEndpoint` answers `GET` on
-`oidc.client_authentication.jwks_path` (default `/auth/jwks`) with one JSON Web Key: the public
+`oidc.client_authentication.jwks_path` (default `/bff/jwks`) with one JSON Web Key: the public
 members of the client-authentication key, `use: sig`, the algorithm and the key id. It never
 publishes a private member, and it never publishes a separate DPoP proof key. It reads no request input.
 The response is `Cache-Control: no-store`; every other method is `405`.
@@ -2848,7 +2848,7 @@ hands the client identity to anyone on that path.
 *Assertion.* The publishing form answers `GET` with exactly one key carrying no private member and
 `405` to other methods; the withheld form answers `404` to every method (`ClientJwksEndpointTest`);
 the path is matched on every host and stays reserved in both forms (`ReservedPathRegistryTest`).
-Against the native image: `GET /auth/jwks` answers, without a credential, one key with `use: sig`,
+Against the native image: `GET /bff/jwks` answers, without a credential, one key with `use: sig`,
 the algorithm `PS256`, no private member and a `kid` equal to the thumbprint computed from the key
 file, and `POST` answers `405` (`BffFapiControlsIT`); in client-secret mode `GET` and `POST` answer
 `404` (`BffClientSecretModeIT`); a generated key is published with `alg: ES256`, Keycloak fetches it

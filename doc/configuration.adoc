@@ -306,11 +306,13 @@ anchors:                           # OPTIONAL namespace-scoped policy (see "Anch
       hsts: { max_age: 31536000, include_subdomains: true }
       content_type_nosniff: true
       frame_deny: true
-  bff:
-    path_prefix: /bff
+  app:
+    path_prefix: /app
     type: bff                      # a bff surface MUST declare access: authenticated
     access: authenticated
-    auth: { require: session }     # the BFF surface: mediated OIDC session per the oidc block
+    auth: { require: session }     # the BFF surface: mediated OIDC session per the oidc block.
+                                   #   Its routes live under /app; the reserved OIDC paths below
+                                   #   (/bff/*) are not an anchor and need none
   static:                          # an asset surface (see "Asset terminal action" in
                                    #   user/endpoint-routes.adoc)
     path_prefix: /static
@@ -407,6 +409,11 @@ token_validation:                  # offline bearer validation (routes with auth
                                    #   the refresh cadence" below.
 
 oidc:                              # only used by the BFF variants (2 and 3)
+                                   # Every path below is a RESERVED path: an exact-match carve-out
+                                   #   on the OIDC host (the host of redirect_uri), resolved AHEAD
+                                   #   of the route table. It is not an anchor -- it claims that one
+                                   #   path and nothing beneath it. The /bff/* spelling is a naming
+                                   #   convention nothing validates; any canonical path works
   issuer: https://idp.example.com/realms/main
   client_id: api-sheriff
   client_authentication:           # private_key_jwt client authentication (the default)
@@ -414,7 +421,7 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   PRIVATE KEY block and one PUBLIC KEY block. RSA (>= 2048
                                    #   bits, signs PS256) or EC P-256 (signs ES256). OPTIONAL --
                                    #   omit to generate a key on startup (single node only)
-    jwks_path: /auth/jwks          # OPTIONAL; default /auth/jwks. An unauthenticated GET here
+    jwks_path: /bff/jwks           # OPTIONAL; default /bff/jwks. An unauthenticated GET here
                                    #   publishes the client-authentication public key (reserved
                                    #   path, matched on EVERY host: the IdP dials it
                                    #   server-to-server). Register its https URL at the IdP as
@@ -436,24 +443,24 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   remove these.
                                    #   Each entry is an RFC 6749 scope-token (printable ASCII,
                                    #   no space, " or \) -- anything else is refused at load
-  redirect_uri: https://gw.example.com/auth/callback
+  redirect_uri: https://gw.example.com/bff/callback
                                    # register at the IdP as a plain GET redirect target: the
                                    #   gateway drives response_mode=query (fixed in code, no knob)
   login:
-    path: /auth/login              # gateway-owned login-initiation entry point (reserved path)
+    path: /bff/login               # gateway-owned login-initiation entry point (reserved path)
     default_return_url: /          # post-login landing when a login carries no usable target;
                                    #   same-origin with redirect_uri (boot-checked); default /
   user_info:
-    path: /auth/userinfo           # gateway-served curated identity view (reserved path)
+    path: /bff/session             # gateway-served curated identity view (reserved path)
     allowed_claims: [sub, name, email]   # operator allowlist; empty (default) discloses nothing
     default_view: [sub, name]      # returned when the caller requests no explicit claims;
                                    #   every entry must lie within allowed_claims
   logout:
-    path: /logout                  # gateway-served; triggers RP-initiated logout at the IdP
-    post_logout_redirect_uri: https://gw.example.com/logout/done   # gateway-owned return leg,
-                                   #   pre-registered, exact match; verifies the logout state
+    path: /bff/logout              # gateway-served; triggers RP-initiated logout at the IdP
+    post_logout_redirect_uri: https://gw.example.com/bff/logout/return   # gateway-owned return
+                                   #   leg, pre-registered, exact match; verifies the logout state
     final_redirect: https://app.example.com/   # where the browser lands after verification
-    backchannel_path: /logout/backchannel   # back-channel receiver (mode: server only)
+    backchannel_path: /bff/backchannel   # back-channel receiver (mode: server only)
   session:                         # NOTE: exhibit shows the fields of BOTH modes; store is
                                    #   server-mode-only, the encryption key cookie-mode-only
     mode: cookie                   # cookie (Variant 3) | server (Variant 2)
@@ -491,7 +498,7 @@ oidc:                              # only used by the BFF variants (2 and 3)
   step_up:
     enabled: true                  # RFC 9470 upstream-challenge leg
     honor_upstream_challenge: true
-    path: /auth/step-up            # OPTIONAL gateway-served step-up entry point (reserved path):
+    path: /bff/step-up             # OPTIONAL gateway-served step-up entry point (reserved path):
                                    #   widens a LIVE session for the route behind its returnUrl.
                                    #   Named as step_up_url in a session route's 403. Independent
                                    #   of the two keys above
@@ -2475,6 +2482,19 @@ Three things hold for every BFF gateway, whatever else the block declares
 * *The client authenticates with `private_key_jwt`*, unless `client_secret` is configured -- see
   link:#_oidc_client_authentication[Client authentication].
 
+*The reserved paths are exact-match carve-outs, not an anchor.* Every path this block names -- the
+`redirect_uri` callback, `logout.path`, the `post_logout_redirect_uri` return leg,
+`logout.backchannel_path`, `user_info.path`, `login.path`, `step_up.path` and the client JWKS path --
+is matched by exact equality on the OIDC host (the host of `redirect_uri`; the back-channel receiver
+and the client JWKS path on every host) and resolved *ahead of the route table*. Each claims its one
+path and nothing beneath it: no namespace, no prefix, no anchor-level auth floor or security filter,
+and a sibling path no key names is routed by the route table like any other request. The samples in
+this repository spell them under `/bff/*` -- `/bff/callback`, `/bff/logout`, `/bff/logout/return`,
+`/bff/backchannel`, `/bff/session` (the user-info view), `/bff/login`, `/bff/step-up` and the
+default client JWKS path `/bff/jwks`. That spelling is a naming convention nothing validates: any
+canonical gateway path works, and keeping the application's own routes under a separate anchor
+(`/app` in the samples) keeps the two namespaces visibly apart.
+
 [cols="1,3"]
 |===
 | Field | Meaning
@@ -2506,7 +2526,7 @@ Three things hold for every BFF gateway, whatever else the block declares
   link:#_oidc_signing_keys[Signing keys].
 
 | `client_authentication.jwks_path`
-| *Optional* string; *default `/auth/jwks`*. The reserved gateway path of the client JWKS endpoint,
+| *Optional* string; *default `/bff/jwks`*. The reserved gateway path of the client JWKS endpoint,
   at which the identity provider fetches the client-authentication public key. An absolute path
   starting with a single `/`, without a query and without a fragment. Reserved on *every* host, in
   both client-authentication modes. A path that another reserved OIDC path or `portal.path` already
@@ -3237,7 +3257,7 @@ generated key at all.
 | Aspect | Contract
 
 | Path
-| `client_authentication.jwks_path`; *default `/auth/jwks`*. An absolute path starting with a single
+| `client_authentication.jwks_path`; *default `/bff/jwks`*. An absolute path starting with a single
   `/`, without a query and without a fragment.
 
 | Host
@@ -4660,7 +4680,7 @@ control, which is the rule above doing exactly the work it was added for.
   `/oidc/client_secret` with a fixed text that names the keys and carries neither the secret nor the
   configured path (see link:#_oidc_client_authentication[Client authentication]).
 * The client JWKS path -- a declared `oidc.client_authentication.jwks_path`, or the default
-  `/auth/jwks` when the key is omitted -- must not be the path of another reserved OIDC endpoint: the
+  `/bff/jwks` when the key is omitted -- must not be the path of another reserved OIDC endpoint: the
   `redirect_uri` callback, `logout.path`, `logout.post_logout_redirect_uri`,
   `logout.backchannel_path`, `user_info.path`, `login.path` or `step_up.path`. A collision fails the
   boot at
@@ -4692,7 +4712,12 @@ control, which is the rule above doing exactly the work it was added for.
   reserved path is matched exactly against the request path, which carries neither a query nor a
   fragment, so a value holding one would name an endpoint no request reaches; a browser reads a
   backslash as `/` and drops a tab or line break before parsing a URL, so `/\host` would be read
-  as the scheme-relative `//host` (see the link:#_oidc[`oidc`] field reference).
+  as the scheme-relative `//host` (see the link:#_oidc[`oidc`] field reference). A value that passes
+  that check must also be canonical -- no `//`, no dot segment, no matrix parameter (`;`) and no
+  percent-encoded character, the same review the client JWKS path is held to -- or the boot fails at
+  the same pointer: the path is registered verbatim and matched by exact equality with the canonical
+  request path, so a request that spells a non-canonical value as configured never reaches the
+  reserved endpoint.
 * `egress_tls.oidc_verify_hostname: false` together with a named `egress_tls.oidc_tls_profile`
   fails the boot with a configuration error naming both keys, and a named `oidc_tls_profile` that is
   unbound, `trust-all`, anchor-free or unloadable fails it too. Both are raised when the BFF runtime

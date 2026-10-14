@@ -675,11 +675,14 @@ the identity provider calls them server-to-server at whatever address was regist
 The first seven are registered only when their configuration key is present, so a deployment that
 omits `oidc.user_info`, `oidc.login` or `oidc.step_up.path` carves out fewer. The client JWKS path
 is the exception: it needs no declaration, and an `oidc` block with a `redirect_uri` that names none
-reserves the default `/auth/jwks`. A proxy
-route such as `path_prefix: /auth` therefore never swallows the `/auth/callback` callback, while
+reserves the default `/bff/jwks`. A proxy
+route such as `path_prefix: /bff` therefore never swallows the `/bff/callback` callback, while
 other virtual hosts (e.g. machine-to-machine API hosts with `bearer` routes) keep their full path
 namespace -- except for the two every-host paths, which no virtual host can proxy. Routes remain free
-to use neighbouring prefixes; only the exact reserved paths are carved out.
+to use neighbouring prefixes; only the exact reserved paths are carved out. A reserved path is a
+carve-out, not an anchor: it claims its one path and nothing beneath it, so `/bff/other` is routed by
+the route table like any other request, and the `/bff/*` spelling the samples use is a naming
+convention nothing validates.
 
 [[_endpoint_scopes]]
 === Endpoint scopes (`endpoint.scopes`)

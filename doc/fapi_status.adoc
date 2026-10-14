@@ -134,7 +134,7 @@ Two terms are used throughout:
 | Key distribution -- the client's `jwks_uri` is served over TLS (§5.4.2)
 | *MET* where the endpoint is reached over TLS. The gateway does not enforce it.
 | In key mode `ClientJwksEndpoint` publishes the client-authentication public key at
-  `oidc.client_authentication.jwks_path` (default `/auth/jwks`). The endpoint is served over TLS only
+  `oidc.client_authentication.jwks_path` (default `/bff/jwks`). The endpoint is served over TLS only
   when the gateway's listener, or the TLS terminator in front of it, is TLS. The gateway does not
   refuse the path on a plain listener, because it cannot see how a request reached a terminator. The
   URL registered at the identity provider must therefore be an `https` URL.
@@ -260,7 +260,7 @@ provider and that version.
 * *Client authentication.* Keycloak refuses a token request that presents a client secret for the
   key-authenticated client. The control is a client registered for a secret, which the same endpoint
   accepts.
-* *Published key.* `GET /auth/jwks` answers, without a credential, one key with `use: sig`, the
+* *Published key.* `GET /bff/jwks` answers, without a credential, one key with `use: sig`, the
   algorithm `PS256` and no private member. Its `kid` equals the RFC 7638 thumbprint the test
   computes from the key file. `POST` answers `405`.
 * *Sender constraint.* The token the gateway forwards upstream carries `cnf.jkt`, arrives as
@@ -278,7 +278,7 @@ provider and that version.
   authenticated with a client secret.
 * The token of the code exchange and the token of the refresh grant both carry the `jkt` of the
   instance's proof key, so both token legs carried a DPoP proof next to the Basic credential.
-* `GET` and `POST` on `/auth/jwks` answer `404`.
+* `GET` and `POST` on `/bff/jwks` answer `404`.
 
 `BffGeneratedKeysIT` -- key mode, no key configured:
 
