@@ -15,8 +15,10 @@ feature plan edits it and two plans touching validation always collide. A seam a
 `config/validation/rule/ValidationRule` with one implementation, `PortalRules` — and is not used for
 anything else. Split the validator into rule classes by concern on that seam.
 
-Pure refactor: the same configurations are accepted and refused with the same messages. The existing
-validator tests passing unchanged is the evidence.
+Pure refactor: the same configurations are accepted and refused with the same messages, in the same
+order. The existing validator tests passing is the evidence (operator decision 2026-10-14: no additional
+golden comparison); tests move with the rules, and simplifying them is `PLAN-V02-27`'s job after the
+refactor has merged. Done now, not deferred (operator decision 2026-10-14).
 
 ## Deliverables
 
@@ -29,8 +31,8 @@ validator tests passing unchanged is the evidence.
 3. **Rules derived from `PLAN-V02-24`'s declaration stay derived.** Checks that `PLAN-V02-24` made
    generic (scope legality of a policy block, the relaxing-override WARN) are not re-written per block
    here.
-4. **Tests follow the rules.** Split `ConfigValidatorTest` and its siblings along the same lines; keep
-   message assertions identical. Offline validation (`PLAN-V02-14`'s `--validate` path) stays green.
+4. **Tests follow the rules.** Move `ConfigValidatorTest` and its siblings' cases to the rule they test;
+   keep message assertions identical; do not rewrite or prune them here. Offline validation (`PLAN-V02-14`'s `--validate` path) stays green.
 5. **Developer documentation**: where a new boot rule goes, in `doc/development/`.
 
 Split guard: 5 deliverables. Keep the PR under 100 files and 150,000 diff characters.
@@ -51,7 +53,7 @@ Split guard: 5 deliverables. Keep the PR under 100 files and 150,000 diff charac
 - Depends on: `PLAN-V02-24` and `PLAN-V02-12`'s second PR (adds `oidc` checks to the validator) having
   landed.
 - Parallel with `PLAN-V02-25` (disjoint surfaces).
-- Before: the re-grounded `PLAN-V02-23`; holds every staged plan adding boot rules (`PLAN-V02-06` D9,
+- Before: the re-grounded `PLAN-V02-23`, then `PLAN-V02-27`; holds every staged plan adding boot rules (`PLAN-V02-06` D9,
   `-20`; kidicap `PLAN-21`, `-29`).
 
 ## Hand-Off Command

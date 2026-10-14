@@ -125,7 +125,7 @@ would otherwise force a retrofit.
 
 | Workstream | Title | Plans |
 |---|---|---|
-| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26 |
+| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27 |
 | WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18 |
 | WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
@@ -209,6 +209,19 @@ needs no translation.
   **ADR-0037 is rewritten in place, not superseded** (it is still `Proposed`). User docs are part of
   the plan. Eight deliverables, proceeding unsplit: the two directions, the CSRF guard and the record
   are one contract.
+- **2026-10-14 — refactor design settled (operator, in discussion).** (1) **Normalise** the policy blocks
+  onto the one documented rule gateway → anchor → endpoint → route; today each block has its own chain,
+  scope set and fallback (`auth` has no gateway scope, `allowed_methods` no route scope, `security_filter`
+  only route → anchor, `security_headers` only anchor → gateway). V02-24 first lands the mechanism with the
+  current chains (behaviour-neutral), then applies per-block scope sets the operator decides at outline,
+  as explicit breaking changes. (2) The override WARN keeps meaning "both scopes declare". (3) Lombok
+  `@Builder` on the config records; tests stop constructing them positionally. (4) V02-25 MERGES
+  `ResolvedRoute` and `RouteRuntime` (the per-route context already exists as `RouteRuntime`; the cost is
+  the field-by-field copy in `RouteRuntimeAssembler`), not a wrapper. (5) `GatewayEdgeRoute`'s jobs move
+  into sub-packages of `edge/`, guarded by an architecture test. (6) V02-26 is done now. (7) The cookie bug
+  waiting behind two to three refactor PRs is accepted. (8) Order as proposed. (9) Proof is the existing
+  suite, no golden comparison; once the refactor has merged, a separate plan simplifies the tests
+  (`PLAN-V02-27`, after V02-23).
 - **2026-10-14 — rework the edge pipeline and policy-block resolution before the cookie policy
   (`PLAN-V02-24`, `-25`, `-26`; `PLAN-V02-23` parked).** Operator ruling during V02-23's outline
   ("GatewayEdgeRoute is a nightmare. We need a major rework here."), reported in inbox V02-23 `-001`. V02-23's
@@ -237,7 +250,7 @@ sufficient.
 
 | Chain | Order | Why |
 |---|---|---|
-| structural refactor, then cookie policy | **(V02-12 second PR + kidicap PLAN-32) → V02-24 → (V02-25 ∥ V02-26) → V02-23 (re-grounded) → every other plan touching `edge/**` or `config/**`** | Operator decision 2026-10-14 (inbox V02-23 `-001`): V02-23 paused, the edge and policy-block structure is reworked first. V02-24 makes a policy block a declaration; V02-25 (edge) and V02-26 (validator) build on it and are disjoint from each other. Held behind them: V02-05, -06, -07, -20; kidicap PLAN-20, -21, -26, -29. |
+| structural refactor, then cookie policy | **(V02-12 second PR + kidicap PLAN-32) → V02-24 → (V02-25 ∥ V02-26) → V02-23 (re-grounded) → V02-27 (test simplification) → every other plan touching `edge/**` or `config/**`** | Operator decision 2026-10-14 (inbox V02-23 `-001`): V02-23 paused, the edge and policy-block structure is reworked first. V02-24 makes a policy block a declaration; V02-25 (edge) and V02-26 (validator) build on it and are disjoint from each other. Held behind them: V02-05, -06, -07, -20; kidicap PLAN-20, -21, -26, -29. |
 | oidc / `BffRuntimeProducer` | **V02-08 → V02-12 → V02-09** | All three write the `oidc` block and the BFF assembly point. V02-08 first: it is the larger reshaping and settles the RFC 9207 `iss` constraint V02-12 inherits. |
 | rejection taxonomy | **V02-13 → V02-06 → V02-07** | V02-13 re-cuts `EventCategory` and makes `renderProblem` content-negotiating at all five call sites. V02-06's uniform-404 branch edits those same sites; V02-07 weights the resulting taxonomy. |
 | sample vs. model | **V02-12 → V02-15** | V02-15 D5 defers the browser-vs-container issuer address to V02-12 rather than letting a sample become the de-facto specification. |
