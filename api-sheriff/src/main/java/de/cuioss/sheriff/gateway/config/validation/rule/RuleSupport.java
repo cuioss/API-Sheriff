@@ -64,8 +64,10 @@ public class RuleSupport {
 
     /**
      * Renders an offending configuration value for a refusal message: every character outside
-     * printable ASCII — CR and LF above all — becomes a {@code \\uXXXX} escape, and the result is
-     * capped at {@code ECHOED_VALUE_MAX_LENGTH} (60) characters. The operator still sees what they
+     * printable ASCII — CR and LF above all — becomes a {@code \\uXXXX} escape, and at most
+     * {@code ECHOED_VALUE_MAX_LENGTH} (60) characters of the input are rendered, followed by
+     * {@code ...} when the input is longer. Because each escape expands one input character to six,
+     * the rendering itself can be longer than 60 characters. The operator still sees what they
      * typed; the boot ERROR log cannot be line-forged by it.
      *
      * @param value the configured value to echo

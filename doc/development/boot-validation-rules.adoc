@@ -16,7 +16,7 @@ link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation
 
 == The model
 
-`ConfigValidator` is orchestration only. It holds *one* ordered list, `DEFAULT_RULES`, with one
+`ConfigValidator` orchestrates. It holds *one* ordered list, `DEFAULT_RULES`, with one
 entry per rule, and runs every entry in list order against the bound gateway document, the enabled
 endpoints and the resolved topology. That list is the only place that decides the order in which
 violations are reported.

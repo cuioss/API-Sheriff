@@ -139,5 +139,5 @@ the answer must always be the runtime, so the check has to be built from it.
   — refuse at boot rather than silently honour or ignore
 * link:../user/endpoint-routes.adoc[Endpoint routes] — "Route ordering" and the disjointness rule
 * link:../configuration.adoc[Configuration Model] — boot validation of `match.headers`
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — the
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/RouteMatchingRules.java` — the
   disjointness and header-matcher consistency rules
