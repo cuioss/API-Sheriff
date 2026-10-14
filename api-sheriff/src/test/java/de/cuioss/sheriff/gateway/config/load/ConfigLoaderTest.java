@@ -150,7 +150,7 @@ class ConfigLoaderTest {
                 gateway.tls().cipherSuites(),
                 "the neutral tls.cipher_suites allowlist must bind from gateway.yaml");
         assertEquals(List.of("h2", "http/1.1"), gateway.tls().alpn());
-        assertEquals(new UpstreamDefaultsConfig(true, false), gateway.upstreamDefaults());
+        assertEquals(UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(false).build(), gateway.upstreamDefaults());
         assertEquals("s3cr3t", gateway.oidc().clientSecret());
         assertNotNull(gateway.oidc().senderConstraint(), "the sender_constraint block must bind from gateway.yaml");
         assertEquals("/etc/sheriff/keys/dpop.pem", gateway.oidc().senderConstraint().keyFile(),
@@ -348,7 +348,7 @@ class ConfigLoaderTest {
         assertEquals("orders", endpoint.id());
         assertTrue(endpoint.enabled(), "an endpoint omitting 'enabled' defaults to enabled");
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), endpoint.allowedMethods());
-        assertEquals(new UpstreamDefaultsConfig(false, true), endpoint.upstreamDefaults());
+        assertEquals(UpstreamDefaultsConfig.builder().retryEnabled(false).notModifiedEnabled(true).build(), endpoint.upstreamDefaults());
         assertEquals(List.of("orders.read", "orders.write"), endpoint.scopes(),
                 "endpoint.scopes must bind outside the auth block");
         assertFalse(endpoint.auth().effectiveTokenRelay(), "a declared token_relay: false must bind");

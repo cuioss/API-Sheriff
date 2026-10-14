@@ -102,7 +102,7 @@ class PortalRulesTest {
         return EndpointConfig.builder()
                 .id(endpointId())
                 .enabled(enabled)
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .routes(List.of(route))
                 .catalog(catalog)
                 .build();

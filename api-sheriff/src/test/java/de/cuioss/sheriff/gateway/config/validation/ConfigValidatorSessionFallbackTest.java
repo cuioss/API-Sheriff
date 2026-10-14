@@ -77,7 +77,7 @@ class ConfigValidatorSessionFallbackTest {
     }
 
     private static AuthConfig auth(Require require, @Nullable Boolean sessionFallback) {
-        return new AuthConfig(require, null, sessionFallback);
+        return AuthConfig.builder().require(require).sessionFallback(sessionFallback).build();
     }
 
     private static OidcConfig oidc() {

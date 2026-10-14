@@ -818,9 +818,12 @@ class SheriffMetricsTest {
 
         private GatewayConfig configWith(@Nullable Metadata metadata,
                 @Nullable TokenValidationConfig tokenValidation, @Nullable OidcConfig oidc) {
-            return new GatewayConfig(1, metadata, null, null, null,
-                    null, null, null, null, null, null, tokenValidation, oidc,
-                    null, null, null);
+            return GatewayConfig.builder()
+                    .version(1)
+                    .metadata(metadata)
+                    .tokenValidation(tokenValidation)
+                    .oidc(oidc)
+                    .build();
         }
     }
 

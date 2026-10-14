@@ -70,7 +70,7 @@ class ConfigModelContractTest {
     // --- Shared fixtures ---------------------------------------------------
 
     private static AuthConfig auth() {
-        return new AuthConfig(Require.BEARER, null, null);
+        return AuthConfig.builder().require(Require.BEARER).build();
     }
 
     private static AnchorConfig anchorConfig() {
@@ -93,7 +93,8 @@ class ConfigModelContractTest {
                 .tls(tlsConfig())
                 .management(managementConfig())
                 .securityHeaders(securityHeadersConfig())
-                .securityDefaults(new SecurityDefaultsConfig("strict", 8192, null, null))
+                .securityDefaults(SecurityDefaultsConfig.builder().profile("strict")
+                        .maxAuthorizationHeaderValueLength(8192).build())
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                 .anchors(Map.of("api", anchorConfig()))
                 .upstreamDefaults(UpstreamDefaultsConfig.defaults())
@@ -227,16 +228,24 @@ class ConfigModelContractTest {
                 .match(matchConfig())
                 .auth(auth())
                 .securityFilter(securityFilterConfig())
-                .forward(new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
-                        Map.of("X-Gateway", "api-sheriff")))
+                .forward(forwardConfig())
                 .upstream(upstreamConfig())
                 .rateLimit(new RateLimitConfig(100, 200))
                 .websocket(webSocketConfig())
                 .build();
     }
 
+    private static ForwardConfig forwardConfig() {
+        return ForwardConfig.builder()
+                .headersAllow(List.of("Accept"))
+                .queryAllow(List.of("page"))
+                .setHeaders(Map.of("X-Gateway", "api-sheriff"))
+                .build();
+    }
+
     private static WebSocketConfig webSocketConfig() {
-        return new WebSocketConfig(List.of("https://app.example.com"), 300);
+        return WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com")).idleTimeoutSeconds(300)
+                .build();
     }
 
     private static ResolvedRoute resolvedRoute() {
@@ -253,8 +262,7 @@ class ConfigModelContractTest {
                 .notModifiedEnabled(true)
                 .rewriteLocation(true)
                 .upstream(resolvedUpstream())
-                .effectiveForward(new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
-                        Map.of("X-Gateway", "api-sheriff")))
+                .effectiveForward(forwardConfig())
                 .build();
     }
 
@@ -310,8 +318,8 @@ class ConfigModelContractTest {
                 .rewriteLocation(true)
                 .connectTimeoutMs(2000)
                 .readTimeoutMs(5000)
-                .retry(new UpstreamConfig.Retry(true, 3, true))
-                .notModified(new UpstreamConfig.NotModified(true))
+                .retry(UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build())
+                .notModified(UpstreamConfig.NotModified.builder().enabled(true).build())
                 .build();
     }
 
@@ -323,6 +331,22 @@ class ConfigModelContractTest {
 
         private static Arguments voCase(String name, Object subject, Object equalCopy, Object different) {
             return Arguments.of(Named.named(name, subject), equalCopy, different);
+        }
+
+        private static SecurityHeadersConfig headersWithPolicy(String contentSecurityPolicy) {
+            return SecurityHeadersConfig.builder().contentTypeNosniff(true).frameDeny(true)
+                    .contentSecurityPolicy(contentSecurityPolicy).build();
+        }
+
+        private static SecurityDefaultsConfig securityDefaults(@Nullable String profile,
+                @Nullable Integer maxAuthorizationHeaderValueLength, @Nullable Boolean allowGetWithContentLengthBody,
+                @Nullable Boolean allowExtendedAscii) {
+            return SecurityDefaultsConfig.builder()
+                    .profile(profile)
+                    .maxAuthorizationHeaderValueLength(maxAuthorizationHeaderValueLength)
+                    .allowGetWithContentLengthBody(allowGetWithContentLengthBody)
+                    .allowExtendedAscii(allowExtendedAscii)
+                    .build();
         }
 
         static Stream<Arguments> valueObjects() {
@@ -347,13 +371,13 @@ class ConfigModelContractTest {
                     // content_security_policy participates in identity: the unequal instance varies only
                     // that component, so dropping it from equals() fails this case alone.
                     voCase("SecurityHeadersConfig (content_security_policy)",
-                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null, null),
-                            new SecurityHeadersConfig(null, true, true, "default-src 'self'", null, null),
-                            new SecurityHeadersConfig(null, true, true, "default-src 'none'", null, null)),
+                            headersWithPolicy("default-src 'self'"),
+                            headersWithPolicy("default-src 'self'"),
+                            headersWithPolicy("default-src 'none'")),
                     voCase("SecurityHeadersConfig (header_modes)",
-                            new SecurityHeadersConfig(null, null, true, null, frameDenyDefault(), null),
-                            new SecurityHeadersConfig(null, null, true, null, frameDenyDefault(), null),
-                            new SecurityHeadersConfig(null, null, true, null, null, null)),
+                            SecurityHeadersConfig.builder().frameDeny(true).headerModes(frameDenyDefault()).build(),
+                            SecurityHeadersConfig.builder().frameDeny(true).headerModes(frameDenyDefault()).build(),
+                            SecurityHeadersConfig.builder().frameDeny(true).build()),
                     voCase("SecurityHeadersConfig.HeaderModes", frameDenyDefault(), frameDenyDefault(),
                             SecurityHeadersConfig.HeaderModes.builder()
                                     .frameDeny(SecurityHeadersConfig.HeaderMode.SET).build()),
@@ -375,21 +399,21 @@ class ConfigModelContractTest {
                     // component and holds the other three fixed, so a component dropped from equals()
                     // fails its own case alone.
                     voCase("SecurityDefaultsConfig (profile)",
-                            new SecurityDefaultsConfig("strict", 8192, null, null),
-                            new SecurityDefaultsConfig("strict", 8192, null, null),
-                            new SecurityDefaultsConfig("lenient", 8192, null, null)),
+                            securityDefaults("strict", 8192, null, null),
+                            securityDefaults("strict", 8192, null, null),
+                            securityDefaults("lenient", 8192, null, null)),
                     voCase("SecurityDefaultsConfig (max_authorization_header_value_length)",
-                            new SecurityDefaultsConfig("strict", 8192, null, null),
-                            new SecurityDefaultsConfig("strict", 8192, null, null),
-                            new SecurityDefaultsConfig("strict", 4096, null, null)),
+                            securityDefaults("strict", 8192, null, null),
+                            securityDefaults("strict", 8192, null, null),
+                            securityDefaults("strict", 4096, null, null)),
                     voCase("SecurityDefaultsConfig (allow_get_with_content_length_body)",
-                            new SecurityDefaultsConfig("strict", 8192, false, null),
-                            new SecurityDefaultsConfig("strict", 8192, false, null),
-                            new SecurityDefaultsConfig("strict", 8192, true, null)),
+                            securityDefaults("strict", 8192, false, null),
+                            securityDefaults("strict", 8192, false, null),
+                            securityDefaults("strict", 8192, true, null)),
                     voCase("SecurityDefaultsConfig (allow_extended_ascii)",
-                            new SecurityDefaultsConfig("strict", 8192, null, false),
-                            new SecurityDefaultsConfig("strict", 8192, null, false),
-                            new SecurityDefaultsConfig("strict", 8192, null, true)),
+                            securityDefaults("strict", 8192, null, false),
+                            securityDefaults("strict", 8192, null, false),
+                            securityDefaults("strict", 8192, null, true)),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),
@@ -484,8 +508,10 @@ class ConfigModelContractTest {
                                     new OidcConfig.SenderConstraintSettings("/keys/a.pem")).build(),
                             OidcConfig.builder().senderConstraint(
                                     new OidcConfig.SenderConstraintSettings("/keys/b.pem")).build()),
-                    voCase("UpstreamDefaultsConfig", new UpstreamDefaultsConfig(true, true),
-                            new UpstreamDefaultsConfig(true, true), new UpstreamDefaultsConfig(false, true)),
+                    voCase("UpstreamDefaultsConfig",
+                            UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(),
+                            UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(),
+                            UpstreamDefaultsConfig.builder().retryEnabled(false).notModifiedEnabled(true).build()),
                     voCase("EndpointConfig", endpointConfig(), endpointConfig(), EndpointConfig.builder()
                             .id("other").baseUrl("svc").auth(auth()).build()),
                     voCase("EndpointConfig.scopes", endpointConfig(), endpointConfig(), EndpointConfig.builder()
@@ -495,13 +521,17 @@ class ConfigModelContractTest {
                             .allowedMethods(endpointConfig().allowedMethods())
                             .upstreamDefaults(endpointConfig().upstreamDefaults())
                             .routes(endpointConfig().routes()).build()),
-                    voCase("AuthConfig", auth(), auth(), new AuthConfig(Require.NONE, null, null)),
-                    voCase("AuthConfig.tokenRelay", new AuthConfig(Require.SESSION, false, null),
-                            new AuthConfig(Require.SESSION, false, null), new AuthConfig(Require.SESSION, true, null)),
+                    voCase("AuthConfig", auth(), auth(), AuthConfig.builder().require(Require.NONE).build()),
+                    voCase("AuthConfig.tokenRelay",
+                            AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build(),
+                            AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build(),
+                            AuthConfig.builder().require(Require.SESSION).tokenRelay(true).build()),
                     // session_fallback participates in identity: the unequal instance varies only that
                     // component, so dropping it from equals() fails this case alone.
-                    voCase("AuthConfig.sessionFallback", new AuthConfig(Require.BEARER, null, true),
-                            new AuthConfig(Require.BEARER, null, true), new AuthConfig(Require.BEARER, null, false)),
+                    voCase("AuthConfig.sessionFallback",
+                            AuthConfig.builder().require(Require.BEARER).sessionFallback(true).build(),
+                            AuthConfig.builder().require(Require.BEARER).sessionFallback(true).build(),
+                            AuthConfig.builder().require(Require.BEARER).sessionFallback(false).build()),
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
                     voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
@@ -530,19 +560,25 @@ class ConfigModelContractTest {
                     voCase("SecurityFilterConfig", securityFilterConfig(), securityFilterConfig(),
                             SecurityFilterConfig.builder().build()),
                     voCase("ForwardConfig",
-                            new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
-                                    Map.of("X-Gateway", "sheriff")),
-                            new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
-                                    Map.of("X-Gateway", "sheriff")),
-                            new ForwardConfig(List.of(), null, List.of(), null, Map.of())),
+                            ForwardConfig.builder().headersAllow(List.of("Accept")).queryAllow(List.of("page"))
+                                    .setHeaders(Map.of("X-Gateway", "sheriff")).build(),
+                            ForwardConfig.builder().headersAllow(List.of("Accept")).queryAllow(List.of("page"))
+                                    .setHeaders(Map.of("X-Gateway", "sheriff")).build(),
+                            ForwardConfig.builder().headersAllow(List.of()).queryAllow(List.of())
+                                    .setHeaders(Map.of()).build()),
                     voCase("ForwardConfig (negative-list mode)",
-                            new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of()),
-                            new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of()),
-                            new ForwardConfig(null, List.of("Cookie"), null, null, Map.of())),
+                            ForwardConfig.builder().headersDeny(List.of("Cookie")).queryDeny(List.of("debug"))
+                                    .setHeaders(Map.of()).build(),
+                            ForwardConfig.builder().headersDeny(List.of("Cookie")).queryDeny(List.of("debug"))
+                                    .setHeaders(Map.of()).build(),
+                            ForwardConfig.builder().headersDeny(List.of("Cookie")).setHeaders(Map.of()).build()),
                     voCase("WebSocketConfig",
-                            new WebSocketConfig(List.of("https://app.example.com"), 300),
-                            new WebSocketConfig(List.of("https://app.example.com"), 300),
-                            new WebSocketConfig(List.of("https://other.example.com"), 60)),
+                            WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com"))
+                                    .idleTimeoutSeconds(300).build(),
+                            WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com"))
+                                    .idleTimeoutSeconds(300).build(),
+                            WebSocketConfig.builder().allowedOrigins(List.of("https://other.example.com"))
+                                    .idleTimeoutSeconds(60).build()),
                     voCase("UpstreamConfig", upstreamConfig(), upstreamConfig(), UpstreamConfig.builder().build()),
                     // rewrite_location participates in identity on both records: each case varies only
                     // that component, so dropping it from equals() fails its own case alone.
@@ -553,12 +589,12 @@ class ConfigModelContractTest {
                     voCase("ResolvedRoute (rewrite_location)", resolvedRouteWithRewriteLocation(true),
                             resolvedRouteWithRewriteLocation(true), resolvedRouteWithRewriteLocation(false)),
                     voCase("UpstreamConfig.Retry",
-                            new UpstreamConfig.Retry(true, 3, true),
-                            new UpstreamConfig.Retry(true, 3, true),
-                            new UpstreamConfig.Retry(false, null, null)),
-                    voCase("UpstreamConfig.NotModified", new UpstreamConfig.NotModified(true),
-                            new UpstreamConfig.NotModified(true),
-                            new UpstreamConfig.NotModified(false)),
+                            UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build(),
+                            UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build(),
+                            UpstreamConfig.Retry.builder().enabled(false).build()),
+                    voCase("UpstreamConfig.NotModified", UpstreamConfig.NotModified.builder().enabled(true).build(),
+                            UpstreamConfig.NotModified.builder().enabled(true).build(),
+                            UpstreamConfig.NotModified.builder().enabled(false).build()),
                     voCase("RateLimitConfig", new RateLimitConfig(100, 200),
                             new RateLimitConfig(100, 200),
                             new RateLimitConfig(1, 1)));
@@ -596,6 +632,7 @@ class ConfigModelContractTest {
 
         @Test
         void authConfigBuilderMatchesConstructor() {
+            // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             AuthConfig viaCtor = new AuthConfig(Require.BEARER, false, true);
             AuthConfig viaBuilder = AuthConfig.builder().require(Require.BEARER).tokenRelay(false)
                     .sessionFallback(true).build();
@@ -604,6 +641,7 @@ class ConfigModelContractTest {
 
         @Test
         void anchorConfigBuilderMatchesConstructor() {
+            // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             AnchorConfig viaCtor = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
                     auth(), null, null, List.of(HttpMethod.GET));
             AnchorConfig viaBuilder = AnchorConfig.builder().name("api").pathPrefix("/api").type(AnchorType.PROXY)
@@ -614,6 +652,7 @@ class ConfigModelContractTest {
 
         @Test
         void gatewayConfigBuilderMatchesConstructor() {
+            // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
                     List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null, null,
                     null, portalConfig());
@@ -625,6 +664,7 @@ class ConfigModelContractTest {
 
         @Test
         void endpointConfigBuilderMatchesConstructor() {
+            // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", "api",
                     auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, List.of(), catalogConfig());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
@@ -649,6 +689,7 @@ class ConfigModelContractTest {
         @Test
         void securityHeadersConfigBuilderMatchesConstructor() {
             SecurityHeadersConfig.Hsts hsts = new SecurityHeadersConfig.Hsts(600, false);
+            // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             SecurityHeadersConfig viaCtor = new SecurityHeadersConfig(hsts, null, true, "default-src 'self'",
                     frameDenyDefault(), null);
             SecurityHeadersConfig viaBuilder = SecurityHeadersConfig.builder().hsts(hsts).frameDeny(true)
@@ -713,6 +754,7 @@ class ConfigModelContractTest {
 
         @Test
         void gatewayConfigNormalizesAllAbsentComponents() {
+            // Positional on purpose: the canonical constructor's null normalization is the subject.
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null);
             assertNull(cfg.metadata());
@@ -761,6 +803,7 @@ class ConfigModelContractTest {
 
         @Test
         void securityHeadersConfigKeepsAnAbsentContentSecurityPolicyAbsent() {
+            // Positional on purpose: the canonical constructor's null round-trip is the subject.
             SecurityHeadersConfig cfg = new SecurityHeadersConfig(null, null, null, null, null, null);
             assertAll("every security_headers component round-trips null — an absent policy emits no header",
                     () -> assertNull(cfg.hsts()),
@@ -825,6 +868,7 @@ class ConfigModelContractTest {
 
         @Test
         void endpointConfigNormalizesAbsentCollectionsAndNullables() {
+            // Positional on purpose: the canonical constructor's null normalization is the subject.
             EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
@@ -837,6 +881,7 @@ class ConfigModelContractTest {
 
         @Test
         void routeConfigNormalizesAbsentAnchor() {
+            // Positional on purpose: the canonical constructor's null round-trip is the subject.
             RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null,
                     null, null);
             assertNull(cfg.anchor());
@@ -849,6 +894,7 @@ class ConfigModelContractTest {
 
         @Test
         void anchorConfigNormalizesAbsentComponents() {
+            // Positional on purpose: the canonical constructor's null normalization is the subject.
             AnchorConfig cfg = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null, null);
             assertNull(cfg.auth());
             assertNull(cfg.securityFilter());
@@ -882,6 +928,7 @@ class ConfigModelContractTest {
 
         @Test
         void collectionBearingRecordsNormalizeNullToEmpty() {
+            // Positional on purpose: every canonical constructor's null-to-empty normalization is the subject.
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
             assertTrue(new ForwardedConfig(null, null, null).trustedProxies().isEmpty());
             assertTrue(new ForwardConfig(null, null, null, null, null).setHeaders().isEmpty());
@@ -899,6 +946,7 @@ class ConfigModelContractTest {
 
         @Test
         void webSocketConfigNormalizesAbsentComponents() {
+            // Positional on purpose: the canonical constructor's null normalization is the subject.
             WebSocketConfig cfg = new WebSocketConfig(null, null);
             assertTrue(cfg.allowedOrigins().isEmpty());
             assertNull(cfg.idleTimeoutSeconds());
@@ -912,6 +960,7 @@ class ConfigModelContractTest {
          */
         @Test
         void forwardConfigKeepsAbsentListsNullRatherThanNormalizingThem() {
+            // Positional on purpose: the canonical constructor's refusal to normalize null is the subject.
             ForwardConfig absent = new ForwardConfig(null, null, null, null, null);
 
             assertAll("every absent forward list stays null",
@@ -923,6 +972,7 @@ class ConfigModelContractTest {
 
         @Test
         void forwardConfigDistinguishesAbsentFromDeclaredEmpty() {
+            // Positional on purpose: the canonical constructor keeping absent and empty apart is the subject.
             ForwardConfig absent = new ForwardConfig(null, null, null, null, Map.of());
             ForwardConfig declaredEmpty = new ForwardConfig(List.of(), null, List.of(), null, Map.of());
 
@@ -940,6 +990,7 @@ class ConfigModelContractTest {
         @Test
         void forwardConfigDefensivelyCopiesDeclaredListsAndKeepsThemUnmodifiable() {
             List<String> source = new ArrayList<>(List.of("Accept"));
+            // Positional on purpose: the canonical constructor's defensive copy is the subject.
             ForwardConfig cfg = new ForwardConfig(source, null, null, null, Map.of());
             source.add("X-Late");
 
@@ -1034,11 +1085,13 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private EndpointConfig endpointConfigWith(String id, String baseUrl) {
+            // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
             return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, List.of(), null);
         }
 
         @Test
         void endpointConfigAcceptsAnAbsentAuthBlock() {
+            // Positional on purpose: the canonical constructor admitting an absent auth is the subject.
             EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), List.of(), null,
                     List.of(), null);
             assertNull(cfg.auth(), "an anchored endpoint may omit its auth block");
@@ -1072,6 +1125,7 @@ class ConfigModelContractTest {
 
         @Test
         void anchorConfigRequiresNamePathPrefixTypeAndAccess() {
+            // Positional on purpose: the canonical constructor's mandatory-field checks are the subject.
             NullPointerException noName = assertThrows(NullPointerException.class,
                     () -> new AnchorConfig(null, "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null,
                             null, null, List.of()));
@@ -1092,6 +1146,7 @@ class ConfigModelContractTest {
 
         @Test
         void authConfigRequiresRequire() {
+            // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
             NullPointerException ex = assertThrows(NullPointerException.class,
                     () -> new AuthConfig(null, null, null));
             assertEquals("require", ex.getMessage());
@@ -1161,6 +1216,7 @@ class ConfigModelContractTest {
          * exactly one component, keeping each {@code assertThrows} lambda to a single invocation.
          */
         private RouteConfig routeConfigWith(String id, MatchConfig match) {
+            // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
             return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null);
         }
 
@@ -1614,7 +1670,7 @@ class ConfigModelContractTest {
             UpstreamDefaultsConfig defaults = UpstreamDefaultsConfig.defaults();
             assertTrue(defaults.retryEnabled());
             assertTrue(defaults.notModifiedEnabled());
-            assertEquals(new UpstreamDefaultsConfig(true, true), defaults);
+            assertEquals(UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(), defaults);
         }
     }
 
@@ -1731,22 +1787,24 @@ class ConfigModelContractTest {
         @Test
         void authConfigResolvesAbsentTokenRelayToRelaying() {
             assertAll("token_relay: absent and true relay, only an explicit false withholds the token",
-                    () -> assertNull(new AuthConfig(Require.SESSION, null, null).tokenRelay()),
-                    () -> assertTrue(new AuthConfig(Require.SESSION, null, null).effectiveTokenRelay()),
-                    () -> assertTrue(new AuthConfig(Require.SESSION, true, null).effectiveTokenRelay()),
-                    () -> assertFalse(new AuthConfig(Require.SESSION, false, null).effectiveTokenRelay()));
+                    () -> assertNull(AuthConfig.builder().require(Require.SESSION).build().tokenRelay()),
+                    () -> assertTrue(AuthConfig.builder().require(Require.SESSION).build().effectiveTokenRelay()),
+                    () -> assertTrue(AuthConfig.builder().require(Require.SESSION).tokenRelay(true).build()
+                            .effectiveTokenRelay()),
+                    () -> assertFalse(AuthConfig.builder().require(Require.SESSION).tokenRelay(false).build()
+                            .effectiveTokenRelay()));
         }
 
         @Test
         void authConfigResolvesOnlyADeclaredTrueSessionFallbackToFallingBack() {
             assertAll("session_fallback: absent and false stay on one branch, only an explicit true falls back",
-                    () -> assertNull(new AuthConfig(Require.BEARER, null, null).sessionFallback()),
-                    () -> assertFalse(new AuthConfig(Require.BEARER, null, null).effectiveSessionFallback(),
+                    () -> assertNull(AuthConfig.builder().require(Require.BEARER).build().sessionFallback()),
+                    () -> assertFalse(AuthConfig.builder().require(Require.BEARER).build().effectiveSessionFallback(),
                             "an absent key resolves to false"),
-                    () -> assertFalse(new AuthConfig(Require.BEARER, null, false).effectiveSessionFallback(),
-                            "a declared false resolves to false"),
-                    () -> assertTrue(new AuthConfig(Require.BEARER, null, true).effectiveSessionFallback(),
-                            "a declared true resolves to true"));
+                    () -> assertFalse(AuthConfig.builder().require(Require.BEARER).sessionFallback(false).build()
+                            .effectiveSessionFallback(), "a declared false resolves to false"),
+                    () -> assertTrue(AuthConfig.builder().require(Require.BEARER).sessionFallback(true).build()
+                            .effectiveSessionFallback(), "a declared true resolves to true"));
         }
 
         @Test
