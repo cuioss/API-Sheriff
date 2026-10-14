@@ -31,7 +31,7 @@
 # The one refinement over a bare service list: `--no-deps` on the gateway bring-up. Both gateway
 # services declare `depends_on: [keycloak, go-httpbin, asset-origin]`, so an unqualified
 # `up -d keycloak api-sheriff api-sheriff-cookie` would also start go-httpbin and asset-origin —
-# five containers, not three. The demo drives only the gateway's reserved /auth/* paths and the
+# five containers, not three. The demo drives only the gateway's reserved /bff/* paths and the
 # /assets/demo/* directory asset source, neither of which touches those two upstreams, and Keycloak
 # (the one dependency that IS load-bearing, for JWKS) is started and waited on explicitly below
 # before the gateways come up. `--no-deps` is what makes the three-container footprint real; it is
@@ -326,7 +326,7 @@ echo ""
 # docker-compose.yml actually publishes. demo-client/pom.xml's demo.baseUrl.* properties carry the
 # same addresses for the Playwright suite; a literal copy here would be a third place to keep in
 # lockstep with the model.
-echo "📱 Demo entry points (the SPA is served BY the gateway, so it is same-origin with /auth/*):"
+echo "📱 Demo entry points (the SPA is served BY the gateway, so it is same-origin with /bff/*):"
 while read -r GATEWAY_SERVICE _ _ GATEWAY_PUBLIC_PORT _; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
     echo "  🖥️  ${GATEWAY_SERVICE}: https://localhost:${GATEWAY_PUBLIC_PORT}/assets/demo/index.html"

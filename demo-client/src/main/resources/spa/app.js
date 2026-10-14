@@ -7,20 +7,20 @@
  * Three rules govern everything below, and each is a property of the gateway rather than a style
  * choice here:
  *
- *   1. `/auth/userinfo` is an XHR PROBE. It answers `200 application/json` with a live session and
+ *   1. `/bff/session` is an XHR PROBE. It answers `200 application/json` with a live session and
  *      `401 application/problem+json` without one. It NEVER redirects, and it does not vary on
  *      `Accept`. This client therefore fetches it and branches on the status code -- it must not
  *      follow or expect a redirect from it.
- *   2. `/auth/login` and `/auth/logout` are NAVIGATIONS. They answer `302` into the identity
+ *   2. `/bff/login` and `/bff/logout` are NAVIGATIONS. They answer `302` into the identity
  *      provider, which only the browser can follow meaningfully. This client uses
  *      `window.location.assign(...)` for both, never `fetch`.
  *   3. No token material exists here to handle. The endpoint discloses none, the session cookie is
  *      `HttpOnly`, and this client neither reads a cookie nor writes to storage. Nothing is logged.
  */
 
-const USERINFO_PATH = '/auth/userinfo';
-const LOGIN_PATH = '/auth/login';
-const LOGOUT_PATH = '/auth/logout';
+const USERINFO_PATH = '/bff/session';
+const LOGIN_PATH = '/bff/login';
+const LOGOUT_PATH = '/bff/logout';
 
 const EM_DASH = '—';
 

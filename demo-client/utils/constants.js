@@ -6,14 +6,18 @@
  * variables, so a published-port change is made in exactly one place.
  */
 
-/** The gateway-owned reserved paths (exact-match, on the OIDC host). */
+/**
+ * The gateway-owned reserved paths (exact-match, on the OIDC host), under the /bff/* convention.
+ * The key `userInfo` names the configuration key it mirrors, oidc.user_info.path; only its address
+ * is /bff/session.
+ */
 export const RESERVED = {
   /** Login initiation. Answers 302 into the OIDC authorization endpoint — a NAVIGATION, never a fetch. */
-  login: '/auth/login',
+  login: '/bff/login',
   /** The XHR identity probe. 200 with a live session, 401 application/problem+json without one — never a redirect. */
-  userInfo: '/auth/userinfo',
+  userInfo: '/bff/session',
   /** RP-initiated logout. Answers 302 into the IdP end-session leg — a NAVIGATION. */
-  logout: '/auth/logout',
+  logout: '/bff/logout',
 };
 
 /**

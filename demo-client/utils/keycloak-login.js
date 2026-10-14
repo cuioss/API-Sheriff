@@ -7,8 +7,8 @@ import { REALM_USER, SPA } from './constants.js';
  *
  * The whole flow is a sequence of TOP-LEVEL NAVIGATIONS the browser owns:
  *
- *   click Log in -> /auth/login?returnUrl=... -> 302 -> Keycloak authorization endpoint
- *   -> the login form -> 302 -> /auth/callback?code&state -> 302 -> the validated returnUrl
+ *   click Log in -> /bff/login?returnUrl=... -> 302 -> Keycloak authorization endpoint
+ *   -> the login form -> 302 -> /bff/callback?code&state -> 302 -> the validated returnUrl
  *
  * The browser reaches Keycloak because Chromium is launched with a host-resolver rule mapping the
  * realm's pinned `keycloak:8443` frontendUrl onto the published host port — see playwright.config.js.
