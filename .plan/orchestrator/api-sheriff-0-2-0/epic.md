@@ -62,18 +62,21 @@ would otherwise force a retrofit.
 - **`PLAN-V02-12` running in two halves (operator rulings 2026-10-13, inbox `-002`).** D1–D4 ship
   now as the first of two PRs: the reserved BFF paths move to `/bff/*`, userinfo becomes
   `/bff/session`, the client-auth JWKS default becomes `/bff/jwks`, the `bff` / `bff-session` sample
-  anchors are renamed, and the canonical-form check covers login, user_info and step_up. **D5–D7 are on
-  hold** (token-sheriff bump, `oidc.discovery_url`, identity repoint plus removal of
-  `--host-resolver-rules`, ADR). They wait for a **`token-sheriff-client` release** carrying a
-  back-channel/discovery override. That override must also cover RFC 7009 revocation (and device
-  authorization) **without rewriting discovery metadata** (RFC 8414 §3.3). On Keycloak 26.5.7 with
-  `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`, `revocation_endpoint` stays on the external
-  `https://localhost:1443`, and the operator does not accept dialling that from the container as a
-  residual. Only a released artifact is consumed: no SNAPSHOT, no gateway-side stand-in. Verified
-  2026-10-13: the pin is `0.9.6`, the newest TokenSheriff tag; `ClientConfiguration` on TokenSheriff
-  `main` models only `issuer`. **Filed upstream 2026-10-13 as cuioss/TokenSheriff#800**, revocation
-  and device authorization included. Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1, so
-  they wait on the same release. **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
+  anchors are renamed, and the canonical-form check covers login, user_info and step_up — open as
+  **#450**. **D5–D7 (back-channel addressing, identity repoint plus removal of
+  `--host-resolver-rules`, ADR) are UNBLOCKED since 2026-10-14:** token-sheriff-client **0.9.7**
+  ships `ClientConfiguration.backChannelOrigin` (cuioss/TokenSheriff#800 → PR #805), and `main` pins
+  0.9.7 since #449 (`5c2a8143`: release-bot bump plus `RetryingJwksLoader.getKeyIds()` as a delegate;
+  CI green including the integration lane, so the extension health checks that 0.9.7 now registers
+  stay excluded). The bump is therefore done and no longer part of V02-12. The upstream shape differs
+  from the request: **origin only, no `discoveryUrl`, no per-endpoint overrides, JWKS not covered**
+  (the client engine fetches none). Endpoints on the issuer's origin — discovery, token, PAR,
+  userinfo, **revocation** — go to the back-channel origin; other origins are left alone; metadata is
+  never rewritten. So the planned `oidc.discovery_url` is dropped: the spec's D1 exposes one `oidc`
+  back-channel-origin key, refuses `http` unless explicitly allowed (`allowInsecureHttp` is client-wide
+  upstream), keeps JWKS on `token_validation.issuers[].jwks.url`, and uses a static Keycloak hostname
+  (no dynamic back-channel). The held half runs as V02-12's second PR once #450 has merged.
+  Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1 (that second PR). **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
   half and runs after V02-23. Since the 2026-10-13 dedup it is also an overlay of `PLAN-V02-15`'s
   BFF sample and extends that plan's CI login proof, so it runs after V02-15 as well.

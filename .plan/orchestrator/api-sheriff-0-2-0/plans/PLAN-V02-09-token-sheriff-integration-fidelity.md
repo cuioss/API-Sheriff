@@ -28,7 +28,20 @@ gaps that remain whichever way it decides.
 Read this before scoping; it is the state on `main`, and each item is either a fact to build on or
 work already done.
 
-- **token-sheriff is pinned at `0.9.6`.**
+- **token-sheriff is pinned at `0.9.7`** since #449 (`5c2a8143`, 2026-10-14). That bump did not
+  re-measure the `pom.xml` BOM comment block ("Re-measure this paragraph on every
+  `${version.token-sheriff}` bump"); this plan owns that re-measurement.
+- **0.9.7 changed the health beans this exclusion is about (TokenSheriff PR #795).** Before 0.9.7 the
+  extension never registered `JwksEndpointHealthCheck` and `TokenValidatorHealthCheck` in a consuming
+  application at all (no bean-archive marker, not in `additionalBeans()`), so readiness answered with
+  an empty check list whatever the JWKS state. 0.9.7 registers both as **unremovable** additional beans
+  in `TokenSheriffProcessor`; readiness then reports `jwks-endpoints` and answers 503 while the loaders
+  are not loaded, and liveness reports `jwt-validator`. **Consequence here: the `…health.*` half of the
+  exclusion excluded beans that did not exist until 0.9.7, and is load-bearing only now.** #449's CI
+  (unit, native integration lane, E2E) stayed green, which is evidence that `quarkus.arc.exclude-types`
+  still removes unremovable additional beans — confirm it directly in D1, do not rest on the green run.
+  Also upstream: `JwksEndpointHealthCheck` reports COMPLETE while a loader is still LOADING (it counts
+  only UNDEFINED), left as is.
 - **The exclusion is in force**, unconditional and in no profile. It covers the extension's
   `…health.*` and `…metrics.*` packages. Its value has **four carriers**, and a change touching only
   the properties file leaves three behind: `application.properties`,
@@ -53,7 +66,11 @@ work already done.
 - **The client engine's `SSLContext` is wired.** `BffRuntimeProducer` passes
   `trustProfileResolver.resolveEgressProfile(...)` to `ClientConfiguration.builder().sslContext(...)`.
   Not a deliverable here.
-- **The `application.properties` rationale block is current** and already names the metrics gap.
+- **The `application.properties` rationale block names the metrics gap, but its health half is now
+  suspect.** It says the two extension health probes "are driven by /q/health/ready and report DOWN".
+  Per TokenSheriff PR #795 those beans were never registered in a consumer before 0.9.7, so that
+  symptom could not have occurred on the versions the block was written against. Re-verify against
+  0.9.7 and correct the block and ADR-0027's account to what actually happened and happens now.
 - **Still open:**
   - The token validator's `SecurityEventCounter` is bound to no meter. `SheriffMetrics` binds only
     cui-http's URL-security counter, so JWT signature failures, expiries, issuer mismatches and JWKS
@@ -70,14 +87,17 @@ work already done.
 1. **Establish what the extension's beans actually do at the pinned version.** Read the shipped
    artifact, not its description and not the issue threads: `health.JwksEndpointHealthCheck`,
    `health.TokenValidatorHealthCheck` and `metrics.JwtMetricsCollector` in
-   `token-sheriff-validation-quarkus` 0.9.6. Report, per bean: what it reads, when it can fail,
+   `token-sheriff-validation-quarkus` 0.9.7. Report, per bean: what it reads, when it can fail,
    whether it observes a **live** condition or a construction fact, and — the question that decides
    D2 — **whether it now observes this gateway's produced `@GatewayValidator` validator or still
    needs the property namespace.** Look for any further bean of the same shape rather than assuming
    the list is complete. If a bean under-covers, that is an upstream finding to report, not
    something to work around here.
 
-   A closed issue is not a released capability. Verify against the resolved jar.
+   A closed issue is not a released capability. Verify against the resolved jar. Include the build
+   step: whether `TokenSheriffProcessor` (0.9.7) registering the health checks as unremovable still
+   loses to `quarkus.arc.exclude-types`, and pin the answer with a test that fails if the beans come
+   back (the current carriers assert the property line, not the beans' absence).
 
 2. **Decide the config-mapping question, with the answer written down either way.** The deliverable
    is a reasoned verdict, not a presupposed one. Candidate directions:
@@ -151,7 +171,7 @@ work already done.
      metadata. Confirm the metadata is sufficient for this application's native build before D2
      relies on dropping the extension.
    - *"`JwtMetricsCollector` fails hard on an empty namespace."* The upstream change asked for
-     warn-once-and-go-idle. Confirm from the jar what 0.9.6 actually does. If the gateway keeps the
+     warn-once-and-go-idle. Confirm from the jar what 0.9.7 actually does. If the gateway keeps the
      exclusion, this matters less for API Sheriff but remains correct for every other consumer.
 
 **Split-guard.** Five deliverables, under the threshold. If a split is ever forced, the line is
@@ -159,8 +179,8 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 
 ## Claim Labels
 
-- OBSERVED: token-sheriff is pinned at `0.9.6` — `api-sheriff/pom.xml`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: version.token-sheriff 0.9.6 in the root pom.xml, consumed by api-sheriff/pom.xml
+- OBSERVED: token-sheriff is pinned at `0.9.7` (#449, `5c2a8143`) — `pom.xml`
+  - verdict: contradicted | checked_at: 5c2a8143fc2414e6644ae4efb4ef4c9986cabb1c | by: api-sheriff-0-2-0/analyze | rescoped: yes | evidence: root pom.xml pins version.token-sheriff 0.9.7 since #449; claim and fact list re-scoped from 0.9.6
 - OBSERVED: the `quarkus.arc.exclude-types` exclusion of token-sheriff health/metrics beans is unconditional — `application.properties`
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties quarkus.arc.exclude-types covers the token quarkus health and metrics packages, unconditional, single occurrence
 - OBSERVED: readiness already reads live `IssuerKeySetStatus` — `GatewayReadinessCheck`
@@ -169,7 +189,7 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics.bindSecurityEventCounter binds only cui-http's counter; the token-side counter is bound to no meter
 - OBSERVED: `ADR-0027` carries no `#641`/`#617` reference — `doc/adr/0027-*.adoc`
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/0027 contains neither 641 nor 617 (control matched its Status line); ADR-0062 does not mention 0027
-- OBSERVED: `token-sheriff-validation-0.9.6.jar` ships `META-INF/native-image/.../reflect-config.json` — `unzip -l` of the resolved artifact
+- OBSERVED (re-check at 0.9.7): `token-sheriff-validation-0.9.6.jar` ships `META-INF/native-image/.../reflect-config.json` — `unzip -l` of the resolved artifact
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: token-sheriff-validation-0.9.6.jar lists META-INF/native-image reflect-config.json and native-image.properties
 
 ## Expected Surface
@@ -184,7 +204,7 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 - `doc/` — the three-layer documentation, and ADR-0027 or its successor
 - `api-sheriff/src/test/**` — `ShippedApplicationPropertiesTest`, `DefaultProfileReadinessTest`, `ExtensionUnqualifiedBeanExclusionTest`, `JwksTrustProfileResolverTest`
 - `pom.xml` — the BOM comment block, re-measured on a version bump
-- Read-only: the `token-sheriff-validation-quarkus` and `token-sheriff-validation` 0.9.6 artifacts
+- Read-only: the `token-sheriff-validation-quarkus` and `token-sheriff-validation` 0.9.7 artifacts
 
 ## Dependencies and Sequencing
 

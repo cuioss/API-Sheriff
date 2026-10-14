@@ -47,22 +47,53 @@ Both advertise the same issuer string.
 
 ## Deliverables
 
-1. **A backchannel/discovery override on the `oidc` block — the enabling production change.**
+1. **A back-channel origin on the `oidc` block — the enabling production change.**
 
    `OidcConfig` today carries a single `issuer` from which discovery derives *both* the
    browser-facing authorization endpoint and the gateway-facing token endpoint. That single
    field is the defect.
 
-   **The correct shape already exists in this codebase and must be mirrored rather than
-   invented**: `token_validation.issuers[]` already carries `issuer` (the expected `iss`) and
-   `jwks.url` as *independent* keys, so the bearer path can already validate against a public
-   identity while fetching keys internally. The BFF path did not get the same treatment. Close
-   that asymmetry.
+   **The engine seam now exists: token-sheriff-client 0.9.7 `ClientConfiguration.backChannelOrigin`**
+   (cuioss/TokenSheriff#800 → PR #805; `main` pins 0.9.7 since #449). Its contract, which this
+   deliverable exposes and must not widen:
+   - **origin only** (scheme, host, port), validated at build time; `issuer` stays the identity and
+     every exact-match check (RFC 8414 §3.3, RFC 9207, RFC 9068) stays as strict as before;
+   - one mapping, in `BackChannelHttp`: an endpoint **on the issuer's origin** is sent to the
+     back-channel origin with path and query preserved; an endpoint on **any other origin is left
+     alone**; the discovery document is never rewritten;
+   - it covers the client's own calls: **discovery, token, PAR, userinfo and RFC 7009 revocation**.
+     Front-channel endpoints (`authorization_endpoint`, `end_session_endpoint`) are untouched;
+   - **there is no `discoveryUrl` and no per-endpoint override** (upstream operator decision).
+     Discovery is fetched from `{back-channel origin}{issuer path}/.well-known/openid-configuration`
+     through the same mapping. Do not add a gateway-side discovery URL to make up for it;
+   - **JWKS is not part of it**: the client engine fetches none. The gateway's key fetch is the
+     bearer path's `token_validation.issuers[].jwks.url`, which is already independent of `issuer` —
+     point it at the internal host there.
 
-   Secure default is mandatory: **absent means today's behaviour** (one authority for
-   everything). The override widens nothing on its own and must never be inferred from request
-   headers — deriving a backchannel target from an inbound header is an SSRF primitive. It is
-   also subject to the existing egress allowlist, not exempt from it.
+   Expose it as one optional `oidc` key (name it at outline, e.g. `oidc.back_channel_origin`), passed
+   to `ClientConfiguration.builder().backChannelOrigin(…)` in
+   `BffRuntimeProducer.backChannelConfiguration` so every scoped variant gets it identically. Boot
+   rules:
+   - absent means today's behaviour (one authority for everything);
+   - an origin only: refuse a path, query, fragment or userinfo at boot with a gateway message rather
+     than relying on the engine's exception text;
+   - the host must pass the existing egress allowlist and the `egress_tls.oidc_*` hostname and trust
+     posture, which the engine applies to the host actually contacted;
+   - **`http` is refused unless explicitly allowed.** Upstream's `allowInsecureHttp` is client-wide
+     (PR #805 "Known limitation", security finding 830d5c): an `http` back-channel origin also permits
+     cleartext to every foreign `http` endpoint the metadata advertises. Default to `https` only; if an
+     `http` origin is admitted at all, it is an explicit opt-in with a boot WARN that names this
+     widening;
+   - never derived from request data (an SSRF primitive).
+
+   **The Keycloak side gets simpler, not more complex.** With the mapping, `hostname-backchannel-dynamic`
+   is not needed: with a static `KC_HOSTNAME` every advertised endpoint is on the issuer's origin and is
+   mapped, revocation included. (With dynamic back-channel on, Keycloak 26.5.7 advertises token, JWKS,
+   PAR and userinfo internally — another origin, left alone — and revocation externally — the issuer's
+   origin, mapped — so it also works, but it is two mechanisms for one job.) Choose static and do not
+   introduce `KC_HOSTNAME_BACKCHANNEL_DYNAMIC` (it is set nowhere on `main`; today both compose files
+   set `KC_HOSTNAME=localhost` with `KC_HOSTNAME_STRICT=false`, and the realms pin
+   `frontendUrl: https://keycloak:8443`, which D2 repoints). Prove the choice in D2's run.
 
    **Hard checklist item:** if this adds a config record, register it in `ConfigModelReflection`.
    An unregistered record boots fine on the JVM and fails **only** in the native image, and one
@@ -87,7 +118,11 @@ Both advertise the same issuer string.
    The gateway fronts the IdP under `/auth/*` on its own origin, so browser and IdP share one
    origin and one authority. Keycloak runs with `--hostname https://{gw}/auth` (a full URL
    including the context path is supported) plus `proxy-headers=xforwarded`; `http-relative-path`
-   is the alternative seam. **No IdP goes into any shipped image** — this is deployment sample
+   is the alternative seam. **The origin mapping preserves the path**: with the issuer
+   `https://{gw}/auth/realms/{realm}` and a back-channel origin of `https://keycloak:8443`, the
+   gateway's own calls go to `https://keycloak:8443/auth/realms/{realm}/…`, so Keycloak must serve under
+   `/auth` on its internal port too (`http-relative-path=/auth`), or the variant does not work. Settle
+   that before anything else in this deliverable. **No IdP goes into any shipped image** — this is deployment sample
    material only. **It is an overlay or variant of `deployment/compose-sample`, not a second
    standalone sample:** `PLAN-V02-15` owns the BFF-capable sample and its CI login proof, and this
    deliverable builds on that sample and extends that proof (allowlist and `/admin/` canonicalization
@@ -153,6 +188,10 @@ Both advertise the same issuer string.
    - browser-side DNS overrides (`--host-resolver-rules`, `/etc/hosts`) — what is in the tree now;
    - rewriting the discovery document in flight — breaks the §3.3 identity check by construction;
    - two issuer values — breaks `iss` validation and RFC 9207;
+   - a separate discovery URL or per-endpoint overrides — declined upstream (TokenSheriff PR #805); the
+     origin mapping covers discovery and every back-channel call with one declared rule;
+   - Keycloak's dynamic back-channel hostname as the mechanism — leaves `revocation_endpoint` on the
+     external origin (observed on 26.5.7), and couples the gateway's correctness to IdP behaviour;
    - validating `iss` against the internal URL while the browser uses the public one — the
      current arrangement, and the one that reads most plausible.
 
@@ -226,9 +265,10 @@ reserved-path namespace is a broken contract rather than a partial one.
   `variant instances (11)` including `api-sheriff-plain-mgmt`; the diagram carries no disclosed
   omission, so this plan owes no gap-closing redraw.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: integration-test-topology.svg shows variant instances (11) including api-sheriff-plain-mgmt; SVG unchanged since 1a20edad
-- HYPOTHESIS: `hostname-backchannel-dynamic=true` (with `hostname` set to a full URL and
-  `proxy-headers=xforwarded`) is the supported Keycloak-side mechanism for the split, and
-  `--hostname https://host/auth` with a context path is supported. Sourced from vendor
+- HYPOTHESIS: with a static `KC_HOSTNAME` (full URL, `proxy-headers=xforwarded`) every endpoint the
+  pinned Keycloak advertises is on the issuer's origin, so the 0.9.7 origin mapping retargets all of them
+  and `hostname-backchannel-dynamic` can be dropped; and `--hostname https://host/auth` with a context
+  path plus `http-relative-path=/auth` is supported. Sourced from vendor
   documentation at the 26.x line, against the pinned `26.5.7` image. Confirm/refute **against the
   pinned image's own behaviour**, not against the doc page. (verify-at-outline)
   - verdict: unverifiable | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs the pinned keycloak 26.5.7 image running; cannot be settled statically
@@ -251,8 +291,9 @@ reserved-path namespace is a broken contract rather than a partial one.
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java` — D1
-- HYPOTHESIS: the OIDC discovery/engine wiring that consumes `OidcConfig.issuer()`, and
-  `ConfigModelReflection` if D1 adds a record — **a new config record unregistered there boots
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § `backChannelConfiguration` — D1 passes the origin to the engine there
+- OBSERVED: `api-sheriff/src/main/resources/schema/gateway.schema.json` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D1's key and its boot rules
+- HYPOTHESIS: `ConfigModelReflection` if D1 adds a record — **a new config record unregistered there boots
   fine on the JVM and fails only in the native image.** (verify-at-outline)
 - OBSERVED: `integration-tests/src/main/docker/keycloak/*.json`,
   `deployment/compose-sample/docker/keycloak/sample-realm.json` — D2
@@ -272,7 +313,7 @@ reserved-path namespace is a broken contract rather than a partial one.
 
 ## Dependencies and Sequencing
 
-- Depends on: none. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058): the BFF now pushes every
+- Depends on: token-sheriff 0.9.7 on `main` (#449, `5c2a8143`, landed) for D1, D2 and D5's held half. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058): the BFF now pushes every
   authorization request, binds its tokens with DPoP and authenticates with `private_key_jwt` unless
   a client secret is configured. Build D1 against that `oidc` block, `OidcConfig` and
   `BffRuntimeProducer` as they now stand, and keep the RFC 9207 `iss` constraint it relies on.

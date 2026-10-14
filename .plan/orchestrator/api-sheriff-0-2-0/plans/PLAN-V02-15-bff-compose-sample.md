@@ -109,6 +109,10 @@ sample exists to save.**
    > *"IdP Addressing Model — one issuer identity, a frontchannel/backchannel split"*. The IT config's
    > container-internal issuer URLs are one of the things #176 says an adopter must not copy.
    >
+   > The mechanism is known since 2026-10-14: one public issuer identity plus V02-12's `oidc`
+   > back-channel-origin key (token-sheriff-client 0.9.7 `backChannelOrigin`), with the JWKS fetched via
+   > `token_validation.issuers[].jwks.url`. The key's exact name and boot rules are V02-12's.
+   >
    > **Read PLAN-V02-12's verdict and apply it. Do not settle the addressing model inside a sample**
    > — a sample that picks its own answer becomes the de-facto specification, and the wrong one.
 
