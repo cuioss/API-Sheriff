@@ -81,6 +81,7 @@ import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.StreamResetException;
+import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
@@ -383,7 +384,7 @@ class GatewayEdgeEarlyResponseResetTest {
                 .filter(captured -> Level.SEVERE.equals(captured.getLevel()))
                 .toList();
         String control = "vertx error capture control " + Generators.letterStrings(8, 16).next();
-        io.vertx.core.impl.logging.LoggerFactory.getLogger(GatewayEdgeEarlyResponseResetTest.class).error(control);
+        LoggerFactory.getLogger(GatewayEdgeEarlyResponseResetTest.class).error(control);
 
         assertAll("ERROR records of an early answer",
                 () -> assertTrue(errors.isEmpty(), () -> errors.size()
