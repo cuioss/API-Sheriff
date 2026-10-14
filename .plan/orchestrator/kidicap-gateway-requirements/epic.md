@@ -614,6 +614,14 @@ decision.
 
 ## Watches
 
+- **Cross-epic hold (2026-10-14): `api-sheriff-0-2-0` reworks the edge pipeline and policy-block
+  resolution before any further edge or config feature.** Operator ruling; sequence there:
+  `PLAN-V02-24` (one resolution mechanism for every policy block, test builders) → `PLAN-V02-25`
+  (decompose `GatewayEdgeRoute`) in parallel with `PLAN-V02-26` (split `ConfigValidator`). They start
+  after this epic's PLAN-32 has landed. **PLAN-20, -21, -26 and -29 are held until the refactor plan for
+  their surface lands** (config blocks → V02-24, edge → V02-25, boot rules → V02-26), then are re-grounded
+  against the new seams before emitting. PLAN-31 (`auth/RetryingJwksLoader` only) is not held.
+
 - **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
   FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`
   (cuioss/TokenSheriff#801 → PR #803); `main` pins 0.9.7 since #449 (`5c2a8143`), which implemented
