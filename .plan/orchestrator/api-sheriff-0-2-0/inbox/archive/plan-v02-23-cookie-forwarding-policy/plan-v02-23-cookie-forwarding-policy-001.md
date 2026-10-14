@@ -4,8 +4,8 @@ sender_id=plan-v02-23-cookie-forwarding-policy
 epic=api-sheriff-0-2-0
 kind=finding
 created=2026-10-14T14:01:33Z
-revision=1
-amended=2026-10-14T14:03:12Z
+revision=2
+amended=2026-10-14T14:04:58Z
 
 # PLAN-V02-23 paused — major refactor of the edge pipeline and policy-block resolution needed first
 
@@ -61,13 +61,6 @@ never-forward set that other pages link to.
 2. Re-sequence V02-23 after the refactor and re-ground its spec against the new seams; the operator
    rulings already taken for V02-23 stand (see below).
 3. Weigh overlap: PLAN-V02-12's second PR, V02-05, -06, -07, -20 all touch `edge/**` / `config/**`.
-4. Sequence against kidicap PLAN-32 (early-answer-it-timeouts, emitted 2026-10-14 as top
-   priority, started on another system): it also edits `GatewayEdgeRoute` and fixes the
-   `Http2EarlyResponseResetIT` flake that #448 left on main. Let PLAN-32 land before the
-   `GatewayEdgeRoute` decomposition starts, so the refactor rebases onto the fix rather than the
-   other way round. The queue-view note "PLAN-32 should merge before V02-23" still holds, now with
-   the refactor sitting between them.
-
 ## V02-23 state to resume from
 
 - Local plan `plan-v02-23-cookie-forwarding-policy`, phase 4-plan, outline written

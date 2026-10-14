@@ -9,6 +9,28 @@ workstream: WS-03
 > launches the plan inline. This spec is SELF-SUFFICIENT: the emitted command is a one-line pointer
 > and carries no brief, so every per-plan carry is authored here and nowhere else.
 
+
+> ⛔ **PARKED 2026-10-14 at phase 4-plan (operator).** The outline came to 8 deliverables, ~67 files and
+> 170,000–230,000 diff characters, about half of it the cost the structure charges for any new
+> per-route policy. It resumes only after `PLAN-V02-24` (policy-block resolution), `PLAN-V02-25` (edge
+> decomposition) and `PLAN-V02-26` (validator split) have landed, and is then re-grounded against those
+> seams: `cookies` becomes one declared block, its policy reaches the stages through the resolved route
+> context, its boot rules live in a rule class. The local plan `plan-v02-23-cookie-forwarding-policy`
+> (outline written, no tasks, no branch) is resumed or restarted from this spec then.
+>
+> **Operator rulings taken during refine/outline — binding for the re-grounded plan:**
+> - default `none` also relays NO upstream `Set-Cookie` (D4 wins over D1); breaking, must be stated;
+> - same-origin baseline without a BFF = the received scheme + host, plus the exact `additional_origins`;
+> - the WebSocket upgrade relays no upstream header today → pin that by test, add no relay;
+> - gRPC trailers pass the shared response-header filter;
+> - execution profile `full`.
+>
+> **Documentation, re-scoped:** D6/D7 first create ONE canonical section for the never-forward set
+> (the browser `Cookie` never reaches an upstream, and its successor rule) and turn the copies in the
+> ADRs, user pages and README into links to it, instead of correcting each copy.
+>
+> The critical-bug ruling of 2026-10-13 (the blanket `Cookie` strip) stays open until this plan ships.
+
 ## Objective
 
 The gateway removes the browser's `Cookie` header from every proxied request without exception

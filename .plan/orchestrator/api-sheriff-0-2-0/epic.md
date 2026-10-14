@@ -75,9 +75,8 @@ would otherwise force a retrofit.
   never rewritten. So the planned `oidc.discovery_url` is dropped: the spec's D1 exposes one `oidc`
   back-channel-origin key, refuses `http` unless explicitly allowed (`allowInsecureHttp` is client-wide
   upstream), keeps JWKS on `token_validation.issuers[].jwks.url`, and uses a static Keycloak hostname
-  (no dynamic back-channel). The held half runs as V02-12's second PR once #450 has merged, alongside
-  `PLAN-V02-23` (operator, 2026-10-14: "rebase"): both write `gateway.schema.json`, `ConfigValidator`,
-  `ConfigModelReflection` and `doc/configuration.adoc`, and whichever merges second rebases.
+  (no dynamic back-channel). The held half runs as V02-12's second PR once #450 has merged; `PLAN-V02-23`, which it was to run
+  alongside, is parked behind the 2026-10-14 refactor, and `PLAN-V02-24` waits for this second PR.
   Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1 (that second PR). **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
   half and runs after V02-23. Since the 2026-10-13 dedup it is also an overlay of `PLAN-V02-15`'s
@@ -126,7 +125,7 @@ would otherwise force a retrofit.
 
 | Workstream | Title | Plans |
 |---|---|---|
-| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16 |
+| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26 |
 | WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18 |
 | WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
@@ -210,6 +209,19 @@ needs no translation.
   **ADR-0037 is rewritten in place, not superseded** (it is still `Proposed`). User docs are part of
   the plan. Eight deliverables, proceeding unsplit: the two directions, the CSRF guard and the record
   are one contract.
+- **2026-10-14 — rework the edge pipeline and policy-block resolution before the cookie policy
+  (`PLAN-V02-24`, `-25`, `-26`; `PLAN-V02-23` parked).** Operator ruling during V02-23's outline
+  ("GatewayEdgeRoute is a nightmare. We need a major rework here."), reported in inbox V02-23 `-001`. V02-23's
+  outline came to ~67 files and 170k–230k diff characters, over the review bots' limit, and about half was
+  structural cost every new per-route policy pays: no shared policy-block resolution (each block has its
+  own hand-written chain in `RouteTableBuilder`), records constructed positionally in tests (`AuthConfig`
+  104 times in 8 files), a 2,664-line `GatewayEdgeRoute` threading per-route values by hand, a 3,273-line
+  `ConfigValidator`. Three plans, split by surface so each PR stays under the limits: V02-24 (one
+  resolution mechanism, test builders), then V02-25 (edge, resolved route context) in parallel with V02-26
+  (validator by concern). V02-23 resumes afterwards, re-grounded on those seams, with the rulings it already
+  carries; its docs deliverables first create one canonical never-forward section. The refactor waits for
+  the two plans in flight on those surfaces (V02-12's second PR, kidicap PLAN-32) rather than rebasing
+  across them.
 - **2026-10-13 — `rate_limit` is planned for later: kept, but no longer silent (`PLAN-V02-06` D9).**
   Operator ruling. The key stays in the endpoint schema, still not implemented, but setting it logs a
   boot WARN, and every document says the same thing: planned, not implemented, no `429` today. This
@@ -225,7 +237,7 @@ sufficient.
 
 | Chain | Order | Why |
 |---|---|---|
-| cookie policy | **(V02-12 first PR + V02-21) → V02-23 → every other staged plan** | Operator direction 2026-10-13: the cookie fix is the next plan emitted once both running plans land. V02-12's held D3 (`/auth`-fronted Keycloak) follows V02-23. Not with V02-04 (V02-23 rewrites ADR-0037). |
+| structural refactor, then cookie policy | **(V02-12 second PR + kidicap PLAN-32) → V02-24 → (V02-25 ∥ V02-26) → V02-23 (re-grounded) → every other plan touching `edge/**` or `config/**`** | Operator decision 2026-10-14 (inbox V02-23 `-001`): V02-23 paused, the edge and policy-block structure is reworked first. V02-24 makes a policy block a declaration; V02-25 (edge) and V02-26 (validator) build on it and are disjoint from each other. Held behind them: V02-05, -06, -07, -20; kidicap PLAN-20, -21, -26, -29. |
 | oidc / `BffRuntimeProducer` | **V02-08 → V02-12 → V02-09** | All three write the `oidc` block and the BFF assembly point. V02-08 first: it is the larger reshaping and settles the RFC 9207 `iss` constraint V02-12 inherits. |
 | rejection taxonomy | **V02-13 → V02-06 → V02-07** | V02-13 re-cuts `EventCategory` and makes `renderProblem` content-negotiating at all five call sites. V02-06's uniform-404 branch edits those same sites; V02-07 weights the resulting taxonomy. |
 | sample vs. model | **V02-12 → V02-15** | V02-15 D5 defers the browser-vs-container issuer address to V02-12 rather than letting a sample become the de-facto specification. |
