@@ -30,10 +30,20 @@ This plan finds the cause, fixes it in the gateway (not in the test), and proves
 - This epic's Open Defect "PLAN-30's PR #448 fails `Http2EarlyResponseResetIT` in CI" (2026-10-14).
 - Run 38538582322 attempts 1 and 2 (job logs: the `TimeoutException` at line 144, attempt 1 at
   09:05Z, attempt 2 at 09:31Z).
+- **GitHub issue #455** (filed 2026-10-14 by the operator's other session; this plan resolves it — the PR
+  says `Closes #455`). Evidence it adds: local runs, isolated and full suite, did not reproduce it; the
+  failing run's gateway log holds one line at the end of the hang, `early-answer-upload did not arrive
+  whole (body-stream-failed)`; the test JVM logged ten `io.vertx.core.net.impl.ConnectionBase
+  <missing-log-message>` ERROR lines, in the failing run only; the passing runs take 2.7–3.0 s. It
+  notes that `SO_LINGER 0` is on the HTTP/1.1 upstream client while the test uploads over HTTP/2 to the
+  gateway, and that the shared nginx fixture changed in the same PR — so neither hypothesis is cleared.
 
 ## Deliverables
 
-1. **Reproduce before changing anything.** Run the IT repeatedly (at least 10 times) against `main`
+1. **Reproduce before changing anything.** Because local runs did not reproduce it (#455), reproduce in CI: run the IT
+   about 20 times on `main` and 20 times on a throwaway branch with the `SO_LINGER 0` line reverted, and
+   capture the gateway and nginx logs plus a thread dump at the 20 s timeout so a stall is seen, not
+   inferred. Explain the `ConnectionBase <missing-log-message>` lines. Run the IT repeatedly (at least 10 times) against `main`
    (`b7b98699` or later) and against `583a5fab` (the parent, before #448), locally and/or through CI
    re-runs, and record the failure rate of each. If it cannot be reproduced on `main` at all, STOP and
    file a finding to the epic inbox with the runs: the cause is then not established, and lesson
