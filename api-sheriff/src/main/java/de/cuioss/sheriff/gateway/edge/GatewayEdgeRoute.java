@@ -2354,19 +2354,32 @@ public class GatewayEdgeRoute {
      * prior-knowledge h2c in cleartext) — gRPC requires HTTP/2 end-to-end. Every other tuple gets the
      * default client (HTTP/1.1 with h2 upgrade negotiation).
      * <p>
-     * Both branches now construct from an options object so both bind the gateway-global egress-TLS
-     * settings. The default branch's object is a bare {@code new HttpClientOptions()} — by
-     * construction the same defaults the no-arg {@code createHttpClient()} used — carrying
-     * {@code setVerifyHost}, and {@code setTrustOptions} only under a configured profile, and
-     * <em>nothing else</em>: no protocol version, no client-level SSL flag, no change to h2-upgrade
-     * negotiation. A route's TLS is still selected per request ({@code DispatchStage}), so a
-     * client-level flag here would change behaviour rather than preserve it.
+     * Both branches construct from an options object so both bind the gateway-global egress-TLS
+     * settings. The default branch's object starts from a bare {@code new HttpClientOptions()} — the
+     * same defaults the no-arg {@code createHttpClient()} uses — and carries {@code setVerifyHost},
+     * {@code setTrustOptions} only under a configured profile, and the abortive close below. It sets no
+     * protocol version, no client-level SSL flag and no change to h2-upgrade negotiation: a route's TLS
+     * is still selected per request ({@code DispatchStage}), so a client-level flag here would change
+     * behaviour rather than preserve it.
+     * <p>
+     * <strong>The default branch closes its connections abortively</strong> ({@code SO_LINGER 0}). On
+     * HTTP/1.1 the gateway's own reset of an upstream request — an early upstream answer to an upload
+     * still in flight, a cap breach, a failed or short inbound body, an abandoned attempt, a relay that
+     * failed to start — costs the whole connection, because HTTP/1.1 has no message-scoped cancel. A
+     * connection the gateway closes in order holds its local port in {@code TIME_WAIT} for a minute, so
+     * a client driving such resets at rate, unauthenticated on a public route, could exhaust the
+     * gateway's ephemeral ports; the connect failures that followed would open the per-upstream breaker
+     * for every client. Closed abortively, a connection holds no local port once it is gone. The
+     * accepted cost: for every connection this client closes, idle-pool evictions included, the
+     * upstream sees a TCP reset instead of a FIN and, on TLS, no {@code close_notify}. The forced-HTTP/2
+     * branch is left as it is: an HTTP/2 connection is shared by its streams, and the gateway resets a
+     * single stream rather than closing the connection.
      */
     private static HttpClient clientFor(Vertx vertx, RouteRuntimeAssembler.UpstreamTarget target,
             boolean verifyHostname, @Nullable TrustOptions trustOptions) {
         if (!target.forcedHttp2()) {
             return vertx.createHttpClient(
-                    egressTlsBound(new HttpClientOptions(), verifyHostname, trustOptions));
+                    egressTlsBound(new HttpClientOptions().setSoLinger(0), verifyHostname, trustOptions));
         }
         HttpClientOptions options = new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2);
         if ("https".equalsIgnoreCase(target.scheme())) {
@@ -2620,15 +2633,16 @@ public class GatewayEdgeRoute {
      * guarded call to be restructured.
      */
     private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
-        // Include retryEnabled in the breaker name: RouteRuntimeAssembler's guardCache is keyed by the
-        // full ResilienceShape (target + retryEnabled), so two routes to the same host:port that differ
-        // only in retryEnabled resolve to two distinct guards. Deriving the name from host:port alone
-        // would hand both the SAME programmatic circuit-breaker name, which SmallRye rejects as a
-        // duplicate. The retry-qualified name is used for both .name(...) and the transition callback.
+        // The name identifies the breaker in its description and its transition log lines only. It is
+        // deliberately NOT registered as the breaker's SmallRye name: that registry is JVM-global and
+        // refuses a name it already holds, so a second edge built in the same JVM for the same upstream
+        // host:port — any edge whose upstream port happens to be reused — would fail every dispatch to
+        // it with a 502. retryEnabled stays in the name because RouteRuntimeAssembler's guardCache is
+        // keyed by the full ResilienceShape, so two routes to one host:port that differ only in
+        // retryEnabled hold two distinct breakers and their transitions must be told apart.
         String name = shape.target().host() + ":" + shape.target().port() + ":retry=" + shape.retryEnabled();
         Guard.Builder builder = Guard.create().withDescription("upstream-" + name);
         builder.withCircuitBreaker()
-                .name(name)
                 .requestVolumeThreshold(20)
                 .failureRatio(0.5)
                 .delay(BREAKER_RESET_SECONDS, ChronoUnit.SECONDS)

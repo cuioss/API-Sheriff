@@ -564,12 +564,7 @@ class GatewayEdgeEarlyResponseResetTest {
     @Test
     @DisplayName("a client dropping its connection mid-body before the response is still metered and logged")
     void clientDropBeforeTheResponseIsStillAnAbortedInboundBody() throws Exception {
-        NetSocket socket = Awaits.connect(netClient.connect(frontPort, LoopbackHost.ADDRESS),
-                "the raw TCP client to connect to the edge");
-        socket.write("POST /up" + HELD + "-drop HTTP/1.1" + CRLF + "Host: localhost:" + frontPort + CRLF
-                + "Transfer-Encoding: chunked" + CRLF + CRLF + "5" + CRLF + "hello" + CRLF);
-        Awaits.until(() -> upstreamStarted.contains("POST " + HELD + "-drop"),
-                "the upstream to receive the head of the dispatched upload", Awaits.CONNECT_CEILING_SECONDS);
+        NetSocket socket = startRawUpload(HELD + "-drop");
 
         Awaits.connect(socket.close(), "the client to drop its connection mid-upload");
         Awaits.until(() -> errorCount(INBOUND_BODY_ABORTED) == 1.0,
@@ -579,6 +574,33 @@ class GatewayEdgeEarlyResponseResetTest {
                 () -> assertEquals(1.0, errorCount(INBOUND_BODY_ABORTED)),
                 () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
                         INBOUND_BODY_ABORTED_RECORD));
+    }
+
+    /**
+     * A client that drops its connection mid-upload, before any answer: the gateway resets the upstream
+     * request still receiving the body — the same reset an early answer makes, here caused by the client
+     * — and on HTTP/1.1 that reset costs the upstream connection. That connection, too, must reach the
+     * upstream as a TCP reset and not as an orderly close, so a client dropping uploads at rate holds no
+     * gateway port in {@code TIME_WAIT} either.
+     */
+    @Test
+    @DisplayName("a client dropping its upload mid-body: the upstream connection the gateway closes is reset, not closed in order")
+    void droppedUploadUpstreamConnectionIsClosedByReset() throws Exception {
+        String upstreamPath = HELD + "-drop-reset";
+        List<String> upload = List.of("POST " + upstreamPath);
+        NetSocket socket = startRawUpload(upstreamPath);
+
+        Awaits.connect(socket.close(), "the client to drop its connection mid-upload");
+        Awaits.until(() -> errorCount(INBOUND_BODY_ABORTED) == 1.0 && !connectionsCarrying(upload).isEmpty()
+                        && connectionsCarrying(upload).stream().allMatch(UpstreamConnection::ended),
+                "the upstream connection of the dropped upload to end", Awaits.CONNECT_CEILING_SECONDS);
+
+        List<UpstreamConnection> connections = connectionsCarrying(upload);
+        assertAll("the upstream connection of a dropped upload",
+                () -> assertEquals(1, connections.size(), "the upload reached the upstream on one connection"),
+                () -> assertTrue(connections.getFirst().reset(),
+                        () -> "the upstream connection must end in a TCP reset: " + connections.getFirst().outcome()),
+                () -> assertEquals(1.0, errorCount(INBOUND_BODY_ABORTED), "the drop is still an aborted inbound body"));
     }
 
     /**
@@ -662,6 +684,23 @@ class GatewayEdgeEarlyResponseResetTest {
         }
         Awaits.connect(request.write(firstPart), "the first part of the " + method + " " + path + " body to be sent");
         return new Upload(request, streamEnd);
+    }
+
+    /**
+     * Opens a raw HTTP/1.1 connection to the edge, sends a chunked {@code POST} to the {@value #ROUTE}
+     * route for {@code upstreamPath} with one chunk of its body, and waits until the upstream has
+     * received the request head — the upload is then in flight and never ended.
+     *
+     * @return the client socket, still open
+     */
+    private NetSocket startRawUpload(String upstreamPath) throws Exception {
+        NetSocket socket = Awaits.connect(netClient.connect(frontPort, LoopbackHost.ADDRESS),
+                "the raw TCP client to connect to the edge");
+        socket.write("POST /" + ROUTE + upstreamPath + " HTTP/1.1" + CRLF + "Host: localhost:" + frontPort + CRLF
+                + "Transfer-Encoding: chunked" + CRLF + CRLF + "5" + CRLF + "hello" + CRLF);
+        Awaits.until(() -> upstreamStarted.contains("POST " + upstreamPath),
+                "the upstream to receive the head of the dispatched upload", Awaits.CONNECT_CEILING_SECONDS);
+        return socket;
     }
 
     /** The stub upstream connections that carried any of {@code requests}. */

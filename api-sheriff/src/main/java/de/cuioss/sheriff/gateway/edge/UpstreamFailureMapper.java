@@ -42,7 +42,8 @@ import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;
  * </ul>
  * Every mapped failure is metered on the shared {@link GatewayEventCounter}. Breaker state
  * transitions are metered and logged through {@link #recordBreakerTransition(String, CircuitBreakerState)},
- * which the boot-time edge registers with SmallRye's {@code CircuitBreakerMaintenance.onStateChange}.
+ * which the boot-time edge installs as each breaker's state-change callback
+ * ({@code CircuitBreakerBuilder.onStateChange}).
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -102,10 +103,10 @@ public final class UpstreamFailureMapper {
     }
 
     /**
-     * Meters and logs a circuit-breaker state transition. Registered by the edge with SmallRye's
-     * {@code CircuitBreakerMaintenance.onStateChange(routeId, mapper::recordBreakerTransition)}.
+     * Meters and logs a circuit-breaker state transition. Installed by the edge as the state-change
+     * callback of each breaker it builds.
      *
-     * @param routeId the route id owning the breaker
+     * @param routeId the name of the breaker's upstream shape, {@code host:port:retry=<flag>}
      * @param state   the new breaker state
      */
     public void recordBreakerTransition(String routeId, CircuitBreakerState state) {

@@ -59,9 +59,10 @@ import org.jspecify.annotations.Nullable;
  * {@link EventType#CONTENT_TOO_LARGE} (413). An inbound stream that fails after dispatch has begun
  * aborts the upstream call the same way and surfaces {@link EventType#INBOUND_BODY_ABORTED} (400), so
  * a request body that did not arrive whole is never completed towards the upstream and its HTTP/1.x
- * upstream connection is never pooled again. The
- * upstream body is <strong>never
- * materialized</strong> into an {@code HttpResult<byte[]>} (ADR-0006/0008): the returned
+ * upstream connection is never pooled again: it is closed abortively, so it frees the gateway's local
+ * port at once instead of holding it in {@code TIME_WAIT} (see {@code GatewayEdgeRoute#clientFor}).
+ * The upstream body is <strong>never materialized</strong> into an {@code HttpResult<byte[]>}
+ * (ADR-0006/0008): the returned
  * {@link HttpClientResponse} is a live {@link ReadStream} whose body {@link ResponseStage} streams
  * back with backpressure.
  * <p>
@@ -995,7 +996,8 @@ public final class DispatchStage {
      * drops mid-body — the same abort action runs before the failure is propagated. A request body
      * that did not arrive whole is therefore never completed towards the upstream: the upstream
      * request is reset at once, which on HTTP/1.x closes that upstream connection instead of returning
-     * it to the pool, and on HTTP/2 resets the one stream. The abort action runs at most once per
+     * it to the pool — abortively, so the gateway's local port is freed at once rather than held in
+     * {@code TIME_WAIT} — and on HTTP/2 resets the one stream. The abort action runs at most once per
      * stream, whichever trigger fires first.
      * <p>
      * <strong>A client-caused abort is recorded as such.</strong> When the trigger that fires first is
