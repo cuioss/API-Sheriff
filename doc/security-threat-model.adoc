@@ -279,7 +279,7 @@ the replacement is announced by the `ApiSheriff-101` boot WARN, which names the 
 the block; the `profile: minimal` refusal on authenticated and BFF routes reads the endpoint block
 through the same resolver the route table uses, so `minimal` cannot reach such a route from the
 endpoint scope either; and every declared
-`max_body_bytes`, the endpoint's included, is held to the framework body-size floor at boot. The
+`max_body_bytes`, the endpoint's included, is held to the framework body-size ceiling at boot. The
 residual is the relaxation that stays legal -- a looser non-`minimal` profile or a raised limit --
 which the WARN makes visible but does not refuse.
 
@@ -300,7 +300,7 @@ by a route block (`RouteTableBuilderTest`); an endpoint `security_filter` replac
 announced once per route (`RouteTableBuilderTest`); `minimal` arriving through an endpoint block on an
 authenticated or BFF route, an endpoint `forward` block declaring both lists of one dimension, and an
 endpoint `headers_allow: [Authorization]` on a `token_relay: false` route each fail the boot
-(`ConfigValidatorTest`); an endpoint `max_body_bytes` above the framework floor fails the boot
+(`ConfigValidatorTest`); an endpoint `max_body_bytes` above the framework ceiling fails the boot
 (`ConfigBootPipelineTest`).
 
 == STRIDE per boundary

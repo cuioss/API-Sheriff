@@ -127,7 +127,7 @@ class RouteMatchingRulesTest {
                 .id(id)
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .allowedMethods(allowedMethods)
                 .routes(List.of(routes))
                 .build();
