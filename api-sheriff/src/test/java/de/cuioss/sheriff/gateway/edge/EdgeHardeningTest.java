@@ -242,7 +242,7 @@ class EdgeHardeningTest {
         @ParameterizedTest(name = "{0} ms")
         @ValueSource(longs = {0L, -1L})
         @DisplayName("the test-only constructor refuses a timeout that is not positive")
-        void testOnlyConstructorRefusesANonPositiveTimeout(long timeoutMillis) {
+        void constructorForTestsRefusesANonPositiveTimeout(long timeoutMillis) {
             EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
 
             assertThrows(IllegalArgumentException.class, () -> new EdgeHardeningOptions(defaults, timeoutMillis));
@@ -250,7 +250,7 @@ class EdgeHardeningTest {
 
         @Test
         @DisplayName("the test-only constructor carries the given timeout and the same admission budget")
-        void testOnlyConstructorCarriesTheGivenTimeout() {
+        void constructorForTestsCarriesTheGivenTimeout() {
             EdgeHardeningOptions hardening = new EdgeHardeningOptions(new EdgeHardeningConfig(64, 8), 300L);
 
             assertAll("the test-only construction",

@@ -108,6 +108,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @EnableGeneratorController
 @DisplayName("DispatchStage — stage 6 streamed upstream dispatch")
@@ -424,7 +425,7 @@ class DispatchStageTest {
         }
 
         @ParameterizedTest(name = "restarted by {0}")
-        @CsvSource({"resume", "fetch"})
+        @ValueSource(strings = {"resume", "fetch"})
         @DisplayName("paused by the consumer: no expiry while paused, and the gap restarts when the flow is restarted")
         void pauseIsNotCounted(String restart) {
             IdleProbe probe = new IdleProbe(TIMEOUT_MILLIS, DispatchStage.NO_DECLARED_LENGTH);
@@ -486,7 +487,7 @@ class DispatchStageTest {
                     () -> assertEquals(1, probe.aborts.get(), "the abort action runs once, for the earlier trigger"),
                     () -> assertEquals(0, probe.time.pendingCount(), "the earlier abort cancels the pending timer"),
                     () -> assertFalse(probe.failure.get() instanceof GatewayException timeout
-                                    && timeout.getEventType() == EventType.REQUEST_BODY_TIMEOUT,
+                            && timeout.getEventType() == EventType.REQUEST_BODY_TIMEOUT,
                             "no expiry is propagated after the earlier abort"));
         }
 
