@@ -1535,13 +1535,7 @@ public final class DispatchStage {
             }
         }, System::nanoTime);
 
-        /**
-         * @throws IllegalArgumentException when {@code timeoutMillis} is negative
-         */
         IdleClock {
-            if (timeoutMillis < NO_BODY_IDLE_TIMEOUT) {
-                throw new IllegalArgumentException("timeoutMillis must not be negative: " + timeoutMillis);
-            }
             Objects.requireNonNull(scheduler, "scheduler");
             Objects.requireNonNull(nanoTime, "nanoTime");
         }
