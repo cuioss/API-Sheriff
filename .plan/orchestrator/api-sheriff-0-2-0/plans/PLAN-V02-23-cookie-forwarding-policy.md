@@ -13,7 +13,7 @@ workstream: WS-03
 > ⛔ **PARKED 2026-10-14 at phase 4-plan (operator).** The outline came to 8 deliverables, ~67 files and
 > 170,000–230,000 diff characters, about half of it the cost the structure charges for any new
 > per-route policy. It resumes only after `PLAN-V02-24` (policy-block resolution), `PLAN-V02-25` (edge
-> decomposition) and `PLAN-V02-26` (validator split) have landed, and is then re-grounded against those
+> decomposition) and the whole validator split (`PLAN-V02-26`, #463, then slices `PLAN-V02-28` … `PLAN-V02-39`) have landed, and is then re-grounded against those
 > seams: `cookies` becomes one declared block, its policy reaches the stages through the resolved route
 > context, its boot rules live in a rule class. The local plan `plan-v02-23-cookie-forwarding-policy`
 > (outline written, no tasks, no branch) is resumed or restarted from this spec then.

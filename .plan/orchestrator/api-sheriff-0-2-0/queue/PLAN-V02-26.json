@@ -2,9 +2,9 @@
   "id": "PLAN-V02-26",
   "slug": "config-validator-split",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-26-config-validator-split",
-  "pr": "",
-  "landing": "",
+  "pr": "463",
+  "landing": "landings/PLAN-V02-26.md",
   "seq": 26
 }
