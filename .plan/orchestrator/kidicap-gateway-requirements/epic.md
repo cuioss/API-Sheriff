@@ -600,11 +600,12 @@ decision.
 
 ## Watches
 
-- **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids.** Filed
-  upstream 2026-10-13 as cuioss/TokenSheriff#801. When a release carries it,
-  stage the switch to the exact rule in `RetryingJwksLoader` and the removal of the residual from
-  ADR-0063 and threat-model GW-07. — trigger: every token-sheriff version bump; source:
-  `landings/PLAN-24.md`, lesson `2026-10-12-16-013`
+- **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
+  FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`
+  (cuioss/TokenSheriff#801 → PR #803); `main` pins 0.9.7 since #449 (`5c2a8143`), which implemented
+  `RetryingJwksLoader.getKeyIds()` as a plain delegate and changed no publish behaviour. PLAN-31 switches
+  `settleRefresh` to the exact rule and removes the residual from ADR-0063 and threat-model GW-07. This
+  entry closes when PLAN-31 lands. — source: `landings/PLAN-24.md`, lesson `2026-10-12-16-013`
 - **A same-day re-grounding seems to tighten the declared surface.** PLAN-24 realized 1.4x its
   declaration; the earlier measurements ran roughly 3x to 5x. PLAN-27, also re-grounded on its emit day,
   realized 28 files against 12 entries (several of them directories); 8 of its 10 undeclared files follow

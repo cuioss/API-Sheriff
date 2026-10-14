@@ -132,9 +132,11 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
 - Depends on: PLAN-23 — landed (#369). Deliverable 5 also waits on `api-sheriff-0-2-0` `PLAN-V02-12`'s
   first PR (the reserved-path rule it records is being rewritten there).
 - If deliverable 2 decides to implement RFC 7009 revocation on logout, it hits the external
-  `revocation_endpoint` problem that holds `PLAN-V02-12` D5–D7 (TokenSheriff#800: in the container
-  deployments the advertised revocation endpoint is the IdP's external origin). The implementation then
-  waits on that token-sheriff-client release too; this plan still owns it.
+  `revocation_endpoint` problem: in the container deployments the advertised revocation endpoint is the
+  IdP's external origin. token-sheriff-client 0.9.7 solves it (`backChannelOrigin`, TokenSheriff#800 →
+  PR #805: endpoints on the issuer's origin, revocation included, are sent to the back-channel origin),
+  and `api-sheriff-0-2-0` `PLAN-V02-12` exposes it as an `oidc` key. So an implementation here runs
+  after V02-12's held half has landed that key; this plan still owns logout revocation itself.
 - Overlaps with: PLAN-20 (`doc/adr/`, `doc/configuration.adoc`, `doc/security-threat-model.adoc`,
   `doc/user/bff-session.adoc`) and PLAN-21 (the same docs). Documentation-only overlap, but on the SAME
   threat-model and ADR files, so it is sequenced against both rather than paired.
