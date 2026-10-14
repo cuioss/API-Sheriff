@@ -1177,6 +1177,8 @@ class DispatchStageTest {
         private static final int REQUEST_VOLUME_THRESHOLD = 4;
         private static final String ACCEPTING_PATH = "/accepting";
         private static final String FAILING_PATH = "/failing";
+        /** The path the stub upstream answers in full at once, before it reads the request body. */
+        private static final String EARLY_PATH = "/early";
 
         private Vertx vertx;
         private ExecutorService virtualThreadExecutor;
@@ -1184,8 +1186,12 @@ class DispatchStageTest {
         private Guard guard;
         private RouteRuntime route;
         private DispatchStage stage;
+        /** The body the stub upstream answers a request to the early path with. */
+        private String earlyAnswer;
         /** Every request the stub upstream received a head for. */
         private final AtomicInteger upstreamStarted = new AtomicInteger();
+        /** Every request to the early path whose body failed at the stub upstream — the gateway reset it. */
+        private final AtomicInteger earlyRequestsReset = new AtomicInteger();
         /** Every state the route's breaker moved to, in order. */
         private final List<CircuitBreakerState> breakerTransitions = new CopyOnWriteArrayList<>();
 
@@ -1193,12 +1199,27 @@ class DispatchStageTest {
         void setUp() throws Exception {
             vertx = Vertx.vertx();
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-            // The stub upstream answers a request once its body has arrived whole, and drops the
-            // connection of any request to the failing path as soon as its head arrives.
+            earlyAnswer = Generators.letterStrings(8, 16).next();
+            // The stub upstream answers a request once its body has arrived whole, drops the
+            // connection of any request to the failing path as soon as its head arrives, and answers a
+            // request to the early path in full at once, before reading its body.
             upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
                 upstreamStarted.incrementAndGet();
                 if (FAILING_PATH.equals(request.path())) {
                     request.connection().close();
+                    return;
+                }
+                if (EARLY_PATH.equals(request.path())) {
+                    AtomicBoolean reset = new AtomicBoolean();
+                    request.handler(_ -> {
+                        // Read and discard: the body is observed only by whether it fails.
+                    });
+                    request.exceptionHandler(_ -> {
+                        if (reset.compareAndSet(false, true)) {
+                            earlyRequestsReset.incrementAndGet();
+                        }
+                    });
+                    request.response().end(earlyAnswer);
                     return;
                 }
                 request.body().onSuccess(body -> request.response().end("ok"));
@@ -1269,6 +1290,49 @@ class DispatchStageTest {
                             "the breaker must stay closed through a full window of inbound failures"),
                     () -> assertEquals(200, response.statusCode(),
                             "the upstream must still be called once the window is full"));
+        }
+
+        /**
+         * Dispatches the upstream answers in full before reading their bodies, each upstream request
+         * then reset by the gateway itself — {@link DispatchStage.InboundBody#resetByGateway()} on the
+         * armed body, as the edge does once the answer is decided — twice the breaker's window over.
+         * The guarded call returned as soon as the response head was handed back, so the reset falls
+         * outside it: the breaker never sees it and stays closed, and an ordinary dispatch behind
+         * those resets still reaches the upstream.
+         */
+        @Test
+        @DisplayName("a gateway reset of the upstream request after a complete response never moves the breaker toward open")
+        void gatewayResetAfterACompleteResponseLeavesTheBreakerClosed() throws Exception {
+            int resets = 2 * REQUEST_VOLUME_THRESHOLD;
+            List<String> answers = new ArrayList<>();
+            for (int call = 1; call <= resets; call++) {
+                TestReadStream source = new TestReadStream();
+                DispatchStage.InboundBody inbound = DispatchStage.InboundBody.arm(source);
+                Future<HttpClientResponse> dispatched = dispatch(EARLY_PATH, inbound);
+                sendFirstChunk(source, call);
+                HttpClientResponse response = Awaits.connect(dispatched, "the early answer to be handed back");
+                io.vertx.core.Future<Buffer> body = response.body();
+                response.resume();
+                answers.add(Awaits.connect(body, "the early answer to arrive whole").toString());
+                inbound.resetByGateway();
+            }
+            Awaits.until(() -> earlyRequestsReset.get() == resets,
+                    "the upstream to observe every gateway reset", Awaits.CONNECT_CEILING_SECONDS);
+            TestReadStream ordinary = new TestReadStream();
+            Future<HttpClientResponse> answered = dispatch(ACCEPTING_PATH, ordinary);
+            sendFirstChunk(ordinary, resets + 1);
+            ordinary.end();
+            HttpClientResponse response = Awaits.connect(answered, "the dispatch behind the resets to be answered");
+
+            assertAll("gateway resets after complete responses",
+                    () -> assertEquals(Collections.nCopies(resets, earlyAnswer), answers,
+                            "every early answer must have been handed back whole before its reset"),
+                    () -> assertEquals(resets, earlyRequestsReset.get(),
+                            "every upstream request must have been reset by the gateway"),
+                    () -> assertEquals(List.of(), breakerTransitions,
+                            "a gateway reset after a complete response must not move the breaker"),
+                    () -> assertEquals(200, response.statusCode(),
+                            "the upstream must still be called behind the resets"));
         }
 
         @Test

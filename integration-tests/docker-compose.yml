@@ -301,8 +301,10 @@ services:
   #
   # The two mounted files are SHARED with the benchmark overlay's nginx-static
   # (docker-compose.benchmark.yml), and so is the image, pinned by the same content digest:
-  # nginx-static.conf answers `return 200` without reading the body, and body-limits.conf keeps the
-  # unread remainder draining under lingering_close instead of resetting the connection. Every gateway
+  # nginx-static.conf answers `return 200` without reading the body on every path except the two
+  # benchmark upload paths, and this route dials the alias base path, which is not one of them.
+  # body-limits.conf keeps the unread remainder draining under lingering_close instead of resetting
+  # the connection. Every gateway
   # instance loads the route; only the primary dials it. No host port is published — it is reached
   # only by the gateway on the internal compose network.
   early-answer-backend:

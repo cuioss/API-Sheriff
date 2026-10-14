@@ -1385,19 +1385,42 @@ class GatewayEdgeRouteTest {
         }
 
         @Test
-        @DisplayName("the default client differs from bare HttpClientOptions in verifyHost alone")
-        void defaultClientDiffersFromBareOptionsInVerifyHostOnly() {
+        @DisplayName("the default client differs from bare HttpClientOptions in verifyHost and the abortive close alone")
+        void defaultClientDiffersFromBareOptionsInVerifyHostAndSoLingerOnly() {
             CapturingVertx capturing = bootWith(new EgressTlsConfig(false, true, null, true, null),
                     unconsultedTrustProfileResolver());
+            HttpClientOptions bare = new HttpClientOptions();
 
-            HttpClientOptions restored =
-                    new HttpClientOptions(capturing.plainHttpOptions()).setVerifyHost(true);
+            HttpClientOptions restored = new HttpClientOptions(capturing.plainHttpOptions())
+                    .setVerifyHost(true).setSoLinger(bare.getSoLinger());
 
-            assertEquals(new HttpClientOptions().toJson(), restored.toJson(),
-                    "restoring verifyHost to its default must leave an object indistinguishable from a "
-                            + "bare new HttpClientOptions() — the restructure that introduced the options "
-                            + "object must not have changed the protocol version, the client-level SSL "
-                            + "flag, h2-upgrade negotiation, or anything else");
+            assertEquals(bare.toJson(), restored.toJson(),
+                    "restoring verifyHost and soLinger to their defaults must leave an object "
+                            + "indistinguishable from a bare new HttpClientOptions() — the default client must "
+                            + "not change the protocol version, the client-level SSL flag, h2-upgrade "
+                            + "negotiation, or anything else");
+        }
+
+        /**
+         * The default client closes its upstream connections abortively, so a connection the gateway
+         * closes holds no local port in {@code TIME_WAIT}; the forced-HTTP/2 client, whose connections
+         * are shared by streams and reset per stream, and the edge-wide WebSocket client keep the
+         * transport default.
+         */
+        @Test
+        @DisplayName("the abortive close (SO_LINGER 0) is bound on the default HTTP client only")
+        void abortiveCloseIsBoundOnTheDefaultClientOnly() {
+            CapturingVertx capturing = bootWith(null, unconsultedTrustProfileResolver());
+
+            assertAll("SO_LINGER at the three client-construction sites",
+                    () -> assertEquals(0, capturing.plainHttpOptions().getSoLinger(),
+                            "the default HTTP client must close its connections abortively"),
+                    () -> assertEquals(new HttpClientOptions().getSoLinger(),
+                            capturing.forcedHttp2Options().getSoLinger(),
+                            "the forced-HTTP/2 client must keep the transport default"),
+                    () -> assertEquals(new WebSocketClientOptions().getSoLinger(),
+                            capturing.webSocketOptions().getSoLinger(),
+                            "the edge-wide WebSocket client must keep the transport default"));
         }
 
         @Test
