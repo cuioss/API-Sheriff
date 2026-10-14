@@ -99,6 +99,22 @@ public final class ApiSheriffLogMessages {
                 .identifier(22)
                 .template("Request body on route '%s' did not arrive whole (%s) — upstream request aborted; further occurrences on this route stay at DEBUG")
                 .build();
+
+        /**
+         * A proxied request's body made no progress for the request-body idle timeout while its
+         * dispatch held an upstream connection; the upstream request was reset, releasing the
+         * connection, and the client was answered {@code 408}. Records the route id and the fixed
+         * timeout in seconds only — never body content or headers.
+         * <p>
+         * Latched per route to bound the log volume: the first occurrence on a route is recorded and
+         * every repeat on that route is a {@code DEBUG} diagnostic, so the log holds one record per
+         * route. The rate is carried by the error counter, not by this record.
+         */
+        public static final LogRecord REQUEST_BODY_TIMEOUT = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(23)
+                .template("Request body on route '%s' made no progress for %s seconds — upstream request reset; further occurrences on this route stay at DEBUG")
+                .build();
     }
 
     /**

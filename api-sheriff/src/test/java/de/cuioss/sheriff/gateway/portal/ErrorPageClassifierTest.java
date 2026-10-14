@@ -67,6 +67,7 @@ class ErrorPageClassifierTest {
         table.put(EventType.RESERVED_BODY_TOO_LARGE, KEEP_SHAPE);
         table.put(EventType.CONTENT_TOO_LARGE, HTML_ELIGIBLE);
         table.put(EventType.INBOUND_BODY_ABORTED, KEEP_SHAPE);
+        table.put(EventType.REQUEST_BODY_TIMEOUT, KEEP_SHAPE);
         table.put(EventType.TOKEN_MISSING, KEEP_SHAPE);
         table.put(EventType.TOKEN_INVALID, KEEP_SHAPE);
         table.put(EventType.SCOPE_MISSING, HTML_ELIGIBLE);

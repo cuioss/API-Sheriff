@@ -42,6 +42,13 @@ import io.vertx.core.streams.ReadStream;
  * bounds (Rapid-Reset / CONTINUATION-flood) hold on the gRPC path because they are enforced by the
  * shared inbound transport ({@link EdgeHardeningOptions}) rather than per-protocol, so legitimate
  * multi-stream gRPC traffic is never misfired.
+ * <p>
+ * <strong>No request-body idle timeout.</strong> The dispatch is built with
+ * {@link DispatchStage#NO_BODY_IDLE_TIMEOUT}, so a gRPC request body is never ended for making no
+ * progress. Client-streaming and bidirectional RPCs legitimately pause between messages, and a
+ * forced-HTTP/2 upstream multiplexes the call on a shared connection instead of holding a pooled
+ * connection of its own, so there is no connection for such a bound to release. The guard's
+ * whole-dispatch timeout still applies.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -56,7 +63,8 @@ public final class GrpcDispatchStage {
      *                      into the error contract
      */
     public GrpcDispatchStage(long maxBodyBytes, UpstreamFailureMapper failureMapper) {
-        this.dispatchStage = new DispatchStage(maxBodyBytes, Objects.requireNonNull(failureMapper, "failureMapper"));
+        this.dispatchStage = new DispatchStage(maxBodyBytes, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+                Objects.requireNonNull(failureMapper, "failureMapper"));
     }
 
     /**

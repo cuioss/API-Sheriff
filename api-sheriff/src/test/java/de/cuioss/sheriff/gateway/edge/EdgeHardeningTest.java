@@ -15,7 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.TimeUnit;
@@ -26,6 +28,8 @@ import io.vertx.core.http.HttpServerOptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("EdgeHardeningOptions — inbound transport bounds and admission/drain limits")
 class EdgeHardeningTest {
@@ -201,6 +205,59 @@ class EdgeHardeningTest {
         assertEquals(DRAIN_TIMEOUT_MILLIS, drainMillis, "The drain timeout is the documented secure default");
         assertTrue(drainMillis > 0L, "The drain timeout must be a positive bound");
         assertTrue(drainMillis < 30_000L, "The drain timeout must stay below the 30s Quarkus shutdown window");
+    }
+
+    /**
+     * The request-body idle timeout: how long a proxied dispatch holding an upstream connection may go
+     * without request-body progress. A fixed gateway constant, below the upstream guard's timeout so the
+     * dispatch is ended as the request's before the guard would end it as the upstream's.
+     */
+    @Nested
+    @DisplayName("request-body idle timeout")
+    class RequestBodyIdleTimeout {
+
+        /** The fixed value, restated as a literal so that a change to it is noticed here. */
+        private static final long REQUEST_BODY_IDLE_TIMEOUT_MILLIS = 10_000L;
+
+        @Test
+        @DisplayName("is the fixed 10,000 ms, whatever the edge_hardening block declares")
+        void isTheFixedTenSeconds() {
+            assertEquals(REQUEST_BODY_IDLE_TIMEOUT_MILLIS, new EdgeHardeningOptions().requestBodyIdleTimeoutMillis(),
+                    "The request-body idle timeout is the fixed gateway constant");
+            assertEquals(REQUEST_BODY_IDLE_TIMEOUT_MILLIS,
+                    new EdgeHardeningOptions(new EdgeHardeningConfig(64, 8)).requestBodyIdleTimeoutMillis(),
+                    "No edge_hardening member reaches the request-body idle timeout");
+        }
+
+        @Test
+        @DisplayName("stays below the upstream guard's whole-dispatch timeout")
+        void staysBelowTheUpstreamGuardTimeout() {
+            long guardTimeoutMillis = TimeUnit.SECONDS.toMillis(GatewayEdgeRoute.UPSTREAM_TIMEOUT_SECONDS);
+
+            assertTrue(new EdgeHardeningOptions().requestBodyIdleTimeoutMillis() < guardTimeoutMillis,
+                    "A body that stopped arriving must be ended before the guard would end the dispatch as an "
+                            + "upstream timeout");
+        }
+
+        @ParameterizedTest(name = "{0} ms")
+        @ValueSource(longs = {0L, -1L})
+        @DisplayName("the test-only constructor refuses a timeout that is not positive")
+        void testOnlyConstructorRefusesANonPositiveTimeout(long timeoutMillis) {
+            EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
+
+            assertThrows(IllegalArgumentException.class, () -> new EdgeHardeningOptions(defaults, timeoutMillis));
+        }
+
+        @Test
+        @DisplayName("the test-only constructor carries the given timeout and the same admission budget")
+        void testOnlyConstructorCarriesTheGivenTimeout() {
+            EdgeHardeningOptions hardening = new EdgeHardeningOptions(new EdgeHardeningConfig(64, 8), 300L);
+
+            assertAll("the test-only construction",
+                    () -> assertEquals(300L, hardening.requestBodyIdleTimeoutMillis()),
+                    () -> assertEquals(64, hardening.admissionCap()),
+                    () -> assertEquals(8, hardening.webSocketRelayCap()));
+        }
     }
 
     /**

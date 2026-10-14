@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -39,8 +40,10 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
 import de.cuioss.tools.logging.CuiLogger;
 import io.smallrye.faulttolerance.api.Guard;
+import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
@@ -89,6 +92,14 @@ import org.jspecify.annotations.Nullable;
  * completes a message of another length. A request that declares no length keeps the framing the
  * transport chooses.
  * <p>
+ * <strong>A body that stops arriving releases its upstream connection.</strong> A dispatch constructed
+ * with a request-body idle timeout watches the body it forwards: once the attempt holds its upstream
+ * connection and is reading the body, a period of that length without a forwarded body byte ends the
+ * dispatch as {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) and resets the upstream request, so
+ * the pooled connection is free for the next dispatch at once instead of being held until the guard's
+ * timeout. What the clock does and does not measure is described on {@link ByteCappedBodyStream}. A
+ * dispatch constructed with {@link #NO_BODY_IDLE_TIMEOUT} never arms the clock.
+ * <p>
  * The dispatch is awaited synchronously on the caller's virtual thread inside the guard so the
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
  * contract by {@link UpstreamFailureMapper}; a body-cap breach propagates its own
@@ -96,10 +107,12 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>What the breaker sees of a client-ended dispatch.</strong> A dispatch the client itself
  * ended — the body-cap breach, an inbound body stream that failed after dispatch began, a body byte
- * on a bodyless method, or a body that disagreed with its declared length — reaches the guard as the
- * {@link GatewayException} the body stream recorded for it ({@link EventType#CONTENT_TOO_LARGE},
- * {@link EventType#INBOUND_BODY_ABORTED} for the failed or short inbound body, or
- * {@link EventType#SECURITY_FILTER_VIOLATION}), never as the transport error the aborted upstream
+ * on a bodyless method, a body that disagreed with its declared length, or a body that made no
+ * progress for the request-body idle timeout — reaches the guard as the {@link GatewayException} the
+ * body stream recorded for it ({@link EventType#CONTENT_TOO_LARGE},
+ * {@link EventType#INBOUND_BODY_ABORTED} for the failed or short inbound body,
+ * {@link EventType#SECURITY_FILTER_VIOLATION}, or {@link EventType#REQUEST_BODY_TIMEOUT} for the idle
+ * body), never as the transport error the aborted upstream
  * request produced. The breaker skips a {@link GatewayException}, so such a dispatch is not counted
  * as an upstream failure, and the retry predicate refuses to retry it. It is not invisible to the
  * breaker, though: SmallRye Fault Tolerance has no neutral outcome, so a skipped exception is
@@ -170,6 +183,12 @@ public final class DispatchStage {
     static final long NO_DECLARED_LENGTH = -1L;
 
     /**
+     * The request-body idle timeout of a dispatch whose body is not watched for progress: the idle
+     * clock is never armed.
+     */
+    public static final long NO_BODY_IDLE_TIMEOUT = 0L;
+
+    /**
      * The retry state of the dispatch the guard is running, bound on the dispatching thread for the
      * duration of its guard call. The guard is shared by every route of one resilience shape, so this
      * is how its retry predicate learns which dispatch failed.
@@ -177,14 +196,24 @@ public final class DispatchStage {
     private static final ScopedValue<RetryState> RETRY_STATE = ScopedValue.newInstance();
 
     private final long maxBodyBytes;
+    private final long bodyIdleTimeoutMillis;
     private final UpstreamFailureMapper failureMapper;
 
     /**
-     * @param maxBodyBytes  the streaming request-body ceiling in bytes ({@code max_body_bytes})
-     * @param failureMapper the mapper turning guarded-dispatch failures into the error contract
+     * @param maxBodyBytes          the streaming request-body ceiling in bytes ({@code max_body_bytes})
+     * @param bodyIdleTimeoutMillis how long, in milliseconds, a body-carrying attempt holding its
+     *                              upstream connection may go without request-body progress before it
+     *                              is ended as {@link EventType#REQUEST_BODY_TIMEOUT}, or
+     *                              {@link #NO_BODY_IDLE_TIMEOUT} when the body is not watched
+     * @param failureMapper         the mapper turning guarded-dispatch failures into the error contract
+     * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis} is negative
      */
-    public DispatchStage(long maxBodyBytes, UpstreamFailureMapper failureMapper) {
+    public DispatchStage(long maxBodyBytes, long bodyIdleTimeoutMillis, UpstreamFailureMapper failureMapper) {
+        if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
+            throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
+        }
         this.maxBodyBytes = maxBodyBytes;
+        this.bodyIdleTimeoutMillis = bodyIdleTimeoutMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
     }
 
@@ -644,6 +673,16 @@ public final class DispatchStage {
          * Sends {@code request} with this dispatch's body: none for a bodyless request, otherwise the
          * byte-capped inbound stream, framed by the declared length when there is one. The request is
          * already published to the current attempt, so a bodyless refusal from here on resets it.
+         * <p>
+         * A body-carrying attempt arms the stream's request-body idle clock here, the moment it hands
+         * the body to its upstream request — so the time spent waiting for a pooled connection is never
+         * counted — and stops it as soon as the attempt's send completes, whether its response arrived
+         * or the send failed. The clock therefore never runs once the response is handed over. Its
+         * timer is scheduled through the Vert.x instance owning the context this callback runs on, the
+         * upstream request's own.
+         *
+         * @throws IllegalStateException when the idle clock is to be armed and no Vert.x context is
+         *                               current — the send callback always runs on one
          */
         Future<HttpClientResponse> send(HttpClientRequest request,
                 AtomicReference<@Nullable ByteCappedBodyStream> cappedBody) {
@@ -666,9 +705,28 @@ public final class DispatchStage {
             // stall) — see allowsRetryAfter.
             subscribed.set(true);
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
-                    request::reset, bytesSent::addAndGet);
+                    request::reset, bytesSent::addAndGet, idleClock());
             cappedBody.set(body);
-            return request.send(body);
+            body.startIdleClock();
+            Future<HttpClientResponse> sent = request.send(body);
+            sent.onComplete(_ -> body.stopIdleClock());
+            return sent;
+        }
+
+        /**
+         * @return the idle clock of a body-carrying attempt: unarmed for a dispatch constructed with
+         *         {@link #NO_BODY_IDLE_TIMEOUT}, otherwise timed on the current Vert.x context
+         */
+        private IdleClock idleClock() {
+            if (bodyIdleTimeoutMillis == NO_BODY_IDLE_TIMEOUT) {
+                return IdleClock.UNARMED;
+            }
+            Context context = Vertx.currentContext();
+            if (context == null) {
+                throw new IllegalStateException("the request-body idle clock is armed on the upstream request's "
+                        + "Vert.x context, and none is current");
+            }
+            return new IdleClock(bodyIdleTimeoutMillis, new VertxIdleScheduler(context.owner()), System::nanoTime);
         }
 
         /**
@@ -1061,6 +1119,34 @@ public final class DispatchStage {
      * action, so the upstream never waits on, or completes, a message shorter than its framing. With
      * no declared length ({@link DispatchStage#NO_DECLARED_LENGTH}) only the {@code max_body_bytes}
      * ceiling applies.
+     * <p>
+     * <strong>A body that makes no progress is ended after the idle timeout.</strong> With an armed
+     * {@link IdleClock}, one clock per stream measures how long the body goes without progress while the
+     * gateway is reading it. It starts at {@link #startIdleClock()}, which the dispatch calls the moment
+     * it hands the stream to an upstream request that has obtained its connection, and every forwarded
+     * chunk restarts it — so a single value covers both the time to the first body byte and every gap
+     * between chunks. It does not run:
+     * <ul>
+     *   <li>before it is started — waiting for a pooled upstream connection is the gateway's own
+     *       queueing, not request-body progress;</li>
+     *   <li>while the consumer has {@linkplain #pause() paused} the stream because the upstream is not
+     *       taking data; {@link #resume()} and {@link #fetch(long)} restart the gap from that moment, so
+     *       the upstream's backpressure is never charged to the request;</li>
+     *   <li>after the inbound body has ended, after any abort claim — a cap breach, a framing refusal,
+     *       an inbound failure or the gateway's own reset — or once {@link #stopIdleClock()} was called,
+     *       which the dispatch does when the attempt's send completes.</li>
+     * </ul>
+     * When the timeout passes without progress, the expiry takes the stream's single abort claim with
+     * an {@link EventType#REQUEST_BODY_TIMEOUT} {@link GatewayException}, pauses the inbound stream, runs
+     * the abort action and propagates the failure, exactly like the other client-caused aborts. A
+     * forwarded chunk only records when it arrived, so no timer is created or cancelled per chunk: one
+     * timer is pending at a time, and when it fires early relative to the last progress it is re-armed
+     * for the remainder instead of expiring.
+     * <p>
+     * Thread-safe: chunks arrive on the inbound connection's event loop, the consumer pauses and
+     * resumes from either loop, and the timer fires on the loop it was scheduled from. The last
+     * progress time is a volatile field; the rest of the clock's state is held under one monitor, and
+     * the expiry competes with every other abort through the atomic claim.
      */
     static final class ByteCappedBodyStream implements ReadStream<Buffer> {
 
@@ -1076,12 +1162,31 @@ public final class DispatchStage {
         private static final String BODY_BEYOND_DECLARED_LENGTH =
                 "Framing rejected: request body exceeded its declared length; the upstream request was aborted";
 
+        /** Fixed disposition of a body that made no progress for the idle timeout. */
+        private static final String BODY_IDLE =
+                "Request body made no progress within the request-body idle timeout; the upstream request was aborted";
+
+        /** The pending-timer value while no idle timer is pending. */
+        private static final long NO_TIMER = -1L;
+
+        /** Added before a nanosecond remainder is converted, so the re-armed delay rounds up. */
+        private static final long MILLIS_ROUNDING_NANOS = TimeUnit.MILLISECONDS.toNanos(1) - 1;
+
         private final ReadStream<Buffer> delegate;
         private final long maxBytes;
         private final long declaredLength;
         private final Runnable abortAction;
         private final LongConsumer bytesForwarded;
+        private final IdleClock idleClock;
         private long bytesSeen;
+        /** When the body last made progress: the clock started, a chunk was forwarded, or it resumed. */
+        private volatile long lastProgressNanos;
+        /** Guards the idle clock's state below. */
+        private final Object clockLock = new Object();
+        private boolean clockStarted;
+        private boolean clockStopped;
+        private boolean pausedByConsumer;
+        private long pendingTimer = NO_TIMER;
         private @Nullable Handler<Buffer> dataHandler;
         private @Nullable Handler<Throwable> failureHandler;
         private @Nullable Handler<Void> endHandler;
@@ -1100,6 +1205,8 @@ public final class DispatchStage {
         }
 
         /**
+         * A stream whose idle clock is never armed.
+         *
          * @param delegate       the inbound request body
          * @param maxBytes       the {@code max_body_bytes} ceiling
          * @param declaredLength the checked declared length the body is held to exactly, or a
@@ -1109,11 +1216,27 @@ public final class DispatchStage {
          */
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded) {
+            this(delegate, maxBytes, declaredLength, abortAction, bytesForwarded, IdleClock.UNARMED);
+        }
+
+        /**
+         * @param delegate       the inbound request body
+         * @param maxBytes       the {@code max_body_bytes} ceiling
+         * @param declaredLength the checked declared length the body is held to exactly, or a
+         *                       negative value when the request declares none
+         * @param abortAction    resets the upstream request
+         * @param bytesForwarded receives the length of every chunk forwarded to the upstream
+         * @param idleClock      the request-body idle clock, {@link IdleClock#UNARMED} for none; it
+         *                       runs only once {@link #startIdleClock()} is called
+         */
+        ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
+                LongConsumer bytesForwarded, IdleClock idleClock) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
             this.maxBytes = maxBytes;
             this.declaredLength = declaredLength;
             this.abortAction = Objects.requireNonNull(abortAction, "abortAction");
             this.bytesForwarded = Objects.requireNonNull(bytesForwarded, "bytesForwarded");
+            this.idleClock = Objects.requireNonNull(idleClock, "idleClock");
             delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
         }
@@ -1126,16 +1249,29 @@ public final class DispatchStage {
          */
         private void onInboundFailure(Throwable failure) {
             if (failure instanceof GatewayStreamReset gatewayReset) {
-                if (abortReason.compareAndSet(null, gatewayReset)) {
+                if (claimAbort(gatewayReset)) {
                     abortAction.run();
                 }
                 return;
             }
-            if (abortReason.compareAndSet(null,
-                    new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure))) {
+            if (claimAbort(new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_FAILED, failure))) {
                 abortAction.run();
             }
             propagateFailure(failure);
+        }
+
+        /**
+         * Takes the single abort claim for {@code reason}; the trigger that wins it also stops the idle
+         * clock, so nothing expires after an abort.
+         *
+         * @return {@code true} when this call won the claim
+         */
+        private boolean claimAbort(Throwable reason) {
+            if (abortReason.compareAndSet(null, reason)) {
+                stopIdleClock();
+                return true;
+            }
+            return false;
         }
 
         /**
@@ -1164,24 +1300,29 @@ public final class DispatchStage {
             // The chunk cleared every bound and is about to cross to the upstream — record it so the
             // stream-aware retry gate can see that a body byte has been sent on this attempt.
             bytesForwarded.accept(chunk.length());
+            if (idleClock.armed()) {
+                // Only the arrival is recorded; the pending timer re-checks it when it fires.
+                lastProgressNanos = idleClock.nanoTime().getAsLong();
+            }
             if (dataHandler != null) {
                 dataHandler.handle(chunk);
             }
         }
 
         /**
-         * The inbound stream ended. A body short of its declared length did not arrive whole: the
-         * upstream request is aborted instead of being ended on a message shorter than its framing.
-         * After an abort the end is not passed on — the consumer has already been told the body failed,
-         * or the gateway reset the stream itself.
+         * The inbound stream ended, which stops the idle clock. A body short of its declared length did
+         * not arrive whole: the upstream request is aborted instead of being ended on a message shorter
+         * than its framing. After an abort the end is not passed on — the consumer has already been told
+         * the body failed, or the gateway reset the stream itself.
          */
         private void onInboundEnd(@Nullable Void end) {
             if (abortReason.get() != null) {
                 return;
             }
+            stopIdleClock();
             if (declaredLength >= 0 && bytesSeen < declaredLength) {
                 GatewayException shortBody = new GatewayException(EventType.INBOUND_BODY_ABORTED, INBOUND_BODY_SHORT);
-                if (abortReason.compareAndSet(null, shortBody)) {
+                if (claimAbort(shortBody)) {
                     abortAction.run();
                     propagateFailure(shortBody);
                 }
@@ -1196,10 +1337,104 @@ public final class DispatchStage {
         /** Stops the inbound stream, and — when this is the first abort — resets the upstream request. */
         private void refuse(GatewayException reason) {
             delegate.pause();
-            if (abortReason.compareAndSet(null, reason)) {
+            if (claimAbort(reason)) {
                 abortAction.run();
                 propagateFailure(reason);
             }
+        }
+
+        /**
+         * Starts the idle clock: from now on, a gap of the clock's timeout without progress ends the
+         * stream as {@link EventType#REQUEST_BODY_TIMEOUT}. A no-op for an unarmed clock, a clock
+         * already started, and one already stopped.
+         */
+        void startIdleClock() {
+            if (!idleClock.armed()) {
+                return;
+            }
+            synchronized (clockLock) {
+                if (clockStarted || clockStopped) {
+                    return;
+                }
+                clockStarted = true;
+                lastProgressNanos = idleClock.nanoTime().getAsLong();
+                if (!pausedByConsumer) {
+                    armTimer(idleClock.timeoutMillis());
+                }
+            }
+        }
+
+        /**
+         * Stops the idle clock for good and cancels its pending timer. Idempotent; a no-op for an
+         * unarmed clock.
+         */
+        void stopIdleClock() {
+            if (!idleClock.armed()) {
+                return;
+            }
+            synchronized (clockLock) {
+                clockStopped = true;
+                if (pendingTimer != NO_TIMER) {
+                    idleClock.scheduler().cancel(pendingTimer);
+                    pendingTimer = NO_TIMER;
+                }
+            }
+        }
+
+        /** The consumer paused the stream: the gap is not counted until it resumes. */
+        private void suspendIdleClock() {
+            if (!idleClock.armed()) {
+                return;
+            }
+            synchronized (clockLock) {
+                pausedByConsumer = true;
+            }
+        }
+
+        /** The consumer resumed the stream: the gap restarts from now, and a timer is pending again. */
+        private void resumeIdleClock() {
+            if (!idleClock.armed()) {
+                return;
+            }
+            synchronized (clockLock) {
+                pausedByConsumer = false;
+                if (!clockStarted || clockStopped) {
+                    return;
+                }
+                lastProgressNanos = idleClock.nanoTime().getAsLong();
+                if (pendingTimer == NO_TIMER) {
+                    armTimer(idleClock.timeoutMillis());
+                }
+            }
+        }
+
+        /** Schedules the one pending idle timer; called holding {@link #clockLock}. */
+        private void armTimer(long delayMillis) {
+            pendingTimer = idleClock.scheduler().schedule(delayMillis, this::onIdleTimer);
+        }
+
+        /**
+         * The pending idle timer fired. A stopped or paused clock does nothing — a resume arms a new
+         * timer. A clock whose last progress lies less than the timeout back re-arms for the remainder;
+         * otherwise the body has made no progress for the whole timeout and the stream is refused.
+         */
+        private void onIdleTimer() {
+            synchronized (clockLock) {
+                pendingTimer = NO_TIMER;
+                if (clockStopped || pausedByConsumer) {
+                    return;
+                }
+                long idleNanos = idleClock.nanoTime().getAsLong() - lastProgressNanos;
+                long remainingNanos = TimeUnit.MILLISECONDS.toNanos(idleClock.timeoutMillis()) - idleNanos;
+                if (remainingNanos > 0) {
+                    armTimer(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos + MILLIS_ROUNDING_NANOS)));
+                    return;
+                }
+                clockStopped = true;
+            }
+            // Outside the monitor: the refusal pauses the inbound stream, resets the upstream request and
+            // propagates the failure, all through the single abort claim.
+            refuse(new GatewayException(EventType.REQUEST_BODY_TIMEOUT, BODY_IDLE));
         }
 
         private void propagateFailure(Throwable failure) {
@@ -1220,20 +1455,26 @@ public final class DispatchStage {
             return this;
         }
 
+        /** Pauses the inbound stream; the idle clock does not count the pause. */
         @Override
         public ReadStream<Buffer> pause() {
+            suspendIdleClock();
             delegate.pause();
             return this;
         }
 
+        /** Resumes the inbound stream; the idle clock restarts its gap from now. */
         @Override
         public ReadStream<Buffer> resume() {
+            resumeIdleClock();
             delegate.resume();
             return this;
         }
 
+        /** Fetches from the inbound stream; the idle clock restarts its gap from now. */
         @Override
         public ReadStream<Buffer> fetch(long amount) {
+            resumeIdleClock();
             delegate.fetch(amount);
             return this;
         }
@@ -1243,6 +1484,92 @@ public final class DispatchStage {
             this.endHandler = endHandler;
             delegate.endHandler(endHandler == null ? null : this::onInboundEnd);
             return this;
+        }
+    }
+
+    /**
+     * The scheduling seam of the request-body idle clock: schedules a task after a delay and cancels
+     * it. Production schedules on Vert.x ({@link VertxIdleScheduler}); a unit test drives it by hand.
+     */
+    interface IdleScheduler {
+
+        /**
+         * Schedules {@code task} to run once after {@code delayMillis}.
+         *
+         * @param delayMillis the delay in milliseconds, positive
+         * @param task        the task to run
+         * @return the id that cancels the task
+         */
+        long schedule(long delayMillis, Runnable task);
+
+        /**
+         * Cancels a scheduled task; a no-op for a task that already ran or was cancelled.
+         *
+         * @param timerId the id {@link #schedule} returned
+         */
+        void cancel(long timerId);
+    }
+
+    /**
+     * The request-body idle clock of one dispatch: its timeout, the scheduler its timer runs on, and
+     * the nano-time source it measures progress with.
+     *
+     * @param timeoutMillis the idle timeout in milliseconds, or {@link #NO_BODY_IDLE_TIMEOUT} for a
+     *                      clock that is never armed
+     * @param scheduler     schedules and cancels the clock's one pending timer
+     * @param nanoTime      the monotonic time source, in nanoseconds
+     */
+    record IdleClock(long timeoutMillis, IdleScheduler scheduler, LongSupplier nanoTime) {
+
+        /** The clock of a body that is not watched for progress: nothing is ever scheduled. */
+        static final IdleClock UNARMED = new IdleClock(NO_BODY_IDLE_TIMEOUT, new IdleScheduler() {
+
+            @Override
+            public long schedule(long delayMillis, Runnable task) {
+                throw new IllegalStateException("an unarmed idle clock schedules nothing");
+            }
+
+            @Override
+            public void cancel(long timerId) {
+                // Nothing was ever scheduled, so there is nothing to cancel.
+            }
+        }, System::nanoTime);
+
+        /**
+         * @throws IllegalArgumentException when {@code timeoutMillis} is negative
+         */
+        IdleClock {
+            if (timeoutMillis < NO_BODY_IDLE_TIMEOUT) {
+                throw new IllegalArgumentException("timeoutMillis must not be negative: " + timeoutMillis);
+            }
+            Objects.requireNonNull(scheduler, "scheduler");
+            Objects.requireNonNull(nanoTime, "nanoTime");
+        }
+
+        /**
+         * @return {@code true} when the clock watches the body, i.e. its timeout is positive
+         */
+        boolean armed() {
+            return timeoutMillis > NO_BODY_IDLE_TIMEOUT;
+        }
+    }
+
+    /**
+     * The production {@link IdleScheduler}: Vert.x timers of the instance owning the upstream request's
+     * context.
+     *
+     * @param vertx the Vert.x instance the timers are set on
+     */
+    private record VertxIdleScheduler(Vertx vertx) implements IdleScheduler {
+
+        @Override
+        public long schedule(long delayMillis, Runnable task) {
+            return vertx.setTimer(delayMillis, _ -> task.run());
+        }
+
+        @Override
+        public void cancel(long timerId) {
+            vertx.cancelTimer(timerId);
         }
     }
 }

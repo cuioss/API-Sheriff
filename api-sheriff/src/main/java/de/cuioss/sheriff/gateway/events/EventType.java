@@ -64,7 +64,7 @@ public enum EventType {
     /** The request method is outside the route's effective {@code allowed_methods}. */
     METHOD_NOT_ALLOWED(EventCategory.ROUTING, 405),
 
-    // --- Input validation (400 / 413) ---
+    // --- Input validation (400 / 408 / 413) ---
 
     /** A cui-http security filter rejected the request. */
     SECURITY_FILTER_VIOLATION(EventCategory.INPUT_VALIDATION, 400),
@@ -111,6 +111,22 @@ public enum EventType {
      * and is recorded by it as a success.
      */
     INBOUND_BODY_ABORTED(EventCategory.INPUT_VALIDATION, 400),
+    /**
+     * A proxied request's body made no progress for the gateway's fixed request-body idle timeout
+     * while its dispatch held an upstream connection and was reading the body. {@code DispatchStage}
+     * resets the upstream request, which releases its connection at once, and reports this event; the
+     * client is answered {@code 408}. The wait for a pooled connection, the upstream's backpressure and
+     * the time after the response was handed over are not counted, and bodyless requests and gRPC
+     * routes are never watched.
+     * <p>
+     * Contrast {@link #INBOUND_BODY_ABORTED}, which is a body stream that failed — this event is a body
+     * that is still open but stopped arriving — and {@link #UPSTREAM_TIMEOUT}, which is the whole
+     * dispatch exceeding the upstream guard's timeout and is attributed to the upstream. This event is
+     * attributed to the request, never to the upstream, which was given no request bytes to answer: it
+     * is not counted as a failure by the route's circuit breaker and is recorded by it as a success,
+     * and it is never retried.
+     */
+    REQUEST_BODY_TIMEOUT(EventCategory.INPUT_VALIDATION, 408),
 
     // --- Authentication (401) ---
 
