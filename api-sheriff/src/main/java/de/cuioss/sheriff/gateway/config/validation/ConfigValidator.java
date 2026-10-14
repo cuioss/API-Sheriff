@@ -15,6 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.declaredAnchorName;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.resolveAnchor;
+
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.net.URI;
@@ -32,7 +39,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
@@ -77,6 +83,7 @@ import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import de.cuioss.sheriff.gateway.http.LocationPathReview;
 import de.cuioss.tools.logging.CuiLogger;
@@ -86,6 +93,14 @@ import org.jspecify.annotations.Nullable;
  * Runs the cross-cutting configuration rules (pipeline step 7) that cannot be
  * expressed structurally in the D2 JSON Schemas, aggregating every violation in a
  * single pass.
+ * <p>
+ * The validator is the orchestration of ONE ordered rule list, {@code DEFAULT_RULES}: one entry per
+ * rule, in the order the violations are reported. That list is the only place that decides the
+ * order. A rule body lives in the concern class of the {@code rule} package that owns its
+ * configuration block ({@link PortalRules} for the application portal, for example) or — for a
+ * concern not yet extracted — as a private method of this class, registered at its position all the
+ * same. The helpers every rule shares (the reporting file and pointer, the CWE-117-safe echo of a
+ * configured value, anchor resolution) live once, in {@link RuleSupport}.
  * <p>
  * Each rule is a {@link ValidationRule}; {@link #validate} executes them all and
  * returns the combined, file- and path-annotated {@link ConfigError} list — never
@@ -222,12 +237,10 @@ public final class ConfigValidator {
     private static final CuiLogger LOGGER = new CuiLogger(ConfigValidator.class);
 
     private static final int SUPPORTED_VERSION = 1;
-    private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String PASSTHROUGH_SNI_POINTER = "/tls/passthrough_sni";
     private static final String ANCHORS_POINTER = "/anchors";
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
     private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
-    private static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
     private static final String FORWARDED_TRUSTED_POINTER = "/forwarded/trusted_proxies";
     private static final String EDGE_HARDENING_ADMISSION_POINTER = "/edge_hardening/admission_cap";
     private static final String EDGE_HARDENING_WEBSOCKET_POINTER = "/edge_hardening/websocket_relay_cap";
@@ -395,9 +408,6 @@ public final class ConfigValidator {
      */
     private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(MEDIA_TYPE_TOKEN);
 
-    /** The cap on the offending value a refusal message echoes back to the operator. */
-    private static final int ECHOED_VALUE_MAX_LENGTH = 60;
-
     /** The {@code jwks.source} whose {@code allowed_egress_hosts} feed token-sheriff's egress guard. */
     private static final String JWKS_SOURCE_HTTP = "http";
 
@@ -414,7 +424,11 @@ public final class ConfigValidator {
     /** The only schemes an {@code allow_external} redirect location may carry. */
     private static final Set<String> EXTERNAL_REDIRECT_SCHEMES = Set.of("http", "https");
 
-    private static final List<ValidationRule> CORE_RULES = List.of(
+    /**
+     * The built-in rules, one entry per rule, in the order their violations are reported. The
+     * application-portal rules run after every other rule.
+     */
+    private static final List<ValidationRule> DEFAULT_RULES = List.of(
             (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRouteIdUniqueness(endpoints, errors),
@@ -462,11 +476,12 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateJwksEgressHosts(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateJwksRefresh(gateway, errors));
-
-    /** The core rules followed by the application-portal rules, which run after every core rule. */
-    private static final List<ValidationRule> DEFAULT_RULES =
-            Stream.concat(CORE_RULES.stream(), PortalRules.RULES.stream()).toList();
+            (gateway, endpoints, topology, errors) -> validateJwksRefresh(gateway, errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validatePortalPathCanonical(gateway, errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validatePortalPathNotReserved(gateway, errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validatePortalPathNotExactRoute(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> PortalRules.validateCatalogEntries(endpoints, errors));
 
     private final List<ValidationRule> rules;
 
@@ -655,7 +670,7 @@ public final class ConfigValidator {
      * whatever this rule permits.
      * <p>
      * The refusal names the offending extension and value, because an operator cannot fix a typo
-     * they cannot see. The value is rendered through {@link #renderForMessage} rather than echoed
+     * they cannot see. The value is rendered through {@link RuleSupport#renderForMessage} rather than echoed
      * raw: a {@link ConfigError} is emitted into the boot ERROR log, so echoing an unescaped CR/LF
      * would forge log lines (CWE-117) through the very key this rule constrains.
      * <p>
@@ -679,29 +694,6 @@ public final class ConfigValidator {
                                 .formatted(entry.getKey(), renderForMessage(value))));
             }
         }
-    }
-
-    /**
-     * Renders an offending configuration value for a refusal message: every character outside
-     * printable ASCII — CR and LF above all — becomes a {@code \\uXXXX} escape, and the result is
-     * capped at {@link #ECHOED_VALUE_MAX_LENGTH}. The operator still sees what they typed; the boot
-     * ERROR log cannot be line-forged by it.
-     */
-    private static String renderForMessage(String value) {
-        StringBuilder rendered = new StringBuilder();
-        int limit = Math.min(value.length(), ECHOED_VALUE_MAX_LENGTH);
-        for (int index = 0; index < limit; index++) {
-            char current = value.charAt(index);
-            if (current >= 0x20 && current < 0x7F) {
-                rendered.append(current);
-            } else {
-                rendered.append("\\u%04X".formatted((int) current));
-            }
-        }
-        if (value.length() > limit) {
-            rendered.append("...");
-        }
-        return rendered.toString();
     }
 
     /**
@@ -831,7 +823,7 @@ public final class ConfigValidator {
      * an absolute URL only on the {@code redirect_uri} origin, and a scheme-relative, backslash, blank
      * or unparseable value is refused. With no {@code redirect_uri} there is no origin to compare an
      * absolute value against, so only a gateway-relative path is admitted. The value is echoed
-     * through {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117).
+     * through {@link RuleSupport#renderForMessage}, so it cannot forge boot log lines (CWE-117).
      */
     private static void validateDefaultReturnUrl(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();
@@ -883,7 +875,7 @@ public final class ConfigValidator {
      * <p>
      * A {@code file} issuer (its list feeds no egress guard), an issuer without a {@code jwks} block
      * and an absent {@code token_validation} block are skipped. The offending entry and the issuer
-     * name are echoed through {@link #renderForMessage}, so a hostile value cannot forge boot log
+     * name are echoed through {@link RuleSupport#renderForMessage}, so a hostile value cannot forge boot log
      * lines (CWE-117). Every offending entry is collected rather than failing on the first, per
      * ADR-0009.
      */
@@ -941,7 +933,7 @@ public final class ConfigValidator {
      * <p>
      * An issuer without a {@code jwks} block and an absent {@code token_validation} block are skipped,
      * and an omitted key is always admitted. Each message names the issuer's logical name — echoed
-     * through {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117) — the key and
+     * through {@link RuleSupport#renderForMessage}, so it cannot forge boot log lines (CWE-117) — the key and
      * the admitted range, and never the JWKS url. Every violation of every issuer is collected in one
      * pass, per ADR-0009.
      */
@@ -1273,7 +1265,7 @@ public final class ConfigValidator {
      * with one error per conflicting pair. Redundant but compatible pairs ({@code value} with
      * {@code present: true}, identical values, or matching presence flags) stay valid.
      * <p>
-     * Header names are echoed through {@link #renderForMessage}, so they cannot forge boot log lines
+     * Header names are echoed through {@link RuleSupport#renderForMessage}, so they cannot forge boot log lines
      * (CWE-117). Every violation collects into the shared list; the rule never fails fast (ADR-0009).
      */
     private static void validateHeaderMatcherConsistency(List<EndpointConfig> endpoints, List<ConfigError> errors) {
@@ -1947,7 +1939,7 @@ public final class ConfigValidator {
      *       Opting in emits {@link ConfigLogMessages.WARN#REDIRECT_EXTERNAL_TARGET_ALLOWED}, naming
      *       the route but never the location.</li>
      * </ul>
-     * Refusal messages echo the value through {@link #renderForMessage}, so a hostile value cannot
+     * Refusal messages echo the value through {@link RuleSupport#renderForMessage}, so a hostile value cannot
      * forge boot log lines (CWE-117).
      * <p>
      * <strong>Query hand-off.</strong> {@code keep_query} together with {@code allow_external} is
@@ -2624,7 +2616,7 @@ public final class ConfigValidator {
      * authority. It applies in both session modes, because both emit the configured name. An omitted
      * key is never refused — it resolves to {@link SessionCookieCodec#DEFAULT_COOKIE_NAME}.
      * <p>
-     * The offending value is echoed through {@link #renderForMessage}, so a name carrying CR/LF cannot
+     * The offending value is echoed through {@link RuleSupport#renderForMessage}, so a name carrying CR/LF cannot
      * forge boot ERROR log lines (CWE-117). All failed requirements of one name are reported in a
      * single violation, collected into the shared list; the rule never fails fast (ADR-0009).
      */
@@ -2922,7 +2914,7 @@ public final class ConfigValidator {
      * <ol>
      *   <li><strong>Shape</strong> ({@link #isAbsoluteGatewayPath}): an absolute gateway path starting
      *       with a single {@code /}, carrying no query, no fragment, no backslash, no control character
-     *       and no whitespace. The refused value is echoed through {@link #renderForMessage}, so it
+     *       and no whitespace. The refused value is echoed through {@link RuleSupport#renderForMessage}, so it
      *       cannot forge boot log lines (CWE-117).</li>
      *   <li><strong>Canonical form</strong> ({@link #canonicalReservedPathRefusal}), checked once the
      *       shape holds: no {@code //}, no dot segment, no matrix parameter ({@code ;}) and no
@@ -3188,16 +3180,6 @@ public final class ConfigValidator {
         return normalized.isEmpty() ? null : normalized;
     }
 
-    private static @Nullable String declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
-        return route.anchor() != null ? route.anchor() : endpoint.anchor();
-    }
-
-    private static @Nullable AnchorConfig resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route) {
-        String name = declaredAnchorName(endpoint, route);
-        return name == null ? null : gateway.anchors().get(name);
-    }
-
     /**
      * The route's effective auth, resolved through the wholesale
      * {@code route → endpoint → declared-anchor} replacement chain (ADR-0007) — the
@@ -3265,9 +3247,5 @@ public final class ConfigValidator {
         return prefixContains(container, candidate)
                 && !RouteTableBuilder.normalizePrefix(container)
                 .equals(RouteTableBuilder.normalizePrefix(candidate));
-    }
-
-    private static String endpointFile(EndpointConfig endpoint) {
-        return "endpoints/" + endpoint.id() + ".yaml";
     }
 }

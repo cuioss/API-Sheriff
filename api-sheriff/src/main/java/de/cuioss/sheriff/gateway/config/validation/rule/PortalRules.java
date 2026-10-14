@@ -15,6 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -67,8 +70,6 @@ import lombok.experimental.UtilityClass;
 @UtilityClass
 public class PortalRules {
 
-    private static final String GATEWAY_FILE = "gateway.yaml";
-
     /** The JSON pointer of {@code portal.path} in {@code gateway.yaml}. */
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
@@ -81,16 +82,6 @@ public class PortalRules {
 
     private static final String SLASH = "/";
     private static final String DOUBLE_SLASH = "//";
-
-    /**
-     * The portal rules in their reporting order, for registration in the configuration validator's
-     * default rule set.
-     */
-    public static final List<ValidationRule> RULES = List.of(
-            (gateway, endpoints, topology, errors) -> validatePortalPathCanonical(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validatePortalPathNotReserved(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validatePortalPathNotExactRoute(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateCatalogEntries(endpoints, errors));
 
     /**
      * Rule 1: {@code portal.path} must be a canonical gateway path.
@@ -228,9 +219,5 @@ public class PortalRules {
             end = fragment;
         }
         return reference.substring(0, end);
-    }
-
-    private static String endpointFile(EndpointConfig endpoint) {
-        return "endpoints/" + endpoint.id() + ".yaml";
     }
 }
