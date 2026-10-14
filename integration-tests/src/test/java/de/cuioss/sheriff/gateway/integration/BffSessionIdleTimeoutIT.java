@@ -137,7 +137,7 @@ class BffSessionIdleTimeoutIT {
     private static final String IDLE_TIMEOUT_KEY = "idle_timeout_seconds";
 
     /** A {@code require: session} route of the shared configuration. */
-    private static final String SESSION_ROUTE = "/bff-session/get";
+    private static final String SESSION_ROUTE = "/app/get";
 
     /** The default session-cookie name; neither source descriptor declares another. */
     private static final String SESSION_COOKIE = "__Host-sheriff-session";
@@ -145,7 +145,7 @@ class BffSessionIdleTimeoutIT {
     /** The activity cookie's name: the session cookie's, with the suffix the gateway appends. */
     private static final String ACTIVITY_COOKIE = SESSION_COOKIE + "-activity";
 
-    private static final String LOGOUT_PATH = "/auth/logout";
+    private static final String LOGOUT_PATH = "/bff/logout";
 
     private static final int SERVER_IDLE_SECONDS = 12;
     private static final int SERVER_FIRST_USE_SECONDS = 7;

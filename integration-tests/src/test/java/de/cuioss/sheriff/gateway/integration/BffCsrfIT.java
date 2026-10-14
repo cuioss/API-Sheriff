@@ -22,7 +22,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Exercises the fixed CSRF defence on the require:session {@code /bff-session} route. The defence has no
+ * Exercises the fixed CSRF defence on the require:session {@code /app} route. The defence has no
  * disable knob and runs <em>before</em> session resolution, so an unsafe-method request with a foreign
  * {@code Origin} is rejected {@code 403} regardless of whether a session cookie is present — no login is
  * required to prove the rejection. A trusted {@code Origin} passes the CSRF gate, after which the
@@ -38,7 +38,7 @@ class BffCsrfIT extends BaseIntegrationTest {
                 .header("Origin", "https://evil.example.com")
                 .header("Accept", "application/json")
                 .when()
-                .post("/bff-session/post")
+                .post("/app/post")
                 .then()
                 .statusCode(403)
                 .extract();
@@ -53,7 +53,7 @@ class BffCsrfIT extends BaseIntegrationTest {
         given()
                 .header("Accept", "application/json")
                 .when()
-                .post("/bff-session/post")
+                .post("/app/post")
                 .then()
                 .statusCode(403);
     }
@@ -68,7 +68,7 @@ class BffCsrfIT extends BaseIntegrationTest {
                 .header("Origin", BffKeycloakLoginFlow.GATEWAY_ORIGIN)
                 .header("Accept", "application/json")
                 .when()
-                .post("/bff-session/post")
+                .post("/app/post")
                 .then()
                 .statusCode(401);
     }

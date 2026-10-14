@@ -16,7 +16,7 @@
 #     gateway-owned response governance.
 #   * /assets/demo/*    -> source: directory, root /app/demo (the read-only bind
 #     mount of demo-client/src/main/resources/spa). Serves the demo SPA and its
-#     post-logout landing page same-origin with the reserved /auth paths, which is
+#     post-logout landing page same-origin with the reserved /bff paths, which is
 #     what makes the browser-facing BFF contract observable at all.
 #
 # This file is mounted into ALL SIX gateway instances, four of which overlay only

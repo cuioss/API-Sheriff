@@ -73,7 +73,7 @@ import org.junit.jupiter.api.Test;
  *       {@code integration-client} is refused by Keycloak. The control is the token-mint client: the
  *       same endpoint accepts a secret from a client registered for one, so the refusal is of this
  *       client's credential and not of the endpoint.</li>
- *   <li><em>Published key.</em> {@code GET /auth/jwks} on the primary instance, with no credential,
+ *   <li><em>Published key.</em> {@code GET /bff/jwks} on the primary instance, with no credential,
  *       answers one key that carries {@code use: sig}, the algorithm {@code PS256} and no private
  *       member, and whose {@code kid} equals the RFC 7638 thumbprint this test computes from the public
  *       block of the committed client key file. The same request with {@code POST} answers
@@ -118,7 +118,7 @@ import org.junit.jupiter.api.Test;
 class BffFapiControlsIT {
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
-    static final String MEDIATED_PATH = "/bff-session/get";
+    static final String MEDIATED_PATH = "/app/get";
 
     /**
      * INFO — the mediated tokens of a session were refreshed. The trailing colon is part of the match:
@@ -138,7 +138,7 @@ class BffFapiControlsIT {
     static final int WAIT_INTO_REFRESH_WINDOW_SECONDS = 22;
 
     /** The gateway's default client JWKS path, which the primary instance publishes its key at. */
-    static final String JWKS_PATH = "/auth/jwks";
+    static final String JWKS_PATH = "/bff/jwks";
 
     /** The client of the primary instance (see {@code sheriff-config/gateway.yaml}). */
     private static final String CLIENT_ID = "integration-client";
@@ -164,7 +164,7 @@ class BffFapiControlsIT {
     @Test
     @DisplayName("pushed request: a front-channel request without request_uri is refused, the gateway's own redirect completes a login")
     void frontChannelRequestIsRefusedWhileThePushedRequestCompletesALogin() {
-        assertFrontChannelRequestRefused(CLIENT_ID, BffKeycloakLoginFlow.GATEWAY_ORIGIN + "/auth/callback");
+        assertFrontChannelRequestRefused(CLIENT_ID, BffKeycloakLoginFlow.GATEWAY_ORIGIN + "/bff/callback");
 
         Session session = BffKeycloakLoginFlow.login(MEDIATED_PATH);
 
@@ -199,7 +199,7 @@ class BffFapiControlsIT {
     }
 
     @Test
-    @DisplayName("published key: GET /auth/jwks answers the one public client key under its thumbprint, POST answers 405")
+    @DisplayName("published key: GET /bff/jwks answers the one public client key under its thumbprint, POST answers 405")
     void jwksEndpointPublishesTheClientKeyAndNothingElse() throws Exception {
         Response answered = BffKeycloakLoginFlow.gateway(Map.of())
                 .when().get(JWKS_PATH)

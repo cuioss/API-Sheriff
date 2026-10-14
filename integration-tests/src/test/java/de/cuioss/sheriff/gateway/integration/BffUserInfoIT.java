@@ -32,7 +32,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Exercises the reserved {@code /auth/userinfo} session/user-info fold end-to-end.
+ * Exercises the reserved {@code /bff/session} session/user-info fold end-to-end.
  * <p>
  * Without a session the fold is closed ({@code 401}); with a live session it serves the curated
  * default view, capped by the operator claim allowlist. The mounted {@code oidc.user_info} config sets
@@ -60,7 +60,7 @@ class BffUserInfoIT extends BaseIntegrationTest {
         var response = given()
                 .header("Accept", "application/json")
                 .when()
-                .get("/auth/userinfo")
+                .get("/bff/session")
                 .then()
                 .statusCode(401)
                 .extract();
@@ -73,13 +73,13 @@ class BffUserInfoIT extends BaseIntegrationTest {
     @Test
     @DisplayName("the user-info fold renders a single string claim and the session metadata byte for byte")
     void userInfoRendersAStringClaimByteForByte() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .header("Accept", "application/json")
                 .queryParam("claims", "preferred_username")
                 .when()
-                .get("/auth/userinfo")
+                .get("/bff/session")
                 .then()
                 .statusCode(200)
                 .extract();
@@ -92,12 +92,12 @@ class BffUserInfoIT extends BaseIntegrationTest {
     @Test
     @DisplayName("the user-info fold serves the curated default view for a live session")
     void userInfoServesCuratedDefaultView() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .header("Accept", "application/json")
                 .when()
-                .get("/auth/userinfo")
+                .get("/bff/session")
                 .then()
                 .statusCode(200)
                 .extract();
@@ -120,13 +120,13 @@ class BffUserInfoIT extends BaseIntegrationTest {
     @Test
     @DisplayName("the user-info fold discloses a list-valued claim as a native JSON array (AS-7)")
     void userInfoDisclosesGroupsAsJsonArray() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .header("Accept", "application/json")
                 .queryParam("claims", "groups")
                 .when()
-                .get("/auth/userinfo")
+                .get("/bff/session")
                 .then()
                 .statusCode(200)
                 .extract();

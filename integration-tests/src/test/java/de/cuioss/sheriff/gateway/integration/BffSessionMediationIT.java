@@ -31,7 +31,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Exercises the server-mode BFF token-mediation semantics on the require:session {@code /bff-session}
+ * Exercises the server-mode BFF token-mediation semantics on the require:session {@code /app}
  * route: an authenticated session mediates a bearer to the upstream while the browser session cookie is
  * stripped, an unauthenticated XHR is rejected {@code 401 application/problem+json}, and an
  * unauthenticated navigation is redirected {@code 302} into the IdP.
@@ -40,14 +40,14 @@ import org.junit.jupiter.api.Test;
  * observable: {@code headers.Authorization} carries the injected bearer (Authorization is allow-listed
  * on the route) and {@code headers.Cookie} is absent (Cookie is deny-by-default and never forwarded).
  * <p>
- * The sibling {@code /bff-session/norelay} route resolves {@code auth.token_relay: false}: the same
+ * The sibling {@code /app/norelay} route resolves {@code auth.token_relay: false}: the same
  * session is required, but no {@code Authorization} header reaches the origin — neither the mediated
  * bearer nor one the client sends — while the unauthenticated {@code 302}/{@code 401} negotiation is
  * unchanged.
  */
 class BffSessionMediationIT extends BaseIntegrationTest {
 
-    private static final String NORELAY_PATH = "/bff-session/norelay/get";
+    private static final String NORELAY_PATH = "/app/norelay/get";
 
     /**
      * The session-cookie name the primary stack uses, the gateway's default. Spelled out here rather
@@ -58,11 +58,11 @@ class BffSessionMediationIT extends BaseIntegrationTest {
     @Test
     @DisplayName("an authenticated session injects the bearer upstream and never forwards the session cookie")
     void mediatesBearerAndStripsSessionCookie() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         Response response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .when()
-                .get("/bff-session/get")
+                .get("/app/get")
                 .then()
                 .statusCode(200)
                 .extract().response();
@@ -81,7 +81,7 @@ class BffSessionMediationIT extends BaseIntegrationTest {
         var response = given()
                 .header("Accept", "application/json")
                 .when()
-                .get("/bff-session/get")
+                .get("/app/get")
                 .then()
                 .statusCode(401)
                 .extract();
@@ -98,7 +98,7 @@ class BffSessionMediationIT extends BaseIntegrationTest {
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when()
-                .get("/bff-session/get")
+                .get("/app/get")
                 .then()
                 .statusCode(302)
                 .extract();
@@ -120,7 +120,7 @@ class BffSessionMediationIT extends BaseIntegrationTest {
         // needs a client whose access-token lifespan is short enough to reach the window; that is what
         // BffTokenRefreshIT does, against the dedicated api-sheriff-refresh instance and its 45s
         // refresh-client.
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         // Read off the callback response alone. The jar the login returns already held the cookies of
         // the initiation response before the callback was followed, so its being non-empty says nothing
@@ -134,7 +134,7 @@ class BffSessionMediationIT extends BaseIntegrationTest {
         for (int request = 0; request < 2; request++) {
             var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                     .when()
-                    .get("/bff-session/get")
+                    .get("/app/get")
                     .then()
                     .statusCode(200)
                     .extract();
@@ -146,7 +146,7 @@ class BffSessionMediationIT extends BaseIntegrationTest {
     @Test
     @DisplayName("a token_relay:false route serves a live session without relaying any Authorization upstream")
     void tokenRelayOptOutRelaysNoAuthorization() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         // The client also sends an Authorization of its own: it must not cross either, so the origin sees
         // no Authorization header at all — the session's token stays at the gateway.

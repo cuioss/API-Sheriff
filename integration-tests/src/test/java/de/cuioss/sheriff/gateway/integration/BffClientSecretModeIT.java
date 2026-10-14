@@ -71,7 +71,7 @@ import org.junit.jupiter.api.Test;
  *       in client-secret mode that the bound response is accepted on both token legs; the instance log
  *       gains a token-refreshed record ({@value BffFapiControlsIT#TOKEN_REFRESHED_RECORD}) and
  *       carries no refused-response record ({@value BffFapiControlsIT#TOKEN_NOT_BOUND_RECORD}).</li>
- *   <li><em>The key set.</em> {@code GET} and {@code POST} on {@code /auth/jwks} of this instance
+ *   <li><em>The key set.</em> {@code GET} and {@code POST} on {@code /bff/jwks} of this instance
  *       answer {@code 404}: there is no client-authentication key to publish. The control is the
  *       primary instance, which answers {@code 200} to {@code GET} on the same path.</li>
  * </ul>
@@ -145,7 +145,7 @@ class BffClientSecretModeIT {
         BffLoginInitiationIT.assertPushedRequestRedirect(initiation, CLIENT_ID);
         assertEquals("GET", mediatedCall(session.gatewayCookies(), ORIGIN).path("method"),
                 "a login started with a request pushed under client_secret_basic must complete");
-        assertFrontChannelRequestRefused(CLIENT_ID, ORIGIN + "/auth/callback");
+        assertFrontChannelRequestRefused(CLIENT_ID, ORIGIN + "/bff/callback");
     }
 
     @Test

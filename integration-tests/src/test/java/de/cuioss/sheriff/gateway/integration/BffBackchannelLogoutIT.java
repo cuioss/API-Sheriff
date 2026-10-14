@@ -42,7 +42,7 @@ import org.junit.jupiter.api.Test;
  * {@code integration-realm.json} rather than assumed from a Keycloak built-in:
  * <ul>
  *   <li>{@code backchannel.logout.url} on {@code integration-client}, pointing at the gateway's
- *       container-internal {@code /auth/backchannel} — without it Keycloak notifies nobody;</li>
+ *       container-internal {@code /bff/backchannel} — without it Keycloak notifies nobody;</li>
  *   <li>{@code backchannel.logout.session.required}, which puts {@code sid} on the logout token, the
  *       claim {@code BackchannelLogoutReceiver} routes to {@code SessionBinding.destroyBySid};</li>
  *   <li>a dedicated {@link BffKeycloakLoginFlow#BACKCHANNEL_USERNAME} identity, because the admin-API
@@ -56,7 +56,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>A fifth piece is not configuration at all</strong>, and it is why this suite spent its
  * first CI run red with all four of the above correctly in place. The gateway has to actually SERVE
- * {@code /auth/backchannel} on the host Keycloak dials it by. Keycloak reaches it as
+ * {@code /bff/backchannel} on the host Keycloak dials it by. Keycloak reaches it as
  * {@code api-sheriff} — its compose service name on the shared network — while the OIDC host is
  * {@code localhost}, the browser-facing host of {@code redirect_uri}. {@code ReservedPathRegistry}
  * gated <em>every</em> reserved path on the OIDC host, so the delivered logout token was answered
@@ -82,7 +82,7 @@ class BffBackchannelLogoutIT extends BaseIntegrationTest {
     private static final String KEYCLOAK_ORIGIN = "https://localhost:1443";
 
     /** A {@code require: session} route on the primary server-mode gateway. */
-    private static final String SESSION_ROUTE = "/bff-session/get";
+    private static final String SESSION_ROUTE = "/app/get";
 
     /**
      * How long the gateway is given to receive and apply the logout token. Back-channel delivery is

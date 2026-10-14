@@ -140,7 +140,7 @@ class BffCookieRefreshIT {
     private static final String SESSION_COOKIE = "__Host-sheriff-session";
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
-    private static final String MEDIATED_PATH = "/bff-session/get";
+    private static final String MEDIATED_PATH = "/app/get";
 
     /**
      * Seconds to wait before a call that must land inside the near-expiry window.

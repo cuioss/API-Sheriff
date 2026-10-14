@@ -23,11 +23,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Exercises the full server-mode BFF authorization-code login through the reserved {@code /auth/callback}
+ * Exercises the full server-mode BFF authorization-code login through the reserved {@code /bff/callback}
  * against the compose Keycloak {@code integration} realm.
  * <p>
  * The scripted browser-less flow ({@link BffKeycloakLoginFlow}) navigates onto the require:session
- * {@code /bff-session} route, follows the {@code 302} into Keycloak, submits the seeded
+ * {@code /app} route, follows the {@code 302} into Keycloak, submits the seeded
  * {@code integration-user} credentials, and follows the callback back to the gateway. This suite
  * asserts where that callback sends the browser. That the login created a usable server-side session —
  * the gateway set a session cookie on the callback response, and replaying that cookie jar on the
@@ -43,7 +43,7 @@ class BffSessionLoginIT extends BaseIntegrationTest {
         // A query with two parameters and a percent-encoded '/' in a value: the gateway must record the
         // canonical path plus the raw query byte for byte, never a re-encoded or re-ordered rendering.
         // The start path is sent unencoded by the login flow, so %2F reaches the gateway as sent.
-        String requested = "/bff-session/liste/1?tab=a&x=%2F";
+        String requested = "/app/liste/1?tab=a&x=%2F";
 
         Session session = BffKeycloakLoginFlow.login(requested);
 

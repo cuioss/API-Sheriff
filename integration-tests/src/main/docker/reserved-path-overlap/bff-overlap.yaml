@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # The reserved-path overlap fixture of BffReservedPathPrecedenceIT: one proxy route whose prefix,
-# /auth, contains every reserved OIDC path the gateway carves out under /auth.
+# /bff, contains every reserved OIDC path the gateway carves out under /bff.
 #
 # WHY IT IS NOT UNDER sheriff-config/endpoints/. Every gateway instance of the stack mounts that
 # directory, and an endpoint names an anchor that the gateway document it is loaded beside must
@@ -12,11 +12,11 @@
 # directory is added or changed for it.
 #
 # WHAT THE ROUTE IS FOR. The reserved paths are matched exactly and ahead of the route table, so this
-# prefix route must never see /auth/callback, /auth/login and their siblings, while every other path
-# below /auth is its own. The test asserts both sides, and which pipeline stages a reserved path does
+# prefix route must never see /bff/callback, /bff/login and their siblings, while every other path
+# below /bff is its own. The test asserts both sides, and which pipeline stages a reserved path does
 # and does not pass:
 #   * allowed_methods is restricted to POST, so the route's verb gate has something to refuse: a GET
-#     below /auth is refused 405 on the routed path, while a GET on a reserved path is answered by the
+#     below /bff is refused 405 on the routed path, while a GET on a reserved path is answered by the
 #     reserved endpoint. It is the endpoint's allowed_methods and not a match.methods matcher on
 #     purpose: a matcher decides whether the route is selected at all, the allowed list is what the
 #     verb gate enforces on the selected route;
@@ -30,14 +30,14 @@
 # The anchor is public and carries no auth block, so the endpoint declares the require: none posture
 # itself.
 endpoint:
-  id: auth-overlap
+  id: bff-overlap
   enabled: true
   base_url: UPSTREAM
-  anchor: auth-overlap
+  anchor: bff-overlap
   allowed_methods: ["POST"]
   auth:
     require: none
   routes:
-    - id: auth-overlap-proxy
+    - id: bff-overlap-proxy
       match:
-        path_prefix: /auth
+        path_prefix: /bff

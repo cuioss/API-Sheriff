@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # The routes that need a scope BEYOND the gateway's oidc.scopes (ADR-0048).
-# Anchored to the 'bff-session' anchor (type: bff, access: authenticated, auth: require:
+# Anchored to the 'app' anchor (type: bff, access: authenticated, auth: require:
 # session) declared in gateway.yaml, and routed to the same go-httpbin echo backend (the
 # UPSTREAM topology alias) as endpoints/bff-session.yaml so what the gateway forwards is
 # observable. Two routes live here: bff-scoped (the session floor as inherited) and
@@ -16,7 +16,7 @@
 # Keycloak issues it only when it is requested — its presence in a token is therefore proof the
 # gateway asked for it, not an artefact of the realm's defaults.
 #
-# Both prefixes nest under /bff-session and are statically disjoint from bff-session-mediated by
+# Both prefixes nest under /app and are statically disjoint from bff-session-mediated by
 # specificity, exactly as /secure/filtered coexists with /secure in endpoints/secure.yaml.
 # No forward block: the mediated bearer is merged by ForwardPolicyStage regardless of any
 # forward list, and nothing here needs a client header to reach the echo.
@@ -24,12 +24,12 @@ endpoint:
   id: bff-scoped
   enabled: true
   base_url: UPSTREAM
-  anchor: bff-session
+  anchor: app
   scopes: ["sheriff_it_endpoint"]
   routes:
     - id: bff-scoped
       match:
-        path_prefix: /bff-session/scoped
+        path_prefix: /app/scoped
     # session_fallback (auth.session_fallback: true) — ONE require: bearer route that also serves the
     # BFF browser. The branch is chosen per request from a single input: whether the request carries an
     # Authorization header. With the header (any scheme, any value, empty included) the route behaves
@@ -61,7 +61,7 @@ endpoint:
     # the seam, not a re-admission of the inbound header. Cookie is withheld by the same set.
     - id: bff-session-fallback
       match:
-        path_prefix: /bff-session/fallback
+        path_prefix: /app/fallback
       auth:
         require: bearer
         session_fallback: true

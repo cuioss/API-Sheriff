@@ -70,11 +70,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <p>
  * <strong>The rig.</strong> One one-off gateway on the compose network, started once for the class and
  * removed afterwards. Its configuration directory is assembled below {@code target/}: a copy of the
- * shared configuration, the fixture {@code reserved-path-overlap/auth-overlap.yaml} as one further
+ * shared configuration, the fixture {@code reserved-path-overlap/bff-overlap.yaml} as one further
  * endpoint file, and a gateway document derived from
  * {@code sheriff-config-passthrough-empty/gateway.yaml} by adding the one anchor the fixture names —
  * asserted to be the only difference. The directory is mounted whole in place of the shared one. The
- * fixture declares a single route, {@code path_prefix: /auth}, to the echo upstream, with
+ * fixture declares a single route, {@code path_prefix: /bff}, to the echo upstream, with
  * {@code allowed_methods: ["POST"]} and the gateway-wide strict filter profile.
  * <p>
  * <strong>How a request is known not to have reached the upstream.</strong> The route forwards every
@@ -84,7 +84,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <p>
  * <strong>What this suite proves.</strong>
  * <ul>
- *   <li><em>Control.</em> A {@code POST} to a path below {@code /auth} that is not reserved is
+ *   <li><em>Control.</em> A {@code POST} to a path below {@code /bff} that is not reserved is
  *       proxied: the upstream echoes the method and the probe.</li>
  *   <li><em>The reserved paths win.</em> For each of the eight reserved paths the descriptor's
  *       {@code oidc} block yields — {@link #RESERVED_PATHS}, asserted against the descriptor — the
@@ -129,15 +129,15 @@ class BffReservedPathPrecedenceIT {
      * logout receiver, the user-info fold, the login initiation, the step-up entry point and — declared
      * by no key — the default client JWKS path.
      */
-    private static final Set<String> RESERVED_PATHS = Set.of("/auth/callback", "/auth/logout",
-            "/auth/logout/return", "/auth/backchannel", "/auth/userinfo", "/auth/login", "/auth/step-up",
-            "/auth/jwks");
+    private static final Set<String> RESERVED_PATHS = Set.of("/bff/callback", "/bff/logout",
+            "/bff/logout/return", "/bff/backchannel", "/bff/session", "/bff/login", "/bff/step-up",
+            "/bff/jwks");
 
     /** The reserved path no descriptor key declares; the default the gateway publishes its client key at. */
-    private static final String CLIENT_JWKS_PATH = "/auth/jwks";
+    private static final String CLIENT_JWKS_PATH = "/bff/jwks";
 
     /** A path below the route's prefix that is not reserved. */
-    private static final String ROUTED_PATH = "/auth/overlap-control";
+    private static final String ROUTED_PATH = "/bff/overlap-control";
 
     private static final String GATEWAY = "sheriff-reserved-path-overlap";
 
@@ -153,7 +153,7 @@ class BffReservedPathPrecedenceIT {
 
     private static final Path SOURCE_DESCRIPTOR =
             DOCKER.resolve(Path.of("sheriff-config-passthrough-empty", "gateway.yaml"));
-    private static final Path OVERLAP_ENDPOINT = DOCKER.resolve(Path.of("reserved-path-overlap", "auth-overlap.yaml"));
+    private static final Path OVERLAP_ENDPOINT = DOCKER.resolve(Path.of("reserved-path-overlap", "bff-overlap.yaml"));
 
     /** The committed directory every compose instance loads its endpoints from. */
     private static final Path COMMITTED_ENDPOINTS = DOCKER.resolve(Path.of("sheriff-config", "endpoints"));
@@ -167,14 +167,14 @@ class BffReservedPathPrecedenceIT {
     private static final String DESCRIPTOR_MODE = "rw-r--r--";
 
     private static final String ANCHORS_KEY = "anchors";
-    private static final String OVERLAP_ANCHOR = "auth-overlap";
+    private static final String OVERLAP_ANCHOR = "bff-overlap";
 
     /** The top-level line of the source descriptor the anchor is inserted after. */
     private static final String ANCHORS_LINE = "\n" + ANCHORS_KEY + ":\n";
 
     /** The one anchor the derivation adds: the fixture's own, public and disjoint from every other. */
     private static final String OVERLAP_ANCHOR_BLOCK = "  " + OVERLAP_ANCHOR + ":\n"
-            + "    path_prefix: /auth\n"
+            + "    path_prefix: /bff\n"
             + "    type: proxy\n"
             + "    access: public\n";
 
@@ -223,7 +223,7 @@ class BffReservedPathPrecedenceIT {
     }
 
     @Test
-    @DisplayName("control: a path below /auth that is not reserved is proxied and echoed")
+    @DisplayName("control: a path below /bff that is not reserved is proxied and echoed")
     void aPathBelowTheOverlapThatIsNotReservedIsProxied() {
         String probe = probe();
 
@@ -250,7 +250,7 @@ class BffReservedPathPrecedenceIT {
         Response answered = post(reservedPath, probe);
 
         assertFalse(answered.asString().contains(probe),
-                () -> "a request to " + reservedPath + " was echoed by the upstream of the /auth route (status "
+                () -> "a request to " + reservedPath + " was echoed by the upstream of the /bff route (status "
                         + answered.statusCode() + "): the reserved path did not win. " + answered.asString());
     }
 
@@ -274,7 +274,7 @@ class BffReservedPathPrecedenceIT {
         assertAll("the reserved paths of " + DERIVED_DESCRIPTOR,
                 () -> assertEquals(RESERVED_PATHS, declared),
                 () -> assertEquals(8, declared.size(), "eight distinct reserved paths"),
-                () -> assertTrue(declared.stream().allMatch(path -> path.startsWith("/auth/")),
+                () -> assertTrue(declared.stream().allMatch(path -> path.startsWith("/bff/")),
                         () -> "every reserved path must lie below the prefix of the overlapping route: " + declared));
     }
 
@@ -411,7 +411,7 @@ class BffReservedPathPrecedenceIT {
         Object added = derivedAnchors.remove(OVERLAP_ANCHOR);
         derived.put(ANCHORS_KEY, derivedAnchors);
         assertAll("the derived descriptor " + DERIVED_DESCRIPTOR,
-                () -> assertEquals(Map.of("path_prefix", "/auth", "type", "proxy", "access", "public"), added,
+                () -> assertEquals(Map.of("path_prefix", "/bff", "type", "proxy", "access", "public"), added,
                         "it must declare the fixture's anchor"),
                 () -> assertEquals(expected, derived, "apart from that anchor it must be its source, unchanged"));
         return DERIVED_DESCRIPTOR;

@@ -64,7 +64,7 @@ class MetricsIT extends BaseIntegrationTest {
     private static final String SESSION_BRANCH_LABEL = "branch=\"session\"";
 
     /** A path on the plain {@code require: session} route {@code bff-session-mediated}. */
-    private static final String SESSION_ROUTE_PATH = "/bff-session/get";
+    private static final String SESSION_ROUTE_PATH = "/app/get";
 
     /** A path on the plain {@code require: bearer} route of the {@code secure} anchor. */
     private static final String BEARER_ROUTE_PATH = "/secure/get";

@@ -34,8 +34,8 @@ anchors:
     path_prefix: /proxy
     type: proxy
     access: public
-  bff:
-    path_prefix: /bff
+  web:
+    path_prefix: /web
     type: proxy
     access: public
   # Server-mode BFF session namespace exercised by the Bff*IT suite. A require:session
@@ -44,9 +44,9 @@ anchors:
   # authenticated (ADR-0013), and the session floor is backed by the global oidc block
   # below (ConfigValidator rejects a session floor with no oidc block). The reserved
   # OIDC endpoints themselves are carved out of the route table on the oidc host and
-  # live under /auth (see the oidc block), disjoint from this /bff-session proxy prefix.
-  bff-session:
-    path_prefix: /bff-session
+  # live under /bff (see the oidc block), disjoint from this /app proxy prefix.
+  app:
+    path_prefix: /app
     type: bff
     access: authenticated
     auth:
@@ -125,7 +125,7 @@ token_validation:
 # only when a global oidc block declares session.mode=server AND a redirect_uri). The
 # reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
 # the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
-# under /auth and never collide with the /bff-session proxy anchor above. Confidential
+# under /bff and never collide with the /app proxy anchor above. Confidential
 # client: integration-client against the compose 'integration' realm (standardFlowEnabled,
 # redirectUris '*'), authenticated with private_key_jwt — no client secret is declared.
 # OIDC discovery is lazy (first engine use), so boot needs no live IdP; the browser reaches
@@ -137,7 +137,7 @@ oidc:
   client_id: integration-client
   # The same two key files as the primary gateway.yaml, which carries the explanation: the
   # client-authentication key by literal path, the DPoP proof key through ${OIDC_DPOP_KEY_FILE}.
-  # This instance holds the key the primary instance publishes at /auth/jwks, so the realm
+  # This instance holds the key the primary instance publishes at /bff/jwks, so the realm
   # client's one jwks.url covers it.
   client_authentication:
     key_file: /app/signing-keys/client-auth-rsa.pem
@@ -147,12 +147,12 @@ oidc:
   # Full browser-facing callback URL. Its host ('localhost') is the oidc host every
   # reserved path binds to; its origin ('https://localhost:10444') is the gateway
   # origin used for same-origin return-URL validation and the default CSRF trusted origin.
-  redirect_uri: https://localhost:10444/auth/callback
+  redirect_uri: https://localhost:10444/bff/callback
   logout:
-    path: /auth/logout
-    post_logout_redirect_uri: https://localhost:10444/auth/logout/return
+    path: /bff/logout
+    post_logout_redirect_uri: https://localhost:10444/bff/logout/return
     final_redirect: /
-    backchannel_path: /auth/backchannel
+    backchannel_path: /bff/backchannel
   session:
     mode: server
     store: memory
@@ -163,11 +163,11 @@ oidc:
     csrf:
       trusted_origins: ["https://localhost:10444"]
   user_info:
-    path: /auth/userinfo
+    path: /bff/session
     allowed_claims: ["sub", "preferred_username", "email", "groups"]
     default_view: ["sub", "preferred_username"]
   login:
-    path: /auth/login
+    path: /bff/login
 # --- Trust for the BFF OIDC back-channel -------------------------------------------------------
 # Binds the BFF back-channel — the calls the oidc block above makes to Keycloak — to the trust
 # profile the JWKS issuers already name through jwks.tls_profile. Last block of the document on

@@ -75,7 +75,7 @@ import org.junit.jupiter.api.Test;
 class BffSessionInstanceIsolationIT {
 
     /** The session route both instances serve, relaying a bearer to the echo upstream. */
-    private static final String MEDIATED_PATH = "/bff-session/get";
+    private static final String MEDIATED_PATH = "/app/get";
 
     /** The instance the session under test is created on. */
     private static final String HOME_ORIGIN = BffKeycloakLoginFlow.GATEWAY_ORIGIN;

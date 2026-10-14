@@ -96,7 +96,7 @@ import org.junit.jupiter.api.Test;
 class BffRefreshTransientFailureIT {
 
     /** The plain session route, relaying a bearer to the echo upstream. */
-    private static final String MEDIATED_PATH = "/bff-session/get";
+    private static final String MEDIATED_PATH = "/app/get";
 
     /** WARN — a refresh failed before the identity provider processed it; the session is kept. */
     private static final String REFRESH_DEFERRED_RECORD = "ApiSheriff-127";

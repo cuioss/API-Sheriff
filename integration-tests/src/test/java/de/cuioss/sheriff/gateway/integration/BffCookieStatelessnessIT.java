@@ -74,10 +74,10 @@ class BffCookieStatelessnessIT {
     private static final String SESSION_COOKIE = "__Host-sheriff-session";
 
     /** The require:session route mediating a bearer to the go-httpbin echo upstream. */
-    private static final String SESSION_ROUTE = "/bff-session/get";
+    private static final String SESSION_ROUTE = "/app/get";
 
     /** The reserved session/user-info fold, whose curated view carries the session's identity. */
-    private static final String USER_INFO = "/auth/userinfo";
+    private static final String USER_INFO = "/bff/session";
 
     @Test
     @DisplayName("a session sealed by one instance is served by a second instance sharing only the key")

@@ -135,7 +135,7 @@ class BffClientKeyWiringTest {
     private static final String SIGNING_KEYS_IN_CONTAINER = "/app/signing-keys";
 
     /** The path the gateway publishes its client key at when {@code jwks_path} is not declared. */
-    private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+    private static final String DEFAULT_JWKS_PATH = "/bff/jwks";
 
     private static final String CLIENT_SECRET_VARIABLE = "OIDC_CLIENT_SECRET";
     private static final String DPOP_KEY_VARIABLE = "OIDC_DPOP_KEY_FILE";

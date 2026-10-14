@@ -92,7 +92,7 @@ import org.junit.jupiter.api.Test;
  * <ul>
  *   <li>The container is named and aliased {@value #NETWORK_ALIAS} on the compose network. Keycloak
  *       fetches the generated client key from
- *       {@code https://sheriff-generated-keys:8443/auth/client-keys}, the {@code jwks.url} of the
+ *       {@code https://sheriff-generated-keys:8443/bff/client-keys}, the {@code jwks.url} of the
  *       realm client {@value #CLIENT_ID}, and verifies the name it dials — so the application listener
  *       presents {@value #CERTIFICATE}, whose subject alternative names cover that alias, and the
  *       Keycloak service trusts that certificate. {@code BffClientKeyWiringTest} guards all three
@@ -113,9 +113,9 @@ import org.junit.jupiter.api.Test;
  * <ol>
  *   <li>The boot log carries the generated-key record ({@value #KEY_GENERATED_RECORD}) once per
  *       purpose, and no member of the published key.</li>
- *   <li>{@code GET /auth/client-keys} answers one EC P-256 key with {@code use: sig},
+ *   <li>{@code GET /bff/client-keys} answers one EC P-256 key with {@code use: sig},
  *       {@code alg: ES256} and a {@code kid} equal to the thumbprint this test computes from the
- *       published coordinates; {@code /auth/jwks}, the default path the descriptor moved away from, is
+ *       published coordinates; {@code /bff/jwks}, the default path the descriptor moved away from, is
  *       not served.</li>
  *   <li>A login completes. No key is registered at Keycloak, so this is the proof that Keycloak
  *       fetched the generated key from the gateway over TLS.</li>
@@ -156,7 +156,7 @@ class BffGeneratedKeysIT {
     static final String CLIENT_ID = "generated-key-client";
 
     /** The JWKS path the derived descriptor declares; the path of the realm client's {@code jwks.url}. */
-    static final String JWKS_PATH = "/auth/client-keys";
+    static final String JWKS_PATH = "/bff/client-keys";
 
     /** The server certificate the application listener presents; its SAN list covers the alias. */
     static final String CERTIFICATE = "generated-keys-gateway.crt";

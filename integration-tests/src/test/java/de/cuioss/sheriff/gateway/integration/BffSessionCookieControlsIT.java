@@ -84,7 +84,7 @@ class BffSessionCookieControlsIT {
     private static final String SESSION_COOKIE = "__Host-sheriff-session";
 
     /** A {@code require: session} route of the primary instance. */
-    private static final String SESSION_ROUTE = "/bff-session/get";
+    private static final String SESSION_ROUTE = "/app/get";
 
     /**
      * The route whose upstream, go-httpbin's {@code /response-headers}, answers every query parameter

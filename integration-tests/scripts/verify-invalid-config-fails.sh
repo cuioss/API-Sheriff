@@ -611,12 +611,12 @@ oidc:
   client_id: integration-client
   client_secret: ${OIDC_CLIENT_SECRET}
   scopes: ["openid", "profile", "email"]
-  redirect_uri: https://localhost:10443/auth/callback
+  redirect_uri: https://localhost:10443/bff/callback
   logout:
-    path: /auth/logout
-    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    path: /bff/logout
+    post_logout_redirect_uri: https://localhost:10443/bff/logout/return
     final_redirect: /
-    backchannel_path: /auth/backchannel
+    backchannel_path: /bff/backchannel
   session:
     mode: server
     store: memory
@@ -624,7 +624,7 @@ oidc:
     csrf:
       trusted_origins: ["https://localhost:10443"]
   login:
-    path: /auth/login
+    path: /bff/login
 YAML
 cat > "${FALLBACK_ON_SESSION_DIR}/topology.properties" <<'PROPS'
 APP_UPSTREAM=http://go-httpbin:8080/anything
@@ -735,12 +735,12 @@ oidc:
   client_authentication:
     key_file: /app/sheriff-config/client-key.pem
   scopes: ["openid", "profile", "email"]
-  redirect_uri: https://localhost:10443/auth/callback
+  redirect_uri: https://localhost:10443/bff/callback
   logout:
-    path: /auth/logout
-    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    path: /bff/logout
+    post_logout_redirect_uri: https://localhost:10443/bff/logout/return
     final_redirect: /
-    backchannel_path: /auth/backchannel
+    backchannel_path: /bff/backchannel
   session:
     mode: server
     store: memory
@@ -748,7 +748,7 @@ oidc:
     csrf:
       trusted_origins: ["https://localhost:10443"]
   login:
-    path: /auth/login
+    path: /bff/login
 YAML
 cat > "${SECRET_AND_KEY_FILE_DIR}/topology.properties" <<'PROPS'
 APP_UPSTREAM=http://go-httpbin:8080/anything
@@ -805,12 +805,12 @@ oidc:
   client_authentication:
     key_file: /app/sheriff-config/client-key.pem
   scopes: ["openid", "profile", "email"]
-  redirect_uri: https://localhost:10443/auth/callback
+  redirect_uri: https://localhost:10443/bff/callback
   logout:
-    path: /auth/logout
-    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    path: /bff/logout
+    post_logout_redirect_uri: https://localhost:10443/bff/logout/return
     final_redirect: /
-    backchannel_path: /auth/backchannel
+    backchannel_path: /bff/backchannel
   session:
     mode: server
     store: memory
@@ -818,7 +818,7 @@ oidc:
     csrf:
       trusted_origins: ["https://localhost:10443"]
   login:
-    path: /auth/login
+    path: /bff/login
 YAML
 cat > "${KEY_FILE_WITHOUT_PEM_DIR}/client-key.pem" <<'PEM'
 this file holds no PEM block
@@ -874,12 +874,12 @@ oidc:
   client_id: integration-client
   client_secret: ${OIDC_CLIENT_SECRET}
   scopes: ["openid", "profile", "email"]
-  redirect_uri: https://localhost:10443/auth/callback
+  redirect_uri: https://localhost:10443/bff/callback
   logout:
-    path: /auth/logout
-    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    path: /bff/logout
+    post_logout_redirect_uri: https://localhost:10443/bff/logout/return
     final_redirect: /
-    backchannel_path: /auth/backchannel
+    backchannel_path: /bff/backchannel
   session:
     mode: server
     store: memory
@@ -888,7 +888,7 @@ oidc:
     csrf:
       trusted_origins: ["https://localhost:10443"]
   login:
-    path: /auth/login
+    path: /bff/login
 YAML
 cat > "${IDLE_ABOVE_TTL_DIR}/topology.properties" <<'PROPS'
 APP_UPSTREAM=http://go-httpbin:8080/anything

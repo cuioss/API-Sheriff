@@ -432,7 +432,7 @@ class NoCertificatePlainHttpOptInIT {
         private static final String ECHO_PROBE = "X-Sheriff-Echo-Probe";
 
         /** The login path the shared oidc block carves out on the {@code localhost} oidc host. */
-        private static final String LOGIN_PATH = "/auth/login";
+        private static final String LOGIN_PATH = "/bff/login";
 
         private static final String BINDING_COOKIE = "__Host-sheriff-binding";
 
@@ -519,7 +519,7 @@ class NoCertificatePlainHttpOptInIT {
          * Whether a {@code Set-Cookie} header carries an attribute as a COMPLETE attribute token.
          * <p>
          * <strong>A substring test asserts less than these four messages claim, in both directions.</strong>
-         * {@code contains("Path=/")} is satisfied by {@code Path=/auth} — a narrower path than the
+         * {@code contains("Path=/")} is satisfied by {@code Path=/bff} — a narrower path than the
          * {@code __Host-} prefix permits at all — so the assertion would pass on precisely the cookie
          * whose scoping had been weakened. And {@code Secure} or {@code HttpOnly} appearing anywhere
          * in the opaque cookie VALUE satisfies the test without the gateway having emitted either
