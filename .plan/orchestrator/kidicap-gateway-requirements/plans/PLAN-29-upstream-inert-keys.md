@@ -43,13 +43,17 @@ Promoted lesson `2026-10-13-06-003` carries the documentation side.
 3. **Carry out the retry decision**, the same way. If wired: `max_attempts` replaces the fixed
    `maxRetries(2)` and `idempotent_only` governs what `DispatchStage.allowsRetryAfter` already vets;
    state the bounds `ConfigValidator` enforces.
-4. **Plan DP-6 with the timeout half.** The quality report says the 30 s guard timeout strands a pooled
-   upstream connection when it fires. Confirm or refute it against the code first — after `PLAN-30`
-   lands, against the connection lifecycle `PLAN-30` chose for gateway-initiated resets, since both
-   concern the same abort sites and DP-6 must not get a second, different mechanism. If it holds and the
-   timeout decision is "wire", fix it here; if it holds and the decision is "remove", record it as still
-   open with the reason. ⛔ If the fix reaches beyond the dispatch guard and the upstream client, STOP
-   and file a finding to the epic inbox.
+4. **Close DP-6 in the record — the defect itself is already fixed.** ⚠ Re-scoped 2026-10-14 (cleanup at
+   `5490144f`): the quality report's DP-6 (the 30 s guard timeout strands a pooled upstream connection)
+   no longer holds. Since #386 (`84afdba0`) `DispatchStage.awaitDispatch` calls `attempt.abandon()` on any
+   exit other than handing the response back, the guard timeout's interrupt included, which resets the
+   request in flight and releases a paused response; since #448 (PLAN-30, ADR-0066 Amendment A1) the
+   default HTTP/1.1 client closes that connection abortively. Do not build a second mechanism. What
+   remains: mark DP-6 resolved in `doc/quality-report/code-correctness.adoc` (its entry and its location
+   `DispatchStage.java:246-266` are stale) and `doc/quality-report/README.adoc`, naming #386 and #448. If
+   wiring a timeout key changes the guard's timeout, keep the abandon path covered by a test. ⛔ If the
+   work reaches beyond the dispatch guard and the upstream client, STOP and file a finding to the epic
+   inbox.
 5. **Every wired key gets a test that goes red when the key is deleted** (CLAUDE.md: a configuration key
    that parses is not a configuration key that acts). A wired timeout is asserted against an upstream that
    stalls; a wired attempt count against an upstream that fails a counted number of times. Add the rows
@@ -70,19 +74,23 @@ Split guard: 6 deliverables — within the operator-authorized 12.
 ## Claim Labels
 
 - OBSERVED: `connectTimeoutMs`, `readTimeoutMs`, `maxAttempts` and `idempotentOnly` occur under `api-sheriff/src/main` only in `UpstreamConfig` (record components and Javadoc); nothing reads them — read by searching `api-sheriff/src/main` for the four names at `128fd07e`
-  - verdict: corroborated | checked_at: 128fd07e | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: search of api-sheriff/src/main at 128fd07e: the four names occur only in UpstreamConfig (lines 40-70), no reader
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: under api-sheriff/src/main the four names occur only in UpstreamConfig.java:40-70; nothing reads them
 - OBSERVED: the dispatch guard applies `withTimeout().duration(30, SECONDS)` and, for a route with retry enabled, `withRetry().maxRetries(2).delay(100, MILLIS).whenException(DispatchStage::allowsRetryAfter)` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § the guard builder (lines 2568 to 2571), at `128fd07e`
-  - verdict: corroborated | checked_at: 128fd07e | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: GatewayEdgeRoute:2568 withTimeout().duration(30, SECONDS); 2570-2571 withRetry().maxRetries(2).delay(100, MILLIS).whenException(DispatchStage::allowsRetryAfter)
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.guardFor :2657 withTimeout 30 s; :2659-2660 maxRetries(2).delay(100 ms).whenException(DispatchStage::allowsRetryAfter) (moved by #431/#448)
 - OBSERVED: only `retry.enabled` acts, through `RouteTableBuilder.resolveRetryEnabled` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java` § `resolveRetryEnabled`, at `128fd07e`
-  - verdict: corroborated | checked_at: 128fd07e | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: RouteTableBuilder:239 calls resolveRetryEnabled, declared at 371
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RouteTableBuilder:239 calls resolveRetryEnabled, declared :371
 - OBSERVED: the schema declares all four keys — read at `api-sheriff/src/main/resources/schema/endpoint.schema.json` § `upstream` (lines 211 to 219), at `128fd07e`
-  - verdict: corroborated | checked_at: 128fd07e | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: endpoint.schema.json:211-219 declares connect_timeout_ms, read_timeout_ms, max_attempts, idempotent_only
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: endpoint.schema.json:211-219 declares connect_timeout_ms, read_timeout_ms, retry.max_attempts, retry.idempotent_only
 - OBSERVED: `doc/architecture.adoc` names `connect_timeout_ms` / `read_timeout_ms` as the cause of `504` in two rows; `doc/user/endpoint-routes.adoc` marks the keys inert in its example; `doc/variants/01-base-gateway.adoc` carries `read_timeout_ms: 5000` unmarked — read at those files at `128fd07e`
-  - verdict: corroborated | checked_at: 128fd07e | by: kidicap-gateway-requirements/analyze | rescoped: n/a | evidence: architecture.adoc:1247 and 1349 name the two timeout keys as the 504 cause; endpoint-routes.adoc:136-140 marks the keys inert; variants/01-base-gateway.adoc:115 carries read_timeout_ms: 5000 unmarked
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: architecture.adoc:1318 (504) and :1420 (DEADLINE_EXCEEDED) name the timeout keys; endpoint-routes.adoc:136-137 INERT; variants/01-base-gateway.adoc:115 read_timeout_ms 5000 with no note
 - HYPOTHESIS: the upstream client is built from a bare `HttpClientOptions` with no connect and no idle timeout, only the egress-TLS settings — the sender's statement; the orchestrator saw the bare options object and did not read the whole method. Confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § `clientFor` (verify-at-outline)
+  - verdict: contradicted | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: no connect or idle timeout still holds, but since #448 the default client also sets SO_LINGER 0 (GatewayEdgeRoute.clientFor:2378-2382), not only egress-TLS settings; spec D4 rewritten
 - HYPOTHESIS: the 30 s guard timeout strands a pooled upstream connection when it fires (DP-6) — taken from the quality report, not re-read. Confirm/refute at `doc/quality-report/code-correctness.adoc` § DP-6 and the dispatch path it cites (verify-at-outline)
+  - verdict: contradicted | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: DP-6 fixed by #386 (84afdba0): DispatchStage.awaitDispatch:379-386 calls attempt.abandon() on any non-handed-back exit incl. the guard timeout; #448 closes abortively; D4 re-scoped to correcting the stale record
 - HYPOTHESIS: no descriptor in the repository's own stacks relies on any of the four keys, so removal breaks no suite — not checked. Confirm/refute by searching `integration-tests/src/main/docker/`, `benchmarks/` and `deployment/` for the four keys (verify-at-outline)
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: none of the four keys in integration-tests, benchmarks, deployment or demo-client descriptors; only ConfigLoaderTest:341 and ConfigValidatorTest:1030 (surface entry added)
 - Verify-first clause: settle deliverable 1 before writing code. The two decisions determine which of deliverables 2 to 5 exist in which form, and the surface below is declared for both outcomes.
+  - verdict: unverifiable | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: process rule; the operator decision is still to be taken
 
 ## Expected Surface
 
@@ -94,6 +102,9 @@ Split guard: 6 deliverables — within the operator-authorized 12.
 - OBSERVED: `doc/architecture.adoc`, `doc/configuration.adoc`, `doc/user/endpoint-routes.adoc`, `doc/variants/01-base-gateway.adoc`
 - OBSERVED: `doc/adr/` — one new record or an amendment to ADR-0064, and `doc/adr/0008-data-plane-transport.adoc`
 - OBSERVED: `doc/quality-report/code-correctness.adoc`, `doc/quality-report/README.adoc`, `doc/development/declared-limit-assertion-coverage.adoc`
+- OBSERVED (added 2026-10-14, cleanup at `5490144f`): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidatorTest.java` — line 1030 builds `UpstreamConfig` with `readTimeoutMs(2500)`, so removing that key breaks its compilation
+- OBSERVED (added 2026-10-14): `doc/adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc` — names the four keys (lines 9, 103 to 106)
+- OBSERVED (added 2026-10-14): `doc/adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc` — Amendment A1 is the connection lifecycle deliverable 4 reads against
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigModelReflection.java` — if a nested record goes away with a removed key (verify-at-outline)
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — bounds for a wired key; the path is the orchestrator's guess (verify-at-outline)
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/DispatchStage.java` — if `idempotent_only` is wired (verify-at-outline)

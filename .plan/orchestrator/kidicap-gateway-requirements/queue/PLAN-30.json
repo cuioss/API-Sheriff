@@ -5,6 +5,6 @@
   "status": "shipped",
   "plan_marshall_plan_id": "plan-30-early-answer-upstream-port-exhaustion",
   "pr": "#448",
-  "landing": "",
+  "landing": "landings/PLAN-30.md",
   "seq": 18
 }

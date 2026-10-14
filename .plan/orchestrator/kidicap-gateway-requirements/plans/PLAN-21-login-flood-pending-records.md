@@ -18,6 +18,11 @@ against unbounded memory growth, but one that hands an attacker a different effe
 login form, whose callback then fails in a way that looks like an IdP or cookie problem. This plan makes a
 flood cost the flooder rather than other users.
 
+> ⚠ **Re-grounded 2026-10-14 (cleanup at `5490144f`):** #450 (`eff0724c`) moved the reserved BFF paths
+> from `/auth/*` to `/bff/*`. Read every `/auth/login` and `/auth/callback` below as the default
+> `/bff/login` and `/bff/callback` (`BffPendingLoginBoundIT` already uses them). `rate_limit` is declared in
+> `endpoint.schema.json` (line 287 at `5490144f`), not in `gateway.schema.json`.
+
 ## Source
 
 Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the downstream deployment
@@ -75,19 +80,19 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 ## Claim Labels
 
 - HYPOTHESIS: `PendingAuthorizationStore.InMemory` bounds at `DEFAULT_MAX_PENDING = 10_000` and evicts the oldest beyond capacity — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/` § pending-authorization store and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § store construction (verify-at-outline)
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): BffRuntimeProducer:252 DEFAULT_MAX_PENDING=10_000 and :443 InMemory(DEFAULT_MAX_PENDING)
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.java:281 DEFAULT_MAX_PENDING = 10_000; :528 new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING)
 - HYPOTHESIS: eviction is global rather than per-client, so a flood from one client evicts another client's live record — confirm/refute at the same store's eviction method (verify-at-outline)
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): InMemory.store evicts oldest beyond capacity on one global LinkedHashMap; no per-client partition
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java:93-94 put then evictOldestBeyondCapacity (:115) on one global LinkedHashMap (:75); no per-client partition
 - HYPOTHESIS: `rate_limit` is reserved in the schema with no reader — confirm/refute at `api-sheriff/src/main/resources/schema/gateway.schema.json` § `rate_limit` and a grep for its config accessor (verify-at-outline)
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): RateLimitConfig accepted-and-ignored; referenced only by RouteConfig and ConfigModelReflection
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: rate_limit reserved and unread: RateLimitConfig referenced only by RouteConfig:69 and ConfigModelReflection:112; key is in endpoint.schema.json:287, not gateway.schema.json (spec note added)
 - OBSERVED: `LoginFlow.initiate` creates the pending record and validates the return URL's origin — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): LoginFlow.initiate:129-144 same-origin-validates then creates and stores the record; the PAR push now runs first at :132
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate :128; PAR authorize :131, same-origin check :133, create :137, store :139
 - OBSERVED (cleanup re-grounding, 3abc370): the binding cookie is minted from the newly created record's own id — `PendingAuthorizationRecord.create(...)` → `pendingStore.store(pending)` → `bindingCookieCodec.toSetCookieHeader(pending.id())` — so no inbound binding identity exists at record-creation time — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): LoginFlow:138-142 create then store then toSetCookieHeader(pending.id()); PAR added a push but no reorder of cookie minting
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow:137 create, :139 pendingStore.store, :141 toSetCookieHeader(pending.id()); cookie minted from the new record
 - OBSERVED: `PendingAuthorizationStore.InMemory` keys one shared insertion-ordered map on `pending.id()` with no per-client partition, and `evictOldestBeyondCapacity` walks that single map — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` § `InMemory`, `evictOldestBeyondCapacity`
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): PendingAuthorizationStore:75-121 keys one LinkedHashMap on pending.id(); eviction walks that single keySet
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore:72-121 one insertion-ordered map keyed on pending.id(); eviction walks that map
 - Verify-first clause (SETTLED and absorbed 2026-09-21): the clause's own "if not" branch fired — a per-binding cap keyed on an existing cookie is not viable, and deliverable 1 now carries the three re-scoped options. What remains open for outline is only WHICH option, and the cost of option (a)'s pre-login cookie on the unauthenticated path.
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: unchanged since 35f2bb37 (file not in the 35f2bb37..6788bdae diff): clause holds at HEAD: the cookie is minted from the new record (LoginFlow:142) so no inbound identity exists at creation time; the earlier contradicted verdict recorded the clause premise failing - the re-scope stands and the clause itself is now true
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: no inbound binding identity at creation (LoginFlow:141); no V02-06 per-source substrate in api-sheriff/src/main
 
 ## Expected Surface
 

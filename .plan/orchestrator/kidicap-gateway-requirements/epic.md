@@ -50,14 +50,18 @@ decision.
   Defects). The native integration job took about 20 minutes with its one new suite.
 - PLAN-28 — shipped #437. Ran alone. Three fixes, three records, two diagnoses that ended without a
   fix (one of them became PLAN-30).
-- **PLAN-30 (staged 2026-10-13, WS-02) — early upstream answers exhaust local ports and open the
-  breaker.** A defect introduced by #431, with an availability consequence. Runs NEXT, before PLAN-29:
-  both change `GatewayEdgeRoute` and `DispatchStage`. Carries one design decision for the operator at
-  outline (drain versus reset on an HTTP/1.1 upstream). Check the sibling epic's ledger for a plan on
-  the same path before its outline.
-- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** Sequenced AFTER PLAN-30. Its
-  line references into `GatewayEdgeRoute` are stale since #431: run `cleanup` before emitting it. Carries
-  two wire-or-remove decisions for the operator at outline.
+- PLAN-30 — shipped #448. Ran beside the sibling's `PLAN-V02-12` over a 3-path overlap (operator's
+  call); nothing collided. Merged while this epic recorded a "must not merge" hold the plan never saw
+  (lesson `2026-10-14-13-003`). The upload benchmarks no longer exercise the early-answer path.
+- **PLAN-32 (staged and emitted 2026-10-14 by the other orchestrator session, WS-02, RUNNING) — the
+  `Http2EarlyResponseResetIT` timeouts since #448** (#455). Top priority; touches the early-answer path in
+  `GatewayEdgeRoute` and `DispatchStage`, so PLAN-29 waits for it.
+- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** HELD by the cross-epic hold (Watches) until `PLAN-V02-25` lands; then re-ground and emit. Its line references into
+  `GatewayEdgeRoute` are stale since #431 and #448: run `cleanup` before emitting it. Its D4 (DP-6) must
+  be read against #448's abortive close and guard-keyed breaker. Carries two wire-or-remove decisions for
+  the operator at outline.
+- **PLAN-31 (staged 2026-10-14 by the other orchestrator session, WS-01) — the exact JWKS publish rule**
+  via token-sheriff 0.9.7's `getKeyIds()`. Not yet re-grounded by this session.
 - PLAN-25 — shipped #408. The pairing note below ("pairs with anything") held for files and failed for
   the CI job's wall-clock.
 - **Flow is sequential in practice.** Every staged pair overlaps on `doc/configuration.adoc`, the schemas
@@ -120,6 +124,23 @@ decision.
 
 ## Decisions
 
+- 2026-10-14 — **PLAN-30 shipped** as PR #448 / b7b98699 (gateway-closed HTTP/1.1 upstream connections
+  are closed abortively, `SO_LINGER 0` on the default upstream client, ADR-0066 Amendment A1; the
+  gateway's own upstream reset no longer logs at ERROR and does not count against the breaker; the
+  upload benchmarks' backend now reads the body; 7/7 deliverables; 16h38m wall, 6.5M tokens). Landing
+  record: `landings/PLAN-30.md`; `landing-check` reports it complete. Corroborated against
+  `ci pr view 448`, the merged diff (13 files), the client option at `GatewayEdgeRoute.java:2382` and
+  ADR-0066 A1. Post-merge benchmark (run 38565585855) green, but it no longer covers the early-answer
+  path; the fix's load evidence is one local run (51,198 `uploadSmall` iterations, error rate 0).
+  - **Merged over this epic's own hold.** #453 recorded "must not merge until fixed" for an intermittent
+    `Http2EarlyResponseResetIT` hang; the plan merged an hour later on a green merge-queue run and filed
+    #455. The hold lived only in `epic.md`. Lesson `2026-10-14-13-003`.
+  - **Drain (6 messages, 2026-10-14):** `-002` promoted as `2026-10-14-13-001` (phase-3-outline: operator
+    answers not written back into the outline); `-003` promoted as `2026-10-14-13-002` (api-sheriff: a
+    catch-all exception drop justified for one protocol path); `-001` folded into `2026-10-12-16-001`,
+    `-004` and `-005` into `2026-10-13-06-004` (recurrences); `-006` reconciled.
+  - **Not emitted:** the operator asked for analyze, then rebase and cleanup. PLAN-29 needs `cleanup`
+    first.
 - 2026-10-13 — **PLAN-28 shipped** as PR #437 / 82f2d7d8 (`runRetry` guarded so the JWKS retry sequence
   survives an unanticipated throwable; WARN 137 `JWKS_REFRESH_FAILED`; the refresh window and grace
   deadline moved to a monotonic clock, ADR-0063 Amendment A1; documentation rows plus a contract test
@@ -410,19 +431,24 @@ decision.
 
 ## Open Defects
 
-- **PLAN-30's PR #448 fails `Http2EarlyResponseResetIT` in CI — TOP PRIORITY. #448 MERGED UNFIXED on 2026-10-14
-  (`b7b98699`, head `bc002caf`; merge-group and push IT runs passed, so 2 failures in 5 runs on that code).
-  Fix staged and emitted as PLAN-32.** Original observation:
-  (observed 2026-10-14 by the orchestrator). Integration Tests run 38538582322 needed three attempts:
-  attempts 1 and 2 failed in `earlyAnsweredUploadsStayAnsweredWithoutGoAway` with a
-  `TimeoutException` at line 144 (a batch of 10 uploads did not settle within 20 s; 289 of 290 ITs
-  passed), attempt 3 passed. On `main` the same test passed in every push and merge-group run since
-  #431. #448's gateway change is `setSoLinger(0)` on the upstream `HttpClient` in
-  `GatewayEdgeRoute` (`b93aa3a6`), which makes **every** upstream close abortive, not only the
-  early-answer case; the early-answer fixture still answers before reading the body, so the fixture
-  is not the cause. Not yet reproduced: the plan must reproduce it (run the IT repeatedly on the
-  branch against `main`), fix the cause, and show the test green over several consecutive runs before
-  merging. A third-attempt green is not evidence. — source: run 38538582322 attempts 1-2
+- **`Http2EarlyResponseResetIT.earlyAnsweredUploadsStayAnsweredWithoutGoAway` hangs intermittently since
+  #448 — now on `main`, tracked as #455. Fix staged and emitted by the other orchestrator session as
+  PLAN-32 (`early-answer-it-timeouts`, running): reproduce, fix narrowly, show 10 consecutive green
+  runs.** Integration Tests run 38538582322 at bc002caf:
+  attempts 1 and 2 timed out at the batch await (line 144, a batch of 10 uploads not settled within
+  20 s), attempt 3 passed; 2 of 4 attempts in all. `main` had been green on it since #431. #448 makes
+  **every** close of the default HTTP/1.1 upstream client abortive (`setSoLinger(0)`), not only the
+  early-answer case; the plan states that change is neither attributed nor cleared. #448 merged on a
+  green merge-queue run over this epic's "must not merge" hold (lesson `2026-10-14-13-003`). Not
+  reproduced locally. The merge-group and push IT runs on that code passed, so 2 failures in 5 runs. It
+  guards the early-answer path, so re-running until green can hide a regression. — source: run 38538582322, `landings/PLAN-30.md`
+- **The circuit breaker's identity changed in #448 without an ADR.** `GatewayEdgeRoute.guardFor` no
+  longer registers it under a SmallRye name (the JVM-global registry rejected a reused upstream port
+  once the abortive close freed TIME_WAIT); the guard, keyed `scheme://host:port:h2=…:retry=…`, is the
+  identity now. The operator deferred the ADR; the draft is git-ignored at
+  `.plan/temp/adr-propose-plan-30-breaker-identity-draft.adoc` in the main checkout. No plan owns it.
+  Stale breaker-name comments and other advisory leftovers are listed in `landings/PLAN-30.md` § Residue.
+  — source: `landings/PLAN-30.md`
 
 > ↪ Relocated to `settled.md` § "PLAN-15 abandonment retraction" — the claim was retracted and PLAN-15 has since shipped
 
@@ -432,12 +458,6 @@ decision.
   "HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS"**, which holds both sightings (#431's main push run and
   PLAN-28's CI-only 502), the owner (`PLAN-V02-06`, or a dedicated fix when it recurs) and the
   reproduction recipe. Report new sightings there, not here. — consolidated 2026-10-13
-- **Early upstream answers on an HTTP/1.1 upstream exhaust the gateway's local ports and open the
-  circuit breaker.** Introduced by #431: the gateway resets the upstream request, which closes the
-  connection and holds a local port for 60 s. Measured once, locally: past about 470 early answers per
-  second the breaker opens and the upstream is cut off for up to a minute (40% errors). CI's benchmark
-  is green, by the sender's reading only because its runner is slower. Staged as PLAN-30. — source:
-  inbox `plan-28-jwks-refresh-follow-ups-001.md`, `landings/PLAN-28.md`
 - **Documentation left open by PLAN-28** (the sender's statement, not re-read): two stale
   `token_validation` mentions in `doc/configuration.adoc` (around line 2213 and the YAML example comment
   near line 380); the `IssuerConfig.Jwks` Javadoc repeats the three refresh ranges unguarded; the
@@ -492,12 +512,7 @@ decision.
   sonar-roundtrip). The merge rests on CI fully green at `e0e9fcf` (native ITs included) plus both review
   bots on that commit with no open threads. Not a code defect — a verification-currency gap to weigh if
   something surfaces in that surface later. — source: landing `landings/PLAN-15.md`
-> ↪ **RESOLVED 2026-09-24 by PLAN-18** (#346 / f6067588): names are normalised once at the route-compile
-> seam with `toLowerCase(Locale.ROOT)`, `present: false` requires absence and composes under AND, and the
-> boot validator now judges matchers exactly as the runtime evaluates them (ADR-0053, ADR-0054). Record:
-> `landings/PLAN-18.md`. Was: names compared case-sensitively against a lower-cased request map, and
-> `present: false` constrained nothing while the boot disjointness check treated it as distinguishing
-> (source: inbox `kidicap-gateway-downstream-004.md`).
+> ↪ Relocated to `settled.md` § "Header-matcher defects, resolved by PLAN-18" — resolved 2026-09-24 by PLAN-18 (#346)
 
 - **No per-request access log exists.** The gateway ships events and metrics and relies on the Quarkus
   HTTP access log, but no `quarkus.http.access-log.*` setting exists anywhere in the repository —
@@ -523,24 +538,7 @@ decision.
   staged plan touches that surface — fold into whichever plan next enters the relay. — source:
   `landings/PLAN-22.md`
 
-> ↪ **RESOLVED 2026-10-02 by PR #367** (`fix(adr): resolve ordinal 0053 collision and add contract
-> guards`), independently of this epic: `doc/adr/` now carries ONE 0053, the header-matcher ADR moved to
-> 0056, and the PR added contract guards against a repeat. **PLAN-20's deliverable 9 (the renumber) is
-> therefore RETIRED** — it would re-do settled work. What is NOT fixed is the blind gate: `manage-adr
-> scan` still omits the duplicate population on executor 0.1.1826, so confirm the corpus by listing
-> `doc/adr/`, never by that payload. Was:
-
-- **`main` carries TWO ADR-0053 files** — `0053-A_header_matchers_name_is_normalised…` (#346, PLAN-18) and
-  `0053-Portal_templates_render_on_a_standalone_Qute_engine…` (#348, which renamed it from 0050 after #341
-  had taken 0050; that file is the portal ADR `landings/PLAN-16.md` recorded as ADR-0050). So the ordinal
-  has now collided **twice** under concurrent plans, and the second collision is live on `main`. One file
-  needs renumbering and the allocator needs to stop handing one ordinal to two plans — repository-source
-  work, so a plan's or an operator's, not the orchestrator's. **FOLDED 2026-09-24 into PLAN-20 as
-  deliverable 9** (it already authors an ADR and already declares `doc/adr/`, so the fold added no file
-  surface); the entry stays open until PLAN-20 lands. PLAN-22's pre-merge duplicate gate was waived over
-  this and ALSO returned no verdict, because `manage-adr scan` omits the duplicate population from its
-  success payload (plan-marshall lesson `2026-09-24-07-001`) — so confirm the corpus by listing
-  `doc/adr/`, never by that payload. — observed 2026-09-24 by the orchestrator, not reported by any plan
+> ↪ Relocated to `settled.md` § "Duplicate ADR-0053, resolved by #367" — resolved 2026-10-02 by #367; the manage-adr scan blind-gate note moved with it
 - **`source_id` is a stored PATH, resolved at finalize time, so a ledger relocation orphans every
   in-flight plan's outbox.** PLAN-23 shipped #369 with `emit-landing` reporting *not orchestrated, no
   landing emitted*: its `source_id` was persisted on 2026-09-25 as
@@ -556,28 +554,14 @@ decision.
   `post_responses` transmitted verbatim as a public reply. Harmless; delete by hand on GitHub if wanted.
   Mechanism filed as plan-marshall lesson `2026-09-24-05-001`. — source: inbox
   `route-header-matcher-defects-003.md`
-> ↪ **RESOLVED 2026-09-23 by PLAN-17** (#345 / c1b09c7): the allowance is derived from the `jwks.url`
-> host on absent/empty, and blank entries, `host:port` entries and a hostless `jwks.url` now abort
-> startup with `CONFIG_INVALID`. Record: `landings/PLAN-17.md`. Was: `allowed_egress_hosts` duplicates the
-> JWKS URL host — a blank entry boots and fails later, a `host:port` entry is silently inert (source:
-> inbox `kidicap-gateway-downstream-003.md`).
+> ↪ Relocated to `settled.md` § "Egress-allowance duplication, resolved by PLAN-17" — resolved 2026-09-23 by PLAN-17 (#345)
 
 - The merge-lock release reported the lock **"already free"** during PLAN-17's finalize although that plan
   had acquired it. The merge was unaffected, but the release path did not observe its own claim, so mutual
   exclusion is unestablished for that window and the report reads as success. Plugin-side; filed as
   plan-marshall lesson `2026-09-23-05-003`. — source: operator report, PLAN-17 landing
 
-> ↪ **RESOLVED 2026-10-06 by plan-marshall 0.1.1855**: `corpus cross-check` now excludes the sentinel
-> before counting (`excluded_sentinel_plan_count: 1`) and reports `candidate_comparison_determinate: true`
-> for this epic, so the `next` gate no longer fails closed on it and no operator override is needed. Was:
-
-- `orchestrator corpus cross-check` (plan-marshall 0.1.1728) counts `.plan/local/plans/NO_PLAN` — the
-  plan-less operations sentinel (`status.json` `metadata.sentinel: true`, no `references.json`) — as a
-  live plan with no comparable surface. That sets `candidate_comparison_determinate: false`
-  (`live_plan indeterminate: 1`) for EVERY candidate, so the `next` gate fails closed permanently in this
-  repository. Not a collision; a plugin defect (the live-plan scan should exclude sentinels). Until fixed,
-  each emit needs a recorded operator override naming the sentinel as the sole indeterminate candidate.
-  Plugin-side fix, outside this epic. — observed 2026-09-22 after PLAN-14's landing
+> ↪ Relocated to `settled.md` § "NO_PLAN sentinel fails the next gate, resolved in plan-marshall 0.1.1855" — resolved 2026-10-06 by plan-marshall 0.1.1855
 
 - kidicap-gateway still links to the removed `doc/api-sheriff-aenderungen.adoc` (~30 references in
   `README.md`, `CLAUDE.md`, `doc/**`, incl. `#as-N` anchors). Not API Sheriff work, and not owned by any
