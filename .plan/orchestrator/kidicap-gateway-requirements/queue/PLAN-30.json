@@ -2,9 +2,9 @@
   "id": "PLAN-30",
   "slug": "early-answer-upstream-port-exhaustion",
   "workstream": "WS-02",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-30-early-answer-upstream-port-exhaustion",
-  "pr": "",
+  "pr": "#448",
   "landing": "",
   "seq": 18
 }
