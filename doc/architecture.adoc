@@ -414,6 +414,17 @@ reaches it. Only when HTTP/2 flow control holds the final frame back does the re
 frame has been written, since a reset written earlier would discard it. A stream the client has ended
 in the meantime is not reset.
 
+*On an HTTP/1.1 upstream, the reset of step 1 costs the connection, and the gateway closes it
+abortively.* HTTP/1.1 cannot cancel one message, so resetting the upstream request closes the upstream
+connection instead of returning it to the pool, and the next request to that upstream opens a new
+one. The gateway's HTTP/1.1 upstream client closes its connections with `SO_LINGER 0`: the close is a
+TCP reset, and the gateway's local port is free at once instead of being held in `TIME_WAIT` for a
+minute (see <<_downstream_client,Downstream Client>>). This reset is not a breaker failure. It happens
+after the guarded dispatch call has returned, so the route's circuit breaker never sees it, and the
+`StreamResetException` it hands to the upstream request is dropped rather than logged at `ERROR`
+(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#amendment-a1[ADR-0066
+Amendment A1]).
+
 The late refusal of a body on a bodyless method (below) stays a `CANCEL` reset taken before the
 response ends, and neither the WebSocket upgrade nor the L4 passthrough relay is affected.
 
@@ -440,7 +451,8 @@ paths forward none.
 *A request body that fails after dispatch is a client-caused termination.* When the inbound body
 stream fails only after the request was dispatched -- a client that disconnects mid-upload, or a
 chunked body whose framing breaks mid-stream -- the upstream request is reset, and on HTTP/1.x the
-upstream connection that carried it is not reused. The gateway reports it under its own event,
+upstream connection that carried it is not reused: it is closed abortively, so it holds no local port
+on the gateway (see <<_http2_post_response_reset>>). The gateway reports it under its own event,
 `INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`). It is neither a security-filter violation nor an
 upstream failure: no security warning is logged, the route's circuit breaker does not count it as a
 failure, and it is never retried. `INFO` `ApiSheriff-22` records it, latched per route, and
@@ -1061,6 +1073,7 @@ spelling -- is relayed unchanged; the last two refusals are the boot review's ow
 candidate path and to the computed mapping alike (see link:security-threat-model.adoc#gw-13[GW-13]).
 The trailer-carrying gRPC relay never rewrites, since gRPC carries no redirect.
 
+[[_downstream_client]]
 === Downstream Client
 
 The upstream client is split by plane
@@ -1072,7 +1085,13 @@ The upstream client is split by plane
   HTTP trailers (gRPC), raw upgrade streams (WebSocket), upstream h2. One shared client and
   connection pool per *distinct upstream target tuple* (resolved host + connect/read timeouts
   + TLS context), options assembled once at boot; timeouts are millisecond-precision client
-  options.
+  options. The client of every upstream not forced to HTTP/2 closes its connections abortively
+  (`SO_LINGER 0`). A connection the gateway closes -- after it resets an upstream request, or when it
+  evicts the connection from the idle pool -- therefore ends in a TCP reset and holds no local port in
+  `TIME_WAIT`, so a client that drives early answers or aborted uploads at rate cannot use up the
+  gateway's ephemeral ports. The accepted cost is that the upstream sees a reset instead of a `FIN`,
+  and on TLS no `close_notify`. The forced-HTTP/2 (gRPC) client is unchanged, because there the
+  gateway resets one stream and leaves the shared connection open.
 * *Resilience -- SmallRye Fault Tolerance, programmatic.* One guard per upstream target and retry
   setting, shared by every route that dials that target with that setting, built at boot and
   invoked around the dispatch call in the framework-bound edge layer (no annotations, no CDI
@@ -1094,7 +1113,11 @@ The upstream client is split by plane
   records it, as a success: SmallRye has no neutral outcome, and keeping such dispatches out of the
   window would need the guarded call to be restructured, which the gateway does not do. The edge's
   idle timeout can reap an inbound connection before the route's read timeout fires; that dispatch
-  ends as a client-ended one.
+  ends as a client-ended one. The gateway's own reset of an upstream request after a complete
+  response is not a failure either, and the breaker records nothing for it: the guarded call returns
+  as soon as the response head has been handed back, so the reset that ends an early-answered upload
+  falls outside it (<<_http2_post_response_reset>>). The connect failures an exhausted set of local
+  ports would cause are genuine failures to reach the upstream and are counted.
 * *Control plane -- `cui-http`.* The gateway's own small, bounded JSON calls (OIDC discovery,
   JWKS, the pushed authorization request, token exchange, revocation -- made chiefly inside the
   token-sheriff libraries) use

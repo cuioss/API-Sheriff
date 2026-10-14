@@ -272,7 +272,9 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 
 | B1 Client->edge
 | *Spoofing* forwarding identity -> <<gw-04>>. *Tampering* with framing/encoding ->
-  <<gw-02>>, <<gw-01>>. *DoS* (slowloris, h2 abuse, decompression) -> <<gw-07>>, <<gw-08>>; an
+  <<gw-02>>, <<gw-01>>. *DoS* (slowloris, h2 abuse, decompression) -> <<gw-07>>, <<gw-08>>;
+  uploads that make the gateway close its own upstream connections until its local ports run out ->
+  <<gw-07-upstream-ports,GW-07>>; an
   unauthenticated login request driving an outbound request to the identity provider -> <<bff-20>>;
   a token naming an arbitrary key id driving a JWKS request to the identity provider ->
   <<gw-07-jwks-refresh,GW-07>>.
@@ -591,7 +593,8 @@ with the value the gate and the `max_body_bytes` pre-check admitted, and with ex
 bytes. A request that declares none keeps the framing the upstream client chooses. A `GET` or
 `HEAD` without a positive declared length is sent with no body at all. Resetting an upstream
 request closes its connection on HTTP/1.x, which is what the corpus pins; on HTTP/2 it resets the
-stream.
+stream. The HTTP/1.x close is abortive, so it holds no local port on the gateway
+(<<gw-07-upstream-ports,GW-07>>).
 
 The bodyless-method rule binds the proxy dispatch, the one terminal action that streams an
 inbound body. The other terminal actions a `GET` or `HEAD` can reach forward no inbound body
@@ -1298,6 +1301,67 @@ records, than `floor(elapsed / window) + 1`, and that a token signed with the cu
 signed with the replaced key are both still accepted afterwards. That suite runs a 5 s window and
 does not prove the 30 s default, the expiry of the grace period, or a refresh whose fetch fails.
 
+[#gw-07-upstream-ports]
+*A client's uploads cannot use up the gateway's local ports through the gateway's own upstream
+closes.* When the gateway stops forwarding an upload it resets the upstream request: an upstream
+answered before reading the body, the body crossed the route cap, the client dropped it mid-body, or
+one of the other resets of the dispatch fired. On an HTTP/1.1 upstream that reset closes the
+connection, because HTTP/1.1 cannot cancel one message. The gateway closed that connection first and
+in order, so its side held the local port in `TIME_WAIT` for 60 seconds. Any client, unauthenticated
+on a public upload route, can produce such closes at rate, and each one cost the gateway a local port
+for a minute. Enough of them used up the gateway's ephemeral ports. New connections to the upstream
+then failed, the per-upstream circuit breaker counted those genuine connect failures and opened, and
+every client of that upstream was answered `503` (CWE-400). The client spends nothing beyond its own
+uploads; the cost lands on the gateway's ports and on every other client.
+
+*Evidence.* Observed in this gateway's own benchmark, on the `uploadSmall` aspect against a backend
+that answered before reading the body. Before the fix the aspect ran 47,441 iterations at an error
+rate of 0.40, failing past roughly 28,000 iterations. That is about the size of the Linux default
+ephemeral range (32768-60999); the agreement is arithmetic, not a count of the gateway's sockets.
+After the fix, on 2026-10-14 and against the same backend still answering early, the aspect ran at
+852.85 requests per second over a 60 s window at an error rate of 0, p99 32.37 ms. The k6 summary
+records no iteration count: the figure of about 51,200 iterations is derived from that rate and the
+60.03 s window, not measured. With the benchmark backend then changed to read the body before it
+answers, both upload aspects stayed at an error rate of 0 -- `uploadSmall` at 80.86 requests per
+second (p99 762.2 ms) and `uploadLarge` at 1.80 requests per second (p99 3737.9 ms).
+
+*Control*
+(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#amendment-a1[ADR-0066
+Amendment A1]):
+
+* *The close holds no port.* The HTTP/1.1 upstream client closes every connection abortively
+  (`SO_LINGER 0`). The close is a TCP reset and leaves no `TIME_WAIT` socket on the gateway, so the
+  closes a client can cause no longer accumulate. The forced-HTTP/2 (gRPC) client resets one stream
+  and keeps the connection, and is unchanged.
+* *The reset is not a breaker failure.* The gateway's reset after a complete response runs after the
+  guarded dispatch call has returned, so the breaker never counts it, and a client cannot open the
+  breaker by uploading. Connect failures stay counted, because they are failures to reach the
+  upstream (see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]).
+* *The reset leaves no error record.* The `StreamResetException` of the gateway's own upstream reset
+  is dropped, so a burst of uploads does not write one `ERROR` record per upload (CWE-779).
+
+*Residual (accepted).* Each such upload still costs one new upstream connection, and the upstream sees
+a TCP reset instead of a `FIN` for every connection the gateway closes, idle-pool evictions included,
+and on TLS no `close_notify`. The rate of those connections is bounded by what the edge admits and by
+nothing narrower.
+
+*Status of this control:* COVERED. `GatewayEdgeEarlyResponseResetTest` drives early-answered HTTP/2
+uploads against an HTTP/1.1 stub upstream and asserts that every upstream connection the gateway
+closed reached the stub as a reset and none as an orderly close
+(`earlyAnsweredUpstreamConnectionsAreClosedByReset`, red on the code before the fix), asserts the same
+for a client that drops its upload mid-body (`droppedUploadUpstreamConnectionIsClosedByReset`), and
+asserts that an early answer leaves no `ERROR` record
+(`earlyAnswerLeavesNoErrorRecordForTheGatewaysOwnUpstreamReset`). `GatewayEdgeRouteTest`
+(`abortiveCloseIsBoundOnTheDefaultClientOnly`) pins the option on the HTTP/1.1 client and its
+absence on the forced-HTTP/2 and WebSocket clients. `DispatchStageTest`
+(`gatewayResetAfterACompleteResponseLeavesTheBreakerClosed`) drives a burst of early-answered
+dispatches larger than the test guard's breaker window, each followed by the gateway's reset, and
+asserts that the breaker made no transition and the next dispatch reached the upstream. No test
+observes the gateway's own `TIME_WAIT` sockets: at test scale the observable is the reset the upstream
+receives. The benchmark run above is the system-scale proof, and it is not a standing guard: the upload
+aspects now target a backend that reads the body, so no benchmark aspect drives early answers any
+more, and `Http2EarlyResponseResetIT` guards the shape of an early answer, not the gateway's port use.
+
 [#gw-08]
 === GW-08 -- HTTP/2 & gRPC abuse (Rapid Reset, CONTINUATION flood, downgrade smuggling, h2c)
 
@@ -1332,7 +1396,9 @@ arrive. The 50 ms quiet period infers it from a client that is not sending, and 
 separate exit that ends the wait even while request data may still be in flight. The guard itself is
 untouched: no
 `quarkus.http.limits.rst-flood-*` key is set or changed, and this note does not change the status
-below.
+below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
+availability threat of its own: it is recorded, with its control, under
+<<gw-07-upstream-ports,GW-07>>.
 
 *Status:* GAP. Quarkus/Netty ship some Rapid-Reset mitigation, but stream-reset rate limiting
 and CONTINUATION bounds must be verified and pinned, and h2c-upgrade non-forwarding asserted.
@@ -3356,6 +3422,7 @@ outstanding hardening work (next section).
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
+| <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`GatewayEdgeRoute` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED

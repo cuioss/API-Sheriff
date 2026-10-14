@@ -9,8 +9,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Every response end on the edge passes one seam; an HTTP/2 response answered while its request body is still open stops reading the body at once (the upstream request is reset, the inbound stream paused so no flow-control window is returned), holds its final END_STREAM frame until the client can send nothing more, its window has been unchanged for a quiet period or a hard time cap has passed, and then writes the end and RST_STREAM(NO_ERROR) together in one event-loop turn; the gateway's own reset is marked on the inbound body and never recorded as INBOUND_BODY_ABORTED; HTTP/1.x, an ended body, the CANCEL late-body refusal, WebSocket and the L4 relay are unchanged; raising the reset limits, changing the upstream, per-writer marks, a reset straight after the write and a stream-window-only bound are rejected
-// tags: http2, edge, flow-control, stream-reset, rapid-reset, early-response, rfc9113, response-end, upload, abort-attribution, framework-seam
+// summary: Every response end on the edge passes one seam; an HTTP/2 response answered while its request body is still open stops reading the body at once (the upstream request is reset, the inbound stream paused so no flow-control window is returned), holds its final END_STREAM frame until the client can send nothing more, its window has been unchanged for a quiet period or a hard time cap has passed, and then writes the end and RST_STREAM(NO_ERROR) together in one event-loop turn; the gateway's own reset is marked on the inbound body and never recorded as INBOUND_BODY_ABORTED; HTTP/1.x, an ended body, the CANCEL late-body refusal, WebSocket and the L4 relay are unchanged; raising the reset limits, changing the upstream, per-writer marks, a reset straight after the write and a stream-window-only bound are rejected. AMENDED (A1, the upstream leg): a connection the gateway's HTTP/1.1 upstream client closes is closed abortively (SO_LINGER 0), so the reset of an HTTP/1.1 upstream request still costs that connection but no longer holds a local port in TIME_WAIT, which had let a client driving early answers or aborted uploads at rate exhaust the gateway's ephemeral ports and open the per-upstream circuit breaker for every client; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; the StreamResetException of the gateway's own upstream reset is absorbed instead of logged at ERROR; draining the upstream message is rejected for the same reason as draining the inbound one, because its missing bytes are the client's
+// tags: http2, edge, flow-control, stream-reset, rapid-reset, early-response, rfc9113, response-end, upload, abort-attribution, framework-seam, upstream-connection, http1, so-linger, time-wait, port-exhaustion, circuit-breaker, availability
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -161,9 +161,11 @@ key is set or changed.
 * The transport view reaches one Vert.x internal. A Vert.x upgrade that changes it degrades the rule to
   "end at once, reset after the write" rather than failing, which reintroduces the in-flight
   `STREAM_CLOSED` resets for that build.
-* Resetting an HTTP/1.1 upstream request closes that upstream connection instead of returning it to
-  the pool. It is the wanted "stop forwarding", paid for with a new upstream connection per early
-  answer.
+* Resetting an HTTP/1.1 upstream request costs that upstream connection: HTTP/1.1 cannot cancel one
+  message, so the connection is closed instead of returned to the pool. The wanted "stop forwarding"
+  is paid for with a new upstream connection per early answer, and the upstream sees each such close
+  as a TCP reset, because the gateway closes the connection abortively so that it holds no local
+  port (<<amendment-a1,Amendment A1>>).
 * The response-end seam changes the contract of every writer: a writer no longer ends a response, it
   hands over the call that does. The relay and the gRPC status writer carry that seam in their
   signatures.
@@ -236,11 +238,121 @@ bounded; observing the remaining credit tells when it is exhausted; a hard cap k
 And when a protection counts signals per connection, the remedy for false trips is to stop emitting the
 signals that look like abuse, not to make the protection more tolerant of abuse.
 
+[[amendment-a1]]
+== Amendment A1 (2026-10-14): the upstream leg -- a gateway-closed HTTP/1.1 upstream connection is closed abortively
+
+*Step 1 still resets the upstream request, and on HTTP/1.1 that still costs the connection. What
+changes is how the gateway closes it, and what the breaker and the log make of the reset.*
+
+=== Context
+
+Step 1 stops forwarding by resetting the upstream request that is still receiving the body. On an
+HTTP/2 upstream that ends one stream. HTTP/1.1 has no way to cancel one message: a request whose body
+has been cut off can only be ended by closing the connection it travels on. The gateway closed that
+connection itself, in order, so it was the side that sent the first `FIN`. On Linux the side that
+closes first keeps the connection in `TIME_WAIT` for 60 seconds, and for the gateway that is the local
+port it dialled from. Every early answer on an HTTP/1.1 upstream therefore held one of the gateway's
+ephemeral ports for a minute after the connection was gone.
+
+That turned an ordinary upload shape into an availability lever. Any client, unauthenticated on a
+public upload route, can send uploads that an upstream answers before reading them. The Linux default
+ephemeral range holds about 28,000 ports, so about 470 such answers a second are enough to hold all
+of them. New connections to the upstream then fail. Those connect failures are genuine failures to
+reach the upstream, so the per-upstream breaker counts them, opens, and every client of that upstream
+is answered `503`. The early answer is the case a client drives most cheaply, but it is not the only
+one: every reset the gateway makes of an HTTP/1.1 upstream request closes the connection the same way
+-- a body over the route cap, an inbound body that fails or ends short, a body beyond its declared
+length, a body on a bodyless method, an abandoned attempt and a relay that fails to start.
+
+=== Decision
+
+*The gateway's HTTP/1.1 upstream client closes its connections abortively. The gateway's own reset
+after a complete response is not a breaker failure, and it is not logged as an error.*
+
+. *The close is abortive.* The default upstream client -- the client of every upstream not forced to
+  HTTP/2 -- sets `SO_LINGER 0`, so a connection it closes ends with a TCP reset and holds no local
+  port once it is gone. The reset of step 1 stays, and so does its cost of a new upstream connection
+  per early answer. The setting is client-wide: every connection this client closes is closed this
+  way, idle-pool evictions included. It is set through the client's public option rather than on the
+  individual connections the reset paths close, which only a Vert.x internal reaches. The
+  forced-HTTP/2 client is unchanged, because an HTTP/2 reset ends one stream and leaves the shared
+  connection open, and so is the edge-wide WebSocket client.
+. *The breaker does not count the reset.* The guarded call
+  (link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064])
+  returns as soon as the attempt's response head has been handed back. The relay, the end of the
+  response and the reset of the upstream request all run after it, outside every guarded call, so the
+  breaker has recorded the call as a success and never sees the reset. No exclusion is added: the
+  property holds by the structure of the dispatch, and a test pins it. The connect failures that
+  exhausted ports caused remain counted, because they are failures to reach the upstream.
+. *The reset is not an error record.* A reset of an upstream request hands a `StreamResetException`
+  to the request's exception handler, and with none registered Vert.x logged it as an unhandled
+  exception at `ERROR`, once per reset. Every attempt's upstream request now carries a handler from
+  the moment it is obtained, before any reset can reach it. On HTTP/1.x a `StreamResetException` can
+  only come from the gateway's own reset, since HTTP/1.x has no peer stream reset, so the handler drops
+  it. Any other failure it sees also reaches the send future or the response stream, where it is mapped
+  and metered as before, so the handler logs it at `DEBUG` only. This is the upstream counterpart of
+  the rule that the gateway's own reset is never recorded as `INBOUND_BODY_ABORTED`.
+
+=== Why the upstream leg differs from the inbound leg, and where it does not
+
+Draining was rejected for the inbound leg ("Keep reading the body to its end", above). The upstream
+leg pays a higher price for declining the body, which raises the question whether it should drain
+instead. It should not, and the comparison is the reason:
+
+* *It differs in what declining the body costs.* On the inbound leg the decline is a `NO_ERROR` reset
+  of one HTTP/2 stream: it costs the client nothing, and the connection and its sibling streams carry
+  on. HTTP/1.1 has no message-scoped cancel, so on the upstream leg the decline costs the whole
+  connection.
+* *It does not differ in what draining would require.* The bytes that would complete the upstream
+  message are the client's; the gateway has no other source for them. Draining the upstream message
+  therefore means reading the inbound stream to its end -- the alternative rejected above, which puts
+  the stream's lifetime back under the client's control. Completing the message with bytes the gateway
+  invents would hand the upstream a body nobody sent.
+* *What took availability down was not the extra connection.* A new upstream connection per early
+  answer is a cost the upstream absorbs, and the one every aborted upload already carried. The outage
+  came from the 60 seconds of `TIME_WAIT` the gateway's own orderly close left on a local port. The
+  abortive close removes that and keeps every property of this decision: the body is still stopped at
+  once, nothing more is forwarded, and the end and the `NO_ERROR` reset of the inbound stream are timed
+  as in steps 2 and 3.
+
+=== Consequences of the amendment
+
+*Positive.*
+
+* A stream of early answers or aborted uploads no longer uses up the gateway's ephemeral ports, so it
+  can no longer open the per-upstream breaker for every client of that upstream. The benchmark
+  evidence is recorded with the threat in
+  link:../security-threat-model.adoc#gw-07-upstream-ports[the threat model (GW-07)].
+* An early answer leaves no `ERROR` record in the log.
+
+*Negative.*
+
+* The upstream sees a TCP reset instead of a `FIN` for every connection the gateway closes, idle-pool
+  evictions included, and on TLS no `close_notify`. An upstream that logs or alerts on connection
+  resets sees one per early answer.
+* The new upstream connection per early answer remains (see the negative consequences above).
+
+*Risks.*
+
+* *Moving the reset into the guarded call.* A restructuring that runs the relay, or the end of the
+  response, inside the guarded call would make every early answer a breaker failure, and a client
+  could open the breaker by uploading. The pin test drives the reset itself after the dispatch has
+  returned, so it holds the dispatch to the property; a change to where the edge ends the response
+  has to be judged against this record rather than being caught by that test.
+* *Dropping the option for a narrower close.* Confining the abortive close to the reset paths reaches
+  a Vert.x internal. Removing the client-wide option without that replacement brings the port
+  exhaustion back.
+
+This amendment supersedes one statement above: the negative consequence that an HTTP/1.1 upstream
+reset is paid for with a new upstream connection alone, which is reworded for the current behaviour.
+The one seam, the three steps, the rule's two branches and the rejected alternatives stand.
+
 == References
 
 * link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060 -- Dispatch sends a bodyless method no body] -- the late body refusal whose `CANCEL` reset stays outside this rule.
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062 -- Platform mechanisms are preferred over hand-rolled equivalents] -- the transport view of the stream windows reaches below Vert.x because the platform exposes no per-stream flow-control state.
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] -- the streaming, never-buffered body model the stop-at-once step relies on.
 * link:../architecture.adoc#_http2_post_response_reset[Architecture -- post-response reset] -- the one end rule, its three steps and the `INBOUND_BODY_ABORTED` boundary.
-* link:../security-threat-model.adoc[Threat Model] -- GW-08, the Rapid-Reset guard whose limits this decision leaves unchanged.
+* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the guarded call outside which the gateway's reset after a complete response falls (Amendment A1).
+* link:../security-threat-model.adoc[Threat Model] -- GW-08, the Rapid-Reset guard whose limits this decision leaves unchanged, and link:../security-threat-model.adoc#gw-07-upstream-ports[GW-07], the port exhaustion Amendment A1 closes.
 * RFC 9113 §8.1 -- permits a complete response followed by a `NO_ERROR` stream reset when the response does not depend on the rest of the request body.

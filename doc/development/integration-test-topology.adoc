@@ -241,10 +241,19 @@ matching.
 `early-answer-backend` is an nginx on `8080` with *no published host port*. The gateway reaches it
 through the `EARLY_ANSWER` alias and the `/upload/early-answer` route of the shared
 `sheriff-config/endpoints/early-answer.yaml`, which rides the existing `upload` anchor. It answers
-`200` *before* it reads the request body: it mounts `nginx-static.conf` (`return 200` without
-reading the body) and `body-limits.conf` (a lingering close that drains the unread remainder instead
-of resetting the connection), both shared with the benchmark overlay's `nginx-static`, and runs the
-same digest-pinned image.
+`200` *before* it reads the request body. It runs the same digest-pinned image as the benchmark
+overlay's `nginx-static` and mounts the same two files:
+
+* `nginx-static.conf` is shared, and its two halves serve the two backends differently. Its upload
+  location -- the benchmark upload paths `/upload-small` and `/upload-large`, with or without an
+  `/anything` prefix -- reads the whole request body before it answers, so the benchmark's upload
+  aspects measure an upload that was actually transferred. Every other path still answers `return 200`
+  without reading the body. `early-answer-backend` is dialled at its alias base path, which is not an
+  upload path, so it only ever reaches the early-answering half.
+* `body-limits.conf` is shared as well. Its lingering close drains the unread remainder of a body
+  instead of resetting the connection, which is what the early-answering paths need; the upload
+  location leaves nothing to drain. Its `client_max_body_size 0` takes effect on the upload location,
+  the one that reads the body, and is inert on the early-answering paths.
 
 It exists because no other upstream of the default stack answers an upload early: `go-httpbin` reads
 and echoes the whole body before it answers. An HTTP/2 upload answered while its body is still open
