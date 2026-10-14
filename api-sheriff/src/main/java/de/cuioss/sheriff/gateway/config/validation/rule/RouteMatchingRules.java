@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.resolveAnchor;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -27,9 +26,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+import de.cuioss.sheriff.gateway.config.PolicyBlock;
+import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -37,7 +37,6 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import lombok.experimental.UtilityClass;
-import org.jspecify.annotations.Nullable;
 
 /**
  * The boot-time {@link ValidationRule}s of the {@code match} block of a route: route disjointness
@@ -300,8 +299,8 @@ public class RouteMatchingRules {
 
     /**
      * Rule: every method an enabled route names in {@code match.methods} must lie inside the route's
-     * effective {@code allowed_methods} — the endpoint's list, else the resolved anchor's, else the
-     * gateway's, else every method. A route matching a method its effective allowlist excludes
+     * effective {@code allowed_methods}, resolved through {@link PolicyBlock#ALLOWED_METHODS} — the
+     * same resolution the route table uses, so boot validation and runtime cannot disagree. A route matching a method its effective allowlist excludes
      * could never be served for it, so the boot refuses it with one error per offending method.
      * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
      *
@@ -313,8 +312,8 @@ public class RouteMatchingRules {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                Set<HttpMethod> allowed = effectiveAllowedMethods(gateway, endpoint,
-                        resolveAnchor(gateway, endpoint, route));
+                Set<HttpMethod> allowed = EnumSet.copyOf(
+                        PolicyBlock.ALLOWED_METHODS.resolve(ScopeChain.of(gateway, endpoint, route)));
                 for (HttpMethod method : route.match().methods()) {
                     if (!allowed.contains(method)) {
                         errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
@@ -324,19 +323,5 @@ public class RouteMatchingRules {
                 }
             }
         }
-    }
-
-    private static Set<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
-            @Nullable AnchorConfig anchor) {
-        if (!endpoint.allowedMethods().isEmpty()) {
-            return EnumSet.copyOf(endpoint.allowedMethods());
-        }
-        if (anchor != null && !anchor.allowedMethods().isEmpty()) {
-            return EnumSet.copyOf(anchor.allowedMethods());
-        }
-        if (!gateway.allowedMethods().isEmpty()) {
-            return EnumSet.copyOf(gateway.allowedMethods());
-        }
-        return EnumSet.allOf(HttpMethod.class);
     }
 }

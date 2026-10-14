@@ -40,9 +40,11 @@ Not every concern has been extracted yet. Until it is, its rules stay `private s
 The helpers every rule shares live once, in
 link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/RuleSupport.java[`RuleSupport`]:
 the reporting file (`GATEWAY_FILE`, `endpointFile`), the `ENDPOINT_ROUTES_POINTER`, the
-CWE-117-safe echo of a configured value (`renderForMessage`) and anchor resolution
-(`declaredAnchorName`, `resolveAnchor`). A helper moves into `RuleSupport` with the first extracted
-concern class that needs it, not before.
+CWE-117-safe echo of a configured value (`renderForMessage`) and the declared anchor name
+(`declaredAnchorName`). A helper moves into `RuleSupport` with the first extracted concern class that
+needs it, not before. A rule never resolves a policy block or a route's anchor itself: it reads them
+through `PolicyBlock` and `PolicyBlock.ScopeChain.of` (ADR-0067), so boot validation and the route
+table cannot disagree.
 
 The `ValidationRule` seam is not widened. Every rule today has the shape above, and a rule that
 logs does so as a side effect with its own logger. Change the interface only for a check this

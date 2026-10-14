@@ -19,7 +19,9 @@
  * This package hosts the collaborators that turn the bound, validated
  * configuration model into the runtime-ready {@link de.cuioss.sheriff.gateway.config.model.RouteTable}:
  * the {@link de.cuioss.sheriff.gateway.config.RouteTableBuilder} that materializes the
- * effective per-route settings, and the {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}
+ * effective per-route settings, the {@link de.cuioss.sheriff.gateway.config.PolicyBlock}
+ * descriptors every policy block is resolved through, and the
+ * {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}
  * structured-log catalogue. The framework-bound wiring — the CDI producer that
  * drives the boot pipeline and fails startup on invalid configuration — lives in
  * the {@code de.cuioss.sheriff.gateway.quarkus} edge package; nothing here

@@ -16,9 +16,7 @@
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
@@ -100,21 +98,5 @@ public class RuleSupport {
      */
     public static @Nullable String declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
         return route.anchor() != null ? route.anchor() : endpoint.anchor();
-    }
-
-    /**
-     * The anchor a route resolves: the anchor {@link #declaredAnchorName} names, looked up among the
-     * gateway's declared anchors.
-     *
-     * @param gateway  the bound gateway document
-     * @param endpoint the endpoint declaring the route
-     * @param route    the route whose anchor is resolved
-     * @return the resolved anchor, {@code null} when the route declares no anchor or names one the
-     *         gateway does not declare
-     */
-    public static @Nullable AnchorConfig resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route) {
-        String name = declaredAnchorName(endpoint, route);
-        return name == null ? null : gateway.anchors().get(name);
     }
 }

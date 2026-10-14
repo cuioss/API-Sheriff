@@ -20,7 +20,6 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEW
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.declaredAnchorName;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.resolveAnchor;
 
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -48,6 +47,8 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
+import de.cuioss.sheriff.gateway.config.PolicyBlock;
+import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
@@ -71,7 +72,6 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
-import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
@@ -722,15 +722,15 @@ public final class ConfigValidator {
      * {@code Authorization} header is re-admitted past the gateway-owned never-forward set. The pair
      * therefore declares two opposite postures for the same header, and whichever one the gateway
      * silently honoured would be a guess about the operator's intent — so the boot refuses it. The
-     * effective auth is resolved through the same wholesale {@code route → endpoint → anchor} chain
-     * the route table uses. The message names the route and the two keys, never a header value.
+     * effective auth is resolved through {@link PolicyBlock#AUTH}, the descriptor the route table
+     * resolves through. The message names the route and the two keys, never a header value.
      * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
      */
     private static void validateTokenRelayForwardConflict(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                AuthConfig auth = effectiveAuth(gateway, endpoint, route);
+                AuthConfig auth = PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route));
                 ForwardConfig forward = route.forward();
                 List<String> headersAllow = forward == null ? null : forward.headersAllow();
                 if (auth == null || auth.effectiveTokenRelay() || headersAllow == null) {
@@ -764,8 +764,10 @@ public final class ConfigValidator {
             if (endpoint.scopes().isEmpty()) {
                 continue;
             }
-            boolean allUnauthenticated = endpoint.routes().stream()
-                    .allMatch(route -> effectiveRequire(gateway, endpoint, route) == Require.NONE);
+            boolean allUnauthenticated = endpoint.routes().stream().allMatch(route -> {
+                AuthConfig auth = PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route));
+                return auth == null || auth.require() == Require.NONE;
+            });
             if (allUnauthenticated) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_SCOPES_POINTER,
                         ("endpoint '%s' declares scopes but every one of its routes resolves require: none; "
@@ -1094,7 +1096,7 @@ public final class ConfigValidator {
     /**
      * Rule: every enabled route must resolve an auth posture through the same
      * {@code route → endpoint → declared-anchor} chain the route table uses
-     * ({@link #effectiveAuth}); a route for which none of the three supplies an
+     * ({@link PolicyBlock#AUTH}); a route for which none of the three supplies an
      * {@code auth} block fails the boot (ADR-0007). Checking per route — rather than
      * once per endpoint — closes two gaps of a per-endpoint anchor check: it no longer
      * falsely rejects an endpoint whose every route supplies its own auth, and it
@@ -1108,7 +1110,7 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                if (effectiveAuth(gateway, endpoint, route) == null) {
+                if (PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route)) == null) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' has no resolvable auth: neither the route, its endpoint '%s', nor a declared anchor provides an auth posture"
                                     .formatted(route.id(), endpoint.id())));
@@ -1126,14 +1128,16 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
+                ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
+                AnchorConfig anchor = chain.anchor();
                 AuthConfig anchorAuth = anchor == null ? null : anchor.auth();
                 if (anchorAuth == null) {
                     continue;
                 }
                 Require anchorRequire = anchorAuth.require();
-                if (anchorRequire != Require.NONE
-                        && effectiveRequire(gateway, endpoint, route) == Require.NONE) {
+                AuthConfig auth = PolicyBlock.AUTH.declared(chain);
+                Require effectiveRequire = auth == null ? Require.NONE : auth.require();
+                if (anchorRequire != Require.NONE && effectiveRequire == Require.NONE) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
                                     .formatted(route.id(), anchor.name(), anchorRequire)));
@@ -1147,7 +1151,8 @@ public final class ConfigValidator {
         Set<Require> requires = EnumSet.noneOf(Require.class);
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                requires.add(effectiveRequire(gateway, endpoint, route));
+                AuthConfig auth = PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route));
+                requires.add(auth == null ? Require.NONE : auth.require());
             }
         }
         if (requires.contains(Require.BEARER) && lacksConfiguredIssuer(gateway)) {
@@ -1288,7 +1293,10 @@ public final class ConfigValidator {
      * seam the route table uses — rather than from {@link AnchorConfig#access()} directly: a route or
      * endpoint may legally <em>strengthen</em> a {@code public}-access anchor's auth floor (ADR-0007
      * forbids weakening it, not strengthening it), and reading the anchor's static {@code access}
-     * would under-refuse exactly those routes. The gateway-wide case needs no separate rule: a
+     * would under-refuse exactly those routes. The profile is read through
+     * {@link RouteTableBuilder#effectiveProfile} over the {@link PolicyBlock#SECURITY_FILTER} block —
+     * the seam the boot posture line reports — so the refusal and that line can never disagree. The
+     * gateway-wide case needs no separate rule: a
      * {@code security_defaults.profile: minimal} reaching an authenticated or BFF route through the
      * fallback resolves to {@code minimal} here and is refused identically.
      * <p>
@@ -1300,11 +1308,12 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
-                if (effectiveProfile(gateway, route, anchor) != SecurityProfile.MINIMAL) {
+                ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
+                if (RouteTableBuilder.effectiveProfile(PolicyBlock.SECURITY_FILTER.resolve(chain), gateway)
+                        != SecurityProfile.MINIMAL) {
                     continue;
                 }
-                List<String> refusals = minimalRefusalDimensions(gateway, endpoint, route, anchor);
+                List<String> refusals = minimalRefusalDimensions(chain);
                 if (!refusals.isEmpty()) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             ("route '%s' resolves inbound-filter profile 'minimal' but %s; 'minimal' is refused on "
@@ -1321,10 +1330,10 @@ public final class ConfigValidator {
      * effectively-authenticated access level, a {@code type: bff} anchor, or both. An empty list
      * means the route may legally run under {@code minimal}.
      */
-    private static List<String> minimalRefusalDimensions(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable AnchorConfig anchor) {
+    private static List<String> minimalRefusalDimensions(ScopeChain chain) {
         List<String> refusals = new ArrayList<>();
-        AuthConfig auth = effectiveAuth(gateway, endpoint, route);
+        AnchorConfig anchor = chain.anchor();
+        AuthConfig auth = PolicyBlock.AUTH.declared(chain);
         if (auth != null && RouteTableBuilder.effectiveAccessLevel(anchor, auth) == AccessLevel.AUTHENTICATED) {
             refusals.add("its effective access level is 'authenticated'");
         }
@@ -1332,26 +1341,6 @@ public final class ConfigValidator {
             refusals.add("its anchor '%s' is type 'bff'".formatted(anchor.name()));
         }
         return refusals;
-    }
-
-    /**
-     * The route's effective inbound-filter profile, resolved through the same
-     * {@code route → declared-anchor} wholesale {@code security_filter} replacement chain
-     * {@code RouteTableBuilder} materializes, falling back to the gateway-wide
-     * {@link RouteTableBuilder#globalProfile(GatewayConfig) profile} (itself
-     * {@link SecurityProfile#DEFAULT_PROFILE} when undeclared). The whole {@code security_filter}
-     * block is replaced, not merged: a route declaring a block without a {@code profile} falls back
-     * to the gateway-wide value, never to its anchor's profile.
-     */
-    private static SecurityProfile effectiveProfile(GatewayConfig gateway, RouteConfig route,
-            @Nullable AnchorConfig anchor) {
-        SecurityFilterConfig securityFilter = route.securityFilter();
-        if (securityFilter == null && anchor != null) {
-            securityFilter = anchor.securityFilter();
-        }
-        String declaredProfile = securityFilter == null ? null : securityFilter.profile();
-        return SecurityProfile.parse(declaredProfile)
-                .orElseGet(() -> RouteTableBuilder.globalProfile(gateway));
     }
 
     /**
@@ -1393,7 +1382,7 @@ public final class ConfigValidator {
      */
     private static void validateRouteTerminalAction(GatewayConfig gateway, EndpointConfig endpoint,
             RouteConfig route, ResolvedTopology topology, List<ConfigError> errors) {
-        AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
+        AnchorConfig anchor = ScopeChain.of(gateway, endpoint, route).anchor();
         boolean assetAnchor = anchor != null && anchor.type() == AnchorType.ASSET;
         AssetConfig asset = route.asset();
         RedirectConfig redirect = route.redirect();
@@ -2592,7 +2581,8 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         WebSocketConfig websocket = route.websocket();
         List<String> origins = websocket == null ? List.of() : websocket.allowedOrigins();
-        Require require = effectiveRequire(gateway, endpoint, route);
+        AuthConfig auth = PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route));
+        Require require = auth == null ? Require.NONE : auth.require();
         if (require.isAuthenticated() && origins.isEmpty()) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' with effective auth '%s' must declare a non-empty allowed_origins allowlist (fail-closed)"
@@ -2691,29 +2681,6 @@ public final class ConfigValidator {
         }
         String normalized = host.toLowerCase(Locale.ROOT);
         return normalized.isEmpty() ? null : normalized;
-    }
-
-    /**
-     * The route's effective auth, resolved through the wholesale
-     * {@code route → endpoint → declared-anchor} replacement chain (ADR-0007) — the
-     * same order {@code RouteTableBuilder} materializes. {@code null} when none of the
-     * three declares an {@code auth} block.
-     */
-    private static @Nullable AuthConfig effectiveAuth(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route) {
-        if (route.auth() != null) {
-            return route.auth();
-        }
-        if (endpoint.auth() != null) {
-            return endpoint.auth();
-        }
-        AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
-        return anchor == null ? null : anchor.auth();
-    }
-
-    private static Require effectiveRequire(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route) {
-        AuthConfig auth = effectiveAuth(gateway, endpoint, route);
-        return auth == null ? Require.NONE : auth.require();
     }
 
     /**

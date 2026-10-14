@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.config;
 import java.io.Serial;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -78,10 +77,11 @@ import org.jspecify.annotations.Nullable;
  * wholesale, deny lists included), and the effective upstream base path (the route-level
  * {@code upstream.path} appended to the alias-derived base path when declared), and the
  * needed scope set ({@code oidc.scopes} united with the owning endpoint's {@code scopes})
- * into a {@link ResolvedRoute}. The inheritance chains
- * (gateway defaults → anchor → endpoint → route, wholesale replacement at every
- * step — ADR-0007) are resolved here, once, so the request pipeline never
- * re-implements them and never consults an anchor. The effective posture of each
+ * into a {@link ResolvedRoute}. Every policy block is resolved through its
+ * {@link PolicyBlock} descriptor — the single place the inheritance chains live
+ * (gateway → anchor → endpoint → route, nearest declared scope wins, wholesale replacement —
+ * ADR-0007) — and it is resolved here, once, so the request pipeline never re-implements
+ * a chain and never consults an anchor. The effective posture of each
  * route is emitted to the boot log; a non-auth override that replaces an
  * anchor-provided block is logged as a boot WARN.
  * <p>
@@ -100,14 +100,13 @@ import org.jspecify.annotations.Nullable;
 // that maps the whole configuration record model onto ResolvedRoute, so naming every record type is
 // precisely its job. The metric counts breadth of a mapping surface as if it were entanglement.
 //
-// Extraction was considered and rejected on the terms the ADRs set, not for convenience:
-//   - ADR-0007 centralises the gateway-defaults -> anchor -> endpoint -> route inheritance chains
-//     HERE, once, so the request pipeline never re-implements them and never consults an anchor.
-//     Splitting the resolve* cascade into a second class would fragment exactly that single place,
-//     while the orchestration in resolveRoute still has to name the same types to feed the builder —
-//     so the aggregate coupling would not drop, it would only be spread across two files plus a new
-//     carrier type.
-//   - normalizePrefix, effectiveAccessLevel and globalProfile are documented SHARED SEAMS that
+// Further extraction was considered and rejected on the terms the ADRs set, not for convenience:
+//   - The gateway -> anchor -> endpoint -> route inheritance chains (ADR-0007) already live in ONE
+//     place, the PolicyBlock descriptors, which this class and ConfigValidator both resolve through.
+//     What remains here is the mapping itself: resolveRoute has to name every resolved block type to
+//     feed the ResolvedRoute builder, so moving that orchestration into another class would not drop
+//     the aggregate coupling, it would only spread it across two files plus a new carrier type.
+//   - normalizePrefix, effectiveAccessLevel, globalProfile and effectiveProfile are documented SHARED SEAMS that
 //     ConfigValidator resolves through (ADR-0009 single-reporter), so relocating them would break the
 //     single-implementation property their own javadoc asserts and let the boot refusal and the
 //     runtime governance drift apart.
@@ -118,8 +117,6 @@ import org.jspecify.annotations.Nullable;
 public final class RouteTableBuilder {
 
     private static final CuiLogger LOGGER = new CuiLogger(RouteTableBuilder.class);
-
-    private static final List<HttpMethod> STANDARD_ALLOWED_METHODS = List.copyOf(EnumSet.allOf(HttpMethod.class));
 
     /** The display fallback for an absent anchor name in {@link #logPosture}. */
     private static final String NO_ANCHOR_NAME = "none";
@@ -158,10 +155,8 @@ public final class RouteTableBuilder {
                 continue;
             }
             ResolvedUpstream upstream = resolveEndpointUpstream(endpoint, topology);
-            UpstreamDefaultsConfig defaults = resolveDefaults(gateway, endpoint);
             for (RouteConfig route : endpoint.routes()) {
-                AnchorConfig anchor = resolveAnchor(gateway, endpoint, route);
-                resolved.add(resolveRoute(gateway, route, endpoint, anchor, upstream, defaults, topology));
+                resolved.add(resolveRoute(PolicyBlock.ScopeChain.of(gateway, endpoint, route), upstream, topology));
             }
         }
 
@@ -221,42 +216,40 @@ public final class RouteTableBuilder {
         return normalized;
     }
 
-    private static @Nullable AnchorConfig resolveAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route) {
-        String name = route.anchor() != null ? route.anchor() : endpoint.anchor();
-        return name == null ? null : gateway.anchors().get(name);
-    }
-
-    private static ResolvedRoute resolveRoute(GatewayConfig gateway, RouteConfig route, EndpointConfig endpoint,
-            @Nullable AnchorConfig anchor, @Nullable ResolvedUpstream upstream, UpstreamDefaultsConfig defaults,
+    /**
+     * Resolves one route into its {@link ResolvedRoute}. Every policy block is read through its
+     * {@link PolicyBlock} descriptor, so no block chain is restated here.
+     */
+    private static ResolvedRoute resolveRoute(PolicyBlock.ScopeChain chain, @Nullable ResolvedUpstream upstream,
             ResolvedTopology topology) {
-        AuthConfig auth = resolveEffectiveAuth(route, endpoint, anchor);
-        List<HttpMethod> allowedMethods = effectiveAllowedMethods(gateway, endpoint, anchor);
-        SecurityFilterConfig securityFilter = resolveSecurityFilter(route, anchor);
-        SecurityHeadersConfig securityHeaders = resolveSecurityHeaders(gateway, anchor);
+        GatewayConfig gateway = chain.gateway();
+        EndpointConfig endpoint = chain.endpoint();
+        RouteConfig route = chain.route();
+        AnchorConfig anchor = chain.anchor();
+        AuthConfig auth = PolicyBlock.AUTH.resolve(chain);
+        List<HttpMethod> allowedMethods = PolicyBlock.ALLOWED_METHODS.resolve(chain);
+        SecurityFilterConfig securityFilter = PolicyBlock.SECURITY_FILTER.resolve(chain);
+        SecurityHeadersConfig securityHeaders = PolicyBlock.SECURITY_HEADERS.resolve(chain);
         warnOnWeakeningOverride(route, endpoint, anchor);
+        UpstreamDefaultsConfig defaults = PolicyBlock.UPSTREAM_DEFAULTS.resolve(chain);
         UpstreamConfig routeUpstream = route.upstream();
-        boolean retryEnabled = resolveRetryEnabled(routeUpstream, defaults);
-        boolean notModifiedEnabled = resolveNotModifiedEnabled(routeUpstream, defaults);
-        // Both defaults are written as an explicit null check rather than Objects.requireNonNullElse*,
-        // matching the idiom every other resolve* helper in this class already uses. The explicit form
-        // also keeps the non-nullness visible to static analysis: Sonar's dataflow does not model
-        // requireNonNullElse as null-eliminating, so it carried route.forward()/route.protocol()'s
-        // @Nullable onto the result and raised java:S4449 at the first use of each local (PR #146).
-        //
-        // The declared block is carried WHOLESALE, so headers_deny / query_deny ride this same chain
-        // with no per-list resolution: the forward block has no inheritance cascade (ADR-0007 applies
-        // to auth, allowed_methods, security_* and upstream_defaults, not to forward), so a route
-        // either declares the block or it does not. The fallback ForwardConfig is all-absent, which
-        // is FORWARD-ALL on both dimensions — not a nothing-crosses allowlist.
-        ForwardConfig declaredForward = route.forward();
-        ForwardConfig effectiveForward = declaredForward != null
-                ? declaredForward
-                : ForwardConfig.builder().build();
+        UpstreamConfig.Retry retry = routeUpstream == null ? null : routeUpstream.retry();
+        UpstreamConfig.NotModified notModified = routeUpstream == null ? null : routeUpstream.notModified();
+        boolean retryEnabled = routeToggle(retry == null ? null : retry.enabled(), defaults.retryEnabled());
+        boolean notModifiedEnabled = routeToggle(notModified == null ? null : notModified.enabled(),
+                defaults.notModifiedEnabled());
+        // The forward block is carried WHOLESALE, so headers_deny / query_deny ride the block with no
+        // per-list resolution. When no scope declares it, the descriptor's fallback is the all-absent
+        // block, which is FORWARD-ALL on both dimensions — not a nothing-crosses allowlist.
+        ForwardConfig effectiveForward = PolicyBlock.FORWARD.resolve(chain);
+        // Written as an explicit null check rather than Objects.requireNonNullElse: Sonar's dataflow
+        // does not model requireNonNullElse as null-eliminating, so it carried route.protocol()'s
+        // @Nullable onto the result and raised java:S4449 at the first use of the local (PR #146).
         Protocol declaredProtocol = route.protocol();
         Protocol protocol = declaredProtocol != null ? declaredProtocol : Protocol.HTTP;
-        Set<String> allowedOrigins = effectiveAllowedOrigins(route);
-        Integer idleTimeout = resolveWebSocketIdleTimeout(route, protocol);
+        WebSocketConfig websocket = PolicyBlock.WEBSOCKET.resolve(chain);
+        Set<String> allowedOrigins = effectiveAllowedOrigins(websocket);
+        Integer idleTimeout = resolveWebSocketIdleTimeout(websocket, protocol);
         ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
                 .id(route.id())
                 .protocol(protocol)
@@ -288,32 +281,8 @@ public final class RouteTableBuilder {
             builder.upstream(applyRouteUpstreamPath(Objects.requireNonNull(upstream, "upstream"), route));
         }
         ResolvedRoute resolved = builder.build();
-        logPosture(resolved, globalProfile(gateway));
+        logPosture(resolved, gateway);
         return resolved;
-    }
-
-    /**
-     * Resolves the route's effective auth block through the {@code route → endpoint → anchor}
-     * cascade. Every route must end up with one: a route that reaches the end of the cascade
-     * without an auth block is a configuration error, not a defaultable omission.
-     *
-     * @throws RouteTableException when no level of the cascade declares an auth block
-     */
-    private static AuthConfig resolveEffectiveAuth(RouteConfig route, EndpointConfig endpoint,
-            @Nullable AnchorConfig anchor) {
-        AuthConfig auth = route.auth();
-        if (auth == null) {
-            auth = endpoint.auth();
-        }
-        if (auth == null && anchor != null) {
-            auth = anchor.auth();
-        }
-        if (auth == null) {
-            throw new RouteTableException(
-                    "route '%s' has no effective auth (no route, endpoint, or anchor auth block)"
-                            .formatted(route.id()));
-        }
-        return auth;
     }
 
     /**
@@ -339,52 +308,18 @@ public final class RouteTableBuilder {
     }
 
     /**
-     * Resolves the effective {@code security_filter} through the {@code route → anchor} chain. The
-     * endpoint level carries no such block, so it is not part of the chain.
+     * A route-level {@code upstream} toggle ({@code retry.enabled}, {@code not_modified.enabled}): the
+     * route's declared value when present, otherwise the field of the resolved
+     * {@code upstream_defaults} block. A field-level override, deliberately outside the whole-block
+     * rule of {@link PolicyBlock}: replacing the block wholesale at the route would reset the
+     * undeclared toggle to its default.
      *
-     * @return the declared filter, or {@code null} when neither level declares one
+     * @param declared     the route's declared toggle, {@code null} when the route omits it
+     * @param blockDefault the same field of the resolved {@code upstream_defaults} block
+     * @return the effective toggle
      */
-    private static @Nullable SecurityFilterConfig resolveSecurityFilter(RouteConfig route,
-            @Nullable AnchorConfig anchor) {
-        SecurityFilterConfig routeFilter = route.securityFilter();
-        if (routeFilter != null) {
-            return routeFilter;
-        }
-        return anchor == null ? null : anchor.securityFilter();
-    }
-
-    /**
-     * Resolves the effective response-header posture through the {@code anchor → gateway} chain.
-     *
-     * @return the declared posture, or {@code null} when neither level declares one
-     */
-    private static @Nullable SecurityHeadersConfig resolveSecurityHeaders(GatewayConfig gateway,
-            @Nullable AnchorConfig anchor) {
-        SecurityHeadersConfig anchorHeaders = anchor == null ? null : anchor.securityHeaders();
-        return anchorHeaders != null ? anchorHeaders : gateway.securityHeaders();
-    }
-
-    /**
-     * Resolves the route's effective retry toggle: the declared {@code upstream.retry.enabled} when
-     * present, otherwise the endpoint- or gateway-level default.
-     */
-    private static boolean resolveRetryEnabled(@Nullable UpstreamConfig routeUpstream,
-            UpstreamDefaultsConfig defaults) {
-        UpstreamConfig.Retry retry = routeUpstream == null ? null : routeUpstream.retry();
-        Boolean declared = retry == null ? null : retry.enabled();
-        return declared != null ? declared : defaults.retryEnabled();
-    }
-
-    /**
-     * Resolves the route's effective not-modified toggle: the declared
-     * {@code upstream.not_modified.enabled} when present, otherwise the endpoint- or gateway-level
-     * default.
-     */
-    private static boolean resolveNotModifiedEnabled(@Nullable UpstreamConfig routeUpstream,
-            UpstreamDefaultsConfig defaults) {
-        UpstreamConfig.NotModified notModified = routeUpstream == null ? null : routeUpstream.notModified();
-        Boolean declared = notModified == null ? null : notModified.enabled();
-        return declared != null ? declared : defaults.notModifiedEnabled();
+    private static boolean routeToggle(@Nullable Boolean declared, boolean blockDefault) {
+        return declared != null ? declared : blockDefault;
     }
 
     /**
@@ -392,13 +327,15 @@ public final class RouteTableBuilder {
      * declared {@code websocket.idle_timeout_seconds} when present, otherwise
      * {@link #DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS}.
      *
+     * @param websocket the route's resolved {@code websocket} block, {@code null} when it declares none
+     * @param protocol  the route's effective protocol
      * @return the effective timeout in seconds, or {@code null} for a non-WebSocket route
      */
-    private static @Nullable Integer resolveWebSocketIdleTimeout(RouteConfig route, Protocol protocol) {
+    private static @Nullable Integer resolveWebSocketIdleTimeout(@Nullable WebSocketConfig websocket,
+            Protocol protocol) {
         if (protocol != Protocol.WEBSOCKET) {
             return null;
         }
-        WebSocketConfig websocket = route.websocket();
         Integer declaredIdleTimeout = websocket == null ? null : websocket.idleTimeoutSeconds();
         return declaredIdleTimeout != null ? declaredIdleTimeout : DEFAULT_WEBSOCKET_IDLE_TIMEOUT_SECONDS;
     }
@@ -548,15 +485,36 @@ public final class RouteTableBuilder {
      * {@code require: bearer} route that additionally serves the session branch is visible at boot
      * rather than reading as a plain bearer route.
      */
-    private static void logPosture(ResolvedRoute route, SecurityProfile globalProfile) {
+    private static void logPosture(ResolvedRoute route, GatewayConfig gateway) {
         String anchorName = route.anchor() != null ? route.anchor() : NO_ANCHOR_NAME;
-        SecurityFilterConfig securityFilter = route.effectiveSecurityFilter();
-        SecurityProfile effectiveProfile = SecurityProfile
-                .parse(securityFilter == null ? null : securityFilter.profile())
-                .orElse(globalProfile);
+        SecurityProfile effectiveProfile = effectiveProfile(route.effectiveSecurityFilter(), gateway);
         AuthConfig effectiveAuth = route.effectiveAuth();
         LOGGER.info(ConfigLogMessages.INFO.ROUTE_POSTURE, route.id(), anchorName, effectiveAuth.require(),
                 effectiveAuth.effectiveSessionFallback(), effectiveProfile.name().toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * A route's effective inbound-filter profile: the {@code profile} of its resolved
+     * {@code security_filter} block when the block declares one, otherwise the gateway-wide
+     * {@link #globalProfile(GatewayConfig) profile}. A field-level fallback, deliberately outside the
+     * whole-block rule of {@link PolicyBlock}: a route block declaring no {@code profile} falls back
+     * to the gateway-wide value, never to the profile of the block it replaced.
+     * <p>
+     * A shared seam: {@code ConfigValidator}'s fail-closed {@code profile: minimal} refusal reads the
+     * profile through this same method that the boot posture line reports, so the two can never
+     * disagree about which routes run under {@code minimal} (ADR-0009 single-reporter, the
+     * {@link #normalizePrefix} precedent).
+     *
+     * @param securityFilter the route's resolved {@code security_filter} block, {@code null} when no
+     *                       scope declares one
+     * @param gateway        the bound gateway document supplying {@code security_defaults.profile}
+     * @return the effective profile
+     */
+    public static SecurityProfile effectiveProfile(@Nullable SecurityFilterConfig securityFilter,
+            GatewayConfig gateway) {
+        Objects.requireNonNull(gateway, "gateway");
+        return SecurityProfile.parse(securityFilter == null ? null : securityFilter.profile())
+                .orElseGet(() -> globalProfile(gateway));
     }
 
     /**
@@ -590,38 +548,16 @@ public final class RouteTableBuilder {
         }
     }
 
-    private static UpstreamDefaultsConfig resolveDefaults(GatewayConfig gateway, EndpointConfig endpoint) {
-        UpstreamDefaultsConfig endpointDefaults = endpoint.upstreamDefaults();
-        if (endpointDefaults != null) {
-            return endpointDefaults;
-        }
-        UpstreamDefaultsConfig gatewayDefaults = gateway.upstreamDefaults();
-        return gatewayDefaults == null ? UpstreamDefaultsConfig.defaults() : gatewayDefaults;
-    }
-
-    private static List<HttpMethod> effectiveAllowedMethods(GatewayConfig gateway, EndpointConfig endpoint,
-            @Nullable AnchorConfig anchor) {
-        if (!endpoint.allowedMethods().isEmpty()) {
-            return List.copyOf(endpoint.allowedMethods());
-        }
-        if (anchor != null && !anchor.allowedMethods().isEmpty()) {
-            return List.copyOf(anchor.allowedMethods());
-        }
-        if (!gateway.allowedMethods().isEmpty()) {
-            return List.copyOf(gateway.allowedMethods());
-        }
-        return STANDARD_ALLOWED_METHODS;
-    }
-
     /**
      * The materialized WebSocket {@code allowed_origins} allowlist, lower-cased once at
      * assembly for case-insensitive host matching (scheme and port are already
      * case-insensitive). Iteration order is not significant — origin acceptance is an
      * exact-membership test, so the set may be defensively re-copied downstream without
      * any ordering guarantee. Empty for a route that declares no {@code websocket} block.
+     *
+     * @param websocket the route's resolved {@code websocket} block, {@code null} when it declares none
      */
-    private static Set<String> effectiveAllowedOrigins(RouteConfig route) {
-        WebSocketConfig websocket = route.websocket();
+    private static Set<String> effectiveAllowedOrigins(@Nullable WebSocketConfig websocket) {
         if (websocket == null) {
             return Set.of();
         }
