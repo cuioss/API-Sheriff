@@ -4622,4 +4622,152 @@ class ConfigValidatorTest {
                     () -> refusals.getFirst().message());
         }
     }
+
+    /**
+     * The boot refusals reading {@code security_filter} or {@code forward} cover the endpoint scope
+     * both blocks are declarable at: a block declared on the endpoint is refused exactly like a
+     * route-level one, and a route-level block replacing it wholesale is judged on its own.
+     */
+    @Nested
+    @DisplayName("Endpoint-scope security_filter and forward refusals")
+    class EndpointScopeRefusals {
+
+        private static final String ENDPOINT_ID = "orders";
+        private static final String ALIAS = "ORDERS";
+        private static final String MINIMAL_REFUSAL = "resolves inbound-filter profile 'minimal'";
+        private static final String ENDPOINT_FORWARD_POINTER = "/endpoint/forward";
+        private static final String AUTHORIZATION_REFUSAL = "forward.headers_allow names Authorization";
+
+        private static SecurityFilterConfig profile(String profile) {
+            return SecurityFilterConfig.builder().profile(profile).build();
+        }
+
+        private static EndpointConfig.EndpointConfigBuilder endpointWith(AuthConfig auth, RouteConfig... routes) {
+            return EndpointConfig.builder().id(ENDPOINT_ID).enabled(true).baseUrl(ALIAS).auth(auth)
+                    .routes(List.of(routes));
+        }
+
+        private static AuthConfig noTokenRelay() {
+            return AuthConfig.builder().require(Require.BEARER).tokenRelay(false).build();
+        }
+
+        private List<ConfigError> validate(GatewayConfig gateway, EndpointConfig endpoint) {
+            return validator.validate(gateway, List.of(endpoint), topologyWith(ALIAS));
+        }
+
+        private static boolean anyMessageContains(List<ConfigError> errors, String fragment) {
+            return errors.stream().anyMatch(error -> error.message().contains(fragment));
+        }
+
+        @Test
+        @DisplayName("Should refuse 'minimal' arriving through an endpoint-level security_filter on an authenticated route")
+        void shouldRefuseEndpointMinimalOnAuthenticatedRoute() {
+            EndpointConfig endpoint = endpointWith(auth(Require.BEARER), route("r", HttpMethod.GET))
+                    .securityFilter(profile("minimal")).build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            assertHasError(errors, "/endpoint/routes", "route 'r' " + MINIMAL_REFUSAL);
+        }
+
+        @Test
+        @DisplayName("Should refuse 'minimal' arriving through an endpoint-level security_filter on a BFF route")
+        void shouldRefuseEndpointMinimalOnBffRoute() {
+            AnchorConfig bff = AnchorConfig.builder().name("app").pathPrefix("/r").type(AnchorType.BFF)
+                    .access(AccessLevel.AUTHENTICATED).auth(auth(Require.SESSION)).build();
+            GatewayConfig gateway = validGateway().anchors(Map.of(bff.name(), bff)).build();
+            EndpointConfig endpoint = endpointWith(null, route("r", HttpMethod.GET)).anchor(bff.name())
+                    .securityFilter(profile("minimal")).build();
+
+            List<ConfigError> errors = validate(gateway, endpoint);
+
+            assertHasError(errors, "/endpoint/routes", "its anchor 'app' is type 'bff'");
+        }
+
+        @Test
+        @DisplayName("Should not refuse 'minimal' at the endpoint when the route restores a non-minimal profile")
+        void shouldAcceptRouteRestoringNonMinimalProfile() {
+            RouteConfig restoring = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .securityFilter(profile("strict")).build();
+            EndpointConfig endpoint = endpointWith(auth(Require.BEARER), restoring)
+                    .securityFilter(profile("minimal")).build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            assertFalse(anyMessageContains(errors, MINIMAL_REFUSAL),
+                    () -> "the route-level block replaces the endpoint 'minimal' wholesale, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse an endpoint-level forward block declaring both header lists")
+        void shouldRefuseEndpointForwardDeclaringBothHeaderLists() {
+            ForwardConfig both = ForwardConfig.builder().headersAllow(List.of("Accept"))
+                    .headersDeny(List.of("X-Internal")).build();
+            EndpointConfig endpoint = endpointWith(auth(Require.NONE), route("r", HttpMethod.GET)).forward(both)
+                    .build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            ConfigError refusal = singleRefusalAt(errors, ENDPOINT_FORWARD_POINTER);
+            assertTrue(refusal.message().contains("endpoint '" + ENDPOINT_ID
+                    + "' declares both headers_allow and headers_deny"), refusal::message);
+        }
+
+        @Test
+        @DisplayName("Should refuse an endpoint-level forward block declaring both query lists")
+        void shouldRefuseEndpointForwardDeclaringBothQueryLists() {
+            ForwardConfig both = ForwardConfig.builder().queryAllow(List.of("page")).queryDeny(List.of("debug"))
+                    .build();
+            EndpointConfig endpoint = endpointWith(auth(Require.NONE), route("r", HttpMethod.GET)).forward(both)
+                    .build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            ConfigError refusal = singleRefusalAt(errors, ENDPOINT_FORWARD_POINTER);
+            assertTrue(refusal.message().contains("endpoint '" + ENDPOINT_ID
+                    + "' declares both query_allow and query_deny"), refusal::message);
+        }
+
+        @Test
+        @DisplayName("Should accept an endpoint-level forward block declaring one list per dimension (matched control)")
+        void shouldAcceptEndpointForwardDeclaringOneListPerDimension() {
+            ForwardConfig coherent = ForwardConfig.builder().headersAllow(List.of("Accept"))
+                    .queryDeny(List.of("debug")).build();
+            EndpointConfig endpoint = endpointWith(auth(Require.NONE), route("r", HttpMethod.GET)).forward(coherent)
+                    .build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            assertTrue(errors.stream().noneMatch(error -> ENDPOINT_FORWARD_POINTER.equals(error.pointer())),
+                    () -> "a coherent endpoint forward block is not refused, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse Authorization re-admitted by an endpoint-level forward block on a token_relay: false route")
+        void shouldRefuseEndpointForwardReadmittingAuthorization() {
+            ForwardConfig readmitting = ForwardConfig.builder().headersAllow(List.of("authorization")).build();
+            EndpointConfig endpoint = endpointWith(noTokenRelay(), route("r", HttpMethod.GET)).forward(readmitting)
+                    .build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            ConfigError refusal = singleRefusalAt(errors, ENDPOINT_FORWARD_POINTER);
+            assertTrue(refusal.message().contains("route 'r' resolves auth.token_relay: false but its "
+                    + AUTHORIZATION_REFUSAL), refusal::message);
+        }
+
+        @Test
+        @DisplayName("Should accept a route-level forward block replacing an endpoint block that re-admitted Authorization")
+        void shouldAcceptRouteForwardReplacingEndpointAuthorization() {
+            ForwardConfig readmitting = ForwardConfig.builder().headersAllow(List.of("Authorization")).build();
+            RouteConfig replacing = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .forward(ForwardConfig.builder().headersAllow(List.of("Accept")).build()).build();
+            EndpointConfig endpoint = endpointWith(noTokenRelay(), replacing).forward(readmitting).build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            assertFalse(anyMessageContains(errors, AUTHORIZATION_REFUSAL),
+                    () -> "the route-level block replaces the endpoint block wholesale, got: " + errors);
+        }
+    }
 }

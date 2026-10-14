@@ -45,6 +45,18 @@
         "allowed_content_types": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "forward": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Forward filter applied INSIDE an already-authorised route (deny-by-default lives at the URL layer, not here). Declarable on the endpoint and on a route; the nearest declaration replaces the broader one wholesale. Each dimension - headers, query - resolves exactly one of three modes: a positive-list when *_allow is declared, a negative-list when *_deny is declared, and forward-all when neither is. An absent list is not the same as a declared empty one: query_allow: [] is a positive-list admitting nothing, while an omitted query_allow is forward-all. Declaring both lists for one dimension is refused at boot in code, not by this schema: additionalProperties: false bounds the key set, but a mutual exclusion between two optional keys is cross-cutting and belongs with the other post-binding rules.",
+      "properties": {
+        "headers_allow": { "type": "array", "description": "Positive-list of forwardable request-header names. Naming Authorization here is the ONLY way an inbound Authorization is re-admitted past the gateway-owned never-forward set; Cookie is absolute and no list re-admits it. Mutually exclusive with headers_deny (enforced in code).", "items": { "type": "string" } },
+        "headers_deny": { "type": "array", "description": "Negative-list of withheld request-header names; every other client header crosses EXCEPT the gateway-owned never-forward set, which applies under every mode (Cookie, an inbound Authorization, the hop-by-hop, framing and provenance names). The gateway-understood protocol headers cross without being named, and a name listed here withholds them too. Mutually exclusive with headers_allow (enforced in code).", "items": { "type": "string" } },
+        "query_allow": { "type": "array", "description": "Positive-list of forwardable query-parameter names. Mutually exclusive with query_deny (enforced in code).", "items": { "type": "string" } },
+        "query_deny": { "type": "array", "description": "Negative-list of withheld query-parameter names; every other client parameter crosses. Mutually exclusive with query_allow (enforced in code).", "items": { "type": "string" } },
+        "set_headers": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
     "upstreamDefaults": {
       "type": "object",
       "additionalProperties": false,
@@ -107,6 +119,14 @@
         "upstream_defaults": {
           "$ref": "#/$defs/upstreamDefaults",
           "description": "Optional endpoint-level retry / not-modified defaults. When present, replaces the global upstream_defaults wholesale for this endpoint."
+        },
+        "security_filter": {
+          "$ref": "#/$defs/securityFilter",
+          "description": "Optional endpoint-level inbound security-filter block. When present, replaces the anchor-level block wholesale for every route of this endpoint that declares none of its own; a route-level block replaces it in turn. The profile: minimal posture refusal and the framework body-limit check read it at this scope too (enforced in code)."
+        },
+        "forward": {
+          "$ref": "#/$defs/forward",
+          "description": "Optional endpoint-level forward filter. Applies to every route of this endpoint that declares none of its own; a route-level forward block replaces it wholesale. The mode-exclusivity and token_relay / Authorization refusals read it at this scope too (enforced in code)."
         },
         "catalog": {
           "type": "object",
@@ -182,18 +202,13 @@
                 }
               },
               "auth": { "$ref": "#/$defs/auth" },
-              "security_filter": { "$ref": "#/$defs/securityFilter" },
+              "security_filter": {
+                "$ref": "#/$defs/securityFilter",
+                "description": "Optional per-route inbound security-filter block. When present, replaces the endpoint-level (or, failing that, the anchor-level) block wholesale for this route."
+              },
               "forward": {
-                "type": "object",
-                "additionalProperties": false,
-                "description": "Per-route forward filter applied INSIDE an already-authorised route (deny-by-default lives at the URL layer, not here). Each dimension - headers, query - resolves exactly one of three modes: a positive-list when *_allow is declared, a negative-list when *_deny is declared, and forward-all when neither is. An absent list is not the same as a declared empty one: query_allow: [] is a positive-list admitting nothing, while an omitted query_allow is forward-all. Declaring both lists for one dimension is refused at boot in code, not by this schema: additionalProperties: false bounds the key set, but a mutual exclusion between two optional keys is cross-cutting and belongs with the other post-binding rules.",
-                "properties": {
-                  "headers_allow": { "type": "array", "description": "Positive-list of forwardable request-header names. Naming Authorization here is the ONLY way an inbound Authorization is re-admitted past the gateway-owned never-forward set; Cookie is absolute and no list re-admits it. Mutually exclusive with headers_deny (enforced in code).", "items": { "type": "string" } },
-                  "headers_deny": { "type": "array", "description": "Negative-list of withheld request-header names; every other client header crosses EXCEPT the gateway-owned never-forward set, which applies under every mode (Cookie, an inbound Authorization, the hop-by-hop, framing and provenance names). The gateway-understood protocol headers cross without being named, and a name listed here withholds them too. Mutually exclusive with headers_allow (enforced in code).", "items": { "type": "string" } },
-                  "query_allow": { "type": "array", "description": "Positive-list of forwardable query-parameter names. Mutually exclusive with query_deny (enforced in code).", "items": { "type": "string" } },
-                  "query_deny": { "type": "array", "description": "Negative-list of withheld query-parameter names; every other client parameter crosses. Mutually exclusive with query_allow (enforced in code).", "items": { "type": "string" } },
-                  "set_headers": { "type": "object", "additionalProperties": { "type": "string" } }
-                }
+                "$ref": "#/$defs/forward",
+                "description": "Optional per-route forward filter. When present, replaces the endpoint-level forward block wholesale for this route: no list of the endpoint block survives a route-level block."
               },
               "upstream": {
                 "type": "object",

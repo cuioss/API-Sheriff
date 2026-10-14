@@ -4587,7 +4587,7 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   *mechanically verified* against those files: `DocumentedSetsContractTest` derives both sets from
   the schemas and fails the build when a listed key, a stated count or the object-item set drifts
   from them. A key defined once and referenced from several places -- `allowed_methods` at the
-  global and anchor level, the `security_filter` and `security_headers` blocks -- is one
+  global and anchor level, the `security_filter`, `security_headers` and `forward` blocks -- is one
   key, named by the block it is declared under; an endpoint document's keys are named relative to
   its `endpoint` block.
 +
@@ -4602,9 +4602,9 @@ usable set: `allowed_methods` (global and anchor), `security_filter.allowed_path
 `oidc.user_info.default_view`.
 
 An `endpoints/*.yaml` document declares the same-named `allowed_methods` and four
-`security_filter` lists, and adds 7 further string-item keys of its own: `scopes`,
-`routes[].match.methods`, `routes[].forward.headers_allow`, `routes[].forward.headers_deny`,
-`routes[].forward.query_allow`, `routes[].forward.query_deny` and
+`security_filter` lists (at the endpoint and on a route), and adds 7 further string-item keys of its
+own: `scopes`, `routes[].match.methods`, `forward.headers_allow`, `forward.headers_deny`,
+`forward.query_allow`, `forward.query_deny` (the forward block, at the endpoint and on a route) and
 `routes[].websocket.allowed_origins`.
 --
 +
@@ -4663,7 +4663,7 @@ reporting nothing. Refusing this one form costs an operator nothing a secret was
   neutral name; supplying it from the environment is discouraged.
 +
 The same caution applies with more force to the endpoint-document keys, because several of them are
-*security controls*: the `routes[].forward` header and query allow/deny lists and
+*security controls*: the `forward` header and query allow/deny lists (endpoint- or route-level) and
 `routes[].websocket.allowed_origins` decide what crosses the gateway and which origins may open a
 socket. They are reachable by a `${VAR}` on the same uniform terms as any other list, so an
 environment variable can widen or empty them. Treat them as policy that belongs in the committed

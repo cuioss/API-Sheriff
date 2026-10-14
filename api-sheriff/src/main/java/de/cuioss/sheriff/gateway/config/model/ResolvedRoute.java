@@ -30,7 +30,8 @@ import org.jspecify.annotations.Nullable;
  * override wholesale, else the endpoint default, else the anchor floor), effective
  * {@code allowed_methods} (endpoint list if declared, else the anchor list, else
  * the global list, else the standard set), effective {@code security_filter} (route
- * block, else the anchor block), effective {@code security_headers} (anchor block,
+ * block, else the endpoint block, else the anchor block), effective {@code forward} (route
+ * block, else the endpoint block), effective {@code security_headers} (anchor block,
  * else the gateway block), and the effective retry / not-modified toggles (global
  * {@code upstream_defaults}, wholesale-replaced by an endpoint block, overridden
  * per route) — so downstream pipeline code consumes the already resolved values and
@@ -81,7 +82,8 @@ import org.jspecify.annotations.Nullable;
  *                               stage 5 — a per-dimension positive-list, negative-list
  *                               or forward-all posture; an all-absent
  *                               {@link ForwardConfig}, meaning <em>forward-all</em>,
- *                               when the route declares no {@code forward} block
+ *                               when neither the route nor its endpoint declares a
+ *                               {@code forward} block
  * @param effectiveAllowedOrigins the materialized, lower-cased exact-match
  *                               {@code Origin} allowlist for a WebSocket route,
  *                               empty for a non-WebSocket route (meaningful only when

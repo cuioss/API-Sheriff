@@ -45,6 +45,16 @@ import org.jspecify.annotations.Nullable;
  * allowlist) wholesale for this endpoint (no inheritance); an empty list means the
  * global/anchor list applies. The endpoint-level {@code upstreamDefaults}, when
  * present, replaces the global block wholesale for this endpoint's routes.
+ * {@code securityFilter} and {@code forward} are the endpoint-level declarations of the
+ * {@code security_filter} and {@code forward} blocks. Both follow the one rule every policy
+ * block is resolved by ({@link de.cuioss.sheriff.gateway.config.PolicyBlock}): the nearest
+ * declared scope wins and replaces every broader declaration wholesale. An endpoint-level
+ * {@code securityFilter} therefore replaces the route's anchor block for every route of this
+ * endpoint, and a route-level block replaces the endpoint one in turn — no field of a broader
+ * block is merged into a nearer one. An endpoint-level {@code forward} block applies to every
+ * route of this endpoint that declares none of its own; a route-level {@code forward} block
+ * replaces it wholesale (an endpoint {@code query_deny} does not survive a route
+ * {@code headers_allow} block).
  * {@code scopes} names the OIDC scopes this endpoint needs <em>in addition to</em> the
  * gateway's {@code oidc.scopes}. It is additive only — an endpoint can add scopes but never
  * remove one — and it lives on the endpoint, outside {@code auth}, so a route- or anchor-level
@@ -64,7 +74,13 @@ import org.jspecify.annotations.Nullable;
  *                         global/anchor list applies
  * @param upstreamDefaults the endpoint-level retry/not-modified defaults, {@code null}
  *                         when the global block applies
- * @param routes           the routes declared by this endpoint, empty when none
+ * @param securityFilter   the endpoint-level inbound security-filter block, {@code null} when
+ *                         the endpoint declares none (the anchor block, if any, then applies to
+ *                         routes declaring none of their own)
+ * @param forward          the endpoint-level forward-filtering block, {@code null} when the
+ *                         endpoint declares none (routes declaring none of their own then forward
+ *                         everything)
+ * @param routes          the routes declared by this endpoint, empty when none
  * @param catalog          the portal overview entry, {@code null} when the endpoint is not listed.
  *                         A catalog block makes the endpoint an overview entry, active exactly when
  *                         the endpoint is enabled after placeholder resolution
@@ -82,6 +98,8 @@ boolean enabled,
 List<String> scopes,
 List<HttpMethod> allowedMethods,
 @Nullable UpstreamDefaultsConfig upstreamDefaults,
+@Nullable SecurityFilterConfig securityFilter,
+@Nullable ForwardConfig forward,
 List<RouteConfig> routes,
 @Nullable CatalogConfig catalog) {
 

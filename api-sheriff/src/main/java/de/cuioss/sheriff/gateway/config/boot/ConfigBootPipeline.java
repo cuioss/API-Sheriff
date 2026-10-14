@@ -171,7 +171,7 @@ public final class ConfigBootPipeline {
      * start and names the key the operator must raise.
      *
      * @param gateway the bound gateway document (source of the anchor-level caps)
-     * @param enabled the enabled endpoints whose routes carry the route-level caps
+     * @param enabled the enabled endpoints, carrying the endpoint-level and route-level caps
      * @param limit   the framework request-body ceiling in bytes
      * @return the single violation when the largest declared cap exceeds the framework limit,
      *         otherwise an empty list
@@ -189,18 +189,23 @@ public final class ConfigBootPipeline {
 
     /**
      * The largest {@code max_body_bytes} declared anywhere in the configuration set — across the
-     * named policy anchors and every enabled endpoint's routes, the only two places a per-route cap
-     * can be declared.
+     * named policy anchors, every enabled endpoint's own {@code security_filter} block and every
+     * enabled endpoint's routes, the only three places a per-route cap can be declared (the scopes
+     * {@link de.cuioss.sheriff.gateway.config.PolicyBlock#SECURITY_FILTER} names). Every declaration
+     * counts, not only the one a route resolves: the declared cap is the effective one (ADR-0023), so a
+     * declaration the framework ceiling would silently cut is refused wherever it sits.
      *
      * @param gateway the bound gateway document
      * @param enabled the enabled endpoints
      * @return the maximum declared cap in bytes, or {@code 0} when no cap is declared
      */
     private static long maxDeclaredBodyBytes(GatewayConfig gateway, List<EndpointConfig> enabled) {
-        return Stream.concat(
+        return Stream.of(
                 gateway.anchors().values().stream().map(AnchorConfig::securityFilter),
+                enabled.stream().map(EndpointConfig::securityFilter),
                 enabled.stream().flatMap(endpoint -> endpoint.routes().stream())
                         .map(RouteConfig::securityFilter))
+                .flatMap(declarations -> declarations)
                 .filter(Objects::nonNull)
                 .map(SecurityFilterConfig::maxBodyBytes)
                 .filter(Objects::nonNull)

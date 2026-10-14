@@ -121,8 +121,8 @@ class PolicyBlockTest {
         }
 
         @Test
-        @DisplayName("Every descriptor declares exactly its current scope set")
-        void shouldDeclareTheCurrentScopeSets() {
+        @DisplayName("Every descriptor declares exactly its decided scope set")
+        void shouldDeclareTheDecidedScopeSets() {
             Map<String, Set<Scope>> scopes = PolicyBlock.ALL.stream()
                     .collect(Collectors.toMap(PolicyBlock::yamlKey, PolicyBlock::scopes));
 
@@ -130,11 +130,24 @@ class PolicyBlockTest {
                     () -> assertEquals(EnumSet.of(Scope.ANCHOR, Scope.ENDPOINT, Scope.ROUTE), scopes.get("auth")),
                     () -> assertEquals(EnumSet.of(Scope.GATEWAY, Scope.ANCHOR, Scope.ENDPOINT),
                             scopes.get("allowed_methods")),
-                    () -> assertEquals(EnumSet.of(Scope.ANCHOR, Scope.ROUTE), scopes.get("security_filter")),
+                    () -> assertEquals(EnumSet.of(Scope.ANCHOR, Scope.ENDPOINT, Scope.ROUTE),
+                            scopes.get("security_filter")),
                     () -> assertEquals(EnumSet.of(Scope.GATEWAY, Scope.ANCHOR), scopes.get("security_headers")),
                     () -> assertEquals(EnumSet.of(Scope.GATEWAY, Scope.ENDPOINT), scopes.get("upstream_defaults")),
-                    () -> assertEquals(EnumSet.of(Scope.ROUTE), scopes.get("forward")),
+                    () -> assertEquals(EnumSet.of(Scope.ENDPOINT, Scope.ROUTE), scopes.get("forward")),
                     () -> assertEquals(EnumSet.of(Scope.ROUTE), scopes.get("websocket")));
+        }
+
+        @Test
+        @DisplayName("Neither widened block is declarable at the gateway scope")
+        void shouldNotReadTheWidenedBlocksAtTheGateway() {
+            assertAll("no gateway scope",
+                    () -> assertFalse(PolicyBlock.SECURITY_FILTER.scopes().contains(Scope.GATEWAY),
+                            "security_defaults owns the gateway-wide profile"),
+                    () -> assertFalse(PolicyBlock.FORWARD.scopes().contains(Scope.GATEWAY),
+                            "forward filtering is upstream-specific"),
+                    () -> assertFalse(PolicyBlock.FORWARD.scopes().contains(Scope.ANCHOR),
+                            "forward filtering is upstream-specific"));
         }
 
         @Test
@@ -218,22 +231,45 @@ class PolicyBlockTest {
         }
 
         @Test
-        @DisplayName("security_filter: a route block replaces the anchor block wholesale")
+        @DisplayName("security_filter: route over endpoint over anchor, each replacing wholesale")
         void shouldResolveSecurityFilterNearestFirst() {
             SecurityFilterConfig anchorFilter = filter();
+            SecurityFilterConfig endpointFilter = SecurityFilterConfig.builder().profile("lenient").build();
             SecurityFilterConfig routeFilter = SecurityFilterConfig.builder().build();
             AnchorConfig anchor = anchor(name()).securityFilter(anchorFilter).build();
             GatewayConfig gateway = gatewayWith(anchor);
             EndpointConfig endpoint = endpoint().anchor(anchor.name()).build();
+            EndpointConfig filteringEndpoint = endpoint().anchor(anchor.name()).securityFilter(endpointFilter).build();
 
             SecurityFilterConfig routeWins = PolicyBlock.SECURITY_FILTER.resolve(
-                    ScopeChain.of(gateway, endpoint, route().securityFilter(routeFilter).build()));
+                    ScopeChain.of(gateway, filteringEndpoint, route().securityFilter(routeFilter).build()));
+            SecurityFilterConfig endpointWins = PolicyBlock.SECURITY_FILTER.resolve(
+                    ScopeChain.of(gateway, filteringEndpoint, route().build()));
             SecurityFilterConfig anchorWins = PolicyBlock.SECURITY_FILTER.resolve(
                     ScopeChain.of(gateway, endpoint, route().build()));
 
             assertAll("security_filter chain",
                     () -> assertSame(routeFilter, routeWins),
+                    () -> assertSame(endpointFilter, endpointWins),
                     () -> assertSame(anchorFilter, anchorWins));
+        }
+
+        @Test
+        @DisplayName("forward: a route block replaces the endpoint block wholesale")
+        void shouldResolveForwardNearestFirst() {
+            ForwardConfig endpointForward = ForwardConfig.builder().queryDeny(List.of(name())).build();
+            ForwardConfig routeForward = ForwardConfig.builder().headersAllow(List.of(name())).build();
+            EndpointConfig endpoint = endpoint().forward(endpointForward).build();
+
+            ForwardConfig routeWins = PolicyBlock.FORWARD.resolve(
+                    ScopeChain.of(gateway().build(), endpoint, route().forward(routeForward).build()));
+            ForwardConfig endpointWins = PolicyBlock.FORWARD.resolve(
+                    ScopeChain.of(gateway().build(), endpoint, route().build()));
+
+            assertAll("forward chain",
+                    () -> assertSame(routeForward, routeWins),
+                    () -> assertNull(routeWins.queryDeny(), "the endpoint query_deny is not merged"),
+                    () -> assertSame(endpointForward, endpointWins));
         }
 
         @Test
@@ -273,8 +309,8 @@ class PolicyBlockTest {
         }
 
         @Test
-        @DisplayName("forward and websocket: the route's declared block")
-        void shouldResolveRouteOnlyBlocksFromTheRoute() {
+        @DisplayName("forward and websocket: the route's declared block on an endpoint declaring none")
+        void shouldResolveRouteLevelBlocksFromTheRoute() {
             ForwardConfig forward = ForwardConfig.builder().headersAllow(List.of(name())).build();
             WebSocketConfig websocket = WebSocketConfig.builder().idleTimeoutSeconds(42).build();
             ScopeChain chain = ScopeChain.of(gateway().build(), endpoint().build(),
@@ -364,7 +400,8 @@ class PolicyBlockTest {
             GatewayConfig gateway = gateway().allowedMethods(List.of(HttpMethod.GET)).securityHeaders(headers())
                     .upstreamDefaults(upstreamDefaults()).anchors(Map.of(anchor.name(), anchor)).build();
             EndpointConfig endpoint = endpoint().anchor(anchor.name()).auth(auth(Require.BEARER))
-                    .allowedMethods(List.of(HttpMethod.GET)).upstreamDefaults(upstreamDefaults()).build();
+                    .allowedMethods(List.of(HttpMethod.GET)).upstreamDefaults(upstreamDefaults())
+                    .securityFilter(filter()).forward(ForwardConfig.builder().build()).build();
             RouteConfig route = route().auth(auth(Require.BEARER)).securityFilter(filter())
                     .forward(ForwardConfig.builder().build()).websocket(WebSocketConfig.builder().build()).build();
             ScopeChain chain = ScopeChain.of(gateway, endpoint, route);

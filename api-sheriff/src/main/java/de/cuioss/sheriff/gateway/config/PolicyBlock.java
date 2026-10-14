@@ -117,12 +117,14 @@ Map<Scope, Function<ScopeChain, @Nullable T>> accessors, Fallback<T> fallback, b
             false);
 
     /**
-     * {@code security_filter}: declarable at anchor and route; {@code null} when neither declares
-     * one (the profile then comes from {@code security_defaults}).
+     * {@code security_filter}: declarable at anchor, endpoint and route; {@code null} when none
+     * declares one (the profile then comes from {@code security_defaults}). There is no gateway
+     * scope: {@code security_defaults} owns the gateway-wide profile.
      */
     public static final PolicyBlock<@Nullable SecurityFilterConfig> SECURITY_FILTER =
             new PolicyBlock<>("security_filter",
                     Map.of(Scope.ANCHOR, atAnchor(AnchorConfig::securityFilter),
+                            Scope.ENDPOINT, atEndpoint(EndpointConfig::securityFilter),
                             Scope.ROUTE, atRoute(RouteConfig::securityFilter)),
                     new Fallback.None<>(),
                     false);
@@ -146,11 +148,14 @@ Map<Scope, Function<ScopeChain, @Nullable T>> accessors, Fallback<T> fallback, b
             false);
 
     /**
-     * {@code forward}: declarable at route only. When the route declares none, the all-absent block
-     * applies, which is <em>forward-all</em> on both dimensions — not a nothing-crosses allowlist.
+     * {@code forward}: declarable at endpoint and route — forward filtering is upstream-specific
+     * (ADR-0036), so there is no anchor or gateway scope. When neither declares one, the all-absent
+     * block applies, which is <em>forward-all</em> on both dimensions — not a nothing-crosses
+     * allowlist.
      */
     public static final PolicyBlock<ForwardConfig> FORWARD = new PolicyBlock<>("forward",
-            Map.of(Scope.ROUTE, atRoute(RouteConfig::forward)),
+            Map.of(Scope.ENDPOINT, atEndpoint(EndpointConfig::forward),
+                    Scope.ROUTE, atRoute(RouteConfig::forward)),
             new Fallback.Value<>(ForwardConfig.builder().build()),
             false);
 

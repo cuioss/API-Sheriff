@@ -199,6 +199,50 @@ class ConfigBootPipelineTest {
         assertNotNull(outcome.assembly(), () -> "unexpected " + outcome.violations());
     }
 
+    /** Writes a proxy endpoint whose own {@code security_filter} declares {@code max_body_bytes}. */
+    private void writeEndpointDeclaringBodyCap(int maxBodyBytes) throws IOException {
+        Files.createDirectories(configDir.resolve("endpoints"));
+        Files.writeString(configDir.resolve("endpoints/uploads.yaml"), """
+                endpoint:
+                  id: uploads
+                  base_url: UPLOADS
+                  auth:
+                    require: none
+                  security_filter:
+                    max_body_bytes: %d
+                  routes:
+                    - id: uploads-proxied
+                      match:
+                        path_prefix: /uploads
+                """.formatted(maxBodyBytes));
+        writeTopology("UPLOADS=https://uploads.internal:8443\n");
+    }
+
+    @Test
+    @DisplayName("An endpoint-level body cap above the supplied framework limit yields the body-limit violation")
+    void endpointBodyCapAboveTheFrameworkLimitIsAViolation() throws Exception {
+        writeGateway(VALID_GATEWAY);
+        writeEndpointDeclaringBodyCap(4096);
+
+        ConfigBootPipeline.Outcome outcome = pipelineWith(Map.of()).run(configDir, FRAMEWORK_LIMIT_BYTES);
+
+        assertNull(outcome.assembly());
+        assertEquals(List.of(new ConfigError("application.properties", "quarkus.http.limits.max-body-size",
+                        "4096 exceeds framework limit 1024; raise quarkus.http.limits.max-body-size to at least 4096")),
+                outcome.violations());
+    }
+
+    @Test
+    @DisplayName("An endpoint-level body cap equal to the framework limit is reachable and assembles")
+    void endpointBodyCapAtTheFrameworkLimitAssembles() throws Exception {
+        writeGateway(VALID_GATEWAY);
+        writeEndpointDeclaringBodyCap(1024);
+
+        ConfigBootPipeline.Outcome outcome = pipelineWith(Map.of()).run(configDir, FRAMEWORK_LIMIT_BYTES);
+
+        assertNotNull(outcome.assembly(), () -> "unexpected " + outcome.violations());
+    }
+
     @Test
     @DisplayName("Without a framework limit the body-limit check is named as not checked, never passed or failed")
     void nullLimitIsReportedAsNotChecked() throws Exception {

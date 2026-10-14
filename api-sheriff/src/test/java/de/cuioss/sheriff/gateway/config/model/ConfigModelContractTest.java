@@ -666,7 +666,8 @@ class ConfigModelContractTest {
         void endpointConfigBuilderMatchesConstructor() {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", "api",
-                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, List.of(), catalogConfig());
+                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, null, null, List.of(),
+                    catalogConfig());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
                     .anchor("api").auth(auth()).scopes(List.of("orders.read")).allowedMethods(List.of(HttpMethod.GET))
                     .catalog(catalogConfig()).build();
@@ -869,9 +870,12 @@ class ConfigModelContractTest {
         @Test
         void endpointConfigNormalizesAbsentCollectionsAndNullables() {
             // Positional on purpose: the canonical constructor's null normalization is the subject.
-            EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null, null, null);
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null, null, null, null,
+                    null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
+            assertNull(cfg.securityFilter(), "an endpoint without a security_filter block declares none");
+            assertNull(cfg.forward(), "an endpoint without a forward block declares none");
             assertNull(cfg.catalog(), "an endpoint without a catalog block is not listed on the portal");
             assertTrue(cfg.scopes().isEmpty(), "an absent endpoint scopes list normalizes to empty");
             assertTrue(cfg.allowedMethods().isEmpty());
@@ -1086,14 +1090,15 @@ class ConfigModelContractTest {
          */
         private EndpointConfig endpointConfigWith(String id, String baseUrl) {
             // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
-            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, List.of(), null);
+            return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, null, null,
+                    List.of(), null);
         }
 
         @Test
         void endpointConfigAcceptsAnAbsentAuthBlock() {
             // Positional on purpose: the canonical constructor admitting an absent auth is the subject.
-            EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), List.of(), null,
-                    List.of(), null);
+            EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), List.of(), null, null,
+                    null, List.of(), null);
             assertNull(cfg.auth(), "an anchored endpoint may omit its auth block");
         }
 

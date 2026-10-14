@@ -1046,6 +1046,62 @@ class RouteTableBuilderTest {
 
             LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, "overrides anchor");
         }
+
+        @Test
+        @DisplayName("Should let an endpoint-level security_filter govern a route declaring none")
+        void shouldApplyEndpointSecurityFilterToRouteDeclaringNone() {
+            SecurityFilterConfig endpointFilter = SecurityFilterConfig.builder().profile("lenient")
+                    .maxBodyBytes(2048).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").securityFilter(endpointFilter)
+                    .routes(List.of(route("r", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(endpointFilter, find(table, "r").effectiveSecurityFilter(),
+                    "the endpoint block is the nearest declaration for a route declaring none");
+        }
+
+        @Test
+        @DisplayName("Should let a route-level security_filter replace the endpoint block wholesale")
+        void shouldReplaceEndpointSecurityFilterWithRouteBlockWholesale() {
+            SecurityFilterConfig endpointFilter = SecurityFilterConfig.builder().profile("lenient")
+                    .maxBodyBytes(2048).build();
+            SecurityFilterConfig routeFilter = SecurityFilterConfig.builder().maxHeaderCount(10).build();
+            RouteConfig declaring = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .securityFilter(routeFilter).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").securityFilter(endpointFilter)
+                    .routes(List.of(declaring)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            SecurityFilterConfig resolved = find(table, "r").effectiveSecurityFilter();
+            assertAll("the route block replaces the endpoint block, no field is merged",
+                    () -> assertEquals(routeFilter, resolved),
+                    () -> assertNull(resolved.profile(), "the endpoint profile does not survive the route block"),
+                    () -> assertNull(resolved.maxBodyBytes(), "the endpoint cap does not survive the route block"));
+        }
+
+        @Test
+        @DisplayName("Should let an endpoint-level security_filter replace the anchor block wholesale")
+        void shouldReplaceAnchorSecurityFilterWithEndpointBlockWholesale() {
+            SecurityFilterConfig anchorFilter = SecurityFilterConfig.builder().profile("paranoid")
+                    .maxBodyBytes(1024).build();
+            SecurityFilterConfig endpointFilter = SecurityFilterConfig.builder().maxHeaderCount(20).build();
+            GatewayConfig config = gateway()
+                    .anchors(Map.of("api", anchor("api", "/api", auth(Require.BEARER), anchorFilter, null, null)))
+                    .build();
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET)).build();
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").securityFilter(endpointFilter)
+                    .routes(List.of(route)).build();
+
+            RouteTable table = builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
+
+            SecurityFilterConfig resolved = find(table, "r").effectiveSecurityFilter();
+            assertAll("the endpoint block replaces the anchor block, no field is merged",
+                    () -> assertEquals(endpointFilter, resolved),
+                    () -> assertNull(resolved.profile(), "the anchor profile does not survive the endpoint block"),
+                    () -> assertNull(resolved.maxBodyBytes(), "the anchor cap does not survive the endpoint block"));
+        }
     }
 
     @Nested
@@ -1192,6 +1248,39 @@ class RouteTableBuilderTest {
                             "an absent list stays absent"),
                     () -> assertNotEquals(find(table, "declared").effectiveForward(),
                             find(table, "absent").effectiveForward()));
+        }
+
+        @Test
+        @DisplayName("Should let an endpoint-level forward block govern a route declaring none")
+        void shouldApplyEndpointForwardToRouteDeclaringNone() {
+            ForwardConfig endpointForward = ForwardConfig.builder().queryDeny(List.of("debug"))
+                    .headersDeny(List.of("X-Internal")).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").forward(endpointForward)
+                    .routes(List.of(route("r", HttpMethod.GET))).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertEquals(endpointForward, find(table, "r").effectiveForward(),
+                    "the endpoint block is the nearest declaration for a route declaring none");
+        }
+
+        @Test
+        @DisplayName("Should let a route-level forward block replace the endpoint block wholesale")
+        void shouldReplaceEndpointForwardWithRouteBlockWholesale() {
+            ForwardConfig endpointForward = ForwardConfig.builder().queryDeny(List.of("debug")).build();
+            ForwardConfig routeForward = ForwardConfig.builder().headersAllow(List.of("Accept")).build();
+            RouteConfig declaring = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .forward(routeForward).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").forward(endpointForward)
+                    .routes(List.of(declaring)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            ForwardConfig resolved = find(table, "r").effectiveForward();
+            assertAll("the route block replaces the endpoint block, no list is merged",
+                    () -> assertEquals(routeForward, resolved),
+                    () -> assertNull(resolved.queryDeny(),
+                            "the endpoint query_deny is not merged into a route headers_allow block"));
         }
     }
 
