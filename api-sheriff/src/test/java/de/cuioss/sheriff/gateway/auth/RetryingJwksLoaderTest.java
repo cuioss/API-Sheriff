@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -30,6 +31,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -289,6 +291,42 @@ class RetryingJwksLoaderTest {
             Optional<KeyInfo> key = loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID);
             assertTrue(key.isPresent(), "the loaded key set answers key lookups through the wrapper");
             assertEquals(JwksType.HTTP, loader.getJwksType());
+        }
+
+        @Test
+        @DisplayName("the key ids are empty before the first load and the loaded set's ids after it")
+        void keyIdsFollowTheLoadedKeySet() throws Exception {
+            // Arrange
+            RetryingJwksLoader loader = httpLoader();
+            Set<String> beforeLoad = loader.getKeyIds();
+
+            // Act
+            initialise(loader);
+            int requestsAfterInit = server.getRequestCount();
+            Set<String> afterLoad = loader.getKeyIds();
+
+            // Assert
+            assertTrue(beforeLoad.isEmpty(), "no key set is loaded yet, so no key ids");
+            assertEquals(Set.of(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID), afterLoad);
+            assertThrows(UnsupportedOperationException.class, () -> afterLoad.add("invented"),
+                    "the key ids are an immutable snapshot");
+            assertEquals(requestsAfterInit, server.getRequestCount(), "reading the key ids issues no fetch");
+            loader.close();
+        }
+
+        @Test
+        @DisplayName("a failed first load reports no key ids")
+        void failedFirstLoadHasNoKeyIds() throws Exception {
+            // Arrange
+            RetryingJwksLoader loader = loader(FailingLoader::new);
+
+            // Act
+            loader.initJWKSLoader(new SecurityEventCounter()).handle((status, failure) -> status)
+                    .get(AWAIT_SECONDS, TimeUnit.SECONDS);
+
+            // Assert
+            assertTrue(loader.getKeyIds().isEmpty());
+            loader.close();
         }
 
         @Test
@@ -1061,6 +1099,29 @@ class RetryingJwksLoaderTest {
         }
 
         @Test
+        @DisplayName("after a refresh the key ids are the published set's only, and an earlier snapshot is unchanged")
+        void keyIdsExcludeTheRetiredKeySet() throws Exception {
+            // Arrange
+            RetryingJwksLoader loader = refreshingLoader();
+            initialise(loader);
+            Set<String> beforeRefresh = loader.getKeyIds();
+            rotateSigningKey();
+
+            // Act
+            loader.getKeyInfo(ROTATED_KEY_ID);
+            awaitRotatedKeyPublished(loader);
+            Set<String> afterRefresh = loader.getKeyIds();
+
+            // Assert
+            assertEquals(Set.of(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID), beforeRefresh,
+                    "a snapshot taken before the refresh is not changed by it");
+            assertEquals(Set.of(ROTATED_KEY_ID), afterRefresh, "only the active key set's ids are reported");
+            assertTrue(loader.getKeyInfo(InMemoryKeyMaterialHandler.DEFAULT_KEY_ID).isPresent(),
+                    "the retired key set still resolves its key id inside the grace period");
+            loader.close();
+        }
+
+        @Test
         @DisplayName("the replaced delegate answers its own key id until the grace deadline and is closed after it")
         void replacedDelegateAnswersUntilTheGraceDeadline() throws Exception {
             // Arrange — a grace period the scheduler reaches within the test. The deadline a lookup
@@ -1421,6 +1482,11 @@ class RetryingJwksLoaderTest {
         @Override
         public Optional<KeyInfo> getKeyInfo(String kid) {
             return Optional.empty();
+        }
+
+        @Override
+        public Set<String> getKeyIds() {
+            return Set.of();
         }
 
         @Override
