@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.config.validation;
+package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,6 +36,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -45,7 +46,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 
 /**
- * Tests for the same-prefix route-disjointness rule of {@link ConfigValidator} (D5, ADR-0009).
+ * Tests for the route-matching rules of {@link RouteMatchingRules} — route disjointness (D5, ADR-0009),
+ * header-matcher consistency and method membership — each driven through the default
+ * {@link ConfigValidator}, so a rule dropped from its registration fails here.
  * <p>
  * Two enabled routes that normalize to the same {@code match.path_prefix} collide unless some
  * matcher distinguishes them. The rule decides that by conjunction: the routes collide only when
@@ -54,8 +57,8 @@ import org.junit.jupiter.params.ParameterizedTest;
  * "declared on one side only" shapes, where an omitted matcher means "matches anything" and
  * therefore still overlaps rather than distinguishing.
  * <p>
- * The sibling {@code ConfigValidatorTest} covers the rule's baseline (a plain same-prefix collision
- * and prefix normalization); this class covers the discriminator matrix, which is where the
+ * The rule's baseline cases (a plain same-prefix collision, prefix normalization and method
+ * disjointness) live in this class, beside the discriminator matrix, which is where the
  * fail-open risk lives — a matcher wrongly treated as distinguishing would let two colliding routes
  * boot, and the request would then be dispatched to whichever route won an undefined ordering. The
  * header discriminator mirrors the runtime matcher: names compare exactly as {@code RouteMatcher}
@@ -73,7 +76,7 @@ import org.junit.jupiter.params.ParameterizedTest;
  * header while the other forbids it. Redundant but compatible pairs stay valid.
  */
 @EnableGeneratorController
-class ConfigValidatorRouteDisjointnessTest {
+class RouteMatchingRulesTest {
 
     private static final String SHARED_PREFIX = "/api";
     private static final String COLLISION_MESSAGE = "are not disjoint";
@@ -102,6 +105,37 @@ class ConfigValidatorRouteDisjointnessTest {
 
     private static HeaderMatcher headerWithPresence(String name, boolean present) {
         return HeaderMatcher.builder().name(name).present(present).build();
+    }
+
+    private static GatewayConfig.GatewayConfigBuilder validGateway() {
+        return GatewayConfig.builder().version(1);
+    }
+
+    private static MatchConfig match(String pathPrefix, HttpMethod... methods) {
+        return MatchConfig.builder().pathPrefix(pathPrefix).methods(List.of(methods)).build();
+    }
+
+    private static RouteConfig route(String id, HttpMethod... methods) {
+        return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
+    }
+
+    private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
+            RouteConfig... routes) {
+        return EndpointConfig.builder()
+                .id(id)
+                .enabled(true)
+                .baseUrl(alias)
+                .auth(new AuthConfig(Require.NONE, null, null))
+                .allowedMethods(allowedMethods)
+                .routes(List.of(routes))
+                .build();
+    }
+
+    private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
+        assertTrue(errors.stream()
+                        .anyMatch(e -> e.pointer().contains(pointerContains) && e.message().contains(messageContains)),
+                () -> "expected an error whose pointer contains '" + pointerContains + "' and message contains '"
+                        + messageContains + "', but got: " + errors);
     }
 
     /**
@@ -690,6 +724,68 @@ class ConfigValidatorRouteDisjointnessTest {
                             error -> error.message().contains(IntraRouteSameNameContradiction.PAIR_MESSAGE)),
                     () -> "The two matchers read different runtime headers and must not be refused, got: "
                             + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("The same-prefix disjointness baseline")
+    class DisjointnessBaseline {
+
+        @Test
+        @DisplayName("Should reject two enabled routes sharing a normalized prefix and overlapping on method")
+        void shouldRejectNonDisjointSamePrefixRoutes() {
+            RouteConfig first = RouteConfig.builder().id("first").match(match("/api", HttpMethod.GET)).build();
+            RouteConfig second = RouteConfig.builder().id("second").match(match("/api", HttpMethod.GET)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), first, second);
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "share prefix '/api' and are not disjoint");
+        }
+
+        @Test
+        @DisplayName("Should collide '/api' with '/api/' in the same-prefix disjointness rule after normalization")
+        void shouldCollideTrailingSlashPrefixInDisjointness() {
+            RouteConfig first = RouteConfig.builder().id("first").match(match("/api", HttpMethod.GET)).build();
+            RouteConfig second = RouteConfig.builder().id("second").match(match("/api/", HttpMethod.GET)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), first, second);
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "are not disjoint");
+        }
+
+        @Test
+        @DisplayName("Should accept two same-prefix routes made disjoint by method")
+        void shouldAcceptSamePrefixRoutesDisjointByMethod() {
+            RouteConfig reader = RouteConfig.builder().id("reader").match(match("/api", HttpMethod.GET)).build();
+            RouteConfig writer = RouteConfig.builder().id("writer").match(match("/api", HttpMethod.POST)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), reader, writer);
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.message().contains("not disjoint")),
+                    () -> "method-disjoint same-prefix routes must not collide, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("Membership of match.methods in the effective allowed_methods")
+    class MethodMembership {
+
+        @Test
+        @DisplayName("Should reject a route matching a method outside the effective allowed_methods")
+        void shouldRejectMethodOutsideEffectiveAllowedMethods() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(HttpMethod.GET),
+                    route("orders-post", HttpMethod.POST));
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertHasError(errors, "/endpoint/routes", "outside the effective allowed_methods");
         }
     }
 }
