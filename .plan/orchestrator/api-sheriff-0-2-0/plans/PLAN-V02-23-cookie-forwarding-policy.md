@@ -251,6 +251,11 @@ suite is its proof.
 - Depends on: **`PLAN-V02-12` (its first PR, D1–D4) and `PLAN-V02-21` having landed.** Operator
   direction (2026-10-13): this plan is the **next one emitted** after both land, ahead of every other
   staged plan in the queue.
+- **Emitted 2026-10-14, concurrently with two plans in flight; rebase, do not wait.** `PLAN-V02-12`'s
+  second PR (the `oidc` back-channel-origin key) writes `gateway.schema.json`, `ConfigValidator`,
+  `ConfigModelReflection` and `doc/configuration.adoc`; kidicap `PLAN-30` (PR #448, open) writes
+  `GatewayEdgeRoute`, `ResponseStage` and their tests. Whichever merges second rebases (operator,
+  2026-10-14). Re-fetch `origin/main` before outline and again before push.
 - Depended on by: `PLAN-V02-12`'s held D3 (the `/auth`-fronted Keycloak sample), which also needs
   `PLAN-V02-12` D1 and its upstream `token-sheriff-client` release.
 - Overlaps with: every staged spec declaring `edge/**`, `forward/**`, `config/**` or the docs above —
@@ -263,7 +268,7 @@ suite is its proof.
 ## Hand-Off Command
 
 ```text
-/plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-23-cookie-forwarding-policy.md"
+/plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-23-cookie-forwarding-policy.md" plan_id=plan-v02-23-cookie-forwarding-policy
 ```
 
 ## Write-Boundary
