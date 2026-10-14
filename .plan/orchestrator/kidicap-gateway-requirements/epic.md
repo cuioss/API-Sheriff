@@ -55,7 +55,8 @@ decision.
   (lesson `2026-10-14-13-003`). The upload benchmarks no longer exercise the early-answer path.
 - **PLAN-32 (staged and emitted 2026-10-14 by the other orchestrator session, WS-02, RUNNING) — the
   `Http2EarlyResponseResetIT` timeouts since #448** (#455). Top priority; touches the early-answer path in
-  `GatewayEdgeRoute` and `DispatchStage`, so PLAN-29 waits for it.
+  `GatewayEdgeRoute` and `DispatchStage`, so PLAN-29 waits for it. Since #461 the sibling's edge refactor
+  `PLAN-V02-25` also waits for it.
 - **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** HELD by the cross-epic hold (Watches) until `PLAN-V02-25` lands; then re-ground and emit. Its line references into
   `GatewayEdgeRoute` are stale since #431 and #448: run `cleanup` before emitting it. Its D4 (DP-6) must
   be read against #448's abortive close and guard-keyed breaker. Carries two wire-or-remove decisions for
@@ -605,6 +606,16 @@ decision.
   after this epic's PLAN-32 has landed. **PLAN-20, -21, -26 and -29 are held until the refactor plan for
   their surface lands** (config blocks → V02-24, edge → V02-25, boot rules → V02-26), then are re-grounded
   against the new seams before emitting. PLAN-31 (`auth/RetryingJwksLoader` only) is not held.
+  **Update 2026-10-14 (#461, refactor design settled with the operator):** `PLAN-V02-24` and `PLAN-V02-26`
+  were emitted in parallel and run now — they no longer wait for PLAN-32. `PLAN-V02-25` (edge) follows
+  once V02-24 **and this epic's PLAN-32** have landed, so PLAN-32 now gates the edge refactor and with it
+  PLAN-29. Release order for the held plans: PLAN-26 when V02-26 lands; PLAN-20 and PLAN-21 when V02-24
+  lands; PLAN-29 when V02-25 lands. V02-24 first moves every policy block onto one resolution mechanism
+  (gateway → anchor → endpoint → route) with the current chains, then applies per-block scope sets the
+  operator decides at its outline **as explicit breaking changes** — re-grounding PLAN-20 and PLAN-21 must
+  read those decisions, not only the new seams. The config records gain Lombok `@Builder`; tests stop
+  constructing them positionally. A later `PLAN-V02-27` simplifies the tests in `config/`, `edge/`,
+  `routing/` after the refactor.
 
 - **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
   FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`
