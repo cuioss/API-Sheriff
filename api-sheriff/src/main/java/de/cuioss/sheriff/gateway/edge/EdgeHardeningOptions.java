@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import io.quarkus.vertx.http.HttpServerOptionsCustomizer;
+import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpServerOptions;
 
 /**
@@ -40,6 +41,13 @@ import io.vertx.core.http.HttpServerOptions;
  * will buffer for a gateway-terminated reserved POST path (rejected with {@code 413}), so an
  * unauthenticated caller cannot exhaust heap through the pre-authentication back-channel logout
  * path that never reaches the per-route body cap.
+ * <p>
+ * <strong>The inbound HTTP/2 connection window is a transport bound too.</strong> It is sized so every
+ * stream the listener admits at once can fill its own window: the maximum concurrent streams times the
+ * initial stream window, capped at {@code 2^31-1} and never below one stream window. A request whose
+ * body the gateway is not reading yet returns no window, so a connection window the size of one stream
+ * would let such streams use it up and leave the ones being forwarded unable to send a byte. The value
+ * is derived from the listener's own stream settings at the time this customizer runs, not configured.
  * <p>
  * <strong>Transport bounds are fixed; the admission budget is operator-configurable.</strong> The
  * codec limits above are deliberate secure defaults chosen to keep the abuse surface bounded while
@@ -125,7 +133,24 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
                 .setMaxInitialLineLength(MAX_INITIAL_LINE_LENGTH_BYTES)
                 .setMaxChunkSize(MAX_CHUNK_SIZE_BYTES)
                 .setIdleTimeout(IDLE_TIMEOUT_SECONDS)
-                .setIdleTimeoutUnit(TimeUnit.SECONDS);
+                .setIdleTimeoutUnit(TimeUnit.SECONDS)
+                .setHttp2ConnectionWindowSize(connectionWindowSize(options.getInitialSettings()));
+    }
+
+    /**
+     * Derives the inbound HTTP/2 connection window from the stream settings the listener announces:
+     * every stream it admits at once can fill its whole window without drawing on a sibling's share.
+     * The product is computed in {@code long}, capped at {@code 2^31-1} — the largest window
+     * RFC 9113 section 6.9.1 allows, reached by a listener whose concurrent streams are unbounded —
+     * and never set below one stream window.
+     *
+     * @param settings the initial HTTP/2 settings of the listener
+     * @return the connection window in bytes
+     */
+    private static int connectionWindowSize(Http2Settings settings) {
+        long streamWindow = settings.getInitialWindowSize();
+        long everyStreamsWindow = settings.getMaxConcurrentStreams() * streamWindow;
+        return (int) Math.max(streamWindow, Math.min(everyStreamsWindow, Integer.MAX_VALUE));
     }
 
     /**

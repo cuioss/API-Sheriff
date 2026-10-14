@@ -71,6 +71,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
@@ -80,6 +81,7 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.http.PoolOptions;
 import io.vertx.core.http.StreamResetException;
 import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.net.NetClient;
@@ -162,8 +164,10 @@ class GatewayEdgeEarlyResponseResetTest {
     private static final int SENDING_UPLOADS = 3 * RESET_LIMIT;
     /**
      * Uploads the still-sending case keeps in flight at once on that connection: enough that the
-     * bodies the gateway holds back exhaust the connection's flow-control window, as many concurrent
-     * uploads on one connection do.
+     * bodies the gateway holds back exhaust a flow-control window, as many concurrent uploads on one
+     * connection do — the connection's own on a front server with Vert.x's default single-stream
+     * connection window, each stream's on one carrying the edge's options, whose connection window has
+     * room for every stream's.
      */
     private static final int SENDING_BATCH = 10;
     /** The size of each chunk a still-sending upload writes. */
@@ -203,7 +207,9 @@ class GatewayEdgeEarlyResponseResetTest {
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         earlyAnswer = Generators.letterStrings(16, 32).next();
         partialChunk = Generators.letterStrings(16, 32).next();
-        upstreamServer = Awaits.connect(vertx.createHttpServer()
+        // HTTP/1.1 only, which is all the gateway's default upstream client speaks: without h2c to
+        // detect, the stub reports a connection when it is accepted rather than with its first bytes.
+        upstreamServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions().setHttp2ClearTextEnabled(false))
                 .connectionHandler(this::trackUpstreamConnection)
                 .requestHandler(this::handleUpstreamRequest)
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
@@ -443,8 +449,88 @@ class GatewayEdgeEarlyResponseResetTest {
     @Test
     @DisplayName("uploads still sending when answered early: each answered whole, then reset by the gateway; no GOAWAY")
     void uploadsStillSendingWhenAnsweredStayOnOneConnection() throws Exception {
-        int port = startEdge(new EdgeHardeningOptions(),
+        assertUploadsStillSendingWhenAnsweredStayOnOneConnection(
                 new HttpServerOptions().setHttp2RstFloodMaxRstFramePerWindow(RESET_LIMIT));
+    }
+
+    /**
+     * The still-sending case of {@link #uploadsStillSendingWhenAnsweredStayOnOneConnection} on a front
+     * server carrying the edge's own options, so the early-answer end of ADR-0066 holds under the
+     * connection window production uses: there the held-back bodies use up each stream's window rather
+     * than the connection's, and the gateway must still end every response, reset it {@code NO_ERROR}
+     * and keep the connection.
+     */
+    @Test
+    @DisplayName("uploads still sending when answered early, under the edge's own options: the same end, no GOAWAY")
+    void uploadsStillSendingWhenAnsweredStayOnOneConnectionUnderTheEdgesOptions() throws Exception {
+        assertUploadsStillSendingWhenAnsweredStayOnOneConnection(
+                edgeServerOptions().setHttp2RstFloodMaxRstFramePerWindow(RESET_LIMIT));
+    }
+
+    /**
+     * Uploads that wait for an upstream connection must leave the ones holding one able to finish. The
+     * upstream client's HTTP/1.1 pool holds {@link #upstreamPoolSize()} connections; that many uploads
+     * take every one of them with only their heads sent, and one further upload, whose dispatch waits for
+     * a free connection, sends one whole stream window of body the gateway does not read yet. A request
+     * body the gateway is not reading returns no window, so on a connection window the size of one
+     * stream that upload would use it all up: the uploads holding a connection could then not send a
+     * byte of the rest of their bodies and would free the connection the further one waits for only
+     * once the gateway's upstream timeout answered them {@code 504}. The order is forced, not raced.
+     */
+    @Test
+    @DisplayName("uploads waiting for an upstream connection do not stall the ones holding one")
+    void uploadsWaitingForAnUpstreamConnectionDoNotStallTheOnesHoldingOne() throws Exception {
+        int port = startEdge(new EdgeHardeningOptions(), edgeServerOptions());
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        int poolSize = upstreamPoolSize();
+        List<HttpClientRequest> holding = new ArrayList<>();
+        for (int i = 0; i < poolSize; i++) {
+            HttpClientRequest request = open(http2Client, port, "POST", "/up/holding-" + i);
+            request.setChunked(true);
+            Awaits.connect(request.sendHead(), "the head of the upload holding upstream connection " + i);
+            holding.add(request);
+        }
+        HttpConnection connection = holding.getFirst().connection();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+        connection.goAwayHandler(goAway -> goAwayCodes.add(goAway.getErrorCode()));
+        Awaits.until(() -> upstreamConnections.size() == poolSize,
+                "the upstream to accept one connection per upload holding one", Awaits.CONNECT_CEILING_SECONDS);
+        assertEquals(List.of(), upstreamStarted,
+                "precondition: the uploads holding a connection have sent no body, so no request head reached the upstream");
+        int streamWindow = new Http2Settings().getInitialWindowSize();
+        HttpClientRequest waiting = open(http2Client, port, "POST", "/up/waiting");
+        waiting.setChunked(true);
+        Awaits.connect(waiting.write(Buffer.buffer(new byte[streamWindow])),
+                "one whole stream window of the upload waiting for a connection to be sent");
+        List<HttpClientRequest> uploads = new ArrayList<>(holding);
+        uploads.add(waiting);
+        List<Future<Answer>> answers = uploads.stream().map(GatewayEdgeEarlyResponseResetTest::answerOf).toList();
+        List<String> upstreamRequests = uploads.stream()
+                .map(request -> "POST " + request.path().substring(("/" + ROUTE).length()))
+                .toList();
+
+        for (HttpClientRequest request : holding) {
+            request.end(Generators.letterStrings(4, 12).next());
+        }
+        waiting.end();
+        Awaits.connect(Future.all(answers), "every upload to be answered");
+
+        assertAll("uploads waiting for an upstream connection beside ones holding one",
+                () -> assertTrue(answers.stream().allMatch(answer -> answer.result().response().statusCode() == 200
+                                && "ok".equals(answer.result().body())),
+                        () -> "every upload must be answered 200 ok: " + answers.stream()
+                                .map(answer -> answer.result().response().statusCode() + " " + answer.result().body())
+                                .toList()),
+                () -> assertTrue(upstreamCompleted.containsAll(upstreamRequests),
+                        () -> "the upstream must read every body whole: " + upstreamCompleted),
+                () -> assertTrue(uploads.stream().allMatch(request -> request.connection() == connection),
+                        "every upload must share the one connection"),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes));
+    }
+
+    private void assertUploadsStillSendingWhenAnsweredStayOnOneConnection(HttpServerOptions serverOptions)
+            throws Exception {
+        int port = startEdge(new EdgeHardeningOptions(), serverOptions);
         HttpClient http2Client = client(HttpVersion.HTTP_2);
         List<HttpConnection> connections = new CopyOnWriteArrayList<>();
         List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
@@ -697,6 +783,21 @@ class GatewayEdgeEarlyResponseResetTest {
                 "the edge front server to start listening");
         frontServers.add(frontServer);
         return frontServer.actualPort();
+    }
+
+    /**
+     * Front-server options carrying the edge's transport bounds, applied through
+     * {@link EdgeHardeningOptions#customizeHttpServer} the way Quarkus applies its customizers.
+     */
+    private static HttpServerOptions edgeServerOptions() {
+        HttpServerOptions options = new HttpServerOptions();
+        new EdgeHardeningOptions().customizeHttpServer(options);
+        return options;
+    }
+
+    /** The HTTP/1.1 connections the gateway's upstream client pools per upstream: Vert.x's default. */
+    private static int upstreamPoolSize() {
+        return new PoolOptions().getHttp1MaxSize();
     }
 
     /**

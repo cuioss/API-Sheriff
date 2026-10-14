@@ -21,8 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.concurrent.TimeUnit;
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
+import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpServerOptions;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 @DisplayName("EdgeHardeningOptions — inbound transport bounds and admission/drain limits")
@@ -199,5 +201,80 @@ class EdgeHardeningTest {
         assertEquals(DRAIN_TIMEOUT_MILLIS, drainMillis, "The drain timeout is the documented secure default");
         assertTrue(drainMillis > 0L, "The drain timeout must be a positive bound");
         assertTrue(drainMillis < 30_000L, "The drain timeout must stay below the 30s Quarkus shutdown window");
+    }
+
+    /**
+     * The inbound HTTP/2 connection window, derived from the stream settings the listener announces so
+     * every stream it admits at once can fill its own window.
+     */
+    @Nested
+    @DisplayName("inbound HTTP/2 connection window")
+    class ConnectionWindow {
+
+        /** Vert.x's default listener settings: 100 concurrent streams of 65,535 bytes each. */
+        private static final int DEFAULT_CONNECTION_WINDOW_BYTES = 6_553_500;
+
+        @Test
+        @DisplayName("sizes the window of a default listener to every concurrent stream's window")
+        void sizesDefaultListenerWindowToEveryStreamsWindow() {
+            Http2Settings defaults = new HttpServerOptions().getInitialSettings();
+            HttpServerOptions options = new HttpServerOptions();
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(defaults.getMaxConcurrentStreams() * defaults.getInitialWindowSize(),
+                    options.getHttp2ConnectionWindowSize(),
+                    "The connection window is the maximum concurrent streams times the initial stream window");
+            assertEquals(DEFAULT_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                    "At the Vert.x defaults of 100 streams x 65,535 bytes the window is 6,553,500 bytes");
+        }
+
+        @Test
+        @DisplayName("follows the stream settings the listener actually announces")
+        void followsTheListenersOwnStreamSettings() {
+            HttpServerOptions options = new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(7).setInitialWindowSize(1_000));
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(7_000, options.getHttp2ConnectionWindowSize(),
+                    "7 concurrent streams of 1,000 bytes each need a 7,000-byte connection window");
+        }
+
+        @Test
+        @DisplayName("caps the window at 2^31-1 for a listener whose concurrent streams are unbounded")
+        void capsTheWindowForUnboundedConcurrentStreams() {
+            HttpServerOptions options = new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings()
+                            .setMaxConcurrentStreams(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS));
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(Integer.MAX_VALUE, options.getHttp2ConnectionWindowSize(),
+                    "RFC 9113 section 6.9.1 bounds a flow-control window at 2^31-1");
+        }
+
+        @Test
+        @DisplayName("never sizes the window below one stream window")
+        void neverSizesTheWindowBelowOneStreamWindow() {
+            HttpServerOptions options = new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(0).setInitialWindowSize(1_000));
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(1_000, options.getHttp2ConnectionWindowSize(),
+                    "A listener admitting no concurrent stream still keeps one stream window for the connection");
+        }
+
+        @Test
+        @DisplayName("sizes the TLS listener's window exactly as the plaintext listener's")
+        void sizesTheTlsListenerWindowIdentically() {
+            HttpServerOptions options = new HttpServerOptions();
+
+            new EdgeHardeningOptions().customizeHttpsServer(options);
+
+            assertEquals(DEFAULT_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                    "The TLS listener sizes its connection window identically");
+        }
     }
 }
