@@ -524,7 +524,7 @@ public class GatewayEdgeRoute {
 
         // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
         // consulted in process() ahead of route selection, so a proxy route such as
-        // path_prefix: /bffnever swallows the exact /bff/callback. Empty (and inert) unless the
+        // path_prefix: /bff never swallows the exact /bff/callback. Empty (and inert) unless the
         // global oidc block declares a redirect_uri. The reserved-path exemption from the
         // url-parameter pipeline is now STRUCTURAL rather than predicate-driven: handleReservedPath
         // returns before route selection, and the parameter pipeline moved after it into

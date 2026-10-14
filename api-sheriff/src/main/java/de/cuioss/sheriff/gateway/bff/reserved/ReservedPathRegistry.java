@@ -44,7 +44,8 @@ import org.jspecify.annotations.Nullable;
  * is resolved here first and the prefix route never sees it.
  * <p>
  * <strong>A reserved path is an exact-match carve-out, not an anchor.</strong> It claims one path on
- * the OIDC host and nothing beneath it: no namespace, no prefix, no anchor-level auth floor or
+ * the OIDC host (on every host for the back-channel logout and client JWKS paths — see
+ * {@link #match(String, String)}) and nothing beneath it: no namespace, no prefix, no anchor-level auth floor or
  * security filter. The {@code /bff/*} spelling the samples use is a naming convention that nothing
  * validates — every reserved path is operator-configurable, and a sibling path such as
  * {@code /bff/other} that no key names is not reserved and is routed by the route table like any

@@ -50,6 +50,11 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.yaml.snakeyaml.Yaml;
 
+import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
+import de.cuioss.sheriff.gateway.config.load.ConfigLoadException;
+import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
+import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
 
@@ -86,9 +91,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <ul>
  *   <li><em>Control.</em> A {@code POST} to a path below {@code /bff} that is not reserved is
  *       proxied: the upstream echoes the method and the probe.</li>
- *   <li><em>The reserved paths win.</em> For each of the eight reserved paths the descriptor's
- *       {@code oidc} block yields — {@link #RESERVED_PATHS}, asserted against the descriptor — the
- *       same {@code POST} is not echoed. The route would have forwarded it: the control differs from
+ *   <li><em>The reserved paths win.</em> For each reserved path {@link ReservedPathRegistry} derives
+ *       from the rig's loaded configuration — asserted to equal both the descriptor's declared paths
+ *       and {@link #EXPECTED_RESERVED_PATHS} — the same {@code POST} is not echoed. The route would have forwarded it: the control differs from
  *       it in the path alone.</li>
  *   <li><em>The baseline filter applies to a reserved path.</em> One query parameter above the strict
  *       preset's count cap is rejected {@code 400} on the client JWKS path, which answers {@code 200}
@@ -124,12 +129,17 @@ import org.junit.jupiter.params.provider.MethodSource;
 class BffReservedPathPrecedenceIT {
 
     /**
-     * The eight reserved paths of the rig's gateway, as {@code ReservedPathRegistry} derives them from
-     * the descriptor's {@code oidc} block: the callback, the logout, its return leg, the back-channel
-     * logout receiver, the user-info fold, the login initiation, the step-up entry point and — declared
-     * by no key — the default client JWKS path.
+     * The eight reserved paths this suite expects the rig's gateway to carry: the callback, the logout,
+     * its return leg, the back-channel logout receiver, the user-info fold, the login initiation, the
+     * step-up entry point and — declared by no key — the default client JWKS path.
+     * <p>
+     * This is the independently written <em>expectation</em>, not the parameter source. The precedence
+     * cases run over what {@link ReservedPathRegistry} actually derives from the rig's loaded
+     * configuration (see {@link #effectiveReservedPaths()}), so a reserved endpoint the registry gains
+     * is exercised without editing this suite, and this set only pins that the derivation still
+     * yields what the descriptor declares.
      */
-    private static final Set<String> RESERVED_PATHS = Set.of("/bff/callback", "/bff/logout",
+    private static final Set<String> EXPECTED_RESERVED_PATHS = Set.of("/bff/callback", "/bff/logout",
             "/bff/logout/return", "/bff/backchannel", "/bff/session", "/bff/login", "/bff/step-up",
             "/bff/jwks");
 
@@ -236,9 +246,39 @@ class BffReservedPathPrecedenceIT {
                         () -> "the upstream must echo the probe header it received: " + echoed.asString()));
     }
 
-    /** The parameter source of {@link #aReservedPathIsNotProxied(String)}: every pinned path, in a stable order. */
+    /**
+     * The parameter source of {@link #aReservedPathIsNotProxied(String)}: every path
+     * {@link ReservedPathRegistry} reserves for the rig's loaded configuration, in a stable order.
+     */
     static Stream<String> reservedPaths() {
-        return RESERVED_PATHS.stream().sorted();
+        return effectiveReservedPaths().stream().sorted();
+    }
+
+    /**
+     * The reserved paths of the rig's gateway as the production code derives them: the assembled
+     * configuration directory is loaded through the real {@link ConfigLoader}, and
+     * {@link ReservedPathRegistry#reservedPaths} is asked for the paths of its {@code oidc} block. The
+     * one variable the descriptor references is resolved to the committed signing key on the host, the
+     * file the container mounts.
+     *
+     * @return the reserved paths, never empty for this rig
+     */
+    private static Set<String> effectiveReservedPaths() {
+        String proofKey = DOCKER.resolve(Path.of("signing-keys", PROOF_KEY_FILE)).toAbsolutePath().toString();
+        Map<String, String> environment = Map.of(PROOF_KEY_VARIABLE, proofKey);
+        GatewayConfig gateway;
+        try {
+            gateway = new ConfigLoader(ASSEMBLED_CONFIGURATION, new EnvSecretResolver(environment::get))
+                    .load(defaulted -> {
+                        // Only the oidc block's reserved paths matter here, not which placeholders fell back.
+                    }).gateway();
+        } catch (ConfigLoadException e) {
+            throw new AssertionError("the rig's assembled configuration " + ASSEMBLED_CONFIGURATION
+                    + " must load through the real ConfigLoader: " + e.getMessage(), e);
+        }
+        Set<String> derived = ReservedPathRegistry.reservedPaths(gateway.oidc());
+        assertFalse(derived.isEmpty(), "the rig's configuration must yield reserved paths, or every case is vacuous");
+        return derived;
     }
 
     @ParameterizedTest(name = "{0}")
@@ -255,7 +295,7 @@ class BffReservedPathPrecedenceIT {
     }
 
     @Test
-    @DisplayName("the eight asserted paths are exactly the reserved paths the descriptor's oidc block yields")
+    @DisplayName("the registry's derived paths, the descriptor's declared paths and the expected eight agree")
     void theAssertedPathsAreTheReservedPathsOfTheDescriptor() {
         Map<String, Object> oidc = mapping(loadYaml(DERIVED_DESCRIPTOR).get("oidc"), "oidc");
         Map<String, Object> logout = mapping(oidc.get("logout"), "oidc.logout");
@@ -271,8 +311,12 @@ class BffReservedPathPrecedenceIT {
                 "the descriptor must declare no jwks_path, so the client key is published at the default path");
         declared.add(CLIENT_JWKS_PATH);
 
+        Set<String> derived = effectiveReservedPaths();
+
         assertAll("the reserved paths of " + DERIVED_DESCRIPTOR,
-                () -> assertEquals(RESERVED_PATHS, declared),
+                () -> assertEquals(EXPECTED_RESERVED_PATHS, declared, "the descriptor declares the expected paths"),
+                () -> assertEquals(declared, derived,
+                        "ReservedPathRegistry reserves exactly the paths the descriptor declares, no more and no fewer"),
                 () -> assertEquals(8, declared.size(), "eight distinct reserved paths"),
                 () -> assertTrue(declared.stream().allMatch(path -> path.startsWith("/bff/")),
                         () -> "every reserved path must lie below the prefix of the overlapping route: " + declared));

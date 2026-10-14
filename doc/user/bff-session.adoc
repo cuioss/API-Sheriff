@@ -78,8 +78,11 @@ serves bearer routes tightens those routes.
 
 *The `/bff/*` paths are reserved paths, not an anchor.* Every path the block names -- the callback,
 `/bff/login`, the curated identity view at `/bff/session`, and the logout, back-channel, step-up and
-client JWKS paths when you declare them -- is an exact-match carve-out on the OIDC host (the host of
-`redirect_uri`), answered by the gateway *ahead of the route table*. Each claims its one path and
+client JWKS paths when you declare them -- is an exact-match carve-out answered by the gateway *ahead
+of the route table*. The carve-out applies on the OIDC host (the host of `redirect_uri`), with two
+exceptions: the back-channel logout and client JWKS paths are reserved on *every* host, because the
+identity provider dials them server-to-server at whatever address the client registered, often an
+internal one. So on another host those two paths still never reach your routes. Each claims its one path and
 nothing beneath it: `/bff/other` is not reserved and is routed like any other request. Nothing
 validates the `/bff/` spelling either; it is a naming convention, and any canonical path works. Keep
 your application's own routes under an anchor of their own -- `/app` in the examples below -- so the

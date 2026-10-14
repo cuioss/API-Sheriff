@@ -409,11 +409,16 @@ token_validation:                  # offline bearer validation (routes with auth
                                    #   the refresh cadence" below.
 
 oidc:                              # only used by the BFF variants (2 and 3)
-                                   # Every path below is a RESERVED path: an exact-match carve-out
-                                   #   on the OIDC host (the host of redirect_uri), resolved AHEAD
-                                   #   of the route table. It is not an anchor -- it claims that one
-                                   #   path and nothing beneath it. The /bff/* spelling is a naming
-                                   #   convention nothing validates; any canonical path works
+                                   # Each listed OIDC endpoint path (callback, login, user_info,
+                                   #   logout, its return leg, back-channel, step-up, client JWKS) is
+                                   #   a RESERVED path: an exact-match carve-out resolved AHEAD of
+                                   #   the route table, on the OIDC host (the host of redirect_uri)
+                                   #   -- except back-channel and client JWKS, which are reserved on
+                                   #   EVERY host. A reserved path is not an anchor -- it claims that
+                                   #   one path and nothing beneath it. Redirect DESTINATIONS such as
+                                   #   login.default_return_url and logout.final_redirect are NOT
+                                   #   reserved. The /bff/* spelling is a naming convention nothing
+                                   #   validates; any canonical path works
   issuer: https://idp.example.com/realms/main
   client_id: api-sheriff
   client_authentication:           # private_key_jwt client authentication (the default)
