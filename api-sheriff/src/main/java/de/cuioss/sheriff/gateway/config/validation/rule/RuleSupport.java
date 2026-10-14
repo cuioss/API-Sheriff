@@ -30,8 +30,9 @@ import org.jspecify.annotations.Nullable;
  * refusal message, and which anchor a route resolves.
  * <p>
  * Each helper exists exactly once. {@link #renderForMessage} above all must stay the single copy of
- * the CWE-117 escaping: every refusal that echoes a configured scalar goes through it, so a hostile
- * value can never forge a boot ERROR log line.
+ * the CWE-117 escaping. The rule for every refusal: a configured scalar echoed into its message is
+ * passed through {@link #renderForMessage} first, so that a hostile value cannot forge a boot ERROR
+ * log line.
  * <p>
  * Stateless, and therefore safe for concurrent use. Free of framework dependencies as the pre-boot
  * rule requires of this package (ADR-0061, ADR-0062).

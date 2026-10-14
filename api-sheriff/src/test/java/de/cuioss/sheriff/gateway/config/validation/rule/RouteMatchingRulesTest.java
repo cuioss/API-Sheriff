@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -786,6 +788,93 @@ class RouteMatchingRulesTest {
                     topologyWith("ORDERS"));
 
             assertHasError(errors, "/endpoint/routes", "outside the effective allowed_methods");
+        }
+    }
+
+    /**
+     * Pins that every configured scalar these rules echo into a refusal — route ids and the colliding
+     * path — goes through {@link RuleSupport#renderForMessage}: a CR/LF in the value reaches the
+     * message as its escape sequence text, never as a raw line break that could forge a boot ERROR
+     * log line (CWE-117).
+     */
+    @Nested
+    @DisplayName("Configured scalars echoed into refusals (CWE-117)")
+    class EchoedScalarEscaping {
+
+        private static final String LINE_BREAK = "\r\n";
+        private static final String ESCAPED_LINE_BREAK = "\\u000D\\u000A";
+
+        private static String refusalContaining(List<ConfigError> errors, String messageContains) {
+            List<String> refusals = errors.stream().map(ConfigError::message)
+                    .filter(message -> message.contains(messageContains)).toList();
+            assertEquals(1, refusals.size(),
+                    () -> "Exactly one refusal containing '" + messageContains + "' expected, got: " + errors);
+            return refusals.getFirst();
+        }
+
+        private static void assertEscaped(String message, String... escapedValues) {
+            assertAll("Every echoed value is escaped, never a raw line break",
+                    () -> assertTrue(Stream.of(escapedValues)
+                                    .allMatch(value -> message.contains("'" + value + "'")),
+                            () -> "escaped value missing: " + message),
+                    () -> assertFalse(message.contains("\r"), () -> "raw CR echoed: " + message),
+                    () -> assertFalse(message.contains("\n"), () -> "raw LF echoed: " + message));
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 3)
+        @DisplayName("Should escape route ids and the shared path in the disjointness refusal")
+        void shouldEscapeDisjointnessRefusal(String label) {
+            String sharedPath = "/" + label + LINE_BREAK + "path";
+            MatchConfig exact = MatchConfig.builder().path(sharedPath).methods(List.of(HttpMethod.GET)).build();
+
+            List<ConfigError> errors = validateEndpoint(
+                    route(label + LINE_BREAK + "one", exact), route(label + LINE_BREAK + "two", exact));
+
+            assertEscaped(refusalContaining(errors, COLLISION_MESSAGE),
+                    label + ESCAPED_LINE_BREAK + "one", label + ESCAPED_LINE_BREAK + "two",
+                    "/" + label + ESCAPED_LINE_BREAK + "path");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 3)
+        @DisplayName("Should escape the route id in the method-membership refusal")
+        void shouldEscapeMethodMembershipRefusal(String label) {
+            RouteConfig offending = route(label + LINE_BREAK + "forged",
+                    MatchConfig.builder().pathPrefix(SHARED_PREFIX).methods(List.of(HttpMethod.POST)).build());
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(HttpMethod.GET), offending);
+
+            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertEscaped(refusalContaining(errors, "outside the effective allowed_methods"),
+                    label + ESCAPED_LINE_BREAK + "forged");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 3)
+        @DisplayName("Should escape the route id in the present: false + value refusal")
+        void shouldEscapeContradictionRefusal(String label) {
+            HeaderMatcher contradictory = HeaderMatcher.builder()
+                    .name("X-Tenant").present(false).value(label).build();
+
+            List<ConfigError> errors = validateEndpoint(route(label + LINE_BREAK + "forged",
+                    sharedPrefix(HttpMethod.GET).headers(List.of(contradictory)).build()));
+
+            assertEscaped(refusalContaining(errors, "both present: false and value"),
+                    label + ESCAPED_LINE_BREAK + "forged");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 8, count = 3)
+        @DisplayName("Should escape the route id in the same-name matcher pair refusal")
+        void shouldEscapePairRefusal(String label) {
+            List<ConfigError> errors = validateEndpoint(route(label + LINE_BREAK + "forged",
+                    sharedPrefix(HttpMethod.GET).headers(List.of(headerWithValue("X-Tenant", label + "-a"),
+                            headerWithValue("X-Tenant", label + "-b"))).build()));
+
+            assertEscaped(refusalContaining(errors, "can never hold together"),
+                    label + ESCAPED_LINE_BREAK + "forged");
         }
     }
 }

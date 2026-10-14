@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 
 import java.util.List;
 import java.util.Optional;
@@ -120,7 +121,8 @@ public class PortalRules {
     }
 
     /**
-     * Rule 3: {@code portal.path} must not equal an enabled endpoint's exact-route match path.
+     * Rule 3: {@code portal.path} must not equal an enabled endpoint's exact-route match path. The
+     * colliding route's id is echoed through {@link RuleSupport#renderForMessage} (CWE-117).
      *
      * @param gateway          the bound gateway document
      * @param enabledEndpoints the endpoints filtered to those enabled
@@ -141,7 +143,7 @@ public class PortalRules {
                     errors.add(new ConfigError(GATEWAY_FILE, PORTAL_PATH_POINTER,
                             ("portal.path equals the exact route '%s' of endpoint '%s'; the portal is answered "
                                     + "before the route table, so that route would be unreachable")
-                                    .formatted(route.id(), endpoint.id())));
+                                    .formatted(renderForMessage(route.id()), endpoint.id())));
                 }
             }
         }

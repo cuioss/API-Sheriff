@@ -15,7 +15,9 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -276,6 +278,31 @@ class PortalRulesTest {
 
             assertRefused(errors, PortalRules.PORTAL_PATH_POINTER, "unreachable");
             assertRefused(errors, PortalRules.PORTAL_PATH_POINTER, endpoint.id());
+        }
+
+        @Test
+        @DisplayName("Should escape CR and LF of the colliding route id echoed into the refusal")
+        void escapesLineBreaksInEchoedRouteId() {
+            String path = "/" + endpointId();
+            String label = endpointId();
+            RouteConfig route = RouteConfig.builder()
+                    .id(label + "\r\nforged")
+                    .match(MatchConfig.builder().path(path).build())
+                    .redirect(RedirectConfig.builder().location("/elsewhere").status(302).build())
+                    .build();
+            EndpointConfig endpoint = endpoint(true, null, route);
+
+            List<ConfigError> errors = portalErrors(gateway(portal(path), null), List.of(endpoint));
+
+            List<String> refusals = errors.stream().map(ConfigError::message)
+                    .filter(message -> message.contains("unreachable")).toList();
+            assertEquals(1, refusals.size(), () -> "Exactly one exact-route refusal expected, got: " + errors);
+            String message = refusals.getFirst();
+            assertAll("The route id is echoed escaped, never as a raw line break",
+                    () -> assertTrue(message.contains("'" + label + "\\u000D\\u000Aforged'"),
+                            () -> "escaped route id missing: " + message),
+                    () -> assertFalse(message.contains("\r"), () -> "raw CR echoed: " + message),
+                    () -> assertFalse(message.contains("\n"), () -> "raw LF echoed: " + message));
         }
 
         @Test

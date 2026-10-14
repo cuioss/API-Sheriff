@@ -134,7 +134,8 @@ public class RouteMatchingRules {
         String kind = firstMatch.isExact() ? "path" : "prefix";
         errors.add(new ConfigError(endpointFile(first.endpoint()), ENDPOINT_ROUTES_POINTER,
                 "routes '%s' and '%s' share %s '%s' and are not disjoint".formatted(
-                        first.route().id(), second.route().id(), kind, firstKey)));
+                        renderForMessage(first.route().id()), renderForMessage(second.route().id()), kind,
+                        renderForMessage(firstKey))));
     }
 
     /**
@@ -248,8 +249,8 @@ public class RouteMatchingRules {
      * with one error per conflicting pair. Redundant but compatible pairs ({@code value} with
      * {@code present: true}, identical values, or matching presence flags) stay valid.
      * <p>
-     * Header names are echoed through {@link RuleSupport#renderForMessage}, so they cannot forge boot log lines
-     * (CWE-117). Every violation collects into the shared list; the rule never fails fast (ADR-0009).
+     * Route ids and header names are echoed through {@link RuleSupport#renderForMessage}, so they cannot
+     * forge boot log lines (CWE-117). Every violation collects into the shared list; the rule never fails fast (ADR-0009).
      *
      * @param endpoints the enabled endpoints
      * @param errors    the shared error accumulator
@@ -265,7 +266,7 @@ public class RouteMatchingRules {
                                 ("route '%s' declares header matcher '%s' with both present: false and value; "
                                         + "present: false forbids the header while value requires it, so the "
                                         + "matcher can never match — drop value, or declare present: true")
-                                        .formatted(route.id(), renderForMessage(header.name()))));
+                                        .formatted(renderForMessage(route.id()), renderForMessage(header.name()))));
                     }
                     checkSameNameMatchersCompatible(endpoint, route, header, headers.subList(i + 1, headers.size()),
                             errors);
@@ -291,7 +292,7 @@ public class RouteMatchingRules {
                                 + "header names compare lower-cased, as the runtime reads them, and every "
                                 + "matcher of a route must hold, so the route can never match — drop one "
                                 + "matcher, or make them agree")
-                                .formatted(route.id(), renderForMessage(header.name()),
+                                .formatted(renderForMessage(route.id()), renderForMessage(header.name()),
                                         renderForMessage(other.name()), conflict)));
             }
         }
@@ -318,7 +319,7 @@ public class RouteMatchingRules {
                     if (!allowed.contains(method)) {
                         errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                                 "route '%s' matches method %s outside the effective allowed_methods"
-                                        .formatted(route.id(), method)));
+                                        .formatted(renderForMessage(route.id()), method)));
                     }
                 }
             }

@@ -199,9 +199,10 @@ The tests of a not-yet-extracted concern stay in `ConfigValidatorTest` (or its e
 * *All violations in a single pass.* A rule appends and returns; it never throws a validation
   failure and never stops at the first one, so the operator sees every violation in one boot attempt
   (link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]).
-* *Configured values are echoed through `RuleSupport.renderForMessage`.* A refusal that names a
-  configured scalar renders it with control characters escaped and the length capped, so a hostile
-  value cannot forge a boot ERROR log line (CWE-117). There is exactly one copy of that escaping.
+* *Configured values must be echoed through `RuleSupport.renderForMessage`.* A refusal that names
+  a configured scalar has to render it with control characters escaped and the length capped, so
+  that a hostile value cannot forge a boot ERROR log line (CWE-117). Write every refusal that way,
+  and keep that escaping in exactly one copy.
 * *A rule that logs owns its logger.* A rule that emits a WARN declares its own `CuiLogger` in its
   concern class and keeps its `LogRecord` from `ConfigLogMessages`; the identifier and the text do
   not change when the rule moves, only the logger category does. A test asserting the absence of
