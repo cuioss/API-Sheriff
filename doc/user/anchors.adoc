@@ -58,20 +58,18 @@ Semantics -- deliberately few rules:
   anchor had no covering member. Declaring `methods: [GET]` on the covering route is the easiest way
   to trip this: the anchor looks covered, but a `POST` would have fallen through.
 * *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers` and
-  `allowed_methods`. Resolution follows one chain -- *gateway defaults -> anchor -> endpoint ->
-  route* -- and every step *replaces the whole block, never merges* (the same rule as
-  endpoint -> route `auth` today). The chain applies per block *at the scopes where the block
-  exists*: `auth` -> anchor, endpoint, route; `allowed_methods` -> anchor, endpoint (there is
-  no route-level `allowed_methods` -- routes constrain via `match.methods` *within* the
-  effective list); `security_filter` -> anchor, route; `security_headers` -> anchor *only*
-  (below).
-* *`security_headers` resolves at gateway -> anchor level only* -- endpoints and routes cannot
+  `allowed_methods`. Every policy block is resolved by one rule -- the nearest declared scope of
+  *gateway -> anchor -> endpoint -> route* wins and replaces every broader declaration *whole,
+  never merged* -- and each block is declarable at a fixed set of those scopes. The rule and the
+  per-block scope table are in <<_policy_block_resolution>> below.
+* *`security_headers` is declarable at gateway and anchor only* -- endpoints and routes cannot
   override it. How the block takes effect, and what it does *not* merge, is set out in
   <<_anchor_security_headers>> below.
 * *The auth floor cannot be weakened.* Where the anchor declares `require: bearer` or
   `require: session`, a member whose *effective* auth resolves to `require: none` fails the
   boot. Replacing one non-`none` posture with another (anchor `bearer`, route `session`) is
-  allowed. Non-auth overrides that relax anchor limits are replacements logged as boot WARNs.
+  allowed. An endpoint or route replacing an anchor's `allowed_methods` or `security_filter` block
+  is allowed and logged as a boot WARN (see <<_policy_block_override_warn>>).
 * *Anchored endpoints may omit `auth`.* The endpoint-level `auth` block becomes optional when
   the endpoint's anchor declares one; every route must still resolve to an unambiguous
   effective auth (route, else endpoint, else anchor) or the boot fails.
@@ -84,6 +82,147 @@ The one modelling consequence: a service exposed on two surfaces -- the same ups
 under `/api` with bearer *and* under `/bff` with a session -- is *two routes* (in the same
 endpoint file, sharing the `base_url` alias), one per anchor. Multi-anchor membership does not
 exist; it would reintroduce merge-order ambiguity.
+
+[[_policy_block_resolution]]
+=== Policy-block resolution -- one rule for every block
+
+Seven policy blocks -- `auth`, `allowed_methods`, `security_filter`, `security_headers`,
+`upstream_defaults`, `forward` and `websocket` -- are resolved for a route by the same rule
+(decision:
+link:../adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]):
+
+. *Four scopes, broadest first: `gateway -> anchor -> endpoint -> route`.* `gateway` is the root of
+  `gateway.yaml`; `anchor` is the route's anchor -- the route's own `anchor:`, else its endpoint's;
+  `endpoint` is the `endpoint` block of the route's endpoint file; `route` is the route itself.
+. *The nearest declared scope wins.* The route's effective block is the one declared at the scope
+  nearest the route.
+. *Whole-block replacement.* The winning block replaces every broader declaration wholesale. No
+  field of a broader block is merged into it: a key the winning block omits takes that key's own
+  default, never the value a broader block declared.
+. *An empty list is not a declaration.* A scope that omits the block, or declares it as an empty
+  list (`allowed_methods: []`), does not declare it, and the next broader scope is consulted.
+. *A block is declarable only at its own scopes* (the table below). The bundled schemas refuse it
+  at any other scope when the document is loaded.
+. *When no scope declares the block*, its nothing-declared fallback in the table applies.
+. *The auth floor stays a floor.* Resolution decides which `auth` block a route gets; it never
+  permits a weakening. Under an anchor declaring `require: bearer` or `require: session`, an
+  effective `require: none` still fails the boot.
+
+The route table and the boot validator resolve every block through the same code, so the posture
+the boot validator judges is the posture the route runs.
+
+[[_policy_block_scopes]]
+.Where each policy block is declarable
+[cols="2,3,4,3,6", options="header"]
+|===
+| Block | Declarable at | Nothing declared | Override WARN | Why the scopes stop where they do
+
+| `auth`
+| anchor, endpoint, route
+| The boot fails: every route must resolve an auth posture from its route, its endpoint or its
+  anchor.
+| No
+| No gateway scope: a gateway-wide `auth` would hand every unanchored route a posture and turn the
+  refused boot for a route without one into a silent default. No WARN: weakening an anchor's floor
+  is refused at boot, which is stronger than a warning.
+
+| `allowed_methods`
+| gateway, anchor, endpoint
+| Every standard method: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`.
+| Yes -- an endpoint list replacing the anchor's
+| No route scope: a route narrows its verbs with `match.methods`, which must be a subset of the
+  effective list.
+
+| `security_filter`
+| anchor, endpoint, route
+| No block: the route runs the `security_defaults.profile` preset (`strict` when omitted).
+| Yes -- an endpoint or route block replacing the anchor's
+| No gateway scope: `security_defaults` owns the gateway-wide profile. The endpoint scope is
+  *new and breaking* (see <<_policy_block_breaking_changes>>).
+
+| `security_headers`
+| gateway, anchor
+| No block: no gateway-owned response security header is emitted.
+| No
+| No endpoint or route scope: the browser response posture is a property of the namespace, and a
+  narrower block would let one endpoint drop HSTS or frame-deny for part of an anchor's namespace.
+  `cors` is declarable in the gateway block only.
+
+| `upstream_defaults`
+| gateway, endpoint
+| Both toggles enabled: `retry.enabled: true`, `not_modified.enabled: true`.
+| No
+| No anchor scope: upstream behaviour belongs to the upstream, which the endpoint owns through its
+  `base_url`; an anchor is a namespace, not an upstream. A route overrides single toggles instead
+  (see <<_policy_block_field_level_exceptions>>).
+
+| `forward`
+| endpoint, route
+| Forward-all on both dimensions, bounded by the gateway-owned sets no configuration re-admits.
+| No
+| No anchor or gateway scope: forward filtering is upstream-specific
+  (link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
+  The endpoint and the route block live in the same endpoint file, so a route replacing the
+  endpoint block is one owner's choice and is not announced. The endpoint scope is *new and
+  breaking* (see <<_policy_block_breaking_changes>>).
+
+| `websocket`
+| route
+| No block: an empty `allowed_origins` and an idle timeout of 300 seconds on a `protocol: websocket`
+  route.
+| No
+| Route only: the block is valid on `protocol: websocket` routes alone, and `allowed_origins` is a
+  fail-closed per-route allowlist
+  (link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]); an endpoint block would
+  reach the endpoint's other routes.
+|===
+
+[[_policy_block_override_warn]]
+==== The override WARN
+
+Replacing an anchor's block from a nearer scope is allowed, and for the blocks marked *Yes* above it
+is announced: `ApiSheriff-101` is logged during route-table assembly when the route's anchor
+declares the block *and* the route's endpoint or the route itself declares it too. The record is
+logged once per route and block -- an anchor block replaced at both the endpoint and the route is
+announced once -- and names the route, the anchor and the block. A block marked *No* is not
+announced: `auth` because weakening its floor is refused outright, the others because no anchor
+declaration sits under a nearer one (`security_headers`) or because the block has no anchor scope
+at all. See link:../LogMessages.adoc[Log Messages].
+
+[[_policy_block_field_level_exceptions]]
+==== Documented exceptions -- two field-level fallbacks
+
+Two fallbacks act on a single field rather than on a whole block. They are deliberate exceptions to
+the rule above, not a merge:
+
+* *`security_filter.profile`.* A resolved `security_filter` block that declares no `profile` takes
+  `security_defaults.profile`, and `strict` when that is omitted too -- never the profile of the
+  broader block it replaced. Dropping the field fallback would make such a block resolve `strict`
+  whatever the gateway's baseline declares, and would leave the route's profile disagreeing with
+  the pre-route baseline the gateway applies before any route is selected.
+* *A route's `upstream.retry.enabled` and `upstream.not_modified.enabled`.* Each toggle the route
+  declares overrides that one field of the effective `upstream_defaults` block; a toggle the route
+  omits keeps the block's value. A route-level `upstream_defaults` block replaced wholesale would
+  reset the toggle the route did not mention to its default.
+
+[[_policy_block_breaking_changes]]
+==== Breaking changes: `security_filter` and `forward` at the endpoint scope
+
+The endpoint scope of these two blocks is a breaking change to what an endpoint document may
+declare, and what it takes over is stated here:
+
+* *An endpoint may declare `security_filter`.* It governs every route of the endpoint that declares
+  no block of its own, and it replaces the anchor's block wholesale -- announced by
+  `ApiSheriff-101`. The `profile: minimal` refusal on authenticated and BFF routes, and the boot
+  check against the framework body-size floor, read the endpoint block too.
+* *An endpoint may declare `forward`.* It governs every route of the endpoint that declares no block
+  of its own; a route block replaces it wholesale, so a route block naming only `headers_allow`
+  drops an endpoint `query_deny`. Both list pairs are refused at the endpoint exactly as on a route
+  (allow and deny for one dimension together), and a `token_relay: false` route whose effective
+  `forward.headers_allow` -- endpoint-level included -- names `Authorization` is refused.
+
+A configuration without either key at the endpoint resolves exactly as it did before the scope
+existed: the schema refused both keys there, so no existing endpoint document declares them.
 
 [[_anchor_security_headers]]
 === Anchor `security_headers`
@@ -140,7 +279,7 @@ in `set` mode whatever the global block says.
 
 *To keep a global header under an anchor, restate it in the anchor block* -- as `hsts` and
 `content_type_nosniff` are restated in the example above. This is the wholesale-replacement rule every
-policy block in the anchor chain follows, not a special case for headers.
+policy block follows (see <<_policy_block_resolution>>), not a special case for headers.
 ====
 
 *`content_security_policy`.* The value is served *verbatim* as the `Content-Security-Policy` header;

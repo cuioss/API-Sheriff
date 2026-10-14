@@ -46,7 +46,8 @@ upstream is never called.
 
 | Inbound filtering
 | `cui-http` pipelines (path, parameter, header) + `RequestCollectionValidator` for counts,
-  driven by the route's `security_filter` block. See
+  driven by the route's resolved `security_filter` block -- its own, else its endpoint's, else its
+  anchor's (see link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). See
   link:../configuration.adoc#_security_filtering[Security Filtering].
 
 | Path whitelisting
@@ -66,9 +67,9 @@ upstream is never called.
   link:../configuration.adoc#_endpoint_scopes[`endpoint.scopes`].
 
 | Forwarding
-| A per-route filter *inside* an already-authorised route, not an admission gate: each of headers
-  and query parameters independently resolves a positive-list, a negative-list, or -- when the route
-  declares neither -- forward-all. Whatever the mode, the gateway-owned never-forward set still
+| A filter *inside* an already-authorised route, not an admission gate, declared on the route or
+  as a default on its endpoint: each of headers and query parameters independently resolves a
+  positive-list, a negative-list, or -- when the resolved block declares neither -- forward-all. Whatever the mode, the gateway-owned never-forward set still
   withholds `Cookie` -- absolute against client input, re-admitted by no mode and no list -- along
   with the hop-by-hop and provenance names. An inbound `Authorization` is the set's *single*
   re-admittable member, and only where the route declares a positive-list naming it; under a

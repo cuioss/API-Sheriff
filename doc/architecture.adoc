@@ -103,7 +103,8 @@ route) and nothing after it runs:
 | 2a
 | `SecurityHeadersStage.applyRouteHeaders`
 | Replaces the gateway-owned security headers with the selected route's resolved block (anchor block,
-  else global) -- wholesale, never merged. See <<_response_security_headers>>.
+  else global, resolved at boot by the one policy-block resolver) -- wholesale, never merged. See
+  <<_response_security_headers>>.
 
 | 2b
 | `VerbGateStage`
@@ -515,12 +516,22 @@ Only routes of *enabled* endpoints enter the table: an endpoint switched off by 
 contributes nothing (its paths fall through to `404`), which
 lets one config set be shipped across environments and toggled per environment (see
 link:configuration.adoc#_endpoint_identity[Configuration -- `endpoint`]). Orthogonally, a coarse
-*positive verb allowlist* -- `allowed_methods`, global with wholesale per-anchor and
-per-endpoint replacement and no inheritance -- gates which HTTP methods an endpoint serves at
-all: a routed request whose
+*positive verb allowlist* -- `allowed_methods`, declarable globally, per anchor and per endpoint,
+the nearest declared list replacing every broader one wholesale -- gates which HTTP methods an
+endpoint serves at all: a routed request whose
 method is outside the matched route's effective set is rejected `405` with an `Allow` header,
 above and beyond the per-route `match.methods` matcher (see
 link:configuration.adoc#_allowed_methods[Configuration -- `allowed_methods`]).
+
+Every policy block -- `auth`, `allowed_methods`, `security_filter`, `security_headers`,
+`upstream_defaults`, `forward` and `websocket` -- is resolved for a route by one resolver: each block
+is one `PolicyBlock` descriptor naming the scopes it is declarable at, and the nearest declared scope
+of `gateway -> anchor -> endpoint -> route` wins and replaces every broader declaration wholesale.
+The route-table builder and the configuration validator both resolve through those descriptors, so
+the posture the boot validator judges is the posture the route table materializes, and the request
+pipeline only reads the materialized result (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution] and
+link:adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]).
 
 === Authentication Layer
 
@@ -1053,7 +1064,8 @@ fixed positions (link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 A
 Everything answered before a route is selected carries the global block; everything after stage 2a
 carries the route's block. The anchor block *replaces* the global block wholesale -- no key-by-key
 merge -- so an anchor that omits a header drops it for its routes, in line with the replacement rule
-every anchor policy block follows.
+every policy block follows (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]).
 
 *Precedence against origin headers.* Each gateway-owned header resolves a mode from its block's
 `header_modes`. A `set` header (the default) goes into the response header map that overwrites; a

@@ -1,0 +1,280 @@
+= ADR-0067: Every policy block is one declaration, resolved nearest declared scope wins with whole-block replacement
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: Each of the seven policy blocks (auth, allowed_methods, security_filter, security_headers, upstream_defaults, forward, websocket) is one PolicyBlock descriptor -- its declarable scopes, its "is declared" test (null or an empty list is absent), its nothing-declared fallback and its override-WARN opt-in -- and one generic resolver applies the rule of ADR-0007 to all of them: the nearest declared scope of gateway -> anchor -> endpoint -> route wins and replaces every broader declaration wholesale. The route table and the boot validator both resolve through the descriptors. The operator decided the scope set of every block: security_filter and forward gain the endpoint scope, every other block keeps its scopes; the boot readers of the two widened blocks are extended to the endpoint scope; the override WARN is derived from the descriptor and opted into by allowed_methods and security_filter; the two field-level fallbacks (security_filter.profile, the route's upstream retry / not_modified toggles) stay as documented exceptions behind one config-side seam; the request-pipeline edge is unchanged.
+// tags: configuration-model, anchors, precedence, policy-resolution, boot-validation, wholesale-replacement, override-warn
+// affects: api-sheriff, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+This decision amends link:0007-anchor-scoped-policy.adoc[ADR-0007] (Amendment A2) and
+link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]
+(Amendment A1).
+
+== Context
+
+ADR-0007 states one inheritance rule for the gateway's policy blocks: `gateway -> anchor -> endpoint ->
+route`, every step replacing the whole block and never merging it. The rule was stated once and
+implemented seven times. The route-table builder resolved each block with its own hand-written chain,
+and the configuration validator carried a second copy of four of them -- the route's anchor, its
+effective `auth`, its effective `require`, its effective filter profile and its effective
+`allowed_methods`. Each chain named its own subset of the four scopes, so *where a block could be
+declared* was a property of whichever chain a reader called, recorded nowhere as a fact about the
+block.
+
+That shape had three costs, and the third is the one a security gateway cannot carry:
+
+* *Two resolutions can disagree.* A boot refusal judged a route through the validator's copy while the
+  route ran the builder's. Every copy happened to agree, but nothing made them, and a scope added to
+  one would not reach the other.
+* *Adding or widening a block was unmeasured work.* The record component, both JSON schemas, the
+  native-image registration, the documented array-key inventory and the chain itself all had to move
+  together, with no list of the places and no guard on most of them.
+* *A newly declarable scope could bypass a boot refusal.* Several boot rules do not resolve a block --
+  they enumerate declarations (`route.forward()`, a stream over anchors and routes). A scope such a
+  reader does not name is a scope at which a declaration is never checked.
+
+Re-deriving the inventory from the code showed that every existing chain already obeyed
+nearest-declared-wins with whole-block replacement. Normalising the blocks therefore never needed to
+remove a scope or change what a booting configuration means; it needed one declaration per block, one
+resolver, and an explicit decision per block about which scopes it should have.
+
+== Decision
+
+=== One descriptor per block, one resolver for all of them
+
+*Every policy block is one `PolicyBlock` descriptor, and one generic resolver applies the rule to every
+block.* A descriptor carries:
+
+* the YAML key the block is declared under;
+* the scopes it is declarable at, each with the accessor reading the declaration there;
+* the one "is declared" test every block shares -- `null` and an empty list are both *not declared*;
+* its fallback when no scope declares it: a fixed value, no block, or a boot error;
+* its override-WARN opt-in (below).
+
+The resolver walks the scopes nearest first and returns the first declaration; it never merges two.
+The route's anchor is resolved in one place too -- the route's own `anchor`, else its endpoint's.
+The route-table builder and the configuration validator both resolve through the descriptors, so the
+posture a boot refusal judges and the posture the route table materializes come from the same code.
+The validator's own copies of the chains are deleted, the `allowed_methods` copy included.
+
+The descriptors live in the framework-free configuration package, so the offline configuration check
+resolves blocks exactly as the boot does
+(link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]).
+
+=== The scope set of each block (operator decisions)
+
+The operator decided every block's scopes, each on the default recommended at outline:
+
+[cols="2,3,2,6", options="header"]
+|===
+| Block | Declarable at | Change | Security consequence / why the set stops there
+
+| `auth`
+| anchor, endpoint, route
+| none
+| No gateway scope: a gateway-wide `auth` would hand every unanchored route a posture and turn the
+  fail-closed "no auth resolvable = refused boot" into a default. Nothing declared stays a boot error.
+
+| `allowed_methods`
+| gateway, anchor, endpoint
+| none
+| No route scope: a route already narrows its verbs with `match.methods`, which is held to be a subset
+  of the effective list; a route-level allowlist would be a second way to say the same thing.
+
+| `security_filter`
+| anchor, endpoint, route
+| *+ endpoint*
+| Removes per-route repetition inside an endpoint file. An endpoint block can replace -- and relax --
+  an anchor block wholesale; that is announced by the override WARN and bounded by the `minimal`
+  refusal, which reads the endpoint scope through the shared resolver. No gateway scope:
+  `security_defaults` owns the gateway-wide profile and the pre-route baseline seeded from it.
+
+| `security_headers`
+| gateway, anchor
+| none
+| The browser response posture is a property of the namespace. A narrower block would let one
+  endpoint or route drop HSTS or frame-deny for part of an anchor's namespace. `cors` stays in the
+  gateway block alone (ADR-0007 Amendment A1).
+
+| `upstream_defaults`
+| gateway, endpoint
+| none
+| Upstream behaviour belongs to the upstream, which the endpoint owns through its `base_url`; an anchor
+  is a namespace, not an upstream. The route keeps its field-level toggles (below).
+
+| `forward`
+| endpoint, route
+| *+ endpoint*
+| One deny or allow list per upstream instead of per route. A route block replaces the endpoint block
+  wholesale and can drop an endpoint `query_deny`; both blocks sit in the same endpoint file with one
+  owner, so the replacement is not announced. No anchor or gateway scope: forward filtering is
+  upstream-specific (ADR-0036).
+
+| `websocket`
+| route
+| none
+| The block is valid on `protocol: websocket` routes only, and `allowed_origins` is a fail-closed
+  per-route allowlist
+  (link:0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]); an endpoint block would reach the
+  endpoint's other routes.
+|===
+
+The net change to the configuration surface is two scopes, both *breaking*: an endpoint document may
+now declare `security_filter` and `forward`. A configuration that booted before resolves exactly as it
+did, because both keys were refused at the endpoint until now.
+
+=== The boot readers of a widened block read the new scope
+
+*Every boot rule and boot-pipeline check that reads `security_filter` or `forward` covers the endpoint
+scope.* Without that, the widening would be a silent downgrade: an endpoint-level declaration would
+bypass refusals that hold on a route. The operator accepted extending exactly the three readers that
+enumerate declarations instead of resolving them:
+
+* the token-relay conflict -- a `token_relay: false` route whose `forward.headers_allow` names
+  `Authorization` -- now reads the *resolved* forward block, so an endpoint-level list is refused like a
+  route-level one;
+* the forward mode-exclusivity rule -- both lists of one dimension -- also checks the endpoint-declared
+  block;
+* the framework body-size check counts every endpoint's own `max_body_bytes` as well as every anchor's
+  and route's, so an endpoint cap above `quarkus.http.limits.max-body-size` is refused at boot rather
+  than cut silently by the framework
+  (link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023]).
+
+The `profile: minimal` refusal on authenticated and BFF routes needed no change: it reads the route's
+resolved block through the shared resolver, so the endpoint scope reaches it by construction
+(link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]).
+
+=== The override WARN is derived from the descriptor
+
+ADR-0007 required that a non-auth override relaxing an anchor's limits be logged. Which blocks were
+logged was a hard-coded list. *The WARN is now derived:* `ApiSheriff-101` is emitted for a block whose
+descriptor opts in when the route's anchor declares the block *and* a nearer scope -- the route's
+endpoint or the route itself -- declares it too. It is logged once per route and block, and the log
+template is unchanged.
+
+The opt-in set is exactly `allowed_methods` and `security_filter`. `auth` is excluded because
+weakening its floor is a boot refusal, which is stronger than a warning. `security_headers` has no
+scope nearer than the anchor; `upstream_defaults`, `forward` and `websocket` have no anchor scope.
+
+=== Two field-level fallbacks stay, as documented exceptions
+
+Two fallbacks act on one field rather than on a whole block. Both are kept:
+
+* *`security_filter.profile` -> `security_defaults.profile` -> `strict`.* A resolved block that
+  declares no `profile` takes the gateway-wide profile, never the profile of the broader block it
+  replaced. Dropping the fallback would make such a block resolve `strict` whatever the gateway
+  declares -- tighter, but a silent change to deployments -- and would leave the route's profile
+  disagreeing with the pre-route baseline, which is seeded from `security_defaults`. The config side
+  implements the fallback once, in `RouteTableBuilder.effectiveProfile`, read by the boot posture log
+  and by the validator; the two former copies are gone.
+* *A route's `upstream.retry.enabled` and `upstream.not_modified.enabled`.* Each overrides that one
+  field of the resolved `upstream_defaults` block. Folding the toggles into a route-scope
+  `upstream_defaults` block would, under whole-block replacement, reset the toggle the route did not
+  mention to its default.
+
+=== What is left unchanged
+
+*The request-pipeline edge is unchanged.* The edge reads the materialized route, seeds its pre-route
+baseline from `security_defaults` and keeps its own reading of the profile fallback for that baseline.
+The resolved route's shape is unchanged. Consolidating the edge's reading with the config-side seam is
+the subject of a separate plan (PLAN-V02-25).
+
+*The anchor auth floor stays where it is.* The floor -- an anchor declaring `require: bearer` or
+`require: session` refuses a member whose effective auth is `require: none` -- is derivable from the
+declaration: it compares the anchor's declared `auth` block with the resolved one. Its rule stays in
+the configuration validator and only its call sites change here. Moving it next to the other rule
+placements is left to whichever of this plan and PLAN-V02-26 merges second.
+
+=== The operator decision record
+
+The twelve decisions this record rests on, each taken by the operator rather than inferred:
+
+. `auth` keeps anchor, endpoint and route; nothing declared is a boot refusal; no override WARN.
+. `allowed_methods` keeps gateway, anchor and endpoint; no route scope; opted into the WARN.
+. `security_filter` gains the endpoint scope; no gateway scope; the WARN covers the anchor replaced at
+  the endpoint or the route; the `minimal` refusal reads the endpoint scope through the resolver.
+. `security_headers` keeps gateway and anchor.
+. `upstream_defaults` keeps gateway and endpoint, with the route's field-level toggles as a documented
+  exception.
+. `forward` gains the endpoint scope; no anchor or gateway scope; no WARN.
+. `websocket` stays route-only.
+. The `security_filter.profile` fallback stays field-level, implemented once on the config side.
+. The WARN means "the anchor declares the block and a nearer scope declares it too"; its template is
+  unchanged; the opt-in set is `allowed_methods` and `security_filter`.
+. The validator's `allowed_methods` chain resolves through the shared resolver as well.
+. The request-pipeline edge stays unchanged, its shared seams keeping their signatures.
+. The three boot readers of the widened blocks -- the token-relay conflict, forward mode exclusivity
+  and the framework body-size check -- are extended to the endpoint scope, each pinned by a test.
+
+== Consequences
+
+=== Positive
+
+* The boot validator and the route table cannot resolve a block differently; there is one resolution.
+* Where a block is declarable is a fact recorded once, in its descriptor, and bound to both bundled
+  schemas and to the user-documentation scope table by a contract test that fails in either direction.
+* Adding a block is a listed set of steps, each with the test that catches a missed one
+  (link:../development/README.adoc#_adding_a_policy_block[Development -- Adding a policy block]).
+* The override WARN covers `allowed_methods` replaced at the endpoint and `security_filter` replaced at
+  the endpoint or the route, from one flag per block instead of a list kept by hand.
+
+=== Negative
+
+* Two endpoint-level keys widen the configuration surface. An operator reading an endpoint file has one
+  more place a route's filter or forward posture can come from.
+* An endpoint-level `security_filter` can relax an anchor's posture for every route of the endpoint at
+  once. The WARN makes that visible; it does not refuse it.
+
+=== Risks
+
+* *A boot reader that enumerates declarations stays blind to a new scope.* The three found readers are
+  extended and tested; a reader written later that enumerates instead of resolving would not be caught
+  by any contract test. The development guide names the obligation.
+* *Whole-block replacement drops what a broader block declared.* A route `forward` block naming only
+  `headers_allow` drops an endpoint `query_deny`. That is the rule working as stated, accepted because a
+  merge would make a nearer scope unable to relax a broader one and would reintroduce the merge-order
+  ambiguity ADR-0007 rejected.
+
+== Alternatives Considered
+
+*Keep the per-block chains and add a contract test over them.* A test can compare seven chains with
+the schemas, but it cannot make the validator and the route table call the same code. Rejected: it
+guards the symptom and leaves two resolutions in place.
+
+*Merge blocks across scopes key by key.* A nearer block would only override the keys it declares.
+Rejected for the reason ADR-0007 recorded: every surveyed gateway that survived overrides whole
+blocks, and key-level merging makes a nearer scope unable to remove a broader key.
+
+*Give every block every scope.* Uniform, and simple to state. Rejected block by block in the table
+above: a gateway-level `auth` turns a refused boot into a default, an endpoint-level `security_headers`
+lets one team drop HSTS inside another's namespace, and an endpoint-level `websocket` block reaches
+routes that are not WebSocket routes.
+
+*Drop the two field-level fallbacks for a uniform rule.* Rejected: each one prevents a silent change to
+a running deployment (the profile) or a reset of a toggle the route never mentioned (the upstream
+toggles).
+
+== References
+
+* link:0007-anchor-scoped-policy.adoc[ADR-0007] -- the inheritance rule this decision implements once;
+  Amendment A2 records the scope sets
+* link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] -- the
+  forward policy; Amendment A1 records its endpoint scope
+* link:0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] -- why `websocket` stays route-only
+* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023]
+  -- the body-cap check extended to the endpoint scope
+* link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]
+  -- the `minimal` refusal that reads the endpoint scope through the resolver
+* link:../user/anchors.adoc#_policy_block_resolution[Anchors -- Policy-block resolution] -- the
+  operator-facing rule and scope table
+* link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-101`

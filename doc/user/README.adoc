@@ -172,9 +172,10 @@ describes how to *use* them, never why they were chosen.
 == Inbound Filter Modes (`security_defaults.profile`)
 
 The `profile` knob selects the gateway's inbound-validation mode. It is declarable gateway-wide on
-`security_defaults` and per route or anchor on `security_filter`. Field-level contract and the
-resolution chain live in
-link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
+`security_defaults` and per anchor, endpoint or route on `security_filter`, where the nearest
+declared `security_filter` block wins (see
+link:anchors.adoc#_policy_block_resolution[Policy-block resolution]). The field-level contract lives
+in link:../configuration.adoc#_security_defaults[Configuration Reference -- `security_defaults`]; this
 section is the operator's decision guide.
 
 === The modes
@@ -240,8 +241,9 @@ The gateway *fails to start* if a route whose effective profile resolves to `min
 * effectively authenticated -- its resolved auth posture requires a bearer token or a session, or
 * under a `type: bff` anchor.
 
-This includes the indirect case: a gateway-wide `security_defaults.profile: minimal` that reaches such a
-route through the fallback chain is refused exactly as a per-route declaration would be. It also
+This includes the indirect cases: a `minimal` declared on the route's endpoint or anchor, and a
+gateway-wide `security_defaults.profile: minimal` that reaches such a route through the fallback, are
+refused exactly as a per-route declaration would be. It also
 includes the subtle case: a route that adds its own `auth.require: bearer` under an `access: public`
 anchor *is* authenticated in effect, so it is refused even though its anchor still reads `public`.
 
@@ -256,7 +258,7 @@ The mode set is exactly `strict`, `paranoid`, `lenient`, `minimal`. Any other va
 no warning-and-continue.
 
 The refusal applies at every site the key appears -- `security_defaults`, an anchor's
-`security_filter`, and a route's `security_filter`. `auth.require: none` is a *different* key in a
+`security_filter`, an endpoint's `security_filter`, and a route's `security_filter`. `auth.require: none` is a *different* key in a
 different value space and is unrelated to this set.
 
 === An omitted `security_defaults` block means `strict`
