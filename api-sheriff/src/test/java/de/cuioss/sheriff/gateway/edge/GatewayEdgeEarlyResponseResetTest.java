@@ -38,6 +38,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -57,6 +59,7 @@ import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
@@ -350,6 +353,48 @@ class GatewayEdgeEarlyResponseResetTest {
                 () -> assertTrue(notReset.isEmpty(), () -> notReset.size()
                         + " upstream connection(s) did not end in a TCP reset (" + connectionCost + "): "
                         + notReset.stream().map(UpstreamConnection::outcome).toList()));
+    }
+
+    /**
+     * The gateway's own reset of the upstream request still receiving an early-answered upload is
+     * routine — it is how forwarding stops — and so leaves no {@code ERROR} record behind: neither one
+     * of the gateway nor the {@code Stream reset: 0} report Vert.x's {@code HttpClientRequestImpl}
+     * writes for an upstream request whose failure no handler takes.
+     * <p>
+     * Vert.x logs through JUL in this fixture, so the test logger observes that report; the case
+     * closes with a control that emits an {@code ERROR} through Vert.x's logging facade and fails
+     * unless it is captured, so the absence it states was examined.
+     */
+    @Test
+    @DisplayName("an early upstream answer leaves no ERROR record for the gateway's own upstream reset")
+    void earlyAnswerLeavesNoErrorRecordForTheGatewaysOwnUpstreamReset() throws Exception {
+        String upstreamPath = EARLY + "-logged";
+        List<String> upload = List.of("POST " + upstreamPath);
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+
+        Upload early = startUpload(http2Client, frontPort, "POST", "/" + ROUTE + upstreamPath, Map.of());
+        Awaits.connect(answerOf(early.request()), "the early answer to arrive whole");
+        Awaits.connect(early.streamEnd(), "the edge to reset the open upload stream");
+        Awaits.until(() -> !connectionsCarrying(upload).isEmpty()
+                        && connectionsCarrying(upload).stream().allMatch(UpstreamConnection::ended),
+                "the upstream connection the gateway reset to end", Awaits.CONNECT_CEILING_SECONDS);
+
+        List<LogRecord> errors = SheriffDebugCapture.capturedRecords().stream()
+                .filter(captured -> Level.SEVERE.equals(captured.getLevel()))
+                .toList();
+        String control = "vertx error capture control " + Generators.letterStrings(8, 16).next();
+        io.vertx.core.impl.logging.LoggerFactory.getLogger(GatewayEdgeEarlyResponseResetTest.class).error(control);
+
+        assertAll("ERROR records of an early answer",
+                () -> assertTrue(errors.isEmpty(), () -> errors.size()
+                        + " ERROR record(s) for the gateway's own upstream reset: " + errors.stream()
+                        .map(captured -> captured.getLoggerName() + ": " + SheriffDebugCapture.rendered(captured))
+                        .toList()),
+                () -> assertTrue(SheriffDebugCapture.capturedRecords().stream()
+                                .anyMatch(captured -> Level.SEVERE.equals(captured.getLevel())
+                                        && control.equals(captured.getMessage())),
+                        "an ERROR written through Vert.x's logging is not captured, so the absence above would "
+                                + "say nothing about Vert.x's own reports"));
     }
 
     /**

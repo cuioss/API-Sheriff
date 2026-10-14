@@ -37,6 +37,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.tools.logging.CuiLogger;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
@@ -45,6 +46,7 @@ import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.RequestOptions;
+import io.vertx.core.http.StreamResetException;
 import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
 
@@ -121,6 +123,14 @@ import org.jspecify.annotations.Nullable;
  * is never sent late, one in flight is reset, and a response it already received and paused is
  * released with it. Only a response actually handed to the caller is exempt.
  * <p>
+ * <strong>The gateway's own upstream reset is not logged as an error.</strong> Every attempt's
+ * upstream request carries an exception handler from the moment it is obtained. Without one, Vert.x
+ * reports the {@code StreamResetException} each {@link HttpClientRequest#reset()} delivers as an
+ * unhandled exception at {@code ERROR} — once per early answer, cap breach, failed inbound body,
+ * abandoned attempt or relay that failed to start. On an HTTP/1.x request that exception can only be
+ * the gateway's own reset, so the handler drops it; any other failure it sees also reaches the send
+ * future or the response stream and is mapped there, so it is logged at {@code DEBUG} only.
+ * <p>
  * <strong>Stream-aware retry gating.</strong> When the route enables SmallRye retry, a failed attempt
  * may be retried. A streamed request cannot be safely replayed once any body byte has crossed to the
  * upstream, a non-idempotent verb must never be re-sent, and the one-shot inbound body stream cannot be
@@ -137,6 +147,8 @@ import org.jspecify.annotations.Nullable;
  * @since 1.0
  */
 public final class DispatchStage {
+
+    private static final CuiLogger LOGGER = new CuiLogger(DispatchStage.class);
 
     /** Bounds the cause-chain walk so a self-referential cause cycle cannot spin forever. */
     private static final int MAX_CAUSE_DEPTH = 16;
@@ -384,6 +396,9 @@ public final class DispatchStage {
         AtomicReference<@Nullable GatewayException> clientAbortAtFailure = new AtomicReference<>();
         Future<HttpClientResponse> response = httpClient.request(options)
                 .compose(request -> {
+                    // Registered before the request is published, so every reset of it the gateway
+                    // makes — the unsent release below included — finds a handler (see the class javadoc).
+                    request.exceptionHandler(DispatchStage::onUpstreamRequestFailure);
                     if (!attempt.publish(request)) {
                         // The dispatch stopped waiting for this attempt before its request obtained a
                         // connection: the request was reset unsent, and no late upstream execution follows.
@@ -437,6 +452,21 @@ public final class DispatchStage {
             throw refusedBeforeHandOver;
         }
         return received;
+    }
+
+    /**
+     * The exception handler of every attempt's upstream request. A {@link StreamResetException} on
+     * an HTTP/1.x request can only come from the gateway's own {@link HttpClientRequest#reset()} —
+     * HTTP/1.x has no peer stream reset — so it is dropped: the reset is how the gateway stops
+     * forwarding, not a failure. Any other failure also reaches the send future or the response stream,
+     * where it is mapped, metered or answered, so it is logged here at {@code DEBUG} only.
+     */
+    private static void onUpstreamRequestFailure(Throwable failure) {
+        if (failure instanceof StreamResetException) {
+            return;
+        }
+        LOGGER.debug(failure, "Upstream request reported a failure, handled where it is mapped: %s",
+                failure.getClass().getName());
     }
 
     private static @Nullable GatewayException extractGatewayException(Throwable failure) {
