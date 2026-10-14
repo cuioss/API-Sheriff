@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -668,6 +669,19 @@ final class RetryingJwksLoader implements JwksLoader, AutoCloseable {
             onUnknownKeyId(kid);
         }
         return Optional.empty();
+    }
+
+    /**
+     * The key ids of the current delegate's active key set, as an immutable snapshot taken at the
+     * moment of the call. A retired delegate's key ids are not included, even while its grace period
+     * lets {@link #getKeyInfo(String)} still resolve them. A pure read: it never fetches and never
+     * schedules a refresh.
+     *
+     * @return the active key set's key ids, empty before the first load, never {@code null}
+     */
+    @Override
+    public Set<String> getKeyIds() {
+        return Set.copyOf(snapshot.get().delegate().getKeyIds());
     }
 
     @Override
