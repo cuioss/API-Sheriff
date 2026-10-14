@@ -787,10 +787,8 @@ public final class ConfigValidator {
             if (endpoint.scopes().isEmpty()) {
                 continue;
             }
-            boolean allUnauthenticated = endpoint.routes().stream().allMatch(route -> {
-                AuthConfig auth = PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route));
-                return auth == null || auth.require() == Require.NONE;
-            });
+            boolean allUnauthenticated = endpoint.routes().stream()
+                    .allMatch(route -> effectiveRequire(ScopeChain.of(gateway, endpoint, route)) == Require.NONE);
             if (allUnauthenticated) {
                 errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_SCOPES_POINTER,
                         ("endpoint '%s' declares scopes but every one of its routes resolves require: none; "
@@ -1158,9 +1156,7 @@ public final class ConfigValidator {
                     continue;
                 }
                 Require anchorRequire = anchorAuth.require();
-                AuthConfig auth = PolicyBlock.AUTH.declared(chain);
-                Require effectiveRequire = auth == null ? Require.NONE : auth.require();
-                if (anchorRequire != Require.NONE && effectiveRequire == Require.NONE) {
+                if (anchorRequire != Require.NONE && effectiveRequire(chain) == Require.NONE) {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
                                     .formatted(route.id(), anchor.name(), anchorRequire)));
@@ -1174,8 +1170,7 @@ public final class ConfigValidator {
         Set<Require> requires = EnumSet.noneOf(Require.class);
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                AuthConfig auth = PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route));
-                requires.add(auth == null ? Require.NONE : auth.require());
+                requires.add(effectiveRequire(ScopeChain.of(gateway, endpoint, route)));
             }
         }
         if (requires.contains(Require.BEARER) && lacksConfiguredIssuer(gateway)) {
@@ -2604,8 +2599,7 @@ public final class ConfigValidator {
             List<ConfigError> errors) {
         WebSocketConfig websocket = route.websocket();
         List<String> origins = websocket == null ? List.of() : websocket.allowedOrigins();
-        AuthConfig auth = PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route));
-        Require require = auth == null ? Require.NONE : auth.require();
+        Require require = effectiveRequire(ScopeChain.of(gateway, endpoint, route));
         if (require.isAuthenticated() && origins.isEmpty()) {
             errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                     "websocket route '%s' with effective auth '%s' must declare a non-empty allowed_origins allowlist (fail-closed)"
@@ -2689,6 +2683,15 @@ public final class ConfigValidator {
     private static Map<String, String> passthroughSni(GatewayConfig gateway) {
         TlsConfig tls = gateway.tls();
         return tls == null ? Map.of() : tls.passthroughSni();
+    }
+
+    /**
+     * The route's effective {@code auth.require}, resolved through {@link PolicyBlock#AUTH};
+     * {@link Require#NONE} when no scope declares an auth block (that route is refused separately).
+     */
+    private static Require effectiveRequire(ScopeChain chain) {
+        AuthConfig auth = PolicyBlock.AUTH.declared(chain);
+        return auth == null ? Require.NONE : auth.require();
     }
 
     /** The route's effective protocol — the declared value, or {@link Protocol#HTTP} when omitted. */
