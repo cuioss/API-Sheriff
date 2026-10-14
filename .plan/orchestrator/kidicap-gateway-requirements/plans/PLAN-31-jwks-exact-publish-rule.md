@@ -60,16 +60,27 @@ and the threat model.
    new key are rejected within the first window after an abrupt change) unless D1 changes it. Update the
    class Javadoc of `RetryingJwksLoader` (lines ~84–89 describe the approximate rule) and any
    `doc/configuration.adoc` / `doc/user/` text that describes when a refreshed set is used.
+   ⚠ Re-grounded 2026-10-14 (cleanup at `5490144f`): #448 added a sibling GW-07 subsection
+   (`gw-07-upstream-ports`); the paragraph to change is in the `gw-07-jwks-refresh` subsection, plus its
+   summary row ("a refresh published only when it holds the triggering key id"). Three more places state
+   the approximate rule: `doc/LogMessages.adoc` (ApiSheriff-136, "a refresh replaces the key set only when
+   it holds the key id that triggered it") and `doc/configuration.adoc` (the sentence "The refresh replaces
+   the key set only if it holds the key id that triggered it").
 
 Split guard: 3 deliverables.
 
 ## Claim Labels
 
 - OBSERVED: `settleRefresh` discards the fresh delegate when `fresh.getKeyInfo(kid).isEmpty()` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoader.java` § `settleRefresh`, at `5c2a8143`
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.settleRefresh :553; :555 discards when status != OK || fresh.getKeyInfo(kid).isEmpty()
 - OBSERVED: `RetryingJwksLoader.getKeyIds()` delegates to the current delegate's active set and was added by #449 — read in the diff of `5c2a8143`
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RetryingJwksLoader.getKeyIds() :683-684 returns Set.copyOf(delegate().getKeyIds()); added by 5c2a8143 (#449)
 - OBSERVED: `main` pins `version.token-sheriff` 0.9.7 — read at `pom.xml`, at `5c2a8143`
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: pom.xml:63 version.token-sheriff 0.9.7
 - OBSERVED: ADR-0063 § Risks and the threat model's GW-07 residual both say closing the residual needs a key-id accessor that 0.9.6 lacks — read at `doc/adr/0063-…adoc` (~lines 219–227) and `doc/security-threat-model.adoc` (~lines 1276–1290), at `5c2a8143`
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: ADR-0063 Risks :219-227 and threat-model gw-07-jwks-refresh residual :1282-1290 end "which token-sheriff 0.9.6 does not"; Javadoc RetryingJwksLoader:86-89
 - HYPOTHESIS: `JwksKeyRotationIT` can drive a rotation behind a claimed window end to end — confirm/refute at `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/JwksKeyRotationIT.java` (verify-at-outline)
+  - verdict: unverifiable | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: JwksKeyRotationIT (:150) drives rotation and an invented-key-id flood separately; whether it can drive the combined case is an outline judgement
 
 ## Expected Surface
 
@@ -77,6 +88,8 @@ Split guard: 3 deliverables.
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/auth/RetryingJwksLoaderTest.java`
 - OBSERVED: `doc/adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc`
 - OBSERVED: `doc/security-threat-model.adoc`
+- OBSERVED (added 2026-10-14, cleanup at `5490144f`): `doc/LogMessages.adoc` — ApiSheriff-136 states the approximate rule
+- OBSERVED (added 2026-10-14): `doc/configuration.adoc` — states the approximate rule
 - HYPOTHESIS: `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/JwksKeyRotationIT.java` (verify-at-outline)
 - HYPOTHESIS: `doc/configuration.adoc`, `doc/user/` pages describing the `jwks` refresh keys (verify-at-outline)
 

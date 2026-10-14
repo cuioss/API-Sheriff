@@ -81,6 +81,10 @@ because the component is this project's own.
    same rule right now: one shape-plus-canonical-form check (`validateReservedPath`) for every reserved
    path, which moves to `/bff/*`. Write the ADR against that unified rule. This plan is the rule's only
    ADR owner; V02-12's held ADR (frontchannel/backchannel split) references it and does not restate it.
+   ✅ **Gate met 2026-10-14:** V02-12's first PR landed as #450 (`eff0724c`). The rule to record is
+   `ConfigValidator.validateReservedPath` (and `ABSOLUTE_GATEWAY_PATH_REQUIREMENT`) as #450 left it: the
+   reserved paths default under `/bff/*`, and the check also refuses dot segments, `//`, `;` and
+   percent-encoding. Read it there; it is a reference, not a file this plan edits.
    ⚠ The next free ordinal is **0067** (0053 and 0056–0066 taken — re-checked 2026-10-13 at `48e8d5a6`); confirm by listing `doc/adr/` rather than
    trusting `manage-adr scan`, whose success payload omits the duplicate population entirely (plan-marshall
    lesson `2026-10-02-13-00x`; this is how `main` carried two ADR-0053 files for a week).
@@ -96,18 +100,18 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/` § the logout handler's revocation call
   (verify-at-outline). ⛔ If BFF-09 is already corrected, close deliverable 1 and say so — do not rewrite
   a row that someone has since fixed.
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BFF-09 summary row (threat-model:3014) still reads COVERED (server) and the Control line (:1930) still says revoke the RT family; BffRuntimeProducer unchanged since 35f2bb37 so the revocation seam is still bound to a no-op (comment :604, buildLogoutEndpoint :1077)
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BFF-09 heading threat-model:2075, Control :2088 still revokes the RT family, summary :3441 COVERED (server); no-op binding BffRuntimeProducer.buildLogoutEndpoint:1264, lambda :1277-1280
 - HYPOTHESIS: the cookie-mode residual is documented in the user docs but carries no disposition of
   CodeRabbit's Medium rating — confirm/refute at `doc/user/bff-cookie.adoc` and
   `doc/security-threat-model.adoc` § the cookie-mode rows (verify-at-outline).
-  - verdict: contradicted | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: the cookie-mode residual is documented with its bound and mitigations (threat-model:1971-1987) and the summary row (:3014) reads PARTIAL-accepted; deliverable 3 stays dropped
+  - verdict: contradicted | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: cookie-mode residual documented as accepted with bound and mitigations at threat-model:2153-2170, summary :3441 PARTIAL-accepted; deliverable 3 already dropped
 - HYPOTHESIS: neither the problem+json extension-member rule nor the reserved-path boot rule has an ADR at
   HEAD — confirm/refute by searching `doc/adr/` for both subjects (verify-at-outline).
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr listed at 6788bdae: 0060 is dispatch framing and 0061 offline config validation; still no ADR states the problem+json extension-member rule or the reserved-path boot rule
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: no ADR states either rule; ADR-0057:134-136 names missing_scopes/step_up_url only for its own 403; #450 rewrote validateReservedPath (ConfigValidator:2937) and touched no ADR
 - OBSERVED: ADR ordinals 0053, 0056 and 0057 are taken at HEAD (0053 once, after PR #367 resolved the
   collision; 0056 the header-matcher ADR; 0057 PLAN-23's session-scope ADR) — orchestrator-verified
   2026-10-02 by listing `doc/adr/`.
-  - verdict: corroborated | checked_at: 6788bdae | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr carries one 0053 plus 0056 and 0057 as claimed; 0058-0061 are also taken, so the next free ordinal is 0062
+  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: doc/adr at 5490144f: one 0053, 0056-0066 taken; next free ordinal 0067
 
 ## Expected Surface
 

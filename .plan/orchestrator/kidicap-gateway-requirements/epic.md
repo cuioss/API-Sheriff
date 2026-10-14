@@ -53,7 +53,10 @@ decision.
 - PLAN-30 — shipped #448. Ran beside the sibling's `PLAN-V02-12` over a 3-path overlap (operator's
   call); nothing collided. Merged while this epic recorded a "must not merge" hold the plan never saw
   (lesson `2026-10-14-13-003`). The upload benchmarks no longer exercise the early-answer path.
-- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** NEXT. Its line references into
+- **PLAN-32 (staged and emitted 2026-10-14 by the other orchestrator session, WS-02, RUNNING) — the
+  `Http2EarlyResponseResetIT` timeouts since #448** (#455). Top priority; touches the early-answer path in
+  `GatewayEdgeRoute` and `DispatchStage`, so PLAN-29 waits for it.
+- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** HELD by the cross-epic hold (Watches) until `PLAN-V02-25` lands; then re-ground and emit. Its line references into
   `GatewayEdgeRoute` are stale since #431 and #448: run `cleanup` before emitting it. Its D4 (DP-6) must
   be read against #448's abortive close and guard-keyed breaker. Carries two wire-or-remove decisions for
   the operator at outline.
@@ -509,12 +512,7 @@ decision.
   sonar-roundtrip). The merge rests on CI fully green at `e0e9fcf` (native ITs included) plus both review
   bots on that commit with no open threads. Not a code defect — a verification-currency gap to weigh if
   something surfaces in that surface later. — source: landing `landings/PLAN-15.md`
-> ↪ **RESOLVED 2026-09-24 by PLAN-18** (#346 / f6067588): names are normalised once at the route-compile
-> seam with `toLowerCase(Locale.ROOT)`, `present: false` requires absence and composes under AND, and the
-> boot validator now judges matchers exactly as the runtime evaluates them (ADR-0053, ADR-0054). Record:
-> `landings/PLAN-18.md`. Was: names compared case-sensitively against a lower-cased request map, and
-> `present: false` constrained nothing while the boot disjointness check treated it as distinguishing
-> (source: inbox `kidicap-gateway-downstream-004.md`).
+> ↪ Relocated to `settled.md` § "Header-matcher defects, resolved by PLAN-18" — resolved 2026-09-24 by PLAN-18 (#346)
 
 - **No per-request access log exists.** The gateway ships events and metrics and relies on the Quarkus
   HTTP access log, but no `quarkus.http.access-log.*` setting exists anywhere in the repository —
@@ -540,24 +538,7 @@ decision.
   staged plan touches that surface — fold into whichever plan next enters the relay. — source:
   `landings/PLAN-22.md`
 
-> ↪ **RESOLVED 2026-10-02 by PR #367** (`fix(adr): resolve ordinal 0053 collision and add contract
-> guards`), independently of this epic: `doc/adr/` now carries ONE 0053, the header-matcher ADR moved to
-> 0056, and the PR added contract guards against a repeat. **PLAN-20's deliverable 9 (the renumber) is
-> therefore RETIRED** — it would re-do settled work. What is NOT fixed is the blind gate: `manage-adr
-> scan` still omits the duplicate population on executor 0.1.1826, so confirm the corpus by listing
-> `doc/adr/`, never by that payload. Was:
-
-- **`main` carries TWO ADR-0053 files** — `0053-A_header_matchers_name_is_normalised…` (#346, PLAN-18) and
-  `0053-Portal_templates_render_on_a_standalone_Qute_engine…` (#348, which renamed it from 0050 after #341
-  had taken 0050; that file is the portal ADR `landings/PLAN-16.md` recorded as ADR-0050). So the ordinal
-  has now collided **twice** under concurrent plans, and the second collision is live on `main`. One file
-  needs renumbering and the allocator needs to stop handing one ordinal to two plans — repository-source
-  work, so a plan's or an operator's, not the orchestrator's. **FOLDED 2026-09-24 into PLAN-20 as
-  deliverable 9** (it already authors an ADR and already declares `doc/adr/`, so the fold added no file
-  surface); the entry stays open until PLAN-20 lands. PLAN-22's pre-merge duplicate gate was waived over
-  this and ALSO returned no verdict, because `manage-adr scan` omits the duplicate population from its
-  success payload (plan-marshall lesson `2026-09-24-07-001`) — so confirm the corpus by listing
-  `doc/adr/`, never by that payload. — observed 2026-09-24 by the orchestrator, not reported by any plan
+> ↪ Relocated to `settled.md` § "Duplicate ADR-0053, resolved by #367" — resolved 2026-10-02 by #367; the manage-adr scan blind-gate note moved with it
 - **`source_id` is a stored PATH, resolved at finalize time, so a ledger relocation orphans every
   in-flight plan's outbox.** PLAN-23 shipped #369 with `emit-landing` reporting *not orchestrated, no
   landing emitted*: its `source_id` was persisted on 2026-09-25 as
@@ -573,28 +554,14 @@ decision.
   `post_responses` transmitted verbatim as a public reply. Harmless; delete by hand on GitHub if wanted.
   Mechanism filed as plan-marshall lesson `2026-09-24-05-001`. — source: inbox
   `route-header-matcher-defects-003.md`
-> ↪ **RESOLVED 2026-09-23 by PLAN-17** (#345 / c1b09c7): the allowance is derived from the `jwks.url`
-> host on absent/empty, and blank entries, `host:port` entries and a hostless `jwks.url` now abort
-> startup with `CONFIG_INVALID`. Record: `landings/PLAN-17.md`. Was: `allowed_egress_hosts` duplicates the
-> JWKS URL host — a blank entry boots and fails later, a `host:port` entry is silently inert (source:
-> inbox `kidicap-gateway-downstream-003.md`).
+> ↪ Relocated to `settled.md` § "Egress-allowance duplication, resolved by PLAN-17" — resolved 2026-09-23 by PLAN-17 (#345)
 
 - The merge-lock release reported the lock **"already free"** during PLAN-17's finalize although that plan
   had acquired it. The merge was unaffected, but the release path did not observe its own claim, so mutual
   exclusion is unestablished for that window and the report reads as success. Plugin-side; filed as
   plan-marshall lesson `2026-09-23-05-003`. — source: operator report, PLAN-17 landing
 
-> ↪ **RESOLVED 2026-10-06 by plan-marshall 0.1.1855**: `corpus cross-check` now excludes the sentinel
-> before counting (`excluded_sentinel_plan_count: 1`) and reports `candidate_comparison_determinate: true`
-> for this epic, so the `next` gate no longer fails closed on it and no operator override is needed. Was:
-
-- `orchestrator corpus cross-check` (plan-marshall 0.1.1728) counts `.plan/local/plans/NO_PLAN` — the
-  plan-less operations sentinel (`status.json` `metadata.sentinel: true`, no `references.json`) — as a
-  live plan with no comparable surface. That sets `candidate_comparison_determinate: false`
-  (`live_plan indeterminate: 1`) for EVERY candidate, so the `next` gate fails closed permanently in this
-  repository. Not a collision; a plugin defect (the live-plan scan should exclude sentinels). Until fixed,
-  each emit needs a recorded operator override naming the sentinel as the sole indeterminate candidate.
-  Plugin-side fix, outside this epic. — observed 2026-09-22 after PLAN-14's landing
+> ↪ Relocated to `settled.md` § "NO_PLAN sentinel fails the next gate, resolved in plan-marshall 0.1.1855" — resolved 2026-10-06 by plan-marshall 0.1.1855
 
 - kidicap-gateway still links to the removed `doc/api-sheriff-aenderungen.adoc` (~30 references in
   `README.md`, `CLAUDE.md`, `doc/**`, incl. `#as-N` anchors). Not API Sheriff work, and not owned by any

@@ -62,3 +62,55 @@ stays in `epic.md`. These three bullets record the first cut and why it was made
   integration check as deliverables; removed. External dependencies (`cui-http` for AS-13, the token
   client engine for AS-14, the token-validation library for AS-7/AS-10) are verify-first clauses,
   never in-repo implementation; any dependency bump needs explicit user approval.
+
+## Header-matcher defects, resolved by PLAN-18
+
+> ↪ **RESOLVED 2026-09-24 by PLAN-18** (#346 / f6067588): names are normalised once at the route-compile
+> seam with `toLowerCase(Locale.ROOT)`, `present: false` requires absence and composes under AND, and the
+> boot validator now judges matchers exactly as the runtime evaluates them (ADR-0053, ADR-0054). Record:
+> `landings/PLAN-18.md`. Was: names compared case-sensitively against a lower-cased request map, and
+> `present: false` constrained nothing while the boot disjointness check treated it as distinguishing
+> (source: inbox `kidicap-gateway-downstream-004.md`).
+
+## Duplicate ADR-0053, resolved by #367
+
+> ↪ **RESOLVED 2026-10-02 by PR #367** (`fix(adr): resolve ordinal 0053 collision and add contract
+> guards`), independently of this epic: `doc/adr/` now carries ONE 0053, the header-matcher ADR moved to
+> 0056, and the PR added contract guards against a repeat. **PLAN-20's deliverable 9 (the renumber) is
+> therefore RETIRED** — it would re-do settled work. What is NOT fixed is the blind gate: `manage-adr
+> scan` still omits the duplicate population on executor 0.1.1826, so confirm the corpus by listing
+> `doc/adr/`, never by that payload. Was:
+
+- **`main` carries TWO ADR-0053 files** — `0053-A_header_matchers_name_is_normalised…` (#346, PLAN-18) and
+  `0053-Portal_templates_render_on_a_standalone_Qute_engine…` (#348, which renamed it from 0050 after #341
+  had taken 0050; that file is the portal ADR `landings/PLAN-16.md` recorded as ADR-0050). So the ordinal
+  has now collided **twice** under concurrent plans, and the second collision is live on `main`. One file
+  needs renumbering and the allocator needs to stop handing one ordinal to two plans — repository-source
+  work, so a plan's or an operator's, not the orchestrator's. **FOLDED 2026-09-24 into PLAN-20 as
+  deliverable 9** (it already authors an ADR and already declares `doc/adr/`, so the fold added no file
+  surface); the entry stays open until PLAN-20 lands. PLAN-22's pre-merge duplicate gate was waived over
+  this and ALSO returned no verdict, because `manage-adr scan` omits the duplicate population from its
+  success payload (plan-marshall lesson `2026-09-24-07-001`) — so confirm the corpus by listing
+  `doc/adr/`, never by that payload. — observed 2026-09-24 by the orchestrator, not reported by any plan
+
+## Egress-allowance duplication, resolved by PLAN-17
+
+> ↪ **RESOLVED 2026-09-23 by PLAN-17** (#345 / c1b09c7): the allowance is derived from the `jwks.url`
+> host on absent/empty, and blank entries, `host:port` entries and a hostless `jwks.url` now abort
+> startup with `CONFIG_INVALID`. Record: `landings/PLAN-17.md`. Was: `allowed_egress_hosts` duplicates the
+> JWKS URL host — a blank entry boots and fails later, a `host:port` entry is silently inert (source:
+> inbox `kidicap-gateway-downstream-003.md`).
+
+## NO_PLAN sentinel fails the next gate, resolved in plan-marshall 0.1.1855
+
+> ↪ **RESOLVED 2026-10-06 by plan-marshall 0.1.1855**: `corpus cross-check` now excludes the sentinel
+> before counting (`excluded_sentinel_plan_count: 1`) and reports `candidate_comparison_determinate: true`
+> for this epic, so the `next` gate no longer fails closed on it and no operator override is needed. Was:
+
+- `orchestrator corpus cross-check` (plan-marshall 0.1.1728) counts `.plan/local/plans/NO_PLAN` — the
+  plan-less operations sentinel (`status.json` `metadata.sentinel: true`, no `references.json`) — as a
+  live plan with no comparable surface. That sets `candidate_comparison_determinate: false`
+  (`live_plan indeterminate: 1`) for EVERY candidate, so the `next` gate fails closed permanently in this
+  repository. Not a collision; a plugin defect (the live-plan scan should exclude sentinels). Until fixed,
+  each emit needs a recorded operator override naming the sentinel as the sole indeterminate candidate.
+  Plugin-side fix, outside this epic. — observed 2026-09-22 after PLAN-14's landing
