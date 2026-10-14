@@ -50,7 +50,7 @@ shape genuinely cannot express, and record why.
 
 == The concern map
 
-The 51 rules group into 15 concern classes. Positions are the 1-based positions in
+The 51 rules group into 16 concern classes. Positions are the 1-based positions in
 `DEFAULT_RULES`. "Extracted" means the concern class exists and owns the rule bodies; "private in
 `ConfigValidator`" means the rules are still private methods there, at the positions shown.
 
