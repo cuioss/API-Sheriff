@@ -221,11 +221,11 @@ class PolicyBlockSchemaContractTest {
         List<List<String>> tamperedRows = new ArrayList<>();
         for (List<String> row : shipped.rows()) {
             String key = blockKey(row);
-            if (key.equals(DROPPED_ROW_KEY)) {
+            if (DROPPED_ROW_KEY.equals(key)) {
                 continue;
             }
             List<String> copy = new ArrayList<>(row);
-            if (key.equals(WIDENED_ROW_KEY)) {
+            if (WIDENED_ROW_KEY.equals(key)) {
                 copy.set(SCOPES_COLUMN, ADDED_SCOPE.name().toLowerCase(Locale.ROOT) + ", " + row.get(SCOPES_COLUMN));
             }
             tamperedRows.add(copy);
@@ -238,7 +238,7 @@ class PolicyBlockSchemaContractTest {
         Set<Scope> widened = EnumSet.copyOf(PolicyBlock.WEBSOCKET.scopes());
         widened.add(ADDED_SCOPE);
         assertEquals(List.of(scopeSetMismatch(PolicyBlock.FORWARD, null),
-                scopeSetMismatch(PolicyBlock.WEBSOCKET, widened)), mismatches,
+                        scopeSetMismatch(PolicyBlock.WEBSOCKET, widened)), mismatches,
                 "dropping the '" + DROPPED_ROW_KEY + "' row and widening the '" + WIDENED_ROW_KEY
                         + "' row must be exactly the two reported drifts");
     }
@@ -308,7 +308,7 @@ class PolicyBlockSchemaContractTest {
         }
         int open = -1;
         for (int index = anchor + 1; index < document.size() && open < 0; index++) {
-            if (document.get(index).strip().equals(TABLE_DELIMITER)) {
+            if (TABLE_DELIMITER.equals(document.get(index).strip())) {
                 open = index;
             }
         }
@@ -386,7 +386,7 @@ class PolicyBlockSchemaContractTest {
      */
     private static Path repoRoot() {
         for (Path candidate = Path.of(System.getProperty("user.dir")); candidate != null;
-                candidate = candidate.getParent()) {
+             candidate = candidate.getParent()) {
             if (Files.isRegularFile(candidate.resolve(SCOPE_TABLE_DOCUMENT))) {
                 return candidate;
             }
