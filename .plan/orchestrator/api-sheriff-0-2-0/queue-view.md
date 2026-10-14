@@ -6,7 +6,7 @@
 
 **Resume anchor**: === 2026-10-14 STATE at 5c2a8143 (token-sheriff 0.9.7 integrated into the specs). This anchor states current state only; older paragraphs are in the ledger's git history. ===
 
-SHIPPED (12): V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19, -21 (#439, landings/PLAN-V02-21.md). RUNNING: V02-12 (plan-v02-12-idp-addressing-model; first PR #450 open = /bff/* relocation and canonical check; held half = back-channel addressing, identity repoint, ADR - UNBLOCKED by token-sheriff 0.9.7, runs as its second PR after #450; its D3 sample after V02-23 and V02-15). STAGED (10): V02-23 (cookie forwarding policy - NEXT after V02-12's first PR lands), V02-04, -05, -06, -07, -09, -11, -15, -20, -22. kidicap PLAN-28 shipped (#437); its duplicate run (jwks-refresh-follow-ups) was closed unmerged and its worktree removed.
+SHIPPED (12): V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19, -21 (#439, landings/PLAN-V02-21.md). RUNNING: V02-12 (plan-v02-12-idp-addressing-model; first PR #450 MERGED 2026-10-14 as eff0724c (/bff/* relocation and canonical check; merge-group green, push IT and benchmark were pending at analysis); held half = back-channel addressing, identity repoint, ADR - UNBLOCKED by token-sheriff 0.9.7, runs as its second PR after #450; its D3 sample after V02-23 and V02-15). STAGED (10): V02-23 (cookie forwarding policy - NEXT after V02-12's first PR lands), V02-04, -05, -06, -07, -09, -11, -15, -20, -22. kidicap PLAN-28 shipped (#437); its duplicate run (jwks-refresh-follow-ups) was closed unmerged and its worktree removed.
 
 INBOX: empty (114 archived). kidicap inbox drained 2026-10-13 too (duplicate-run report -> lesson 2026-10-13-18-001).
 
@@ -33,7 +33,7 @@ READ BEFORE EMITTING:
 
 OPEN: Open Defect 14 (#201, V02-11). Open Defect 12 (RouteRuntimeAssembler dead allocation; no owner). Watches: V02-21 doc leftovers (ADR-0031 "seven", start-dev-environment.sh literal 120 -> V02-22); HTTP/1.1 drain 502 flake (GatewayEdgeFramingCorpusTest, all sightings across both epics); V02-01 D7 residue; test-cycle rework residue (#422, #423, shared-wait sampling, ConfigValidator anchor order). A /marshall-steward run is owed. Upstream: TokenSheriff#800 and #801 closed, released in 0.9.7 (2026-10-14); main pins 0.9.7 since #449 (5c2a8143).
 
-NEXT ACTION: when V02-12's first PR lands, run analyze, then emit PLAN-V02-23 first (operator direction), before any other staged plan; do not fill free slots ahead of it without operator say-so. V02-21 has landed, so V02-12 rebases over its 3 shared files (start-sample.sh, ADR-0031, integration-tests/docker-compose.yml). Held: V02-22 (never with V02-12), V02-15 and V02-09 (after V02-12), V02-07 (after V02-06).
+NEXT ACTION: TOP PRIORITY (operator 2026-10-14): the integration-test failures reported from the other machine are kidicap PLAN-30's PR #448 (Http2EarlyResponseResetIT timed out in 2 of 3 attempts; main green on it since #431; suspected setSoLinger(0) on the upstream HttpClient). It is a kidicap Open Defect; #448 must not merge until fixed. Emit nothing until the operator confirms the fix, then emit PLAN-V02-23 (V02-12's second PR runs alongside; whichever merges second rebases). Held: V02-22 (never with V02-12), V02-15 and V02-09 (after V02-12), V02-07 (after V02-06). Kidicap PLAN-31 staged.
 **Phase**: orchestrating
 **Running**:
 - PLAN-V02-12 (WS-04) — plan=plan-v02-12-idp-addressing-model
