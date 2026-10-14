@@ -75,7 +75,9 @@ would otherwise force a retrofit.
   never rewritten. So the planned `oidc.discovery_url` is dropped: the spec's D1 exposes one `oidc`
   back-channel-origin key, refuses `http` unless explicitly allowed (`allowInsecureHttp` is client-wide
   upstream), keeps JWKS on `token_validation.issuers[].jwks.url`, and uses a static Keycloak hostname
-  (no dynamic back-channel). The held half runs as V02-12's second PR once #450 has merged.
+  (no dynamic back-channel). The held half runs as V02-12's second PR once #450 has merged, alongside
+  `PLAN-V02-23` (operator, 2026-10-14: "rebase"): both write `gateway.schema.json`, `ConfigValidator`,
+  `ConfigModelReflection` and `doc/configuration.adoc`, and whichever merges second rebases.
   Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1 (that second PR). **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
   half and runs after V02-23. Since the 2026-10-13 dedup it is also an overlay of `PLAN-V02-15`'s
