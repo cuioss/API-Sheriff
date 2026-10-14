@@ -9,7 +9,8 @@ workstream: WS-01
 > is paused until the edge pipeline and policy-block resolution are reworked; "GatewayEdgeRoute is a
 > nightmare. We need a major rework here."). Design settled with the operator the same day (decisions
 > recorded in `epic.md` § Decisions, 2026-10-14). First of three refactor plans: this one, then
-> `PLAN-V02-25` (edge) in parallel with `PLAN-V02-26` (validator), then the re-grounded V02-23.
+> `PLAN-V02-25` (edge) in parallel with the validator split (`PLAN-V02-26`, then slices `PLAN-V02-28` …
+> `PLAN-V02-39`), then the re-grounded V02-23.
 
 ## Objective
 
@@ -58,9 +59,10 @@ change; part (a) is not.
 4. **The override WARN keeps its meaning: "both scopes declare the block"** (operator decision). It is
    derived from the declaration for every block that opts in, not hand-coded per block; the opt-in set
    is part of deliverable 1's proposal. The `auth` floor stays a floor (an anchor's auth cannot be
-   replaced by a weaker one). **Leave `ConfigValidator.validateAnchorAuthFloor` where it is**: `PLAN-V02-26`
-   runs in parallel and owns where validator rules live. If the floor can be derived from the declaration,
-   say so in the ADR and leave the move to whichever of the two plans merges second.
+   replaced by a weaker one). **Leave `ConfigValidator.validateAnchorAuthFloor` where it is**: the validator
+   split owns where validator rules live (`PLAN-V02-26` shipped slice 1 as #463; the floor moves into
+   `AnchorRules` with slice `PLAN-V02-32`). If the floor can be derived from the declaration, say so in
+   the ADR and leave the derivation to whichever of this plan and `PLAN-V02-32` merges second.
 5. **Config records get Lombok `@Builder`; tests stop constructing them positionally** (operator
    decision). 24 of the 41 classes in `config/model/` carry `@Builder` at `5490144f`; `AuthConfig` is
    constructed positionally 104 times in 8 test files. Add `@Builder` to the scope and policy-block
