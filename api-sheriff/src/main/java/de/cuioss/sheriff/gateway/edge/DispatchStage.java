@@ -458,8 +458,11 @@ public final class DispatchStage {
      * The exception handler of every attempt's upstream request. A {@link StreamResetException} on
      * an HTTP/1.x request can only come from the gateway's own {@link HttpClientRequest#reset()} —
      * HTTP/1.x has no peer stream reset — so it is dropped: the reset is how the gateway stops
-     * forwarding, not a failure. Any other failure also reaches the send future or the response stream,
-     * where it is mapped, metered or answered, so it is logged here at {@code DEBUG} only.
+     * forwarding, not a failure. The handler is also installed on the forced-HTTP/2 (gRPC) path, where
+     * the same exception type can instead carry the upstream's own {@code RST_STREAM}. Dropping it here
+     * hides no upstream failure on either path: Vert.x fails the send future, or the response stream
+     * once a response was handed back, with the same exception, and it is mapped, metered or answered
+     * there. Any other failure takes the same route, so it is logged here at {@code DEBUG} only.
      */
     private static void onUpstreamRequestFailure(Throwable failure) {
         if (failure instanceof StreamResetException) {

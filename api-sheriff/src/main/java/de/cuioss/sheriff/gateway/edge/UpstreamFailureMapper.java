@@ -106,7 +106,8 @@ public final class UpstreamFailureMapper {
      * Meters and logs a circuit-breaker state transition. Installed by the edge as the state-change
      * callback of each breaker it builds.
      *
-     * @param routeId the name of the breaker's upstream shape, {@code host:port:retry=<flag>}
+     * @param routeId the name of the breaker's upstream shape,
+     *                {@code scheme://host:port:h2=<flag>:retry=<flag>}
      * @param state   the new breaker state
      */
     public void recordBreakerTransition(String routeId, CircuitBreakerState state) {

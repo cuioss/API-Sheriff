@@ -2637,10 +2637,14 @@ public class GatewayEdgeRoute {
         // deliberately NOT registered as the breaker's SmallRye name: that registry is JVM-global and
         // refuses a name it already holds, so a second edge built in the same JVM for the same upstream
         // host:port — any edge whose upstream port happens to be reused — would fail every dispatch to
-        // it with a 502. retryEnabled stays in the name because RouteRuntimeAssembler's guardCache is
-        // keyed by the full ResilienceShape, so two routes to one host:port that differ only in
-        // retryEnabled hold two distinct breakers and their transitions must be told apart.
-        String name = shape.target().host() + ":" + shape.target().port() + ":retry=" + shape.retryEnabled();
+        // it with a 502. The name carries every dimension of the ResilienceShape that keys
+        // RouteRuntimeAssembler's guardCache — scheme, host, port, the forced-HTTP/2 flag and
+        // retryEnabled — because each distinct shape holds its own breaker: a gRPC route and an HTTP/1.1
+        // route to one host:port, or two routes differing only in retryEnabled, open and close
+        // independently, and an operator reading a transition must be able to tell which one moved.
+        RouteRuntimeAssembler.UpstreamTarget target = shape.target();
+        String name = target.scheme() + "://" + target.host() + ":" + target.port()
+                + ":h2=" + target.forcedHttp2() + ":retry=" + shape.retryEnabled();
         Guard.Builder builder = Guard.create().withDescription("upstream-" + name);
         builder.withCircuitBreaker()
                 .requestVolumeThreshold(20)
