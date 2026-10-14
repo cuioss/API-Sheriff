@@ -87,7 +87,7 @@ class PolicyBlockSchemaContractTest {
 
     @Test
     @DisplayName("the shipped schemas declare every block exactly at its descriptor's scopes")
-    void shippedSchemasAgreeWithEveryDescriptor() throws IOException {
+    void shippedSchemasAgreeWithEveryDescriptor() throws Exception {
         JsonNode gateway = schemaTree(GATEWAY_SCHEMA_RESOURCE);
         JsonNode endpoint = schemaTree(ENDPOINT_SCHEMA_RESOURCE);
 
@@ -100,7 +100,7 @@ class PolicyBlockSchemaContractTest {
 
     @Test
     @DisplayName("every scope location resolves to the declared keys of a schema object")
-    void everyScopeLocationResolves() throws IOException {
+    void everyScopeLocationResolves() throws Exception {
         JsonNode gateway = schemaTree(GATEWAY_SCHEMA_RESOURCE);
         JsonNode endpoint = schemaTree(ENDPOINT_SCHEMA_RESOURCE);
 
@@ -119,7 +119,7 @@ class PolicyBlockSchemaContractTest {
 
     @Test
     @DisplayName("a block key added at a scope its descriptor does not declare is refused")
-    void blockKeyAtAnUndeclaredScopeIsRefused() throws IOException {
+    void blockKeyAtAnUndeclaredScopeIsRefused() throws Exception {
         JsonNode gateway = schemaTree(GATEWAY_SCHEMA_RESOURCE);
         JsonNode endpoint = schemaTree(ENDPOINT_SCHEMA_RESOURCE).deepCopy();
         ObjectNode properties = propertiesAt(endpoint, ENDPOINT_POINTER);
@@ -133,7 +133,7 @@ class PolicyBlockSchemaContractTest {
 
     @Test
     @DisplayName("a block key removed from a scope its descriptor declares is refused")
-    void descriptorScopeWithoutASchemaKeyIsRefused() throws IOException {
+    void descriptorScopeWithoutASchemaKeyIsRefused() throws Exception {
         JsonNode gateway = schemaTree(GATEWAY_SCHEMA_RESOURCE);
         JsonNode endpoint = schemaTree(ENDPOINT_SCHEMA_RESOURCE).deepCopy();
         ObjectNode properties = propertiesAt(endpoint, ROUTE_POINTER);
