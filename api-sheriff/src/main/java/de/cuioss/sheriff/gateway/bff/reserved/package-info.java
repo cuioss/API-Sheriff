@@ -21,12 +21,15 @@
  * the login-initiation fold, the step-up entry point and the client JWKS endpoint — each matched
  * exactly. The six a browser reaches are matched on the OIDC host only; the two the identity provider
  * dials server-to-server, the back-channel logout receiver and the client JWKS endpoint, are matched
- * on every host. This package owns the carve-out and the endpoints behind it:
+ * on every host. A reserved path is an exact-match carve-out resolved ahead of the route table, not an
+ * anchor: it claims one path and nothing beneath it, and the {@code /bff/*} spelling the samples use is
+ * a naming convention that nothing validates. This package owns the carve-out and the endpoints behind
+ * it:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry} classifies an exact
  *       host+path match to a reserved endpoint. The edge consults it <em>before</em> the route
- *       table, so a proxy route such as {@code path_prefix: /auth} never swallows the exact
- *       {@code /auth/callback}.</li>
+ *       table, so a proxy route such as {@code path_prefix: /bff} never swallows the exact
+ *       {@code /bff/callback}.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.bff.reserved.CallbackEndpoint} handles the OIDC
  *       auth-code callback: it parses the <em>raw</em> query (BFF-13 duplicate-parameter
  *       defence), resolves the browser-bound pending-authorization record, and drives the engine's

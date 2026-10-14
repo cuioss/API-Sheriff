@@ -125,13 +125,13 @@ class BffPendingLoginBoundIT extends BaseIntegrationTest {
     private static final String SESSION_COOKIE_NAME = "__Host-sheriff-session";
 
     /** The gateway-owned login-initiation path; each request to it starts one login. */
-    private static final String LOGIN_PATH = "/auth/login";
+    private static final String LOGIN_PATH = "/bff/login";
 
     /** The session route: 200 with a session, 401 for a non-navigation request without one. */
-    private static final String SESSION_ROUTE = "/bff-session/get";
+    private static final String SESSION_ROUTE = "/app/get";
 
     /** Where the identity provider sends a completed login: the gateway's {@code redirect_uri}. */
-    private static final String CALLBACK_PREFIX = "https://localhost:10443/auth/callback";
+    private static final String CALLBACK_PREFIX = "https://localhost:10443/bff/callback";
 
     /** The path of the identity provider's authorization endpoint, below the realm. */
     private static final String AUTHORIZATION_ENDPOINT_PATH = "/protocol/openid-connect/auth";

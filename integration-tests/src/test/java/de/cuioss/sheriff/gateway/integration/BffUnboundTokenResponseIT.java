@@ -83,7 +83,7 @@ import org.junit.jupiter.api.Test;
 class BffUnboundTokenResponseIT {
 
     /** The require:session route each login starts on. */
-    private static final String START_PATH = "/bff-session/get";
+    private static final String START_PATH = "/app/get";
 
     /**
      * The session-cookie name of the rig's gateway, the gateway's default. Spelled out here rather than

@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
-# The require:session WebSocket route BffSessionWebSocketIT targets. It rides the 'bff-session'
+# The require:session WebSocket route BffSessionWebSocketIT targets. It rides the 'app'
 # anchor (type: bff, access: authenticated, auth: require: session) declared in gateway.yaml, so an
 # upgrade is let through only with a live session, and it relays to the same go-httpbin WebSocket
 # echo the public WebSocket routes use (the WS_UPSTREAM topology alias): the match prefix maps to the
@@ -9,7 +9,7 @@
 # closed on both legs with WebSocket close 1008 when that session ends. The suite opens a relay with a
 # live server-mode session, logs the session out and reads the close frame.
 #
-# The prefix nests under /bff-session, the prefix of bff-session.yaml's mediated route, and is
+# The prefix nests under /app, the prefix of bff-session.yaml's mediated route, and is
 # disjoint from it by specificity — the same relation bff-session-norelay has to that route.
 #
 # allowed_origins names the primary gateway's own origin: an authenticated WebSocket route must
@@ -19,11 +19,11 @@ endpoint:
   id: bff-session-websocket
   enabled: true
   base_url: WS_UPSTREAM
-  anchor: bff-session
+  anchor: app
   routes:
     - id: bff-session-ws
       protocol: websocket
       match:
-        path_prefix: /bff-session/ws
+        path_prefix: /app/ws
       websocket:
         allowed_origins: ["https://localhost:10443"]

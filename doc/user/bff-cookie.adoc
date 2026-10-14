@@ -52,7 +52,7 @@ oidc:
   client_id: api-sheriff
   # no client_secret and no client_authentication.key_file: the gateway authenticates with
   # private_key_jwt and a key it generates on startup
-  redirect_uri: https://gw.example.com/auth/callback   # registered exactly at the IdP
+  redirect_uri: https://gw.example.com/bff/callback   # registered exactly at the IdP
   scopes: [openid, profile]                   # requested on every login; endpoints add their own
   session:
     mode: cookie                              # sealed cookie, no store (this variant)
@@ -355,8 +355,8 @@ link:../configuration.adoc#_oidc_signing_keys[Configuration Reference -- Signing
 The identity provider learns the client-authentication key from the gateway. Register the
 gateway's JWKS URL at the client; do not paste the public key into the identity provider.
 
-* *The JWKS URL* is `https://<gateway address the identity provider can reach>/auth/jwks`. The path
-  is `oidc.client_authentication.jwks_path`; `/auth/jwks` is its default. The endpoint answers a
+* *The JWKS URL* is `https://<gateway address the identity provider can reach>/bff/jwks`. The path
+  is `oidc.client_authentication.jwks_path`; `/bff/jwks` is its default. The endpoint answers a
   `GET` without a credential, on every host name the gateway answers on, so an internal service name
   works. It publishes the public half of the client-authentication key and nothing else.
 * *The identity provider dials the gateway.* It must reach that URL server-to-server and must trust

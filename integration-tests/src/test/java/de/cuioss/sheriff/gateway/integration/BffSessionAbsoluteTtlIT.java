@@ -114,7 +114,7 @@ import org.junit.jupiter.api.Test;
 class BffSessionAbsoluteTtlIT {
 
     /** The session route both instances serve, relaying a bearer to the echo upstream. */
-    private static final String MEDIATED_PATH = "/bff-session/get";
+    private static final String MEDIATED_PATH = "/app/get";
 
     private static final String GATEWAY = "sheriff-absolute-ttl";
 
@@ -305,7 +305,7 @@ class BffSessionAbsoluteTtlIT {
                 () -> assertEquals(CONTROL_TTL_SECONDS, sourceTtl,
                         "control: the committed descriptor, which the control instance runs, keeps the long lifetime"),
                 () -> assertEquals(SHORT_TTL_SECONDS, session(derived).get(TTL_KEY), "oidc.session." + TTL_KEY),
-                () -> assertEquals(ORIGIN + "/auth/callback", derivedOidc.get("redirect_uri"), "oidc.redirect_uri"),
+                () -> assertEquals(ORIGIN + "/bff/callback", derivedOidc.get("redirect_uri"), "oidc.redirect_uri"),
                 () -> assertEquals(expected, derived,
                         "it must be its source with the lifetime and the gateway origin changed, and nothing else"));
         return DERIVED_DESCRIPTOR;

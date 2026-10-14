@@ -90,7 +90,7 @@ disk without touching this table and the guard fails.
 
 | `reserved-path-overlap/*.yaml`
 | 1
-| `reserved-path-overlap/auth-overlap.yaml` -- the endpoint BffReservedPathPrecedenceIT mounts in a
+| `reserved-path-overlap/bff-overlap.yaml` -- the endpoint BffReservedPathPrecedenceIT mounts in a
   configuration directory of its own; no compose instance loads it
 |===
 // end::inventory[]
@@ -111,7 +111,7 @@ readiness gate would refuse it. It is a standalone, deliberately minimal documen
 beside exactly one shared endpoint file, `sheriff-config/endpoints/assets-secure.yaml`, and no
 `topology.properties`, so its route set is that single bearer-gated directory asset route.
 
-`reserved-path-overlap/auth-overlap.yaml` lives in a directory no compose instance mounts, because
+`reserved-path-overlap/bff-overlap.yaml` lives in a directory no compose instance mounts, because
 a shared endpoint on its new anchor would force that anchor into every committed `gateway.yaml`.
 `BffReservedPathPrecedenceIT` copies it into a configuration directory it assembles, beside a
 gateway document derived from `sheriff-config-passthrough-empty/gateway.yaml` with that one anchor
@@ -151,7 +151,7 @@ Over all thirty-one files it returns hits in exactly nineteen of them:
 * `sheriff-config/endpoints/httpbin.yaml`
 * `sheriff-config/endpoints/secure.yaml`
 * `sheriff-config/endpoints/websocket.yaml`
-* `reserved-path-overlap/auth-overlap.yaml`
+* `reserved-path-overlap/bff-overlap.yaml`
 // end::limit-bearing[]
 
 The remaining twelve -- `sheriff-config/endpoints/assets.yaml`,
@@ -232,7 +232,7 @@ the *base document only* and is inherited by the overlays as the omitted-key def
 `allowed_methods` row does not fit that reading: every `gateway.yaml` in the surface declares the
 key -- the nine overlays at the base's own values -- and the row cites the base document's five
 declarations rather than each document's, plus the one endpoint-level list the surface declares, in
-`reserved-path-overlap/auth-overlap.yaml`. The documents described below that copy the base, or
+`reserved-path-overlap/bff-overlap.yaml`. The documents described below that copy the base, or
 stand alone, declare further base-cited keys; each paragraph says which.
 
 `sheriff-config-passthrough-empty/gateway.yaml` is deliberately *outside* that `×N` notation, and
@@ -510,11 +510,11 @@ declaration's *existence* is proven while its *boundary* is not.
 | `allowed_methods`
   `sheriff-config/gateway.yaml:20` (global), `:176` (graphql), `:181` (upload), `:210`
   (assets-public), `:220` (assets-secure);
-  `reserved-path-overlap/auth-overlap.yaml:37` (endpoint, `["POST"]`)
+  `reserved-path-overlap/bff-overlap.yaml:37` (endpoint, `["POST"]`)
 | Route selection / method gate
 | COVERED
 | `PipelineVerbIT` (405 plus four positive controls); `BffReservedPathPrecedenceIT` for the
-  endpoint-level list -- a `GET` on the routed path below `/auth` is refused `405` naming `POST` as the
+  endpoint-level list -- a `GET` on the routed path below `/bff` is refused `405` naming `POST` as the
   allowed verb, while the same `GET` on the reserved client JWKS path under that prefix is answered
   `200` with the key set
 

@@ -507,7 +507,7 @@ List<String> scopes,
         /** The path the client JWKS endpoint is reserved at when {@code jwks_path} is omitted. */
         // java:S1075 — the documented default of a configuration key, not a customizable URI/filesystem path.
         @SuppressWarnings("java:S1075")
-        public static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        public static final String DEFAULT_JWKS_PATH = "/bff/jwks";
     }
 
     /**

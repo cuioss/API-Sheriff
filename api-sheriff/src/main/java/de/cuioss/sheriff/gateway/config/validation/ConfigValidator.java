@@ -156,10 +156,10 @@ import org.jspecify.annotations.Nullable;
  * the default it resolves to when omitted — that another reserved OIDC endpoint already claims. The
  * reserved-path registry keeps the first registration for a path, so the collision would otherwise
  * drop the key-set endpoint without a diagnostic. The same rule refuses a path that is not a
- * canonical gateway path — held to the canonical-path review of {@link PortalRules}, and carrying
- * neither a matrix parameter nor a percent-encoded character — because the path is matched by exact
- * equality with the canonical request path and a request that spells such a value as configured
- * would never be matched.
+ * canonical reserved path ({@link #canonicalReservedPathRefusal}) — held to the canonical-path review
+ * of {@link PortalRules}, and carrying neither a matrix parameter nor a percent-encoded character —
+ * because the path is matched by exact equality with the canonical request path and a request that
+ * spells such a value as configured would never be matched.
  * <p>
  * The terminal-action rule (ADR-0014 and its Amendment A1) holds every route to exactly one of
  * upstream, asset or redirect, reviews a redirect's {@code location} for open-redirect
@@ -179,7 +179,12 @@ import org.jspecify.annotations.Nullable;
  * no whitespace. A reserved path is matched exactly against the canonical request path, which
  * carries neither a query nor a fragment, so a value holding one would boot and name an endpoint no
  * request can reach; a backslash, a control character or whitespace is refused because a browser
- * reads {@code /\host} and {@code /<TAB>/host} as the scheme-relative {@code //host}.
+ * reads {@code /\host} and {@code /<TAB>/host} as the scheme-relative {@code //host}. A path that
+ * passes that shape check is then held to the same canonical form the client JWKS path is held to
+ * ({@link #canonicalReservedPathRefusal}): no {@code //}, no dot segment, no matrix parameter
+ * ({@code ;}) and no percent-encoded character, since a request that spells such a value as
+ * configured is never matched by the reserved endpoint. Both refusals are reported on the key's own
+ * JSON pointer.
  * <p>
  * The JWKS egress-allowlist refusal adds one more: every {@code allowed_egress_hosts} entry of an
  * {@code http}-sourced issuer must be usable as the host-exact exemption token-sheriff's SSRF egress
@@ -246,9 +251,10 @@ public final class ConfigValidator {
     private static final String OIDC_STEP_UP_PATH_POINTER = "/oidc/step_up/path";
 
     /**
-     * The requirement every reserved-path refusal states, shared by the three rules that apply
-     * {@link #isAbsoluteGatewayPath}. Fixed text carrying no format specifier, so it is appended to a
-     * rule's own subject and never interprets a configured scalar.
+     * The requirement every reserved-path shape refusal states, shared by the three keys
+     * {@link #validateReservedPath} holds to {@link #isAbsoluteGatewayPath}. Fixed text carrying no
+     * format specifier, so it is appended to a key's own subject and never interprets a configured
+     * scalar.
      */
     private static final String ABSOLUTE_GATEWAY_PATH_REQUIREMENT =
             " must be an absolute gateway path starting with a single '/' and carrying no query ('?') and no "
@@ -287,10 +293,22 @@ public final class ConfigValidator {
     private static final String OIDC_CLIENT_JWKS_PATH_POINTER = "/oidc/client_authentication/jwks_path";
     private static final String OIDC_CLIENT_JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
 
-    /** Opens a matrix parameter in a path segment; a client JWKS path must not carry one. */
+    /** The operator-declared reserved path {@code oidc.user_info.path}, held to {@link #validateReservedPath}. */
+    private static final ReservedPathKey USER_INFO_PATH = new ReservedPathKey("oidc user_info path",
+            "oidc.user_info.path", OIDC_USER_INFO_PATH_POINTER);
+
+    /** The operator-declared reserved path {@code oidc.login.path}, held to {@link #validateReservedPath}. */
+    private static final ReservedPathKey LOGIN_PATH = new ReservedPathKey("oidc login path", "oidc.login.path",
+            OIDC_LOGIN_PATH_POINTER);
+
+    /** The operator-declared reserved path {@code oidc.step_up.path}, held to {@link #validateReservedPath}. */
+    private static final ReservedPathKey STEP_UP_PATH = new ReservedPathKey("oidc step_up path",
+            "oidc.step_up.path", OIDC_STEP_UP_PATH_POINTER);
+
+    /** Opens a matrix parameter in a path segment; a reserved path must not carry one. */
     private static final char MATRIX_PARAMETER_DELIMITER = ';';
 
-    /** Opens a percent-encoded octet; a client JWKS path must not carry one. */
+    /** Opens a percent-encoded octet; a reserved path must not carry one. */
     private static final char PERCENT_SIGN = '%';
 
     /**
@@ -2684,7 +2702,7 @@ public final class ConfigValidator {
      * <strong>Canonical form.</strong> The reserved-path registry registers the path verbatim and the
      * edge matches it by exact equality with the canonical request path. A path that is not itself
      * canonical — a {@code //}, a dot segment, a {@code ?} or {@code #}, a matrix parameter, a
-     * percent-encoded character, or anything else {@link #clientJwksPathRefusal} names — is never
+     * percent-encoded character, or anything else {@link #canonicalReservedPathRefusal} names — is never
      * matched by a request that spells it as configured, with two consequences: the key set is not
      * published at the URL the operator registers, so in key mode the identity provider cannot fetch
      * the key that verifies the gateway's client assertion and every login fails without a boot
@@ -2714,7 +2732,7 @@ public final class ConfigValidator {
      * resolves it with, and the owner of the path through
      * {@link ReservedPathRegistry#reservedKind(OidcConfig, String)}, the registry's own derivation — so
      * the rule judges exactly what the runtime would register. It therefore covers the default path as
-     * well: a document that declares no {@code jwks_path} and names {@code /auth/jwks} under another key
+     * well: a document that declares no {@code jwks_path} and names {@code /bff/jwks} under another key
      * is refused like one that declares the collision outright.
      * <p>
      * The rule does not read the client-authentication mode. The path is reserved with a client secret
@@ -2728,7 +2746,7 @@ public final class ConfigValidator {
             return;
         }
         String path = oidc.effectiveClientJwksPath();
-        clientJwksPathRefusal(path).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
+        canonicalReservedPathRefusal(path).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
                 OIDC_CLIENT_JWKS_PATH_POINTER,
                 ("%s must be a canonical gateway path: %s. A request that spells the path as configured "
                         + "would never be answered by the key-set endpoint, and where such a request "
@@ -2750,15 +2768,19 @@ public final class ConfigValidator {
     }
 
     /**
-     * The reason a client JWKS path is not a canonical gateway path, or empty when it is one.
+     * The reason a reserved path is not a canonical gateway path, or empty when it is one.
      * <p>
-     * The review is {@link PortalRules#canonicalPathRefusal(String)} — the one {@code portal.path} is
-     * held to, reused here rather than restated — followed by two refusals that review does not make.
-     * Both name a path that could never be answered at the URL an operator would register for it:
+     * Every reserved path is registered verbatim and matched by exact equality with the canonical
+     * request path, so the client JWKS path, {@code oidc.user_info.path}, {@code oidc.login.path} and
+     * {@code oidc.step_up.path} are all held to this one review. It is
+     * {@link PortalRules#canonicalPathRefusal(String)} — the one {@code portal.path} is held to,
+     * reused here rather than restated: no {@code //}, no dot segment, no {@code ?} or {@code #} —
+     * followed by two refusals that review does not make. Both name a path that could never be
+     * answered at the URL an operator would register for it:
      * <ul>
      *   <li><strong>A matrix parameter.</strong> The canonical-path guard refuses every request whose
      *       raw path carries a {@code ;}, so a request for the configured URL is answered {@code 400}
-     *       and never the key set.</li>
+     *       and never by the reserved endpoint.</li>
      *   <li><strong>A {@code %}.</strong> The request path is percent-decoded before it is matched, so
      *       an encoded character in the configured path never equals the decoded one the request
      *       yields; and a request path carrying a second encoding layer is refused, so no request
@@ -2766,7 +2788,7 @@ public final class ConfigValidator {
      * </ul>
      * Every reason is fixed text; none echoes the configured value.
      */
-    private static Optional<String> clientJwksPathRefusal(String path) {
+    private static Optional<String> canonicalReservedPathRefusal(String path) {
         Optional<String> shared = PortalRules.canonicalPathRefusal(path);
         if (shared.isPresent()) {
             return shared;
@@ -2790,9 +2812,9 @@ public final class ConfigValidator {
             case LOGOUT -> "oidc.logout.path";
             case LOGOUT_RETURN -> "oidc.logout.post_logout_redirect_uri";
             case BACKCHANNEL_LOGOUT -> "oidc.logout.backchannel_path";
-            case USER_INFO -> "oidc.user_info.path";
-            case LOGIN -> "oidc.login.path";
-            case STEP_UP -> "oidc.step_up.path";
+            case USER_INFO -> USER_INFO_PATH.key();
+            case LOGIN -> LOGIN_PATH.key();
+            case STEP_UP -> STEP_UP_PATH.key();
             case CLIENT_JWKS -> OIDC_CLIENT_JWKS_PATH_KEY;
         };
     }
@@ -2826,15 +2848,12 @@ public final class ConfigValidator {
 
     /**
      * Rule: the session/user-info reserved endpoint (fold, D1). When an
-     * {@code oidc.user_info} block is present, its {@code path} must be an absolute
-     * gateway path carrying no query and no fragment ({@link #isAbsoluteGatewayPath} — the
-     * path is matched exactly against the canonical request path, so a value holding either
-     * names an endpoint no request can reach), nor a backslash, a control character or whitespace,
-     * and every {@code default_view} claim must lie within the
-     * {@code allowed_claims} allowlist — the operator-owned allowlist caps
+     * {@code oidc.user_info} block is present, its {@code path} is held to
+     * {@link #validateReservedPath} — an absolute gateway path in canonical form, since the path is
+     * matched exactly against the canonical request path — and every {@code default_view} claim must
+     * lie within the {@code allowed_claims} allowlist — the operator-owned allowlist caps
      * disclosure and the default view can never exceed it. An empty allowlist is the
-     * secure closed default (nothing disclosed) and is not itself an error. The refused path is
-     * echoed through {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117). Every
+     * secure closed default (nothing disclosed) and is not itself an error. Every
      * violation collects into the shared list; the rule never fails fast.
      */
     private static void validateUserInfo(GatewayConfig gateway, List<ConfigError> errors) {
@@ -2843,12 +2862,7 @@ public final class ConfigValidator {
         if (userInfo == null) {
             return;
         }
-        String path = userInfo.path();
-        if (path != null && !isAbsoluteGatewayPath(path)) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_USER_INFO_PATH_POINTER,
-                    "oidc user_info path '%s'".formatted(renderForMessage(path))
-                            + ABSOLUTE_GATEWAY_PATH_REQUIREMENT));
-        }
+        validateReservedPath(USER_INFO_PATH, userInfo.path(), errors);
         Set<String> allowed = new HashSet<>(userInfo.allowedClaims());
         for (String claim : userInfo.defaultView()) {
             if (!allowed.contains(claim)) {
@@ -2861,29 +2875,24 @@ public final class ConfigValidator {
 
     /**
      * Rule: the login-initiation reserved path (fold, D1). When
-     * {@code oidc.login.path} is present it must be an absolute gateway path — a
-     * schema-relative ({@code //host}) or off-path value is rejected as an
+     * {@code oidc.login.path} is present it is held to {@link #validateReservedPath}: it must be an
+     * absolute gateway path — a schema-relative ({@code //host}) or off-path value is rejected as an
      * open-redirect hazard. A value carrying a query ({@code ?}) or a fragment
      * ({@code #}) is rejected as well: the path is matched exactly against the canonical
      * request path, which carries neither, so such a value names an endpoint no request
      * can reach. A backslash, a control character or whitespace is rejected too
-     * ({@link #isAbsoluteGatewayPath}). The refused value is echoed through
-     * {@link #renderForMessage}, so it cannot forge boot log lines (CWE-117).
+     * ({@link #isAbsoluteGatewayPath}), and so is a path that is not in canonical form
+     * ({@link #canonicalReservedPathRefusal}).
      */
     private static void validateLoginPath(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();
         OidcConfig.Login login = oidc == null ? null : oidc.login();
-        String path = login == null ? null : login.path();
-        if (path != null && !isAbsoluteGatewayPath(path)) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_PATH_POINTER,
-                    "oidc login path '%s'".formatted(renderForMessage(path))
-                            + ABSOLUTE_GATEWAY_PATH_REQUIREMENT));
-        }
+        validateReservedPath(LOGIN_PATH, login == null ? null : login.path(), errors);
     }
 
     /**
-     * Rule: the step-up reserved path. When {@code oidc.step_up.path} is present it must be an
-     * absolute gateway path, validated exactly as {@link #validateLoginPath} validates
+     * Rule: the step-up reserved path. When {@code oidc.step_up.path} is present it is held to
+     * {@link #validateReservedPath}, exactly as {@link #validateLoginPath} holds
      * {@code oidc.login.path}: a blank, relative or scheme-relative ({@code //host}) value is
      * rejected, since the path is named verbatim in the {@code step_up_url} a session route hands to
      * the browser. A value carrying a query ({@code ?}) or a fragment ({@code #}) is rejected too,
@@ -2893,7 +2902,8 @@ public final class ConfigValidator {
      * return target into its own parameter and a fragment would keep it from being sent at all. A
      * backslash, a control character or whitespace is rejected as well
      * ({@link #isAbsoluteGatewayPath}), because a browser reads a {@code step_up_url} naming
-     * {@code /\host} or {@code /<TAB>/host} as the scheme-relative {@code //host}. A
+     * {@code /\host} or {@code /<TAB>/host} as the scheme-relative {@code //host}. A path that is not
+     * in canonical form ({@link #canonicalReservedPathRefusal}) is rejected as well. A
      * collision with the application portal needs no rule here — the portal rules compare
      * {@code portal.path} against every reserved path, this one included. A collision with the client
      * JWKS path needs none here either: {@link #validateClientJwksPath} refuses it, naming both keys,
@@ -2902,12 +2912,55 @@ public final class ConfigValidator {
     private static void validateStepUpPath(GatewayConfig gateway, List<ConfigError> errors) {
         OidcConfig oidc = gateway.oidc();
         OidcConfig.StepUp stepUp = oidc == null ? null : oidc.stepUp();
-        String path = stepUp == null ? null : stepUp.path();
-        if (path != null && !isAbsoluteGatewayPath(path)) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_STEP_UP_PATH_POINTER,
-                    "oidc step_up path '%s'".formatted(renderForMessage(path))
-                            + ABSOLUTE_GATEWAY_PATH_REQUIREMENT));
+        validateReservedPath(STEP_UP_PATH, stepUp == null ? null : stepUp.path(), errors);
+    }
+
+    /**
+     * The two refusals an operator-declared reserved path ({@code oidc.user_info.path},
+     * {@code oidc.login.path}, {@code oidc.step_up.path}) is held to, both reported on the key's own
+     * JSON pointer. A no-op when the path is omitted.
+     * <ol>
+     *   <li><strong>Shape</strong> ({@link #isAbsoluteGatewayPath}): an absolute gateway path starting
+     *       with a single {@code /}, carrying no query, no fragment, no backslash, no control character
+     *       and no whitespace. The refused value is echoed through {@link #renderForMessage}, so it
+     *       cannot forge boot log lines (CWE-117).</li>
+     *   <li><strong>Canonical form</strong> ({@link #canonicalReservedPathRefusal}), checked once the
+     *       shape holds: no {@code //}, no dot segment, no matrix parameter ({@code ;}) and no
+     *       percent-encoded character. The path is registered verbatim and matched by exact equality
+     *       with the canonical request path, so a request that spells a non-canonical value as
+     *       configured never reaches the reserved endpoint. The reason is fixed text and the refusal
+     *       echoes no configured value.</li>
+     * </ol>
+     * A value that fails the shape check is not held to the canonical form as well, so one defect is
+     * reported once. Every violation collects into the shared list; the check never fails fast.
+     */
+    private static void validateReservedPath(ReservedPathKey reservedPath, @Nullable String path,
+            List<ConfigError> errors) {
+        if (path == null) {
+            return;
         }
+        if (!isAbsoluteGatewayPath(path)) {
+            errors.add(new ConfigError(GATEWAY_FILE, reservedPath.pointer(),
+                    "%s '%s'".formatted(reservedPath.subject(), renderForMessage(path))
+                            + ABSOLUTE_GATEWAY_PATH_REQUIREMENT));
+            return;
+        }
+        canonicalReservedPathRefusal(path).ifPresent(reason -> errors.add(new ConfigError(GATEWAY_FILE,
+                reservedPath.pointer(),
+                ("%s must be a canonical gateway path: %s. The path is matched by exact equality with the "
+                        + "canonical request path, so a request that spells it as configured would never reach "
+                        + "the reserved endpoint — declare a canonical path")
+                        .formatted(reservedPath.key(), reason))));
+    }
+
+    /**
+     * An operator-declared reserved path, named the way its refusals have to name it.
+     *
+     * @param subject the subject the shape refusal opens with, e.g. {@code oidc login path}
+     * @param key     the dotted {@code gateway.yaml} key, e.g. {@code oidc.login.path}
+     * @param pointer the JSON pointer every refusal of the key is reported on
+     */
+    private record ReservedPathKey(String subject, String key, String pointer) {
     }
 
     /**
@@ -2928,7 +2981,8 @@ public final class ConfigValidator {
      * URL before parsing it, so {@code /<TAB>/host} is read as {@code //host} too. The same two
      * tests guard the login return URL ({@code PendingAuthorizationRecord.sameOrigin}); whitespace
      * is refused alongside the control characters, so no blank of any kind passes. Percent-encoded
-     * spellings and dot segments are not judged here.
+     * spellings, dot segments and matrix parameters are not judged here; a reserved path that passes
+     * this check is held to {@link #canonicalReservedPathRefusal} next.
      */
     private static boolean isAbsoluteGatewayPath(String path) {
         return path.startsWith("/") && !path.startsWith("//")

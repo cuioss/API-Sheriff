@@ -86,7 +86,7 @@ class BffCookieSessionIT {
     private static final String SESSION_COOKIE = "__Host-sheriff-session";
 
     /** The require:session route mediating a bearer to the go-httpbin echo upstream. */
-    private static final String SESSION_ROUTE = "/bff-session/get";
+    private static final String SESSION_ROUTE = "/app/get";
 
     /** Matches the compact JWT the gateway mediates upstream, whatever surrounds it in the echo. */
     private static final Pattern COMPACT_JWT =
@@ -119,8 +119,8 @@ class BffCookieSessionIT {
         // the server-mode stack leaves it unset and lands on '/' (BffLoginInitiationIT).
         String configuredDefault = "/assets/demo/landing.html";
 
-        // Act — /auth/login with no returnUrl is the start path, so the login carries no return target.
-        Session session = BffKeycloakLoginFlow.login("/auth/login", COOKIE_ORIGIN);
+        // Act — /bff/login with no returnUrl is the start path, so the login carries no return target.
+        Session session = BffKeycloakLoginFlow.login("/bff/login", COOKIE_ORIGIN);
 
         // Assert
         assertEquals(configuredDefault, session.callbackLocation(),
@@ -199,7 +199,7 @@ class BffCookieSessionIT {
         // Act
         Response logout = BffKeycloakLoginFlow.gateway(session.gatewayCookies(), COOKIE_ORIGIN)
                 .redirects().follow(false)
-                .when().get("/auth/logout")
+                .when().get("/bff/logout")
                 .then().statusCode(302).extract().response();
 
         // Assert — a stateless binding holds nothing to destroy, so the authoritative local effect of

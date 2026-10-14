@@ -71,7 +71,7 @@ import org.junit.jupiter.api.Timeout;
 class BffSessionWebSocketIT {
 
     /** The {@code require: session} WebSocket route (see {@code endpoints/bff-session-websocket.yaml}). */
-    private static final String SESSION_WEBSOCKET_PATH = "/bff-session/ws";
+    private static final String SESSION_WEBSOCKET_PATH = "/app/ws";
 
     /** The one Origin the route allow-lists: the primary gateway's own. */
     private static final String ALLOWED_ORIGIN = BffKeycloakLoginFlow.GATEWAY_ORIGIN;
@@ -102,7 +102,7 @@ class BffSessionWebSocketIT {
     @Test
     @DisplayName("a relay opened with a session is closed 1008 'session ended' when the session is logged out")
     void relayIsClosedWhenItsSessionIsLoggedOut() throws Exception {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
         var listener = new RecordingListener();
         WebSocket socket = httpClient.newWebSocketBuilder()
                 .header("Origin", ALLOWED_ORIGIN)
@@ -117,7 +117,7 @@ class BffSessionWebSocketIT {
 
             BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                     .redirects().follow(false)
-                    .when().get("/auth/logout")
+                    .when().get("/bff/logout")
                     .then().statusCode(302);
 
             Close close = listener.closed.get(CLOSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -134,7 +134,7 @@ class BffSessionWebSocketIT {
     @Test
     @DisplayName("the session WebSocket route refuses a foreign Origin 403 even with a live session")
     void foreignOriginIsRefusedWithALiveSession() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         ExecutionException thrown = assertThrows(ExecutionException.class, () -> httpClient.newWebSocketBuilder()
                         .header("Origin", FOREIGN_ORIGIN)

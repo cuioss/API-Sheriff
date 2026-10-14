@@ -35,13 +35,13 @@ const BENCHMARK_NAME = 'sessionMediated';
 
 // The protected upstream route guarded by `require: session`: a request without a resolvable
 // session cookie is redirected to login, so a 200 here proves the mediation path ran end to end.
-// It targets the session-gated `/bff-session` anchor (NOT `/secure`, which is `require: bearer` and
+// It targets the session-gated `/app` anchor (NOT `/secure`, which is `require: bearer` and
 // would reject a replayed session cookie with a 401).
-const TARGET_URL = __ENV.TARGET_URL || targetUrl('/bff-session/get');
+const TARGET_URL = __ENV.TARGET_URL || targetUrl('/app/get');
 
 // The gateway-owned login-initiation reserved path (oidc.login.path). Hitting it drives the
 // auth-code flow that ends with the gateway setting the opaque session cookie.
-const LOGIN_URL = __ENV.LOGIN_URL || targetUrl('/auth/login');
+const LOGIN_URL = __ENV.LOGIN_URL || targetUrl('/bff/login');
 
 // The opaque server-session cookie the gateway sets on a successful callback. Only its value is
 // replayed; no token material ever leaves the gateway. Matches SessionCookieCodec.DEFAULT_COOKIE_NAME.

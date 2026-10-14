@@ -53,13 +53,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <ul>
  *   <li>{@code endpoints/bff-scoped.yaml} adds {@code sheriff_it_endpoint}, an <em>optional</em>
  *       client scope of {@code integration-client}: Keycloak grants it as soon as an authorization
- *       request names it. Its routes are {@code /bff-session/scoped} and
- *       {@code /bff-session/fallback}.</li>
+ *       request names it. Its routes are {@code /app/scoped} and
+ *       {@code /app/fallback}.</li>
  *   <li>{@code endpoints/bff-unassigned-scope.yaml} adds {@code sheriff_it_unassigned}, which exists
- *       in the realm but is assigned to no client. Its routes are {@code /bff-session/unassigned} and
- *       {@code /bff-session/unassigned/fallback}.</li>
+ *       in the realm but is assigned to no client. Its routes are {@code /app/unassigned} and
+ *       {@code /app/unassigned/fallback}.</li>
  * </ul>
- * Every session starts through {@code /auth/login?returnUrl=} a target that is not an authenticated
+ * Every session starts through {@code /bff/login?returnUrl=} a target that is not an authenticated
  * route, so the login requests {@code oidc.scopes} and nothing else, and the session then meets a
  * route that needs more. Each row is run on both {@link Surface surfaces}: the
  * {@code require: session} routes, and the SESSION branch of the {@code session_fallback} routes —
@@ -84,7 +84,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       redirect and no cookie, and the instance log carries the refused-push record
  *       ({@value #PUSH_REFUSED_RECORD}) with the reason {@code push-failed}; the XHR is refused
  *       {@code 403}; and in both cases no cookie is set and the same session is still served on
- *       {@code /bff-session/get}, under the cookie the login set, with the scopes it had.</li>
+ *       {@code /app/get}, under the cookie the login set, with the scopes it had.</li>
  *   <li><em>A satisfied route.</em> Two consecutive calls relay a byte-identical bearer and set no
  *       cookie, so the comparison alone costs no identity-provider round trip.</li>
  *   <li><em>The step-up path.</em> An off-origin {@code returnUrl} falls back to the default return
@@ -146,13 +146,13 @@ class BffSessionScopeParityIT {
     private static final String SESSION_COOKIE = "__Host-sheriff-session";
 
     /** A path on the plain session route, which needs {@code oidc.scopes} only. */
-    private static final String PLAIN_SESSION_PATH = "/bff-session/get";
+    private static final String PLAIN_SESSION_PATH = "/app/get";
 
     /** The configured {@code oidc.step_up.path}. */
-    private static final String STEP_UP_PATH = "/auth/step-up";
+    private static final String STEP_UP_PATH = "/bff/step-up";
 
     /** The gateway callback every authorization response is redirected to. */
-    private static final String CALLBACK_URL_PREFIX = BffKeycloakLoginFlow.GATEWAY_ORIGIN + "/auth/callback?";
+    private static final String CALLBACK_URL_PREFIX = BffKeycloakLoginFlow.GATEWAY_ORIGIN + "/bff/callback?";
 
     private static final String ACCEPT = "Accept";
     private static final String NAVIGATION = "text/html";
@@ -186,18 +186,18 @@ class BffSessionScopeParityIT {
         /** The {@code require: session} routes; the login returns to a {@code require: none} asset. */
         SESSION_ROUTE("require: session route",
             "/assets/static/index.html",
-            "/bff-session/scoped/get",
-            "/auth/step-up?returnUrl=%2Fbff-session%2Fscoped%2Fget",
-            "/bff-session/unassigned/get",
-            "/auth/step-up?returnUrl=%2Fbff-session%2Funassigned%2Fget"),
+            "/app/scoped/get",
+            "/bff/step-up?returnUrl=%2Fapp%2Fscoped%2Fget",
+            "/app/unassigned/get",
+            "/bff/step-up?returnUrl=%2Fapp%2Funassigned%2Fget"),
 
         /** The SESSION branch of the {@code session_fallback} routes; the login returns to the portal. */
         SESSION_FALLBACK_ROUTE("session_fallback route, session established through the portal",
                 "/portal",
-                "/bff-session/fallback/get",
-                "/auth/step-up?returnUrl=%2Fbff-session%2Ffallback%2Fget",
-                "/bff-session/unassigned/fallback/get",
-                "/auth/step-up?returnUrl=%2Fbff-session%2Funassigned%2Ffallback%2Fget");
+                "/app/fallback/get",
+                "/bff/step-up?returnUrl=%2Fapp%2Ffallback%2Fget",
+                "/app/unassigned/fallback/get",
+                "/bff/step-up?returnUrl=%2Fapp%2Funassigned%2Ffallback%2Fget");
 
         private final String label;
         private final String loginTarget;
@@ -430,7 +430,7 @@ class BffSessionScopeParityIT {
         assertEquals(302, response.statusCode(), "a step-up request with a live session is answered by a redirect");
         // The control for the fallback above: the parameter IS read and honoured when it is same-origin,
         // so a '/' answer to an off-origin target is the fallback and not a parameter that never arrived.
-        assertEquals("/bff-session/get", response.getHeader("Location"),
+        assertEquals("/app/get", response.getHeader("Location"),
                 "a same-origin returnUrl whose route the session already satisfies is redirected to directly");
         assertNoSetCookie(response, "a satisfied target needs no widening, so no binding cookie is set");
     }
@@ -450,14 +450,14 @@ class BffSessionScopeParityIT {
     // ---------------------------------------------------------------- helpers
 
     /**
-     * Logs in through {@code /auth/login?returnUrl=} the surface's login target. That target is not
+     * Logs in through {@code /bff/login?returnUrl=} the surface's login target. That target is not
      * an authenticated route, so the login requests {@code oidc.scopes} and nothing else.
      *
      * @param surface the surface whose login target the session is established for
      * @return the established session
      */
     private static Session loginWithOidcScopesOnly(Surface surface) {
-        Session session = BffKeycloakLoginFlow.login("/auth/login?returnUrl=" + surface.loginTarget);
+        Session session = BffKeycloakLoginFlow.login("/bff/login?returnUrl=" + surface.loginTarget);
         assertEquals(surface.loginTarget, session.callbackLocation(),
                 "precondition: the login must land on the target it was started for");
         return session;

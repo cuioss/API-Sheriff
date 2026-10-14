@@ -92,7 +92,7 @@ and shared with the cookie-based variant:
   unchanged, and a refresh ends the session.
 * *Key-based client authentication, by default.* The gateway authenticates to the IdP with
   `private_key_jwt`. It publishes the public half of that key at a JWKS endpoint -- a reserved
-  gateway path, `/auth/jwks` by default, answered on every host -- and the IdP fetches it from there.
+  gateway path, `/bff/jwks` by default, answered on every host -- and the IdP fetches it from there.
 
 Each of the two keys is either read from a PEM file the configuration names by path, or generated at
 startup when no file is named. A generated key is replaced by every restart and cannot be shared, so
@@ -412,12 +412,12 @@ oidc:
     key_file: /etc/sheriff/keys/client-auth.pem   # optional: omit to generate a key on startup
   sender_constraint:             # DPoP proof key; every access token is bound to it
     key_file: /etc/sheriff/keys/dpop.pem          # optional: omit to generate a key on startup
-  redirect_uri: https://gw.example.com/auth/callback
+  redirect_uri: https://gw.example.com/bff/callback
   scopes: [openid, profile]      # requested on every login; endpoints add their own (additive)
   login:
-    path: /auth/login            # gateway-owned login-initiation entry point (reserved path)
+    path: /bff/login             # gateway-owned login-initiation entry point (reserved path)
   user_info:
-    path: /auth/userinfo         # curated identity view (reserved path)
+    path: /bff/session           # curated identity view (reserved path)
     allowed_claims: [sub, name, email]   # disclosure ceiling; empty (default) discloses nothing
     default_view: [sub, name]    # returned when no explicit claims requested; subset of allowed_claims
   session:

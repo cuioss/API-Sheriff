@@ -57,10 +57,10 @@
         "post.logout.redirect.uris": "*",
         "oauth2.device.authorization.grant.enabled": "false",
         "backchannel.logout.revoke.offline.tokens": "false",
-        "backchannel.logout.url": "https://api-sheriff:8443/auth/backchannel",
+        "backchannel.logout.url": "https://api-sheriff:8443/bff/backchannel",
         "backchannel.logout.session.required": "true",
         "use.jwks.url": "true",
-        "jwks.url": "https://api-sheriff:8443/auth/jwks",
+        "jwks.url": "https://api-sheriff:8443/bff/jwks",
         "token.endpoint.auth.signing.alg": "PS256",
         "require.pushed.authorization.requests": "true",
         "dpop.bound.access.tokens": "true"
@@ -86,7 +86,7 @@
         "backchannel.logout.revoke.offline.tokens": "false",
         "access.token.lifespan": "45",
         "use.jwks.url": "true",
-        "jwks.url": "https://api-sheriff:8443/auth/jwks",
+        "jwks.url": "https://api-sheriff:8443/bff/jwks",
         "token.endpoint.auth.signing.alg": "PS256",
         "require.pushed.authorization.requests": "true",
         "dpop.bound.access.tokens": "true"
@@ -112,7 +112,7 @@
         "backchannel.logout.revoke.offline.tokens": "false",
         "access.token.lifespan": "45",
         "use.jwks.url": "true",
-        "jwks.url": "https://sheriff-generated-keys:8443/auth/client-keys",
+        "jwks.url": "https://sheriff-generated-keys:8443/bff/client-keys",
         "token.endpoint.auth.signing.alg": "ES256",
         "require.pushed.authorization.requests": "true",
         "dpop.bound.access.tokens": "true"

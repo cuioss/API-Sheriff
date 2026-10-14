@@ -81,11 +81,11 @@
 
   <!-- 8. IdP -> browser (302 redirect, code as query parameter) -->
   <line class="arrow-return" x1="745" y1="420" x2="150" y2="420" marker-end="url(#arrow)"/>
-  <text x="600" y="412" class="arrow-lbl">302 &#8594; /auth/callback?code&amp;state&amp;iss</text>
+  <text x="600" y="412" class="arrow-lbl">302 &#8594; /bff/callback?code&amp;state&amp;iss</text>
 
   <!-- 9. browser -> gateway callback -->
   <line class="arrow" x1="150" y1="465" x2="445" y2="465" marker-end="url(#arrow)"/>
-  <text x="300" y="457" class="arrow-lbl">GET /auth/callback?code&amp;state&amp;iss</text>
+  <text x="300" y="457" class="arrow-lbl">GET /bff/callback?code&amp;state&amp;iss</text>
 
   <!-- gateway note: verify -->
   <text x="466" y="490" class="note">verify state + iss (RFC 9207)</text>

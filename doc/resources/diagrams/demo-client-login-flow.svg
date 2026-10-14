@@ -10,7 +10,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">Demo-client login flow as the single-page application sees it</title>
-  <desc id="desc">A time-ordered exchange showing only the legs the demo single-page application participates in. The application hands the login to the browser with a top-level navigation to /auth/login carrying a same-origin returnUrl; API Sheriff sets a short-lived SameSite=Lax browser-binding cookie and redirects to the identity provider. The identity-provider authorization and server-to-server code exchange are elided and cross-referenced to the BFF login handshake diagram. The browser returns to /auth/callback as a top-level GET, the gateway sets the HttpOnly session cookie and redirects to the validated returnUrl, and the reloaded application confirms its state with a same-origin fetch of /auth/userinfo.</desc>
+  <desc id="desc">A time-ordered exchange showing only the legs the demo single-page application participates in. The application hands the login to the browser with a top-level navigation to /bff/login carrying a same-origin returnUrl; API Sheriff sets a short-lived SameSite=Lax browser-binding cookie and redirects to the identity provider. The identity-provider authorization and server-to-server code exchange are elided and cross-referenced to the BFF login handshake diagram. The browser returns to /bff/callback as a top-level GET, the gateway sets the HttpOnly session cookie and redirects to the validated returnUrl, and the reloaded application confirms its state with a same-origin fetch of /bff/session.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -51,11 +51,11 @@
 
   <!-- 1. SPA hands the login to the browser -->
   <line class="arrow" x1="140" y1="120" x2="495" y2="120" marker-end="url(#arrow)"/>
-  <text x="320" y="112" class="arrow-lbl">window.location.assign('/auth/login?returnUrl=&#8230;')</text>
+  <text x="320" y="112" class="arrow-lbl">window.location.assign('/bff/login?returnUrl=&#8230;')</text>
 
   <!-- 2. browser -> gateway (top-level navigation) -->
   <line class="arrow" x1="500" y1="164" x2="855" y2="164" marker-end="url(#arrow)"/>
-  <text x="680" y="156" class="arrow-lbl">GET /auth/login?returnUrl=&#8230; (top-level navigation)</text>
+  <text x="680" y="156" class="arrow-lbl">GET /bff/login?returnUrl=&#8230; (top-level navigation)</text>
 
   <!-- 3. gateway -> browser 302 to IdP -->
   <line class="arrow-return" x1="855" y1="208" x2="500" y2="208" marker-end="url(#arrow)"/>
@@ -69,7 +69,7 @@
 
   <!-- 4. browser -> gateway callback -->
   <line class="arrow" x1="500" y1="348" x2="855" y2="348" marker-end="url(#arrow)"/>
-  <text x="680" y="340" class="arrow-lbl">GET /auth/callback?code&amp;state (top-level GET)</text>
+  <text x="680" y="340" class="arrow-lbl">GET /bff/callback?code&amp;state (top-level GET)</text>
 
   <!-- 5. gateway -> browser: session cookie + return to app -->
   <line class="arrow-return" x1="855" y1="392" x2="500" y2="392" marker-end="url(#arrow)"/>
@@ -81,7 +81,7 @@
 
   <!-- 7. SPA confirms its state -->
   <line class="arrow" x1="140" y1="480" x2="855" y2="480" marker-end="url(#arrow)"/>
-  <text x="680" y="472" class="arrow-lbl">fetch('/auth/userinfo')</text>
+  <text x="680" y="472" class="arrow-lbl">fetch('/bff/session')</text>
 
   <!-- 8. gateway -> SPA -->
   <line class="arrow-return" x1="855" y1="524" x2="140" y2="524" marker-end="url(#arrow)"/>

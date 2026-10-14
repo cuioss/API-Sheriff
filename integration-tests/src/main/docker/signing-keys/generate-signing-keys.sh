@@ -15,7 +15,7 @@
 #                        gateway (clients integration-client and cookie-refresh-client). It signs
 #                        the private_key_jwt client assertion with PS256. All of those instances
 #                        mount the same file, so the one JWKS the primary instance publishes at
-#                        https://api-sheriff:8443/auth/jwks carries the key each of them signs with.
+#                        https://api-sheriff:8443/bff/jwks carries the key each of them signs with.
 #   dpop-ec.pem          EC P-256. The DPoP proof key of the instances whose client is
 #                        integration-client. Proofs are signed with ES256.
 #   dpop-rsa.pem         RSA-2048. The DPoP proof key of the two refresh instances

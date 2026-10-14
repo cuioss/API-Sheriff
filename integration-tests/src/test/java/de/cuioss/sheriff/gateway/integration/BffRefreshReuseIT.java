@@ -191,7 +191,7 @@ import org.junit.jupiter.api.Test;
 class BffRefreshReuseIT {
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
-    private static final String MEDIATED_PATH = "/bff-session/get";
+    private static final String MEDIATED_PATH = "/app/get";
 
     /** The host-published Keycloak origin the test JVM can reach (compose {@code 1443 -> 8443}). */
     private static final String KEYCLOAK_ORIGIN = "https://localhost:1443";

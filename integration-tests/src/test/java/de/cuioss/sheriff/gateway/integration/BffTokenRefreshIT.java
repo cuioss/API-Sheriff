@@ -75,7 +75,7 @@ import org.junit.jupiter.api.Test;
  *       {@code Authorization} header. The proof is the changed upstream bearer, never session
  *       continuity: a session that merely still works proves only that it was not destroyed, which is
  *       equally true of {@code CURRENT}.</li>
- *   <li>{@code REFRESHED} on a scoped route — after a login on {@code /bff-session/scoped}, whose
+ *   <li>{@code REFRESHED} on a scoped route — after a login on {@code /app/scoped}, whose
  *       endpoint adds {@code sheriff_it_endpoint} to {@code oidc.scopes} (ADR-0048), the rotated
  *       mediated token still carries {@code sheriff_it_endpoint}. The refresh requests the session's
  *       active scope set rather than {@code oidc.scopes}, and since the scope is optional on
@@ -189,7 +189,7 @@ import org.junit.jupiter.api.Test;
 class BffTokenRefreshIT {
 
     /** The require:session route that mediates a bearer to the go-httpbin echo upstream. */
-    private static final String MEDIATED_PATH = "/bff-session/get";
+    private static final String MEDIATED_PATH = "/app/get";
 
     /** The host-published Keycloak origin the test JVM can reach (compose {@code 1443 -> 8443}). */
     private static final String KEYCLOAK_ORIGIN = "https://localhost:1443";
@@ -301,7 +301,7 @@ class BffTokenRefreshIT {
     void refreshedOutcomeKeepsTheEndpointScope() {
         // Arrange — first confirm this instance serves the scoped session route at all. It mounts the
         // shared endpoints/ tree under its own gateway.yaml, so bff-scoped is present only if that
-        // overlay still declares the bff-session anchor; an unauthenticated navigation that is
+        // overlay still declares the app anchor; an unauthenticated navigation that is
         // redirected into the IdP proves the route exists and rules out a 404 masquerading as a scope
         // failure further down. The redirect is that of a pushed request and names no scope, so the
         // scope set the route asks for is proven by the granted token of the login below.

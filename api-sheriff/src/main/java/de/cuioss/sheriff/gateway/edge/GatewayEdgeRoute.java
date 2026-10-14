@@ -524,7 +524,7 @@ public class GatewayEdgeRoute {
 
         // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
         // consulted in process() ahead of route selection, so a proxy route such as
-        // path_prefix: /auth never swallows the exact /auth/callback. Empty (and inert) unless the
+        // path_prefix: /bff never swallows the exact /bff/callback. Empty (and inert) unless the
         // global oidc block declares a redirect_uri. The reserved-path exemption from the
         // url-parameter pipeline is now STRUCTURAL rather than predicate-driven: handleReservedPath
         // returns before route selection, and the parameter pipeline moved after it into
@@ -1194,8 +1194,8 @@ public class GatewayEdgeRoute {
 
     /**
      * Resolves and dispatches a reserved OIDC carve-out (D2/D16): a reserved endpoint is matched here,
-     * ahead of the route table, so a proxy route such as {@code path_prefix: /auth} can never swallow
-     * the exact {@code /auth/callback}. When the server-mode BFF runtime is wired the matched path is
+     * ahead of the route table, so a proxy route such as {@code path_prefix: /bff} can never swallow
+     * the exact {@code /bff/callback}. When the server-mode BFF runtime is wired the matched path is
      * DISPATCHED to its handler; a bearer-only / cookie-mode gateway carves it out of proxy dispatch
      * and renders {@code NO_ROUTE_MATCHED} (the empty reserved registry never matches there anyway).
      *

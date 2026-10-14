@@ -36,7 +36,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Proves the {@code auth.session_fallback} branch table against the native stack, one test per row,
- * on the {@code bff-session-fallback} route ({@code /bff-session/fallback}, go-httpbin echo).
+ * on the {@code bff-session-fallback} route ({@code /app/fallback}, go-httpbin echo).
  * <p>
  * <strong>The fixture.</strong> {@code endpoints/bff-scoped.yaml} declares the route with
  * {@code auth: {require: bearer, session_fallback: true}} under the {@code bff-scoped} endpoint, whose
@@ -77,13 +77,13 @@ class BffSessionFallbackIT extends BaseIntegrationTest {
     static final String FALLBACK_ROUTE_ID = "bff-session-fallback";
 
     /** A safe-method path on the {@code session_fallback} route; the echo upstream answers any path. */
-    static final String FALLBACK_PATH = "/bff-session/fallback/get";
+    static final String FALLBACK_PATH = "/app/fallback/get";
 
     /** The client the primary gateway instance, which serves the route, authenticates as. */
     private static final String FALLBACK_ROUTE_CLIENT_ID = "integration-client";
 
     /** An unsafe-method path on the {@code session_fallback} route. */
-    private static final String FALLBACK_UNSAFE_PATH = "/bff-session/fallback/post";
+    private static final String FALLBACK_UNSAFE_PATH = "/app/fallback/post";
 
     /** An {@code Origin} that is neither the gateway origin nor a configured CSRF trusted origin. */
     private static final String FOREIGN_ORIGIN = "https://evil.example.com";

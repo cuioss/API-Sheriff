@@ -39,7 +39,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Exercises the reserved {@code /auth/login} login-initiation fold end-to-end.
+ * Exercises the reserved {@code /bff/login} login-initiation fold end-to-end.
  * <p>
  * Without a session the fold starts a fresh auth-code flow. The gateway pushes the authorization
  * request to the identity provider over the back channel (RFC 9126) and answers a {@code 302} into the
@@ -79,7 +79,7 @@ class BffLoginInitiationIT extends BaseIntegrationTest {
         Response response = given()
                 .redirects().follow(false)
                 .when()
-                .get("/auth/login")
+                .get("/bff/login")
                 .then()
                 .statusCode(302)
                 .extract().response();
@@ -90,12 +90,12 @@ class BffLoginInitiationIT extends BaseIntegrationTest {
     @Test
     @DisplayName("login initiation with a live session short-circuits to the validated return target, not the IdP")
     void loginInitiationShortCircuitsForLiveSession() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         var response = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .redirects().follow(false)
                 .when()
-                .get("/auth/login?returnUrl=/home")
+                .get("/bff/login?returnUrl=/home")
                 .then()
                 .statusCode(302)
                 .extract();
@@ -115,9 +115,9 @@ class BffLoginInitiationIT extends BaseIntegrationTest {
     @DisplayName("a login started without returnUrl lands on / when oidc.login.default_return_url is unset")
     void loginWithoutReturnUrlLandsOnRootFallback() {
         // The primary (server-mode) stack declares no oidc.login.default_return_url, so the post-login
-        // fallback is '/'. /auth/login is itself the start path: the flow's first navigation is the
+        // fallback is '/'. /bff/login is itself the start path: the flow's first navigation is the
         // initiation, which 302s into Keycloak exactly as a session-route navigation does.
-        Session session = BffKeycloakLoginFlow.login("/auth/login");
+        Session session = BffKeycloakLoginFlow.login("/bff/login");
 
         assertEquals("/", session.callbackLocation(),
                 "a login with no return target must land on the '/' fallback on the server stack");

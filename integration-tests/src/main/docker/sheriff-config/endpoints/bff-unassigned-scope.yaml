@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # The routes that need a scope the identity provider will NOT grant (ADR-0057).
-# Anchored to the 'bff-session' anchor (type: bff, access: authenticated, auth: require:
+# Anchored to the 'app' anchor (type: bff, access: authenticated, auth: require:
 # session) declared in gateway.yaml, and routed to the same go-httpbin echo backend (the
 # UPSTREAM topology alias) as endpoints/bff-session.yaml and endpoints/bff-scoped.yaml, so an
 # upstream contact would be observable — and its absence is what these routes are for. Two
@@ -30,7 +30,7 @@
 # is answered 502 and the instance logs the refused-push record ApiSheriff-132: no redirect is
 # issued, nothing is stored, the session is left unchanged, and the request never reaches the
 # echo. An XHR is refused 403 application/problem+json naming the missing scope. The same session
-# keeps working on /bff-session/get afterwards, which is the proof that a refused widening costs
+# keeps working on /app/get afterwards, which is the proof that a refused widening costs
 # the browser nothing it already had. Assigning the scope to the client in the realm would turn
 # the refusal into a grant and make these routes a second copy of bff-scoped.
 #
@@ -39,20 +39,20 @@
 # is proven at unit level (CallbackEndpointTest).
 #
 # The step-up path the XHR answer points at is oidc.step_up.path in gateway.yaml. Both prefixes
-# nest under /bff-session and are statically disjoint from bff-session-mediated by specificity,
-# exactly as /bff-session/scoped is; the fallback prefix nests one level further and is disjoint
+# nest under /app and are statically disjoint from bff-session-mediated by specificity,
+# exactly as /app/scoped is; the fallback prefix nests one level further and is disjoint
 # from bff-unassigned-scope the same way, as /secure/filtered is from /secure in
 # endpoints/secure.yaml. No forward block: nothing here is ever forwarded.
 endpoint:
   id: bff-unassigned-scope
   enabled: true
   base_url: UPSTREAM
-  anchor: bff-session
+  anchor: app
   scopes: ["sheriff_it_unassigned"]
   routes:
     - id: bff-unassigned-scope
       match:
-        path_prefix: /bff-session/unassigned
+        path_prefix: /app/unassigned
     # session_fallback (auth.session_fallback: true) — the refusal shown on the SESSION branch of a
     # require: bearer route. A request without an Authorization header takes that branch and is held
     # to the route's needed scopes exactly as on bff-unassigned-scope above, so the same widening is
@@ -69,7 +69,7 @@ endpoint:
     # why MetricsIT accepts this route id next to bff-session-fallback.
     - id: bff-unassigned-scope-fallback
       match:
-        path_prefix: /bff-session/unassigned/fallback
+        path_prefix: /app/unassigned/fallback
       auth:
         require: bearer
         session_fallback: true

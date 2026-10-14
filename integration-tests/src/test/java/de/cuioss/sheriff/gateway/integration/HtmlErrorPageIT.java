@@ -136,7 +136,7 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     private static final String SCOPED_BEARER_PATH = "/secure/scoped/get";
 
     /** The reserved OIDC callback, reached without the browser-binding cookie a real login sets. */
-    private static final String CALLBACK_PATH = "/auth/callback";
+    private static final String CALLBACK_PATH = "/bff/callback";
 
     /**
      * The {@code origin-status} route, forwarding to go-httpbin's {@code /status/503} through the

@@ -332,7 +332,7 @@ by the base document and its `passthrough-empty` mirror only; under every other 
 route's `403` names the missing scopes and no `step_up_url`.
 
 *Which instance publishes the key.* The two key-authenticated clients of the compose instances name
-the same JWKS URL, `https://api-sheriff:8443/auth/jwks` -- the primary instance, under the name
+the same JWKS URL, `https://api-sheriff:8443/bff/jwks` -- the primary instance, under the name
 Keycloak already dials for back-channel logout. All eleven key-authenticated instances mount the same client-authentication
 key file, so the key the primary publishes is the key each of them signs with. The URL names the
 primary and no other instance because the stack certificate's SAN list covers `api-sheriff` and no
@@ -401,7 +401,7 @@ a scratch realm, before the stack was migrated:
   a signed assertion only. No test asserts that last observation.
 
 Two facts need the gateway and were therefore not part of that isolated check: that the stack's
-Keycloak fetches the key over TLS from `https://api-sheriff:8443/auth/jwks`, and that the binding
+Keycloak fetches the key over TLS from `https://api-sheriff:8443/bff/jwks`, and that the binding
 holds on the authorization-code grant. Neither is asserted by this page. No key is registered
 statically, so a login completed through a key-authenticated instance is itself the proof of the
 fetch; the decision record carries the observation entries for both.
@@ -425,12 +425,12 @@ it adds no row to the instance table and nothing to the diagram.
 
 | Realm client
 | `generated-key-client`, whose `jwks.url` is
-  `https://sheriff-generated-keys:8443/auth/client-keys`
+  `https://sheriff-generated-keys:8443/bff/client-keys`
 
 | Descriptor
 | Derived at test time from the committed `sheriff-config-cookie-refresh/gateway.yaml`: both
   `key_file` entries removed, the client id replaced, a `client_authentication.jwks_path` of
-  `/auth/client-keys` declared, and the gateway origin retargeted at the port below. It is written
+  `/bff/client-keys` declared, and the gateway origin retargeted at the port below. It is written
   below `target/` and never committed.
 
 | Server certificate
@@ -478,8 +478,8 @@ certificate. `BffClientKeyWiringTest` reads all three without a container and as
 
 . The gateway boots with no key configured. Its log carries the generated-key record once for client
   authentication and once for the sender constraint, and no member of the published key.
-. `GET /auth/client-keys` answers one EC P-256 key with `use: sig`, `alg: ES256` and a `kid` equal to
-  its RFC 7638 thumbprint. `/auth/jwks`, the default path the descriptor moved away from, answers
+. `GET /bff/client-keys` answers one EC P-256 key with `use: sig`, `alg: ES256` and a `kid` equal to
+  its RFC 7638 thumbprint. `/bff/jwks`, the default path the descriptor moved away from, answers
   `404`.
 . A login completes. No key is registered at Keycloak, so Keycloak fetched the generated key from the
   gateway over TLS.
@@ -897,7 +897,7 @@ route. So the suite starts a gateway over a configuration of its own, once for t
 | `sheriff-reserved-path-overlap`, on the Compose network.
 
 | Fixture
-| `reserved-path-overlap/auth-overlap.yaml`: one endpoint with one route, `path_prefix: /auth`, to the
+| `reserved-path-overlap/bff-overlap.yaml`: one endpoint with one route, `path_prefix: /bff`, to the
   echo upstream, with `allowed_methods: ["POST"]`. It lives outside every `sheriff-config*` directory.
 
 | Configuration directory

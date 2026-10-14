@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
  * best-effort no-op — {@code RpInitiatedLogout}'s contract makes local session destruction the
  * authoritative logout. So this suite asserts the session is destroyed <em>locally</em> (the old cookie
  * jar no longer authorizes the protected route), not that the IdP token was revoked. The
- * {@code /auth/logout} entry redirects {@code 302} into the RP-initiated round-trip that ends at the
+ * {@code /bff/logout} entry redirects {@code 302} into the RP-initiated round-trip that ends at the
  * configured {@code final_redirect}. That redirect targets the realm's end-session endpoint and its
  * query carries the {@code id_token_hint}, so the suite also asserts the two headers the gateway
  * answers it with: {@code Referrer-Policy: no-referrer} and {@code Cache-Control: no-store}.
@@ -57,12 +57,12 @@ class BffLogoutIT extends BaseIntegrationTest {
     @Test
     @DisplayName("RP-initiated logout redirects into the round-trip and destroys the local session")
     void rpInitiatedLogoutDestroysLocalSession() {
-        Session session = BffKeycloakLoginFlow.login("/bff-session/get");
+        Session session = BffKeycloakLoginFlow.login("/app/get");
 
         var logout = BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .redirects().follow(false)
                 .when()
-                .get("/auth/logout")
+                .get("/bff/logout")
                 .then()
                 .statusCode(302)
                 .extract();
@@ -85,7 +85,7 @@ class BffLogoutIT extends BaseIntegrationTest {
         BffKeycloakLoginFlow.gateway(session.gatewayCookies())
                 .header("Accept", "application/json")
                 .when()
-                .get("/bff-session/get")
+                .get("/app/get")
                 .then()
                 .statusCode(401);
     }
@@ -96,7 +96,7 @@ class BffLogoutIT extends BaseIntegrationTest {
         var response = given()
                 .contentType("application/x-www-form-urlencoded")
                 .when()
-                .post("/auth/backchannel")
+                .post("/bff/backchannel")
                 .then()
                 .statusCode(400)
                 .extract();

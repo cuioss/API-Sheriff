@@ -89,7 +89,7 @@ import org.junit.jupiter.api.Test;
 class BffRefreshSingleFlightIT {
 
     /** The plain session route, relaying a bearer to the echo upstream. */
-    private static final String MEDIATED_PATH = "/bff-session/get";
+    private static final String MEDIATED_PATH = "/app/get";
 
     private static final int CONCURRENT_REQUESTS = 8;
 

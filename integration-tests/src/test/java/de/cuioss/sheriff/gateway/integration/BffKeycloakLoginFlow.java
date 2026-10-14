@@ -345,7 +345,7 @@ final class BffKeycloakLoginFlow {
      * Runs the full auth-code flow against the primary (server-mode) gateway origin.
      *
      * @param startPath the gateway path to navigate to (a require:session route such as
-     *                  {@code /bff-session/get}); the unauthenticated navigation triggers the login
+     *                  {@code /app/get}); the unauthenticated navigation triggers the login
      *                  redirect into the IdP
      * @return the established gateway {@link Session}
      */
@@ -533,7 +533,7 @@ final class BffKeycloakLoginFlow {
 
         // Step 3 — POST the credentials. The gateway drives the authorization request with
         // response_mode=query, so on a successful login Keycloak answers a 302 whose Location is the
-        // gateway redirect_uri (/auth/callback) with the authorization code + state in the QUERY STRING.
+        // gateway redirect_uri (/bff/callback) with the authorization code + state in the QUERY STRING.
         Response credentials = keycloak(keycloakCookies)
                 .contentType("application/x-www-form-urlencoded")
                 .formParam("username", username)

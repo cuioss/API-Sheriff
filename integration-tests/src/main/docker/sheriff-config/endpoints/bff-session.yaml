@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # The require:session protected upstream the server-mode BFF mediation suite targets.
-# Anchored to the 'bff-session' anchor (type: bff, access: authenticated,
+# Anchored to the 'app' anchor (type: bff, access: authenticated,
 # auth: require: session) declared in gateway.yaml, so every route here inherits the
 # session floor. It routes to the same go-httpbin echo backend the proxy suite uses
 # (the UPSTREAM topology alias) so BffSessionMediationIT can observe exactly what the
@@ -27,11 +27,11 @@ endpoint:
   id: bff-session
   enabled: true
   base_url: UPSTREAM
-  anchor: bff-session
+  anchor: app
   routes:
     - id: bff-session-mediated
       match:
-        path_prefix: /bff-session
+        path_prefix: /app
       forward:
         headers_allow: ["Authorization", "Content-Type"]
     # token_relay OPT-OUT (auth.token_relay: false). The login is still enforced exactly as on
@@ -47,10 +47,10 @@ endpoint:
     # boot a route whose effective token_relay is false while its forward.headers_allow names
     # Authorization (any letter case), because that list would re-admit the browser's own
     # Authorization header to an origin the route promises no token. The prefix nests under
-    # /bff-session and is disjoint from bff-session-mediated by specificity.
+    # /app and is disjoint from bff-session-mediated by specificity.
     - id: bff-session-norelay
       match:
-        path_prefix: /bff-session/norelay
+        path_prefix: /app/norelay
       auth:
         require: session
         token_relay: false

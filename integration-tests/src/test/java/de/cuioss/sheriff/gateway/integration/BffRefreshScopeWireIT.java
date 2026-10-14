@@ -87,10 +87,10 @@ import org.junit.jupiter.api.Test;
 class BffRefreshScopeWireIT {
 
     /** The plain session route: it needs {@code oidc.scopes} and nothing else. */
-    private static final String PLAIN_SESSION_PATH = "/bff-session/get";
+    private static final String PLAIN_SESSION_PATH = "/app/get";
 
     /** The scoped session route: it needs {@code oidc.scopes} plus {@code sheriff_it_endpoint}. */
-    private static final String SCOPED_SESSION_PATH = "/bff-session/scoped/get";
+    private static final String SCOPED_SESSION_PATH = "/app/scoped/get";
 
     /**
      * The scope set a login on the scoped route asks for, spelled out: this suite asserts what is sent

@@ -22,7 +22,7 @@ copy of either.
 == The Browser-Facing Contract
 
 Everything below is observable from a browser against a gateway configured as this sample is. The
-sample application is served *by the gateway*, same-origin with the reserved `/auth` paths, which is
+sample application is served *by the gateway*, same-origin with the reserved `/bff/*` paths, which is
 what makes the whole contract reachable with a plain same-origin `fetch`.
 
 [cols="3,1,3"]
@@ -34,47 +34,47 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | `text/html` through the gateway-owned asset envelope, with
   `X-Content-Type-Options: nosniff`.
 
-| `fetch /auth/userinfo` -- no session
+| `fetch /bff/session` -- no session
 | `401`
 | `application/problem+json`, `Cache-Control: no-store`. *Never a redirect.*
 
-| navigate `/auth/login?returnUrl=...`
+| navigate `/bff/login?returnUrl=...`
 | `302`
 | Into the OIDC authorization endpoint. The gateway adds two query parameters, `client_id` and
   `request_uri`, and no other; a query the endpoint URL itself carries is kept. This is a
   *top-level navigation*, never a `fetch`.
 
-| `/auth/callback?code&state`
+| `/bff/callback?code&state`
 | `302`
 | The IdP `302`s the browser here as a *top-level GET*, with `code` and `state` in the query
   string. The gateway exchanges the code, then redirects back to the validated `returnUrl` with the
   session cookie set. Your application never sees this leg -- the browser performs it.
 
-| `fetch /auth/userinfo` -- live session
+| `fetch /bff/session` -- live session
 | `200`
 | `application/json`: `claims` (the curated default view) plus `session` metadata.
 
-| `fetch /auth/userinfo?claims=email`
+| `fetch /bff/session?claims=email`
 | `200`
 | Only the named claims, provided each is inside the operator allowlist.
 
-| `fetch /auth/userinfo?claims=*`
+| `fetch /bff/session?claims=*`
 | `200`
 | The full allowlisted view.
 
-| `fetch /auth/userinfo?claims=given_name`
+| `fetch /bff/session?claims=given_name`
 | `403`
 | `application/problem+json` -- the claim is outside the operator allowlist.
 
-| navigate `/auth/login` -- live session
+| navigate `/bff/login` -- live session
 | `302`
 | Straight to the validated `returnUrl`. No fresh authorization flow is started.
 
-| navigate `/auth/logout`
+| navigate `/bff/logout`
 | `302`
-| To the IdP end-session endpoint, then to `/auth/logout/return`, then to `final_redirect`.
+| To the IdP end-session endpoint, then to `/bff/logout/return`, then to `final_redirect`.
 
-| `fetch /auth/userinfo` -- after logout
+| `fetch /bff/session` -- after logout
 | `401`
 | The authoritative proof the session is gone.
 |===
@@ -84,11 +84,11 @@ common way to mis-integrate:
 
 [#_the_401_versus_302_split]
 * *The `401`-versus-`302` split is PATH-based, not `Accept`-based.* Both reserved endpoints are
-  blind to the request's `Accept` header. `/auth/userinfo` is an XHR probe and answers
+  blind to the request's `Accept` header. `/bff/session` is an XHR probe and answers
   `401 application/problem+json` without a session -- it never redirects, whatever you send. Do not
   write a client that sends `Accept: text/html` to the info endpoint expecting a redirect, and do
   not write one that treats a `302` from the info endpoint as reachable. It is not.
-* *Login is a navigation, logout is a navigation.* `/auth/login` and `/auth/logout` answer `302`
+* *Login is a navigation, logout is a navigation.* `/bff/login` and `/bff/logout` answer `302`
   into the identity provider. A `fetch` cannot follow that meaningfully -- the browser must own the
   navigation. Use `window.location.assign(...)`, never `fetch`.
 
@@ -96,7 +96,7 @@ common way to mis-integrate:
 
 The whole leg is navigations the browser performs; your application starts it and reads the result.
 
-. The application navigates to `/auth/login?returnUrl=/some/page`. The gateway pushes the
+. The application navigates to `/bff/login?returnUrl=/some/page`. The gateway pushes the
   authorization request to the identity provider over its own back channel, sets a short-lived,
   `HttpOnly` browser-binding cookie and `302`s to the identity provider. *Of the authorization
   request, that first redirect carries only `client_id` and `request_uri`*: no scope, no `state` and
@@ -105,7 +105,7 @@ The whole leg is navigations the browser performs; your application starts it an
 . The user authenticates at the identity provider. Keycloak 26.5.7 answers the redirect above with a
   further `302` to its own `login-actions/authenticate` page, and that page is the login form. The
   browser follows it; your application does not see it.
-. The identity provider `302`s the browser back to `/auth/callback` *as a top-level GET*, with
+. The identity provider `302`s the browser back to `/bff/callback` *as a top-level GET*, with
   `code` and `state` in the query string.
 . The gateway validates the binding cookie and the `state`, exchanges the code for tokens over its
   own back channel, sets the session cookie, and `302`s to the validated same-origin `returnUrl`.
@@ -136,7 +136,7 @@ The identity-provider client must also meet three requirements, or the login is 
 * *It binds access tokens with DPoP.* The gateway refuses a token that is not bound to its proof
   key; the callback then answers `400` and no session is created.
 * *It authenticates the gateway by a signed JWT and fetches the gateway's key set.* Register the
-  gateway's *JWKS URL* -- `https://<gateway address the identity provider can reach>/auth/jwks` --
+  gateway's *JWKS URL* -- `https://<gateway address the identity provider can reach>/bff/jwks` --
   as the client's key-set URL. The identity provider calls that URL server-to-server, so it must
   reach the gateway and trust its certificate.
 
@@ -167,7 +167,7 @@ The exposure is *bounded, not eliminated*:
 
 What this means for you as an integrator: *treat access logs and `Referer`-bearing telemetry on the
 callback path as sensitive*, and do not add third-party analytics or error reporting that captures
-full URLs on `/auth/callback`. Nothing else in your application is affected -- the code never
+full URLs on `/bff/callback`. Nothing else in your application is affected -- the code never
 reaches your code. The full statement is in
 link:../../doc/architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
 ====
@@ -185,21 +185,21 @@ Against the sample's `allowed_claims: ["sub", "preferred_username", "email", "gr
 |===
 | Request | Outcome | What it demonstrates
 
-| `/auth/userinfo`
+| `/bff/session`
 | `200` -- `sub`, `preferred_username`
 | The *curated default view*. The operator decides what an application sees when it asks for
   nothing in particular.
 
-| `/auth/userinfo?claims=email`
+| `/bff/session?claims=email`
 | `200` -- `email` only
 | *Explicit selection*. A comma-separated list narrows the disclosure to exactly those claims.
 
-| `/auth/userinfo?claims=*`
+| `/bff/session?claims=*`
 | `200` -- `sub`, `preferred_username`, `email`, `groups`
 | The *full allowlisted view*. `*` is the widest disclosure that exists -- and it is still capped by
   the allowlist, not by the client.
 
-| `/auth/userinfo?claims=given_name`
+| `/bff/session?claims=given_name`
 | `403` `application/problem+json`
 | The *allowlist cap*. `given_name` is present in the validated ID token, and is still refused,
   because the operator did not allow it.
@@ -229,9 +229,9 @@ This is a guarantee you can rely on, not a hint: it means an application does no
 caching itself with cache-busting query parameters or `no-cache` request headers, and it means a
 shared proxy in front of the gateway cannot serve one user's identity view to another.
 
-== The Return-URL Rule: `/auth/login` Is Not an Open Redirect
+== The Return-URL Rule: `/bff/login` Is Not an Open Redirect
 
-`/auth/login` accepts a `returnUrl` parameter naming where the browser should land after login. The
+`/bff/login` accepts a `returnUrl` parameter naming where the browser should land after login. The
 gateway validates it as *same-origin with the gateway's own origin* -- the origin of the configured
 `redirect_uri`.
 
@@ -241,7 +241,7 @@ both paths: on a fresh login, and on the already-authenticated short-circuit.
 
 Two consequences for an integrator:
 
-* You cannot use `/auth/login?returnUrl=...` to bounce a browser to another origin. The
+* You cannot use `/bff/login?returnUrl=...` to bounce a browser to another origin. The
   login-initiation URL is not an open redirect, by construction.
 * Because the failure mode is a *silent fallback* rather than an error, a mistyped or cross-origin
   `returnUrl` looks like "login worked but landed on the wrong page". If that is what you see, check
@@ -250,9 +250,9 @@ Two consequences for an integrator:
 The sample passes `window.location.href` -- always same-origin, because the application is served by
 the gateway.
 
-An already-authenticated caller is never re-driven through a fresh authorization flow: `/auth/login`
+An already-authenticated caller is never re-driven through a fresh authorization flow: `/bff/login`
 with a live session redirects straight to the validated return URL. No new login transaction is
-started and no binding cookie is set. An application may therefore link to `/auth/login`
+started and no binding cookie is set. An application may therefore link to `/bff/login`
 unconditionally without worrying about spurious re-authentication.
 
 [#_serving_your_application_from_the_gateway]
@@ -293,8 +293,8 @@ entry point must name a concrete file: `/assets/demo/index.html`, not `/assets/d
 to your links, your bookmarks, your `returnUrl` values and your `final_redirect` alike.
 ====
 
-Serving the application from the gateway is what makes it *same-origin* with the reserved `/auth`
-paths. That is not a convenience -- it is what lets a plain `fetch('/auth/userinfo')` carry the
+Serving the application from the gateway is what makes it *same-origin* with the reserved `/bff/*`
+paths. That is not a convenience -- it is what lets a plain `fetch('/bff/session')` carry the
 `HttpOnly` session cookie without any cross-origin cookie configuration, and what keeps the login
 navigation inside one origin. A bundle served from a separate static host is a materially different
 integration with materially more configuration.
@@ -308,8 +308,8 @@ points it at a concrete public page:
 ----
 oidc:
   logout:
-    path: /auth/logout
-    post_logout_redirect_uri: https://localhost:10443/auth/logout/return
+    path: /bff/logout
+    post_logout_redirect_uri: https://localhost:10443/bff/logout/return
     final_redirect: /assets/demo/landing.html
 ----
 
@@ -353,7 +353,7 @@ The return leg is `state`-verified against a single-use cookie; a missing or mis
 rejected `400`, so a forged logout-return cannot land the browser anywhere.
 
 *Treat the `401` re-probe as the proof of logout, not the landing page.* After the round-trip,
-`fetch('/auth/userinfo')` returning `401` is what demonstrates the session is genuinely destroyed. A
+`fetch('/bff/session')` returning `401` is what demonstrates the session is genuinely destroyed. A
 landing page rendering successfully proves only that a static file was served.
 
 == Session Mode Is Invisible to the Application

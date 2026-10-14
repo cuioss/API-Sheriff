@@ -932,11 +932,11 @@ class GatewayEdgeRouteBffWiringTest {
      * Three properties are only observable here, one layer out from {@link ClientJwksEndpoint} and
      * {@link ReservedPathRegistry}: the path is answered on a host that is <em>not</em> the OIDC host,
      * it is answered to a request carrying no credential at all, and it is answered <em>ahead of</em> the
-     * route table — the proxy route below claims the whole {@code /auth} prefix on every host, so a
+     * route table — the proxy route below claims the whole {@code /bff} prefix on every host, so a
      * request the carve-out missed would reach the stub upstream and be counted there.
      * <p>
      * Each form is a matched pair with the control request beside it: the same edge forwards an
-     * ordinary {@code /auth} path to the upstream, so an upstream count of zero for the JWKS path is
+     * ordinary {@code /bff} path to the upstream, so an upstream count of zero for the JWKS path is
      * attributable to the carve-out rather than to a route that forwards nothing.
      */
     @Nested
@@ -944,9 +944,9 @@ class GatewayEdgeRouteBffWiringTest {
     class ClientJwksAtTheEdge {
 
         /** The path the endpoint is reserved at when {@code jwks_path} is omitted — {@link #fullOidc()} omits it. */
-        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
-        private static final String ROUTED_CONTROL_PATH = "/auth/not-reserved";
-        /** A path outside the {@code /auth} route that nothing reserves: the gateway does not know it. */
+        private static final String DEFAULT_JWKS_PATH = "/bff/jwks";
+        private static final String ROUTED_CONTROL_PATH = "/bff/not-reserved";
+        /** A path outside the {@code /bff} route that nothing reserves: the gateway does not know it. */
         private static final String UNKNOWN_PATH = "/not-a-route";
         /** A host the identity provider might dial that is not the host of {@code oidc.redirect_uri}. */
         private static final String FOREIGN_HOST = "gateway.internal";
@@ -1004,7 +1004,7 @@ class GatewayEdgeRouteBffWiringTest {
                             new JsonObject(answer.body()).getMap(),
                             "the body is the key set holding exactly the one public key the runtime was built with"),
                     () -> assertEquals(0, upstreamHits.get(),
-                            "the /auth proxy route never sees the reserved path"));
+                            "the /bff proxy route never sees the reserved path"));
         }
 
         @Test
@@ -1024,7 +1024,7 @@ class GatewayEdgeRouteBffWiringTest {
         void shouldProxyAnOrdinaryPathUnderTheSamePrefix() throws Exception {
             EdgeAnswer answer = get(publishingFront, FOREIGN_HOST, ROUTED_CONTROL_PATH);
 
-            assertAll("the /auth proxy route serves the foreign host",
+            assertAll("the /bff proxy route serves the foreign host",
                     () -> assertEquals(200, answer.status()),
                     () -> assertEquals("upstream", answer.body()),
                     () -> assertEquals(1, upstreamHits.get(),
@@ -1037,7 +1037,7 @@ class GatewayEdgeRouteBffWiringTest {
             EdgeAnswer answer = send(publishingFront, io.vertx.core.http.HttpMethod.POST, FOREIGN_HOST,
                     DEFAULT_JWKS_PATH);
 
-            assertAll("POST on the JWKS path — a method the /auth proxy route itself allows",
+            assertAll("POST on the JWKS path — a method the /bff proxy route itself allows",
                     () -> assertEquals(405, answer.status()),
                     () -> assertEquals("GET", answer.headers().get("Allow")),
                     () -> assertEquals("", answer.body()),
@@ -1055,7 +1055,7 @@ class GatewayEdgeRouteBffWiringTest {
          * The three leading assertions are the control: they pin the reference to the route table's own
          * {@code 404} problem document, so two answers that agreed on some other shape would not pass.
          * The upstream count is what keeps the equality from being bought by releasing the path — the
-         * {@code /auth} proxy route covers the JWKS path and allows both methods, and still sees
+         * {@code /bff} proxy route covers the JWKS path and allows both methods, and still sees
          * nothing.
          */
         @ParameterizedTest(name = "{1} on host {0}")
@@ -1089,7 +1089,7 @@ class GatewayEdgeRouteBffWiringTest {
         void shouldProxyAnOrdinaryPathOnTheWithheldEdge() throws Exception {
             EdgeAnswer answer = get(withheldFront, FOREIGN_HOST, ROUTED_CONTROL_PATH);
 
-            assertAll("the /auth proxy route is live on the withheld edge too",
+            assertAll("the /bff proxy route is live on the withheld edge too",
                     () -> assertEquals(200, answer.status()),
                     () -> assertEquals(1, upstreamHits.get(),
                             "so the 404 above cannot be a route that reaches no upstream"));
@@ -1098,7 +1098,7 @@ class GatewayEdgeRouteBffWiringTest {
         private HttpServer startEdge(ClientJwksEndpoint jwksEndpoint) throws Exception {
             TokenValidator tokenValidator = TokenValidator.builder()
                     .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(authPrefixRoute(upstream.actualPort()))),
+            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(bffPrefixRoute(upstream.actualPort()))),
                     GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
                     new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
@@ -1141,12 +1141,12 @@ class GatewayEdgeRouteBffWiringTest {
             return lines;
         }
 
-        /** A credential-free proxy route claiming the whole {@code /auth} prefix on every host. */
-        private static ResolvedRoute authPrefixRoute(int upstreamPort) {
+        /** A credential-free proxy route claiming the whole {@code /bff} prefix on every host. */
+        private static ResolvedRoute bffPrefixRoute(int upstreamPort) {
             return ResolvedRoute.builder()
-                    .id("auth-proxy")
+                    .id("bff-proxy")
                     .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/auth").build())
+                    .match(MatchConfig.builder().pathPrefix("/bff").build())
                     .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                     .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))

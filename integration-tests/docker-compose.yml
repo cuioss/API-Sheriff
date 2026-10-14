@@ -93,9 +93,9 @@ services:
       # Lets Keycloak TRUST the gateway when it DIALS it. Everything else in this file concerns
       # Keycloak as a TLS *server*; there are two legs where Keycloak is the TLS *client*. On
       # back-channel logout it POSTs a logout token to the backchannel.logout.url the
-      # integration-client declares (https://api-sheriff:8443/auth/backchannel). And to verify a
+      # integration-client declares (https://api-sheriff:8443/bff/backchannel). And to verify a
       # client assertion it GETs the client's public key from the jwks.url integration-client and
-      # cookie-refresh-client declare (https://api-sheriff:8443/auth/jwks). The gateway serves the same
+      # cookie-refresh-client declare (https://api-sheriff:8443/bff/jwks). The gateway serves the same
       # self-signed localhost.crt this service does, which is in no default JVM truststore, so
       # without this both fail the handshake: no logout token is ever delivered and
       # BffBackchannelLogoutIT fails with a live session it expected destroyed, and no client
@@ -107,7 +107,7 @@ services:
       #
       # The second entry is for a gateway that is NOT a service of this file. BffGeneratedKeysIT
       # starts a one-off gateway under the network alias sheriff-generated-keys, and Keycloak fetches
-      # that gateway's generated client key from https://sheriff-generated-keys:8443/auth/client-keys,
+      # that gateway's generated client key from https://sheriff-generated-keys:8443/bff/client-keys,
       # the jwks.url of the realm client generated-key-client. The stack certificate covers no gateway
       # name but api-sheriff, and Keycloak verifies the name it dials, so the one-off gateway presents
       # a certificate of its own (certificates/generate-generated-keys-gateway-certificate.sh) and
@@ -447,7 +447,7 @@ services:
       # run in the native image. Neither value is a secret: both are locations on the signing-keys
       # mount below. No client secret is set — this instance authenticates with private_key_jwt.
       # It is also the instance Keycloak FETCHES the client-authentication key from:
-      # https://api-sheriff:8443/auth/jwks, the JWKS URL integration-client and cookie-refresh-client
+      # https://api-sheriff:8443/bff/jwks, the JWKS URL integration-client and cookie-refresh-client
       # name.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
       # Portal catalog toggle acceptance (PortalIT). endpoints/portal-hidden.yaml declares

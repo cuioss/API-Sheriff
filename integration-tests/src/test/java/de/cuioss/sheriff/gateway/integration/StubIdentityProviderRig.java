@@ -597,7 +597,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
                 () -> assertNotNull(state, "state"),
                 () -> assertNotNull(nonce, "nonce"),
                 () -> assertNotNull(scope, "scope"),
-                () -> assertEquals(origin + "/auth/callback", redirectUri, "redirect_uri"));
+                () -> assertEquals(origin + "/bff/callback", redirectUri, "redirect_uri"));
 
         script(Endpoint.TOKEN, loginAnswer(scope, accessTokenLifetime, nonce, binding));
         Response callback = BffKeycloakLoginFlow.gateway(gatewayCookies, origin)
@@ -1130,7 +1130,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
         assertAll("the derived descriptor " + derived,
                 () -> assertEquals(ISSUER, oidc.get("issuer"), "oidc.issuer must be the stub"),
                 () -> assertEquals(CLIENT_ID, oidc.get("client_id"), "oidc.client_id"),
-                () -> assertEquals(origin + "/auth/callback", oidc.get("redirect_uri"), "oidc.redirect_uri"),
+                () -> assertEquals(origin + "/bff/callback", oidc.get("redirect_uri"), "oidc.redirect_uri"),
                 () -> assertTrue(String.valueOf(mapping(oidc.get("logout"), "oidc.logout")
                                 .get("post_logout_redirect_uri")).startsWith(origin + "/"),
                         "oidc.logout.post_logout_redirect_uri must name the rig's origin"),

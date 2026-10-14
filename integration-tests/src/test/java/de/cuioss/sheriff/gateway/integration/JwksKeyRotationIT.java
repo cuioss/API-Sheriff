@@ -126,7 +126,7 @@ class JwksKeyRotationIT {
     private static final Duration TOKEN_LIFETIME = Duration.ofMinutes(10);
 
     /** A {@code require: session} route of the descriptor, on which a login starts. */
-    private static final String SESSION_PATH = "/bff-session/get";
+    private static final String SESSION_PATH = "/app/get";
 
     private static final int FLOOD_REQUESTS = 200;
 

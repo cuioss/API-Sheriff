@@ -51,7 +51,7 @@ import org.junit.jupiter.api.Test;
 class BffCookieBackchannelDisabledIT {
 
     /** The reserved back-channel logout path both instances register (oidc.logout.backchannel_path). */
-    private static final String BACKCHANNEL_PATH = "/auth/backchannel";
+    private static final String BACKCHANNEL_PATH = "/bff/backchannel";
 
     private static final String FORM_CONTENT_TYPE = "application/x-www-form-urlencoded";
 

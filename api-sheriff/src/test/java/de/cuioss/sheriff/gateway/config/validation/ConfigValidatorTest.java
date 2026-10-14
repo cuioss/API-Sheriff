@@ -3920,7 +3920,7 @@ class ConfigValidatorTest {
         private static final String POINTER = "/oidc/client_authentication/jwks_path";
         private static final String JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
         private static final String ORIGIN = "https://gateway.example.com";
-        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        private static final String DEFAULT_JWKS_PATH = "/bff/jwks";
         private static final String DECLARED_JWKS_PATH = "/auth/client-keys";
 
         /** The seven reserved keys a JWKS path can collide with, each placing a path under its own key. */
@@ -4074,7 +4074,7 @@ class ConfigValidatorTest {
         /**
          * The matched control for the default-path refusal: the same {@code logout.path} is admitted
          * once the JWKS path is declared elsewhere, so the refusal above is about the two endpoints
-         * sharing a path and not about the literal {@code /auth/jwks}.
+         * sharing a path and not about the literal {@code /bff/jwks}.
          */
         @Test
         @DisplayName("Should admit another key on the default JWKS path once jwks_path is declared elsewhere (matched control)")
@@ -4122,7 +4122,7 @@ class ConfigValidatorTest {
         private static final String POINTER = "/oidc/client_authentication/jwks_path";
         private static final String JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
         private static final String ORIGIN = "https://gateway.example.com";
-        private static final String DEFAULT_JWKS_PATH = "/auth/jwks";
+        private static final String DEFAULT_JWKS_PATH = "/bff/jwks";
 
         /** Each refused spelling with a fragment of the reason it must be refused for. */
         private static final List<List<String>> NON_CANONICAL_PATHS = List.of(
@@ -4165,7 +4165,7 @@ class ConfigValidatorTest {
 
         static Stream<Arguments> canonicalPathsInBothModes() {
             return Stream.of(Mode.values()).flatMap(mode -> Stream
-                    .of("/auth/jwks", "/keys/client.jwks", "/auth/client-keys", "/.well-known/client-jwks.json", "/jwks")
+                    .of("/bff/jwks", "/keys/client.jwks", "/auth/client-keys", "/.well-known/client-jwks.json", "/jwks")
                     .map(path -> Arguments.of(mode, path)));
         }
 
@@ -4562,6 +4562,105 @@ class ConfigValidatorTest {
 
             assertEquals(List.of(), withoutAnyRule,
                     "control: the model itself refuses nothing, so the refusal above is the validator rule's");
+        }
+    }
+
+    /**
+     * The canonical-form refusal of the three operator-declared reserved paths
+     * {@code oidc.login.path}, {@code oidc.user_info.path} and {@code oidc.step_up.path}: a path that
+     * passes the absolute-path shape check but is not canonical — an inner {@code //}, a dot segment,
+     * a matrix parameter or a percent-encoded character — is refused at the key's own pointer, naming
+     * the key, because a reserved path is matched by exact equality with the canonical request path.
+     * <p>
+     * Every refused value starts with a single {@code /} and carries no query, fragment, backslash,
+     * control character or whitespace, so the shape check admits it and the canonical-form check is
+     * the only rule that can refuse it. The values are literals: each is the spelling the rule names.
+     */
+    @Nested
+    @DisplayName("Reserved paths must be canonical")
+    class ReservedPathCanonicalForm {
+
+        private static final String CANONICAL_REFUSAL = "must be a canonical gateway path";
+
+        /** The three operator-declared reserved paths, each with the key, pointer and fixture it needs. */
+        enum ReservedPathKey {
+            LOGIN("oidc.login.path", "/oidc/login/path", "/bff/login"),
+            USER_INFO("oidc.user_info.path", "/oidc/user_info/path", "/bff/session"),
+            STEP_UP("oidc.step_up.path", "/oidc/step_up/path", "/bff/step-up");
+
+            private final String key;
+            private final String pointer;
+            private final String canonicalPath;
+
+            ReservedPathKey(String key, String pointer, String canonicalPath) {
+                this.key = key;
+                this.pointer = pointer;
+                this.canonicalPath = canonicalPath;
+            }
+
+            GatewayConfig gatewayDeclaring(String path) {
+                OidcConfig.OidcConfigBuilder oidc = OidcConfig.builder();
+                switch (this) {
+                    case LOGIN -> oidc.login(new OidcConfig.Login(path, null));
+                    case USER_INFO -> oidc.userInfo(new OidcConfig.UserInfo(path, List.of(), List.of()));
+                    case STEP_UP -> oidc.stepUp(new OidcConfig.StepUp(null, null, path));
+                }
+                return validGateway().oidc(oidc.build()).build();
+            }
+        }
+
+        static Stream<Arguments> nonCanonicalPaths() {
+            Stream.Builder<Arguments> cases = Stream.builder();
+            for (ReservedPathKey reservedPath : ReservedPathKey.values()) {
+                cases.add(Arguments.of(reservedPath, "/bff/./login"));
+                cases.add(Arguments.of(reservedPath, "/bff/../session"));
+                cases.add(Arguments.of(reservedPath, "/bff//step-up"));
+                cases.add(Arguments.of(reservedPath, "/bff/step-up;x"));
+                cases.add(Arguments.of(reservedPath, "/bff/%2e/login"));
+                cases.add(Arguments.of(reservedPath, "/bff/sess%69on"));
+            }
+            return cases.build();
+        }
+
+        private List<ConfigError> refusalsAt(ReservedPathKey reservedPath, String path) {
+            return validator.validate(reservedPath.gatewayDeclaring(path), List.of(), topologyWith()).stream()
+                    .filter(error -> reservedPath.pointer.equals(error.pointer()))
+                    .toList();
+        }
+
+        @ParameterizedTest(name = "{0}: {1}")
+        @MethodSource("nonCanonicalPaths")
+        @DisplayName("Should refuse a non-canonical reserved path at the key's pointer, naming the key")
+        void shouldRefuseANonCanonicalReservedPath(ReservedPathKey reservedPath, String path) {
+            List<ConfigError> refusals = refusalsAt(reservedPath, path);
+
+            assertEquals(1, refusals.size(), () -> "exactly one refusal at " + reservedPath.pointer + ", got: "
+                    + refusals);
+            String message = refusals.getFirst().message();
+            assertAll(path,
+                    () -> assertTrue(message.contains(reservedPath.key + " " + CANONICAL_REFUSAL),
+                            () -> "the refusal names the key and the canonical-form requirement: " + message),
+                    () -> assertFalse(message.contains(path),
+                            () -> "the canonical-form refusal echoes no configured value: " + message));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ReservedPathKey.class)
+        @DisplayName("Should accept the canonical /bff/* form of each reserved path (matched control)")
+        void shouldAcceptTheCanonicalForm(ReservedPathKey reservedPath) {
+            assertEquals(List.of(), refusalsAt(reservedPath, reservedPath.canonicalPath),
+                    "the refusals above are about the canonical form, not about declaring the key");
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ReservedPathKey.class)
+        @DisplayName("Should report a scheme-relative path once, as a shape refusal, not twice")
+        void shouldReportASchemeRelativePathOnce(ReservedPathKey reservedPath) {
+            List<ConfigError> refusals = refusalsAt(reservedPath, "//bff/session");
+
+            assertEquals(1, refusals.size(), () -> "one defect is reported once, got: " + refusals);
+            assertTrue(refusals.getFirst().message().contains("must be an absolute gateway path starting with a single '/'"),
+                    () -> refusals.getFirst().message());
         }
     }
 }

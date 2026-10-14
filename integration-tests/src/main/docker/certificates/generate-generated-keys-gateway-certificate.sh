@@ -5,7 +5,7 @@
 #   generated-keys-gateway.key  its private key
 #
 # WHY THIS GATEWAY HAS A CERTIFICATE OF ITS OWN. Keycloak fetches the gateway's generated client key
-# from https://sheriff-generated-keys:8443/auth/client-keys and verifies the host name it dials. The
+# from https://sheriff-generated-keys:8443/bff/client-keys and verifies the host name it dials. The
 # stack certificate (localhost.crt) covers api-sheriff and no other gateway name, so a gateway
 # reached under the network alias sheriff-generated-keys cannot present it. The SAN list below names
 # that alias, plus localhost and 127.0.0.1, under which the test JVM reaches the published port.

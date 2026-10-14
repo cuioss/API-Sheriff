@@ -40,8 +40,16 @@ import org.jspecify.annotations.Nullable;
  * two — the back-channel logout receiver and the client JWKS endpoint — are matched on
  * <strong>every</strong> host, for the reason {@link #match(String, String)} documents. The gateway
  * edge consults this registry <em>before</em> the route table, so a proxy route such as
- * {@code path_prefix: /auth} can never swallow the exact {@code /auth/callback}: the reserved path
+ * {@code path_prefix: /bff} can never swallow the exact {@code /bff/callback}: the reserved path
  * is resolved here first and the prefix route never sees it.
+ * <p>
+ * <strong>A reserved path is an exact-match carve-out, not an anchor.</strong> It claims one path on
+ * the OIDC host (on every host for the back-channel logout and client JWKS paths — see
+ * {@link #match(String, String)}) and nothing beneath it: no namespace, no prefix, no anchor-level auth floor or
+ * security filter. The {@code /bff/*} spelling the samples use is a naming convention that nothing
+ * validates — every reserved path is operator-configurable, and a sibling path such as
+ * {@code /bff/other} that no key names is not reserved and is routed by the route table like any
+ * other request.
  * <p>
  * The client JWKS path is the one reserved path that needs no declaration: an {@code oidc} block
  * with a {@code redirect_uri} that names none reserves the default path. It is reserved in both
@@ -230,8 +238,8 @@ public final class ReservedPathRegistry {
 
     /**
      * Resolves the reserved endpoint for a request, matching the path <strong>exactly</strong>. A
-     * prefix that merely contains a reserved path (e.g. {@code /auth} against the reserved
-     * {@code /auth/callback}) never matches — that is precisely the carve-out this registry
+     * prefix that merely contains a reserved path (e.g. {@code /bff} against the reserved
+     * {@code /bff/callback}) never matches — that is precisely the carve-out this registry
      * guarantees.
      * <p>
      * <strong>The six browser-facing endpoints additionally require the request host to be the OIDC
@@ -308,7 +316,7 @@ public final class ReservedPathRegistry {
 
     /**
      * Normalizes a configured value to its absolute path component: a full URI ({@code https://…})
-     * contributes its path, a bare absolute path ({@code /auth/logout}) is taken verbatim. A blank,
+     * contributes its path, a bare absolute path ({@code /bff/logout}) is taken verbatim. A blank,
      * relative, or unparseable value contributes nothing.
      */
     private static Optional<String> toPath(String value) {

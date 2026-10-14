@@ -39,7 +39,7 @@ import org.junit.jupiter.api.Test;
  * {@code scopes} (ADR-0048) — by reading the token the IdP issues for it.
  * <p>
  * <strong>The fixture.</strong> {@code endpoints/bff-scoped.yaml} declares the session route
- * {@code /bff-session/scoped} with {@code scopes: ["sheriff_it_endpoint"]}, so its needed set is
+ * {@code /app/scoped} with {@code scopes: ["sheriff_it_endpoint"]}, so its needed set is
  * exactly {@code openid profile email sheriff_it_endpoint}. {@code sheriff_it_endpoint} is an
  * <em>optional</em> client scope of {@code integration-client} in {@code integration-realm.json}:
  * Keycloak issues it only when the authorization request names it. Its presence in the mediated
@@ -56,12 +56,12 @@ import org.junit.jupiter.api.Test;
  * <ul>
  *   <li>A login started by an unauthenticated navigation on the scoped route mediates a token that
  *       carries every member of the four-member set.</li>
- *   <li>{@code /auth/login?returnUrl=} resolves the scope set from the return target: a login for a
+ *   <li>{@code /bff/login?returnUrl=} resolves the scope set from the return target: a login for a
  *       target on a {@code require: none} asset route mediates a token <em>without</em>
  *       {@code sheriff_it_endpoint}, while a login for a target on the scoped session route mediates
  *       one <em>with</em> it. The second case is what keeps the first from passing vacuously — a
  *       resolver that always answered {@code oidc.scopes} would satisfy the asset case on its own.</li>
- *   <li>A login started on the plain {@code /bff-session} route yields a mediated bearer without the
+ *   <li>A login started on the plain {@code /app} route yields a mediated bearer without the
  *       endpoint scope — the control that proves the realm does not issue the scope by default.</li>
  * </ul>
  * <p>
@@ -90,10 +90,10 @@ class BffEndpointScopesIT {
     static final Set<String> SCOPED_ROUTE_SCOPES = Set.of("openid", "profile", "email", ENDPOINT_SCOPE);
 
     /** A path on the scoped session route; the echo upstream answers any path. */
-    static final String SCOPED_SESSION_PATH = "/bff-session/scoped/get";
+    static final String SCOPED_SESSION_PATH = "/app/scoped/get";
 
     /** A path on the plain session route, which declares no endpoint scope. */
-    private static final String PLAIN_SESSION_PATH = "/bff-session/get";
+    private static final String PLAIN_SESSION_PATH = "/app/get";
 
     /** A return target on the {@code require: none} {@code assets-directory} route. */
     private static final String PUBLIC_ASSET_TARGET = "/assets/static/index.html";
@@ -106,14 +106,14 @@ class BffEndpointScopesIT {
         Set<String> granted = mediatedScopes(session, SCOPED_SESSION_PATH);
 
         assertTrue(granted.containsAll(SCOPED_ROUTE_SCOPES),
-                "a navigation login on /bff-session/scoped must be granted oidc.scopes united with the "
+                "a navigation login on /app/scoped must be granted oidc.scopes united with the "
                         + "endpoint's scopes; the mediated token carries " + granted);
     }
 
     @Test
-    @DisplayName("/auth/login with a public asset return target is granted oidc.scopes without the endpoint scope")
+    @DisplayName("/bff/login with a public asset return target is granted oidc.scopes without the endpoint scope")
     void loginInitiationForPublicTargetIsGrantedNoEndpointScope() {
-        Session session = BffKeycloakLoginFlow.login("/auth/login?returnUrl=" + PUBLIC_ASSET_TARGET);
+        Session session = BffKeycloakLoginFlow.login("/bff/login?returnUrl=" + PUBLIC_ASSET_TARGET);
 
         Set<String> granted = mediatedScopes(session, PLAIN_SESSION_PATH);
 
@@ -126,9 +126,9 @@ class BffEndpointScopesIT {
     }
 
     @Test
-    @DisplayName("/auth/login with a scoped-route return target is granted the endpoint scope")
+    @DisplayName("/bff/login with a scoped-route return target is granted the endpoint scope")
     void loginInitiationForScopedTargetIsGrantedTheEndpointScope() {
-        Session session = BffKeycloakLoginFlow.login("/auth/login?returnUrl=" + SCOPED_SESSION_PATH);
+        Session session = BffKeycloakLoginFlow.login("/bff/login?returnUrl=" + SCOPED_SESSION_PATH);
 
         Set<String> granted = mediatedScopes(session, SCOPED_SESSION_PATH);
 
