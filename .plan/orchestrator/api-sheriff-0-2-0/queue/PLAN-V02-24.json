@@ -2,8 +2,8 @@
   "id": "PLAN-V02-24",
   "slug": "policy-block-resolution",
   "workstream": "WS-01",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "plan-v02-24-policy-block-resolution",
   "pr": "",
   "landing": "",
   "seq": 24

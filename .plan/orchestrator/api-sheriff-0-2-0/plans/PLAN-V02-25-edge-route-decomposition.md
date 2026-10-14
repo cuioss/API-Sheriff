@@ -1,4 +1,4 @@
-# PLAN-V02-25: Decompose `GatewayEdgeRoute` — Per-Route Policy Reaches Stages Through One Resolved Context
+# PLAN-V02-25: Decompose `GatewayEdgeRoute` and Merge the Two Per-Route Types
 
 epic: api-sheriff-0-2-0
 workstream: WS-01
@@ -6,61 +6,80 @@ workstream: WS-01
 > Staged plan spec — one shippable unit of work, ready for `/plan-marshall` hand-off.
 > The orchestrator EMITS the command below; it never launches the plan inline.
 > Staged 2026-10-14 from inbox `plan-v02-23-cookie-forwarding-policy-001` (operator: "GatewayEdgeRoute is
-> a nightmare. We need a major rework here."). Second of three refactor plans, after `PLAN-V02-24`.
+> a nightmare. We need a major rework here."). Design settled with the operator the same day (decisions
+> in `epic.md` § Decisions, 2026-10-14). Second of three refactor plans, after `PLAN-V02-24`, parallel
+> with `PLAN-V02-26`.
 
 ## Objective
 
-`edge/GatewayEdgeRoute.java` is 2,664 lines with about 78 methods. Every per-route setting is threaded
-by hand from it into each pipeline stage and relay call site, so every new per-route policy edits this
-class in several places (V02-23's deliverables 1, 3, 4 and 5 all did). Split it so that per-route
-policy reaches the stages through one resolved route context, and the class keeps only the wiring.
+Two problems, both measured at `5490144f`:
 
-Pure refactor: no observable behaviour change. The edge's behaviour is pinned by a large suite — the
-framing corpus, the early-answer tests, the WebSocket and gRPC relays, the integration tests — and that
-suite passing unchanged is this plan's evidence. A test changed to make the refactor pass needs its
-reason stated in the PR.
+- **Every per-route value is carried by two parallel types.** `config/model/ResolvedRoute` (the resolved
+  configuration) and `routing/RouteRuntime` (206 lines: the same effective auth, methods, forward block,
+  security headers, retry and not-modified toggles, allowed origins and WebSocket idle timeout, plus the
+  runtime objects — matcher, protocol processor, security configuration, HTTP client, resilience guard,
+  location rewriter, asset source). `edge/RouteRuntimeAssembler` (305 lines) copies field by field from
+  one to the other. A new per-route policy is a field in both plus a copy line.
+- **`edge/GatewayEdgeRoute.java` (2,664 lines) does about eight jobs:** request admission and connection
+  lifecycle (in-flight count, connection retirement, framing rejection); the reserved-path body ceiling;
+  reserved and BFF endpoints and the portal; proxy dispatch for HTTP, WebSocket, gRPC, assets and
+  redirects; the relay, including the early-answer handling (ADR-0066, #431, #448, kidicap `PLAN-32`);
+  rejection rendering (problem+json, error pages, `Retry-After`); building the pipeline request (method,
+  query, `Content-Length`, authority parsing); and upstream client, egress TLS, header-security
+  configuration and resilience-guard construction.
+
+Refactor: no observable behaviour change. The existing suite — the framing corpus, the early-answer
+tests, the relay and WebSocket/gRPC tests, the integration tests — passing is the evidence (operator
+decision: no additional golden comparison). A test changed to make the refactor pass needs its reason
+stated in the PR.
 
 ## Deliverables
 
-1. **Map it first.** List the class's responsibilities (listener and transport setup, upstream client
-   and guard construction, stage wiring, relay paths for HTTP, gRPC and WebSocket, error rendering,
-   early-answer handling) and every per-route value threaded into a stage. Settle the target split at
-   outline and put it to the operator before moving code.
-2. **A resolved route context.** The stages and relay paths read per-route policy from one immutable
-   context built from `ResolvedRoute` (`PLAN-V02-24`'s output), instead of receiving it as hand-threaded
-   parameters. A new per-route policy is then one field on the context plus its consumer.
-3. **Move responsibilities out.** Extract the responsibilities from deliverable 1 into focused classes in
-   `edge/` (or sub-packages with `package-info.java`). `GatewayEdgeRoute` keeps routing and wiring only.
-   The early-answer path (ADR-0066, #431, #448 and kidicap `PLAN-32`) moves as a unit; do not change its
-   behaviour.
-4. **Tests follow the code.** Unit tests for each extracted class; existing tests are moved, not
-   rewritten, wherever possible. Framing corpus, `Http2EarlyResponseResetIT` and the relay ITs stay green.
-5. **Architecture document.** `doc/architecture.adoc` describes the new edge structure; an ADR records the
-   context seam if it constrains future stages.
+1. **Merge `ResolvedRoute` and `RouteRuntime` into one per-route type** (operator decision: merge, not
+   wrap). The resolved policy and the runtime objects live in one immutable object built once at boot;
+   `RouteRuntimeAssembler`'s field-by-field copy disappears. Settle at outline which package owns the
+   merged type and how the boot-time construction is split between resolution (`PLAN-V02-24`'s
+   mechanism) and runtime assembly (clients, guards, matchers). Migrate every user, tests included, using
+   its `@Builder`.
+2. **Map `GatewayEdgeRoute`'s jobs and settle the target split at outline**, starting from the eight
+   jobs above; put the split to the operator before moving code.
+3. **Extract the jobs into sub-packages of `edge/`** (operator decision), each with a `package-info.java`
+   — for example `edge/admission`, `edge/reserved`, `edge/dispatch`, `edge/relay`, `edge/reject`,
+   `edge/request`, `edge/client`; names settled at outline. `GatewayEdgeRoute` keeps route registration
+   and the top-level `handle` → `process` flow only. The early-answer path moves as a unit and does not
+   change behaviour. Add an architecture test that guards the package boundaries (no cycles; the
+   sub-packages do not reach back into `GatewayEdgeRoute`).
+4. **Tests follow the code.** Existing tests are moved with the code they test, not rewritten; new unit
+   tests only where an extracted class has none. Simplifying the tests is `PLAN-V02-27`'s job, after this
+   has merged.
+5. **Architecture documentation.** `doc/architecture.adoc` describes the new edge structure and the single
+   per-route type; an ADR records the package boundaries and the merge (derive the ordinal at write time).
 
-Split guard: 5 deliverables. Keep the PR under 100 files and 150,000 diff characters; if the move is
-larger, ship deliverable 2 first and the extractions in a second PR.
+Split guard: 5 deliverables. Keep each PR under 100 files and 150,000 diff characters; if needed, ship
+deliverable 1 first and the extractions second.
 
 ## Claim Labels
 
-- OBSERVED: `GatewayEdgeRoute.java` is 2,664 lines at `5490144f` — `git show | wc -l`
-- OBSERVED: `edge/` holds 16 source files at `5490144f` — `git ls-tree`
-- HYPOTHESIS: about 78 method declarations, and every per-route setting is passed by hand into stages — the V02-23 finding's count; re-measure at outline (verify-at-outline)
+- OBSERVED: `GatewayEdgeRoute.java` 2,664 lines; `RouteRuntime.java` 206; `RouteRuntimeAssembler.java` 305 — `wc -l` at `5490144f`
+- OBSERVED: `RouteRuntime` carries the effective policy fields of `ResolvedRoute` plus the runtime objects listed in the Objective — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/routing/RouteRuntime.java`
+- OBSERVED: the eight responsibilities, read from `GatewayEdgeRoute`'s method list (`handle`, `readReservedBodyThenDispatch`, `retireConnectionAfterResponse`, `dispatchReserved`, `handlePortal`, `dispatchAndRelay`, `dispatchWebSocket`, `dispatchGrpc`, `serveAsset`, `startRelay`, `renderRejection`, `renderProblem`, `buildPipelineRequest`, `clientFor`, `egressTlsBound`, `cookieHeaderConfigurationFor`, `guardFor`, …) at `5490144f`
 
 ## Expected Surface
 
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/` — `GatewayEdgeRoute` and the stages it wires
-- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/`, `forward/` — stage signatures, if they take the context (verify-at-outline)
-- OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/`
-- OBSERVED: `doc/architecture.adoc`; `doc/adr/` if a record is written
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/` and new sub-packages under it
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/routing/RouteRuntime.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ResolvedRoute.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/RouteRuntimeAssembler.java`
+- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/`, `forward/`, `routing/` — readers of the per-route type (verify-at-outline)
+- OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/`, `routing/`, `config/`
+- OBSERVED: `doc/architecture.adoc`, `doc/adr/`
 
 ## Dependencies and Sequencing
 
-- Depends on: `PLAN-V02-24` (the resolved route this context is built from), and kidicap `PLAN-32`
-  (the early-answer IT fix, running, in `GatewayEdgeRoute`) having landed.
-- Parallel with `PLAN-V02-26` (validator split): disjoint surfaces, `edge/` versus `config/validation/`.
-- Before: the re-grounded `PLAN-V02-23`; and holds every staged plan editing `edge/**`: `PLAN-V02-05`,
-  `-06`, `-07`; kidicap `PLAN-20`, `-29`.
+- Depends on: `PLAN-V02-24` (its resolution mechanism builds the merged type's policy half) and kidicap
+  `PLAN-32` (early-answer IT fix, in `GatewayEdgeRoute`) having landed.
+- Parallel with `PLAN-V02-26` (validator split) if that is still running: disjoint surfaces. Emitted once
+  V02-24 and kidicap PLAN-32 have both landed.
+- Before: the re-grounded `PLAN-V02-23`, then `PLAN-V02-27`. Holds every staged plan editing `edge/**`:
+  `PLAN-V02-05`, `-06`, `-07`.
 
 ## Hand-Off Command
 
