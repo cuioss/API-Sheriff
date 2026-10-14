@@ -339,21 +339,14 @@ class GatewayEdgeEarlyResponseResetTest {
                 "every upstream connection of the early-answered uploads to end", Awaits.CONNECT_CEILING_SECONDS);
 
         List<UpstreamConnection> earlyConnections = connectionsCarrying(earlyUploads);
-        List<UpstreamConnection> closedInOrder = earlyConnections.stream()
-                .filter(UpstreamConnection::closedInOrder).toList();
         List<UpstreamConnection> notReset = earlyConnections.stream()
                 .filter(connection -> !connection.reset()).toList();
-        String connectionCost = EARLY_ANSWERS + " early answers opened " + earlyConnections.size()
-                + " upstream connection(s)";
         assertAll("upstream connections closed after early answers",
                 () -> assertFalse(earlyConnections.isEmpty(), "the early-answered uploads must reach the upstream"),
-                () -> assertTrue(closedInOrder.isEmpty(), () -> closedInOrder.size()
-                        + " upstream connection(s) were closed in order by the gateway, each holding a local port"
-                        + " in TIME_WAIT (" + connectionCost + "): "
-                        + closedInOrder.stream().map(UpstreamConnection::outcome).toList()),
                 () -> assertTrue(notReset.isEmpty(), () -> notReset.size()
-                        + " upstream connection(s) did not end in a TCP reset (" + connectionCost + "): "
-                        + notReset.stream().map(UpstreamConnection::outcome).toList()));
+                        + " upstream connection(s) did not end in a TCP reset — one closed in order holds a local"
+                        + " port in TIME_WAIT (" + EARLY_ANSWERS + " early answers opened " + earlyConnections.size()
+                        + " upstream connection(s)): " + notReset.stream().map(UpstreamConnection::outcome).toList()));
     }
 
     /**
@@ -916,11 +909,6 @@ class GatewayEdgeEarlyResponseResetTest {
 
         boolean ended() {
             return closed.get();
-        }
-
-        /** @return whether the connection closed with no failure before its close — a FIN from the peer */
-        boolean closedInOrder() {
-            return closed.get() && failure.get() == null;
         }
 
         /** @return whether the peer's TCP reset reached the connection before its close */
