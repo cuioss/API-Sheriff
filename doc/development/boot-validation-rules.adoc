@@ -1,0 +1,208 @@
+= Boot Validation Rules -- Where a New Rule Goes
+:toc:
+:toclevels: 2
+:sectnums:
+
+The cross-cutting configuration rules run at boot (pipeline step 7) and in the offline
+`--validate-config` check. They judge what the bundled JSON Schemas cannot express: a relation
+between two keys, a value checked against another file, a posture resolved through the
+route -> endpoint -> anchor chain. This page describes how those rules are organised, which class
+owns which rule, and what a contributor does to add one.
+
+The code lives in
+link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java[`ConfigValidator`]
+and the package
+link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/package-info.java[`config.validation.rule`].
+
+== The model
+
+`ConfigValidator` is orchestration only. It holds *one* ordered list, `DEFAULT_RULES`, with one
+entry per rule, and runs every entry in list order against the bound gateway document, the enabled
+endpoints and the resolved topology. That list is the only place that decides the order in which
+violations are reported.
+
+Every entry is a
+link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ValidationRule.java[`ValidationRule`]:
+a function of `(GatewayConfig, List<EndpointConfig>, ResolvedTopology, List<ConfigError>)` that
+*appends* one `ConfigError` per violation to the shared list. A rule never throws for a
+validation failure and never stops at the first problem.
+
+A rule body lives in the *concern class* that owns the configuration block it judges. A concern
+class is a stateless Lombok `@UtilityClass` named `{Concern}Rules` in the `rule` package, exposing
+each rule as a `public static validateXxx(...)` method with the narrowest parameter list the rule
+needs. `ConfigValidator` adapts each method with one lambda in `DEFAULT_RULES`. A concern class
+publishes no rule list of its own: a per-class list would be a second place deciding the order,
+and it would have no reader.
+
+Not every concern has been extracted yet. Until it is, its rules stay `private static` methods of
+`ConfigValidator`, registered in `DEFAULT_RULES` at their position exactly like an extracted rule.
+
+The helpers every rule shares live once, in
+link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/RuleSupport.java[`RuleSupport`]:
+the reporting file (`GATEWAY_FILE`, `endpointFile`), the `ENDPOINT_ROUTES_POINTER`, the
+CWE-117-safe echo of a configured value (`renderForMessage`) and anchor resolution
+(`declaredAnchorName`, `resolveAnchor`). A helper moves into `RuleSupport` with the first extracted
+concern class that needs it, not before.
+
+The `ValidationRule` seam is not widened. Every rule today has the shape above, and a rule that
+logs does so as a side effect with its own logger. Change the interface only for a check this
+shape genuinely cannot express, and record why.
+
+== The concern map
+
+The 51 rules group into 15 concern classes. Positions are the 1-based positions in
+`DEFAULT_RULES`. "Extracted" means the concern class exists and owns the rule bodies; "private in
+`ConfigValidator`" means the rules are still private methods there, at the positions shown.
+
+[cols="2,4,3,2"]
+|===
+| Concern class | Rules (position) | Configuration surface | State
+
+| `TopologyRules`
+| `validateVersion` (1), `validateEndpointIdUniqueness` (2), `validateRouteIdUniqueness` (3),
+  `validateBaseUrlResolvable` (6)
+| `version`, endpoint and route ids, `endpoint.base_url`
+| private in `ConfigValidator`
+
+| `RouteMatchingRules`
+| `validateRouteDisjointness` (4), `validateHeaderMatcherConsistency` (5),
+  `validateMethodMembership` (17)
+| `match.*`, effective `allowed_methods`
+| extracted
+
+| `AnchorRules`
+| `validateAnchorPrefixDisjointness` (7), `validateAnchorReferencesExist` (8),
+  `validateAnchorNamespaceMembership` (9), `validateAnchorAuthFloor` (11),
+  `validateAccessAuthMatrix` (14)
+| `anchors.*`, endpoint and route `anchor`
+| private in `ConfigValidator`
+
+| `AuthRules`
+| `validateRouteAuthResolvable` (10), `validateEffectiveAuth` (12), `validateSessionFallback` (13),
+  `validateEndpointScopesNeedAuthentication` (44)
+| `auth.*`, `endpoint.scopes`
+| private in `ConfigValidator`
+
+| `LimitRules`
+| `validateSecurityProfileMinimal` (15), `validateEdgeHardening` (38),
+  `validateAuthorizationHeaderValueLength` (39)
+| `security_filter.profile`, `security_defaults`, `edge_hardening`
+| private in `ConfigValidator`
+
+| `TerminalActionRules`
+| `validateTerminalAction` (16), `validateAssetIndexAndFallback` (37)
+| route `asset` / `redirect` / `upstream` exclusivity
+| private in `ConfigValidator`
+
+| `EdgeRules`
+| `validateForwardedTrust` (18), `validatePassthroughHostCollision` (33),
+  `validatePassthroughAliasResolvable` (34)
+| `forwarded.trusted_proxies`, `tls.passthrough_sni`
+| private in `ConfigValidator`
+
+| `HeaderRules`
+| `validateCors` (19), `validateContentSecurityPolicy` (20), `validateHeaderModes` (21)
+| `security_headers` (global and anchor)
+| private in `ConfigValidator`
+
+| `OidcSessionRules`
+| `validateSessionMode` (22), `validateSessionMaxSessions` (23), `validateSessionIdleTimeout` (24),
+  `validateSessionMaxSessionsPerSubject` (25), `validateSessionMaxCookieSize` (26),
+  `validateSessionCookieName` (27)
+| `oidc.session.*`
+| private in `ConfigValidator`
+
+| `OidcClientRules`
+| `validateClientAuthentication` (28), `validateDefaultReturnUrl` (45)
+| `oidc.client_secret`, `oidc.client_authentication.key_file`, `oidc.login.default_return_url`
+| private in `ConfigValidator`
+
+| `ReservedPathRules`
+| `validateClientJwksPath` (29), `validateUserInfo` (30), `validateLoginPath` (31),
+  `validateStepUpPath` (32)
+| the reserved OIDC endpoint paths
+| private in `ConfigValidator`
+
+| `ProtocolRules`
+| `validateWebSocketConfig` (35), `validateRewriteLocationProtocol` (36)
+| `protocol`, `websocket`, `upstream.rewrite_location`
+| private in `ConfigValidator`
+
+| `AssetDefaultsRules`
+| `validateAssetContentTypesAddOnly` (40), `validateAssetContentTypeValues` (41)
+| `asset_defaults.content_types`
+| private in `ConfigValidator`
+
+| `ForwardingRules`
+| `validateForwardModeExclusivity` (42), `validateTokenRelayForwardConflict` (43)
+| route `forward` block against `auth.token_relay`
+| private in `ConfigValidator`
+
+| `TokenValidationRules`
+| `validateJwksEgressHosts` (46), `validateJwksRefresh` (47)
+| `token_validation.issuers[].jwks`
+| extracted
+
+| `PortalRules`
+| `validatePortalPathCanonical` (48), `validatePortalPathNotReserved` (49),
+  `validatePortalPathNotExactRoute` (50), `validateCatalogEntries` (51)
+| `portal`, endpoint `catalog`
+| extracted
+|===
+
+== Adding a rule
+
+. *Pick the concern by the configuration block the rule judges*, using the map above. A rule that
+  compares a route's `forward` block against its `auth.token_relay` belongs to `ForwardingRules`,
+  whichever of the two keys the refusal message names first.
+. *Add the method where that concern lives today.* For an extracted concern, add a
+  `public static validateXxx(...)` method to its class, with Javadoc stating the rule and why it
+  exists. For a concern that is not extracted yet, add a `private static` method to
+  `ConfigValidator`; it moves with the rest of its concern when that concern is extracted.
+. *Register it as one lambda line in `DEFAULT_RULES`*, at the position that keeps the reported
+  order -- normally beside the rules of the same concern. Never concatenate whole class lists: one
+  entry per rule, in one list.
+. *Document the log message* if the rule logs, in `doc/LogMessages.adoc`, as for any other
+  `LogRecord`.
+
+A new concern class is created the same way the existing ones were: a `@UtilityClass` in the `rule`
+package, its rules moved verbatim from `ConfigValidator`, each registration in `DEFAULT_RULES`
+changed in place to call the class, and the helpers it needs moved into `RuleSupport` if they are
+not there yet. Refusal texts and the reporting order do not change in such a move.
+
+== Tests
+
+A rule's tests live beside it, in the test source tree's `config/validation/rule` package, named
+`{Concern}RulesTest` -- for example
+link:../../api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/rule/RouteMatchingRulesTest.java[`RouteMatchingRulesTest`]
+and
+link:../../api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/rule/PortalRulesTest.java[`PortalRulesTest`].
+Where a concern's cases already span several classes, each keeps its aspect in the name, as
+`TokenValidationRulesJwksEgressTest` and `TokenValidationRulesJwksRefreshTest` do.
+
+The tests drive the full default validator, `new ConfigValidator()`, rather than calling the
+concern-class method directly. That is deliberate: a rule that is written but dropped from
+`DEFAULT_RULES` -- or registered with the wrong arguments -- then fails its own tests, while a test
+of the bare method would stay green over a rule that never runs.
+
+The tests of a not-yet-extracted concern stay in `ConfigValidatorTest` (or its existing sibling
+`ConfigValidator*Test` classes) until the concern moves, and move with it.
+
+== Constraints every rule keeps
+
+* *Pre-boot and framework-free.* The offline `--validate-config` check runs this validator before
+  the framework starts
+  (link:../adr/0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061]),
+  so the validation packages carry no framework imports
+  (link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[the narrowed pre-boot rule of ADR-0062]).
+  `PreBootFrameworkFreeArchTest` enforces it.
+* *All violations in a single pass.* A rule appends and returns; it never throws a validation
+  failure and never stops at the first one, so the operator sees every violation in one boot attempt
+  (link:../adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]).
+* *Configured values are echoed through `RuleSupport.renderForMessage`.* A refusal that names a
+  configured scalar renders it with control characters escaped and the length capped, so a hostile
+  value cannot forge a boot ERROR log line (CWE-117). There is exactly one copy of that escaping.
+* *A rule that logs owns its logger.* A rule that emits a WARN declares its own `CuiLogger` in its
+  concern class and keeps its `LogRecord` from `ConfigLogMessages`; the identifier and the text do
+  not change when the rule moves, only the logger category does. A test asserting the absence of
+  that message must then name the concern class, or it passes vacuously.
