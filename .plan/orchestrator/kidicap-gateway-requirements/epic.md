@@ -410,6 +410,18 @@ decision.
 
 ## Open Defects
 
+- **PLAN-30's PR #448 fails `Http2EarlyResponseResetIT` in CI — TOP PRIORITY, must not merge until fixed**
+  (observed 2026-10-14 by the orchestrator). Integration Tests run 38538582322 needed three attempts:
+  attempts 1 and 2 failed in `earlyAnsweredUploadsStayAnsweredWithoutGoAway` with a
+  `TimeoutException` at line 144 (a batch of 10 uploads did not settle within 20 s; 289 of 290 ITs
+  passed), attempt 3 passed. On `main` the same test passed in every push and merge-group run since
+  #431. #448's gateway change is `setSoLinger(0)` on the upstream `HttpClient` in
+  `GatewayEdgeRoute` (`b93aa3a6`), which makes **every** upstream close abortive, not only the
+  early-answer case; the early-answer fixture still answers before reading the body, so the fixture
+  is not the cause. Not yet reproduced: the plan must reproduce it (run the IT repeatedly on the
+  branch against `main`), fix the cause, and show the test green over several consecutive runs before
+  merging. A third-attempt green is not evidence. — source: run 38538582322 attempts 1-2
+
 > ↪ Relocated to `settled.md` § "PLAN-15 abandonment retraction" — the claim was retracted and PLAN-15 has since shipped
 
 > ↪ Relocated to `settled.md` § "PLAN-15 follow-ups filed as issues" — all seven are filed as #323-#329
