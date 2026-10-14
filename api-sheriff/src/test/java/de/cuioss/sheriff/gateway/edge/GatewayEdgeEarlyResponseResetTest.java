@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -36,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
@@ -112,7 +114,10 @@ import org.junit.jupiter.params.provider.EnumSource;
  * mid-stream; one under {@value #HELD} is received and never answered; every other request is
  * answered {@code ok} once its body has ended. It records every request it saw, and
  * whether that request's body ended or failed — a failed body is how the upstream observes the gateway
- * resetting the upstream request, i.e. forwarding being stopped.
+ * resetting the upstream request, i.e. forwarding being stopped. It also records every connection it
+ * accepted, the requests that connection carried and how it ended: closed in order, when its close
+ * arrived with no failure before it, or reset, when the peer's TCP reset reached it first as an
+ * {@link IOException}.
  * <p>
  * <strong>Abort attribution.</strong> The gateway's own reset is never a client abort: it is neither
  * metered nor logged as {@code INBOUND_BODY_ABORTED}, while a client dropping its connection mid-body
@@ -161,6 +166,8 @@ class GatewayEdgeEarlyResponseResetTest {
     private static final int CHUNK_BYTES = 8 * 1024;
     /** What one still-sending upload sends at most: far beyond any flow-control window. */
     private static final long UPLOAD_CAP_BYTES = 16L * 1024 * 1024;
+    /** Early-answered uploads the upstream-connection case sends, one after the other. */
+    private static final int EARLY_ANSWERS = 24;
 
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
@@ -183,6 +190,8 @@ class GatewayEdgeEarlyResponseResetTest {
     private final List<String> upstreamCompleted = new CopyOnWriteArrayList<>();
     /** Every request whose body failed at the stub upstream — the gateway reset it. */
     private final List<String> upstreamAborted = new CopyOnWriteArrayList<>();
+    /** Every connection the stub upstream accepted, with the requests it carried and how it ended. */
+    private final List<UpstreamConnection> upstreamConnections = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -190,7 +199,9 @@ class GatewayEdgeEarlyResponseResetTest {
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
         earlyAnswer = Generators.letterStrings(16, 32).next();
         partialChunk = Generators.letterStrings(16, 32).next();
-        upstreamServer = Awaits.connect(vertx.createHttpServer().requestHandler(this::handleUpstreamRequest)
+        upstreamServer = Awaits.connect(vertx.createHttpServer()
+                .connectionHandler(this::trackUpstreamConnection)
+                .requestHandler(this::handleUpstreamRequest)
                 .listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         frontPort = startEdge(new EdgeHardeningOptions());
         netClient = vertx.createNetClient();
@@ -210,12 +221,21 @@ class GatewayEdgeEarlyResponseResetTest {
         Awaits.teardown(vertx.close(), "Vert.x to close");
     }
 
+    private void trackUpstreamConnection(HttpConnection connection) {
+        UpstreamConnection tracked = new UpstreamConnection(connection);
+        upstreamConnections.add(tracked);
+        connection.exceptionHandler(tracked::failed);
+        connection.closeHandler(closed -> tracked.closed());
+    }
+
     private void handleUpstreamRequest(HttpServerRequest request) {
         String label = request.method() + " " + request.path();
         boolean early = request.path().startsWith(EARLY);
         boolean held = request.path().startsWith(HELD);
         boolean partial = request.path().startsWith(PARTIAL);
         upstreamStarted.add(label);
+        upstreamConnections.stream().filter(tracked -> tracked.connection() == request.connection()).findFirst()
+                .ifPresent(tracked -> tracked.requests().add(label));
         AtomicBoolean settled = new AtomicBoolean();
         request.handler(chunk -> {
             // Read and discard: the body is observed only by whether it ends or fails.
@@ -279,6 +299,57 @@ class GatewayEdgeEarlyResponseResetTest {
                 () -> assertEquals(0.0, errorCount(INBOUND_BODY_ABORTED),
                         "the gateway's own reset is never metered as an aborted inbound body"),
                 () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, INBOUND_BODY_ABORTED_RECORD));
+    }
+
+    /**
+     * Early-answered HTTP/2 uploads against an HTTP/1.1 upstream, each still holding an open body larger
+     * than the answer when it is answered. The gateway resets every such upstream request, and HTTP/1.1
+     * has no message-scoped cancel, so each reset costs the upstream connection it was sent on. A
+     * connection the gateway closes in order, with a FIN, holds the gateway's local port in
+     * {@code TIME_WAIT}; a stream of early answers at rate then exhausts the gateway's ephemeral ports,
+     * the connect failures that follow open the per-upstream breaker, and every client is refused. Every
+     * upstream connection the gateway closes after an early answer must therefore reach the upstream as a
+     * TCP reset, and none as an orderly close.
+     * <p>
+     * <strong>The cost that stays.</strong> The reset still costs the connection: the
+     * {@value #EARLY_ANSWERS} early answers open {@value #EARLY_ANSWERS} upstream connections, one each,
+     * because a connection whose request was reset is never pooled again. The case reports that count in
+     * its failure message and asserts no bound on it.
+     */
+    @Test
+    @DisplayName("early answers on an HTTP/1.1 upstream: every upstream connection the gateway closes is reset, none closed in order")
+    void earlyAnsweredUpstreamConnectionsAreClosedByReset() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        List<String> earlyUploads = new ArrayList<>();
+
+        for (int i = 0; i < EARLY_ANSWERS; i++) {
+            String path = EARLY + "-port-" + i;
+            Upload upload = startUpload(http2Client, frontPort, "POST", "/up" + path, Map.of(),
+                    Generators.letterStrings(CHUNK_BYTES, CHUNK_BYTES).next());
+            Awaits.connect(answerOf(upload.request()), "the early answer to " + path + " to arrive whole");
+            Awaits.connect(upload.streamEnd(), "the edge to reset the open upload stream of " + path);
+            earlyUploads.add("POST " + path);
+        }
+        Awaits.until(() -> upstreamStarted.containsAll(earlyUploads)
+                        && connectionsCarrying(earlyUploads).stream().allMatch(UpstreamConnection::ended),
+                "every upstream connection of the early-answered uploads to end", Awaits.CONNECT_CEILING_SECONDS);
+
+        List<UpstreamConnection> earlyConnections = connectionsCarrying(earlyUploads);
+        List<UpstreamConnection> closedInOrder = earlyConnections.stream()
+                .filter(UpstreamConnection::closedInOrder).toList();
+        List<UpstreamConnection> notReset = earlyConnections.stream()
+                .filter(connection -> !connection.reset()).toList();
+        String connectionCost = EARLY_ANSWERS + " early answers opened " + earlyConnections.size()
+                + " upstream connection(s)";
+        assertAll("upstream connections closed after early answers",
+                () -> assertFalse(earlyConnections.isEmpty(), "the early-answered uploads must reach the upstream"),
+                () -> assertTrue(closedInOrder.isEmpty(), () -> closedInOrder.size()
+                        + " upstream connection(s) were closed in order by the gateway, each holding a local port"
+                        + " in TIME_WAIT (" + connectionCost + "): "
+                        + closedInOrder.stream().map(UpstreamConnection::outcome).toList()),
+                () -> assertTrue(notReset.isEmpty(), () -> notReset.size()
+                        + " upstream connection(s) did not end in a TCP reset (" + connectionCost + "): "
+                        + notReset.stream().map(UpstreamConnection::outcome).toList()));
     }
 
     /**
@@ -573,6 +644,15 @@ class GatewayEdgeEarlyResponseResetTest {
      */
     private Upload startUpload(HttpClient client, int port, String method, String path, Map<String, String> headers)
             throws Exception {
+        return startUpload(client, port, method, path, headers, Generators.letterStrings(8, 16).next());
+    }
+
+    /**
+     * Opens an upload as {@link #startUpload(HttpClient, int, String, String, Map)} does, sending
+     * {@code firstPart} as the first part of its body.
+     */
+    private Upload startUpload(HttpClient client, int port, String method, String path, Map<String, String> headers,
+            String firstPart) throws Exception {
         HttpClientRequest request = open(client, port, method, path);
         CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
         request.exceptionHandler(streamEnd::complete);
@@ -580,9 +660,15 @@ class GatewayEdgeEarlyResponseResetTest {
         if (!headers.containsKey(CONTENT_LENGTH)) {
             request.setChunked(true);
         }
-        Awaits.connect(request.write(Generators.letterStrings(8, 16).next()),
-                "the first part of the " + method + " " + path + " body to be sent");
+        Awaits.connect(request.write(firstPart), "the first part of the " + method + " " + path + " body to be sent");
         return new Upload(request, streamEnd);
+    }
+
+    /** The stub upstream connections that carried any of {@code requests}. */
+    private List<UpstreamConnection> connectionsCarrying(List<String> requests) {
+        return upstreamConnections.stream()
+                .filter(connection -> connection.requests().stream().anyMatch(requests::contains))
+                .toList();
     }
 
     /**
@@ -706,6 +792,68 @@ class GatewayEdgeEarlyResponseResetTest {
                     + ", body=" + (answer == null ? "none" : answer.body())
                     + ", streamEnd=" + streamEnd + ", failure=" + (failure == null ? null : failure.getClass().getName()
                     + ": " + failure.getMessage().lines().findFirst().orElse("")) + ", sent=" + sent.get();
+        }
+    }
+
+    /**
+     * One connection the stub upstream accepted: the requests it carried, and how it ended. It ended in
+     * order when its close arrived with no failure before it, and in a reset when the peer's TCP reset
+     * reached it first as an {@link IOException}. Both handlers run on the connection's event loop, the
+     * failure before the close, so a connection seen as ended already carries its failure.
+     */
+    private static final class UpstreamConnection {
+
+        private final HttpConnection connection;
+        private final List<String> requests = new CopyOnWriteArrayList<>();
+        private final AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        UpstreamConnection(HttpConnection connection) {
+            this.connection = connection;
+        }
+
+        HttpConnection connection() {
+            return connection;
+        }
+
+        List<String> requests() {
+            return requests;
+        }
+
+        /** Records the first failure the connection reported. */
+        void failed(Throwable cause) {
+            failure.compareAndSet(null, cause);
+        }
+
+        void closed() {
+            closed.set(true);
+        }
+
+        boolean ended() {
+            return closed.get();
+        }
+
+        /** @return whether the connection closed with no failure before its close — a FIN from the peer */
+        boolean closedInOrder() {
+            return closed.get() && failure.get() == null;
+        }
+
+        /** @return whether the peer's TCP reset reached the connection before its close */
+        boolean reset() {
+            return closed.get() && failure.get() instanceof IOException;
+        }
+
+        /** @return how this connection ended, for a failure message */
+        String outcome() {
+            Throwable cause = failure.get();
+            if (!closed.get()) {
+                return requests + " still open";
+            }
+            if (cause == null) {
+                return requests + " closed in order";
+            }
+            String kind = cause instanceof IOException ? "reset" : "failed";
+            return requests + " " + kind + ": " + cause.getClass().getName() + ": " + cause.getMessage();
         }
     }
 
