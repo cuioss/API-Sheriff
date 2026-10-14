@@ -410,7 +410,9 @@ decision.
 
 ## Open Defects
 
-- **PLAN-30's PR #448 fails `Http2EarlyResponseResetIT` in CI — TOP PRIORITY, must not merge until fixed**
+- **PLAN-30's PR #448 fails `Http2EarlyResponseResetIT` in CI — TOP PRIORITY. #448 MERGED UNFIXED on 2026-10-14
+  (`b7b98699`, head `bc002caf`; merge-group and push IT runs passed, so 2 failures in 5 runs on that code).
+  Fix staged and emitted as PLAN-32.** Original observation:
   (observed 2026-10-14 by the orchestrator). Integration Tests run 38538582322 needed three attempts:
   attempts 1 and 2 failed in `earlyAnsweredUploadsStayAnsweredWithoutGoAway` with a
   `TimeoutException` at line 144 (a batch of 10 uploads did not settle within 20 s; 289 of 290 ITs
