@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.config.validation;
+package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,6 +29,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
@@ -38,7 +39,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for the {@link ConfigValidator} rule that refuses an unusable
+ * Tests for the {@link TokenValidationRules} rule the {@link ConfigValidator} runs that refuses an unusable
  * {@code token_validation.issuers[].jwks.allowed_egress_hosts} entry: a blank or whitespace-only entry
  * and a {@code host:port} entry of an {@code http}-sourced issuer.
  * <p>
@@ -51,7 +52,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — jwks.allowed_egress_hosts entry shape")
-class ConfigValidatorJwksEgressTest {
+class TokenValidationRulesJwksEgressTest {
 
     private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String POINTER_PREFIX = "/token_validation/issuers/";
