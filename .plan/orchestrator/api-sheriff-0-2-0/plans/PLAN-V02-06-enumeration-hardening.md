@@ -101,7 +101,10 @@ must work through that negotiation, not around it.
    **Part of it is already in place.** `edge/EdgeHardeningOptions` bounds header size, initial-line
    length, chunk size and idle timeout on every listener. `Upgrade` and `Connection` are already in
    `ConnectionHeaders.REQUEST_STRIP` (#185, pinned in `ConnectionHeadersTest`), so the h2c strip is
-   done except for `HTTP2-Settings`, which nothing strips. Remaining scope: `maxConcurrentStreams`, a
+   done except for `HTTP2-Settings`, which nothing strips. `maxConcurrentStreams` is done: #466 (kidicap PLAN-32) caps it at 100
+   per connection. Releasing the buffered credit of refused and queued streams, and bounding request
+   bodies (total-body bound, gRPC stream idle), is owned by `PLAN-V02-45`. That plan runs before or after
+   this one, never together. Remaining scope here: a
    stream-reset rate bound, CONTINUATION bounds, the `HTTP2-Settings` strip, and checking whether
    ADR-0060's declared-length framing (#385) already re-derives `Content-Length` on h2→h1 (if it
    does, pin it with a test rather than re-implement it). `GrpcDispatchStage`'s Javadoc claims the `gw-08` bounds hold on the gRPC path
