@@ -145,7 +145,7 @@ public final class ConfigLogMessages {
          * so an overly broad prefix is surfaced as a boot WARN for review (D5).
          * <p>
          * The thresholds mark the point where one entry spans more than a single
-         * operator-provisioned network; see {@code ConfigValidator.validateForwardedTrust}
+         * operator-provisioned network; see {@code EdgeRules.validateForwardedTrust}
          * for the reasoning and for what is deliberately left un-warned.
          */
         public static final LogRecord BROAD_TRUSTED_PROXY = LogRecordModel.builder()

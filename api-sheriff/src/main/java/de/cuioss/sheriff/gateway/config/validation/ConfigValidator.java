@@ -22,8 +22,6 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.effec
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 
-import java.math.BigInteger;
-import java.net.InetAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -56,7 +54,6 @@ import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
-import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -64,13 +61,12 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
-import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.LimitRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.RouteMatchingRules;
@@ -212,16 +208,10 @@ public final class ConfigValidator {
     private static final CuiLogger LOGGER = new CuiLogger(ConfigValidator.class);
 
     private static final int SUPPORTED_VERSION = 1;
-    private static final String PASSTHROUGH_SNI_POINTER = "/tls/passthrough_sni";
     private static final String ANCHORS_POINTER = "/anchors";
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
     private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
     private static final String ENDPOINT_FORWARD_POINTER = "/endpoint/forward";
-    private static final String FORWARDED_TRUSTED_POINTER = "/forwarded/trusted_proxies";
-    private static final int IPV4_BITS = 32;
-    private static final int IPV6_BITS = 128;
-    private static final int BROAD_PREFIX_IPV4 = 16;
-    private static final int BROAD_PREFIX_IPV6 = 48;
     private static final String WILDCARD_ORIGIN = "*";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
@@ -405,7 +395,7 @@ public final class ConfigValidator {
             TerminalActionRules::validateTerminalAction,
             (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateMethodMembership(gateway, endpoints,
                     errors),
-            (gateway, endpoints, topology, errors) -> validateForwardedTrust(gateway, errors),
+            (gateway, endpoints, topology, errors) -> EdgeRules.validateForwardedTrust(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateContentSecurityPolicy(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateHeaderModes(gateway, errors),
@@ -420,8 +410,10 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateStepUpPath(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validatePassthroughHostCollision(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validatePassthroughAliasResolvable(gateway, topology, errors),
+            (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughHostCollision(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughAliasResolvable(gateway, topology,
+                    errors),
             (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRewriteLocationProtocol(endpoints, errors),
             (gateway, endpoints, topology, errors) -> TerminalActionRules.validateAssetIndexAndFallback(endpoints,
@@ -1203,142 +1195,6 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: every {@code trusted_proxies} entry is a well-formed CIDR; the union of
-     * the parsed ranges per address family must not cover the entire IPv4 or IPv6
-     * space — catching a single full-space CIDR <em>and</em> complementary
-     * combinations such as {@code 0.0.0.0/1} + {@code 128.0.0.0/1}. Individually very
-     * broad — but not total — prefixes (shorter than {@code /16} for IPv4 or
-     * {@code /48} for IPv6) are surfaced as the boot WARN
-     * {@link ConfigLogMessages.WARN#BROAD_TRUSTED_PROXY}. The trust-all refusal is the only breadth
-     * refusal: every range narrower than the whole address space boots.
-     * <p>
-     * Both thresholds encode one principle: <em>warn when a single entry spans more than one
-     * operator-provisioned network.</em> A range matching exactly one network an operator
-     * deliberately provisioned is a considered trust decision; anything broader is far more
-     * likely to be an RFC 1918 block pasted in whole. {@code /16} is the widest single IPv4
-     * network in routine use — an AWS VPC's maximum size, Docker's default bridge shape
-     * {@code 172.17.0.0/16}, the RFC 1918 {@code 192.168.0.0/16} block — so the warning starts
-     * one bit broader, at {@code /15}, and catches {@code 172.16.0.0/12} and {@code 10.0.0.0/8}.
-     * {@code /48} is the canonical IPv6 site allocation and the direct analogue, with
-     * {@code /64} the standard single subnet.
-     * <p>
-     * Left un-warned deliberately: an IPv4 {@code /16} (65,536 addresses) and an IPv6
-     * {@code /48}. Every host inside a trusted range that can reach the gateway directly can
-     * spoof forwarded headers, so a {@code /16} is still a real exposure — un-warned because it
-     * is a <em>legible</em> one an operator chose, not because it is safe. Warning on a routine,
-     * correct configuration is how a guard gets trained into background noise.
-     * <p>
-     * <strong>The value may arrive from an environment variable no code review sees.</strong> A
-     * {@code ${VAR}} placeholder is substituted before this rule runs, so a range the deployment
-     * environment supplies reaches it indistinguishable from one written literally into
-     * {@code gateway.yaml} — except that it never passed through a reviewed change. Such a range keeps
-     * exactly the boot WARN a literal one gets and meets no second, stricter refusal threshold. An
-     * environment-only refusal is not expressible here, because the rule cannot tell the two sources
-     * apart; a source-blind refusal at a wider threshold would refuse legitimate pod-network trust
-     * such as {@code 10.0.0.0/8} while catching nothing the WARN and the trust-all refusal do not
-     * already surface. The un-warned residual applies unchanged: an environment-supplied IPv4
-     * {@code /16} or IPv6 {@code /48} boots with no signal at all, the same chosen exposure with no
-     * review behind it. The decision and its rejected alternatives are recorded in ADR-0044.
-     */
-    private static void validateForwardedTrust(GatewayConfig gateway, List<ConfigError> errors) {
-        ForwardedConfig forwarded = gateway.forwarded();
-        if (forwarded == null) {
-            return;
-        }
-        List<CidrRange> ipv4 = new ArrayList<>();
-        List<CidrRange> ipv6 = new ArrayList<>();
-        for (String cidr : forwarded.trustedProxies()) {
-            Optional<CidrRange> parsed = parseCidr(cidr);
-            if (parsed.isEmpty()) {
-                errors.add(new ConfigError(GATEWAY_FILE, FORWARDED_TRUSTED_POINTER,
-                        "malformed trusted_proxies CIDR: " + cidr));
-                continue;
-            }
-            CidrRange range = parsed.get();
-            (range.bits() == IPV4_BITS ? ipv4 : ipv6).add(range);
-        }
-        checkFamilyTrust(ipv4, IPV4_BITS, BROAD_PREFIX_IPV4, "IPv4", errors);
-        checkFamilyTrust(ipv6, IPV6_BITS, BROAD_PREFIX_IPV6, "IPv6", errors);
-    }
-
-    private static void checkFamilyTrust(List<CidrRange> ranges, int bits, int broadPrefix, String family,
-            List<ConfigError> errors) {
-        if (ranges.isEmpty()) {
-            return;
-        }
-        if (coversEntireSpace(ranges, bits)) {
-            errors.add(new ConfigError(GATEWAY_FILE, FORWARDED_TRUSTED_POINTER,
-                    "trusted_proxies cover the entire %s address space; a trust-all range is not permitted"
-                            .formatted(family)));
-            return;
-        }
-        for (CidrRange range : ranges) {
-            if (range.prefixLength() < broadPrefix) {
-                LOGGER.warn(ConfigLogMessages.WARN.BROAD_TRUSTED_PROXY, range.cidr(),
-                        Integer.toString(range.prefixLength()));
-            }
-        }
-    }
-
-    /**
-     * Whether the union of the supplied ranges covers the whole {@code [0, 2^bits-1]}
-     * address space, merging contiguous or overlapping ranges (so complementary
-     * halves are caught).
-     */
-    private static boolean coversEntireSpace(List<CidrRange> ranges, int bits) {
-        List<CidrRange> sorted = new ArrayList<>(ranges);
-        sorted.sort((first, second) -> first.start().compareTo(second.start()));
-        BigInteger max = BigInteger.ONE.shiftLeft(bits).subtract(BigInteger.ONE);
-        BigInteger nextExpected = BigInteger.ZERO;
-        for (CidrRange range : sorted) {
-            if (range.start().compareTo(nextExpected) > 0) {
-                return false;
-            }
-            BigInteger endPlusOne = range.end().add(BigInteger.ONE);
-            if (endPlusOne.compareTo(nextExpected) > 0) {
-                nextExpected = endPlusOne;
-            }
-        }
-        return nextExpected.compareTo(max) > 0;
-    }
-
-    /**
-     * Parses a {@code address/prefix} CIDR into its inclusive address range, or an
-     * empty optional when the entry is malformed (not exactly one {@code /}, a
-     * non-numeric or out-of-range prefix, or an address that is not an IP literal).
-     */
-    private static Optional<CidrRange> parseCidr(String cidr) {
-        int slash = cidr.indexOf('/');
-        if (slash < 0 || cidr.indexOf('/', slash + 1) >= 0) {
-            return Optional.empty();
-        }
-        int prefixLength;
-        try {
-            prefixLength = Integer.parseInt(cidr.substring(slash + 1));
-        } catch (NumberFormatException _) {
-            return Optional.empty();
-        }
-        byte[] bytes;
-        try {
-            bytes = InetAddress.ofLiteral(cidr.substring(0, slash)).getAddress();
-        } catch (IllegalArgumentException _) {
-            return Optional.empty();
-        }
-        int bits = bytes.length * 8;
-        if (prefixLength < 0 || prefixLength > bits) {
-            return Optional.empty();
-        }
-        BigInteger value = new BigInteger(1, bytes);
-        int hostBits = bits - prefixLength;
-        BigInteger start = value.shiftRight(hostBits).shiftLeft(hostBits);
-        BigInteger end = start.add(BigInteger.ONE.shiftLeft(hostBits)).subtract(BigInteger.ONE);
-        return Optional.of(new CidrRange(cidr, bits, prefixLength, start, end));
-    }
-
-    private record CidrRange(String cidr, int bits, int prefixLength, BigInteger start, BigInteger end) {
-    }
-
-    /**
      * Rule: the global CORS block must not combine a wildcard origin with {@code allow_credentials}.
      * <p>
      * CORS is global only (ADR-0007 Amendment A1): it is evaluated at stage 0, before route selection
@@ -2063,49 +1919,6 @@ public final class ConfigValidator {
                 || Character.isSpaceChar(character);
     }
 
-    private static void validatePassthroughHostCollision(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        Map<String, String> passthrough = passthroughSni(gateway);
-        if (passthrough.isEmpty()) {
-            return;
-        }
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                String host = routeHost(route);
-                if (host == null) {
-                    continue;
-                }
-                for (String sniHost : passthrough.keySet()) {
-                    if (sniHost.equalsIgnoreCase(host)) {
-                        errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
-                                "route '%s' matches host '%s', which is relayed at L4 by passthrough_sni and is never routed"
-                                        .formatted(route.id(), sniHost)));
-                    }
-                }
-            }
-        }
-    }
-
-    private static void validatePassthroughAliasResolvable(GatewayConfig gateway, ResolvedTopology topology,
-            List<ConfigError> errors) {
-        for (Map.Entry<String, String> entry : passthroughSni(gateway).entrySet()) {
-            String alias = entry.getValue();
-            Optional<ResolvedUpstream> upstream = topology.lookup(alias);
-            if (upstream.isEmpty()) {
-                errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
-                        "unresolved topology alias '%s' referenced by passthrough_sni host '%s'"
-                                .formatted(alias, entry.getKey())));
-                continue;
-            }
-            String basePath = upstream.get().basePath();
-            if (!basePath.isEmpty() && !"/".equals(basePath)) {
-                errors.add(new ConfigError(GATEWAY_FILE, PASSTHROUGH_SNI_POINTER,
-                        "passthrough_sni alias '%s' must resolve to an origin without a base path, but resolved to '%s'"
-                                .formatted(alias, basePath)));
-            }
-        }
-    }
-
     /**
      * Rule: the fail-closed WebSocket allowlist contract (ADR-0015). Each
      * {@code protocol: websocket} route is validated by {@link #validateWebSocketRoute}
@@ -2193,11 +2006,6 @@ public final class ConfigValidator {
         }
     }
 
-    private static Map<String, String> passthroughSni(GatewayConfig gateway) {
-        TlsConfig tls = gateway.tls();
-        return tls == null ? Map.of() : tls.passthroughSni();
-    }
-
     /**
      * The route's effective {@code auth.require}, resolved through {@link PolicyBlock#AUTH};
      * {@link Require#NONE} when no scope declares an auth block (that route is refused separately).
@@ -2205,15 +2013,6 @@ public final class ConfigValidator {
     private static Require requireOf(ScopeChain chain) {
         AuthConfig auth = PolicyBlock.AUTH.declared(chain);
         return auth == null ? Require.NONE : auth.require();
-    }
-
-    private static @Nullable String routeHost(RouteConfig route) {
-        String host = route.match().host();
-        if (host == null) {
-            return null;
-        }
-        String normalized = host.toLowerCase(Locale.ROOT);
-        return normalized.isEmpty() ? null : normalized;
     }
 
     /**
