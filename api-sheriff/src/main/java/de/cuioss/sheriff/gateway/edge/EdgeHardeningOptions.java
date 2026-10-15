@@ -49,12 +49,15 @@ import io.vertx.core.http.HttpServerOptions;
  * the guard would end it as an upstream timeout. A bodyless request and a gRPC route are not
  * watched.
  * <p>
- * <strong>The inbound HTTP/2 connection window is a transport bound too.</strong> It is sized so every
+ * <strong>The inbound HTTP/2 concurrent streams and connection window are transport bounds too.</strong>
+ * A listener admits at most 100 concurrent streams per connection (the Vert.x listener default): a listener announcing more, or announcing no limit at all, is lowered to that bound, and
+ * a lower value already set on the listener is kept. The connection window is then sized so every
  * stream the listener admits at once can fill its own window: the maximum concurrent streams times the
- * initial stream window, capped at {@code 2^31-1} and never below one stream window. A request whose
- * body the gateway is not reading yet returns no window, so a connection window the size of one stream
- * would let such streams use it up and leave the ones being forwarded unable to send a byte. The value
- * is derived from the listener's own stream settings at the time this customizer runs, not configured.
+ * initial stream window, capped at {@code 2^31-1} and never below one stream window — 6,553,500 bytes
+ * at the bound of 100 streams and the default stream window of 65,535 bytes. A request whose body the
+ * gateway is not reading yet returns no window, so a connection window the size of one stream would
+ * let such streams use it up and leave the ones being forwarded unable to send a byte. The window is
+ * derived from the listener's stream settings after the stream bound is applied, not configured.
  * <p>
  * <strong>Transport bounds are fixed; the admission budget is operator-configurable.</strong> The
  * codec limits above are deliberate secure defaults chosen to keep the abuse surface bounded while
@@ -114,6 +117,16 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      */
     private static final long REQUEST_BODY_IDLE_TIMEOUT_MILLIS = 10_000L;
 
+    /**
+     * Upper bound on the HTTP/2 streams one inbound connection may have open at once, announced as the
+     * listener's initial {@code SETTINGS_MAX_CONCURRENT_STREAMS} — the Vert.x listener default. A
+     * transport bound: it caps the work a single connection can hold in flight, and it is the factor
+     * the {@linkplain #connectionWindowSize(Http2Settings) connection window} is derived from, so the
+     * window stays a finite multiple of the stream window. A listener announcing an unbounded or
+     * larger value is lowered to it; a lower value is kept.
+     */
+    private static final long MAX_CONCURRENT_STREAMS_PER_CONNECTION = 100L;
+
     private final int admissionCap;
     private final int webSocketRelayCap;
     private final long requestBodyIdleTimeoutMillis;
@@ -165,20 +178,37 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     }
 
     private static void apply(HttpServerOptions options) {
+        Http2Settings settings = options.getInitialSettings();
+        boundConcurrentStreams(settings);
         options.setMaxHeaderSize(MAX_HEADER_SIZE_BYTES)
                 .setMaxInitialLineLength(MAX_INITIAL_LINE_LENGTH_BYTES)
                 .setMaxChunkSize(MAX_CHUNK_SIZE_BYTES)
                 .setIdleTimeout(IDLE_TIMEOUT_SECONDS)
                 .setIdleTimeoutUnit(TimeUnit.SECONDS)
-                .setHttp2ConnectionWindowSize(connectionWindowSize(options.getInitialSettings()));
+                .setInitialSettings(settings)
+                .setHttp2ConnectionWindowSize(connectionWindowSize(settings));
     }
 
     /**
-     * Derives the inbound HTTP/2 connection window from the stream settings the listener announces:
-     * every stream it admits at once can fill its whole window without drawing on a sibling's share.
-     * The product is computed in {@code long}, capped at {@code 2^31-1} — the largest window
-     * RFC 9113 section 6.9.1 allows, reached by a listener whose concurrent streams are unbounded —
-     * and never set below one stream window.
+     * Lowers the listener's announced concurrent streams to
+     * {@link #MAX_CONCURRENT_STREAMS_PER_CONNECTION} when it is unbounded or above that bound; a lower
+     * value is left as it is.
+     *
+     * @param settings the initial HTTP/2 settings of the listener, updated in place
+     */
+    private static void boundConcurrentStreams(Http2Settings settings) {
+        if (settings.getMaxConcurrentStreams() > MAX_CONCURRENT_STREAMS_PER_CONNECTION) {
+            settings.setMaxConcurrentStreams(MAX_CONCURRENT_STREAMS_PER_CONNECTION);
+        }
+    }
+
+    /**
+     * Derives the inbound HTTP/2 connection window from the stream settings the listener announces
+     * once {@link #boundConcurrentStreams(Http2Settings)} has applied the stream bound: every stream it
+     * admits at once can fill its whole window without drawing on a sibling's share. The product is
+     * computed in {@code long}, capped at {@code 2^31-1} — the largest window RFC 9113 section 6.9.1
+     * allows, reached only by a stream window above 21,474,836 bytes at the 100-stream bound — and
+     * never set below one stream window.
      *
      * @param settings the initial HTTP/2 settings of the listener
      * @return the connection window in bytes

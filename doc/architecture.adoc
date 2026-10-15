@@ -430,10 +430,13 @@ Amendment A1]).
 inbound request returns no flow-control window until its dispatch subscribes the request body, and
 the dispatch subscribes it only once it holds an upstream connection. Until then -- and for good once
 step 1 above has paused it -- every byte the client sends on that stream stays charged against the
-connection window as well as the stream's own. The edge therefore sizes the inbound connection window
-to the maximum concurrent streams times the initial stream window: 6,553,500 bytes at the Vert.x
-defaults of 100 streams of 65,535 bytes, capped at 2^31^-1 and never below one stream window. The
-value is derived from the listener's own stream settings, not configured. Each stream stays bounded by
+connection window as well as the stream's own. The edge first bounds the concurrent streams every
+listener announces to 100 per connection -- a listener whose own setting is unbounded or larger is
+lowered to 100, a lower setting is kept -- and then sizes the inbound connection window to the maximum
+concurrent streams times the initial stream window: 6,553,500 bytes on the deployed listeners, 100
+streams of 65,535 bytes, capped at 2^31^-1 and never below one stream window. The stream bound is a
+constant of the gateway and the window is derived from it; neither is configured. Each stream stays
+bounded by
 its own window, and streams the gateway is not yet reading cannot use up the connection window and
 hold back the streams it is forwarding. With a connection window of one stream window, a single upload
 waiting for an upstream connection could use it up, and every upload on that connection already

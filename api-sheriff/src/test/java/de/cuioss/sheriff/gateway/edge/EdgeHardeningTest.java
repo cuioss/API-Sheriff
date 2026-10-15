@@ -261,6 +261,83 @@ class EdgeHardeningTest {
     }
 
     /**
+     * The inbound HTTP/2 concurrent-stream bound: an unbounded or larger announced value is lowered to
+     * 100 streams per connection, a lower one is kept, and the connection window follows the result.
+     */
+    @Nested
+    @DisplayName("inbound HTTP/2 concurrent-stream bound")
+    class ConcurrentStreamBound {
+
+        /** The bound, restated as a literal so that a change to it is noticed here. */
+        private static final long MAX_CONCURRENT_STREAMS = 100L;
+
+        /** 100 concurrent streams of the default 65,535-byte stream window each. */
+        private static final int BOUNDED_CONNECTION_WINDOW_BYTES = 6_553_500;
+
+        private HttpServerOptions listenerAnnouncing(long maxConcurrentStreams) {
+            return new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(maxConcurrentStreams));
+        }
+
+        @Test
+        @DisplayName("lowers an unbounded listener to 100 streams and a 6,553,500-byte connection window")
+        void lowersAnUnboundedListenerToTheBound() {
+            HttpServerOptions options = listenerAnnouncing(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS);
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertAll("an unbounded listener",
+                    () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
+                            "An unbounded announced value is lowered to 100 concurrent streams"),
+                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                            "The connection window is derived from the bounded 100 streams x 65,535 bytes"));
+        }
+
+        @Test
+        @DisplayName("lowers a listener announcing more than 100 streams to 100")
+        void lowersALargerValueToTheBound() {
+            HttpServerOptions options = listenerAnnouncing(250L);
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertAll("a listener announcing 250 streams",
+                    () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
+                            "A value above the bound is lowered to 100 concurrent streams"),
+                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                            "The connection window follows the lowered stream count"));
+        }
+
+        @ParameterizedTest(name = "{0} streams")
+        @ValueSource(longs = {7L, 100L})
+        @DisplayName("keeps a listener's stream limit at or below 100, and the connection window follows it")
+        void keepsAValueAtOrBelowTheBound(long maxConcurrentStreams) {
+            HttpServerOptions options = listenerAnnouncing(maxConcurrentStreams);
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertAll("a listener announcing " + maxConcurrentStreams + " streams",
+                    () -> assertEquals(maxConcurrentStreams, options.getInitialSettings().getMaxConcurrentStreams(),
+                            "A value at or below the bound is kept"),
+                    () -> assertEquals(maxConcurrentStreams * 65_535, options.getHttp2ConnectionWindowSize(),
+                            "The connection window is the kept stream count x 65,535 bytes"));
+        }
+
+        @Test
+        @DisplayName("bounds the TLS listener's streams and window exactly as the plaintext listener's")
+        void boundsTheTlsListenerIdentically() {
+            HttpServerOptions options = listenerAnnouncing(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS);
+
+            new EdgeHardeningOptions().customizeHttpsServer(options);
+
+            assertAll("an unbounded TLS listener",
+                    () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
+                            "The TLS listener is lowered to 100 concurrent streams identically"),
+                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                            "The TLS listener sizes its connection window identically"));
+        }
+    }
+
+    /**
      * The inbound HTTP/2 connection window, derived from the stream settings the listener announces so
      * every stream it admits at once can fill its own window.
      */
@@ -299,11 +376,12 @@ class EdgeHardeningTest {
         }
 
         @Test
-        @DisplayName("caps the window at 2^31-1 for a listener whose concurrent streams are unbounded")
-        void capsTheWindowForUnboundedConcurrentStreams() {
+        @DisplayName("caps the window at 2^31-1 when 100 stream windows would exceed it")
+        void capsTheWindowWhenEveryStreamsWindowExceedsTheMaximum() {
             HttpServerOptions options = new HttpServerOptions()
                     .setInitialSettings(new Http2Settings()
-                            .setMaxConcurrentStreams(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS));
+                            .setMaxConcurrentStreams(100L)
+                            .setInitialWindowSize(Integer.MAX_VALUE));
 
             new EdgeHardeningOptions().customizeHttpServer(options);
 

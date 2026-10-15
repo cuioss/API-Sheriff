@@ -852,12 +852,18 @@ deployment that never writes it keeps the behaviour shown here.
 | An idle connection is closed after this window, so a slow-loris / h2 abuse load cannot pin
   connection slots.
 
+| HTTP/2 concurrent streams per connection
+| 100
+| The `SETTINGS_MAX_CONCURRENT_STREAMS` value every listener announces. A listener whose own setting
+  is unbounded or larger is lowered to 100; a lower setting is kept. Not configurable.
+
 | HTTP/2 connection window
-| maximum concurrent streams × initial stream window +
-  (6,553,500 bytes at the defaults of 100 streams × 65,535 bytes)
+| 6,553,500 bytes +
+  (100 streams × 65,535-byte initial stream window)
 | Each stream is bounded by its own window; the connection window is large enough that streams the
-  gateway is not yet reading cannot hold back the ones it forwards. Derived from the listener's own
-  stream settings, capped at 2^31^-1 and never below one stream window.
+  gateway is not yet reading cannot hold back the ones it forwards. Derived from the 100-stream bound
+  above times the initial stream window, capped at 2^31^-1 and never below one stream window. Not
+  configurable.
 
 | Request-body idle timeout
 | 10 s
