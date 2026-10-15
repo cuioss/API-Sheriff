@@ -13,7 +13,7 @@ STAGED: V02-25 edge-route-decomposition (GatewayEdgeRoute into edge/ sub-package
 
 VALIDATOR SPLIT (operator: all before V02-23, 2026-10-14; re-packed 2026-10-15). Move-only work has the 150k-char cap lifted (Sourcery is optional); the 100-file cap binds; split above ~350 KB or if CodeRabbit declines. Order: V02-28 LimitRules (#467) -> V02-40 TerminalAction+Edge+Protocol -> V02-41 AssetDefaults+Forwarding+Anchor (also derives the auth floor via PolicyBlock.AUTH, amends ADR-0067) -> [V02-12 second PR merged] -> V02-42 Auth+OidcClient+OidcSession -> V02-43 ReservedPath+Header+Topology, end of split, ADR. Serial; two at once under the rebase rule; disjoint from V02-44/V02-25.
 
-INBOX: empty (139 archived). Latest lessons: 2026-10-15-15-001..004 (V02-28: quota rate-limit burns loop-back rounds; sibling overlap; moot criterion grading; review_support bullet parsing). Lessons promoted: V02-26 -> 2026-10-14-20-001..005; V02-24 -> 2026-10-15-09-001 (never re-enumerate a code-owned set; written into the slice specs) and -002 (Sonar S2637/S2638 under @NullMarked).
+INBOX: empty (139 archived). Lessons: plan-marshall findings are ROUTED to the plan-marshall repo's lessons-routing inbox (sender api-sheriff-api-sheriff-0-2-0; sent -001..-009 so far) and any local copy removed (operator standing rule 2026-10-15, epic.md Decisions); only project-local findings are promoted here. Older plan-marshall lessons filed before 2026-10-14 are not yet swept. Lessons promoted: V02-26 -> 2026-10-14-20-001..005; V02-24 -> 2026-10-15-09-001 (never re-enumerate a code-owned set; written into the slice specs) and -002 (Sonar S2637/S2638 under @NullMarked).
 
 DEDUP 2026-10-13 (operator: no duplicates across epics). Every staged spec in this epic, kidicap-gateway-requirements and api-sheriff-0-3-0 was audited; each partial overlap has ONE owner, written into the specs:
 - per-source limiter, block/ban and delay primitive: V02-06 (consumers V02-07, V03-01 D2/D3, kidicap PLAN-21 options b/c). V02-06 D8: h2c Upgrade/Connection strip already shipped (#185); remaining is HTTP2-Settings plus stream bounds.
@@ -32,10 +32,11 @@ READ BEFORE EMITTING:
 - New test conventions from #424 bind every plan that adds tests. Next free ADR ordinal: 0068 (derive at write time).
 - PRs over 100 files or 150,000 diff characters are refused by the review bots: size at spec time (lesson 2026-10-14-20-004), not only at outline.
 - Never write to the kidicap-gateway-requirements ledger (operator, 2026-10-14).
+- Plan-marshall findings: route to plan-marshall lessons-routing (orchestrator inbox write --slug lessons-routing from that repo root), then manage-lessons remove --force any local copy.
 
 OPEN: Open Defect 14 (#201, V02-11). Open Defect 12 (RouteRuntimeAssembler dead allocation; V02-44 removes the assembler's copy). Watches: V02-21 doc leftovers; HTTP/1.1 drain 502 flake (GatewayEdgeFramingCorpusTest); V02-01 D7 residue; test-cycle rework residue. A /marshall-steward run is owed.
 
-NEXT ACTION: On each landing message run analyze. When V02-40 lands, emit V02-41 (then V02-42 only after V02-12's second PR). Emit V02-25 once V02-44 has landed (kidicap PLAN-32 landed as #466). Slices V02-34..38 wait for V02-12's second PR. V02-23 re-grounded after V02-25 and V02-43, then V02-27. Off-surface plans free meanwhile: V02-11, V02-22 (not with V02-12).
+NEXT ACTION: On each landing message run analyze. V02-40 and V02-44 are emitted; per the operator nothing had started at 2026-10-15 afternoon (recommended: start both, they are disjoint). V02-12's second PR after V02-40 lands (both edit ConfigValidator). When V02-40 lands, emit V02-41 (then V02-42 only after V02-12's second PR). Emit V02-25 once V02-44 has landed (kidicap PLAN-32 landed as #466). Slices V02-34..38 wait for V02-12's second PR. V02-23 re-grounded after V02-25 and V02-43, then V02-27. Off-surface plans free meanwhile: V02-11, V02-22 (not with V02-12).
 **Phase**: orchestrating
 **Running**:
 - PLAN-V02-12 (WS-04) — plan=plan-v02-12-idp-addressing-model
