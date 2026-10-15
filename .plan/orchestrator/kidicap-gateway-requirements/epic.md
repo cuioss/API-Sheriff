@@ -53,11 +53,11 @@ decision.
 - PLAN-30 — shipped #448. Ran beside the sibling's `PLAN-V02-12` over a 3-path overlap (operator's
   call); nothing collided. Merged while this epic recorded a "must not merge" hold the plan never saw
   (lesson `2026-10-14-13-003`). The upload benchmarks no longer exercise the early-answer path.
-- **PLAN-32 (staged and emitted 2026-10-14 by the other orchestrator session, WS-02, RUNNING) — the
-  `Http2EarlyResponseResetIT` timeouts since #448** (#455). Top priority; touches the early-answer path in
-  `GatewayEdgeRoute` and `DispatchStage`, so PLAN-29 waits for it. Since #461 the sibling's edge refactor
-  `PLAN-V02-25` also waits for it.
-- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** HELD by the cross-epic hold (Watches) until `PLAN-V02-25` lands; then re-ground and emit. Its line references into
+- PLAN-32 — shipped #466 (`73233f1e`), closing #455. Ran alone in this epic, beside the sibling's V02-24 and
+  V02-26; nothing collided. The cause was not the `SO_LINGER 0` the spec suspected. It was a deadlock between
+  the inbound HTTP/2 connection window and the upstream pool. The fix added an operator-requested 10 s
+  request-body idle bound that answers `408`. Realized 17 files against 5 declared entries.
+- **PLAN-29 (staged 2026-10-13, WS-02) — the four inert upstream keys.** HELD by the cross-epic hold (Watches) until the sibling's refactor chain completes; then re-ground and emit. Must read #466's changes to `GatewayEdgeRoute`/`DispatchStage` (request-body idle bound, 408). Its line references into
   `GatewayEdgeRoute` are stale since #431 and #448: run `cleanup` before emitting it. Its D4 (DP-6) must
   be read against #448's abortive close and guard-keyed breaker. Carries two wire-or-remove decisions for
   the operator at outline.
@@ -125,6 +125,26 @@ decision.
 
 ## Decisions
 
+- 2026-10-15 — **PLAN-32 shipped** as PR #466 / 73233f1e, closing #455. The inbound HTTP/2 connection window
+  is now sized to max concurrent streams × stream window, and streams are capped at 100 per connection.
+  A 10 s request-body idle bound on HTTP dispatch resets the upstream request and answers `408`. ADR-0060
+  amended. 6/6 deliverables; 22h22m wall, 10.3M tokens. Landing record: `landings/PLAN-32.md`;
+  `landing-check` reports it complete. Corroborated against `ci pr view 466`, `ci checks status`
+  (success), the merged diff (17 files), and issue #455 (closed). The spec's suspect `SO_LINGER 0` was
+  refuted and stays in place. The real cause was flow-control windows interacting with the upstream pool.
+  - **Drain (29 messages, 2026-10-15):** `-029` reconciled. `-020`/`-021`, `-026` and `-027` promoted to
+    the API-Sheriff corpus as `2026-10-15-12-001`, `-002` and `-003`. The other 24 (`-001`..`-019`, `-022`..`-025`,
+    `-028`) are plan-marshall process and tooling lessons. They were grouped into 13 messages and routed to
+    plan-marshall's lessons-routing epic: sibling repository `plan-marshall`, inbox
+    `.plan/local/worktrees/_orchestrator/.plan/orchestrator/lessons-routing/inbox/` (relative to that
+    repository's root, written through its own `orchestrator inbox write --slug lessons-routing`), sender
+    `api-sheriff-kidicap-gateway-requirements`, messages `-001`..`-013`. `-023` (the verification-feedback
+    producer gap) went as a recurrence of plan-marshall's `lessons-routing-019` / PLAN-LB-24.
+    **Standing rule (operator, 2026-10-15): every plan-marshall-related finding from this epic is
+    routed to that inbox**, not promoted into this repository's corpus.
+  - **Holds (operator, 2026-10-15):** PLAN-20, -21, -26 and -29 stay held until the sibling's whole refactor
+    chain lands (Watches). PLAN-31 is held over its multi-file overlap with V02-12, V02-23 and V02-44.
+    Nothing is emitted.
 - 2026-10-14 — **PLAN-30 shipped** as PR #448 / b7b98699 (gateway-closed HTTP/1.1 upstream connections
   are closed abortively, `SO_LINGER 0` on the default upstream client, ADR-0066 Amendment A1; the
   gateway's own upstream reset no longer logs at ERROR and does not count against the breaker; the
@@ -432,17 +452,6 @@ decision.
 
 ## Open Defects
 
-- **`Http2EarlyResponseResetIT.earlyAnsweredUploadsStayAnsweredWithoutGoAway` hangs intermittently since
-  #448 — now on `main`, tracked as #455. Fix staged and emitted by the other orchestrator session as
-  PLAN-32 (`early-answer-it-timeouts`, running): reproduce, fix narrowly, show 10 consecutive green
-  runs.** Integration Tests run 38538582322 at bc002caf:
-  attempts 1 and 2 timed out at the batch await (line 144, a batch of 10 uploads not settled within
-  20 s), attempt 3 passed; 2 of 4 attempts in all. `main` had been green on it since #431. #448 makes
-  **every** close of the default HTTP/1.1 upstream client abortive (`setSoLinger(0)`), not only the
-  early-answer case; the plan states that change is neither attributed nor cleared. #448 merged on a
-  green merge-queue run over this epic's "must not merge" hold (lesson `2026-10-14-13-003`). Not
-  reproduced locally. The merge-group and push IT runs on that code passed, so 2 failures in 5 runs. It
-  guards the early-answer path, so re-running until green can hide a regression. — source: run 38538582322, `landings/PLAN-30.md`
 - **The circuit breaker's identity changed in #448 without an ADR.** `GatewayEdgeRoute.guardFor` no
   longer registers it under a SmallRye name (the JVM-global registry rejected a reused upstream port
   once the abortive close freed TIME_WAIT); the guard, keyed `scheme://host:port:h2=…:retry=…`, is the
@@ -616,6 +625,14 @@ decision.
   read those decisions, not only the new seams. The config records gain Lombok `@Builder`; tests stop
   constructing them positionally. A later `PLAN-V02-27` simplifies the tests in `config/`, `edge/`,
   `routing/` after the refactor.
+  **Update 2026-10-15 (operator ruling, this epic's PLAN-32 landing analysis):** PLAN-32 shipped as #466,
+  V02-24 as #465 and V02-26's first slice as #463. The release points above are **replaced** by the
+  sibling's chain: validator slices V02-28 → V02-40..43, V02-44 → V02-25, then V02-23, then V02-27.
+  **PLAN-20, -21, -26 and -29 stay held until that whole chain has landed**, then each is re-grounded
+  (cleanup) before emitting. PLAN-31 is not under this hold, but the operator held it on 2026-10-15 over
+  multi-file overlaps with the running V02-12 (8 files: docs, `JwksKeyRotationIT`), the parked V02-23 (8 doc
+  files) and the running V02-44 (`RetryingJwksLoaderTest`, `doc/LogMessages.adoc`). Re-run the gate once
+  V02-12's second PR and V02-44 have landed.
 
 - **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
   FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`
