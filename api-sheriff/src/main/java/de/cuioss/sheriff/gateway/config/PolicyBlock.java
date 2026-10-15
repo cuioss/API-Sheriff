@@ -388,6 +388,12 @@ Map<Scope, Function<ScopeChain, @Nullable T>> accessors, Fallback<T> fallback, b
          */
         record None<T extends @Nullable Object>() implements Fallback<T> {
 
+            // T is a nullable type argument here -- every None descriptor is a @Nullable block -- so
+            // returning null honours Fallback#apply. Sonar does not model a nullable type argument and
+            // reads the inherited T as non-null under the package's @NullMarked: without @Nullable this
+            // override trips S2637, with it S2638. @Nullable states the real contract; S2638 is the
+            // false positive suppressed here.
+            @SuppressWarnings("java:S2638")
             @Override
             public @Nullable T apply(ScopeChain chain) {
                 return null;

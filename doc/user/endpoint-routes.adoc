@@ -784,9 +784,9 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
   link:../configuration.adoc#_endpoint_identity[`endpoint`]).
 
 | `allowed_methods` (endpoint level)
-| The *anchor's* list applies if the route's anchor declares one, else the *global*
-  `gateway.allowed_methods`, else the standard verb set. There is no route-level list -- a route
-  narrows its verbs with `match.methods` -- see
+| A declared endpoint list is the nearest scope and wins. With none, the *anchor's* list applies if
+  the route's anchor declares one, else the *global* `gateway.allowed_methods`, else the standard
+  verb set. There is no route-level list -- a route narrows its verbs with `match.methods` -- see
   link:../configuration.adoc#_allowed_methods[`allowed_methods`].
 
 | `security_filter`
