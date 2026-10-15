@@ -210,7 +210,7 @@ before authentication, which runs after route selection.
 
 The Decision states one chain -- gateway defaults -> anchor -> endpoint -> route, wholesale replacement
 at every step -- but the chain was implemented once per block: seven hand-written resolutions in the
-route-table builder, and a second copy of four of them in the configuration validator. Each copy
+route-table builder, and a second copy of five of them in the configuration validator. Each copy
 named its own subset of the four scopes, so which scopes a block was read at was a property of
 whichever copy a reader happened to call, not a declaration. A boot refusal and the posture the route
 ran could disagree, and nothing tied a block's schema keys to the scopes its resolution read.

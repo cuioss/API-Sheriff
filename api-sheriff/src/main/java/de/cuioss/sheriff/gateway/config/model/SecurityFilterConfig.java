@@ -21,9 +21,9 @@ import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The per-route {@code security_filter} block: allowlists and limits (explicitly
- * not a WAF). The optional baseline {@code profile} is overridden by the limits
- * below.
+ * The {@code security_filter} block, declarable on an anchor, an endpoint and a route (the nearest
+ * declared block replaces the others wholesale): allowlists and limits (explicitly not a WAF). The
+ * optional baseline {@code profile} is overridden by the limits below.
  * <p>
  * An omitted {@code profile} inherits the gateway-wide value from
  * {@code security_defaults} (which itself resolves to {@link SecurityProfile#DEFAULT_PROFILE} when

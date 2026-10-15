@@ -25,7 +25,7 @@ link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.ad
 ADR-0007 states one inheritance rule for the gateway's policy blocks: `gateway -> anchor -> endpoint ->
 route`, every step replacing the whole block and never merging it. The rule was stated once and
 implemented seven times. The route-table builder resolved each block with its own hand-written chain,
-and the configuration validator carried a second copy of four of them -- the route's anchor, its
+and the configuration validator carried a second copy of five of these resolutions -- the route's anchor, its
 effective `auth`, its effective `require`, its effective filter profile and its effective
 `allowed_methods`. Each chain named its own subset of the four scopes, so *where a block could be
 declared* was a property of whichever chain a reader called, recorded nowhere as a fact about the

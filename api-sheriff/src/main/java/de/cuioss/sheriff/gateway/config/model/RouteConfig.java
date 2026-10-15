@@ -36,11 +36,14 @@ import org.jspecify.annotations.Nullable;
  * @param match          the matcher set (mandatory)
  * @param auth           the route-level auth override, {@code null} when inheriting the
  *                       endpoint/anchor default
- * @param securityFilter the route-level security filter, {@code null} when the anchor or
- *                       global default applies
- * @param forward        the forward filter, {@code null} when the route declares no
- *                       {@code forward} block — which is the forward-all posture on
- *                       both dimensions, not a nothing-crosses one
+ * @param securityFilter the route-level security filter, {@code null} when the route declares
+ *                       none and the endpoint's, else the anchor's block applies; with none
+ *                       declared the profile comes from {@code security_defaults}
+ *                       ({@code PolicyBlock#SECURITY_FILTER})
+ * @param forward        the route-level forward filter, {@code null} when the route declares
+ *                       none and the endpoint's block applies; with neither declared the
+ *                       posture is forward-all on both dimensions, not a nothing-crosses one
+ *                       ({@code PolicyBlock#FORWARD})
  * @param upstream       the upstream target settings, {@code null} when omitted
  * @param asset          the asset terminal-action settings, {@code null} when omitted
  * @param redirect       the redirect terminal-action settings, {@code null} when omitted;

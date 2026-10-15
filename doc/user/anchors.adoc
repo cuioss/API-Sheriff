@@ -214,7 +214,7 @@ declare, and what it takes over is stated here:
 * *An endpoint may declare `security_filter`.* It governs every route of the endpoint that declares
   no block of its own, and it replaces the anchor's block wholesale -- announced by
   `ApiSheriff-101`. The `profile: minimal` refusal on authenticated and BFF routes, and the boot
-  check against the framework body-size ceiling, read the endpoint block too.
+  check against the framework body-size floor, read the endpoint block too.
 * *An endpoint may declare `forward`.* It governs every route of the endpoint that declares no block
   of its own; a route block replaces it wholesale, so a route block naming only `headers_allow`
   drops an endpoint `query_deny`. Both list pairs are refused at the endpoint exactly as on a route
