@@ -121,6 +121,11 @@ Split guard: 6 deliverables — within the operator-authorized 12.
 - ⚠ **Sequence it after PLAN-28.** PLAN-28 diagnoses two intermittent failures on the dispatch path (an
   edge framing test and the `upload_small` benchmark). Changing the dispatch timeout and retry behaviour
   before those are understood would move the ground under the diagnosis.
+- **Coordinates with `api-sheriff-0-2-0` `PLAN-V02-45` deliverable 3** (added 2026-10-15 from #472): V02-45
+  adds a total request-body bound (deadline or minimum rate) beside #466's 10 s request-body idle bound.
+  This plan decides whether the per-route `read_timeout_ms` is wired. The two must not overlap: whichever
+  plan runs second reads the other's result and states how its bound relates to the other's (and to the
+  guard's 30 s timeout) in the ADR and `doc/architecture.adoc`.
 - **If a test fails against shipped behaviour this plan did not intend to change, STOP and file a
   finding** to the epic inbox.
 

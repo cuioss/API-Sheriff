@@ -458,7 +458,11 @@ decision.
   identity now. The operator deferred the ADR; the draft is git-ignored at
   `.plan/temp/adr-propose-plan-30-breaker-identity-draft.adoc` in the main checkout. No plan owns it.
   Stale breaker-name comments and other advisory leftovers are listed in `landings/PLAN-30.md` § Residue.
-  — source: `landings/PLAN-30.md`
+  ⚠ Since #472 the sibling's staged `PLAN-V02-46` (after V02-25) evaluates replacing PLAN-30's
+  `SO_LINGER 0` with a FIN-first close and falls back to the abortive close only if port exhaustion is not
+  bounded. If it adopts FIN-first, the TIME_WAIT behaviour that forced this identity change returns:
+  whoever writes the breaker-identity ADR reads V02-46's result first, and V02-46 must keep the
+  guard-keyed identity working. — source: `landings/PLAN-30.md`
 
 > ↪ Relocated to `settled.md` § "PLAN-15 abandonment retraction" — the claim was retracted and PLAN-15 has since shipped
 
