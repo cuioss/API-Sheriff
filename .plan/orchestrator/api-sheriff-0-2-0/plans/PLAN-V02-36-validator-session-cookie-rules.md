@@ -46,6 +46,12 @@ Estimated diff: the remainder of the ~181 KB group.
   map, so slices run one at a time by default. Two may run at once under the rebase rule (whichever merges
   second rebases). A slice runs alongside `PLAN-V02-24` and `PLAN-V02-25`, whose surfaces are disjoint.
   Re-fetch `origin/main` before outline and before push.
+- **State after `PLAN-V02-24` (#465, `9e05a3d6`).** Policy blocks resolve through `config/PolicyBlock`
+  (one descriptor per block). `RuleSupport.resolveAnchor` is gone. `allowed_methods` resolution sits in
+  `RouteMatchingRules` through `PolicyBlock.ALLOWED_METHODS`. A moved rule that resolves a block must call
+  the descriptor and must not hand-list scopes: walk a scope set with an exhaustive `switch` over the scope
+  enum. The docs must not restate the block inventory; they link `_policy_block_scopes` in
+  `doc/user/anchors.adoc`.
 - No ADR, except in the last slice (`PLAN-V02-39`). Small: no deep-lane ceremony beyond what the lane
   router decides.
 

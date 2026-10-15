@@ -23,7 +23,7 @@ into its rule class on the `ValidationRule` seam, with its tests.
 Slice-specific notes:
 - `prefixContains` / `strictlyContains`, and `lacksConfiguredIssuer` if needed, move to `RuleSupport`.
 - The `gateway.yaml` comments naming `ConfigValidator.prefixContains` in three `integration-tests/src/main/docker/sheriff-config*` trees: update them.
-- `validateAnchorAuthFloor` moves unchanged. If `PLAN-V02-24`'s ADR says the floor can be derived from the policy-block declaration, that derivation is done by whichever of `PLAN-V02-24` and this slice merges second; check `origin/main` and V02-24's ADR at outline.
+- `validateAnchorAuthFloor` moves into `AnchorRules`, and **this slice derives it from the policy-block declaration**. ADR-0067 (#465) records the floor as derivable ("compares the anchor's declared `auth` block with the resolved one") and left the move to whichever of V02-24 and V02-26 merged second. V02-24 merged second but did not move it. Resolve through `PolicyBlock.AUTH`, keep the refusal message identical, and amend ADR-0067's floor paragraph. This is the one deliberate exception to "moves unchanged" in this series; behaviour must not change.
 
 Estimated diff: ~147 KB for the whole group, which is why `validateAccessAuthMatrix` is `PLAN-V02-33`; measure this part before the PR.
 
@@ -48,6 +48,12 @@ Estimated diff: ~147 KB for the whole group, which is why `validateAccessAuthMat
   map, so slices run one at a time by default. Two may run at once under the rebase rule (whichever merges
   second rebases). A slice runs alongside `PLAN-V02-24` and `PLAN-V02-25`, whose surfaces are disjoint.
   Re-fetch `origin/main` before outline and before push.
+- **State after `PLAN-V02-24` (#465, `9e05a3d6`).** Policy blocks resolve through `config/PolicyBlock`
+  (one descriptor per block). `RuleSupport.resolveAnchor` is gone. `allowed_methods` resolution sits in
+  `RouteMatchingRules` through `PolicyBlock.ALLOWED_METHODS`. A moved rule that resolves a block must call
+  the descriptor and must not hand-list scopes: walk a scope set with an exhaustive `switch` over the scope
+  enum. The docs must not restate the block inventory; they link `_policy_block_scopes` in
+  `doc/user/anchors.adoc`.
 - No ADR, except in the last slice (`PLAN-V02-39`). Small: no deep-lane ceremony beyond what the lane
   router decides.
 

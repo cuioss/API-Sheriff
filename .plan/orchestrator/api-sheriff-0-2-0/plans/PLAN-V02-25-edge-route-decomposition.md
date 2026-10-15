@@ -54,8 +54,17 @@ stated in the PR.
    has merged.
 5. **Architecture documentation.** `doc/architecture.adoc` describes the new edge structure and the single
    per-route type; an ADR records the package boundaries and the merge (derive the ordinal at write time).
+6. **Carry `PLAN-V02-24`'s residue** (small, behaviour-neutral). (a) `ApiSheriff-101`, the override WARN,
+   names only the route and anchor. Since #465 an **endpoint** block can replace an anchor's
+   `security_filter`, so the record should name the replacing scope (`endpoint` or `route`) and the
+   endpoint id. Take that from the resolver's result when the merged per-route type is built, reword the
+   template, and update `doc/LogMessages.adoc` and the LogAsserts in `RouteTableBuilderTest`. The threat
+   model's `_residual_policy_block_replacement` names this WARN as the control. (b) Correct
+   `doc/development/README.adoc` ~354–356: the offline `--validate-config` run never reaches the body-limit
+   reader, so "every run fails" is wrong there. Correct the `ConfigBootPipeline` Javadoc (~192), which
+   overstates what a newly gained scope reaches without an edit.
 
-Split guard: 5 deliverables. Keep each PR under 100 files and 150,000 diff characters; if needed, ship
+Split guard: 6 deliverables. Keep each PR under 100 files and 150,000 diff characters; if needed, ship
 deliverable 1 first and the extractions second.
 
 ## Claim Labels
@@ -74,8 +83,9 @@ deliverable 1 first and the extractions second.
 
 ## Dependencies and Sequencing
 
-- Depends on: `PLAN-V02-24` (its resolution mechanism builds the merged type's policy half) and kidicap
-  `PLAN-32` (early-answer IT fix, in `GatewayEdgeRoute`) having landed.
+- Depends on: `PLAN-V02-24` (**landed**, #465, `9e05a3d6`; its `config/PolicyBlock` resolver builds the
+  merged type's policy half) and kidicap `PLAN-32` (early-answer IT fix, in `GatewayEdgeRoute`; PR #466 open
+  at 2026-10-15) having landed.
 - Parallel with whichever validator slice (`PLAN-V02-28` … `PLAN-V02-39`) is running: disjoint surfaces. Emitted once
   V02-24 and kidicap PLAN-32 have both landed.
 - Before: the re-grounded `PLAN-V02-23`, then `PLAN-V02-27`. Holds every staged plan editing `edge/**`:
