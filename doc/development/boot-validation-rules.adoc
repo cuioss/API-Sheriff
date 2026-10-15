@@ -87,7 +87,7 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `LimitRules`
 | `validateSecurityProfileMinimal`, `validateEdgeHardening`, `validateAuthorizationHeaderValueLength`
 | `security_filter.profile`, `security_defaults`, `edge_hardening`
-| private in `ConfigValidator`
+| extracted
 
 | `TerminalActionRules`
 | `validateTerminalAction`, `validateAssetIndexAndFallback`
