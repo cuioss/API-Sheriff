@@ -336,19 +336,31 @@ missed edit; where nothing does, it says so.
 
 | 8. Every boot reader at every scope
 | See below.
-| Nothing generic -- the reader's own tests.
+| For a reader that takes its scopes from the descriptor, the compiler and the reader's refusal of an
+  unmapped scope; for any other reader, nothing generic -- the reader's own tests.
 |===
 
 *Every boot rule and boot-pipeline check that reads a block must read it at every scope the block is
 declarable at.* A reader that resolves the block through its descriptor (`PolicyBlock.X.resolve`)
 gets this for free. A reader that *enumerates declarations* instead -- `route.forward()`, a stream
 over anchors and routes -- silently skips any scope it does not name, and a newly declarable scope
-then lets a declaration bypass a boot refusal. Three such readers had to be extended when
-`security_filter` and `forward` gained the endpoint scope: the token-relay/`Authorization` conflict and
-the forward mode-exclusivity rule in `ConfigValidator`, and the framework body-size check
-(`maxDeclaredBodyBytes`) in `ConfigBootPipeline`. Before widening a block, find every production
-reader of its record component and give each one a test at the new scope; no contract test does this
-for you.
+then lets a declaration bypass a boot refusal.
+
+An enumerating reader can still take its scopes from the descriptor. The framework body-size check
+(`maxDeclaredBodyBytes` in `ConfigBootPipeline`) has to enumerate, because it counts every declared
+cap rather than only the one a route resolves (ADR-0023). It iterates `PolicyBlock.SECURITY_FILTER.scopes()`
+and maps each scope to the declarations it holds through an exhaustive switch over `PolicyBlock.Scope`.
+A new scope constant therefore fails the compile there, and the one scope the switch has no
+declaration for -- `GATEWAY` -- throws an `IllegalStateException` instead of being skipped. Widening
+`security_filter` to the gateway scope cannot slip past that reader: every run fails until the
+`GATEWAY` arm reads the new declaration.
+
+The other two readers that had to cover the endpoint scope when `security_filter` and `forward` gained
+it were extended by hand, both in `ConfigValidator`: the token-relay/`Authorization` conflict now
+reads the resolved forward block, and the forward mode-exclusivity rule also checks the
+endpoint-declared block. Before widening a block, find every production reader of its record
+component that names its scopes itself, and give each one a test at the new scope; no contract test
+does this for you.
 
 == Artifact Purity: No Test-Shaped Configuration in the Shipped File
 

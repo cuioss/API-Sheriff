@@ -29,12 +29,23 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import de.cuioss.sheriff.gateway.config.PolicyBlock;
+import de.cuioss.sheriff.gateway.config.PolicyBlock.Scope;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.DefaultedPlaceholder;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
+import de.cuioss.sheriff.gateway.config.model.AccessLevel;
+import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
+import de.cuioss.sheriff.gateway.config.model.AnchorType;
+import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -42,8 +53,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 /**
  * Tests for {@link ConfigBootPipeline}: one case per stage outcome — a valid set assembles, and a
  * loader, topology, validator, body-limit or not-checked outcome is reported as the boot would
- * reach it — plus the injected placeholder engine and the stage-ordered collection of applied
- * in-file defaults.
+ * reach it — plus the body-limit check's scope mapping (every scope the {@code security_filter}
+ * descriptor names, every declaration counted), the injected placeholder engine and the
+ * stage-ordered collection of applied in-file defaults.
  */
 class ConfigBootPipelineTest {
 
@@ -241,6 +253,104 @@ class ConfigBootPipelineTest {
         ConfigBootPipeline.Outcome outcome = pipelineWith(Map.of()).run(configDir, FRAMEWORK_LIMIT_BYTES);
 
         assertNotNull(outcome.assembly(), () -> "unexpected " + outcome.violations());
+    }
+
+    /**
+     * Writes a proxy endpoint whose route's {@code security_filter} declares {@code max_body_bytes},
+     * preceded by the given endpoint-level block (empty for none).
+     */
+    private void writeEndpointWithRouteBodyCap(String endpointFilterBlock, int routeMaxBodyBytes) throws IOException {
+        Files.createDirectories(configDir.resolve("endpoints"));
+        Files.writeString(configDir.resolve("endpoints/uploads.yaml"), """
+                endpoint:
+                  id: uploads
+                  base_url: UPLOADS
+                  auth:
+                    require: none
+                %s  routes:
+                    - id: uploads-proxied
+                      match:
+                        path_prefix: /uploads
+                      security_filter:
+                        max_body_bytes: %d
+                """.formatted(endpointFilterBlock, routeMaxBodyBytes));
+        writeTopology("UPLOADS=https://uploads.internal:8443\n");
+    }
+
+    @Test
+    @DisplayName("A route-level body cap above the supplied framework limit yields the body-limit violation")
+    void routeBodyCapAboveTheFrameworkLimitIsAViolation() throws Exception {
+        writeGateway(VALID_GATEWAY);
+        writeEndpointWithRouteBodyCap("", 2048);
+
+        ConfigBootPipeline.Outcome outcome = pipelineWith(Map.of()).run(configDir, FRAMEWORK_LIMIT_BYTES);
+
+        assertNull(outcome.assembly());
+        assertEquals(List.of(new ConfigError("application.properties", "quarkus.http.limits.max-body-size",
+                        "2048 exceeds framework limit 1024; raise quarkus.http.limits.max-body-size to at least 2048")),
+                outcome.violations());
+    }
+
+    @Test
+    @DisplayName("A declared cap the route's nearer block replaces still counts against the framework limit")
+    void replacedBodyCapStillCounts() throws Exception {
+        writeGateway(VALID_GATEWAY);
+        writeEndpointWithRouteBodyCap("""
+                  security_filter:
+                    max_body_bytes: 4096
+                """, 512);
+
+        ConfigBootPipeline.Outcome outcome = pipelineWith(Map.of()).run(configDir, FRAMEWORK_LIMIT_BYTES);
+
+        assertNull(outcome.assembly());
+        assertEquals(List.of(new ConfigError("application.properties", "quarkus.http.limits.max-body-size",
+                        "4096 exceeds framework limit 1024; raise quarkus.http.limits.max-body-size to at least 4096")),
+                outcome.violations());
+    }
+
+    @Test
+    @DisplayName("Every scope the security_filter descriptor names maps to that scope's own declarations")
+    void everySecurityFilterScopeMapsToItsDeclarations() {
+        SecurityFilterConfig anchorFilter = SecurityFilterConfig.builder().maxBodyBytes(100).build();
+        SecurityFilterConfig endpointFilter = SecurityFilterConfig.builder().maxBodyBytes(200).build();
+        SecurityFilterConfig routeFilter = SecurityFilterConfig.builder().maxBodyBytes(300).build();
+        GatewayConfig gateway = gatewayWithAnchorFilter(anchorFilter);
+        List<EndpointConfig> enabled = List.of(endpointWithFilters(endpointFilter, routeFilter));
+        Map<Scope, SecurityFilterConfig> expected = Map.of(Scope.ANCHOR, anchorFilter, Scope.ENDPOINT,
+                endpointFilter, Scope.ROUTE, routeFilter);
+
+        assertEquals(expected.keySet(), PolicyBlock.SECURITY_FILTER.scopes(),
+                "every scope the descriptor names needs an expected mapping here");
+        assertAll("per-scope declarations", expected.entrySet().stream().map(entry -> (Executable) () ->
+                assertEquals(List.of(entry.getValue()),
+                        ConfigBootPipeline.securityFilterDeclarations(entry.getKey(), gateway, enabled).toList(),
+                        () -> "declarations read at " + entry.getKey())));
+    }
+
+    @Test
+    @DisplayName("A scope with no security_filter declaration is refused loudly, never read as empty")
+    void undeclarableScopeIsRefused() {
+        GatewayConfig gateway = gatewayWithAnchorFilter(SecurityFilterConfig.builder().maxBodyBytes(100).build());
+        List<EndpointConfig> enabled = List.of();
+
+        IllegalStateException refused = assertThrows(IllegalStateException.class,
+                () -> ConfigBootPipeline.securityFilterDeclarations(Scope.GATEWAY, gateway, enabled));
+
+        assertTrue(refused.getMessage().contains(Scope.GATEWAY.name()), refused::getMessage);
+    }
+
+    private static GatewayConfig gatewayWithAnchorFilter(SecurityFilterConfig filter) {
+        AnchorConfig anchor = AnchorConfig.builder().name("uploads").pathPrefix("/uploads").type(AnchorType.PROXY)
+                .access(AccessLevel.AUTHENTICATED).securityFilter(filter).build();
+        return GatewayConfig.builder().version(1).anchors(Map.of(anchor.name(), anchor)).build();
+    }
+
+    private static EndpointConfig endpointWithFilters(SecurityFilterConfig endpointFilter,
+            SecurityFilterConfig routeFilter) {
+        RouteConfig route = RouteConfig.builder().id("uploads-proxied")
+                .match(MatchConfig.builder().pathPrefix("/uploads").build()).securityFilter(routeFilter).build();
+        return EndpointConfig.builder().id("uploads").enabled(true).securityFilter(endpointFilter)
+                .routes(List.of(route)).build();
     }
 
     @Test

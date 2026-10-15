@@ -23,6 +23,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoadException;
@@ -188,30 +189,57 @@ public final class ConfigBootPipeline {
     }
 
     /**
-     * The largest {@code max_body_bytes} declared anywhere in the configuration set — across the
-     * named policy anchors, every enabled endpoint's own {@code security_filter} block and every
-     * enabled endpoint's routes, the only three places a per-route cap can be declared (the scopes
-     * {@link de.cuioss.sheriff.gateway.config.PolicyBlock#SECURITY_FILTER} names). Every declaration
-     * counts, not only the one a route resolves: the declared cap is the effective one (ADR-0023), so a
-     * declaration the framework ceiling would silently cut is refused wherever it sits.
+     * The largest {@code max_body_bytes} declared anywhere in the configuration set, at every scope
+     * {@link PolicyBlock#SECURITY_FILTER} is declarable at. The scopes are read from the descriptor
+     * rather than named here, so a scope the block gains is reached without editing this reader —
+     * {@link #securityFilterDeclarations} maps each one to the declarations it holds and refuses a
+     * scope it has no mapping for. Every declaration counts, not only the one a route resolves: the
+     * declared cap is the effective one (ADR-0023), so a declaration the framework ceiling would
+     * silently cut is refused wherever it sits.
      *
      * @param gateway the bound gateway document
      * @param enabled the enabled endpoints
      * @return the maximum declared cap in bytes, or {@code 0} when no cap is declared
+     * @throws IllegalStateException when the descriptor names a scope this reader has no mapping for
      */
     private static long maxDeclaredBodyBytes(GatewayConfig gateway, List<EndpointConfig> enabled) {
-        return Stream.of(
-                gateway.anchors().values().stream().map(AnchorConfig::securityFilter),
-                enabled.stream().map(EndpointConfig::securityFilter),
-                enabled.stream().flatMap(endpoint -> endpoint.routes().stream())
-                        .map(RouteConfig::securityFilter))
-                .flatMap(declarations -> declarations)
+        return PolicyBlock.SECURITY_FILTER.scopes().stream()
+                .flatMap(scope -> securityFilterDeclarations(scope, gateway, enabled))
                 .filter(Objects::nonNull)
                 .map(SecurityFilterConfig::maxBodyBytes)
                 .filter(Objects::nonNull)
                 .mapToLong(Integer::longValue)
                 .max()
                 .orElse(0L);
+    }
+
+    /**
+     * Every {@code security_filter} declaration one scope holds across the configuration set — each
+     * named anchor's, each enabled endpoint's own, or each enabled endpoint's routes'. Unlike
+     * {@link PolicyBlock#declared}, which reads one route's chain, this enumerates every declaration at
+     * the scope, because the body-limit check judges each declared cap and not only the resolved one.
+     * <p>
+     * The switch is exhaustive over {@link PolicyBlock.Scope}, so a new scope constant fails the
+     * compile here. {@link PolicyBlock.Scope#GATEWAY} has no {@code security_filter} declaration —
+     * {@code security_defaults} owns the gateway-wide profile — and is refused loudly rather than read
+     * as empty: a descriptor widened to the gateway scope must not silently skip its caps.
+     *
+     * @param scope   a scope {@link PolicyBlock#SECURITY_FILTER} is declarable at
+     * @param gateway the bound gateway document
+     * @param enabled the enabled endpoints
+     * @return the declarations at that scope, {@code null} where an element declares none
+     * @throws IllegalStateException when the scope has no {@code security_filter} declaration to read
+     */
+    static Stream<@Nullable SecurityFilterConfig> securityFilterDeclarations(PolicyBlock.Scope scope,
+            GatewayConfig gateway, List<EndpointConfig> enabled) {
+        return switch (scope) {
+            case ANCHOR -> gateway.anchors().values().stream().map(AnchorConfig::securityFilter);
+            case ENDPOINT -> enabled.stream().map(EndpointConfig::securityFilter);
+            case ROUTE -> enabled.stream().flatMap(endpoint -> endpoint.routes().stream())
+                    .map(RouteConfig::securityFilter);
+            case GATEWAY -> throw new IllegalStateException(
+                    "body-limit check has no security_filter declarations to read at scope " + scope);
+        };
     }
 
     /**
