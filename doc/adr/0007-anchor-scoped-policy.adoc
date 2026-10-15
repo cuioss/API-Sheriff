@@ -5,7 +5,8 @@
 == Status
 
 Accepted. Amended by <<amendment-a1>> (`security_headers` apply after route selection; CORS stays
-global and pre-auth).
+global and pre-auth) and by <<amendment-a2>> (the inheritance chain is one declared rule resolved by
+`PolicyBlock`, with a fixed scope set per block).
 
 == Context
 
@@ -182,9 +183,10 @@ before authentication, which runs after route selection.
   stage-1 rejection, a `404` for an unrouted path, the CORS preflight -- carries the global block,
   because no anchor is known yet. Every response after stage 2a, the verb gate's `405` included,
   carries the route's block.
-* *The anchor block replaces the global block wholesale.* There is no key-by-key merge, in line with
-  the replacement rule of the Decision: an anchor block declaring only `frame_deny` drops the global
-  `Strict-Transport-Security` for its routes. An operator who wants both declares both on the anchor.
+* *The anchor block replaces the global block wholesale.* There is no key-by-key merge: `security_headers`
+  is resolved by the one rule every policy block follows (<<amendment-a2>>), so an anchor block
+  declaring only `frame_deny` drops the global `Strict-Transport-Security` for its routes. An operator
+  who wants both declares both on the anchor.
 * *CORS is global only.* It is evaluated before route selection, so an anchor cannot scope it. The
   bundled `gateway.schema.json` therefore accepts `cors` in the global `security_headers` block only;
   an anchor-level `cors` block fails the boot at schema load instead of being silently ignored, and
@@ -201,6 +203,60 @@ before authentication, which runs after route selection.
 * A configuration that placed `cors` under an anchor -- previously accepted and ignored -- is now a
   refused boot; the fix is to move the block to the global `security_headers`.
 
+[[amendment-a2]]
+== Amendment A2 -- One declared rule, resolved by `PolicyBlock`, with a fixed scope set per block
+
+=== Context
+
+The Decision states one chain -- gateway defaults -> anchor -> endpoint -> route, wholesale replacement
+at every step -- but the chain was implemented once per block: seven hand-written resolutions in the
+route-table builder, and a second copy of five of them in the configuration validator. Each copy
+named its own subset of the four scopes, so which scopes a block was read at was a property of
+whichever copy a reader happened to call, not a declaration. A boot refusal and the posture the route
+ran could disagree, and nothing tied a block's schema keys to the scopes its resolution read.
+
+=== Decision
+
+* *One rule, declared once per block.* Every policy block is a `PolicyBlock` descriptor naming the
+  scopes it is declarable at. The nearest declared scope wins and replaces every broader declaration
+  wholesale; `null` and an empty list both count as not declared; with no scope declaring the block,
+  its fallback applies (a value, no block, or a boot error). The route-table builder and the
+  configuration validator both resolve through the descriptors.
+* *The scope set of each block, as this amendment decides it.* The live inventory is
+  `PolicyBlock.ALL`; its operator-facing scope table
+  (link:../user/anchors.adoc#_policy_block_scopes[Anchors -- Where each policy block is declarable])
+  is the list a contract test binds to the descriptors:
++
+[cols="2,3", options="header"]
+|===
+| Block | Declarable at
+
+| `auth` | anchor, endpoint, route
+| `allowed_methods` | gateway, anchor, endpoint
+| `security_filter` | anchor, endpoint, route
+| `security_headers` | gateway, anchor
+| `upstream_defaults` | gateway, endpoint
+| `forward` | endpoint, route
+| `websocket` | route
+|===
++
+`security_filter` and `forward` gain the endpoint scope; every other block keeps the scopes it had.
+The reasons each set stops where it does, and the two field-level fallbacks kept as documented
+exceptions, are recorded in
+link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067].
+* *The override WARN is derived, not listed.* "Non-auth overrides that relax anchor limits follow the
+  existing convention" is made precise: a block whose descriptor opts in is announced when the route's
+  anchor declares it and the route's endpoint or the route itself declares it too. The opt-in set is
+  `allowed_methods` and `security_filter`. The auth floor stays a boot refusal, as decided above.
+
+=== Consequences
+
+* The boot validator and the route table cannot resolve a block differently: there is one resolution.
+* A block's descriptor scopes, both bundled schemas and the user-documentation scope table are bound
+  together by a contract test, so a scope added in one place and not the others fails the build.
+* A boot rule that enumerates declarations instead of resolving the block still has to be widened by
+  hand when a block gains a scope; the development guide lists that obligation.
+
 == References
 
 * https://developer.konghq.com/gateway/entities/plugin/[Kong -- plugin scopes and precedence]
@@ -210,3 +266,7 @@ before authentication, which runs after route selection.
 * https://learn.microsoft.com/en-us/azure/api-management/api-management-howto-policies[Azure APIM -- policy scopes and `<base/>`]
 * link:../configuration.adoc[Configuration Model] -- the wholesale-replacement convention this
   decision extends
+* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]
+  -- the one resolution rule and the per-block scope decisions Amendment A2 records
+* link:../user/anchors.adoc#_policy_block_resolution[Anchors -- Policy-block resolution] -- the
+  operator-facing rule and scope table

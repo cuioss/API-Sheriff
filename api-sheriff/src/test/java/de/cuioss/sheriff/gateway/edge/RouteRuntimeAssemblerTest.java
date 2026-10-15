@@ -271,8 +271,8 @@ class RouteRuntimeAssemblerTest {
     @Test
     @DisplayName("Should carry the effective forward filter from the resolved route")
     void shouldCarryEffectiveForward() {
-        ForwardConfig forward = new ForwardConfig(List.of("Accept"), null, List.of("page"), null,
-                Map.of("X-Gateway", "api-sheriff"));
+        ForwardConfig forward = ForwardConfig.builder().headersAllow(List.of("Accept"))
+                .queryAllow(List.of("page")).setHeaders(Map.of("X-Gateway", "api-sheriff")).build();
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
@@ -288,7 +288,8 @@ class RouteRuntimeAssemblerTest {
     @Test
     @DisplayName("Should carry a negative-list forward block from the resolved route")
     void shouldCarryEffectiveForwardDenyLists() {
-        ForwardConfig forward = new ForwardConfig(null, List.of("Cookie"), null, List.of("debug"), Map.of());
+        ForwardConfig forward = ForwardConfig.builder().headersDeny(List.of("Cookie"))
+                .queryDeny(List.of("debug")).setHeaders(Map.of()).build();
         RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
                 .id("deny").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/d").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())

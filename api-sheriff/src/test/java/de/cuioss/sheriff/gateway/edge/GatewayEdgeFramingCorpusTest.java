@@ -252,7 +252,7 @@ class GatewayEdgeFramingCorpusTest {
     /** Starts an edge whose gateway document declares {@code allow_get_with_content_length_body: true}. */
     private int startOptInEdge() throws Exception {
         return startEdge(GatewayConfig.builder().version(1)
-                        .securityDefaults(new SecurityDefaultsConfig(null, null, Boolean.TRUE, null)).build(),
+                        .securityDefaults(SecurityDefaultsConfig.builder().allowGetWithContentLengthBody(Boolean.TRUE).build()).build(),
                 optInMeterRegistry);
     }
 

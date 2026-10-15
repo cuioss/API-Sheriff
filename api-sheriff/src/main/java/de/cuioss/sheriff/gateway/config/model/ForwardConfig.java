@@ -22,7 +22,8 @@ import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The per-route {@code forward} block: a <strong>three-mode filter</strong> deciding which client
+ * The {@code forward} block, declarable on an endpoint and on a route (the route's replaces the
+ * endpoint's wholesale): a <strong>three-mode filter</strong> deciding which client
  * headers and query parameters cross to the upstream <em>inside a route the request is already
  * authorised for</em>.
  * <p>

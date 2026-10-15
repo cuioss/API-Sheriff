@@ -23,6 +23,12 @@ The gateway's `profile` knob selects an inbound-validation posture, on the gatew
 `security_defaults` block and on every per-route and per-anchor `security_filter` block. Two things
 about it were underspecified, and both were being resolved by accident rather than by decision.
 
+NOTE: Amendment by
+link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]:
+`security_filter` is also declarable on an endpoint. The `minimal` refusal below reads a route's
+resolved block, so a `minimal` arriving from the endpoint scope is refused exactly as one declared on
+the route or its anchor.
+
 *The mode set had a member that promised nothing.* Alongside the modes backed by a concrete cui-http
 preset — `strict`, `paranoid` and `lenient` — the set carried a `default` value whose meaning was
 "whatever the library's builder defaults happen to be". A posture name that resolves to an incidental value cannot

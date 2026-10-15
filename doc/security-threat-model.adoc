@@ -261,6 +261,48 @@ mode carries, are enumerated in
 link:user/tls-edge.adoc#_interactions_with_the_rest_of_the_edge[TLS edge -- What this mode does to
 the rest of the edge]; they are not restated here.
 
+[[_residual_policy_block_replacement]]
+=== Residual risk: a policy block replaced from a nearer scope (B6)
+
+Every policy block resolves by one rule: the nearest declared scope of
+`gateway -> anchor -> endpoint -> route` wins and replaces every broader declaration wholesale
+(link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution],
+link:adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]).
+A nearer declaration can therefore relax a broader one, and the operator who owns the broader scope
+does not have to be the one who writes the nearer block. Two blocks carry that surface at the
+endpoint scope.
+
+*An endpoint-level `security_filter` replacing the anchor's block.* An endpoint file can relax the
+inbound-filter posture an anchor sets for its namespace -- a looser profile, raised limits, a wider
+`allowed_paths` -- for every route of the endpoint that declares no block of its own. The controls:
+the replacement is announced by the `ApiSheriff-101` boot WARN, which names the route, the anchor and
+the block; the `profile: minimal` refusal on authenticated and BFF routes reads the endpoint block
+through the same resolver the route table uses, so `minimal` cannot reach such a route from the
+endpoint scope either; and every declared
+`max_body_bytes`, the endpoint's included, is held to the framework body-size floor at boot. The
+residual is the relaxation that stays legal -- a looser non-`minimal` profile or a raised limit --
+which the WARN makes visible but does not refuse.
+
+*An endpoint-level `forward` block applied to every route of the upstream.* The endpoint block
+governs every route of the endpoint that declares no block of its own, and a route block replaces it
+wholesale -- so a route block naming only `headers_allow` drops an endpoint `query_deny` for that
+route. Both blocks live in the same endpoint file and have one owner, so the replacement is not a
+cross-owner weakening and is not announced. The controls are the boot refusals, which apply at the
+endpoint scope exactly as on a route: both lists of one dimension together are refused, and a
+`token_relay: false` route whose effective `forward.headers_allow` -- endpoint-level included -- names
+`Authorization` is refused. The gateway-owned never-forward set bounds every mode whatever scope
+declared it (ADR-0037). The residual is the wholesale replacement itself, accepted because a merge
+would make a route unable to relax an endpoint list and would reintroduce the merge-order ambiguity
+ADR-0007 forbids.
+
+*Assertion.* An endpoint-level block governs a route without its own block and is replaced wholesale
+by a route block (`RouteTableBuilderTest`); an endpoint `security_filter` replacing an anchor block is
+announced once per route (`RouteTableBuilderTest`); `minimal` arriving through an endpoint block on an
+authenticated or BFF route, an endpoint `forward` block declaring both lists of one dimension, and an
+endpoint `headers_allow: [Authorization]` on a `token_relay: false` route each fail the boot
+(`ConfigValidatorTest`); an endpoint `max_body_bytes` above the framework floor fails the boot
+(`ConfigBootPipelineTest`).
+
 == STRIDE per boundary
 
 The threat categories that actually bite each boundary (empty cells omitted for brevity;
@@ -314,7 +356,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 
 | B6 operator->config
 | *Tampering*/*Elevation* via env-substitution bypassing validation -> <<gw-11>>; secrets in
-  logs -> <<gw-12>>. *DoS* via config-expansion -> <<gw-07>>. Fail-closed boot is the
+  logs -> <<gw-12>>. *DoS* via config-expansion -> <<gw-07>>. *Elevation* by relaxing an anchor's
+  policy from a nearer scope -> <<_residual_policy_block_replacement>>. Fail-closed boot is the
   overarching control.
 
 | B7 network->management
@@ -1709,7 +1752,9 @@ inherited.
   block does not enable is refused at boot, and a gateway-authored response (rejection, redirect,
   asset, preflight) always carries the configured value.
 * *Anchor replacement is wholesale and stated, not merged silently.* An anchor block replaces the
-  global block for its routes -- the same no-merge rule as every anchor policy block -- and the
+  global block for its routes -- the same nearest-declared-scope, no-merge rule every policy block is
+  resolved by (link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]); the block
+  is declarable at gateway and anchor only, so no endpoint or route can replace it -- and the
   operator documentation states the consequence at every place the key is described: a header the
   anchor block omits is absent under that anchor. Responses before route selection keep the global
   block, so no pre-route rejection loses it.

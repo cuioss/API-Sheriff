@@ -127,7 +127,7 @@ class RouteMatchingRulesTest {
                 .id(id)
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .allowedMethods(allowedMethods)
                 .routes(List.of(routes))
                 .build();
@@ -148,7 +148,7 @@ class RouteMatchingRulesTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("ORDERS")
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .routes(List.of(route("first", first), route("second", second)))
                 .build();
 
@@ -164,7 +164,7 @@ class RouteMatchingRulesTest {
                 .id("orders")
                 .enabled(true)
                 .baseUrl("ORDERS")
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .routes(List.of(routes))
                 .build();
         return validator.validate(GatewayConfig.builder().version(1).build(), List.of(endpoint),

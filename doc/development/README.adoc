@@ -275,11 +275,92 @@ link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] a route or endpoint may leg
 reads `public`. The naive check passes exactly that route -- and it reads as coverage while providing
 none.
 
-The rule reuses the private `resolveAnchor` / `effectiveAuth` / `effectiveRequire` helpers for the same
-reason: they implement the ADR-0007 resolution chain, and re-deriving the posture from raw config
-fields would reintroduce the divergence the shared seam exists to prevent. `effectiveAccessLevel` and
-`globalProfile` are `public static` on `RouteTableBuilder` solely to serve as those shared seams,
-following the existing `normalizePrefix` precedent -- they are not general-purpose API.
+The rule resolves the route's `auth` and `security_filter` blocks through the `PolicyBlock`
+descriptors for the same reason: they are the one implementation of the resolution rule the route
+table also uses, and re-deriving the posture from raw config fields would reintroduce the divergence
+the shared seam exists to prevent. `effectiveAccessLevel`, `globalProfile` and `effectiveProfile`
+(the field-level `security_filter.profile` fallback) are `public static` on `RouteTableBuilder` solely
+to serve as shared seams, following the existing `normalizePrefix` precedent -- they are not
+general-purpose API.
+
+[[_adding_a_policy_block]]
+== Adding a Policy Block
+
+A policy block is a configuration block resolved per route by the one rule of
+link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]: the nearest declared
+scope of `gateway -> anchor -> endpoint -> route` wins, whole
+(link:../adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]).
+Each block is one `PolicyBlock` descriptor naming the scopes it is declarable at, its "is declared"
+test, its nothing-declared fallback and its override-WARN opt-in. Adding a block -- or widening an
+existing block to a further scope -- touches the places below. Each step names what catches a
+missed edit; where nothing does, it says so.
+
+[cols="3,4,4", options="header"]
+|===
+| Step | What to change | What catches a missed edit
+
+| 1. Record component
+| The block's component on the record of every scope it is declarable at (`GatewayConfig`,
+  `AnchorConfig`, `EndpointConfig`, `RouteConfig`), with a builder entry.
+| The compiler, once the descriptor names the accessor in step 5.
+
+| 2. JSON schemas
+| The key at each scope's location in `schema/gateway.schema.json` and `schema/endpoint.schema.json`,
+  through a shared `$ref` where the block already exists elsewhere.
+| `PolicyBlockSchemaContractTest`: descriptor scopes and schema locations must agree in both
+  directions.
+
+| 3. Native-image reflection
+| A new model type registered in `ConfigModelReflection`.
+| `ConfigModelReflectionTest`, which walks the record graph from `GatewayConfig` and `EndpointConfig`.
+
+| 4. Array-key inventory
+| Every list-valued key the block brings, in the inventory of `doc/configuration.adoc` (the stated
+  counts included).
+| `DocumentedSetsContractTest`, which derives the sets from the schemas.
+
+| 5. Descriptor
+| A `PolicyBlock` constant with its scopes, fallback and `overrideWarn` flag, listed in
+  `PolicyBlock.ALL`, and its expectations in `PolicyBlockTest`.
+| `PolicyBlockSchemaContractTest` (against the schemas) and `PolicyBlockTest`.
+
+| 6. User documentation
+| The block's row in the scope table of `doc/user/anchors.adoc` (`_policy_block_scopes`).
+| `PolicyBlockSchemaContractTest`, which parses that table against `PolicyBlock.ALL`.
+
+| 7. Override WARN
+| When the block has an anchor scope and a nearer one, a decision whether replacing the anchor's
+  block is announced (`overrideWarn`); an opted-in block needs `ApiSheriff-101` in
+  `doc/LogMessages.adoc` to name it.
+| `RouteTableBuilderTest` WARN-present and WARN-absent cases per opted-in block.
+
+| 8. Every boot reader at every scope
+| See below.
+| For a reader that takes its scopes from the descriptor, the compiler and the reader's refusal of an
+  unmapped scope; for any other reader, nothing generic -- the reader's own tests.
+|===
+
+*Every boot rule and boot-pipeline check that reads a block must read it at every scope the block is
+declarable at.* A reader that resolves the block through its descriptor (`PolicyBlock.X.resolve`)
+gets this for free. A reader that *enumerates declarations* instead -- `route.forward()`, a stream
+over anchors and routes -- silently skips any scope it does not name, and a newly declarable scope
+then lets a declaration bypass a boot refusal.
+
+An enumerating reader can still take its scopes from the descriptor. The framework body-size check
+(`maxDeclaredBodyBytes` in `ConfigBootPipeline`) has to enumerate, because it counts every declared
+cap rather than only the one a route resolves (ADR-0023). It iterates `PolicyBlock.SECURITY_FILTER.scopes()`
+and maps each scope to the declarations it holds through an exhaustive switch over `PolicyBlock.Scope`.
+A new scope constant therefore fails the compile there, and the one scope the switch has no
+declaration for -- `GATEWAY` -- throws an `IllegalStateException` instead of being skipped. Widening
+`security_filter` to the gateway scope cannot slip past that reader: every run fails until the
+`GATEWAY` arm reads the new declaration.
+
+The other two readers that had to cover the endpoint scope when `security_filter` and `forward` gained
+it were extended by hand, both in `ConfigValidator`: the token-relay/`Authorization` conflict now
+reads the resolved forward block, and the forward mode-exclusivity rule also checks the
+endpoint-declared block. Before widening a block, find every production reader of its record
+component that names its scopes itself, and give each one a test at the new scope; no contract test
+does this for you.
 
 == Artifact Purity: No Test-Shaped Configuration in the Shipped File
 

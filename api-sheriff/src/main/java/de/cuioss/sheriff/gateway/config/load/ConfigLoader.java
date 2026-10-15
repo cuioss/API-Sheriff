@@ -982,7 +982,10 @@ public final class ConfigLoader {
         public UpstreamDefaultsConfig deserialize(JsonParser parser, DeserializationContext context)
                 throws IOException {
             JsonNode node = parser.readValueAsTree();
-            return new UpstreamDefaultsConfig(readEnabled(node, "retry"), readEnabled(node, "not_modified"));
+            return UpstreamDefaultsConfig.builder()
+                    .retryEnabled(readEnabled(node, "retry"))
+                    .notModifiedEnabled(readEnabled(node, "not_modified"))
+                    .build();
         }
 
         private static boolean readEnabled(JsonNode node, String block) {

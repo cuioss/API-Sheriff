@@ -1161,7 +1161,7 @@ class GatewayEdgeRouteTest {
 
         private GatewayConfig gatewayWithAuthorizationCap(@Nullable Integer cap) {
             return GatewayConfig.builder().version(1)
-                    .securityDefaults(new SecurityDefaultsConfig("strict", cap, null, null))
+                    .securityDefaults(SecurityDefaultsConfig.builder().profile("strict").maxAuthorizationHeaderValueLength(cap).build())
                     .build();
         }
 

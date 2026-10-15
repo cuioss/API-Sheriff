@@ -533,7 +533,7 @@ including why the extension *dependency* itself stays.
   pipeline re-run, and nothing else -- the pre-route floor, the body cap and the path allowlist all
   still apply. It is additionally *refused at boot* on effectively-authenticated and BFF routes, so
   the weakening cannot reach the surfaces where it would matter most.
-* *Override route:* *neutral*, `gateway.yaml`, per route or anchor. There is no environment route,
+* *Override route:* *neutral*, `gateway.yaml` or the endpoint file, per anchor, endpoint or route. There is no environment route,
   and an unrecognised value is a hard boot failure with no fallback.
 * *Deployment-bound by necessity?* No, and it should not be -- an inbound-validation posture that
   could be relaxed by an environment variable would be a weakening with no audit trail in the

@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
+import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -73,6 +74,7 @@ import org.jspecify.annotations.Nullable;
  * @since 1.0
  */
 // cui-rewrite:disable AnnotationNewlineFormat
+@Builder
 public record SecurityDefaultsConfig(@Nullable String profile, @Nullable Integer maxAuthorizationHeaderValueLength,
 @Nullable Boolean allowGetWithContentLengthBody, @Nullable Boolean allowExtendedAscii) {
 

@@ -76,7 +76,7 @@ class TopologyResolverTest {
                 .id(alias.toLowerCase(Locale.ROOT))
                 .enabled(true)
                 .baseUrl(alias)
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .build();
     }
 
@@ -231,7 +231,7 @@ class TopologyResolverTest {
                 .id("second")
                 .enabled(true)
                 .baseUrl("MISSING")
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .build();
         List<EndpointConfig> endpoints = List.of(endpointFor("MISSING"), second);
         List<String> additionalAliases = List.of("MISSING");
@@ -402,7 +402,7 @@ class TopologyResolverTest {
         EndpointConfig assetOnly = EndpointConfig.builder()
                 .id("site")
                 .enabled(true)
-                .auth(new AuthConfig(Require.NONE, null, null))
+                .auth(AuthConfig.builder().require(Require.NONE).build())
                 .build();
         List<EndpointConfig> endpoints = List.of(assetOnly, endpointFor("ORDERS"));
 

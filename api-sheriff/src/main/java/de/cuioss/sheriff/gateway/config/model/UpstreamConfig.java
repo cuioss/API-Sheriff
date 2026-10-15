@@ -79,6 +79,7 @@ public record UpstreamConfig(
      * @since 1.0
      */
     // cui-rewrite:disable AnnotationNewlineFormat
+    @Builder
     public record NotModified(@Nullable Boolean enabled) {
     }
 }

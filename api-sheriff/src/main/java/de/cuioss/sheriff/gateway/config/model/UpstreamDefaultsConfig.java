@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.config.model;
 
+import lombok.Builder;
+
 /**
  * The {@code upstream_defaults} block declarable at two scopes — global
  * ({@code gateway.yaml}) and per endpoint ({@code endpoints/*.yaml}).
@@ -31,6 +33,7 @@ package de.cuioss.sheriff.gateway.config.model;
  * @author API Sheriff Team
  * @since 1.0
  */
+@Builder
 public record UpstreamDefaultsConfig(boolean retryEnabled, boolean notModifiedEnabled) {
 
     /**
@@ -40,6 +43,6 @@ public record UpstreamDefaultsConfig(boolean retryEnabled, boolean notModifiedEn
      * @return a defaults instance with retry and not-modified both enabled
      */
     public static UpstreamDefaultsConfig defaults() {
-        return new UpstreamDefaultsConfig(true, true);
+        return builder().retryEnabled(true).notModifiedEnabled(true).build();
     }
 }

@@ -447,7 +447,7 @@ class GatewayEdgePipelineTest {
         HttpServer optedInFront = startFront(GatewayConfig.builder()
                 .version(1)
                 .securityHeaders(globalHeaders())
-                .securityDefaults(new SecurityDefaultsConfig(null, null, null, true))
+                .securityDefaults(SecurityDefaultsConfig.builder().allowExtendedAscii(true).build())
                 .build());
         try {
             // Act

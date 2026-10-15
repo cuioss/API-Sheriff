@@ -147,7 +147,8 @@ file-and-JSON-pointer error before any immutable value object is built:
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
-  `anchor`, `auth`, `allowed_methods`, `upstream_defaults`) and its `routes[]`, each route's
+  `anchor`, `auth`, `allowed_methods`, `upstream_defaults`, `security_filter`, `forward`) and its
+  `routes[]`, each route's
   `id`, `protocol`, `anchor`, `match`, `auth`, `security_filter`, `forward`, `upstream`, `asset`,
   `redirect`, the WebSocket-route `websocket` block (which holds `allowed_origins` and
   `idle_timeout_seconds`), and reserved `rate_limit`.
@@ -158,7 +159,9 @@ typo or a stale field -- fails the boot rather than being silently ignored. The 
 this document field-for-field and are the *structural* gate only. The *cross-cutting* rules a
 schema cannot express are enforced in code and listed under
 link:#_configuration_validation_rules_summary[Configuration Validation Rules]: endpoint- and
-route-`id` uniqueness across files, `upstream_defaults` and `allowed_methods` wholesale-replacement,
+route-`id` uniqueness across files, the resolution of every policy block by the one
+nearest-declared-scope rule (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]),
 `allowed_methods` verb membership, topology-alias resolvability, the `base_url`-only-with-a-proxy-route
 rule, the one-terminal-action rule and the open-redirect review of a `redirect` location, and
 same-prefix / same-exact-path disjointness. Every
@@ -264,7 +267,8 @@ security_headers:                  # response-header middleware (global block). 
     allowed_headers: [content-type]
     allow_credentials: true
 
-security_defaults:                 # baseline inbound filter mode; overridable per route/anchor
+security_defaults:                 # baseline inbound filter mode; overridable per anchor, endpoint
+                                   #   or route by a security_filter block
   profile: strict                  # strict | paranoid | lenient | minimal   (omitted block => strict)
                                    # 'paranoid' is 'strict' PLUS content block-lists -- it rejects
                                    # 'file'/'path'/'url' parameter names and sensitive path segments
@@ -283,7 +287,8 @@ security_defaults:                 # baseline inbound filter mode; overridable p
 
 allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
                                    #   (global default). An anchor or endpoint may REPLACE this
-                                   #   wholesale (no inheritance -- see endpoint.allowed_methods).
+                                   #   wholesale -- the nearest declared scope wins (see
+                                   #   "Policy-block resolution" in user/anchors.adoc).
                                    #   A routed request whose method is not in the EFFECTIVE list
                                    #   is rejected 405. TRACE and CONNECT are never permitted and
                                    #   cannot be listed. Omit => the standard set shown here.
@@ -589,8 +594,14 @@ proxy route]), `anchor`
 the endpoint/route `anchor` membership field), `auth` (link:#_auth[`auth`]),
 `scopes` (link:#_endpoint_scopes[`endpoint.scopes`]),
 `catalog` (link:#_endpoint_catalog[`endpoint.catalog`]),
-`allowed_methods` (link:#_allowed_methods[`allowed_methods`]), and
+`allowed_methods` (link:#_allowed_methods[`allowed_methods`]),
+`upstream_defaults` (link:#_upstream_defaults[`upstream_defaults`]),
+`security_filter` (link:#_security_filtering[`security_filter`]),
+`forward` (link:#_forward[`forward`]), and
 `routes` (link:user/endpoint-routes.adoc#_route_ordering[Route ordering] + the per-route field headings).
+The policy blocks among them -- `auth`, `allowed_methods`, `upstream_defaults`, `security_filter` and
+`forward` -- are the endpoint's defaults for its routes, resolved by the one rule in
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution].
 
 [[_portal]]
 === `portal`
@@ -1746,8 +1757,15 @@ below. It is valid only on a `protocol: websocket` route.
 [[_security_filtering]]
 === `security_filter`
 
-The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature matching. Maps onto
-`cui-http`'s `SecurityConfiguration` and pipelines:
+The explicit *not-a-WAF* boundary: allowlists and limits, no attack-signature matching. The block is
+declarable on an anchor, on an endpoint and on a route; a route runs the nearest declared block,
+taken whole, and with none declared the `security_defaults` preset (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). *The endpoint scope is a
+breaking change* to the endpoint-document surface: an endpoint block governs every route of the
+endpoint that declares no block of its own, replaces the anchor's block wholesale (announced by the
+`ApiSheriff-101` boot WARN), and is read by the `minimal` refusal and the body-size-floor check
+below exactly as an anchor or route block is. The block maps onto `cui-http`'s
+`SecurityConfiguration` and pipelines:
 
 [cols="2,2,2"]
 |===
@@ -1907,7 +1925,8 @@ applies its own 10 MiB default and silently clips every larger declared cap, so 
 limit never fires.
 
 The relationship is *boot-enforced*: a deployment that declares a `max_body_bytes` larger than the
-floor fails fast at startup rather than running with a cap that cannot be honoured. Raising a
+floor -- in an anchor's, an endpoint's or a route's `security_filter` block, whether or not a route
+resolves that block -- fails fast at startup rather than running with a cap that cannot be honoured. Raising a
 declared cap therefore means raising `quarkus.http.limits.max-body-size` in the same change.
 
 *Shadowing at the boundary.* When the floor is set *equal to* the largest declared cap, the
@@ -1994,7 +2013,9 @@ Whether authentication is required is defined *per endpoint file*: `endpoint.aut
 mandatory (unless the endpoint's anchor declares an `auth` block -- see
 link:user/anchors.adoc#_anchors[Anchors]) and is the default posture for every route in the file. A route-level `auth` block
 replaces the endpoint default wholesale for that route (no field merging). "Effective auth"
-below means the route's own block if present, else the endpoint's. The block carries three keys:
+below means the nearest declared block -- the route's own, else the endpoint's, else the anchor's
+(see link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]); a route none of the
+three supplies one for fails the boot. The block carries three keys:
 `require`, `token_relay` (see <<_auth_token_relay>>) and `session_fallback` (see
 <<_auth_session_fallback>>). Scopes are *not* part of it: they are the
 endpoint-level, additive link:#_endpoint_scopes[`endpoint.scopes`], so a route-level `auth` override
@@ -2021,7 +2042,7 @@ always an explicit, audited choice.
 | Type / default | Boolean, default `true`.
 | Scope | Part of the `auth` block, so it is declared at route, endpoint or anchor level and resolved with the block's wholesale cascade (route -> endpoint -> anchor); never merged on its own.
 | Effect | Acts on `require: session` routes and on the SESSION branch of a <<_auth_session_fallback,`session_fallback`>> route. `true` relays the session's access token upstream as `Authorization: Bearer`. `false` keeps the session required -- missing-session redirect/`401`, refresh, cookie clearing and the enforcement of the route's needed scope set (refresh, widening or `403`) all unchanged -- but suppresses only the session-mediated `Authorization`: the gateway relays no session token. It does not filter operator configuration, so a static `Authorization` the route itself declares in `forward.set_headers` still crosses upstream. It never governs a BEARER branch: the BEARER branch of a `session_fallback` route always forwards the validated client token. No effect on plain `require: bearer` routes or on `none` routes.
-| Boot rule | A route whose effective `token_relay` is `false` while its effective `forward.headers_allow` names `Authorization` (any letter case) is refused (`CONFIG_INVALID`): that list would re-admit the browser's own `Authorization` header to an origin the route promises no token.
+| Boot rule | A route whose effective `token_relay` is `false` while its effective `forward.headers_allow` -- the route's own `forward` block, else its endpoint's -- names `Authorization` (any letter case) is refused (`CONFIG_INVALID`): that list would re-admit the browser's own `Authorization` header to an origin the route promises no token.
 | Upstream contract | The relayed access token is sender-constrained: it carries a `cnf.jkt` claim naming the gateway's DPoP proof key (see link:#_oidc_sender_constraint[The sender constraint and the token-binding check]). The gateway relays it as `Authorization: Bearer` and sends no DPoP proof with it. An upstream *must not check `cnf`*: a `cnf`-blind upstream accepts the token unchanged, and an upstream that enforces DPoP would have to reject it for want of a proof. Nothing downstream of the identity provider checks a proof when the token is used, so the token is as usable on the upstream hop as a bearer token is; the control on that hop is transport security. `token_relay: false` is the per-route way to relay no token at all.
 |===
 
@@ -3529,6 +3550,17 @@ the time `forward` runs, the route has been selected and the auth posture enforc
 block decides only *which of the client's own headers and query parameters survive the trip*
 (link:adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
 
+*Where it is declared.* The block is declarable on an endpoint and on a route. A route runs its own
+block when it declares one, else its endpoint's, taken whole: a route block replaces the endpoint
+block wholesale, so a route block naming only `headers_allow` drops an endpoint `query_deny`. With
+neither declared, both dimensions are forward-all. There is no anchor or gateway scope -- forward
+filtering is upstream-specific. The rule is the one every policy block follows (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). *The endpoint scope is a
+breaking change* to the endpoint-document surface; both boot refusals below -- the two lists of one
+dimension together, and an `Authorization` re-admitted on a `token_relay: false` route (see
+link:#_auth_token_relay[`auth.token_relay`]) -- apply to an endpoint block exactly as to a route
+block. The modes below are stated for "the route", meaning the block the route resolves.
+
 ==== The three modes
 
 Headers and query parameters are *independent dimensions*. Each resolves exactly one of three
@@ -3847,15 +3879,15 @@ pipeline reads a single resolved `true`/`false` and never re-derives the inherit
   `headers_deny`.
 |===
 
-*Resolution (wholesale, no merge).* Each route's effective `retry` / `not_modified` toggle is,
-in precedence order:
-
-* the route's own `upstream.retry.enabled` / `upstream.not_modified.enabled` if declared; else
-* the *endpoint-level* `upstream_defaults` block if the endpoint declares one -- it *replaces*
-  the global block wholesale for that endpoint's routes (the same no-merge rule `auth` and
-  link:#_allowed_methods[`allowed_methods`] use); else
-* the *global* `gateway.upstream_defaults` block if declared; else
-* the built-in default -- both toggles *enabled*.
+*Resolution.* The `upstream_defaults` block itself follows the rule every policy block follows (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]): the endpoint's block when
+the endpoint declares one, replacing the global block wholesale for that endpoint's routes, else the
+global `gateway.upstream_defaults` block, else the built-in default -- both toggles *enabled*. There
+is no anchor scope: upstream behaviour belongs to the upstream, which the endpoint owns. On top of
+the resolved block, a route's own `upstream.retry.enabled` / `upstream.not_modified.enabled`
+overrides the one toggle it declares, field by field -- a
+link:user/anchors.adoc#_policy_block_field_level_exceptions[documented exception] to whole-block
+replacement, so that a route setting one toggle keeps the other at the block's value.
 
 Both `upstream_defaults` blocks (global and per endpoint) share one shape; an omitted toggle
 defaults to `true`:
@@ -3967,7 +3999,9 @@ discovery is added later (link:adr/0002-initial-scope.adoc[ADR-0002]).
 
 Response-header middleware applied to every response the gateway returns. Declared in the global
 `gateway.yaml` block and, optionally, in an anchor's block; endpoints and routes can neither override
-nor disable it (link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]).
+nor disable it (link:adr/0007-anchor-scoped-policy.adoc#amendment-a1[ADR-0007 Amendment A1]). The
+anchor's block wins over the global one by the rule every policy block follows (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]).
 
 *Two positions in the pipeline.* The *global* block is seeded onto the response at the first stage,
 before anything else runs. Immediately after route selection, the selected route's resolved block --
@@ -4150,8 +4184,8 @@ this key: every framing rejection is preserved.
 [IMPORTANT]
 ====
 The mode set is *closed*: `strict`, `paranoid`, `lenient`, `minimal`, and nothing else. Any other value -- at
-any of the three declaration sites (`security_defaults`, an anchor's `security_filter`, a route's
-`security_filter`) -- makes the gateway *fail to boot*. There is no fallback and no
+any of the four declaration sites (`security_defaults`, an anchor's `security_filter`, an endpoint's
+`security_filter`, a route's `security_filter`) -- makes the gateway *fail to boot*. There is no fallback and no
 warning-and-continue.
 
 The value range is enforced by the bundled JSON Schema, not by the configuration validator, so an
@@ -4160,11 +4194,15 @@ out-of-range value is rejected when the document is bound.
 `auth.require: none` is a *different* key in a different value space and is unrelated to this set.
 ====
 
-*The mode is resolved per route*, by wholesale replacement down the chain
-`route.security_filter` -> `anchor.security_filter` -> `security_defaults`. A route declaring a
-`security_filter` block that omits `profile` falls back to `security_defaults.profile`, *not* to its
-anchor's profile -- the block is replaced whole, never merged. Any explicit limit keys in the winning
-block override the resolved preset's limits individually.
+*The mode is resolved per route.* The route's `security_filter` block is the nearest declared one --
+the route's, else its endpoint's, else its anchor's -- taken whole (see
+link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). Its `profile` is the
+mode; a resolved block that omits `profile`, or no block at all, falls back to
+`security_defaults.profile` -- *not* to the profile of a broader block it replaced. That field-level
+fallback is one of the two
+link:user/anchors.adoc#_policy_block_field_level_exceptions[documented exceptions] to whole-block
+replacement. Any explicit limit keys in the winning block override the resolved preset's limits
+individually.
 
 *Fail-closed rule.* A route whose *effective* profile resolves to `minimal` *fails the boot* when either
 
@@ -4175,9 +4213,10 @@ The access level is the *effective* one, not the anchor's declared `access`: a r
 legally strengthen a `public` anchor's auth floor (link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]
 forbids weakening a floor, not strengthening one), and such a route is authenticated in effect while
 its anchor still reads `access: public`. The refusal collects into the all-violations pass with every
-other configuration error and names the route, the refusing dimension, and the remedy. A
-`security_defaults.profile: minimal` that reaches such a route through the fallback chain is refused
-identically -- there is no separate global exemption.
+other configuration error and names the route, the refusing dimension, and the remedy. A `minimal`
+that reaches such a route from its endpoint's or its anchor's block, or from
+`security_defaults.profile` through the fallback, is refused identically -- there is no separate
+exemption for any scope.
 
 [[_the_extended_ascii_override]]
 ==== The extended-ASCII override
@@ -4272,15 +4311,13 @@ It is a coarse, defence-in-depth verb gate that sits *above* the per-route `matc
 matcher: `match.methods` selects which route serves a verb; `allowed_methods` decides whether
 the gateway will serve the verb *at all* for that endpoint.
 
-*Resolution (no inheritance).* Each route's *effective* `allowed_methods` is materialized once
-at boot:
-
-* the *endpoint's* `allowed_methods` if the endpoint declares one -- it *replaces* the
-  anchor/global list wholesale for that endpoint (no merge, no union, no intersection --
-  exactly the wholesale-replace rule the `auth` block uses); else
-* the *anchor's* `allowed_methods` if the route's anchor declares one; else
-* the *global* `gateway.allowed_methods` if declared; else
-* the standard set `{GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS}`.
+*Resolution.* Each route's *effective* `allowed_methods` is materialized once at boot by the rule
+every policy block follows (see link:user/anchors.adoc#_policy_block_resolution[Policy-block
+resolution]): the nearest declared list -- the endpoint's, else the anchor's, else the global
+`gateway.allowed_methods` -- replaces every broader list wholesale (no merge, no union, no
+intersection), an empty list counts as not declared, and with none declared the standard set
+`{GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS}` applies. An endpoint list replacing an anchor list
+is announced by the `ApiSheriff-101` boot WARN.
 
 Because the endpoint list *replaces* rather than narrows, an endpoint may permit a verb the
 global default omits (global `[GET, POST, PUT]`, endpoint `[PUT, DELETE, HEAD]` -> that
@@ -4489,8 +4526,14 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   member (see link:user/anchors.adoc#_anchors[Anchors]).
 * Where a route's anchor declares `auth.require` of `bearer` or `session`, the route's
   *effective* auth must not resolve to `require: none` -- the anchor floor cannot be weakened;
-  violation fails the boot. Non-auth overrides that relax anchor limits are logged as boot
-  WARNs (weakening-override convention).
+  violation fails the boot. An endpoint or route block replacing an anchor's `allowed_methods` or
+  `security_filter` block is logged as the `ApiSheriff-101` boot WARN (weakening-override
+  convention; see link:user/anchors.adoc#_policy_block_override_warn[The override WARN]).
+* Every policy block is resolved by the one nearest-declared-scope rule and is declarable only at
+  its own scopes; the bundled schemas refuse it anywhere else (see
+  link:user/anchors.adoc#_policy_block_scopes[Where each policy block is declarable]).
+* A `forward` block declaring both lists of one dimension (`headers_allow` with `headers_deny`, or
+  `query_allow` with `query_deny`) fails the boot -- on an endpoint exactly as on a route.
 * A route whose *effective* auth is `require: bearer` requires a `token_validation` block with
   at least one issuer.
 * A route whose *effective* auth is `require: session` requires an `oidc` block.
@@ -4546,13 +4589,10 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   `raw`, `safe` or a namespaced expression, aborts startup with `ApiSheriff-202` (a template refusal,
   reported separately from the collected `ApiSheriff-200` violations).
 * `allowed_methods` (global, anchor, or endpoint) may list only `GET`, `HEAD`, `POST`, `PUT`,
-  `PATCH`, `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot. An endpoint
-  `allowed_methods` *replaces* the anchor/global list wholesale, an anchor's replaces the
-  global (no inheritance).
+  `PATCH`, `DELETE`, `OPTIONS`; listing `TRACE` or `CONNECT` fails the boot.
 * Every method in a route's `match.methods` must be a member of that route's *effective*
-  `allowed_methods` (the endpoint's list if declared, else the anchor's, else the global list,
-  else the standard set); a route matching a verb its endpoint forbids fails the boot (see
-  link:#_allowed_methods[`allowed_methods`]).
+  `allowed_methods` (resolved by the one policy-block rule); a route matching a verb its endpoint
+  forbids fails the boot (see link:#_allowed_methods[`allowed_methods`]).
 * A route whose `match.host` equals (case-insensitively) a key in `tls.passthrough_sni`
   fails the boot -- the route and the passthrough declaration contradict each other
   (see the `tls` field reference).
@@ -4587,7 +4627,7 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   *mechanically verified* against those files: `DocumentedSetsContractTest` derives both sets from
   the schemas and fails the build when a listed key, a stated count or the object-item set drifts
   from them. A key defined once and referenced from several places -- `allowed_methods` at the
-  global and anchor level, the `security_filter` and `security_headers` blocks -- is one
+  global and anchor level, the `security_filter`, `security_headers` and `forward` blocks -- is one
   key, named by the block it is declared under; an endpoint document's keys are named relative to
   its `endpoint` block.
 +
@@ -4602,9 +4642,9 @@ usable set: `allowed_methods` (global and anchor), `security_filter.allowed_path
 `oidc.user_info.default_view`.
 
 An `endpoints/*.yaml` document declares the same-named `allowed_methods` and four
-`security_filter` lists, and adds 7 further string-item keys of its own: `scopes`,
-`routes[].match.methods`, `routes[].forward.headers_allow`, `routes[].forward.headers_deny`,
-`routes[].forward.query_allow`, `routes[].forward.query_deny` and
+`security_filter` lists (at the endpoint and on a route), and adds 7 further string-item keys of its
+own: `scopes`, `routes[].match.methods`, `forward.headers_allow`, `forward.headers_deny`,
+`forward.query_allow`, `forward.query_deny` (the forward block, at the endpoint and on a route) and
 `routes[].websocket.allowed_origins`.
 --
 +
@@ -4663,7 +4703,7 @@ reporting nothing. Refusing this one form costs an operator nothing a secret was
   neutral name; supplying it from the environment is discouraged.
 +
 The same caution applies with more force to the endpoint-document keys, because several of them are
-*security controls*: the `routes[].forward` header and query allow/deny lists and
+*security controls*: the `forward` header and query allow/deny lists (endpoint- or route-level) and
 `routes[].websocket.allowed_origins` decide what crosses the gateway and which origins may open a
 socket. They are reachable by a `${VAR}` on the same uniform terms as any other list, so an
 environment variable can widen or empty them. Treat them as policy that belongs in the committed

@@ -150,7 +150,7 @@ class ConfigLoaderTest {
                 gateway.tls().cipherSuites(),
                 "the neutral tls.cipher_suites allowlist must bind from gateway.yaml");
         assertEquals(List.of("h2", "http/1.1"), gateway.tls().alpn());
-        assertEquals(new UpstreamDefaultsConfig(true, false), gateway.upstreamDefaults());
+        assertEquals(UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(false).build(), gateway.upstreamDefaults());
         assertEquals("s3cr3t", gateway.oidc().clientSecret());
         assertNotNull(gateway.oidc().senderConstraint(), "the sender_constraint block must bind from gateway.yaml");
         assertEquals("/etc/sheriff/keys/dpop.pem", gateway.oidc().senderConstraint().keyFile(),
@@ -259,6 +259,79 @@ class ConfigLoaderTest {
                 () -> assertNull(jwks.unknownKidRefreshWindowSeconds()));
     }
 
+    /**
+     * An endpoint document whose {@code endpoint} block ends with {@code endpointMembers}, carrying
+     * one plain route.
+     */
+    private static String endpointWithMembers(String endpointMembers) {
+        return """
+                endpoint:
+                  id: "orders"
+                  base_url: "ORDERS"
+                  auth: { require: "none" }
+                %s
+                  routes:
+                    - id: "orders-read"
+                      match: { path_prefix: "/orders" }
+                """.formatted(endpointMembers.indent(2).stripTrailing());
+    }
+
+    @Test
+    void bindsEndpointLevelSecurityFilterAndForwardBlocks() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", endpointWithMembers("""
+                security_filter:
+                  profile: "lenient"
+                  max_body_bytes: 4096
+                forward:
+                  headers_allow: ["Accept"]
+                  query_deny: ["debug"]
+                """));
+
+        EndpointConfig endpoint = loader(Map.of()).load(IGNORE_DEFAULTED).endpoints().getFirst();
+
+        assertAll("both endpoint-level blocks bind",
+                () -> assertNotNull(endpoint.securityFilter(), "endpoint security_filter binds"),
+                () -> assertEquals("lenient", endpoint.securityFilter().profile()),
+                () -> assertEquals(4096, endpoint.securityFilter().maxBodyBytes()),
+                () -> assertNotNull(endpoint.forward(), "endpoint forward binds"),
+                () -> assertEquals(List.of("Accept"), endpoint.forward().headersAllow()),
+                () -> assertEquals(List.of("debug"), endpoint.forward().queryDeny()),
+                () -> assertNull(endpoint.forward().headersDeny(), "an undeclared list stays absent"));
+    }
+
+    @Test
+    void leavesUndeclaredEndpointLevelSecurityFilterAndForwardAbsent() throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", endpointWithMembers("enabled: true"));
+
+        EndpointConfig endpoint = loader(Map.of()).load(IGNORE_DEFAULTED).endpoints().getFirst();
+
+        assertAll("control: nothing is bound when neither block is declared",
+                () -> assertNull(endpoint.securityFilter()),
+                () -> assertNull(endpoint.forward()));
+    }
+
+    static Stream<Arguments> invalidEndpointLevelBlocks() {
+        return Stream.of(
+                Arguments.of("security_filter:\n  unknown_knob: 1\n", "/endpoint/security_filter"),
+                Arguments.of("forward:\n  headers_permit: [\"Accept\"]\n", "/endpoint/forward"),
+                Arguments.of("security_filter:\n  profile: \"permissive\"\n", "/endpoint/security_filter/profile"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidEndpointLevelBlocks")
+    void schemaRefusesAnInvalidEndpointLevelBlock(String endpointMembers, String pointer) throws Exception {
+        writeConfig("gateway.yaml", "version: 1\n");
+        writeConfig("endpoints/orders.yaml", endpointWithMembers(endpointMembers));
+
+        ConfigLoader loader = loader(Map.of());
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+        assertTrue(exception.errors().stream().anyMatch(error -> error.pointer().startsWith(pointer)),
+                () -> "expected an error at " + pointer + ", got: " + exception.errors());
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"refresh_interval_seconds", "key_rotation_grace_period_seconds",
             "unknown_kid_refresh_window_seconds"})
@@ -348,7 +421,7 @@ class ConfigLoaderTest {
         assertEquals("orders", endpoint.id());
         assertTrue(endpoint.enabled(), "an endpoint omitting 'enabled' defaults to enabled");
         assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), endpoint.allowedMethods());
-        assertEquals(new UpstreamDefaultsConfig(false, true), endpoint.upstreamDefaults());
+        assertEquals(UpstreamDefaultsConfig.builder().retryEnabled(false).notModifiedEnabled(true).build(), endpoint.upstreamDefaults());
         assertEquals(List.of("orders.read", "orders.write"), endpoint.scopes(),
                 "endpoint.scopes must bind outside the auth block");
         assertFalse(endpoint.auth().effectiveTokenRelay(), "a declared token_relay: false must bind");

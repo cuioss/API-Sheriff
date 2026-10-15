@@ -1292,7 +1292,7 @@ class GatewayEdgeRouteBffWiringTest {
                     .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build())
                     .build();
             GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
-                    .securityDefaults(new SecurityDefaultsConfig(profile, null, null, null)).build();
+                    .securityDefaults(SecurityDefaultsConfig.builder().profile(profile).build()).build();
             GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(keysPrefixRoute(upstream.actualPort()))),
                     gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
