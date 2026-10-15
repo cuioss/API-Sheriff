@@ -2,9 +2,9 @@
   "id": "PLAN-32",
   "slug": "early-answer-it-timeouts",
   "workstream": "WS-02",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-32-early-answer-it-timeouts",
-  "pr": "",
-  "landing": "",
+  "pr": "#466",
+  "landing": "landings/PLAN-32.md",
   "seq": 20
 }
