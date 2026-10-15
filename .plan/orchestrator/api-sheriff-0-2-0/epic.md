@@ -127,7 +127,7 @@ would otherwise force a retrofit.
 |---|---|---|
 | WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27, PLAN-V02-28 and PLAN-V02-40 … PLAN-V02-43 (validator slices; V02-29 … -39 superseded), PLAN-V02-44 |
 | WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18 |
-| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23 |
+| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23, PLAN-V02-45, PLAN-V02-46 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
 | WS-05 | Integration and Test Fidelity | PLAN-V02-09, PLAN-V02-10, PLAN-V02-11 |
 
@@ -271,7 +271,7 @@ sufficient.
 
 | Chain | Order | Why |
 |---|---|---|
-| structural refactor, then cookie policy | **V02-24 (shipped 2026-10-15, #465, ADR-0067) → V02-44 (route-type merge, running; concurrent with kidicap PLAN-32 #466 under the rebase rule) → V02-25 (decomposition, after V02-44 and PLAN-32); in parallel the validator slices V02-26 (shipped, #463) → V02-28 → V02-40 → V02-41 → (V02-12's second PR merged) → V02-42 → V02-43 (closes the split, writes the ADR) → V02-23 (re-grounded, after V02-25 and V02-43) → V02-27 (test simplification) → every other plan touching `edge/**` or `config/**`** | Operator decisions 2026-10-14 (inbox V02-23 `-001`, V02-26 landing): V02-23 paused and the edge and policy-block structure reworked first; the whole validator split finishes before V02-23. V02-24 makes a policy block a declaration. V02-25 (edge) and the validator slices (`config/validation/`) are disjoint from it and from each other. The slices edit `ConfigValidator` and `ConfigValidatorTest` and run serially, or at most two at once under the rebase rule. Held behind them: V02-05, -06, -07, -20; kidicap PLAN-20, -21, -26, -29. |
+| structural refactor, then cookie policy | **V02-24 (shipped 2026-10-15, #465, ADR-0067) → V02-44 (route-type merge, running; concurrent with kidicap PLAN-32 #466 under the rebase rule) → V02-25 (decomposition, after V02-44 and PLAN-32); in parallel the validator slices V02-26 (shipped, #463) → V02-28 → V02-40 → V02-41 → (V02-12's second PR merged) → V02-42 → V02-43 (closes the split, writes the ADR) → V02-23 (re-grounded, after V02-25 and V02-43) → V02-27 (test simplification) → every other plan touching `edge/**` or `config/**`** | Operator decisions 2026-10-14 (inbox V02-23 `-001`, V02-26 landing): V02-23 paused and the edge and policy-block structure reworked first; the whole validator split finishes before V02-23. V02-24 makes a policy block a declaration. V02-25 (edge) and the validator slices (`config/validation/`) are disjoint from it and from each other. The slices edit `ConfigValidator` and `ConfigValidatorTest` and run serially, or at most two at once under the rebase rule. Held behind them: V02-05, -06, -07, -20, -45, -46; kidicap PLAN-20, -21, -26, -29. Edge hardening order after V02-25: V02-45 (request-body and HTTP/2 buffer bounds) and V02-06 D8 (`gw-08`) run one after the other, never together; then V02-46 (upstream close). |
 | oidc / `BffRuntimeProducer` | **V02-08 → V02-12 → V02-09** | All three write the `oidc` block and the BFF assembly point. V02-08 first: it is the larger reshaping and settles the RFC 9207 `iss` constraint V02-12 inherits. |
 | rejection taxonomy | **V02-13 → V02-06 → V02-07** | V02-13 re-cuts `EventCategory` and makes `renderProblem` content-negotiating at all five call sites. V02-06's uniform-404 branch edits those same sites; V02-07 weights the resulting taxonomy. |
 | sample vs. model | **V02-12 → V02-15** | V02-15 D5 defers the browser-vs-container issuer address to V02-12 rather than letting a sample become the de-facto specification. |
@@ -397,6 +397,16 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **PER-ROUTE UPSTREAM TIMEOUTS PARSE BUT DO NOT ACT — OWNED BY KIDICAP `PLAN-29`** (added 2026-10-15,
+  inbox `plan-32-early-answer-it-timeouts-001`). `connect_timeout_ms` and `read_timeout_ms` exist only in
+  `UpstreamConfig` and `endpoint.schema.json`, and no runtime reader applies them. Verified with
+  `git grep` at `73721077`; ADR-0064 lists the gap as open. Kidicap `PLAN-29` (upstream inert keys)
+  already carries the wire-or-remove decision for both keys, so no spec here, per the one-owner rule. The
+  finding's comparison (connect defaults 3 s Caddy, 5 s Envoy, 30 s Traefik and Spring Cloud Gateway,
+  60 s NGINX and Kong; HAProxy warns at boot for missing timeouts) is in the archived message for
+  PLAN-29's outline. `PLAN-V02-45` D3 (the total-body bound) coordinates with that decision. PLAN-29 is
+  held behind this epic's refactor chain (kidicap's ruling).
 
 - **`PLAN-V02-21` DOCUMENTATION LEFTOVERS, NONE STAGED** (added 2026-10-13, from the landing).
   ADR-0031 line 115 still says the integration stack runs "seven gateway instances"; there are twelve.
