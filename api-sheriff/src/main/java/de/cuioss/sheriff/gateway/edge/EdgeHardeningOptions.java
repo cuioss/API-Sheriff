@@ -215,7 +215,7 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static int connectionWindowSize(Http2Settings settings) {
         long streamWindow = settings.getInitialWindowSize();
         long everyStreamsWindow = settings.getMaxConcurrentStreams() * streamWindow;
-        return (int) Math.max(streamWindow, Math.min(everyStreamsWindow, Integer.MAX_VALUE));
+        return (int) Math.clamp(everyStreamsWindow, streamWindow, Integer.MAX_VALUE);
     }
 
     /**

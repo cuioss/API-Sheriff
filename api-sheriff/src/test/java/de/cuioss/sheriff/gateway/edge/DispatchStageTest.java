@@ -1977,7 +1977,7 @@ class DispatchStageTest {
 
         @Test
         @DisplayName("an idle expiry on a retry-enabled route is not retried: the upstream sees one connection")
-        void idleExpiryIsNotRetried() throws Exception {
+        void idleExpiryIsNotRetried() {
             DispatchStage stage = stage(IDLE_TIMEOUT_MILLIS);
             Guard retryGuard = Guard.create()
                     .withTimeout().duration(PATIENT_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done()
