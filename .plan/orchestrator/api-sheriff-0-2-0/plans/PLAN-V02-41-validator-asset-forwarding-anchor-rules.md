@@ -29,6 +29,7 @@ into rule classes on the `ValidationRule` seam, together with their tests.
    listed below.
 
 Slice-specific notes:
+- `ConfigValidatorTest.EndpointScopeRefusals` (added by #465, left in place by #467): move its three endpoint-scope `minimal` refusals to `LimitRulesTest` and its forward-block tests with `ForwardingRules`.
 - `MEDIA_TYPE_TOKEN` moves to `RuleSupport` (`OidcSessionRules` reuses it). Also move `prefixContains` / `strictlyContains`, and `lacksConfiguredIssuer` if needed.
 - The `gateway.schema.json` description names `validateAssetContentTypeValues`. The `gateway.yaml` comments in three `integration-tests/src/main/docker/sheriff-config*` trees name `ConfigValidator.prefixContains`. Update both.
 - **The auth floor is the one deliberate exception to moving rules unchanged.** `validateAnchorAuthFloor` moves into `AnchorRules` and is **derived from the policy-block declaration** through `PolicyBlock.AUTH`. ADR-0067 (#465) records the floor as derivable and left the move to whichever of V02-24 and V02-26 merged second. V02-24 merged second and did not move it. Keep the refusal message identical, and amend ADR-0067's floor paragraph. Behaviour must not change.
@@ -65,6 +66,9 @@ Estimated diff: ~265 KB (move-only; see the size rule).
   so they run one at a time, or two at once under the rebase rule (whichever merges second rebases). A slice
   runs alongside `PLAN-V02-44` and `PLAN-V02-25`, whose surfaces are disjoint. Re-fetch `origin/main` before
   outline and before push.
+- **Before finalize, re-check the outline's success criteria against every sibling plan that landed during
+  the run** (`git log` on the shared files). A criterion part that a sibling made moot is graded met-with-residual,
+  naming the PR that removed its subject. Never grade it plainly met (lessons from #467).
 - No new ADR, except in the last slice (`PLAN-V02-43`). `PLAN-V02-41` amends ADR-0067.
 
 ## Claim Labels

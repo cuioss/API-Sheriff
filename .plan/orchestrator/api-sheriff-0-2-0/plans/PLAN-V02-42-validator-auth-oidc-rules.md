@@ -29,7 +29,7 @@ into rule classes on the `ValidationRule` seam, together with their tests.
    listed below.
 
 Slice-specific notes:
-- `effectiveAuth` / `effectiveRequire` / `effectiveProtocol` move to `RuleSupport` if no earlier slice moved them.
+- `effectiveAuth` and `effectiveRequire` no longer exist; #465 replaced them with `PolicyBlock` resolution. Resolve auth through `PolicyBlock.AUTH`. `lacksConfiguredIssuer` moves to `RuleSupport` unless `PLAN-V02-41` already moved it.
 - `validateSessionMaxCookieSize` logs WARN `COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE`.
 - `PLAN-V02-12`'s second PR adds `oidc` back-channel checks to `ConfigValidator`. They move into `OidcClientRules` or `OidcSessionRules` here.
 
@@ -65,6 +65,9 @@ Estimated diff: ~295 KB (move-only; see the size rule).
   so they run one at a time, or two at once under the rebase rule (whichever merges second rebases). A slice
   runs alongside `PLAN-V02-44` and `PLAN-V02-25`, whose surfaces are disjoint. Re-fetch `origin/main` before
   outline and before push.
+- **Before finalize, re-check the outline's success criteria against every sibling plan that landed during
+  the run** (`git log` on the shared files). A criterion part that a sibling made moot is graded met-with-residual,
+  naming the PR that removed its subject. Never grade it plainly met (lessons from #467).
 - No new ADR, except in the last slice (`PLAN-V02-43`). `PLAN-V02-41` amends ADR-0067.
 
 ## Claim Labels

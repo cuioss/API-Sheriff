@@ -31,6 +31,7 @@ into rule classes on the `ValidationRule` seam, together with their tests.
 Slice-specific notes:
 - `TerminalActionRules` logs WARN `REDIRECT_EXTERNAL_TARGET_ALLOWED`. `ConfigValidatorRedirectTest`'s `assertNoLogMessagePresent(WARN, ConfigValidator.class)` must target the rule class, or it turns vacuous.
 - `EdgeRules` logs WARN `BROAD_TRUSTED_PROXY`.
+- `effectiveProtocol` (private in `ConfigValidator`, used by Protocol, TerminalAction, Limit and Forwarding rules) moves to `RuleSupport` in this slice.
 - Name references to update: `integration-tests/src/main/docker/sheriff-config*/endpoints/assets.yaml` comments (`validateAssetSource`); the `ConfigLogMessages` and `PassthroughHostGuardStage` Javadoc; `doc/development/tls-edge.adoc`, `doc/user/tls-scenarios.adoc`, `TlsEdgeActivationWiringTest` and `integration-tests/src/main/docker/sheriff-config/topology.properties`.
 
 Estimated diff: ~220 KB (move-only; see the size rule).
@@ -65,6 +66,9 @@ Estimated diff: ~220 KB (move-only; see the size rule).
   so they run one at a time, or two at once under the rebase rule (whichever merges second rebases). A slice
   runs alongside `PLAN-V02-44` and `PLAN-V02-25`, whose surfaces are disjoint. Re-fetch `origin/main` before
   outline and before push.
+- **Before finalize, re-check the outline's success criteria against every sibling plan that landed during
+  the run** (`git log` on the shared files). A criterion part that a sibling made moot is graded met-with-residual,
+  naming the PR that removed its subject. Never grade it plainly met (lessons from #467).
 - No new ADR, except in the last slice (`PLAN-V02-43`). `PLAN-V02-41` amends ADR-0067.
 
 ## Claim Labels

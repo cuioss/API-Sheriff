@@ -27,6 +27,8 @@ new structure without weakening what they prove.
    and move shared fixtures into a small set of builders, using the records' `@Builder`.
 3. **Remove duplicates only after carrying their extra assertions into the survivor**, so the surviving
    test is at least as strict. Report removed pairs.
+   Known item: `LimitRulesTest`'s class Javadoc says every case drives the full validator, but two
+   `GetBodyOptInDefault` cases do not (#467 advisory).
 4. **Prove nothing was lost:** JaCoCo per class before and after is identical or higher for every touched
    area; integration tests are touched only where the inventory shows a genuine duplicate. Report test
    counts and the unit-test run time before and after.
