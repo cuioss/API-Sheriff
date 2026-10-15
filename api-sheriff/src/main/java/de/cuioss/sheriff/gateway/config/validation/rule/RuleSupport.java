@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
@@ -25,7 +26,7 @@ import org.jspecify.annotations.Nullable;
  * The helpers every boot-time {@link ValidationRule} shares, whichever concern class or
  * not-yet-extracted rule of the configuration validator it belongs to: where a {@link ConfigError}
  * is reported (the file and the JSON pointer), how an offending configured value is echoed into a
- * refusal message, and which anchor a route resolves.
+ * refusal message, which anchor a route resolves, and which protocol a route rides.
  * <p>
  * Each helper exists exactly once. {@link #renderForMessage} above all must stay the single copy of
  * the CWE-117 escaping. The rule for every refusal: a configured scalar echoed into its message is
@@ -98,5 +99,16 @@ public class RuleSupport {
      */
     public static @Nullable String declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
         return route.anchor() != null ? route.anchor() : endpoint.anchor();
+    }
+
+    /**
+     * The route's effective protocol — the declared value, or {@link Protocol#HTTP} when omitted.
+     *
+     * @param route the route whose protocol is resolved
+     * @return the declared protocol, {@link Protocol#HTTP} when the route declares none
+     */
+    public static Protocol effectiveProtocol(RouteConfig route) {
+        Protocol declared = route.protocol();
+        return declared != null ? declared : Protocol.HTTP;
     }
 }

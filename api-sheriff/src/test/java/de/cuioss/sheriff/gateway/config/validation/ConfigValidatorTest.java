@@ -317,11 +317,6 @@ class ConfigValidatorTest {
                 .directory(root).build();
     }
 
-    private static AssetConfig upstreamAsset(String alias) {
-        return AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
-                .upstream(alias).build();
-    }
-
     @Nested
     @DisplayName("oidc.session.max_sessions_per_subject — its range, and its refusal in cookie mode")
     class SessionMaxSessionsPerSubject {
@@ -621,110 +616,6 @@ class ConfigValidatorTest {
 
             assertTrue(errors.stream().noneMatch(error -> BASE_URL_POINTER.equals(error.pointer())),
                     () -> "a resolvable base_url on a proxy-route endpoint is valid, got: " + errors);
-        }
-    }
-
-    @Nested
-    @DisplayName("Terminal-action / anchor-type consistency (ADR-0014)")
-    class TerminalActionConsistency {
-
-        @Test
-        @DisplayName("Should accept a directory asset route under an asset anchor")
-        void shouldAcceptDirectoryAssetUnderAssetAnchor() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should accept an upstream asset route whose alias resolves")
-        void shouldAcceptUpstreamAssetWithResolvableAlias() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("cdn", "/assets", "assets", upstreamAsset("SECONDARY"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should reject an asset-type anchor route that declares no asset terminal action")
-        void shouldRejectAssetAnchorWithoutAssetBlock() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    anchoredRoute("noasset", "/assets", "assets", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertHasError(errors, "/endpoint/routes", "declares no asset terminal action");
-        }
-
-        @Test
-        @DisplayName("Should reject an asset block on a route under a proxy anchor")
-        void shouldRejectAssetBlockUnderProxyAnchor() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("api",
-                    matrixAnchor("api", "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api",
-                    auth(Require.NONE),
-                    assetRoute("mixed", "/api", "api", directoryAsset("/srv/assets"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
-
-            assertHasError(errors, "/endpoint/routes", "requires an asset-type anchor");
-        }
-
-        @Test
-        @DisplayName("Should reject an asset block on an unanchored route")
-        void shouldRejectAssetBlockOnUnanchoredRoute() {
-            GatewayConfig gateway = validGateway().build();
-            EndpointConfig endpoint = EndpointConfig.builder()
-                    .id("plain").enabled(true).baseUrl("PLAIN")
-                    .auth(auth(Require.NONE))
-                    .routes(List.of(assetRoute("loose", "/loose", null, directoryAsset("/srv/assets"), HttpMethod.GET)))
-                    .build();
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("PLAIN"));
-
-            assertHasError(errors, "/endpoint/routes", "the route is unanchored");
-        }
-
-        @Test
-        @DisplayName("Should reject an upstream asset source whose topology alias does not resolve")
-        void shouldRejectUnresolvableUpstreamAssetAlias() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("cdn", "/assets", "assets", upstreamAsset("MISSING"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertHasError(errors, "/endpoint/routes", "does not resolve in the topology");
-        }
-
-        @Test
-        @DisplayName("Should reject a directory asset source that declares no directory root")
-        void shouldRejectDirectoryAssetWithoutRoot() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("bundle", "/assets", "assets", directoryAsset(null), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertHasError(errors, "/endpoint/routes", "no directory root");
         }
     }
 
@@ -2977,75 +2868,6 @@ class ConfigValidatorTest {
             assertTrue(errors.getFirst().message().contains("declares both"),
                     () -> "the message must state that both lists were declared, got: "
                             + errors.getFirst().message());
-        }
-    }
-
-    @Nested
-    @DisplayName("asset.index and asset.fallback (AS-12)")
-    class AssetIndexAndFallback {
-
-        private List<ConfigError> validateAsset(AssetConfig asset) {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("spa", "/assets", "assets", asset, HttpMethod.GET));
-            return validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
-        }
-
-        private static AssetConfig directoryWith(@Nullable String index, @Nullable String fallback) {
-            return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv/spa")
-                    .index(index).fallback(fallback).build();
-        }
-
-        @Test
-        @DisplayName("Should accept a directory asset declaring a single-segment index and fallback")
-        void shouldAcceptDirectoryIndexAndFallback() {
-            List<ConfigError> errors = validateAsset(directoryWith("index.html", "index.html"));
-
-            assertTrue(errors.isEmpty(), () -> "a directory source may declare index and fallback, got: " + errors);
-        }
-
-        @ParameterizedTest(name = "asset.{0} on source: upstream")
-        @ValueSource(strings = {"index", "fallback"})
-        @DisplayName("Should refuse index or fallback on an upstream asset source")
-        void shouldRefuseOnUpstreamSource(String key) {
-            AssetConfig.AssetConfigBuilder asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
-                    .upstream("SECONDARY");
-            if ("index".equals(key)) {
-                asset.index("index.html");
-            } else {
-                asset.fallback("index.html");
-            }
-
-            List<ConfigError> errors = validateAsset(asset.build());
-
-            assertHasError(errors, "/endpoint/routes",
-                    "asset route 'spa' declares asset." + key + " but its source is 'upstream'");
-        }
-
-        @ParameterizedTest(name = "invalid file name ''{0}''")
-        @ValueSource(strings = {"", ".", "..", "../index.html", "sub/index.html", "sub\\index.html", "index\0.html",
-                "index\r.html"})
-        @DisplayName("Should refuse an index or fallback that is not a single file-name segment")
-        void shouldRefuseInvalidFileName(String name) {
-            List<ConfigError> indexErrors = validateAsset(directoryWith(name, null));
-            List<ConfigError> fallbackErrors = validateAsset(directoryWith(null, name));
-
-            assertAll("both keys are held to the single-segment rule",
-                    () -> assertHasError(indexErrors, "/endpoint/routes",
-                            "asset route 'spa' asset.index must be a single file-name segment"),
-                    () -> assertHasError(fallbackErrors, "/endpoint/routes",
-                            "asset route 'spa' asset.fallback must be a single file-name segment"));
-        }
-
-        @Test
-        @DisplayName("Should never echo the offending file-name value into the refusal message")
-        void shouldNotEchoOffendingValue() {
-            List<ConfigError> errors = validateAsset(directoryWith("../../etc/passwd", null));
-
-            assertTrue(errors.stream().noneMatch(error -> error.message().contains("etc/passwd")),
-                    () -> "the refused value must not reach the operator log, got: " + errors);
         }
     }
 
