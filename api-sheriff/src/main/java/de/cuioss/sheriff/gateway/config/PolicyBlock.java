@@ -389,7 +389,7 @@ Map<Scope, Function<ScopeChain, @Nullable T>> accessors, Fallback<T> fallback, b
         record None<T extends @Nullable Object>() implements Fallback<T> {
 
             @Override
-            public T apply(ScopeChain chain) {
+            public @Nullable T apply(ScopeChain chain) {
                 return null;
             }
         }

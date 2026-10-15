@@ -86,9 +86,8 @@ exist; it would reintroduce merge-order ambiguity.
 [[_policy_block_resolution]]
 === Policy-block resolution -- one rule for every block
 
-Seven policy blocks -- `auth`, `allowed_methods`, `security_filter`, `security_headers`,
-`upstream_defaults`, `forward` and `websocket` -- are resolved for a route by the same rule
-(decision:
+Every policy block -- one row each in the scope table below (<<_policy_block_scopes>>) -- is
+resolved for a route by the same rule (decision:
 link:../adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]):
 
 . *Four scopes, broadest first: `gateway -> anchor -> endpoint -> route`.* `gateway` is the root of

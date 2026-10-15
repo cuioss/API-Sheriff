@@ -217,13 +217,15 @@ ran could disagree, and nothing tied a block's schema keys to the scopes its res
 
 === Decision
 
-* *One rule, declared once per block.* Every policy block -- `auth`, `allowed_methods`,
-  `security_filter`, `security_headers`, `upstream_defaults`, `forward`, `websocket` -- is a `PolicyBlock`
-  descriptor naming the scopes it is declarable at. The nearest declared scope wins and replaces every
-  broader declaration wholesale; `null` and an empty list both count as not declared; with no scope
-  declaring the block, its fallback applies (a value, no block, or a boot error). The route-table
-  builder and the configuration validator both resolve through the descriptors.
-* *The scope set of each block:*
+* *One rule, declared once per block.* Every policy block is a `PolicyBlock` descriptor naming the
+  scopes it is declarable at. The nearest declared scope wins and replaces every broader declaration
+  wholesale; `null` and an empty list both count as not declared; with no scope declaring the block,
+  its fallback applies (a value, no block, or a boot error). The route-table builder and the
+  configuration validator both resolve through the descriptors.
+* *The scope set of each block, as this amendment decides it.* The live inventory is
+  `PolicyBlock.ALL`; its operator-facing scope table
+  (link:../user/anchors.adoc#_policy_block_scopes[Anchors -- Where each policy block is declarable])
+  is the list a contract test binds to the descriptors:
 +
 [cols="2,3", options="header"]
 |===

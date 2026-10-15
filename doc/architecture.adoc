@@ -523,11 +523,12 @@ method is outside the matched route's effective set is rejected `405` with an `A
 above and beyond the per-route `match.methods` matcher (see
 link:configuration.adoc#_allowed_methods[Configuration -- `allowed_methods`]).
 
-Every policy block -- `auth`, `allowed_methods`, `security_filter`, `security_headers`,
-`upstream_defaults`, `forward` and `websocket` -- is resolved for a route by one resolver: each block
-is one `PolicyBlock` descriptor naming the scopes it is declarable at, and the nearest declared scope
-of `gateway -> anchor -> endpoint -> route` wins and replaces every broader declaration wholesale.
-The route-table builder and the configuration validator both resolve through those descriptors, so
+Every policy block is resolved for a route by one resolver: each block is one `PolicyBlock`
+descriptor naming the scopes it is declarable at, and the nearest declared scope of
+`gateway -> anchor -> endpoint -> route` wins and replaces every broader declaration wholesale. The
+blocks and their scopes are listed once, in the scope table
+link:user/anchors.adoc#_policy_block_scopes[Where each policy block is declarable], which a contract
+test binds to the descriptors. The route-table builder and the configuration validator both resolve through those descriptors, so
 the posture the boot validator judges is the posture the route table materializes, and the request
 pipeline only reads the materialized result (see
 link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution] and

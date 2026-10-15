@@ -123,7 +123,7 @@ endpoint:
                                    #   block here or at the endpoint: FORWARD-ALL, the baseline.
                                    #   Per dimension, declaring *_allow selects a positive-list
                                    #   and *_deny a negative-list; declaring BOTH for one
-                                   #   dimension is REFUSED AT BOOT, at the endpoint as here
+                                   #   dimension is REFUSED AT BOOT at either scope
         headers_allow: [x-tenant]  # positive-list. The gateway-understood protocol headers
                                    #   (Accept, Accept-Encoding, Accept-Language, Content-Type,
                                    #   Range, + the conditional validators) cross WITHOUT being
