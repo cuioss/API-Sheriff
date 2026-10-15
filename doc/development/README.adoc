@@ -264,9 +264,9 @@ instead is the wrong fix.
 
 === Why the boot refusal keys on the effective access level
 
-`ConfigValidator`'s `minimal`-refusal rule derives the access level through
-`RouteTableBuilder.effectiveAccessLevel` -- the same seam the route table uses -- rather than reading
-`AnchorConfig.access` directly.
+The `minimal`-refusal rule, `LimitRules.validateSecurityProfileMinimal`, derives the access level
+through `RouteTableBuilder.effectiveAccessLevel` -- the same seam the route table uses -- rather than
+reading `AnchorConfig.access` directly.
 
 Reading the anchor's declared `access` would *under-refuse* the case that most needs refusing. Per
 link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007] a route or endpoint may legally *strengthen* a
