@@ -44,7 +44,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The block carries no scope list: the scopes a route needs are declared additively by the
  * owning endpoint's {@code scopes} key, outside {@code auth}, and materialized once per route
- * as {@link ResolvedRoute#neededScopes()}.
+ * as {@link de.cuioss.sheriff.gateway.routing.Route#neededScopes()}.
  * <p>
  * <strong>Thread safety.</strong> This immutable record is thread-safe and may be shared
  * freely across request threads: {@link Require} is an enum and {@link Boolean} is immutable.

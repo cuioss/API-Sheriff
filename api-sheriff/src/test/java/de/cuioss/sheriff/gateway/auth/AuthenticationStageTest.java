@@ -42,11 +42,13 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
@@ -508,14 +510,16 @@ class AuthenticationStageTest {
         return request;
     }
 
-    private static RouteRuntime route(Require require, Set<String> neededScopes) {
+    private static Route route(Require require, Set<String> neededScopes) {
         return route(AuthConfig.builder().require(require).build(), neededScopes);
     }
 
-    private static RouteRuntime route(AuthConfig auth, Set<String> neededScopes) {
-        return RouteRuntime.builder().id("orders")
+    private static Route route(AuthConfig auth, Set<String> neededScopes) {
+        return Route.builder().id("orders")
+                .match(MatchConfig.builder().pathPrefix("/").build())
                 .effectiveAuth(auth)
                 .neededScopes(neededScopes)
+                .upstream(new ResolvedUpstream("https", "orders.example", 443, ""))
                 .build();
     }
 

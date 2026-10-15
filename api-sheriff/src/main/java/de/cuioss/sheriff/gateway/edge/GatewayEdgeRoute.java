@@ -71,7 +71,6 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
@@ -98,7 +97,8 @@ import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
@@ -133,9 +133,10 @@ import org.jspecify.annotations.Nullable;
  * through the fixed pipeline (stages 0-7) on a virtual thread, then relays the streamed upstream
  * response back to the client.
  * <p>
- * <strong>Boot-time assembly.</strong> The constructor compiles the frozen {@link RouteTable} into
- * immutable {@link RouteRuntime} instances via the {@link RouteRuntimeAssembler} (deduplicating the
- * shared Vert.x clients and SmallRye guards), builds every stage once with the shared
+ * <strong>Boot-time assembly.</strong> The constructor completes every {@link Route} of the frozen
+ * {@link RouteTable} with its boot-attached components via the {@link RouteAssembler}, which also
+ * builds the {@link RouteAssembler.UpstreamClients} lookup holding the deduplicated shared Vert.x
+ * clients and SmallRye guards the proxy dispatch resolves per route. It builds every stage once with the shared
  * {@link SecurityEventCounter}, the gateway-wide {@link SecurityConfiguration} seeded from the
  * resolved {@code security_defaults} {@link SecurityProfile} (an omitted block resolving to
  * {@link SecurityProfile#DEFAULT_PROFILE}), the boot-wired
@@ -174,7 +175,7 @@ import org.jspecify.annotations.Nullable;
  *       fixed CSRF defence; the bearer branch does not. A {@code session_fallback} route counts the
  *       selected branch against {@link SheriffMetrics#AUTH_BRANCH_TOTAL};</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
- *       {@link RouteRuntime#getEffectiveForward() effectiveForward} and the global forwarded block;</li>
+ *       {@link Route#effectiveForward() effectiveForward} and the global forwarded block;</li>
  *   <li>stage 6 / 7 — the route's terminal action: streamed upstream dispatch (byte-capped) and the
  *       streamed response relay for a proxy route, the buffered governed asset response for an
  *       asset route, or — for a redirect route — the {@link RedirectStage} answer (configured
@@ -321,7 +322,9 @@ public class GatewayEdgeRoute {
     /** The fixed disposition the aborted-inbound-body record carries; nothing the client supplied. */
     private static final String INBOUND_BODY_ABORTED_DISPOSITION = "body-stream-failed";
 
-    private final List<RouteRuntime> routes;
+    private final List<Route> routes;
+    /** The shared upstream clients and guards every proxy dispatch resolves its route's pair from. */
+    private final RouteAssembler.UpstreamClients upstreamClients;
     private final ExecutorService virtualThreadExecutor;
     private final EdgeHardeningOptions hardening;
 
@@ -526,12 +529,14 @@ public class GatewayEdgeRoute {
                 ? null
                 : egressTrustProfileResolver.resolve(upstreamTlsProfile);
 
-        RouteRuntimeAssembler assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
-        this.routes = assembler.assemble(routeTable,
+        RouteAssembler assembler = new RouteAssembler(new ProtocolProcessorRegistry());
+        RouteAssembler.AssembledRoutes assembled = assembler.assemble(routeTable,
                 filter -> securityPostureFor(filter, globalProfile, allowExtendedAscii),
                 target -> clientFor(vertx, target, upstreamVerifyHostname, upstreamTrustOptions),
                 this::guardFor,
                 asset -> assetSourceFor(asset, assetContentTypes));
+        this.routes = assembled.routes();
+        this.upstreamClients = assembled.upstreamClients();
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 
         // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
@@ -1134,29 +1139,29 @@ public class GatewayEdgeRoute {
                 return;
             }
             routeSelectionStage.process(request);
-            RouteRuntime route = requireSelectedRoute(request);
+            Route route = requireSelectedRoute(request);
             // Stash the metrics label the moment the route is known, not after the stages below have
             // agreed to serve it. Every one of them can end the request by throwing — the verb gate's
             // 405 first among them — and a label written after them would leave those terminal
             // responses metered under NO_ROUTE, which is both wrong and the opposite of what makes
             // them worth metering: a route answering 405 is exactly what an operator needs to find.
-            ctx.put(ROUTE_KEY, route.getId());
+            ctx.put(ROUTE_KEY, route.id());
             // Stage 2a: from here on every response — the 405 of the verb gate included — is
             // route-scoped, so the route's resolved security_headers block (anchor before global,
             // wholesale) replaces the global block seeded at stage 0. Everything answered earlier
             // (a stage-1 rejection, an unrouted 404, the CORS preflight) keeps the global block.
-            securityHeadersStage.applyRouteHeaders(request, route.getSecurityHeaders(),
-                    route.getMatcher().matchHeaderNames());
+            securityHeadersStage.applyRouteHeaders(request, route.securityHeaders(),
+                    route.matcher().matchHeaderNames());
             verbGateStage.process(request);
-            thoroughChecksStage.process(request, route.getEffectiveAllowedPaths());
+            thoroughChecksStage.process(request, route.effectiveAllowedPaths());
             // Resolve the authentication branch through the same pure resolver stage 4 calls again,
             // so the CSRF gate below and the authentication stage cannot disagree on it. Only a
             // session_fallback route meters its branch — a plain route's branch is its posture and
             // carries no signal, so it never touches sheriff_auth_branch_total.
-            AuthConfig effectiveAuth = route.getEffectiveAuth();
+            AuthConfig effectiveAuth = route.effectiveAuth();
             AuthBranch branch = AuthBranch.resolve(effectiveAuth, request);
             if (effectiveAuth.effectiveSessionFallback()) {
-                sheriffMetrics.recordAuthBranch(route.getId(), branch);
+                sheriffMetrics.recordAuthBranch(route.id(), branch);
             }
             // Fixed CSRF defence (D7): every unsafe-method request resolved onto the SESSION branch must
             // prove same-origin provenance before the session runtime resolves it — a require:session
@@ -1179,19 +1184,19 @@ public class GatewayEdgeRoute {
             // above: an unauthenticated request under an authenticated anchor is challenged before
             // any configured location is disclosed. No forward policy is consumed and no upstream is
             // contacted, so REQUEST_FORWARDED is deliberately not incremented.
-            RedirectConfig redirect = route.getRedirect();
+            RedirectConfig redirect = route.redirect();
             if (redirect != null) {
                 writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query(),
-                        route.getEffectiveAuth(), request.responseSetCookies(),
-                        route.getMatcher().matchHeaderNames()));
+                        route.effectiveAuth(), request.responseSetCookies(),
+                        route.matcher().matchHeaderNames()));
                 return;
             }
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
-                    route.getEffectiveForward(), route.isNotModifiedEnabled());
+                    route.effectiveForward(), route.notModifiedEnabled());
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
             // and relays response trailers. Every other protocol takes the HTTP dispatch path.
-            switch (route.getProtocol()) {
+            switch (route.protocol()) {
                 case WEBSOCKET -> dispatchWebSocket(ctx, request, route, forward);
                 case GRPC -> dispatchGrpc(ctx, request, route, forward);
                 default -> dispatchAndRelay(ctx, request, route, forward);
@@ -1578,33 +1583,33 @@ public class GatewayEdgeRoute {
         return body == null ? null : body.toString(StandardCharsets.UTF_8);
     }
 
-    private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
+    private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, Route route,
             ForwardPolicyStage.Result forward) {
         String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         // An asset route serves its terminal action directly — the buffered, gateway-governed
         // asset response — instead of streaming to an upstream. Auth (stage 4) has already run,
         // so an unauthorized request never reaches the source (auth-before-source, ADR-0014).
-        if (route.getAssetSource() != null) {
+        if (route.assetSource() != null) {
             serveAsset(ctx, request, route, remainder);
             return;
         }
         String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.getUpstream();
+        ResolvedUpstream upstreamTarget = route.upstream();
         if (upstreamTarget == null) {
             throw new IllegalStateException("proxy dispatch requires a resolved upstream");
         }
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        SecurityConfiguration routeSecurity = route.getSecurityConfiguration();
+        SecurityConfiguration routeSecurity = route.securityConfiguration();
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
-        DispatchStage dispatchStage = new DispatchStage(cap, hardening.requestBodyIdleTimeoutMillis(),
-                upstreamFailureMapper);
+        DispatchStage dispatchStage = new DispatchStage(upstreamClients, cap,
+                hardening.requestBodyIdleTimeoutMillis(), upstreamFailureMapper);
         DispatchStage.BodyFraming framing = DispatchStage.BodyFraming.of(request.method(),
                 request.declaredContentLength(), lateBodyRefusal(ctx));
         long upstreamStartNanos = System.nanoTime();
         HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> dispatchStage.dispatch(route,
                 request.method(), uri, forward.headers(), inboundBody(ctx), framing));
-        sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
+        sheriffMetrics.recordUpstreamDuration(route.id(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The relay mutates the Vert.x HttpServerResponse (status, headers) and subscribes the
         // upstream pipe — all of which are event-loop-bound and NOT safe to touch from this
@@ -1617,7 +1622,7 @@ public class GatewayEdgeRoute {
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         relayOnEventLoop(ctx, stageSetCookies, upstream, end -> responseStage.relay(upstream, ctx.response(),
-                route.isNotModifiedEnabled(), route.getLocationRewriter(), setHeaders, defaultHeaders, end));
+                route.notModifiedEnabled(), route.locationRewriter(), setHeaders, defaultHeaders, end));
     }
 
     /**
@@ -1656,12 +1661,12 @@ public class GatewayEdgeRoute {
      * connection's event loop under {@link #CLIENT_CONTEXT_KEY}, so the upstream dial, the client upgrade
      * and every relay callback run on the client connection's context regardless of the executor.
      */
-    private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
+    private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, Route route,
             ForwardPolicyStage.Result forward) {
-        originValidationStage.validate(request, route.getId(), route.getEffectiveAllowedOrigins());
+        originValidationStage.validate(request, route.id(), route.effectiveAllowedOrigins());
         String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.getUpstream();
+        ResolvedUpstream upstreamTarget = route.upstream();
         if (upstreamTarget == null) {
             throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
         }
@@ -1681,7 +1686,7 @@ public class GatewayEdgeRoute {
                     admittingSession.get().sessionId(), admittingSession.get().expiresAt());
             if (tracked.isEmpty()) {
                 LOGGER.debug("Session relay registry at its capacity on route '%s' — refusing the upgrade",
-                        route.getId());
+                        route.id());
                 releaseAdmission(ctx, admissionGuard);
                 ctx.vertx().runOnContext(v -> reject(ctx, SERVICE_UNAVAILABLE));
                 return;
@@ -1694,7 +1699,7 @@ public class GatewayEdgeRoute {
             // request will never reach the relay teardown that would return it, so release it here —
             // through the shared guard, so the 503 response's own end handler cannot double-release.
             LOGGER.debug("WebSocket relay budget exhausted on route '%s' — refusing the upgrade",
-                    route.getId());
+                    route.id());
             releaseAdmission(ctx, admissionGuard);
             ctx.vertx().runOnContext(v -> reject(ctx, SERVICE_UNAVAILABLE));
             return;
@@ -1717,23 +1722,23 @@ public class GatewayEdgeRoute {
      * A dispatch failure (including an h2-negotiation failure) surfaces as a {@link GatewayException}
      * that {@link #renderRejection} renders as a trailers-only gRPC status rather than problem+json.
      */
-    private void dispatchGrpc(RoutingContext ctx, PipelineRequest request, RouteRuntime route,
+    private void dispatchGrpc(RoutingContext ctx, PipelineRequest request, Route route,
             ForwardPolicyStage.Result forward) {
         String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
         String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.getUpstream();
+        ResolvedUpstream upstreamTarget = route.upstream();
         if (upstreamTarget == null) {
             throw new IllegalStateException("gRPC dispatch requires a resolved upstream");
         }
         String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        SecurityConfiguration routeSecurity = route.getSecurityConfiguration();
+        SecurityConfiguration routeSecurity = route.securityConfiguration();
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
-        GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(cap, upstreamFailureMapper);
+        GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(upstreamClients, cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
         HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> grpcDispatchStage.dispatch(route,
                 request.method(), uri, forward.headers(), inboundBody(ctx), request.declaredContentLength()));
-        sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
+        sheriffMetrics.recordUpstreamDuration(route.id(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
         // like the HTTP relay path.
@@ -1741,7 +1746,7 @@ public class GatewayEdgeRoute {
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         relayOnEventLoop(ctx, stageSetCookies, upstream, end -> responseStage.relayWithTrailers(upstream,
-                ctx.response(), route.isNotModifiedEnabled(), setHeaders, defaultHeaders, end));
+                ctx.response(), route.notModifiedEnabled(), setHeaders, defaultHeaders, end));
     }
 
     /**
@@ -1751,8 +1756,8 @@ public class GatewayEdgeRoute {
      * client. GET/HEAD-only enforcement and header governance live in the source and envelope;
      * this method only routes and writes.
      */
-    private void serveAsset(RoutingContext ctx, PipelineRequest request, RouteRuntime route, String remainder) {
-        AssetSource source = route.getAssetSource();
+    private void serveAsset(RoutingContext ctx, PipelineRequest request, Route route, String remainder) {
+        AssetSource source = route.assetSource();
         if (source == null) {
             throw new IllegalStateException("asset dispatch requires an asset source");
         }
@@ -2027,8 +2032,8 @@ public class GatewayEdgeRoute {
     private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
         EventType eventType = rejected.getEventType();
         seedRetryAfter(request, eventType);
-        RouteRuntime selected = request != null ? request.selectedRoute() : null;
-        if (selected != null && selected.getProtocol() == Protocol.GRPC) {
+        Route selected = request != null ? request.selectedRoute() : null;
+        if (selected != null && selected.protocol() == Protocol.GRPC) {
             Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
             List<String> setCookies = request.responseSetCookies();
             ctx.vertx().runOnContext(v -> {
@@ -2315,8 +2320,8 @@ public class GatewayEdgeRoute {
         }
     }
 
-    private static RouteRuntime requireSelectedRoute(PipelineRequest request) {
-        RouteRuntime route = request.selectedRoute();
+    private static Route requireSelectedRoute(PipelineRequest request) {
+        Route route = request.selectedRoute();
         if (route == null) {
             throw new IllegalStateException("Route dispatch requires the route selected at stage 2");
         }
@@ -2336,11 +2341,11 @@ public class GatewayEdgeRoute {
      * dispatch path appends to the upstream base path. An exact route matched the whole address, so
      * its remainder is empty; a prefix route strips its (trailing-slash-free) prefix.
      */
-    private static String remainderAfterMatchKey(RouteRuntime route, String canonical) {
-        if (route.getMatcher().isExact()) {
+    private static String remainderAfterMatchKey(Route route, String canonical) {
+        if (route.matcher().isExact()) {
             return "";
         }
-        String prefix = stripTrailingSlash(route.getMatcher().matchKey());
+        String prefix = stripTrailingSlash(route.matcher().matchKey());
         return canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
     }
 
@@ -2426,7 +2431,7 @@ public class GatewayEdgeRoute {
      * branch is left as it is: an HTTP/2 connection is shared by its streams, and the gateway resets a
      * single stream rather than closing the connection.
      */
-    private static HttpClient clientFor(Vertx vertx, RouteRuntimeAssembler.UpstreamTarget target,
+    private static HttpClient clientFor(Vertx vertx, RouteAssembler.UpstreamTarget target,
             boolean verifyHostname, @Nullable TrustOptions trustOptions) {
         if (!target.forcedHttp2()) {
             return vertx.createHttpClient(
@@ -2615,14 +2620,14 @@ public class GatewayEdgeRoute {
      * preset-seeded limit overrides — is asserted directly by {@code GatewayEdgeRouteTest} instead
      * of only through a booted edge, whose assembled routes are not observable.
      */
-    static RouteRuntimeAssembler.SecurityPosture securityPostureFor(
+    static RouteAssembler.SecurityPosture securityPostureFor(
             @Nullable SecurityFilterConfig filter, SecurityProfile globalProfile,
             @Nullable Boolean allowExtendedAscii) {
         SecurityProfile effective = SecurityProfile.parse(filter == null ? null : filter.profile())
                 .orElse(globalProfile);
         SecurityConfiguration preset = SecurityConfigurations.withDeclaredCharacterPolicy(
                 SecurityProfile.limitsProfile(effective, globalProfile).preset(), allowExtendedAscii);
-        return new RouteRuntimeAssembler.SecurityPosture(effective,
+        return new RouteAssembler.SecurityPosture(effective,
                 filter == null ? preset : applyDeclaredLimits(preset, filter));
     }
 
@@ -2685,17 +2690,17 @@ public class GatewayEdgeRoute {
      * {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds the whole dispatch, a steady upload included;
      * the request-body idle timeout is shorter.
      */
-    private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
+    private Guard guardFor(RouteAssembler.ResilienceShape shape) {
         // The name identifies the breaker in its description and its transition log lines only. It is
         // deliberately NOT registered as the breaker's SmallRye name: that registry is JVM-global and
         // refuses a name it already holds, so a second edge built in the same JVM for the same upstream
         // host:port — any edge whose upstream port happens to be reused — would fail every dispatch to
         // it with a 502. The name carries every dimension of the ResilienceShape that keys
-        // RouteRuntimeAssembler's guardCache — scheme, host, port, the forced-HTTP/2 flag and
+        // RouteAssembler's guardCache — scheme, host, port, the forced-HTTP/2 flag and
         // retryEnabled — because each distinct shape holds its own breaker: a gRPC route and an HTTP/1.1
         // route to one host:port, or two routes differing only in retryEnabled, open and close
         // independently, and an operator reading a transition must be able to tell which one moved.
-        RouteRuntimeAssembler.UpstreamTarget target = shape.target();
+        RouteAssembler.UpstreamTarget target = shape.target();
         String name = target.scheme() + "://" + target.host() + ":" + target.port()
                 + ":h2=" + target.forcedHttp2() + ":retry=" + shape.retryEnabled();
         Guard.Builder builder = Guard.create().withDescription("upstream-" + name);

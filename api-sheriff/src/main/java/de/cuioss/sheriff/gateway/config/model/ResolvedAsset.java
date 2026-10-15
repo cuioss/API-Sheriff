@@ -25,10 +25,10 @@ import org.jspecify.annotations.Nullable;
  * ADR-0014).
  * <p>
  * A route resolves to exactly one terminal action — either an
- * {@link ResolvedRoute#upstream() upstream} proxy target or this asset action,
- * never both. This record is the boot-time <em>description</em> of an asset action;
+ * {@link de.cuioss.sheriff.gateway.routing.Route#upstream() upstream} proxy target or this asset
+ * action, never both. This record is the boot-time <em>description</em> of an asset action;
  * the live, framework-coupled source (a directory reader or an SSRF-guarded upstream
- * fetcher) is built from it by the route-runtime assembler, so the agnostic
+ * fetcher) is built from it by the edge's {@code RouteAssembler}, so the agnostic
  * {@code config.model} layer stays free of the {@code asset} runtime package.
  * <p>
  * The {@link AssetConfig.Source source} discriminator selects which resolved field is

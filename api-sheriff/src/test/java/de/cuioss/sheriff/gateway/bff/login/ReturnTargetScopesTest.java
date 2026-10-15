@@ -25,9 +25,9 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -68,12 +68,12 @@ class ReturnTargetScopesTest {
             route("tenant-fallback", MatchConfig.builder().pathPrefix("/tenant").build(), Require.SESSION,
                     APP_SCOPES))), ORIGIN, OIDC_SCOPES);
 
-    private static ResolvedRoute route(String id, MatchConfig match, Require require, Set<String> neededScopes) {
-        return ResolvedRoute.builder()
+    private static Route route(String id, MatchConfig match, Require require, Set<String> neededScopes) {
+        return Route.builder()
                 .id(id)
                 .match(match)
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", "upstream.example", 443, ""))
                 .neededScopes(neededScopes)
                 .build();

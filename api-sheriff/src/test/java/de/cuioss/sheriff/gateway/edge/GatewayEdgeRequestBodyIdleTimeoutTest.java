@@ -26,6 +26,7 @@ import java.lang.annotation.Annotation;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -40,11 +41,11 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -301,12 +302,12 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
     private HttpServer startEdge() throws Exception {
         TokenValidator tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-        RouteTable routes = new RouteTable(List.of(ResolvedRoute.builder()
+        RouteTable routes = new RouteTable(List.of(Route.builder()
                 .id(ROUTE)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix("/" + ROUTE).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
                 .build()));
         EdgeHardeningOptions hardening = new EdgeHardeningOptions(EdgeHardeningConfig.defaults(), IDLE_TIMEOUT_MILLIS);

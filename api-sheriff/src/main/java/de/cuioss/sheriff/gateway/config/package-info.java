@@ -17,9 +17,10 @@
  * Framework-agnostic configuration assembly for the API Sheriff gateway.
  * <p>
  * This package hosts the collaborators that turn the bound, validated
- * configuration model into the runtime-ready {@link de.cuioss.sheriff.gateway.config.model.RouteTable}:
+ * configuration model into the runtime-ready {@link de.cuioss.sheriff.gateway.routing.RouteTable}:
  * the {@link de.cuioss.sheriff.gateway.config.RouteTableBuilder} that materializes the
- * effective per-route settings, the {@link de.cuioss.sheriff.gateway.config.PolicyBlock}
+ * effective per-route settings into one {@link de.cuioss.sheriff.gateway.routing.Route} each,
+ * the {@link de.cuioss.sheriff.gateway.config.PolicyBlock}
  * descriptors every policy block is resolved through, and the
  * {@link de.cuioss.sheriff.gateway.config.ConfigLogMessages}
  * structured-log catalogue. The framework-bound wiring — the CDI producer that

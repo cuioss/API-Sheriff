@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Proxy;
 import java.net.ConnectException;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,15 +42,14 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.smallrye.faulttolerance.api.Guard;
@@ -87,15 +87,22 @@ class GrpcDispatchStageTest {
         @Test
         @DisplayName("rejects a null failure mapper")
         void rejectsNullFailureMapper() {
-            assertThrows(NullPointerException.class, () -> new GrpcDispatchStage(1024L, null),
+            RouteAssembler.UpstreamClients noClients = new RouteAssembler.UpstreamClients(Map.of(), Map.of());
+
+            assertThrows(NullPointerException.class, () -> new GrpcDispatchStage(noClients, 1024L, null),
                     "the gRPC dispatch stage requires a non-null failure mapper");
         }
 
         @Test
         @DisplayName("builds with a body cap and a failure mapper, and maps a failed dispatch through that mapper")
         void buildsWithFailureMapper() {
-            GrpcDispatchStage stage = new GrpcDispatchStage(1024L, new UpstreamFailureMapper(new GatewayEventCounter()));
-            RouteRuntime route = RouteRuntime.builder().id("g").resilienceGuard(new RefusingGuard()).build();
+            Route route = route("g", Protocol.GRPC, upstream("svc.internal"));
+            RouteAssembler.UpstreamTarget forcedH2 = RouteAssembler.UpstreamTarget.of(route);
+            RouteAssembler.UpstreamClients clients = new RouteAssembler.UpstreamClients(
+                    Map.of(forcedH2, unusedClient()),
+                    Map.of(new RouteAssembler.ResilienceShape(forcedH2, route.retryEnabled()), new RefusingGuard()));
+            GrpcDispatchStage stage = new GrpcDispatchStage(clients, 1024L,
+                    new UpstreamFailureMapper(new GatewayEventCounter()));
             Map<String, String> noHeaders = Map.of();
             TestReadStream noBody = new TestReadStream();
 
@@ -106,6 +113,14 @@ class GrpcDispatchStageTest {
             assertEquals(EventType.UPSTREAM_ERROR, mapped.getEventType(),
                     "the stage holds the mapper it was built with: a refused upstream connection is the 502 arm");
         }
+
+        /** A forced-h2 client the refusing guard never lets the dispatch reach: every call fails the test. */
+        private HttpClient unusedClient() {
+            return (HttpClient) Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                    new Class<?>[]{HttpClient.class}, (_, method, _) -> {
+                        throw new AssertionError("the refused dispatch must not touch the client: " + method.getName());
+                    });
+        }
     }
 
     @Nested
@@ -113,24 +128,24 @@ class GrpcDispatchStageTest {
     class ForcedH2ClientWiring {
 
         private Vertx vertx;
-        private RouteRuntimeAssembler assembler;
-        private final List<RouteRuntimeAssembler.UpstreamTarget> capturedTargets = new ArrayList<>();
-        private RouteRuntimeAssembler.UpstreamClientFactory clientFactory;
-        private RouteRuntimeAssembler.SecurityConfigurationFactory securityConfigFactory;
-        private RouteRuntimeAssembler.ResilienceGuardFactory guardFactory;
-        private RouteRuntimeAssembler.AssetSourceFactory assetSourceFactory;
+        private RouteAssembler assembler;
+        private final List<RouteAssembler.UpstreamTarget> capturedTargets = new ArrayList<>();
+        private RouteAssembler.UpstreamClientFactory clientFactory;
+        private RouteAssembler.SecurityConfigurationFactory securityConfigFactory;
+        private RouteAssembler.ResilienceGuardFactory guardFactory;
+        private RouteAssembler.AssetSourceFactory assetSourceFactory;
 
         @BeforeEach
         void setUp() {
             vertx = Vertx.vertx();
-            assembler = new RouteRuntimeAssembler(new ProtocolProcessorRegistry());
+            assembler = new RouteAssembler(new ProtocolProcessorRegistry());
             clientFactory = target -> {
                 capturedTargets.add(target);
                 return vertx.createHttpClient();
             };
             // A fixed neutral posture: this test's subject is forced-h2 client-tuple splitting, which
             // is orthogonal to the inbound security posture.
-            securityConfigFactory = _ -> new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.STRICT,
+            securityConfigFactory = _ -> new RouteAssembler.SecurityPosture(SecurityProfile.STRICT,
                     SecurityConfiguration.builder().build());
             guardFactory = shape -> new StoredOnlyGuard();
             assetSourceFactory = asset -> {
@@ -152,10 +167,10 @@ class GrpcDispatchStageTest {
                     route("h", Protocol.HTTP, upstream("svc.internal"))));
 
             // Act
-            List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory,
+            RouteAssembler.AssembledRoutes assembled = assembler.assemble(table, securityConfigFactory, clientFactory,
                     guardFactory, assetSourceFactory);
 
-            // Assert — the forced-h2 flag splits the client-sharing tuple, so the two routes hold
+            // Assert — the forced-h2 flag splits the client-sharing tuple, so the two routes are served by
             // distinct clients even though the host:port is identical.
             assertEquals(2, capturedTargets.size(), "two distinct upstream tuples build two clients");
             assertTrue(capturedTargets.getFirst().forcedHttp2(), "the gRPC route's upstream target is forced to HTTP/2");
@@ -164,8 +179,7 @@ class GrpcDispatchStageTest {
                     "both targets address the same host");
             assertEquals(capturedTargets.getFirst().port(), capturedTargets.get(1).port(),
                     "both targets address the same port");
-            assertNotSame(runtimes.getFirst().getHttpClient(),
-                    runtimes.get(1).getHttpClient(),
+            assertNotSame(clientOf(assembled, 0), clientOf(assembled, 1),
                     "a gRPC route gets a forced-h2 client distinct from the HTTP/1.1 client to the same host:port");
         }
 
@@ -178,15 +192,20 @@ class GrpcDispatchStageTest {
                     route("g2", Protocol.GRPC, upstream("svc.internal"))));
 
             // Act
-            List<RouteRuntime> runtimes = assembler.assemble(table, securityConfigFactory, clientFactory,
+            RouteAssembler.AssembledRoutes assembled = assembler.assemble(table, securityConfigFactory, clientFactory,
                     guardFactory, assetSourceFactory);
 
             // Assert — one forced-h2 tuple, one shared client
             assertEquals(1, capturedTargets.size(), "two gRPC routes to one host:port share a single forced-h2 tuple");
             assertTrue(capturedTargets.getFirst().forcedHttp2(), "the shared tuple is forced to HTTP/2");
-            assertSame(runtimes.getFirst().getHttpClient(),
-                    runtimes.get(1).getHttpClient(),
+            assertSame(clientOf(assembled, 0), clientOf(assembled, 1),
                     "gRPC routes sharing a host:port reuse one forced-h2 client");
+        }
+
+        /** The shared client the upstream lookup serves the {@code index}-th assembled route with. */
+        private HttpClient clientOf(RouteAssembler.AssembledRoutes assembled, int index) {
+            Route route = assembled.routes().get(index);
+            return assembled.upstreamClients().client(RouteAssembler.UpstreamTarget.of(route)).orElseThrow();
         }
     }
 
@@ -393,13 +412,13 @@ class GrpcDispatchStageTest {
         }
     }
 
-    private static ResolvedRoute route(String id, Protocol protocol, ResolvedUpstream upstream) {
-        return ResolvedRoute.builder()
+    private static Route route(String id, Protocol protocol, ResolvedUpstream upstream) {
+        return Route.builder()
                 .id(id)
                 .protocol(protocol)
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.POST))
+                .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                 .upstream(upstream)
                 .build();
     }
@@ -484,8 +503,8 @@ class GrpcDispatchStageTest {
     }
 
     /**
-     * A {@link Guard} test double that is only ever stored on a {@link RouteRuntime} and never invoked
-     * during assembly, so its guard methods reject execution.
+     * A {@link Guard} test double that is only ever held in the {@link RouteAssembler.UpstreamClients}
+     * lookup and never invoked during assembly, so its guard methods reject execution.
      */
     private static final class StoredOnlyGuard implements Guard {
 

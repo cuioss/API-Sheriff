@@ -29,7 +29,7 @@ import de.cuioss.http.security.pipeline.PipelineFactory;
 import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -153,11 +153,11 @@ public final class ThoroughChecksStage {
     public void process(PipelineRequest request, List<String> allowedPaths) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(allowedPaths, "allowedPaths");
-        RouteRuntime route = requireSelectedRoute(request);
+        Route route = requireSelectedRoute(request);
         String canonicalPath = requireCanonicalPath(request);
         // Present for every assembler-produced route (the posture resolver runs for all of them), so
-        // the fallback covers only a RouteRuntime built without a resolved configuration.
-        SecurityConfiguration declaredConfig = route.getSecurityConfiguration();
+        // the fallback covers only a Route built without a resolved configuration.
+        SecurityConfiguration declaredConfig = route.securityConfiguration();
         SecurityConfiguration routeConfig = declaredConfig == null ? defaultConfiguration : declaredConfig;
 
         // Unconditional half — a resource guard and a path allowlist, neither of which is an
@@ -166,7 +166,7 @@ public final class ThoroughChecksStage {
         enforceAllowedPaths(canonicalPath, allowedPaths);
 
         // Skippable half — the closed list of what 'minimal' turns off, and nothing more.
-        if (!route.getSecurityProfile().skippableValidationEnabled()) {
+        if (!route.securityProfile().skippableValidationEnabled()) {
             return;
         }
         validateParameters(request, routeConfig);
@@ -377,8 +377,8 @@ public final class ThoroughChecksStage {
         return segment.startsWith(SEGMENT_WILDCARD_PREFIX) && segment.endsWith(SEGMENT_WILDCARD_SUFFIX);
     }
 
-    private static RouteRuntime requireSelectedRoute(PipelineRequest request) {
-        RouteRuntime route = request.selectedRoute();
+    private static Route requireSelectedRoute(PipelineRequest request) {
+        Route route = request.selectedRoute();
         if (route == null) {
             throw new IllegalStateException("Thorough checks require the route selected at stage 2");
         }

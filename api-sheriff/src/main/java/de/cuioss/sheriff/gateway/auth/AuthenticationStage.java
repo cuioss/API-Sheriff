@@ -25,7 +25,7 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
 import de.cuioss.sheriff.token.validation.domain.token.AccessTokenContent;
@@ -47,7 +47,7 @@ import org.jspecify.annotations.Nullable;
  *       mandatory for DPoP binding). A missing token is 401 {@link EventType#TOKEN_MISSING}; an
  *       invalid / expired / tampered token is 401 {@link EventType#TOKEN_INVALID}; both carry
  *       {@code WWW-Authenticate: Bearer}. A valid token lacking a member of the route's
- *       {@link RouteRuntime#getNeededScopes() needed scopes} ({@code oidc.scopes} united with the
+ *       {@link Route#neededScopes() needed scopes} ({@code oidc.scopes} united with the
  *       endpoint's {@code scopes}) is 403 {@link EventType#SCOPE_MISSING} carrying the RFC 6750
  *       challenge {@code WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"},
  *       which names only the missing scopes, sorted; an empty needed set skips the check;</li>
@@ -56,7 +56,7 @@ import org.jspecify.annotations.Nullable;
  *       injected as the upstream {@code Authorization: Bearer}, and an unauthenticated request is
  *       redirected into the auth-code flow (navigation) or challenged 401
  *       {@code application/problem+json} (everything else). The session's active scope set is
- *       compared against the route's {@link RouteRuntime#getNeededScopes() needed scopes} on every
+ *       compared against the route's {@link Route#neededScopes() needed scopes} on every
  *       request, whatever {@code token_relay} says: a missing scope inside the session's granted scope set is
  *       obtained by a refresh; any other missing scope redirects a navigation into a widening of
  *       the live session and answers everything else 403 {@link EventType#SCOPE_MISSING} as
@@ -133,8 +133,8 @@ public final class AuthenticationStage {
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
-        RouteRuntime route = requireSelectedRoute(request);
-        AuthConfig auth = route.getEffectiveAuth();
+        Route route = requireSelectedRoute(request);
+        AuthConfig auth = route.effectiveAuth();
         AuthBranch branch = AuthBranch.resolve(auth, request);
         // The `case null` label is load-bearing, not defensive: it makes this an ENHANCED switch,
         // which javac is required to check for exhaustiveness. Without it a constant-only switch
@@ -157,13 +157,13 @@ public final class AuthenticationStage {
             }
             case SESSION -> requireSessionStage(route).process(request);
             case null -> throw new IllegalStateException(
-                    "Route " + route.getId() + " reached authentication with a null auth branch");
+                    "Route " + route.id() + " reached authentication with a null auth branch");
         }
     }
 
-    private SessionAuthenticationStage requireSessionStage(RouteRuntime route) {
+    private SessionAuthenticationStage requireSessionStage(Route route) {
         if (sessionStage == null) {
-            throw new IllegalStateException("Route " + route.getId()
+            throw new IllegalStateException("Route " + route.id()
                     + " requires session authentication but no session runtime is wired");
         }
         return sessionStage;
@@ -174,7 +174,7 @@ public final class AuthenticationStage {
      *
      * @return the raw token, once it has passed validation and the scope check
      */
-    private String validateBearer(PipelineRequest request, RouteRuntime route) {
+    private String validateBearer(PipelineRequest request, Route route) {
         String token = extractBearerToken(request)
                 .orElseThrow(() -> unauthorized(request, EventType.TOKEN_MISSING, "No bearer token presented"));
 
@@ -186,7 +186,7 @@ public final class AuthenticationStage {
             throw unauthorizedFromValidation(request, validationFailure);
         }
 
-        Set<String> neededScopes = route.getNeededScopes();
+        Set<String> neededScopes = route.neededScopes();
         if (!neededScopes.isEmpty()) {
             Set<String> missingScopes = content.determineMissingScopes(neededScopes);
             if (!missingScopes.isEmpty()) {
@@ -203,13 +203,13 @@ public final class AuthenticationStage {
      * the challenge is deterministic. Every name is drawn from the route's boot-configured
      * {@code neededScopes} — never from the token — so the header carries no token material.
      */
-    private static GatewayException insufficientScope(PipelineRequest request, RouteRuntime route,
+    private static GatewayException insufficientScope(PipelineRequest request, Route route,
             Set<String> missingScopes) {
         String missing = String.join(" ", new TreeSet<>(missingScopes));
         request.responseHeaders().put(WWW_AUTHENTICATE,
                 "Bearer error=\"insufficient_scope\", scope=\"" + missing + "\"");
         return new GatewayException(EventType.SCOPE_MISSING,
-                "Token missing a needed scope for route " + route.getId());
+                "Token missing a needed scope for route " + route.id());
     }
 
     private static Optional<String> extractBearerToken(PipelineRequest request) {
@@ -230,8 +230,8 @@ public final class AuthenticationStage {
         return new GatewayException(EventType.TOKEN_INVALID, "Bearer token rejected by validation", validationFailure);
     }
 
-    private static RouteRuntime requireSelectedRoute(PipelineRequest request) {
-        RouteRuntime route = request.selectedRoute();
+    private static Route requireSelectedRoute(PipelineRequest request) {
+        Route route = request.selectedRoute();
         if (route == null) {
             throw new IllegalStateException("Authentication requires the route selected at stage 2");
         }

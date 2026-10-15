@@ -74,9 +74,7 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
@@ -88,6 +86,8 @@ import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.portal.PortalRenderer;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -244,7 +244,7 @@ class GatewayEdgeRouteTest {
     }
 
     @Test
-    @DisplayName("boots a WebSocket route without a forced-HTTP/2 client, beside the edge-wide WebSocket client")
+    @DisplayName("boots a WebSocket route without any upstream HTTP client, beside the edge-wide WebSocket client")
     void bootsWebSocketProtocol() {
         // Arrange
         RouteTable webSocketTable = new RouteTable(List.of(
@@ -254,9 +254,9 @@ class GatewayEdgeRouteTest {
         ClientWiring wiring = clientWiringOf(webSocketTable);
 
         // Assert — WEBSOCKET is registered, so the route is assembled by the WebSocket processor's rules
-        assertEquals(new ClientWiring(1, 0, 1), wiring,
-                "a WebSocket route's upstream tuple builds a default client and never a forced-HTTP/2 one; "
-                        + "the relay itself runs over the one edge-wide WebSocket client");
+        assertEquals(new ClientWiring(0, 0, 1), wiring,
+                "a WebSocket route builds neither a default nor a forced-HTTP/2 upstream client (the proxy "
+                        + "dispatch never serves it); the relay runs over the one edge-wide WebSocket client");
     }
 
     @Test
@@ -691,7 +691,7 @@ class GatewayEdgeRouteTest {
 
     /**
      * The {@code security_filter → security_defaults} posture resolution the edge hands to the
-     * {@code RouteRuntimeAssembler}. It is asserted directly rather than through a booted edge
+     * {@code RouteAssembler}. It is asserted directly rather than through a booted edge
      * because an assembled edge exposes no view of its compiled routes.
      */
     @Nested
@@ -704,9 +704,9 @@ class GatewayEdgeRouteTest {
             // Arrange — the case the previous effectiveSecurityFilter().map(...) shape skipped entirely
 
             // Act
-            RouteRuntimeAssembler.SecurityPosture strict =
+            RouteAssembler.SecurityPosture strict =
                     GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, null);
-            RouteRuntimeAssembler.SecurityPosture lenient =
+            RouteAssembler.SecurityPosture lenient =
                     GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT, null);
 
             // Assert
@@ -726,7 +726,7 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().allowedPaths(List.of("/x")).build();
 
             // Act
-            RouteRuntimeAssembler.SecurityPosture posture =
+            RouteAssembler.SecurityPosture posture =
                     GatewayEdgeRoute.securityPostureFor(noProfile, SecurityProfile.LENIENT, null);
 
             // Assert
@@ -788,7 +788,7 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().profile("lenient").build();
 
             // Act
-            RouteRuntimeAssembler.SecurityPosture posture =
+            RouteAssembler.SecurityPosture posture =
                     GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT, null);
 
             // Assert
@@ -804,11 +804,11 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().profile("minimal").build();
 
             // Act — chain minimal → lenient, then the all-minimal chain
-            RouteRuntimeAssembler.SecurityPosture inheritsLenient =
+            RouteAssembler.SecurityPosture inheritsLenient =
                     GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.LENIENT, null);
-            RouteRuntimeAssembler.SecurityPosture allMinimal =
+            RouteAssembler.SecurityPosture allMinimal =
                     GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.MINIMAL, null);
-            RouteRuntimeAssembler.SecurityPosture globalMinimalBlockLess =
+            RouteAssembler.SecurityPosture globalMinimalBlockLess =
                     GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.MINIMAL, null);
 
             // Assert
@@ -1311,13 +1311,13 @@ class GatewayEdgeRouteTest {
             }
         }
 
-        private ResolvedRoute proxyRoute(int upstreamPort) {
-            return ResolvedRoute.builder()
+        private Route proxyRoute(int upstreamPort) {
+            return Route.builder()
                     .id("t")
                     .protocol(Protocol.HTTP)
                     .match(MatchConfig.builder().pathPrefix("/t").build())
                     .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LOOPBACK, upstreamPort, ""))
                     .build();
         }
@@ -1670,13 +1670,13 @@ class GatewayEdgeRouteTest {
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         }
 
-        private ResolvedRoute appsRoute(int upstreamPort) {
-            return ResolvedRoute.builder()
+        private Route appsRoute(int upstreamPort) {
+            return Route.builder()
                     .id("apps")
                     .protocol(Protocol.HTTP)
                     .match(MatchConfig.builder().pathPrefix("/apps").build())
                     .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
         }
@@ -1995,13 +1995,13 @@ class GatewayEdgeRouteTest {
         Awaits.until(guard::get, message, Awaits.TEARDOWN_CEILING_SECONDS);
     }
 
-    private static ResolvedRoute webSocketRoute(int upstreamPort) {
-        return ResolvedRoute.builder()
+    private static Route webSocketRoute(int upstreamPort) {
+        return Route.builder()
                 .id("w")
                 .protocol(Protocol.WEBSOCKET)
                 .match(MatchConfig.builder().pathPrefix("/w").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
@@ -2188,13 +2188,13 @@ class GatewayEdgeRouteTest {
         }
     }
 
-    private static ResolvedRoute route(String id, Protocol protocol, Require require) {
-        return ResolvedRoute.builder()
+    private static Route route(String id, Protocol protocol, Require require) {
+        return Route.builder()
                 .id(id)
                 .protocol(protocol)
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", id + ".example", 443, ""))
                 .build();
     }

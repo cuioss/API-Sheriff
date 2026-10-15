@@ -27,7 +27,7 @@ import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.core.Context;
 import io.vertx.core.Vertx;
@@ -190,7 +190,7 @@ public final class WebSocketRelayStage {
      * @param clientContext   the client connection's own Vert.x context, captured on its event loop
      *                        before any virtual-thread hop; the upstream dial, its callbacks, the client
      *                        upgrade and every relay callback run on it
-     * @param route           the resolved route runtime (upstream, shared client, idle timeout)
+     * @param route           the selected WebSocket route (upstream, idle timeout)
      * @param forwardHeaders  the mode-filtered forwarded header set computed by stage 5
      * @param securityHeaders the stage-0 security headers accumulated on the response, applied to a
      *                        handshake-failure response before it is ended
@@ -206,7 +206,7 @@ public final class WebSocketRelayStage {
     // Each parameter is one independent input of the hand-off from the edge; the last two are the two
     // lifetimes the relay is bound to, the admission permit and the session.
     @SuppressWarnings("java:S107")
-    public void relay(RoutingContext ctx, Context clientContext, RouteRuntime route,
+    public void relay(RoutingContext ctx, Context clientContext, Route route,
             Map<String, String> forwardHeaders, Map<String, String> securityHeaders, String requestUri,
             Runnable releaseAdmission, SessionRelayRegistry.Tracked sessionRelay) {
         Objects.requireNonNull(sessionRelay, "sessionRelay");
@@ -218,10 +218,11 @@ public final class WebSocketRelayStage {
         Objects.requireNonNull(requestUri, "requestUri");
         Objects.requireNonNull(releaseAdmission, "releaseAdmission");
         Map<String, String> retainedSecurityHeaders = Map.copyOf(securityHeaders);
-        // No per-route HttpClient guard here: the handshake is dialed by the edge-wide WebSocketClient,
-        // so the route's own client is not an input to this path. DispatchStage keeps that guard for the
-        // HTTP leg, which does consume it. The resolved upstream below IS this path's input.
-        ResolvedUpstream upstream = route.getUpstream();
+        // No per-upstream HttpClient here: the handshake is dialed by the edge-wide WebSocketClient, so
+        // the route assembler builds no client or guard for a WebSocket route at all. DispatchStage
+        // resolves those for the HTTP leg, which does consume them. The resolved upstream below IS this
+        // path's input.
+        ResolvedUpstream upstream = route.upstream();
         if (upstream == null) {
             throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
         }
@@ -252,7 +253,7 @@ public final class WebSocketRelayStage {
     SessionRelayRegistry.Tracked sessionRelay) {
     }
 
-    private void onUpstreamConnected(RoutingContext ctx, RouteRuntime route, WebSocket upstreamWs,
+    private void onUpstreamConnected(RoutingContext ctx, Route route, WebSocket upstreamWs,
             RelayLifetime lifetime) {
         // Hold the upstream leg's inbound frames from the moment it is acquired: an upstream that speaks
         // first would otherwise reach a leg with no frame handler during the asynchronous client upgrade.
@@ -270,25 +271,25 @@ public final class WebSocketRelayStage {
                     // No RelaySession is constructed here, so this branch owns its own admission
                     // release — without it the permit acquired for this request is stranded, since the
                     // HTTP end handler no longer has a response to fire on.
-                    LOGGER.debug(failure, "WebSocket client upgrade failed on route '%s': %s", route.getId(),
+                    LOGGER.debug(failure, "WebSocket client upgrade failed on route '%s': %s", route.id(),
                             failure.getMessage());
                     lifetime.releaseAdmission().run();
                     closeQuietly(upstreamWs, CLOSE_INTERNAL_ERROR, "client upgrade failed");
                 });
     }
 
-    private void onUpstreamFailure(RoutingContext ctx, RouteRuntime route, Throwable failure,
+    private void onUpstreamFailure(RoutingContext ctx, Route route, Throwable failure,
             Map<String, String> securityHeaders) {
         int status;
         if (failure instanceof UpgradeRejectedException rejected) {
             // The upstream explicitly refused the upgrade with a status — relay it verbatim.
             status = rejected.getStatus();
-            LOGGER.debug("WebSocket upstream refused upgrade on route '%s' with status %s", route.getId(), status);
+            LOGGER.debug("WebSocket upstream refused upgrade on route '%s' with status %s", route.id(), status);
         } else {
             EventType type = failureMapper.classify(failure);
             eventCounter.increment(type);
             status = type.hasHttpMapping() ? type.httpStatus() : BAD_GATEWAY;
-            LOGGER.debug(failure, "WebSocket upstream dial failed on route '%s': %s", route.getId(),
+            LOGGER.debug(failure, "WebSocket upstream dial failed on route '%s': %s", route.id(),
                     failure.getMessage());
         }
         HttpServerResponse response = ctx.response();
@@ -304,15 +305,15 @@ public final class WebSocketRelayStage {
         response.end();
     }
 
-    private void establishRelay(RoutingContext ctx, RouteRuntime route, ServerWebSocket clientWs,
+    private void establishRelay(RoutingContext ctx, Route route, ServerWebSocket clientWs,
             WebSocket upstreamWs, RelayLifetime lifetime) {
-        Integer declaredIdleSeconds = route.getEffectiveWebSocketIdleTimeoutSeconds();
+        Integer declaredIdleSeconds = route.effectiveWebSocketIdleTimeoutSeconds();
         int idleSeconds = declaredIdleSeconds == null ? DEFAULT_IDLE_TIMEOUT_SECONDS : declaredIdleSeconds;
-        LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, route.getId());
+        LOGGER.info(ApiSheriffLogMessages.INFO.WEBSOCKET_RELAY_ESTABLISHED, route.id());
         eventCounter.increment(EventType.REQUEST_FORWARDED);
         // The admission permit stays held for the relay's whole lifetime — the session releases it from
         // its single teardown funnel, never here at upgrade completion.
-        RelaySession session = new RelaySession(ctx.vertx(), route.getId(), clientWs, upstreamWs, idleSeconds,
+        RelaySession session = new RelaySession(ctx.vertx(), route.id(), clientWs, upstreamWs, idleSeconds,
                 lifetime);
         observer.beforeWiring(session::start);
     }

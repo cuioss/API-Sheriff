@@ -96,7 +96,7 @@
             <artifactId>quarkus-micrometer-registry-prometheus</artifactId>
         </dependency>
         <!-- SmallRye Fault Tolerance: programmatic Guard/TypedGuard + CircuitBreakerMaintenance
-             for the per-route resilience guard held on RouteRuntime (Quarkus-BOM-managed) -->
+             for the per-upstream resilience guard table of RouteAssembler (Quarkus-BOM-managed) -->
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-fault-tolerance</artifactId>

@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 
 /**
  * Stage 2b — the per-route verb gate, run after route selection.
@@ -46,12 +46,12 @@ public final class VerbGateStage {
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
-        RouteRuntime route = requireSelectedRoute(request);
-        Set<HttpMethod> allowed = route.getEffectiveAllowedMethods();
+        Route route = requireSelectedRoute(request);
+        Set<HttpMethod> allowed = route.effectiveAllowedMethods();
         if (!allowed.contains(request.method())) {
             request.responseHeaders().put("Allow", renderAllow(allowed));
             throw new GatewayException(EventType.METHOD_NOT_ALLOWED,
-                    "Method " + request.method() + " not allowed for route " + route.getId());
+                    "Method " + request.method() + " not allowed for route " + route.id());
         }
     }
 
@@ -59,8 +59,8 @@ public final class VerbGateStage {
         return allowed.stream().sorted().map(Enum::name).collect(Collectors.joining(", "));
     }
 
-    private static RouteRuntime requireSelectedRoute(PipelineRequest request) {
-        RouteRuntime route = request.selectedRoute();
+    private static Route requireSelectedRoute(PipelineRequest request) {
+        Route route = request.selectedRoute();
         if (route == null) {
             throw new IllegalStateException("Verb gate requires the route selected at stage 2");
         }

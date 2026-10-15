@@ -31,18 +31,25 @@ import org.junit.jupiter.api.Test;
 /**
  * Pre-boot framework-free gate (ADR-0062). Asserts that the five pre-boot configuration packages
  * ({@code config.boot}, {@code config.load}, {@code config.model}, {@code config.validation},
- * {@code config.topology}) depend on no framework package.
+ * {@code config.topology}) and the {@code routing} package depend on no framework package.
  * <p>
  * The reason is not portability. The offline {@code --validate-config} check runs these packages
  * before the framework starts (ADR-0061), and a framework type reached from them would put framework
  * code on a path that must start nothing.
+ * <p>
+ * <strong>{@code routing} is covered for a different reason than the five configuration
+ * packages.</strong> It is not a configuration package. It is covered because the pre-boot route
+ * table is built from {@code routing.Route} and held as a {@code routing.RouteTable}, so the
+ * offline check constructs those types and everything they reference before the framework starts.
+ * A framework type on the per-route type would reach the pre-boot path through that construction,
+ * which the five configuration packages' own dependencies would not reveal.
  * <p>
  * <strong>{@code events}, {@code forward} and {@code pipeline} are deliberately not covered.</strong>
  * ADR-0062 retires the framework-agnostic core rule those three packages were held to; they are not
  * on the pre-boot path and may use platform types. Adding them back here would re-enact a rule that
  * no longer exists.
  * <p>
- * The gate checks the dependencies of the five packages only. A class outside them that the pre-boot
+ * The gate checks the dependencies of the six packages only. A class outside them that the pre-boot
  * path calls is not covered here; the integration test that runs the flag on the built image is what
  * observes that case.
  * <p>
@@ -58,16 +65,18 @@ class PreBootFrameworkFreeArchTest {
     private static final String BASE_PACKAGE = "de.cuioss.sheriff.gateway";
 
     /**
-     * The pre-boot configuration packages the gate protects: everything the offline configuration
-     * check runs before the framework starts. See the class Javadoc for the packages that are
-     * intentionally absent.
+     * The pre-boot packages the gate protects: everything the offline configuration check runs
+     * before the framework starts — the five configuration packages, plus {@code routing}, whose
+     * per-route type the pre-boot route table is built from. See the class Javadoc for why
+     * {@code routing} is covered and for the packages that are intentionally absent.
      */
     private static final String[] PRE_BOOT_PACKAGES = {
             "de.cuioss.sheriff.gateway.config.boot..",
             "de.cuioss.sheriff.gateway.config.load..",
             "de.cuioss.sheriff.gateway.config.model..",
             "de.cuioss.sheriff.gateway.config.validation..",
-            "de.cuioss.sheriff.gateway.config.topology.."
+            "de.cuioss.sheriff.gateway.config.topology..",
+            "de.cuioss.sheriff.gateway.routing.."
     };
 
     /**
@@ -101,9 +110,9 @@ class PreBootFrameworkFreeArchTest {
                 .that().resideInAnyPackage(PRE_BOOT_PACKAGES)
                 .should().dependOnClassesThat().resideInAnyPackage(FRAMEWORK_PACKAGES)
                 .because("the offline --validate-config check runs config.boot, config.load, config.model, "
-                        + "config.validation and config.topology before the framework starts (ADR-0061), so "
-                        + "a framework type reached from them puts framework code on a path that must start "
-                        + "nothing (ADR-0062)");
+                        + "config.validation and config.topology, and builds the route table from "
+                        + "routing.Route, before the framework starts (ADR-0061), so a framework type reached "
+                        + "from them puts framework code on a path that must start nothing (ADR-0062)");
 
         rule.check(PRODUCTION_CLASSES);
     }

@@ -21,7 +21,7 @@ import java.util.Objects;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.streams.ReadStream;
@@ -31,7 +31,7 @@ import io.vertx.core.streams.ReadStream;
  * <p>
  * gRPC requires HTTP/2 end-to-end, so a gRPC route's upstream client is a <strong>forced-h2</strong>
  * client: the h2 protocol version is part of the client-sharing tuple key
- * ({@link RouteRuntimeAssembler.UpstreamTarget}), so a gRPC route to {@code host:port} holds a
+ * ({@link RouteAssembler.UpstreamTarget}), so a gRPC route to {@code host:port} holds a
  * distinct client from an HTTP/1.1 route to the same {@code host:port}. This stage streams the
  * request/response bodies as <strong>opaque length-prefixed frames</strong> — the gateway never
  * inspects the protobuf payload — reusing the byte-capped streaming dispatch of {@link DispatchStage}
@@ -58,12 +58,15 @@ public final class GrpcDispatchStage {
     private final DispatchStage dispatchStage;
 
     /**
-     * @param maxBodyBytes  the streaming request-body ceiling in bytes ({@code max_body_bytes})
-     * @param failureMapper the mapper turning a guarded-dispatch (including h2-negotiation) failure
-     *                      into the error contract
+     * @param upstreamClients the boot-built lookup the route's shared forced-h2 client and guard are
+     *                        resolved from
+     * @param maxBodyBytes    the streaming request-body ceiling in bytes ({@code max_body_bytes})
+     * @param failureMapper   the mapper turning a guarded-dispatch (including h2-negotiation) failure
+     *                        into the error contract
      */
-    public GrpcDispatchStage(long maxBodyBytes, UpstreamFailureMapper failureMapper) {
-        this.dispatchStage = new DispatchStage(maxBodyBytes, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+    public GrpcDispatchStage(RouteAssembler.UpstreamClients upstreamClients, long maxBodyBytes,
+            UpstreamFailureMapper failureMapper) {
+        this.dispatchStage = new DispatchStage(upstreamClients, maxBodyBytes, DispatchStage.NO_BODY_IDLE_TIMEOUT,
                 Objects.requireNonNull(failureMapper, "failureMapper"));
     }
 
@@ -76,7 +79,8 @@ public final class GrpcDispatchStage {
      * other dispatched request — the declared value becomes the upstream {@code Content-Length} and
      * the forwarded body is held to exactly that many bytes (see {@link DispatchStage}).
      *
-     * @param route          the resolved route runtime holding the shared forced-h2 client and guard
+     * @param route          the selected gRPC route; its forced-h2 upstream target and resilience shape
+     *                       select the shared client and guard
      * @param method         the request method (gRPC is always {@code POST})
      * @param requestUri     the upstream request URI
      * @param forwardHeaders the mode-filtered header set computed by stage 5
@@ -86,7 +90,7 @@ public final class GrpcDispatchStage {
      * @return the upstream response (body and trailers still streaming)
      * @throws GatewayException carrying the mapped error-contract event on any dispatch failure
      */
-    public HttpClientResponse dispatch(RouteRuntime route, HttpMethod method, String requestUri,
+    public HttpClientResponse dispatch(Route route, HttpMethod method, String requestUri,
             Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody, long declaredLength) {
         return dispatchStage.dispatch(route, method, requestUri, forwardHeaders, requestBody,
                 DispatchStage.BodyFraming.streamed(declaredLength));

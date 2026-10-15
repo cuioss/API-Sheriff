@@ -47,7 +47,7 @@ import org.jspecify.annotations.Nullable;
  * different names, and U+212A (Kelvin sign) lower-cases to an ASCII {@code k}.
  * <p>
  * This is the match test only; the effective {@code allowed_methods} verb gate (405) is
- * carried separately on {@link RouteRuntime}.
+ * carried separately on {@link Route#effectiveAllowedMethods()}.
  *
  * @author API Sheriff Team
  * @since 1.0

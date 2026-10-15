@@ -36,14 +36,14 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 4 — the {@code require: session} runtime (D4), the server-session counterpart of the
  * offline bearer validation in {@code AuthenticationStage}. It replaces the boot-time rejection the
- * {@code RouteRuntimeAssembler} used to raise for session routes.
+ * boot-time route assembly used to raise for session routes.
  * <p>
  * For a request selected onto a {@code require: session} route the stage:
  * <ol>
@@ -76,7 +76,7 @@ import org.jspecify.annotations.Nullable;
  *       negotiation as a missing session, {@link OnFailure#REJECT} answers {@code 401}
  *       {@code application/problem+json} for every request, navigation included;</li>
  *   <li>compares the session's active scope set {@code A} ({@link SessionRecord#activeScopes()})
- *       against the route's {@link RouteRuntime#getNeededScopes() neededScopes} and obtains what is
+ *       against the route's {@link Route#neededScopes() neededScopes} and obtains what is
  *       missing before anything is relayed (see <em>Scope enforcement</em> below);</li>
  *   <li>records the mediated access token on the request for automatic upstream injection as
  *       {@code Authorization: Bearer} ({@link PipelineRequest#mediatedBearer(String)} — never an
@@ -118,7 +118,7 @@ import org.jspecify.annotations.Nullable;
  * An <strong>unauthenticated</strong> request is content-negotiated: a <em>navigation</em> request
  * (its {@code Accept} offers {@code text/html}) is redirected {@code 302} into the auth-code flow via
  * the {@link LoginInitiation} seam (short-circuiting the pipeline), requesting the selected route's
- * {@link RouteRuntime#getNeededScopes() neededScopes}; anything else (an XHR / API call)
+ * {@link Route#neededScopes() neededScopes}; anything else (an XHR / API call)
  * gets {@code 401} {@code application/problem+json} via {@link EventType#TOKEN_MISSING}.
  * <p>
  * <strong>Scope enforcement.</strong> A session route never reaches its upstream with a session
@@ -240,7 +240,7 @@ public final class SessionAuthenticationStage {
      */
     public void process(PipelineRequest request) {
         Objects.requireNonNull(request, "request");
-        RouteRuntime route = requireSelectedRoute(request);
+        Route route = requireSelectedRoute(request);
         Instant now = clock.instant();
         String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
 
@@ -280,7 +280,7 @@ public final class SessionAuthenticationStage {
      *                     produced (already emitted by the caller)
      * @param cookieHeader the raw request {@code Cookie} header value the session was resolved from
      */
-    private void enforceScopes(PipelineRequest request, RouteRuntime route, SessionBinding.BoundSession mediated,
+    private void enforceScopes(PipelineRequest request, Route route, SessionBinding.BoundSession mediated,
             @Nullable String cookieHeader, Instant now) {
         SessionRecord session = mediated.session();
         Set<String> missing = missingScopes(route, session);
@@ -329,9 +329,9 @@ public final class SessionAuthenticationStage {
      * the deadline where it was. Any cookie the binding returns for the access joins the response
      * cookies; the edge writes them on the response head before the upstream is contacted.
      */
-    private void relay(PipelineRequest request, RouteRuntime route, SessionRecord session,
+    private void relay(PipelineRequest request, Route route, SessionRecord session,
             @Nullable String cookieHeader, Instant now) {
-        if (route.getEffectiveAuth().effectiveTokenRelay()) {
+        if (route.effectiveAuth().effectiveTokenRelay()) {
             request.mediatedBearer(session.accessToken());
         }
         // The edge ties a long-lived relay opened for this request to the session's end.
@@ -344,16 +344,16 @@ public final class SessionAuthenticationStage {
      * redirected into a widening of the live session; anything else is refused {@code 403}. Either way
      * no bearer is recorded and the request never reaches the upstream.
      */
-    private void widenOrRefuse(PipelineRequest request, RouteRuntime route, SessionRecord session,
+    private void widenOrRefuse(PipelineRequest request, Route route, SessionRecord session,
             Set<String> missing, Instant now) {
         if (acceptsHtml(request)) {
             LoginChallenge challenge = wideningInitiation.initiate(session, returnUrl(request),
-                    route.getNeededScopes(), now);
+                    route.neededScopes(), now);
             request.responseHeaders().put(LOCATION_HEADER, challenge.location());
             emitSetCookies(request, challenge.setCookieHeaders());
             request.shortCircuit(FOUND);
             LOGGER.debug("Session lacks a needed scope on session route %s — redirecting into a session widening",
-                    route.getId());
+                    route.id());
             return;
         }
         Map<String, Object> problemExtensions = new LinkedHashMap<>();
@@ -364,7 +364,7 @@ public final class SessionAuthenticationStage {
                     stepUpPath + RETURN_URL_QUERY + URLEncoder.encode(returnUrl(request), StandardCharsets.UTF_8));
         }
         throw new GatewayException(EventType.SCOPE_MISSING,
-                "Session missing a needed scope for session route " + route.getId(), problemExtensions);
+                "Session missing a needed scope for session route " + route.id(), problemExtensions);
     }
 
     /**
@@ -372,8 +372,8 @@ public final class SessionAuthenticationStage {
      * boot-configured {@code neededScopes}, so it never holds a name taken from a token. A satisfied
      * session, the case every ordinary request takes, is answered without allocating.
      */
-    private static Set<String> missingScopes(RouteRuntime route, SessionRecord session) {
-        Set<String> needed = route.getNeededScopes();
+    private static Set<String> missingScopes(Route route, SessionRecord session) {
+        Set<String> needed = route.neededScopes();
         if (session.activeScopes().containsAll(needed)) {
             return Set.of();
         }
@@ -395,7 +395,7 @@ public final class SessionAuthenticationStage {
      * must reach the browser on this one response — hence the multi-valued Set-Cookie accumulator
      * rather than a single-valued header slot.
      */
-    private void endSession(PipelineRequest request, RouteRuntime route, Instant now) {
+    private void endSession(PipelineRequest request, Route route, Instant now) {
         emitSetCookies(request, sessionBinding.clearingSetCookieHeaders());
         challengeRefreshFailure(request, route, now);
     }
@@ -414,28 +414,28 @@ public final class SessionAuthenticationStage {
     /**
      * Applies the {@link OnFailure} policy to a request a refresh left without a token to mediate.
      */
-    private void challengeRefreshFailure(PipelineRequest request, RouteRuntime route, Instant now) {
+    private void challengeRefreshFailure(PipelineRequest request, Route route, Instant now) {
         switch (onFailure) {
             case REAUTHENTICATE -> challengeUnauthenticated(request, route, now);
             case REJECT -> throw new GatewayException(EventType.TOKEN_MISSING,
-                    "Token refresh failed for require:session route " + route.getId() + " (on_failure: reject)");
+                    "Token refresh failed for require:session route " + route.id() + " (on_failure: reject)");
         }
     }
 
-    private void challengeUnauthenticated(PipelineRequest request, RouteRuntime route, Instant now) {
+    private void challengeUnauthenticated(PipelineRequest request, Route route, Instant now) {
         if (acceptsHtml(request)) {
             // The login requests exactly what this route needs — the one boot-derived neededScopes the
             // bearer check also reads — so requesting and checking can never drift apart.
-            LoginChallenge challenge = loginInitiation.initiate(returnUrl(request), route.getNeededScopes(), now);
+            LoginChallenge challenge = loginInitiation.initiate(returnUrl(request), route.neededScopes(), now);
             request.responseHeaders().put(LOCATION_HEADER, challenge.location());
             emitSetCookies(request, challenge.setCookieHeaders());
             request.shortCircuit(FOUND);
             LOGGER.debug("Unauthenticated navigation on require:session route %s — redirecting into login",
-                    route.getId());
+                    route.id());
             return;
         }
         throw new GatewayException(EventType.TOKEN_MISSING,
-                "No live session for require:session route " + route.getId());
+                "No live session for require:session route " + route.id());
     }
 
     private static boolean acceptsHtml(PipelineRequest request) {
@@ -465,8 +465,8 @@ public final class SessionAuthenticationStage {
         return rawQuery.toString();
     }
 
-    private static RouteRuntime requireSelectedRoute(PipelineRequest request) {
-        RouteRuntime route = request.selectedRoute();
+    private static Route requireSelectedRoute(PipelineRequest request) {
+        Route route = request.selectedRoute();
         if (route == null) {
             throw new IllegalStateException("Session authentication requires the route selected at stage 2");
         }
@@ -674,7 +674,7 @@ public final class SessionAuthenticationStage {
          * @param returnUrl the post-login return target (the path the browser was navigating to, plus
          *                  its raw query verbatim when it carried one)
          * @param scopes    the scope set the login requests — the selected route's
-         *                  {@link RouteRuntime#getNeededScopes() neededScopes}
+         *                  {@link Route#neededScopes() neededScopes}
          * @param now       the reference instant (the pending record's TTL anchor)
          * @return the redirect target and the browser-binding {@code Set-Cookie}
          */
@@ -700,7 +700,7 @@ public final class SessionAuthenticationStage {
          * @param live         the live session to widen
          * @param returnUrl    the target the browser returns to after the widening (the path it was
          *                     navigating to, plus its raw query verbatim when it carried one)
-         * @param neededScopes the selected route's {@link RouteRuntime#getNeededScopes() neededScopes}
+         * @param neededScopes the selected route's {@link Route#neededScopes() neededScopes}
          * @param now          the reference instant (the pending record's TTL anchor)
          * @return the redirect target and the browser-binding {@code Set-Cookie}
          */

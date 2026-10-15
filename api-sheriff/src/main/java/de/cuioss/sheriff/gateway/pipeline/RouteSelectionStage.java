@@ -21,15 +21,15 @@ import java.util.Objects;
 
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 
 /**
  * Stage 2 — deny-by-default route selection on the single canonical path.
  * <p>
- * The stage walks the boot-assembled {@link RouteRuntime} list — already ordered by the route-table
+ * The stage walks the boot-assembled {@link Route} list — already ordered by the route-table
  * builder <em>exact-first</em> (every {@code match.path} route before every {@code match.path_prefix}
  * route), then longest-prefix-first — and selects the first route whose compiled
- * {@link RouteRuntime#matcher() matcher} accepts the request — exact path or prefix <em>and</em>
+ * {@link Route#matcher() matcher} accepts the request — exact path or prefix <em>and</em>
  * match-methods <em>and</em> host <em>and</em> every header matcher. First match wins, so for the same
  * address an exact route is selected before any prefix route, and among prefix routes the most
  * specific one is selected. An exact path is compared un-normalized: {@code /a} does not match
@@ -44,13 +44,13 @@ import de.cuioss.sheriff.gateway.routing.RouteRuntime;
  */
 public final class RouteSelectionStage {
 
-    private final List<RouteRuntime> routes;
+    private final List<Route> routes;
 
     /**
      * @param routes the boot-assembled routes, ordered exact routes first, then longest
      *               {@code path_prefix} first
      */
-    public RouteSelectionStage(List<RouteRuntime> routes) {
+    public RouteSelectionStage(List<Route> routes) {
         this.routes = List.copyOf(Objects.requireNonNull(routes, "routes"));
     }
 
@@ -64,8 +64,8 @@ public final class RouteSelectionStage {
         Objects.requireNonNull(request, "request");
         String canonicalPath = requireCanonicalPath(request);
         Map<String, String> headers = request.singleValueHeaders();
-        for (RouteRuntime route : routes) {
-            if (route.getMatcher().matches(canonicalPath, request.method(), request.host(), headers)) {
+        for (Route route : routes) {
+            if (route.matcher().matches(canonicalPath, request.method(), request.host(), headers)) {
                 request.selectedRoute(route);
                 return;
             }

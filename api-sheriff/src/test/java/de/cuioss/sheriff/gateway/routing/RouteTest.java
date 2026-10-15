@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -28,6 +29,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -39,6 +41,7 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -49,10 +52,18 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.generator.junit.parameterized.GeneratorType;
+import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
 
+/**
+ * Contract test for {@link Route}, the one per-route record, and for the routing collaborators it is
+ * compiled with: the {@link RouteMatcher} compiled from its {@code match} block and the
+ * {@link ProtocolProcessorRegistry} the boot pass selects its processor from.
+ */
 @EnableGeneratorController
 @DisplayName("Route — the one per-route record")
 class RouteTest {
@@ -128,6 +139,36 @@ class RouteTest {
         }
 
         @Test
+        @DisplayName("Should carry an explicitly resolved securityProfile unchanged")
+        void shouldCarryExplicitSecurityProfile() {
+            Route lenient = proxyRoute().securityProfile(SecurityProfile.LENIENT).build();
+            Route minimal = proxyRoute().securityProfile(SecurityProfile.MINIMAL).build();
+
+            assertAll("explicit profile",
+                    () -> assertEquals(SecurityProfile.LENIENT, lenient.securityProfile(),
+                            "An explicitly resolved LENIENT overrides the fail-closed default"),
+                    () -> assertEquals(SecurityProfile.MINIMAL, minimal.securityProfile(),
+                            "An explicitly resolved MINIMAL overrides the fail-closed default"),
+                    () -> assertFalse(minimal.securityProfile().skippableValidationEnabled(),
+                            "The MINIMAL route reports its skippable half as disabled"));
+        }
+
+        @Test
+        @DisplayName("Should resolve an absent forward block to forward-all, keeping every list absent")
+        void shouldKeepForwardAllListsAbsent() {
+            Route route = proxyRoute().effectiveForward(null).build();
+
+            assertAll("forward-all posture",
+                    () -> assertNull(route.effectiveForward().headersAllow(),
+                            "Every list stays absent, never an empty allowlist that would forward nothing"),
+                    () -> assertNull(route.effectiveForward().headersDeny(), "No header denylist"),
+                    () -> assertNull(route.effectiveForward().queryAllow(), "No query allowlist"),
+                    () -> assertNull(route.effectiveForward().queryDeny(), "No query denylist"),
+                    () -> assertTrue(route.effectiveForward().setHeaders().isEmpty(),
+                            "set_headers carries no mode semantics and keeps the absent-means-empty normalization"));
+        }
+
+        @Test
         @DisplayName("Should normalize every absent collection to empty")
         void shouldNormalizeAbsentCollectionsToEmpty() {
             Route route = proxyRoute()
@@ -155,6 +196,8 @@ class RouteTest {
                             "No configuration before the boot pass, the fail-closed absent value"),
                     () -> assertNull(route.assetSource(), "No asset source before the boot pass"),
                     () -> assertNull(route.anchor(), "An unanchored route carries no anchor name"),
+                    () -> assertNull(route.effectiveSecurityFilter(), "No security filter unless one resolves"),
+                    () -> assertNull(route.securityHeaders(), "No response-header posture unless one resolves"),
                     () -> assertNull(route.locationRewriter(), "No rewriter unless rewrite_location is on"),
                     () -> assertNull(route.effectiveWebSocketIdleTimeoutSeconds(),
                             "No idle timeout for a non-WebSocket route"));
@@ -168,6 +211,92 @@ class RouteTest {
             Route route = proxyRoute().match(MatchConfig.builder().pathPrefix(prefix).build()).build();
 
             assertEquals(prefix, route.matchKey(), "The match key is the declared path prefix");
+        }
+
+        @Test
+        @DisplayName("Should expose an exact route's declared path as its match key")
+        void shouldExposeExactMatchKey() {
+            String exactPath = "/" + Generators.letterStrings(3, 12).next() + "/1";
+
+            Route route = proxyRoute().match(MatchConfig.builder().path(exactPath).build()).build();
+
+            assertEquals(exactPath, route.matchKey(), "The match key is the declared exact path");
+        }
+    }
+
+    @Nested
+    @DisplayName("Resolved values")
+    class ResolvedValues {
+
+        @Test
+        @DisplayName("Should carry the materialized WebSocket settings")
+        void shouldCarryMaterializedWebSocketSettings() {
+            Route route = proxyRoute()
+                    .protocol(Protocol.WEBSOCKET)
+                    .effectiveAllowedOrigins(Set.of("https://app.example.com"))
+                    .effectiveWebSocketIdleTimeoutSeconds(300)
+                    .build();
+
+            assertAll("WebSocket settings",
+                    () -> assertEquals(Set.of("https://app.example.com"), route.effectiveAllowedOrigins(),
+                            "The origin allowlist is carried"),
+                    () -> assertEquals(300, route.effectiveWebSocketIdleTimeoutSeconds(),
+                            "The idle timeout is carried"));
+        }
+
+        @Test
+        @DisplayName("Should carry the materialized effective posture")
+        void shouldCarryMaterializedEffectivePosture() {
+            Route route = fullyResolvedProxyRoute();
+
+            assertAll("effective posture",
+                    () -> assertNotNull(route.anchor(), "The resolving anchor name is carried"),
+                    () -> assertEquals(Require.NONE, route.effectiveAuth().require(), "The auth posture is carried"),
+                    () -> assertEquals(Set.of(HttpMethod.GET, HttpMethod.POST), route.effectiveAllowedMethods(),
+                            "The verb allowlist is carried"),
+                    () -> assertNotNull(route.effectiveSecurityFilter(), "The security filter is carried"),
+                    () -> assertNotNull(route.securityHeaders(), "The response-header posture is carried"),
+                    () -> assertEquals(List.of("Accept"), route.effectiveForward().headersAllow(),
+                            "The materialized forward allowlist is carried"),
+                    () -> assertNotNull(route.locationRewriter(),
+                            "The rewrite_location mapping is carried when the route opts in"));
+        }
+    }
+
+    @Nested
+    @DisplayName("equals / hashCode / toString contract")
+    class ValueObjectContract {
+
+        @Test
+        @DisplayName("Should be equal to a route built from the same components")
+        void shouldEqualRouteFromSameComponents() {
+            Route route = fullyResolvedProxyRoute();
+            Route equalCopy = route.toBuilder().build();
+            Route different = route.toBuilder().id(route.id() + "-other").build();
+
+            assertValueObjectContract(route, equalCopy, different);
+        }
+
+        @Test
+        @DisplayName("Should take the location rewriter into account")
+        void shouldDiscriminateOnLocationRewriter() {
+            Route route = fullyResolvedProxyRoute();
+            Route equalCopy = route.toBuilder().build();
+            Route withoutRewriter = route.toBuilder().locationRewriter(null).build();
+
+            assertValueObjectContract(route, equalCopy, withoutRewriter);
+        }
+
+        private static void assertValueObjectContract(Route subject, Route equalCopy, Route different) {
+            String rendered = subject.toString();
+            assertAll("value-object contract",
+                    () -> assertEquals(subject, equalCopy, "Routes built from equal components are equal"),
+                    () -> assertEquals(subject.hashCode(), equalCopy.hashCode(), "Equal routes share a hashCode"),
+                    () -> assertNotEquals(subject, different, "Routes with differing components are not equal"),
+                    () -> assertTrue(rendered.startsWith("Route"), "The rendering names its own type: " + rendered),
+                    () -> assertEquals(equalCopy.toString(), rendered, "Equal routes render equally"),
+                    () -> assertNotEquals(different.toString(), rendered,
+                            "The rendering tells two unequal routes apart"));
         }
     }
 
@@ -229,7 +358,8 @@ class RouteTest {
 
             var thrown = assertThrows(IllegalArgumentException.class, builder::build,
                     "A route resolving no terminal action is refused");
-            assertTrue(thrown.getMessage().contains(id), "The refusal names the route");
+            assertEquals("route '" + id + "' must resolve exactly one terminal action (one of upstream, asset, redirect)",
+                    thrown.getMessage(), "The refusal names the route and the invariant");
         }
 
         @Test
@@ -403,6 +533,195 @@ class RouteTest {
         }
     }
 
+    @Nested
+    @DisplayName("RouteMatcher — the compiled match block")
+    class RouteMatcherContract {
+
+        @Test
+        @DisplayName("Should match a prefix only on segment boundaries")
+        void shouldMatchPrefixOnlyOnSegmentBoundaries() {
+            var matcher = RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").build());
+
+            assertTrue(matcher.matchesPath("/api"), "Exact prefix matches");
+            assertTrue(matcher.matchesPath("/api/users"), "Child path matches");
+            assertFalse(matcher.matchesPath("/apiary"), "Non-boundary continuation does not match");
+            assertFalse(matcher.isExact(), "A path_prefix matcher is not an exact matcher");
+            assertEquals("/api", matcher.matchKey(), "The prefix is the match key");
+        }
+
+        @Test
+        @DisplayName("Should match an exact path by un-normalized string equality only")
+        void shouldMatchExactPathByEqualityOnly() {
+            var matcher = RouteMatcher.from(MatchConfig.builder().path("/a").build());
+
+            assertTrue(matcher.matchesPath("/a"), "The exact address matches");
+            assertFalse(matcher.matchesPath("/a/"), "A trailing-slash variant is a distinct address");
+            assertFalse(matcher.matchesPath("/a/b"), "A child path does not match an exact route");
+            assertFalse(matcher.matchesPath("/ab"), "A leading-substring continuation does not match");
+            assertTrue(matcher.isExact(), "A path matcher is an exact matcher");
+            assertEquals("/a", matcher.matchKey(), "The exact path is the match key");
+        }
+
+        @Test
+        @DisplayName("Should keep a trailing slash significant for an exact path that declares one")
+        void shouldKeepTrailingSlashSignificantForExactPath() {
+            var matcher = RouteMatcher.from(MatchConfig.builder().path("/a/").build());
+
+            assertTrue(matcher.matchesPath("/a/"), "The declared trailing-slash address matches");
+            assertFalse(matcher.matchesPath("/a"), "The slash-less variant is a distinct address");
+            assertFalse(matcher.matchesPath("/a/b"), "A child path does not match, even below a slash");
+        }
+
+        @Test
+        @DisplayName("Should apply the method, host and header matchers on top of an exact path")
+        void shouldApplyAllMatchersToExactPath() {
+            var matcher = RouteMatcher.from(MatchConfig.builder()
+                    .path("/login")
+                    .methods(List.of(HttpMethod.POST))
+                    .build());
+
+            assertTrue(matcher.matches("/login", HttpMethod.POST, null, Map.of()), "Path and method hold");
+            assertFalse(matcher.matches("/login", HttpMethod.GET, null, Map.of()), "Wrong method fails");
+            assertFalse(matcher.matches("/login/x", HttpMethod.POST, null, Map.of()), "A child path fails");
+        }
+
+        @Test
+        @DisplayName("Should apply method, host, and header matchers with AND semantics")
+        void shouldApplyAllMatchersWithAndSemantics() {
+            var matcher = RouteMatcher.from(MatchConfig.builder()
+                    .pathPrefix("/api")
+                    .methods(List.of(HttpMethod.GET))
+                    .host("gw.example")
+                    .headers(List.of(HeaderMatcher.builder().name("X-Tenant").present(true).build()))
+                    .build());
+            Map<String, String> headers = Map.of("x-tenant", "acme");
+
+            assertTrue(matcher.matches("/api/x", HttpMethod.GET, "gw.example", headers), "All matchers hold");
+            assertFalse(matcher.matches("/api/x", HttpMethod.POST, "gw.example", headers), "Wrong method fails");
+            assertFalse(matcher.matches("/api/x", HttpMethod.GET, "other.example", headers), "Wrong host fails");
+            assertFalse(matcher.matches("/api/x", HttpMethod.GET, "gw.example", Map.of()), "Missing header fails");
+        }
+
+        @Test
+        @DisplayName("Should require an exact header value when configured")
+        void shouldRequireExactHeaderValue() {
+            var matcher = RouteMatcher.from(MatchConfig.builder()
+                    .pathPrefix("/api")
+                    .headers(List.of(HeaderMatcher.builder().name("X-Env").value("prod").build()))
+                    .build());
+
+            assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", "prod")), "Exact value matches");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", "dev")), "Wrong value fails");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should match a mixed-case configured header name against the lower-case-keyed request headers")
+        void shouldMatchMixedCaseHeaderNameCaseInsensitively(String value) {
+            var presenceMatcher = headerMatcher(HeaderMatcher.builder().name("X-Tenant").present(true).build());
+            var valueMatcher = headerMatcher(HeaderMatcher.builder().name("X-Tenant").value(value).build());
+            Map<String, String> headers = Map.of("x-tenant", value);
+
+            assertTrue(presenceMatcher.matches("/api", HttpMethod.GET, null, headers),
+                    "A present: true matcher declared as X-Tenant finds the header keyed x-tenant");
+            assertTrue(valueMatcher.matches("/api", HttpMethod.GET, null, headers),
+                    "A value matcher declared as X-Tenant finds the header keyed x-tenant");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should require the header's absence for present: false")
+        void shouldRequireAbsenceForPresentFalse(String value) {
+            var matcher = headerMatcher(HeaderMatcher.builder().name("X-Internal").present(false).build());
+
+            assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of()),
+                    "present: false holds when the header is absent");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-internal", value)),
+                    "present: false fails when the header is present");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should require both presence and value for present: true together with value")
+        void shouldRequireBothPresenceAndValue(String value) {
+            var matcher = headerMatcher(HeaderMatcher.builder().name("X-Env").present(true).value(value).build());
+
+            assertTrue(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", value)),
+                    "The present header carrying the exact value matches");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of("x-env", value + "-other")),
+                    "A present header carrying a different value fails");
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null, Map.of()),
+                    "An absent header fails");
+        }
+
+        @ParameterizedTest
+        @GeneratorsSource(generator = GeneratorType.LETTER_STRINGS, minSize = 3, maxSize = 12, count = 5)
+        @DisplayName("Should compare header values case-sensitively")
+        void shouldCompareHeaderValuesCaseSensitively(String label) {
+            String configured = "v" + label.toLowerCase(Locale.ROOT);
+            var matcher = headerMatcher(HeaderMatcher.builder().name("X-Env").value(configured).build());
+
+            assertFalse(matcher.matches("/api", HttpMethod.GET, null,
+                            Map.of("x-env", configured.toUpperCase(Locale.ROOT))),
+                    "A value differing only in letter case does not match");
+        }
+
+        @Test
+        @DisplayName("Should expose lower-case matcher header names, collapsing names that differ only in case")
+        void shouldExposeLowerCaseMatcherHeaderNames() {
+            var matcher = headerMatcher(
+                    HeaderMatcher.builder().name("X-Tenant").present(true).build(),
+                    HeaderMatcher.builder().name("x-TENANT").value("acme").build(),
+                    HeaderMatcher.builder().name("X-Env").present(false).build());
+
+            assertEquals(List.of("x-tenant", "x-env"), matcher.matchHeaderNames(),
+                    "The names are lower-cased in declaration order, case-only duplicates collapsed");
+        }
+
+        private RouteMatcher headerMatcher(HeaderMatcher... headers) {
+            return RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").headers(List.of(headers)).build());
+        }
+    }
+
+    @Nested
+    @DisplayName("ProtocolProcessorRegistry — the boot-time processor selection")
+    class ProtocolProcessorRegistryContract {
+
+        private final ProtocolProcessorRegistry registry = new ProtocolProcessorRegistry();
+
+        @Test
+        @DisplayName("Should reuse one HTTP processor for HTTP and GraphQL routes")
+        void shouldReuseHttpProcessorForGraphql() {
+            ProtocolProcessor http = registry.require(Protocol.HTTP, "route-http");
+            ProtocolProcessor graphql = registry.require(Protocol.GRAPHQL, "route-graphql");
+
+            assertSame(http, graphql, "GraphQL must reuse the shared HTTP processor instance");
+            assertEquals("http", http.id(), "The shared processor is the HTTP processor");
+        }
+
+        @Test
+        @DisplayName("Should serve gRPC and WebSocket with their dedicated processors")
+        void shouldServeGrpcAndWebSocketProcessors() {
+            assertTrue(registry.supports(Protocol.GRPC), "gRPC is supported");
+            assertEquals("grpc", registry.require(Protocol.GRPC, "grpc-route").id(),
+                    "A gRPC route resolves the dedicated gRPC processor");
+            assertTrue(registry.supports(Protocol.WEBSOCKET), "WebSocket is supported");
+            assertEquals("websocket", registry.require(Protocol.WEBSOCKET, "ws-route").id(),
+                    "A WebSocket route resolves the WebSocket processor");
+        }
+
+        @Test
+        @DisplayName("HttpProtocolProcessor should serve every standard proxyable verb")
+        void httpProcessorShouldServeStandardVerbs() {
+            var processor = new HttpProtocolProcessor();
+
+            assertTrue(processor.supports(HttpMethod.GET), "GET is a standard verb");
+            assertTrue(processor.supports(HttpMethod.DELETE), "DELETE is a standard verb");
+            assertEquals(HttpMethod.values().length, processor.standardMethods().size(),
+                    "Every proxyable verb is standard");
+        }
+    }
+
     private static Route.RouteBuilder baseRoute() {
         return Route.builder()
                 .id(Generators.letterStrings(3, 12).next())
@@ -429,6 +748,7 @@ class RouteTest {
                 .effectiveSecurityFilter(SecurityFilterConfig.builder().allowedPaths(List.of("/api/ok")).build())
                 .effectiveAllowedPaths(List.of("/api/ok"))
                 .securityHeaders(SecurityHeadersConfig.builder().build())
+                .effectiveForward(ForwardConfig.builder().headersAllow(List.of("Accept")).build())
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
                 .locationRewriter(new LocationRewriter(upstream(), match.matchKey(), match.isExact()))

@@ -16,12 +16,14 @@
 /**
  * The framework edge: the Vert.x-bound catch-all route, edge hardening, streamed upstream
  * dispatch / response, and the boot-time
- * {@link de.cuioss.sheriff.gateway.edge.RouteRuntimeAssembler} that compiles the frozen route
- * table into immutable {@link de.cuioss.sheriff.gateway.routing.RouteRuntime} instances with
- * deduplicated heavy collaborators.
+ * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler} that completes every
+ * {@link de.cuioss.sheriff.gateway.routing.Route} of the frozen
+ * {@link de.cuioss.sheriff.gateway.routing.RouteTable} with its boot-attached components and holds
+ * the deduplicated upstream clients and resilience guards in an immutable lookup beside the routes.
  * <p>
  * This package is framework-coupled (Vert.x, SmallRye Fault-Tolerance) by design. The
- * framework-free gate covers the pre-boot configuration packages only (ADR-0062).
+ * framework-free gate does not cover it (ADR-0062): it holds the framework collaborators so the
+ * route type itself can stay framework-free.
  *
  * @author API Sheriff Team
  * @since 1.0

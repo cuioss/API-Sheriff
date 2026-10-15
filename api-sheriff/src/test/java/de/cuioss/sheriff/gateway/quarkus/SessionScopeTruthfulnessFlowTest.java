@@ -50,11 +50,13 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import de.cuioss.sheriff.token.client.token.RotationResult;
@@ -311,9 +313,11 @@ class SessionScopeTruthfulnessFlowTest {
                 .headers(Map.of("cookie", List.of(sessionCookie), "accept", List.of(accept)))
                 .build();
         request.canonicalPath(ROUTE_PATH);
-        request.selectedRoute(RouteRuntime.builder().id("orders")
+        request.selectedRoute(Route.builder().id("orders")
+                .match(MatchConfig.builder().pathPrefix("/app").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                 .neededScopes(NEEDED)
+                .upstream(new ResolvedUpstream("https", "orders.example", 443, ""))
                 .build());
         return request;
     }

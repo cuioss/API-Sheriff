@@ -29,7 +29,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
  * consumed non-idempotent request risks duplicate side effects. This gate therefore permits a
  * retry only when ALL of the following hold:
  * <ul>
- *   <li>the route enables upstream retry ({@link de.cuioss.sheriff.gateway.routing.RouteRuntime#isRetryEnabled()});</li>
+ *   <li>the route enables upstream retry ({@link de.cuioss.sheriff.gateway.routing.Route#retryEnabled()});</li>
  *   <li>the request method is idempotent (RFC 7231 §4.2.2: {@code GET}, {@code HEAD},
  *       {@code PUT}, {@code DELETE}, {@code OPTIONS} — never {@code POST} / {@code PATCH});</li>
  *   <li>zero request body bytes have been sent to the upstream yet.</li>

@@ -36,11 +36,11 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.topology.TopologyResolver;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import org.jspecify.annotations.Nullable;
 
 /**

@@ -67,15 +67,15 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
+import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
@@ -117,6 +117,34 @@ class DispatchStageTest {
 
     /** The {@code max_body_bytes} ceiling of the unit-level body streams, above every body they carry. */
     private static final long BODY_CAP = 1024L;
+
+    /**
+     * A proxy route together with the stage that serves it. The route's shared client and guard are
+     * not route components: the stage resolves them from its {@link RouteAssembler.UpstreamClients}
+     * lookup, which this fixture fills for the route exactly as the boot assembly would.
+     */
+    private record Routed(Route route, DispatchStage stage) {
+
+        static Routed of(String id, ResolvedUpstream upstream, boolean retryEnabled, HttpClient client, Guard guard,
+                long bodyIdleTimeoutMillis, UpstreamFailureMapper failureMapper) {
+            Route route = Route.builder()
+                    .id(id)
+                    .match(MatchConfig.builder().pathPrefix("/" + id).build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .upstream(upstream)
+                    .retryEnabled(retryEnabled)
+                    .build();
+            RouteAssembler.UpstreamTarget target = RouteAssembler.UpstreamTarget.of(route);
+            RouteAssembler.UpstreamClients clients = new RouteAssembler.UpstreamClients(Map.of(target, client),
+                    Map.of(new RouteAssembler.ResilienceShape(target, retryEnabled), guard));
+            return new Routed(route, new DispatchStage(clients, BODY_CAP, bodyIdleTimeoutMillis, failureMapper));
+        }
+
+        HttpClientResponse dispatch(HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
+                ReadStream<Buffer> requestBody, DispatchStage.BodyFraming framing) {
+            return stage.dispatch(route, method, requestUri, forwardHeaders, requestBody, framing);
+        }
+    }
 
     @Nested
     @DisplayName("upstream request URI assembly")
@@ -913,7 +941,6 @@ class DispatchStageTest {
         private ExecutorService virtualThreadExecutor;
         private HttpServer upstream;
         private HttpClient upstreamClient;
-        private DispatchStage stage;
         /** Every request the stub upstream received a head for. */
         private final AtomicInteger upstreamStarted = new AtomicInteger();
         /** Every body byte that reached the stub upstream. */
@@ -938,8 +965,6 @@ class DispatchStageTest {
                 }
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
             upstreamClient = vertx.createHttpClient();
-            stage = new DispatchStage(BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                    new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
         @AfterEach
@@ -1018,22 +1043,19 @@ class DispatchStageTest {
         }
 
         /** A retry-enabled proxy route over {@code client} with a 1 + 2 retry guard, as the edge builds one. */
-        private RouteRuntime route(HttpClient client) {
-            return RouteRuntime.builder()
-                    .id("bodyless")
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
-                    .httpClient(client)
-                    .retryEnabled(true)
-                    .resilienceGuard(Guard.create()
+        private Routed route(HttpClient client) {
+            return Routed.of("bodyless", new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""),
+                    true, client,
+                    Guard.create()
                             .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
                             .whenException(DispatchStage::allowsRetryAfter).done()
-                            .build())
-                    .build();
+                            .build(),
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
         /** Runs one bodyless GET dispatch on a virtual thread, as the edge does. */
-        private Future<HttpClientResponse> dispatchGet(RouteRuntime route, String path, ReadStream<Buffer> inbound) {
-            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.GET, path, Map.of(), inbound,
+        private Future<HttpClientResponse> dispatchGet(Routed routed, String path, ReadStream<Buffer> inbound) {
+            return virtualThreadExecutor.submit(() -> routed.dispatch(HttpMethod.GET, path, Map.of(), inbound,
                     DispatchStage.BodyFraming.of(HttpMethod.GET, DispatchStage.NO_DECLARED_LENGTH,
                             lateViolations::add)));
         }
@@ -1071,7 +1093,6 @@ class DispatchStageTest {
         private ExecutorService virtualThreadExecutor;
         private HttpServer upstream;
         private HttpClient upstreamClient;
-        private DispatchStage stage;
         private Guard attemptGuard;
         private Guard patientGuard;
         /** Answers the request to the held path once completed with the body to answer it with. */
@@ -1102,8 +1123,6 @@ class DispatchStageTest {
                 }
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
             upstreamClient = vertx.createHttpClient(new HttpClientOptions(), new PoolOptions().setHttp1MaxSize(1));
-            stage = new DispatchStage(BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                    new UpstreamFailureMapper(new GatewayEventCounter()));
             attemptGuard = Guard.create()
                     .withTimeout().duration(ATTEMPT_TIMEOUT_MILLIS, ChronoUnit.MILLIS).done()
                     .build();
@@ -1196,18 +1215,15 @@ class DispatchStageTest {
         }
 
         /** A proxy route over {@code client}, without retry, guarded by {@code guard}. */
-        private RouteRuntime route(HttpClient client, Guard guard) {
-            return RouteRuntime.builder()
-                    .id("abandoned-attempt")
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
-                    .httpClient(client)
-                    .resilienceGuard(guard)
-                    .build();
+        private Routed route(HttpClient client, Guard guard) {
+            return Routed.of("abandoned-attempt",
+                    new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""), false, client, guard,
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
         /** Runs one bodyless GET dispatch on a virtual thread, as the edge does. */
-        private Future<HttpClientResponse> dispatchGet(RouteRuntime route, String path) {
-            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.GET, path, Map.of(),
+        private Future<HttpClientResponse> dispatchGet(Routed routed, String path) {
+            return virtualThreadExecutor.submit(() -> routed.dispatch(HttpMethod.GET, path, Map.of(),
                     new TestReadStream(), DispatchStage.BodyFraming.of(HttpMethod.GET, DispatchStage.NO_DECLARED_LENGTH,
                             _ -> {
                                 // No body byte is ever sent in these cases, so no late refusal arrives.
@@ -1297,9 +1313,10 @@ class DispatchStageTest {
     @DisplayName("stream-aware retry gating on the guarded dispatch path")
     class RetryGating {
 
+        /** A stage over an empty upstream lookup: the guarded path under test resolves no client itself. */
         private DispatchStage newStage() {
-            return new DispatchStage(1024L, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                    new UpstreamFailureMapper(new GatewayEventCounter()));
+            return new DispatchStage(new RouteAssembler.UpstreamClients(Map.of(), Map.of()), BODY_CAP,
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
         /** A retry-enabled guard (1 + 2 retries) deciding through the production retry predicate. */
@@ -1447,6 +1464,87 @@ class DispatchStageTest {
         }
     }
 
+    /**
+     * The shared client and guard are resolved from the boot-built lookup by the route's upstream
+     * target and resilience shape; a route the lookup cannot serve is a boot-assembly defect and is
+     * refused before anything is sent.
+     */
+    @Nested
+    @DisplayName("shared client and guard resolved from the upstream lookup")
+    class UpstreamLookup {
+
+        private static final ResolvedUpstream UPSTREAM = new ResolvedUpstream("http", "orders-svc", 8080, "");
+
+        @Test
+        @DisplayName("refuses a route that resolves no proxy upstream")
+        void refusesARouteWithoutUpstream() {
+            Route assetRoute = Route.builder()
+                    .id("asset")
+                    .match(MatchConfig.builder().pathPrefix("/asset").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, null, null))
+                    .build();
+            DispatchStage stage = stageOver(Map.of(), Map.of());
+
+            IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                    () -> dispatchGet(stage, assetRoute));
+
+            assertEquals("proxy dispatch requires a resolved upstream", thrown.getMessage());
+        }
+
+        @Test
+        @DisplayName("refuses a route whose upstream target the lookup holds no client for")
+        void refusesARouteWithoutClient() {
+            Route route = proxyRoute();
+            DispatchStage stage = stageOver(Map.of(), Map.of());
+
+            IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> dispatchGet(stage, route));
+
+            assertEquals("proxy dispatch requires an upstream client", thrown.getMessage());
+        }
+
+        @Test
+        @DisplayName("refuses a route whose resilience shape the lookup holds no guard for")
+        void refusesARouteWithoutGuard() {
+            Route route = proxyRoute();
+            DispatchStage stage = stageOver(Map.of(RouteAssembler.UpstreamTarget.of(route), unusedClient()), Map.of());
+
+            IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> dispatchGet(stage, route));
+
+            assertEquals("proxy dispatch requires a resilience guard", thrown.getMessage());
+        }
+
+        private Route proxyRoute() {
+            return Route.builder()
+                    .id("orders")
+                    .match(MatchConfig.builder().pathPrefix("/orders").build())
+                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                    .upstream(UPSTREAM)
+                    .build();
+        }
+
+        private DispatchStage stageOver(Map<RouteAssembler.UpstreamTarget, HttpClient> clients,
+                Map<RouteAssembler.ResilienceShape, Guard> guards) {
+            return new DispatchStage(new RouteAssembler.UpstreamClients(clients, guards), BODY_CAP,
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
+        }
+
+        private HttpClientResponse dispatchGet(DispatchStage stage, Route route) {
+            return stage.dispatch(route, HttpMethod.GET, "/", Map.of(), new TestReadStream(),
+                    DispatchStage.BodyFraming.of(HttpMethod.GET, DispatchStage.NO_DECLARED_LENGTH, _ -> {
+                        // The dispatch is refused before anything is sent, so no late refusal arrives.
+                    }));
+        }
+
+        /** A client the refused dispatch never reaches: every call on it fails the test. */
+        private HttpClient unusedClient() {
+            return (HttpClient) Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                    new Class<?>[]{HttpClient.class}, (_, method, _) -> {
+                        throw new AssertionError("the refused dispatch must not touch the client: " + method.getName());
+                    });
+        }
+    }
+
     @Nested
     @DisplayName("circuit-breaker attribution over a live upstream")
     class BreakerAttribution {
@@ -1462,7 +1560,7 @@ class DispatchStageTest {
         private ExecutorService virtualThreadExecutor;
         private HttpServer upstream;
         private Guard guard;
-        private RouteRuntime route;
+        private Route route;
         private DispatchStage stage;
         /** The body the stub upstream answers a request to the early path with. */
         private String earlyAnswer;
@@ -1514,23 +1612,25 @@ class DispatchStageTest {
                     .onStateChange(breakerTransitions::add)
                     .done()
                     .build();
-            RouteTable table = new RouteTable(List.of(ResolvedRoute.builder()
+            RouteTable table = new RouteTable(List.of(Route.builder()
                     .id("upload")
                     .protocol(Protocol.HTTP)
                     .match(MatchConfig.builder().pathPrefix("/upload").build())
                     .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(List.of(HttpMethod.POST))
+                    .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                     .build()));
-            route = new RouteRuntimeAssembler(new ProtocolProcessorRegistry()).assemble(table,
-                    _ -> new RouteRuntimeAssembler.SecurityPosture(SecurityProfile.STRICT,
+            RouteAssembler.AssembledRoutes assembled = new RouteAssembler(new ProtocolProcessorRegistry()).assemble(
+                    table,
+                    _ -> new RouteAssembler.SecurityPosture(SecurityProfile.STRICT,
                             SecurityConfiguration.builder().build()),
                     _ -> vertx.createHttpClient(),
                     _ -> guard,
                     _ -> {
                         throw new UnsupportedOperationException("no asset route in this test");
-                    }).getFirst();
-            stage = new DispatchStage(1024L, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+                    });
+            route = assembled.routes().getFirst();
+            stage = new DispatchStage(assembled.upstreamClients(), BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
                     new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
@@ -1688,20 +1788,18 @@ class DispatchStageTest {
             TestReadStream inbound = new TestReadStream();
             // The upstream drops the request; only once the dispatch has seen that failure does the
             // inbound stream fail — before the dispatching thread goes on to read the outcome.
-            RouteRuntime intercepted = RouteRuntime.builder()
-                    .id("upload")
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
-                    .httpClient(interceptingClient(vertx.createHttpClient(), composed -> {
+            Routed intercepted = Routed.of("upload",
+                    new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""), false,
+                    interceptingClient(vertx.createHttpClient(), composed -> {
                         sendFirstChunk(inbound, 1);
                         CompletableFuture<@Nullable Object> settled = new CompletableFuture<>();
                         composed.onComplete(_ -> settled.complete(null));
                         Awaits.connect(settled, "the upstream to fail the request");
                         inbound.fail(new IllegalStateException("inbound body failed"));
-                    }))
-                    .resilienceGuard(guard)
-                    .build();
+                    }),
+                    guard, DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
 
-            GatewayException rejection = rejectionOf(virtualThreadExecutor.submit(() -> stage.dispatch(intercepted,
+            GatewayException rejection = rejectionOf(virtualThreadExecutor.submit(() -> intercepted.dispatch(
                     HttpMethod.POST, FAILING_PATH, Map.of(), inbound,
                     DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH))));
 
@@ -1749,7 +1847,6 @@ class DispatchStageTest {
         private ExecutorService virtualThreadExecutor;
         private HttpServer upstream;
         private HttpClient upstreamClient;
-        private DispatchStage stage;
         private Guard guard;
         private final AtomicInteger breakerSuccesses = new AtomicInteger();
         private final AtomicInteger breakerFailures = new AtomicInteger();
@@ -1763,8 +1860,6 @@ class DispatchStageTest {
                 // Received, never answered.
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
             upstreamClient = vertx.createHttpClient();
-            stage = new DispatchStage(BODY_CAP, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                    new UpstreamFailureMapper(new GatewayEventCounter()));
             guard = Guard.create()
                     .withCircuitBreaker()
                     .requestVolumeThreshold(20)
@@ -1791,7 +1886,7 @@ class DispatchStageTest {
         @Test
         @DisplayName("a vetoed retry is not recorded by the circuit breaker: an upstream failure counts once, as a failure")
         void vetoedRetryAfterAnUpstreamFailureIsNotRecordedByTheBreaker() throws Exception {
-            RouteRuntime unreachable = route(UnreachablePort.pick());
+            Routed unreachable = route(UnreachablePort.pick());
 
             GatewayException rejection = rejectionOf(dispatchPost(unreachable));
 
@@ -1805,7 +1900,7 @@ class DispatchStageTest {
         @Test
         @DisplayName("a vetoed retry is not recorded by the circuit breaker: an attempt timeout counts once, as a failure")
         void vetoedRetryAfterAnAttemptTimeoutIsNotRecordedByTheBreaker() {
-            RouteRuntime unanswering = route(upstream.actualPort());
+            Routed unanswering = route(upstream.actualPort());
 
             GatewayException rejection = rejectionOf(dispatchPost(unanswering));
 
@@ -1817,19 +1912,15 @@ class DispatchStageTest {
         }
 
         /** A retry-enabled proxy route to {@code port} on loopback, guarded by the production-shaped guard. */
-        private RouteRuntime route(int port) {
-            return RouteRuntime.builder()
-                    .id("vetoed-retry")
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, port, ""))
-                    .httpClient(upstreamClient)
-                    .retryEnabled(true)
-                    .resilienceGuard(guard)
-                    .build();
+        private Routed route(int port) {
+            return Routed.of("vetoed-retry", new ResolvedUpstream("http", LoopbackHost.ADDRESS, port, ""), true,
+                    upstreamClient, guard, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+                    new UpstreamFailureMapper(new GatewayEventCounter()));
         }
 
         /** Runs one streamed POST dispatch to the held path on a virtual thread, as the edge does. */
-        private Future<HttpClientResponse> dispatchPost(RouteRuntime route) {
-            return virtualThreadExecutor.submit(() -> stage.dispatch(route, HttpMethod.POST, HELD_PATH, Map.of(),
+        private Future<HttpClientResponse> dispatchPost(Routed routed) {
+            return virtualThreadExecutor.submit(() -> routed.dispatch(HttpMethod.POST, HELD_PATH, Map.of(),
                     new TestReadStream(), DispatchStage.BodyFraming.streamed(DispatchStage.NO_DECLARED_LENGTH)));
         }
     }
@@ -1905,12 +1996,11 @@ class DispatchStageTest {
         @Test
         @DisplayName("a body that never arrives releases the pool's only connection, which the next dispatch obtains")
         void idleBodyReleasesTheConnectionForTheNextDispatch() throws Exception {
-            DispatchStage stage = stage(IDLE_TIMEOUT_MILLIS);
-            RouteRuntime route = route(patientGuard(), false);
+            Routed routed = routed(IDLE_TIMEOUT_MILLIS, patientGuard(), false);
 
-            GatewayException rejection = rejectionOf(dispatch(stage, route, HttpMethod.POST, "/idle",
+            GatewayException rejection = rejectionOf(dispatch(routed, HttpMethod.POST, "/idle",
                     new TestReadStream()));
-            String next = answerOf(dispatch(stage, route, HttpMethod.GET, ANSWERING_PATH, new TestReadStream()));
+            String next = answerOf(dispatch(routed, HttpMethod.GET, ANSWERING_PATH, new TestReadStream()));
 
             // The idle request never wrote its head — the client writes it with the first body chunk — so
             // the reset leaves its connection reusable: the pool hands the same connection on.
@@ -1928,12 +2018,11 @@ class DispatchStageTest {
         @Test
         @DisplayName("a slow and steady upload is never cut off: answered 200, its whole body received")
         void slowSteadyUploadIsNotCutOff() throws Exception {
-            DispatchStage stage = stage(STEADY_TIMEOUT_MILLIS);
             TestReadStream inbound = new TestReadStream();
             String chunk = Generators.letterStrings(4, 4).next();
 
-            Future<HttpClientResponse> dispatched = dispatch(stage, route(patientGuard(), false), HttpMethod.POST,
-                    "/steady", inbound);
+            Future<HttpClientResponse> dispatched = dispatch(routed(STEADY_TIMEOUT_MILLIS, patientGuard(), false),
+                    HttpMethod.POST, "/steady", inbound);
             Awaits.until(inbound::subscribed, "the dispatch to subscribe to the request body",
                     Awaits.CONNECT_CEILING_SECONDS);
             AtomicInteger sent = new AtomicInteger();
@@ -1957,15 +2046,14 @@ class DispatchStageTest {
         @Test
         @DisplayName("more idle expiries than the breaker's window leave it closed, and the next dispatch reaches the upstream")
         void idleExpiriesLeaveTheBreakerClosed() throws Exception {
-            DispatchStage stage = stage(IDLE_TIMEOUT_MILLIS);
-            RouteRuntime route = route(breakerGuard(), false);
+            Routed routed = routed(IDLE_TIMEOUT_MILLIS, breakerGuard(), false);
             List<EventType> raised = new ArrayList<>();
 
             for (int call = 0; call <= REQUEST_VOLUME_THRESHOLD; call++) {
-                raised.add(rejectionOf(dispatch(stage, route, HttpMethod.POST, "/idle-" + call,
+                raised.add(rejectionOf(dispatch(routed, HttpMethod.POST, "/idle-" + call,
                         new TestReadStream())).getEventType());
             }
-            String next = answerOf(dispatch(stage, route, HttpMethod.GET, ANSWERING_PATH, new TestReadStream()));
+            String next = answerOf(dispatch(routed, HttpMethod.GET, ANSWERING_PATH, new TestReadStream()));
 
             assertAll("idle expiries beyond the breaker's window",
                     () -> assertEquals(Collections.nCopies(REQUEST_VOLUME_THRESHOLD + 1, EventType.REQUEST_BODY_TIMEOUT),
@@ -1978,7 +2066,6 @@ class DispatchStageTest {
         @Test
         @DisplayName("an idle expiry on a retry-enabled route is not retried: the upstream sees one connection")
         void idleExpiryIsNotRetried() {
-            DispatchStage stage = stage(IDLE_TIMEOUT_MILLIS);
             Guard retryGuard = Guard.create()
                     .withTimeout().duration(PATIENT_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done()
                     .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
@@ -1989,17 +2076,13 @@ class DispatchStageTest {
             HttpClient counting = interceptingClient(upstreamClient, _ -> attempts.incrementAndGet());
 
             // An idempotent PUT, so only the expiry itself can keep the guard from retrying.
-            GatewayException rejection = rejectionOf(dispatch(stage, route(counting, retryGuard, true), HttpMethod.PUT,
-                    "/idle-retry", new TestReadStream()));
+            GatewayException rejection = rejectionOf(dispatch(routed(IDLE_TIMEOUT_MILLIS, counting, retryGuard, true),
+                    HttpMethod.PUT, "/idle-retry", new TestReadStream()));
 
             assertAll("an idle expiry on a retry-enabled route",
                     () -> assertEquals(EventType.REQUEST_BODY_TIMEOUT, rejection.getEventType()),
                     () -> assertEquals(1, attempts.get(), "an idle expiry must never be retried"),
                     () -> assertEquals(1, acceptedConnections.get(), "the upstream saw exactly one connection"));
-        }
-
-        private DispatchStage stage(long idleTimeoutMillis) {
-            return new DispatchStage(BODY_CAP, idleTimeoutMillis, failureMapper);
         }
 
         /** A guard whose timeout leaves the dispatch far more time than any idle timeout of these cases. */
@@ -2023,26 +2106,27 @@ class DispatchStageTest {
                     .build();
         }
 
-        /** A proxy route over the one-connection client, guarded by {@code guard}. */
-        private RouteRuntime route(Guard guard, boolean retryEnabled) {
-            return route(upstreamClient, guard, retryEnabled);
+        /**
+         * A proxy route over the one-connection client, guarded by {@code guard}, served by a stage whose
+         * request-body idle timeout is {@code idleTimeoutMillis}.
+         */
+        private Routed routed(long idleTimeoutMillis, Guard guard, boolean retryEnabled) {
+            return routed(idleTimeoutMillis, upstreamClient, guard, retryEnabled);
         }
 
-        /** A proxy route over {@code client}, guarded by {@code guard}. */
-        private RouteRuntime route(HttpClient client, Guard guard, boolean retryEnabled) {
-            return RouteRuntime.builder()
-                    .id("body-idle")
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
-                    .httpClient(client)
-                    .retryEnabled(retryEnabled)
-                    .resilienceGuard(guard)
-                    .build();
+        /**
+         * A proxy route over {@code client}, guarded by {@code guard}, served by a stage whose request-body
+         * idle timeout is {@code idleTimeoutMillis}.
+         */
+        private Routed routed(long idleTimeoutMillis, HttpClient client, Guard guard, boolean retryEnabled) {
+            return Routed.of("body-idle", new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""),
+                    retryEnabled, client, guard, idleTimeoutMillis, failureMapper);
         }
 
         /** Runs one dispatch on a virtual thread, as the edge does, framed as its method directs. */
-        private Future<HttpClientResponse> dispatch(DispatchStage stage, RouteRuntime route, HttpMethod method,
-                String path, ReadStream<Buffer> inbound) {
-            return virtualThreadExecutor.submit(() -> stage.dispatch(route, method, path, Map.of(), inbound,
+        private Future<HttpClientResponse> dispatch(Routed routed, HttpMethod method, String path,
+                ReadStream<Buffer> inbound) {
+            return virtualThreadExecutor.submit(() -> routed.dispatch(method, path, Map.of(), inbound,
                     DispatchStage.BodyFraming.of(method, DispatchStage.NO_DECLARED_LENGTH, _ -> {
                         // No body byte is ever sent on a bodyless dispatch here, so no late refusal arrives.
                     })));
@@ -2163,17 +2247,14 @@ class DispatchStageTest {
                             .listen(0, LoopbackHost.ADDRESS),
                     "the immediately-answering upstream to start listening");
             upstreamClient = vertx.createHttpClient();
-            RouteRuntime route = RouteRuntime.builder()
-                    .id("deferred-relay")
-                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
-                    .httpClient(interceptingClient(upstreamClient, stall::hold))
-                    .resilienceGuard(Guard.create()
+            Routed routed = Routed.of("deferred-relay",
+                    new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""), false,
+                    interceptingClient(upstreamClient, stall::hold),
+                    Guard.create()
                             .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
                             .whenException(DispatchStage::allowsRetryAfter).done()
-                            .build())
-                    .build();
-            DispatchStage stage = new DispatchStage(1024L, DispatchStage.NO_BODY_IDLE_TIMEOUT,
-                    new UpstreamFailureMapper(new GatewayEventCounter()));
+                            .build(),
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
             ResponseStage responseStage = new ResponseStage(Set.of());
             front = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
                 // As GatewayEdgeRoute does: pause the inbound request on its event loop, capture that
@@ -2181,7 +2262,7 @@ class DispatchStageTest {
                 request.pause();
                 Context clientContext = Vertx.currentContext();
                 Thread.ofVirtual().start(
-                        () -> dispatchThenDeferRelay(stage, responseStage, route, request, clientContext));
+                        () -> dispatchThenDeferRelay(routed, responseStage, request, clientContext));
             }).listen(0, LoopbackHost.ADDRESS), "the dispatching front server to start listening");
             testClient = vertx.createHttpClient();
         }
@@ -2216,11 +2297,11 @@ class DispatchStageTest {
                             "the client receives the upstream status and body, not an abandoned connection"));
         }
 
-        private void dispatchThenDeferRelay(DispatchStage stage, ResponseStage responseStage, RouteRuntime route,
-                HttpServerRequest request, Context clientContext) {
+        private void dispatchThenDeferRelay(Routed routed, ResponseStage responseStage, HttpServerRequest request,
+                Context clientContext) {
             HttpClientResponse response;
             try {
-                response = stage.dispatch(route, HttpMethod.GET, "/", Map.of(), request,
+                response = routed.dispatch(HttpMethod.GET, "/", Map.of(), request,
                         DispatchStage.BodyFraming.of(HttpMethod.GET, DispatchStage.NO_DECLARED_LENGTH, _ -> {
                             // A body-free GET: no late refusal can arrive in this test.
                         }));

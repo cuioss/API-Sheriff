@@ -27,9 +27,9 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteMatcher;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -39,7 +39,7 @@ import org.jspecify.annotations.Nullable;
  * only hint of what the session is for is the post-login {@code returnUrl}. This resolver maps that
  * target onto the boot-built route table: when the same-origin, canonicalized path of the target
  * selects a route whose effective auth is not {@code none}, the target resolves to that route's
- * {@link ResolvedRoute#neededScopes() neededScopes} — the same single derivation the session stage
+ * {@link Route#neededScopes() neededScopes} — the same single derivation the session stage
  * and the bearer check enforce. In every other case it resolves to {@code oidc.scopes}:
  * <ul>
  *   <li>no {@code returnUrl}, a blank one, or one that fails the same-origin check
@@ -163,9 +163,8 @@ public final class ReturnTargetScopes {
      */
     private record Candidate(RouteMatcher matcher, Require require, Set<String> neededScopes) {
 
-        static Candidate from(ResolvedRoute route) {
-            return new Candidate(RouteMatcher.from(route.match()), route.effectiveAuth().require(),
-                    route.neededScopes());
+        static Candidate from(Route route) {
+            return new Candidate(route.matcher(), route.effectiveAuth().require(), route.neededScopes());
         }
     }
 }

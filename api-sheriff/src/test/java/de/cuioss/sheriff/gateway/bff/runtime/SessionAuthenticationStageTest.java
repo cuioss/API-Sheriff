@@ -48,12 +48,14 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -689,10 +691,7 @@ class SessionAuthenticationStageTest {
                     .headers(navigationHeaders())
                     .build();
             request.canonicalPath(path);
-            request.selectedRoute(RouteRuntime.builder().id("orders")
-                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .neededScopes(Set.of())
-                    .build());
+            request.selectedRoute(sessionRoute(AuthConfig.builder().require(Require.SESSION).build(), Set.of()));
 
             stage.process(request);
 
@@ -1243,10 +1242,18 @@ class SessionAuthenticationStageTest {
                 .headers(headers)
                 .build();
         request.canonicalPath("/app/orders");
-        request.selectedRoute(RouteRuntime.builder().id("orders")
-                .effectiveAuth(AuthConfig.builder().require(Require.SESSION).tokenRelay(tokenRelay).build())
-                .neededScopes(neededScopes)
-                .build());
+        request.selectedRoute(sessionRoute(
+                AuthConfig.builder().require(Require.SESSION).tokenRelay(tokenRelay).build(), neededScopes));
         return request;
+    }
+
+    /** The {@code require: session} proxy route under {@code /app} the requests of this class select. */
+    private static Route sessionRoute(AuthConfig auth, Set<String> neededScopes) {
+        return Route.builder().id("orders")
+                .match(MatchConfig.builder().pathPrefix("/app").build())
+                .effectiveAuth(auth)
+                .neededScopes(neededScopes)
+                .upstream(new ResolvedUpstream("https", "orders.example", 443, ""))
+                .build();
     }
 }

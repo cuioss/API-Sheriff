@@ -25,10 +25,14 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -73,10 +77,13 @@ class VerbGateStageTest {
                         "the gate writes no response header at all on the pass path"));
     }
 
-    private static RouteRuntime routeAllowing(EnumSet<HttpMethod> methods) {
-        return RouteRuntime.builder()
+    private static Route routeAllowing(EnumSet<HttpMethod> methods) {
+        return Route.builder()
                 .id("orders")
+                .match(MatchConfig.builder().pathPrefix("/orders").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(methods)
+                .upstream(new ResolvedUpstream("https", "orders.example", 443, ""))
                 .build();
     }
 

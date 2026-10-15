@@ -48,15 +48,15 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -770,38 +770,34 @@ class GatewayEdgePipelineTest {
         return anchor == null ? globalHeaders() : anchorHeaders();
     }
 
-    private static ResolvedRoute anchoredRoute(String id, String pathPrefix, Require require, int upstreamPort) {
-        return ResolvedRoute.builder()
+    private static Route anchoredRoute(String id, String pathPrefix, Require require, int upstreamPort) {
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .anchor(FRONTEND_ANCHOR)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .effectiveSecurityHeaders(anchorHeaders())
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                .securityHeaders(anchorHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
 
     /** Re-homes an unanchored fixture route under the {@value #FRONTEND_ANCHOR} anchor. */
-    private static ResolvedRoute anchored(ResolvedRoute route) {
-        return new ResolvedRoute(route.id(), route.protocol(), FRONTEND_ANCHOR, route.match(), route.effectiveAuth(),
-                route.effectiveAllowedMethods(), route.effectiveSecurityFilter(), anchorHeaders(),
-                route.retryEnabled(), route.notModifiedEnabled(), route.rewriteLocation(), route.upstream(),
-                route.asset(), route.redirect(), route.effectiveForward(), route.effectiveAllowedOrigins(),
-                route.effectiveWebSocketIdleTimeoutSeconds(), route.neededScopes());
+    private static Route anchored(Route route) {
+        return route.toBuilder().anchor(FRONTEND_ANCHOR).securityHeaders(anchorHeaders()).build();
     }
 
     /** A public directory asset route serving {@value #ASSET_FILE} from the fixture's temporary directory. */
-    private ResolvedRoute assetRoute(String id, String pathPrefix, @Nullable String anchor) {
-        return ResolvedRoute.builder()
+    private Route assetRoute(String id, String pathPrefix, @Nullable String anchor) {
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .anchor(anchor)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .effectiveSecurityHeaders(resolvedHeaders(anchor))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                .securityHeaders(resolvedHeaders(anchor))
                 .asset(ResolvedAsset.directory(assetDirectory.toString(), AccessLevel.PUBLIC, null, null))
                 .build();
     }
@@ -810,15 +806,15 @@ class GatewayEdgePipelineTest {
      * A bearer-protected gRPC route: a call without a token is refused at stage 4 and rendered as a
      * trailers-only gRPC status, so it never dials the (HTTP/1.1) stub upstream.
      */
-    private static ResolvedRoute grpcRoute(String id, String pathPrefix, int upstreamPort, @Nullable String anchor) {
-        return ResolvedRoute.builder()
+    private static Route grpcRoute(String id, String pathPrefix, int upstreamPort, @Nullable String anchor) {
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.GRPC)
                 .anchor(anchor)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.POST))
-                .effectiveSecurityHeaders(resolvedHeaders(anchor))
+                .effectiveAllowedMethods(Set.of(HttpMethod.POST))
+                .securityHeaders(resolvedHeaders(anchor))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
@@ -827,16 +823,16 @@ class GatewayEdgePipelineTest {
      * A public WebSocket route without an Origin allowlist, dialing the stub upstream — which refuses
      * the upgrade, so every request on it ends in the handshake-failure response.
      */
-    private static ResolvedRoute webSocketRoute(String id, String pathPrefix, int upstreamPort,
+    private static Route webSocketRoute(String id, String pathPrefix, int upstreamPort,
             @Nullable String anchor) {
-        return ResolvedRoute.builder()
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.WEBSOCKET)
                 .anchor(anchor)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .effectiveSecurityHeaders(resolvedHeaders(anchor))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                .securityHeaders(resolvedHeaders(anchor))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
@@ -846,26 +842,29 @@ class GatewayEdgePipelineTest {
      * {@code max_body_bytes} cap and an {@code allowed_paths} allowlist — so the partial-disable
      * semantics are executable rather than merely documented.
      */
-    private static ResolvedRoute minimalModeRoute(int upstreamPort) {
+    private static Route minimalModeRoute(int upstreamPort) {
         SecurityFilterConfig filter = SecurityFilterConfig.builder()
                 .profile("minimal")
                 .allowedPaths(List.of("/open/allowed"))
                 .maxBodyBytes(MINIMAL_ROUTE_BODY_CAP)
                 .build();
-        return ResolvedRoute.builder()
+        return Route.builder()
                 .id("open")
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix("/open").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                 .effectiveSecurityFilter(filter)
-                // Resolved, not omitted. A route whose effectiveSecurityHeaders is null makes stage 2a
+                // The whitelist the route-table builder derives from the effective filter on the
+                // pre-boot pass; a hand-built route states it, since the boot assembly derives nothing.
+                .effectiveAllowedPaths(filter.allowedPaths())
+                // Resolved, not omitted. A route whose securityHeaders is null makes stage 2a
                 // remove the gateway-owned names and reseed nothing — correct per ADR-0007, but it is
                 // the shape a route takes only when NEITHER its anchor NOR the gateway declares a
                 // block. This fixture's gateway does declare one, so a null here modelled a topology
                 // the suite never runs and left every response through /open without the global HSTS
                 // and CSP the other routes carry.
-                .effectiveSecurityHeaders(globalHeaders())
+                .securityHeaders(globalHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
@@ -874,14 +873,14 @@ class GatewayEdgePipelineTest {
      * A redirect route answering {@value #REDIRECT_STATUS} towards {@value #REDIRECT_LOCATION} with
      * {@code keep_query} on; it resolves no upstream, so any upstream contact is a defect.
      */
-    private static ResolvedRoute redirectRoute(String id, String pathPrefix, Require require) {
-        return ResolvedRoute.builder()
+    private static Route redirectRoute(String id, String pathPrefix, Require require) {
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .effectiveSecurityHeaders(globalHeaders())
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                .securityHeaders(globalHeaders())
                 .redirect(RedirectConfig.builder()
                         .location(REDIRECT_LOCATION)
                         .status(REDIRECT_STATUS)
@@ -890,15 +889,15 @@ class GatewayEdgePipelineTest {
                 .build();
     }
 
-    private static ResolvedRoute route(String id, String pathPrefix, Require require, int upstreamPort,
+    private static Route route(String id, String pathPrefix, Require require, int upstreamPort,
             HttpMethod... methods) {
-        return ResolvedRoute.builder()
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(methods))
-                .effectiveSecurityHeaders(globalHeaders())
+                .effectiveAllowedMethods(Set.of(methods))
+                .securityHeaders(globalHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
