@@ -64,8 +64,9 @@ declines to review it, split at a sub-package boundary and report the split in t
 
 ## Dependencies and Sequencing
 
-- Depends on `PLAN-V02-44` (the per-route type merge) and kidicap `PLAN-32` (the early-answer IT fix in
-  `GatewayEdgeRoute`, PR #466) having landed. `PLAN-V02-24` landed with #465.
+- Depends on `PLAN-V02-44` (the per-route type merge) having landed. Kidicap `PLAN-32` (the early-answer
+  IT fix in `GatewayEdgeRoute`) landed as #466 (`73233f1e`) and `PLAN-V02-24` as #465; re-measure the
+  eight jobs on that code.
 - Can run alongside whichever validator slice (`PLAN-V02-28`, `PLAN-V02-40` … `-43`) is running: their
   surfaces are disjoint.
 - Comes before the re-grounded `PLAN-V02-23`, then `PLAN-V02-27`. Holds every staged plan that edits
