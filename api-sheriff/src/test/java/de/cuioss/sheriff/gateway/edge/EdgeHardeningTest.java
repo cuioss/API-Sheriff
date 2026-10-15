@@ -279,32 +279,19 @@ class EdgeHardeningTest {
                     .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(maxConcurrentStreams));
         }
 
-        @Test
-        @DisplayName("lowers an unbounded listener to 100 streams and a 6,553,500-byte connection window")
-        void lowersAnUnboundedListenerToTheBound() {
-            HttpServerOptions options = listenerAnnouncing(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS);
+        @ParameterizedTest(name = "{0} streams")
+        @ValueSource(longs = {Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS, 250L})
+        @DisplayName("lowers an unbounded or larger listener to 100 streams and a 6,553,500-byte connection window")
+        void lowersAnUnboundedOrLargerValueToTheBound(long maxConcurrentStreams) {
+            HttpServerOptions options = listenerAnnouncing(maxConcurrentStreams);
 
             new EdgeHardeningOptions().customizeHttpServer(options);
 
-            assertAll("an unbounded listener",
+            assertAll("a listener announcing " + maxConcurrentStreams + " streams",
                     () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
-                            "An unbounded announced value is lowered to 100 concurrent streams"),
+                            "An unbounded or larger announced value is lowered to 100 concurrent streams"),
                     () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
                             "The connection window is derived from the bounded 100 streams x 65,535 bytes"));
-        }
-
-        @Test
-        @DisplayName("lowers a listener announcing more than 100 streams to 100")
-        void lowersALargerValueToTheBound() {
-            HttpServerOptions options = listenerAnnouncing(250L);
-
-            new EdgeHardeningOptions().customizeHttpServer(options);
-
-            assertAll("a listener announcing 250 streams",
-                    () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
-                            "A value above the bound is lowered to 100 concurrent streams"),
-                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
-                            "The connection window follows the lowered stream count"));
         }
 
         @ParameterizedTest(name = "{0} streams")

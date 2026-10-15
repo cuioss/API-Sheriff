@@ -122,8 +122,7 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * listener's initial {@code SETTINGS_MAX_CONCURRENT_STREAMS} — the Vert.x listener default. A
      * transport bound: it caps the work a single connection can hold in flight, and it is the factor
      * the {@linkplain #connectionWindowSize(Http2Settings) connection window} is derived from, so the
-     * window stays a finite multiple of the stream window. A listener announcing an unbounded or
-     * larger value is lowered to it; a lower value is kept.
+     * window stays a finite multiple of the stream window.
      */
     private static final long MAX_CONCURRENT_STREAMS_PER_CONNECTION = 100L;
 
