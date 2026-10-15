@@ -244,6 +244,13 @@ public class GatewayEdgeRoute {
      * so the hint a client is given can never differ from the window the breaker applies.
      */
     static final int BREAKER_RESET_SECONDS = 5;
+    /**
+     * The upstream guard's whole-dispatch timeout, in seconds ({@link #guardFor}). The request-body idle
+     * timeout ({@link EdgeHardeningOptions#requestBodyIdleTimeoutMillis()}) is shorter, so a dispatch
+     * whose body stopped arriving is ended as the request's before the guard would end it as the
+     * upstream's.
+     */
+    static final int UPSTREAM_TIMEOUT_SECONDS = 30;
     private static final String CLAIMS_PARAM = "claims";
     private static final String RETURN_URL_PARAM = "returnUrl";
     private static final String STATE_PARAM = "state";
@@ -290,10 +297,10 @@ public class GatewayEdgeRoute {
      * returns the admission permit stops the tracking through it (see {@link #releaseAdmission}), so a
      * tracked relay is released exactly where its permit is. */
     private static final String SESSION_RELAY_KEY = "sheriff.sessionrelay";
-    /** Set once a framing rejection — the framing gate's, or a body the dispatch refused on its framing
-     * — has fallen on an HTTP/1.x request: the writer that answers it then retires the connection the
-     * answer is written on (see {@link #markFramingRejection}). The virtual-thread hop carries only the
-     * {@link RoutingContext}, so the marker rides on it to the event-loop writer. */
+    /** Set once a framing rejection — the framing gate's, or a body the dispatch could not finish
+     * reading — has fallen on an HTTP/1.x request: the writer that answers it then retires the
+     * connection the answer is written on (see {@link #markFramingRejection}). The virtual-thread hop
+     * carries only the {@link RoutingContext}, so the marker rides on it to the event-loop writer. */
     private static final String RETIRE_CONNECTION_KEY = "sheriff.retireconnection";
     /** The failure an end deferred by {@link #endResponse} reports when another writer ended the
      * response while it waited. */
@@ -366,6 +373,11 @@ public class GatewayEdgeRoute {
      * {@link #logInboundBodyAborted}). Bounded by the number of configured routes.
      */
     private final Set<String> inboundBodyAbortReported = ConcurrentHashMap.newKeySet();
+    /**
+     * The route ids a request-body idle timeout has already been reported for at {@code INFO} (see
+     * {@link #logRequestBodyTimeout}). Bounded by the number of configured routes.
+     */
+    private final Set<String> requestBodyTimeoutReported = ConcurrentHashMap.newKeySet();
     private volatile boolean draining;
 
     /**
@@ -839,7 +851,7 @@ public class GatewayEdgeRoute {
      *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
      *       still tie up connections by repeatedly tripping the {@code 413};</li>
      *   <li>a framing rejection of an HTTP/1.x request — the framing gate's, or a body the dispatch
-     *       refused on its framing (see {@link #markFramingRejection}).</li>
+     *       could not finish reading (see {@link #markFramingRejection}).</li>
      * </ul>
      */
     private static void retireConnectionAfterResponse(RoutingContext ctx) {
@@ -967,8 +979,8 @@ public class GatewayEdgeRoute {
      * version, exactly as {@link #rejectFramingAndRetire} describes: an HTTP/1.x connection is
      * recorded as retired at once and the answer retires it; an HTTP/2 request needs no mark, its
      * stream being ended by the one end rule (see {@link #endResponse}). Shared by the framing gate and
-     * by the dispatch, which refuses a body the headers did not declare (see
-     * {@link #dispatchRefusingOnFraming}).
+     * by the dispatch, which leaves behind a body it could not finish reading — one it refused on its
+     * framing, or one that stopped arriving (see {@link #dispatchMarkingUnreadBody}).
      */
     private void markFramingRejection(RoutingContext ctx) {
         if (isHttp1(ctx.request().version())) {
@@ -1360,7 +1372,8 @@ public class GatewayEdgeRoute {
      * Meters and renders a categorized {@link GatewayException} rejection: increments the event counter
      * (except for upstream failures already metered inside {@code UpstreamFailureMapper}), emits the
      * security-relevant WARN for filter violations and smuggled passthrough hosts and the latched INFO
-     * for an aborted inbound body, records the error metric, and renders the rejection.
+     * for an aborted inbound body and for a request-body idle timeout, records the error metric, and
+     * renders the rejection.
      */
     private void handleGatewayRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
         reportRejection(ctx, rejected);
@@ -1387,6 +1400,9 @@ public class GatewayEdgeRoute {
                     rejected.getMessage());
             // A client-caused termination, not a security event: an INFO, latched per route.
             case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx));
+            // A body that stopped arriving while the dispatch held an upstream connection: an INFO,
+            // latched per route.
+            case REQUEST_BODY_TIMEOUT -> logRequestBodyTimeout(routeLabel(ctx));
             default -> {
                 // Every other rejection is rendered without a log record; it is metered above.
             }
@@ -1415,6 +1431,29 @@ public class GatewayEdgeRoute {
         }
         LOGGER.debug("Request body on route '%s' did not arrive whole again (%s) — already reported once for "
                 + "this route, stays at DEBUG for the rest of the process", route, INBOUND_BODY_ABORTED_DISPOSITION);
+    }
+
+    /**
+     * Records one {@link EventType#REQUEST_BODY_TIMEOUT} — a proxied request whose body made no
+     * progress for the request-body idle timeout while its dispatch held an upstream connection, which
+     * was then released.
+     * <p>
+     * <strong>Latched per route, to bound the log volume.</strong> The first occurrence on a route is
+     * recorded at {@code INFO}; every repeat on that route is a {@code DEBUG} diagnostic, so the log
+     * holds one record per route. The latch is keyed by the route id, so it holds at most one entry per
+     * configured route. The rate is carried by {@link SheriffMetrics#ERRORS_TOTAL}, not by this record.
+     * <p>
+     * The record carries the route id and the fixed timeout in seconds only — never body content or
+     * headers.
+     */
+    private void logRequestBodyTimeout(String route) {
+        long timeoutSeconds = TimeUnit.MILLISECONDS.toSeconds(hardening.requestBodyIdleTimeoutMillis());
+        if (requestBodyTimeoutReported.add(route)) {
+            LOGGER.info(ApiSheriffLogMessages.INFO.REQUEST_BODY_TIMEOUT, route, timeoutSeconds);
+            return;
+        }
+        LOGGER.debug("Request body on route '%s' made no progress for %s seconds again — already reported once "
+                + "for this route, stays at DEBUG for the rest of the process", route, timeoutSeconds);
     }
 
     /**
@@ -1558,11 +1597,12 @@ public class GatewayEdgeRoute {
         SecurityConfiguration routeSecurity = route.getSecurityConfiguration();
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
-        DispatchStage dispatchStage = new DispatchStage(cap, upstreamFailureMapper);
+        DispatchStage dispatchStage = new DispatchStage(cap, hardening.requestBodyIdleTimeoutMillis(),
+                upstreamFailureMapper);
         DispatchStage.BodyFraming framing = DispatchStage.BodyFraming.of(request.method(),
                 request.declaredContentLength(), lateBodyRefusal(ctx));
         long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = dispatchRefusingOnFraming(ctx, () -> dispatchStage.dispatch(route,
+        HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> dispatchStage.dispatch(route,
                 request.method(), uri, forward.headers(), inboundBody(ctx), framing));
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
@@ -1691,7 +1731,7 @@ public class GatewayEdgeRoute {
 
         GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(cap, upstreamFailureMapper);
         long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = dispatchRefusingOnFraming(ctx, () -> grpcDispatchStage.dispatch(route,
+        HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> grpcDispatchStage.dispatch(route,
                 request.method(), uri, forward.headers(), inboundBody(ctx), request.declaredContentLength()));
         sheriffMetrics.recordUpstreamDuration(route.getId(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
@@ -1752,17 +1792,28 @@ public class GatewayEdgeRoute {
     }
 
     /**
-     * Runs an upstream dispatch and, when it refuses the request's body on its framing — a body byte
-     * on a bodyless method, or a body disagreeing with its declared length, both a
-     * {@link EventType#SECURITY_FILTER_VIOLATION} — marks the request exactly as a framing-gate
-     * rejection is marked ({@link #markFramingRejection}) before the refusal propagates: on HTTP/2 the
-     * {@code 400} ends that one stream, on HTTP/1.x the connection is retired.
+     * Runs an upstream dispatch and, when it ends with a body the dispatch could not finish reading,
+     * marks the request exactly as a framing-gate rejection is marked ({@link #markFramingRejection})
+     * before the failure propagates. Two triggers leave such a body behind:
+     * <ul>
+     *   <li>the dispatch refused the body on its framing — a body byte on a bodyless method, or a body
+     *       disagreeing with its declared length, both a {@link EventType#SECURITY_FILTER_VIOLATION}
+     *       answered {@code 400};</li>
+     *   <li>the body made no progress for the request-body idle timeout —
+     *       {@link EventType#REQUEST_BODY_TIMEOUT}, answered {@code 408}.</li>
+     * </ul>
+     * Either way the bytes behind the answer were not read, so they cannot frame a following request:
+     * on HTTP/1.x the connection is retired — recorded at once, the answer carries
+     * {@code Connection: close} and the connection is closed once it has been written. On HTTP/2 the
+     * answer ends that one stream through the one end rule ({@link #endResponse}), its open body is
+     * reset with {@code NO_ERROR}, and the connection stays open.
      */
-    private HttpClientResponse dispatchRefusingOnFraming(RoutingContext ctx, Supplier<HttpClientResponse> dispatch) {
+    private HttpClientResponse dispatchMarkingUnreadBody(RoutingContext ctx, Supplier<HttpClientResponse> dispatch) {
         try {
             return dispatch.get();
         } catch (GatewayException rejected) {
-            if (rejected.getEventType() == EventType.SECURITY_FILTER_VIOLATION) {
+            EventType eventType = rejected.getEventType();
+            if (eventType == EventType.SECURITY_FILTER_VIOLATION || eventType == EventType.REQUEST_BODY_TIMEOUT) {
                 markFramingRejection(ctx);
             }
             throw rejected;
@@ -2627,10 +2678,12 @@ public class GatewayEdgeRoute {
      * re-entry: it never retries a gateway rejection, and a retry it refuses is not recorded by the
      * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
      * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
-     * length — reaches the guard as such a skipped {@link GatewayException} (see
-     * {@link DispatchStage}). SmallRye Fault Tolerance has no neutral outcome, so the breaker records
-     * a skipped exception as a success; keeping these dispatches out of its window would need the
-     * guarded call to be restructured.
+     * length, a body that made no progress for the request-body idle timeout — reaches the guard as
+     * such a skipped {@link GatewayException} (see {@link DispatchStage}). SmallRye Fault Tolerance has
+     * no neutral outcome, so the breaker records a skipped exception as a success; keeping these
+     * dispatches out of its window would need the guarded call to be restructured. The timeout,
+     * {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds the whole dispatch, a steady upload included;
+     * the request-body idle timeout is shorter.
      */
     private Guard guardFor(RouteRuntimeAssembler.ResilienceShape shape) {
         // The name identifies the breaker in its description and its transition log lines only. It is
@@ -2654,7 +2707,7 @@ public class GatewayEdgeRoute {
                 .skipOn(GatewayException.class)
                 .onStateChange(state -> upstreamFailureMapper.recordBreakerTransition(name, state))
                 .done();
-        builder.withTimeout().duration(30, ChronoUnit.SECONDS).done();
+        builder.withTimeout().duration(UPSTREAM_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done();
         if (shape.retryEnabled()) {
             builder.withRetry().maxRetries(2).delay(100, ChronoUnit.MILLIS)
                     .whenException(DispatchStage::allowsRetryAfter).done();

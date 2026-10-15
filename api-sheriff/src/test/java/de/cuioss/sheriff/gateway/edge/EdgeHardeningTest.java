@@ -15,15 +15,21 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.TimeUnit;
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
+import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpServerOptions;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("EdgeHardeningOptions — inbound transport bounds and admission/drain limits")
 class EdgeHardeningTest {
@@ -199,5 +205,198 @@ class EdgeHardeningTest {
         assertEquals(DRAIN_TIMEOUT_MILLIS, drainMillis, "The drain timeout is the documented secure default");
         assertTrue(drainMillis > 0L, "The drain timeout must be a positive bound");
         assertTrue(drainMillis < 30_000L, "The drain timeout must stay below the 30s Quarkus shutdown window");
+    }
+
+    /**
+     * The request-body idle timeout: how long a proxied dispatch holding an upstream connection may go
+     * without request-body progress. A fixed gateway constant, below the upstream guard's timeout so the
+     * dispatch is ended as the request's before the guard would end it as the upstream's.
+     */
+    @Nested
+    @DisplayName("request-body idle timeout")
+    class RequestBodyIdleTimeout {
+
+        /** The fixed value, restated as a literal so that a change to it is noticed here. */
+        private static final long REQUEST_BODY_IDLE_TIMEOUT_MILLIS = 10_000L;
+
+        @Test
+        @DisplayName("is the fixed 10,000 ms, whatever the edge_hardening block declares")
+        void isTheFixedTenSeconds() {
+            assertEquals(REQUEST_BODY_IDLE_TIMEOUT_MILLIS, new EdgeHardeningOptions().requestBodyIdleTimeoutMillis(),
+                    "The request-body idle timeout is the fixed gateway constant");
+            assertEquals(REQUEST_BODY_IDLE_TIMEOUT_MILLIS,
+                    new EdgeHardeningOptions(new EdgeHardeningConfig(64, 8)).requestBodyIdleTimeoutMillis(),
+                    "No edge_hardening member reaches the request-body idle timeout");
+        }
+
+        @Test
+        @DisplayName("stays below the upstream guard's whole-dispatch timeout")
+        void staysBelowTheUpstreamGuardTimeout() {
+            long guardTimeoutMillis = TimeUnit.SECONDS.toMillis(GatewayEdgeRoute.UPSTREAM_TIMEOUT_SECONDS);
+
+            assertTrue(new EdgeHardeningOptions().requestBodyIdleTimeoutMillis() < guardTimeoutMillis,
+                    "A body that stopped arriving must be ended before the guard would end the dispatch as an "
+                            + "upstream timeout");
+        }
+
+        @ParameterizedTest(name = "{0} ms")
+        @ValueSource(longs = {0L, -1L})
+        @DisplayName("the test-only constructor refuses a timeout that is not positive")
+        void constructorForTestsRefusesANonPositiveTimeout(long timeoutMillis) {
+            EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
+
+            assertThrows(IllegalArgumentException.class, () -> new EdgeHardeningOptions(defaults, timeoutMillis));
+        }
+
+        @Test
+        @DisplayName("the test-only constructor carries the given timeout and the same admission budget")
+        void constructorForTestsCarriesTheGivenTimeout() {
+            EdgeHardeningOptions hardening = new EdgeHardeningOptions(new EdgeHardeningConfig(64, 8), 300L);
+
+            assertAll("the test-only construction",
+                    () -> assertEquals(300L, hardening.requestBodyIdleTimeoutMillis()),
+                    () -> assertEquals(64, hardening.admissionCap()),
+                    () -> assertEquals(8, hardening.webSocketRelayCap()));
+        }
+    }
+
+    /**
+     * The inbound HTTP/2 concurrent-stream bound: an unbounded or larger announced value is lowered to
+     * 100 streams per connection, a lower one is kept, and the connection window follows the result.
+     */
+    @Nested
+    @DisplayName("inbound HTTP/2 concurrent-stream bound")
+    class ConcurrentStreamBound {
+
+        /** The bound, restated as a literal so that a change to it is noticed here. */
+        private static final long MAX_CONCURRENT_STREAMS = 100L;
+
+        /** 100 concurrent streams of the default 65,535-byte stream window each. */
+        private static final int BOUNDED_CONNECTION_WINDOW_BYTES = 6_553_500;
+
+        private HttpServerOptions listenerAnnouncing(long maxConcurrentStreams) {
+            return new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(maxConcurrentStreams));
+        }
+
+        @ParameterizedTest(name = "{0} streams")
+        @ValueSource(longs = {Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS, 250L})
+        @DisplayName("lowers an unbounded or larger listener to 100 streams and a 6,553,500-byte connection window")
+        void lowersAnUnboundedOrLargerValueToTheBound(long maxConcurrentStreams) {
+            HttpServerOptions options = listenerAnnouncing(maxConcurrentStreams);
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertAll("a listener announcing " + maxConcurrentStreams + " streams",
+                    () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
+                            "An unbounded or larger announced value is lowered to 100 concurrent streams"),
+                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                            "The connection window is derived from the bounded 100 streams x 65,535 bytes"));
+        }
+
+        @ParameterizedTest(name = "{0} streams")
+        @ValueSource(longs = {7L, 100L})
+        @DisplayName("keeps a listener's stream limit at or below 100, and the connection window follows it")
+        void keepsAValueAtOrBelowTheBound(long maxConcurrentStreams) {
+            HttpServerOptions options = listenerAnnouncing(maxConcurrentStreams);
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertAll("a listener announcing " + maxConcurrentStreams + " streams",
+                    () -> assertEquals(maxConcurrentStreams, options.getInitialSettings().getMaxConcurrentStreams(),
+                            "A value at or below the bound is kept"),
+                    () -> assertEquals(maxConcurrentStreams * 65_535, options.getHttp2ConnectionWindowSize(),
+                            "The connection window is the kept stream count x 65,535 bytes"));
+        }
+
+        @Test
+        @DisplayName("bounds the TLS listener's streams and window exactly as the plaintext listener's")
+        void boundsTheTlsListenerIdentically() {
+            HttpServerOptions options = listenerAnnouncing(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS);
+
+            new EdgeHardeningOptions().customizeHttpsServer(options);
+
+            assertAll("an unbounded TLS listener",
+                    () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
+                            "The TLS listener is lowered to 100 concurrent streams identically"),
+                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                            "The TLS listener sizes its connection window identically"));
+        }
+    }
+
+    /**
+     * The inbound HTTP/2 connection window, derived from the stream settings the listener announces so
+     * every stream it admits at once can fill its own window.
+     */
+    @Nested
+    @DisplayName("inbound HTTP/2 connection window")
+    class ConnectionWindow {
+
+        /** Vert.x's default listener settings: 100 concurrent streams of 65,535 bytes each. */
+        private static final int DEFAULT_CONNECTION_WINDOW_BYTES = 6_553_500;
+
+        @Test
+        @DisplayName("sizes the window of a default listener to every concurrent stream's window")
+        void sizesDefaultListenerWindowToEveryStreamsWindow() {
+            Http2Settings defaults = new HttpServerOptions().getInitialSettings();
+            HttpServerOptions options = new HttpServerOptions();
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(defaults.getMaxConcurrentStreams() * defaults.getInitialWindowSize(),
+                    options.getHttp2ConnectionWindowSize(),
+                    "The connection window is the maximum concurrent streams times the initial stream window");
+            assertEquals(DEFAULT_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                    "At the Vert.x defaults of 100 streams x 65,535 bytes the window is 6,553,500 bytes");
+        }
+
+        @Test
+        @DisplayName("follows the stream settings the listener actually announces")
+        void followsTheListenersOwnStreamSettings() {
+            HttpServerOptions options = new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(7).setInitialWindowSize(1_000));
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(7_000, options.getHttp2ConnectionWindowSize(),
+                    "7 concurrent streams of 1,000 bytes each need a 7,000-byte connection window");
+        }
+
+        @Test
+        @DisplayName("caps the window at 2^31-1 when 100 stream windows would exceed it")
+        void capsTheWindowWhenEveryStreamsWindowExceedsTheMaximum() {
+            HttpServerOptions options = new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings()
+                            .setMaxConcurrentStreams(100L)
+                            .setInitialWindowSize(Integer.MAX_VALUE));
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(Integer.MAX_VALUE, options.getHttp2ConnectionWindowSize(),
+                    "RFC 9113 section 6.9.1 bounds a flow-control window at 2^31-1");
+        }
+
+        @Test
+        @DisplayName("never sizes the window below one stream window")
+        void neverSizesTheWindowBelowOneStreamWindow() {
+            HttpServerOptions options = new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(0).setInitialWindowSize(1_000));
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(1_000, options.getHttp2ConnectionWindowSize(),
+                    "A listener admitting no concurrent stream still keeps one stream window for the connection");
+        }
+
+        @Test
+        @DisplayName("sizes the TLS listener's window exactly as the plaintext listener's")
+        void sizesTheTlsListenerWindowIdentically() {
+            HttpServerOptions options = new HttpServerOptions();
+
+            new EdgeHardeningOptions().customizeHttpsServer(options);
+
+            assertEquals(DEFAULT_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
+                    "The TLS listener sizes its connection window identically");
+        }
     }
 }

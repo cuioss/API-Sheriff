@@ -7,8 +7,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The framing gate decides on headers, and dispatch owns what actually crosses to the upstream: a GET or HEAD without a positive declared Content-Length is sent upstream with no body on every protocol and its first inbound body byte, whatever its size, refuses the request (400 while the dispatch is awaited, a stream reset once the response has been handed over for relay), while every other request that declares a checked Content-Length is forwarded with that validated length as the upstream Content-Length and held to exactly that many bytes; a request without a declared length keeps the transport's framing; a headers-time rejection, a size-cap safeguard, an HTTP/2-only rule, a GET-only framing rule and relaying the client's own header are rejected
-// tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth
+// summary: The framing gate decides on headers, and dispatch owns what actually crosses to the upstream: a GET or HEAD without a positive declared Content-Length is sent upstream with no body on every protocol and its first inbound body byte, whatever its size, refuses the request (400 while the dispatch is awaited, a stream reset once the response has been handed over for relay), while every other request that declares a checked Content-Length is forwarded with that validated length as the upstream Content-Length and held to exactly that many bytes; a request without a declared length keeps the transport's framing; a headers-time rejection, a size-cap safeguard, an HTTP/2-only rule, a GET-only framing rule and relaying the client's own header are rejected. AMENDED (A1, the request-body idle bound): a dispatch that holds an upstream connection and is reading the request body ends after a fixed 10 s without a forwarded body byte as REQUEST_BODY_TIMEOUT (408, input-validation); the wait for a pooled connection, the upstream's backpressure, the time after the response was handed over, bodyless requests and gRPC routes are not counted or not watched; the upstream request is reset so its connection is released at once; on HTTP/2 the stream is reset NO_ERROR through the one end rule, on HTTP/1.x the answer carries Connection: close; the breaker skips it and the retry predicate refuses it like every client-ended dispatch; the value is a fixed gateway constant like the upstream guard (ADR-0064) and sits below the guard's 30 s timeout, which still bounds the whole dispatch; leaving the guard timeout as the only bound, a configurable value, a whole-body deadline and starting the clock with the dispatch are rejected
+// tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, upstream-connection
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -200,6 +200,112 @@ trust boundary, the framing it writes should be the value it validated, and it s
 value on the bytes it sends, so the downstream boundary is one the component has proven rather than
 one it has only relayed.
 
+[[amendment-a1]]
+== Amendment A1 (2026-10-14): a dispatch holding an upstream connection waits at most 10 s for request-body progress
+
+*Dispatch owns what crosses to the upstream, and so it also owns how long it waits for the body it
+forwards. A dispatch that holds its upstream connection and is reading the request body ends after
+10 s without a forwarded body byte: the upstream request is reset, which frees the connection, and the
+client is answered `408`.*
+
+=== Context
+
+A body-carrying dispatch hands the inbound body to its upstream request once the attempt has obtained
+a pooled upstream connection, and it holds that connection until the exchange ends. A body that stops
+arriving leaves the dispatch holding the connection while nothing crosses it: the upstream waits for
+the rest of a message the gateway has no bytes for, and every upload queued behind it for a connection
+of the same pool waits as well. The only bound was the upstream guard's fixed 30 s timeout
+(link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]),
+which then ended the dispatch as `UPSTREAM_TIMEOUT` (`504`). That outcome holds the connection for the
+whole 30 s and attributes the wait to the upstream, which was given nothing to answer, so the breaker
+counts it as an upstream failure.
+
+=== Decision
+
+. *What is measured.* One clock per body stream starts when the dispatch hands the body to its
+  upstream request, which happens only once the attempt holds its connection, and every forwarded chunk
+  restarts it. A single value therefore covers both the wait for the first body byte and every gap
+  between chunks. When 10 s pass without progress, the dispatch ends as `REQUEST_BODY_TIMEOUT` (`408`,
+  `INPUT_VALIDATION`) and the upstream request is reset, so its connection is free for the next
+  dispatch at once.
+. *What is not measured.* The wait for a pooled connection is the gateway's own queueing and comes
+  before the clock starts. While the forwarding pipe has paused the body because the upstream is not
+  taking data, the gap is not counted, and it restarts from the moment the pipe resumes, so the
+  upstream's backpressure is never charged to the request. The clock stops when the upstream request's
+  send completes, so it never runs once the response is handed over. A bodyless request never hands
+  its body to an upstream request (see the decision above) and is not watched. A `protocol: grpc`
+  route is not watched either: client-streaming and bidirectional calls legitimately pause between
+  messages, and the forced-HTTP/2 upstream carries the call on a shared connection, so there is no
+  pooled connection of its own to free.
+. *How the answer ends.* The body behind the `408` was not read, so the answer ends what it arrived on,
+  exactly as a framing refusal of this record does: on HTTP/2 the answer ends that stream, which is
+  then reset with `NO_ERROR` through the one end rule of
+  link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066],
+  and the connection carries on; on HTTP/1.x the answer carries `Connection: close` and the
+  connection is closed once it has been written.
+. *Breaker and retry.* The expiry takes the body stream's single abort claim, as a body over the cap or
+  a body beyond its declared length does, and reaches the guard as a gateway rejection. The breaker
+  skips it and records it as a success, and the retry predicate refuses it -- the treatment of every
+  client-ended dispatch. Whichever abort claims the stream first is the outcome: a cap breach, a framing
+  refusal, an inbound failure or the gateway's own reset that comes first stops the clock, and a later
+  expiry changes nothing.
+. *A fixed value, below the guard.* The 10 s value is a gateway constant with no configuration key or
+  system property, following ADR-0064's line that the upstream guard it sits under is a fixed policy
+  of the gateway. It is shorter than the guard's 30 s timeout, so a dispatch whose body stopped
+  arriving is ended as the request's before the guard would end it as the upstream's, and it is long
+  enough that a sender pausing between chunks on a slow link is not affected. The guard's 30 s timeout
+  still bounds every dispatch as a whole, a steady upload included.
+. *Recording.* `INFO` `ApiSheriff-23` records the expiry with the route id and the fixed timeout only,
+  latched per route so the log holds one record per route; `sheriff_errors_total` counts every
+  occurrence under `event="REQUEST_BODY_TIMEOUT"`.
+
+=== Alternatives considered for the amendment
+
+*Leave the guard timeout as the only bound.* Rejected because it holds the connection for 30 s per
+stalled dispatch, answers the client `504`, and counts an upload that stopped as an upstream failure
+in the breaker's window.
+
+*Make the bound configurable.* Rejected for the reason ADR-0064 gives for the guard: the value has to
+stay below a guard timeout no route can see or change, and no deployment choice makes a longer wait
+on a body that is not arriving correct.
+
+*Bound the whole body by a deadline.* Rejected because a slow but steady upload that keeps arriving
+would be cut off, while the problem is a body that has stopped. Measuring progress ends only the
+dispatch that waits for nothing.
+
+*Start the clock with the dispatch.* Rejected because the wait for a pooled connection would then be
+charged to the request, and a queue behind busy connections would end uploads that never had a chance
+to send.
+
+=== Consequences of the amendment
+
+*Positive.*
+
+* A dispatch whose body stopped arriving frees its upstream connection after 10 s instead of 30 s,
+  and the uploads queued behind it obtain the connection then.
+* The outcome is attributed to the request: the client is answered `408`, and the breaker no longer
+  counts a stalled upload as an upstream failure.
+* An upload that keeps arriving, however slowly, and an upload throttled by its upstream are never cut
+  off by this bound.
+
+*Negative.*
+
+* A client that pauses its upload for longer than 10 s between two chunks, while the gateway is
+  reading it, is answered `408`, and on HTTP/1.x it loses its connection.
+* The body stream carries a timer and the state to judge it. One timer is pending per stream at a
+  time; a forwarded chunk only records when it arrived.
+
+*Risks.*
+
+* *Moving the start of the clock.* Arming it before the attempt holds its connection charges the pool
+  wait to the request.
+* *Counting the pause.* Letting the clock run while the pipe has paused the body charges the upstream's
+  backpressure to the request.
+* *Arming it on the gRPC path.* A client-streaming call that pauses between messages would be ended.
+
+The amendment supersedes no statement above: it adds the time bound to the dispatch side that this
+record already makes the owner of what crosses to the upstream.
+
 == References
 
 * link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029 -- The GET-with-body opt-in relaxes only the Content-Length leg] -- the headers-time gate this record completes on the dispatch side; the opt-in `GET` it admits is forwarded framed by its declared length.
@@ -207,5 +313,7 @@ one it has only relayed.
 * link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037 -- The gateway-owned header sets] -- the never-forward set that withholds the client's `Content-Length`, which dispatch replaces with the value it validated.
 * link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap] -- the streaming counter that also holds a declared-length body to its exact length.
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] and link:0008-data-plane-transport.adoc[ADR-0008 -- Data-plane transport] -- the streaming, never-buffered body model that rules out buffering to learn a length.
-* link:../architecture.adoc[Architecture] -- the inbound pipeline, the framing gate's position and the dispatch stage.
+* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the fixed guard and its 30 s timeout the request-body idle bound sits below (Amendment A1).
+* link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066 -- An HTTP/2 response answered while its request body is open] -- the one end rule the `408` of an idle body passes on HTTP/2 (Amendment A1).
+* link:../architecture.adoc[Architecture] -- the inbound pipeline, the framing gate's position and the dispatch stage; link:../architecture.adoc#_request_body_idle_timeout[the request-body idle timeout] (Amendment A1).
 * link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class, and the bodyless-method evidence row.
