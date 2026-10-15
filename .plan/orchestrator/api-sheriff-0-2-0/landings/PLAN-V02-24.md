@@ -19,7 +19,7 @@ limits.
 | D1 — inventory and normalisation proposal, decided at outline | shipped | ADR-0067 lists the twelve operator decisions on scope sets and on the WARN opt-in. |
 | D2 — one generic mechanism | shipped | `config/PolicyBlock.java` (new): one descriptor per block and one resolver. `RouteTableBuilder`, `ConfigValidator` and `RouteMatchingRules` resolve through it. The per-block `resolve*` / `effective*` helpers and `RuleSupport.resolveAnchor` are deleted. Per the PR, no existing test was changed to make part (a) pass. |
 | D3 — apply the normalisation (breaking) | shipped | Only two scopes widened: `security_filter` and `forward` gain the **endpoint** scope (`endpoint.schema.json`). Every other block keeps its scopes, with a reason in the `_policy_block_scopes` table in `doc/user/anchors.adoc`: `auth` has no gateway scope, `allowed_methods` no route scope, `security_headers` stays at anchor and gateway, `upstream_defaults` at gateway and endpoint, `websocket` at route. Three boot readers now see the endpoint scope. |
-| D4 — override WARN = "both declare", derived | shipped | `ApiSheriff-101` is derived from the descriptor opt-in set `{allowed_methods, security_filter}`. The auth floor stays in `ConfigValidator`. ADR-0067 says it is derivable and leaves the move to whichever of V02-24 and V02-26 merges second. V02-24 merged second but did not move it; that now falls to `PLAN-V02-32`. |
+| D4 — override WARN = "both declare", derived | shipped | `ApiSheriff-101` is derived from the descriptor opt-in set `{allowed_methods, security_filter}`. The auth floor stays in `ConfigValidator`. ADR-0067 says it is derivable and leaves the move to whichever of V02-24 and V02-26 merges second. V02-24 merged second but did not move it; that now falls to `PLAN-V02-41`. |
 | D5 — `@Builder`, positional tests migrated | shipped | `@Builder` added to the remaining `config/model` scope and policy-block records; positional test constructions migrated. |
 | D6 — declare once, register once | shipped | `PolicyBlockSchemaContractTest` binds the descriptors to both schemas and to the scope table. `PolicyBlockTest` covers the resolver. |
 | D7 — docs and ADR | shipped | ADR-0067 (new); amendments to ADR-0007 (A2), ADR-0036 (A1) and ADR-0024 (note). `anchors.adoc` states the one rule. `doc/development/README.adoc` gains "Adding a Policy Block". The threat model gains `_residual_policy_block_replacement`. |
@@ -51,10 +51,10 @@ limits.
 - **`ApiSheriff-101` does not name the replacing scope** (finding `a49cb1`, deferred by the operator during
   finalize). Since the endpoint scope became legal, the record still says "Route %s overrides anchor %s %s
   policy" even when the endpoint block did the replacing. This is about audit-trail accuracy, not a bypass.
-  → `PLAN-V02-25`, D6.
+  → `PLAN-V02-44`, D3.
 - **Two doc advisories.** `doc/development/README.adoc` ~354–356 says "every run fails", but the offline
   `--validate-config` run never reaches the body-limit reader. The `ConfigBootPipeline` Javadoc (~192)
-  overstates what a newly gained scope reaches without an edit. → `PLAN-V02-25`, D6.
-- **Auth-floor derivation.** → `PLAN-V02-32`.
+  overstates what a newly gained scope reaches without an edit. → `PLAN-V02-44`, D3.
+- **Auth-floor derivation.** → `PLAN-V02-41`.
 - **The open validator slice must rebase.** #467 (`PLAN-V02-28`) is CONFLICTING with `main` after this
   merge. That is expected under the rebase rule, and the slice specs now state the post-V02-24 state.

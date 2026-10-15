@@ -125,7 +125,7 @@ would otherwise force a retrofit.
 
 | Workstream | Title | Plans |
 |---|---|---|
-| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27, PLAN-V02-28 … PLAN-V02-39 (validator slices) |
+| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27, PLAN-V02-28 and PLAN-V02-40 … PLAN-V02-43 (validator slices; V02-29 … -39 superseded), PLAN-V02-44 |
 | WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18 |
 | WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
@@ -209,6 +209,19 @@ needs no translation.
   **ADR-0037 is rewritten in place, not superseded** (it is still `Proposed`). User docs are part of
   the plan. Eight deliverables, proceeding unsplit: the two directions, the CSRF guard and the record
   are one contract.
+- **2026-10-15 — re-packed the refactor: four validator slices instead of eleven; V02-25 split in two.**
+  Operator approval of the orchestrator's proposal.
+  - (1) The 150,000-character cap is Sourcery's, and Sourcery is optional in `.plan/marshal.json`. For
+    **move-only** work the cap is lifted. The 100-file cap (CodeRabbit, required) still holds. A PR
+    passing ~350 KB, or one that CodeRabbit declines, splits at a group boundary. The eleven slices
+    `PLAN-V02-29` … `-39` (superseded) become `PLAN-V02-40` … `-43`. That saves about seven plan runs
+    (each ~5–7 M tokens and 5 h or more), and V02-23 now waits behind about seven refactor PRs instead of
+    about fifteen.
+  - (2) `PLAN-V02-25` is split up front (lesson `2026-10-14-20-004`). `PLAN-V02-44` merges `ResolvedRoute`
+    and `RouteRuntime` and carries V02-24's residue; it runs now, concurrently with kidicap PLAN-32
+    (#466), under the rebase rule. `PLAN-V02-25` keeps the `GatewayEdgeRoute` decomposition, which is
+    move-only under rule (1), and runs after V02-44 and PLAN-32.
+  - The auth-floor derivation moves with `AnchorRules` into `PLAN-V02-41`.
 - **2026-10-14 — the whole `ConfigValidator` split runs before V02-23 (`PLAN-V02-28` … `-39`).**
   Operator ruling at V02-26's landing. V02-26 shipped only slice 1 (#463, `RouteMatchingRules`,
   `TokenValidationRules`, `RuleSupport`). Its spec had asked for the whole split in one PR under the
@@ -258,7 +271,7 @@ sufficient.
 
 | Chain | Order | Why |
 |---|---|---|
-| structural refactor, then cookie policy | **V02-24 (shipped 2026-10-15, #465, ADR-0067) → V02-25 (after kidicap PLAN-32, #466); in parallel the validator slices V02-26 (shipped, #463) → V02-28 … V02-33 → (V02-12's second PR merged) → V02-34 … V02-38 → V02-39 (closes the split, writes the ADR) → V02-23 (re-grounded, after V02-25 and V02-39) → V02-27 (test simplification) → every other plan touching `edge/**` or `config/**`** | Operator decisions 2026-10-14 (inbox V02-23 `-001`, V02-26 landing): V02-23 paused and the edge and policy-block structure reworked first; the whole validator split finishes before V02-23. V02-24 makes a policy block a declaration. V02-25 (edge) and the validator slices (`config/validation/`) are disjoint from it and from each other. The slices edit `ConfigValidator` and `ConfigValidatorTest` and run serially, or at most two at once under the rebase rule. Held behind them: V02-05, -06, -07, -20; kidicap PLAN-20, -21, -26, -29. |
+| structural refactor, then cookie policy | **V02-24 (shipped 2026-10-15, #465, ADR-0067) → V02-44 (route-type merge, running; concurrent with kidicap PLAN-32 #466 under the rebase rule) → V02-25 (decomposition, after V02-44 and PLAN-32); in parallel the validator slices V02-26 (shipped, #463) → V02-28 → V02-40 → V02-41 → (V02-12's second PR merged) → V02-42 → V02-43 (closes the split, writes the ADR) → V02-23 (re-grounded, after V02-25 and V02-43) → V02-27 (test simplification) → every other plan touching `edge/**` or `config/**`** | Operator decisions 2026-10-14 (inbox V02-23 `-001`, V02-26 landing): V02-23 paused and the edge and policy-block structure reworked first; the whole validator split finishes before V02-23. V02-24 makes a policy block a declaration. V02-25 (edge) and the validator slices (`config/validation/`) are disjoint from it and from each other. The slices edit `ConfigValidator` and `ConfigValidatorTest` and run serially, or at most two at once under the rebase rule. Held behind them: V02-05, -06, -07, -20; kidicap PLAN-20, -21, -26, -29. |
 | oidc / `BffRuntimeProducer` | **V02-08 → V02-12 → V02-09** | All three write the `oidc` block and the BFF assembly point. V02-08 first: it is the larger reshaping and settles the RFC 9207 `iss` constraint V02-12 inherits. |
 | rejection taxonomy | **V02-13 → V02-06 → V02-07** | V02-13 re-cuts `EventCategory` and makes `renderProblem` content-negotiating at all five call sites. V02-06's uniform-404 branch edits those same sites; V02-07 weights the resulting taxonomy. |
 | sample vs. model | **V02-12 → V02-15** | V02-15 D5 defers the browser-vs-container issuer address to V02-12 rather than letting a sample become the de-facto specification. |

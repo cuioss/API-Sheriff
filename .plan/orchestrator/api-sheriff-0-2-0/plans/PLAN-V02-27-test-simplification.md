@@ -45,8 +45,8 @@ Split guard: 4 deliverables. Keep each PR under 100 files and 150,000 diff chara
 
 ## Dependencies and Sequencing
 
-- Depends on: `PLAN-V02-24`, `PLAN-V02-25`, and the whole validator split having merged (`PLAN-V02-26`
-  slice 1, #463, then the slices `PLAN-V02-28` … `PLAN-V02-39`).
+- Depends on: `PLAN-V02-24` (#465), `PLAN-V02-44`, `PLAN-V02-25`, and the whole validator split having
+  merged (`PLAN-V02-26` slice 1, #463, then `PLAN-V02-28` and `PLAN-V02-40` … `PLAN-V02-43`).
 - After the re-grounded `PLAN-V02-23` (the cookie bug goes first, and it adds tests in the same areas).
 - Holds no feature plan; but a feature plan running at the same time in these areas collides on tests,
   so pair it only with plans off `config/` and `edge/`.

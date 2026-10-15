@@ -21,7 +21,7 @@ Against the spec as written, the split is about one tenth done.
 |--------------------|---------|----------|
 | D1 — group the rules | shipped | 16 concern classes named; the concern map is `doc/development/boot-validation-rules.adoc` (new, 205 lines), with the 13 remaining groups listed in inbox `-001`. |
 | D2 — one rule class per concern, `ConfigValidator` orchestrates only | **partial** | `RuleSupport`, `RouteMatchingRules` (342 lines), `TokenValidationRules` (287) extracted; one ordered `DEFAULT_RULES` list, `PortalRules.RULES` dropped. `ConfigValidator` is 2,750 lines (was 3,273); 13 groups remain private. |
-| D3 — `validateAnchorAuthFloor` in its own class | **not done** | Still private; it moves with `AnchorRules` (`PLAN-V02-32`). |
+| D3 — `validateAnchorAuthFloor` in its own class | **not done** | Still private; it moves with `AnchorRules` (`PLAN-V02-41`). |
 | D4 — tests follow the rules | shipped for slice 1 | Four test classes renamed with the rules (`RouteMatchingRulesTest`, `PortalRulesTest`, two `TokenValidationRules*Test`); route-matching cases moved out of `ConfigValidatorTest`. |
 | D5 — developer documentation | shipped | `boot-validation-rules.adoc` plus a `doc/development/README.adoc` row. Per review, it names owners and points at `DEFAULT_RULES` instead of restating counts and positions. |
 
@@ -52,6 +52,6 @@ claimed or observed.
 ## Follow-ups
 
 - Operator ruling 2026-10-14: finish the whole split **before** V02-23. The 13 groups are staged as
-  12 slice specs, `PLAN-V02-28` … `PLAN-V02-39`, and run serially (each one edits `DEFAULT_RULES` and
+  slice specs, `PLAN-V02-28` and (re-packed 2026-10-15) `PLAN-V02-40` … `PLAN-V02-43`, and run serially (each one edits `DEFAULT_RULES` and
   `ConfigValidatorTest`).
-- `PLAN-V02-27` (test simplification) now depends on the last slice, `PLAN-V02-39`.
+- `PLAN-V02-27` (test simplification) now depends on the last slice, `PLAN-V02-43`.
