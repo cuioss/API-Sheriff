@@ -209,6 +209,19 @@ needs no translation.
   **ADR-0037 is rewritten in place, not superseded** (it is still `Proposed`). User docs are part of
   the plan. Eight deliverables, proceeding unsplit: the two directions, the CSRF guard and the record
   are one contract.
+- **2026-10-15 — plan-marshall findings go to plan-marshall, not into this repository's lesson corpus.**
+  This is an operator standing rule, the same one `kidicap-gateway-requirements` follows. Every
+  plan-marshall-related finding drained from this epic's inbox is routed to the `lessons-routing` epic of
+  the sibling repository `plan-marshall`, sender `api-sheriff-api-sheriff-0-2-0`. That covers phases,
+  finalize steps, the orchestrator, build tooling and review automation. Its inbox is
+  `.plan/local/worktrees/_orchestrator/.plan/orchestrator/lessons-routing/inbox/`, relative to that
+  repository's root, and messages are written with that repository's own `orchestrator inbox write
+  --slug lessons-routing`. Project-local findings (API-Sheriff code, docs, tests) are still promoted
+  here. **A plan-marshall lesson already filed here is removed once routed** ("always remove if filed").
+  First batch: `api-sheriff-api-sheriff-0-2-0-001` … `-005` (V02-28's five candidates). Then `-006` …
+  `-009` (V02-26's lessons `2026-10-14-20-002` … `-005`). The local copies of both batches are removed
+  (`2026-10-15-15-001` … `-004` and `2026-10-14-20-002` … `-005`). Older plan-marshall lessons filed here
+  before 2026-10-14 are not yet swept.
 - **2026-10-15 — re-packed the refactor: four validator slices instead of eleven; V02-25 split in two.**
   Operator approval of the orchestrator's proposal.
   - (1) The 150,000-character cap is Sourcery's, and Sourcery is optional in `.plan/marshal.json`. For
