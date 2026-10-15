@@ -987,11 +987,6 @@ class GatewayEdgeEarlyResponseResetTest {
             return sent;
         }
 
-        /** @return this upload's request as the stub upstream records it, {@code METHOD path} without the route */
-        String upstreamRequest() {
-            return "POST " + request.path().substring(("/" + ROUTE).length());
-        }
-
         /**
          * @param upstreamStarted every request the stub upstream received a head for
          * @return how this upload ended, and whether its request head reached the upstream, for a failure
@@ -999,7 +994,8 @@ class GatewayEdgeEarlyResponseResetTest {
          */
         String outcome(List<String> upstreamStarted) {
             return request.path() + ": status=" + (answer == null ? "none" : answer.response().statusCode())
-                    + ", upstreamStarted=" + upstreamStarted.contains(upstreamRequest())
+                    + ", upstreamStarted="
+                    + upstreamStarted.contains("POST " + request.path().substring(("/" + ROUTE).length()))
                     + ", body=" + (answer == null ? "none" : answer.body())
                     + ", streamEnd=" + streamEnd + ", failure=" + (failure == null ? null : failure.getClass().getName()
                     + ": " + failure.getMessage().lines().findFirst().orElse("")) + ", sent=" + sent.get();
