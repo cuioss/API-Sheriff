@@ -2,9 +2,9 @@
   "id": "PLAN-V02-24",
   "slug": "policy-block-resolution",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-24-policy-block-resolution",
-  "pr": "",
-  "landing": "",
+  "pr": "465",
+  "landing": "landings/PLAN-V02-24.md",
   "seq": 24
 }
