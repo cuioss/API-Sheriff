@@ -183,7 +183,9 @@ Replacing an anchor's block from a nearer scope is allowed, and for the blocks m
 is announced: `ApiSheriff-101` is logged during route-table assembly when the route's anchor
 declares the block *and* the route's endpoint or the route itself declares it too. The record is
 logged once per route and block -- an anchor block replaced at both the endpoint and the route is
-announced once -- and names the route, the anchor and the block. A block marked *No* is not
+announced once -- and names the route, the endpoint owning it, the anchor, the block and the
+replacing scope (`endpoint` or `route`, the nearest scope declaring the block, so a block replaced
+at both names `route`). A block marked *No* is not
 announced: `auth` because weakening its floor is refused outright, the others because no anchor
 declaration sits under a nearer one (`security_headers`) or because the block has no anchor scope
 at all. See link:../LogMessages.adoc[Log Messages].

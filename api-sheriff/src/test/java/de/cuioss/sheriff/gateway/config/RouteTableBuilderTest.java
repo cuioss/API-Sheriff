@@ -1203,52 +1203,71 @@ class RouteTableBuilderTest {
             builder.build(config, List.of(endpoint), topologyWith("ORDERS"));
         }
 
-        private static String overrideOf(String block) {
-            return "Route 'r' overrides anchor 'api' " + block + " policy";
+        /**
+         * The complete rendered override WARN for route {@code r} of endpoint {@code orders} under
+         * anchor {@code api} — the template is the contract, so the whole line is asserted, not a
+         * fragment of it.
+         */
+        private static String overrideOf(String block, String scope) {
+            return "Route 'r' of endpoint 'orders' overrides anchor 'api' " + block + " policy at " + scope
+                    + " scope (wholesale replacement)";
         }
 
         @Test
-        @DisplayName("Should WARN when an endpoint allowed_methods list replaces the anchor's")
+        @DisplayName("Should WARN at endpoint scope when an endpoint allowed_methods list replaces the anchor's")
         void shouldWarnOnEndpointAllowedMethodsOverride() {
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
                     .allowedMethods(List.of(HttpMethod.GET)).routes(List.of(apiRoute().build())).build();
 
             build(gatewayWithAnchor(auth(Require.BEARER), null, List.of(HttpMethod.GET, HttpMethod.POST)), endpoint);
 
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("allowed_methods"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    overrideOf("allowed_methods", "endpoint"));
         }
 
         @Test
-        @DisplayName("Should WARN when a route security_filter replaces the anchor's")
+        @DisplayName("Should not offer a route scope for allowed_methods, so no route-scope override WARN exists")
+        void shouldHaveNoRouteScopeForAllowedMethods() {
+            assertFalse(PolicyBlock.ALLOWED_METHODS.scopes().contains(PolicyBlock.Scope.ROUTE),
+                    "allowed_methods is declarable at gateway, anchor and endpoint only, so its override WARN can "
+                            + "only ever name the endpoint scope");
+        }
+
+        @Test
+        @DisplayName("Should WARN at route scope when a route security_filter replaces the anchor's")
         void shouldWarnOnRouteSecurityFilterOverride() {
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
                     .routes(List.of(apiRoute().securityFilter(filter("lenient")).build())).build();
 
             build(gatewayWithAnchor(auth(Require.BEARER), filter("strict"), null), endpoint);
 
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("security_filter"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    overrideOf("security_filter", "route"));
         }
 
         @Test
-        @DisplayName("Should WARN when an endpoint security_filter replaces the anchor's")
+        @DisplayName("Should WARN at endpoint scope when an endpoint security_filter replaces the anchor's")
         void shouldWarnOnEndpointSecurityFilterOverride() {
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").securityFilter(filter("lenient"))
                     .routes(List.of(apiRoute().build())).build();
 
             build(gatewayWithAnchor(auth(Require.BEARER), filter("strict"), null), endpoint);
 
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("security_filter"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    overrideOf("security_filter", "endpoint"));
         }
 
         @Test
-        @DisplayName("Should WARN exactly once when both the endpoint and the route replace the anchor security_filter")
+        @DisplayName("Should WARN exactly once, at route scope, when both the endpoint and the route replace the anchor security_filter")
         void shouldWarnOnceWhenEndpointAndRouteBothOverride() {
             EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api").securityFilter(filter("lenient"))
                     .routes(List.of(apiRoute().securityFilter(filter("paranoid")).build())).build();
 
             build(gatewayWithAnchor(auth(Require.BEARER), filter("strict"), null), endpoint);
 
-            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("security_filter"));
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, OVERRIDE_WARN_ID);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN,
+                    overrideOf("security_filter", "route"));
         }
 
         @Test

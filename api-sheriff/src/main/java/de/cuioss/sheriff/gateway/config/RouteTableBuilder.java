@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config;
 
 import java.io.Serial;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -561,7 +562,10 @@ public final class RouteTableBuilder {
      * ({@link PolicyBlock#overrideWarn()}), one {@link ConfigLogMessages.WARN#ANCHOR_POLICY_OVERRIDDEN}
      * is emitted when the route's anchor declares the block <em>and</em> at least one nearer scope —
      * endpoint or route — declares it too. A route whose endpoint and route both replace the anchor
-     * block is announced once, not twice. An unanchored route has no anchor policy to override.
+     * block is announced once, not twice, naming the nearest declaring scope: the one the block is
+     * actually resolved from ({@link PolicyBlock#declared}). The record also names the owning
+     * endpoint, so the operator can find the replacing declaration. An unanchored route has no
+     * anchor policy to override.
      *
      * @param chain the route's scope chain
      */
@@ -571,11 +575,27 @@ public final class RouteTableBuilder {
             return;
         }
         for (PolicyBlock<?> block : PolicyBlock.ALL) {
-            if (block.overrideWarn() && replacesAnchor(block.declaringScopes(chain))) {
-                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, chain.route().id(), anchor.name(),
-                        block.yamlKey());
+            if (!block.overrideWarn()) {
+                continue;
+            }
+            Set<PolicyBlock.Scope> declaring = block.declaringScopes(chain);
+            if (replacesAnchor(declaring)) {
+                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, chain.route().id(),
+                        chain.endpoint().id(), anchor.name(), block.yamlKey(), nearestScope(declaring));
             }
         }
+    }
+
+    /**
+     * The nearest of a block's declaring scopes, rendered as it appears in the override WARN —
+     * {@code endpoint} or {@code route}. It is the scope {@link PolicyBlock#declared} resolves the
+     * block from, because {@link PolicyBlock.Scope} orders the scopes broadest first.
+     *
+     * @param declaring the scopes declaring one block for one route; never empty
+     * @return the lower-case name of the nearest declaring scope
+     */
+    private static String nearestScope(Set<PolicyBlock.Scope> declaring) {
+        return Collections.max(declaring).name().toLowerCase(Locale.ROOT);
     }
 
     /**
