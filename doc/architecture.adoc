@@ -610,8 +610,8 @@ The active authentication strategy depends on the variant:
 [[_scope_enforcement]]
 *Scope enforcement is one boot-time derivation, checked on bearer and session routes alike.*
 `RouteTableBuilder` materializes each route's `neededScopes = oidc.scopes ∪ endpoint.scopes` once at
-boot (`endpoint.scopes` alone without an `oidc` block) and carries it on `ResolvedRoute` and
-`RouteRuntime`. Every leg reads that one field, so requesting and checking cannot drift apart:
+boot (`endpoint.scopes` alone without an `oidc` block) and carries it on the route's single per-route
+record, `routing.Route`. Every leg reads that one field, so requesting and checking cannot drift apart:
 
 * *Bearer check.* `AuthenticationStage` compares the validated token against `neededScopes`; a
   shortfall is `403 SCOPE_MISSING` with the RFC 6750 challenge
@@ -1755,15 +1755,19 @@ shared objects are immutable.
 | Immutable and thread-safe once built. One `SecurityConfiguration` and its pipeline set per
   *distinct profile / `security_filter` shape* -- *deduplicated*, so the many routes that share
   a profile share one pipeline instance rather than each compiling its own. Built at boot,
-  referenced by every matching route's `RouteRuntime`.
+  referenced by every matching route's `Route`.
 
 | Data-plane Vert.x `HttpClient` + its connection pool
 | Immutable options, thread-safe client. One Vert.x client per *distinct upstream target
   tuple* (resolved host + connect/read timeouts + TLS context) -- *deduplicated across routes*,
   so N routes to the same backend with the same options share one client and one connection
   pool, rather than opening N pools (link:adr/0008-data-plane-transport.adoc[ADR-0008]). This
-  is the single biggest "reuse a large object" lever. Per-route resilience guards (SmallRye FT)
-  are built once at boot and wrap the shared client per route.
+  is the single biggest "reuse a large object" lever. The resilience guards (SmallRye FT) are
+  built once at boot as well, one per distinct resilience shape. Neither the client nor the guard
+  is a route component -- both are framework types, and `Route` stays framework-free -- so
+  `RouteAssembler` holds them in the immutable per-upstream `UpstreamClients` table, from which the
+  dispatch stage resolves a proxy route's client and guard. A WebSocket route is dialed by the
+  edge-wide WebSocket client and gets neither.
 
 | `TokenValidator`
 | A single shared, cache-backed, thread-safe instance created at startup (already the rule --
@@ -1773,12 +1777,17 @@ shared objects are immutable.
 | Immutable, thread-safe, transport-agnostic; one instance wired from the `forwarded` config,
   reused for every request.
 
-| `RouteTable` / per-route `RouteRuntime`
-| Assembled once at boot (matchers, effective auth, effective `allowed_methods`, filter
-  pipelines, forward sets, shared upstream client reference, resilience guard, protocol
-  processor) -- with any anchor policy already resolved into these effective values
-  (link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]); the runtime never consults an anchor.
-  The request path *looks up* an immutable `RouteRuntime`; it compiles nothing.
+| `routing.RouteTable` / per-route `routing.Route`
+| One per-route record, `Route`, carries everything the request path reads for a route. It is
+  built in two steps. `RouteTableBuilder` builds it on the framework-free pre-boot path --
+  matcher, effective auth, effective `allowed_methods`, `allowed_paths`, forward sets, location
+  rewriter -- with any anchor policy already resolved into these effective values
+  (link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]), so the pre-boot route table carries no
+  framework type and the offline configuration check can build it. At boot, `RouteAssembler`
+  completes each route through `toBuilder()` with the boot-only components (protocol processor,
+  security posture, asset source); no field is copied by hand. `routing.RouteTable` is the lookup
+  the request path reads; the runtime never consults an anchor. The request path *looks up* an
+  immutable `Route`; it compiles nothing.
 
 | Event counters (`GatewayEventCounter`, cui-http `SecurityEventCounter`)
 | Shared, lock-free (`ConcurrentHashMap` + `AtomicLong`); safe to increment concurrently.
