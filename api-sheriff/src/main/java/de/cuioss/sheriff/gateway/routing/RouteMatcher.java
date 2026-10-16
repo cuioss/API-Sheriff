@@ -48,6 +48,14 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * This is the match test only; the effective {@code allowed_methods} verb gate (405) is
  * carried separately on {@link Route#effectiveAllowedMethods()}.
+ * <p>
+ * <strong>Value semantics.</strong> Every field of a matcher is a pure function of the
+ * {@link MatchConfig} it was compiled from, so equality, hash code and rendering are defined over
+ * that source block alone: two matchers compiled from equal blocks are equal, the same relation
+ * {@link #isCompiledFrom} tests. Two {@link Route routes} built independently from equal components
+ * therefore compare equal even though each compiles its own matcher instance.
+ * <p>
+ * <strong>Thread safety.</strong> Instances are immutable and safe to share across threads.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -215,5 +223,37 @@ public final class RouteMatcher {
             }
         }
         return true;
+    }
+
+    /**
+     * Two matchers are equal when they were compiled from equal {@code match} blocks — every other
+     * field is derived from that block, so it is the whole of a matcher's value.
+     *
+     * @param other the object to compare against
+     * @return {@code true} when {@code other} is a matcher compiled from an equal block
+     */
+    @Override
+    public boolean equals(@Nullable Object other) {
+        return this == other || other instanceof RouteMatcher that && source.equals(that.source);
+    }
+
+    /**
+     * Returns the hash code of the source {@code match} block, consistent with {@link #equals}.
+     *
+     * @return the hash code of the block this matcher was compiled from
+     */
+    @Override
+    public int hashCode() {
+        return source.hashCode();
+    }
+
+    /**
+     * Renders the matcher by its source {@code match} block, so equal matchers render equally.
+     *
+     * @return {@code RouteMatcher[<match block>]}
+     */
+    @Override
+    public String toString() {
+        return "RouteMatcher[" + source + "]";
     }
 }

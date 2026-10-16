@@ -333,8 +333,21 @@ class RouteTest {
     class ValueObjectContract {
 
         @Test
-        @DisplayName("Should be equal to a route built from the same components")
+        @DisplayName("Should be equal to a route built independently from the same components")
         void shouldEqualRouteFromSameComponents() {
+            Route.RouteBuilder components = fullyResolvedProxyBuilder();
+            Route route = components.build();
+            Route equalCopy = components.build();
+            Route different = route.toBuilder().id(route.id() + "-other").build();
+
+            assertNotSame(route.matcher(), equalCopy.matcher(),
+                    "Each independent build compiles its own matcher, so equality cannot rest on identity");
+            assertValueObjectContract(route, equalCopy, different);
+        }
+
+        @Test
+        @DisplayName("Should equal its toBuilder() copy, which carries the matcher instance over")
+        void shouldEqualToBuilderCopy() {
             Route route = fullyResolvedProxyRoute();
             Route equalCopy = route.toBuilder().build();
             Route different = route.toBuilder().id(route.id() + "-other").build();
@@ -743,6 +756,27 @@ class RouteTest {
                     "The names are lower-cased in declaration order, case-only duplicates collapsed");
         }
 
+        @Test
+        @DisplayName("Should compare, hash and render by the match block it was compiled from")
+        void shouldHaveValueSemanticsOverSourceBlock() {
+            String prefix = "/" + Generators.letterStrings(3, 12).next();
+            var matcher = RouteMatcher.from(MatchConfig.builder().pathPrefix(prefix).build());
+            var equalMatcher = RouteMatcher.from(MatchConfig.builder().pathPrefix(prefix).build());
+            var otherBlock = RouteMatcher.from(MatchConfig.builder().pathPrefix(prefix + "/other").build());
+
+            assertAll("value semantics",
+                    () -> assertNotSame(matcher, equalMatcher, "Two compilations yield two instances"),
+                    () -> assertEquals(matcher, equalMatcher, "Matchers compiled from equal blocks are equal"),
+                    () -> assertEquals(matcher.hashCode(), equalMatcher.hashCode(),
+                            "Equal matchers share a hashCode"),
+                    () -> assertEquals(matcher.toString(), equalMatcher.toString(), "Equal matchers render equally"),
+                    () -> assertTrue(matcher.toString().contains(prefix),
+                            "The rendering names the source block: " + matcher),
+                    () -> assertNotEquals(matcher, otherBlock, "Matchers of different blocks are not equal"),
+                    () -> assertNotEquals(matcher.toString(), otherBlock.toString(),
+                            "The rendering tells matchers of different blocks apart"));
+        }
+
         private RouteMatcher headerMatcher(HeaderMatcher... headers) {
             return RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").headers(List.of(headers)).build());
         }
@@ -804,6 +838,14 @@ class RouteTest {
     }
 
     private static Route fullyResolvedProxyRoute() {
+        return fullyResolvedProxyBuilder().build();
+    }
+
+    /**
+     * A builder holding every component of a fully resolved proxy route but no matcher, so each
+     * {@code build()} compiles a fresh matcher from the {@code match} block.
+     */
+    private static Route.RouteBuilder fullyResolvedProxyBuilder() {
         MatchConfig match = MatchConfig.builder().pathPrefix("/api").build();
         return proxyRoute()
                 .match(match)
@@ -815,8 +857,7 @@ class RouteTest {
                 .effectiveForward(ForwardConfig.builder().headersAllow(List.of("Accept")).build())
                 .retryEnabled(true)
                 .notModifiedEnabled(true)
-                .locationRewriter(new LocationRewriter(upstream(), match.matchKey(), match.isExact()))
-                .build();
+                .locationRewriter(new LocationRewriter(upstream(), match.matchKey(), match.isExact()));
     }
 
     private static Route fullyResolvedAssetRoute() {

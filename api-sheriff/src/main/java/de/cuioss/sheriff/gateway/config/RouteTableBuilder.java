@@ -379,10 +379,13 @@ public final class RouteTableBuilder {
      * {@code /anything/graphql}. A gRPC route rides an alias with an empty base path, so its
      * {@code upstream.path: /{package}.{Service}} is the whole effective base path and the full
      * method path reaches the upstream unchanged. The alias host / port / scheme are carried
-     * through unchanged, so the client- and guard-sharing tuple
-     * ({@link de.cuioss.sheriff.gateway.edge.RouteAssembler.UpstreamTarget}, keyed on
-     * scheme/host/port) is unaffected. A route without a non-blank {@code upstream.path} keeps the
-     * alias-derived base path unchanged — the default proxy behavior.
+     * through unchanged, so neither sharing key is affected: the clients are keyed by
+     * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler.UpstreamTarget} (scheme, host, port and
+     * the forced-HTTP/2 flag), the resilience guards by
+     * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler.ResilienceShape} (that upstream target
+     * plus the route's retry setting), and the base path is part of neither. A route without a
+     * non-blank {@code upstream.path} keeps the alias-derived base path unchanged — the default
+     * proxy behavior.
      *
      * @param aliasUpstream the endpoint's alias-resolved upstream (shared across the endpoint's
      *                      routes)

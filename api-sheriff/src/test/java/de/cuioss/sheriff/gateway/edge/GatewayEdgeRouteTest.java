@@ -54,6 +54,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.spec.SecretKeySpec;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -291,6 +292,31 @@ class GatewayEdgeRouteTest {
         // within its bounded window, so the shutdown completes cleanly and never hangs.
         assertTimeoutPreemptively(Duration.ofSeconds(5), () -> edge.onShutdown(new ShutdownEvent()),
                 "Graceful drain returns promptly when no request is in flight");
+    }
+
+    /**
+     * The boot-time {@code ApiSheriff-1} line announcing the assembled route table. It is asserted by
+     * its full formatted text, so a change to the template, the level, the identifier or the count
+     * argument turns this test red.
+     */
+    @Nested
+    @EnableTestLogger
+    @DisplayName("boot-time route-table announcement")
+    class RouteTableCompiledLog {
+
+        @Test
+        @DisplayName("logs ApiSheriff-1 at INFO once, carrying the number of assembled routes")
+        void logsAssembledRouteCount() {
+            RouteTable table = new RouteTable(List.of(
+                    route("h", Protocol.HTTP, Require.NONE),
+                    route("g", Protocol.GRPC, Require.NONE),
+                    route("w", Protocol.WEBSOCKET, Require.NONE)));
+
+            clientWiringOf(table);
+
+            LogAsserts.assertSingleLogMessagePresent(TestLogLevel.INFO,
+                    ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED.format(3));
+        }
     }
 
     /**

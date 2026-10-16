@@ -1712,17 +1712,17 @@ Grouped by file. Every row names the thing that makes the admission attributable
 | `trustedOriginMatchIsCaseInsensitive` (`bff/csrf/CsrfDefenceTest`)   | 99 | (a) | matched control :91
 | `absentOriginSameOriginFetchAccepted` (`bff/csrf/CsrfDefenceTest`)   | 108 | (a) | matched control `absentOriginCrossSiteFetchRejected`:117
 | `theBarAppliesToTheDefaultProfile` (`config/SingleSourceTlsContractTest`) | 155 | (c) | self-declared standing guard; its own comment states the assertion is vacuous today, and the population is pinned by `ShippedApplicationPropertiesTest`
-| `resolvedRouteAcceptsEachSingleTerminalAction` (`config/model/ConfigModelContractTest`) | 998 | (a) | matched negative control `resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction`:962 refuses zero, two and three terminal actions over the same constructor
 | `anchorConfigExposesEveryPolicyBlock` (`config/model/ConfigModelContractTest`) | 1104 | (a) | narrow scope -- `securityFilter()` and `securityHeaders()` are distinctly typed, so presence IS the carried-through claim
-| `resolvedRouteCarriesTheMaterializedEffectivePosture` (`config/model/ConfigModelContractTest`) | 1117 | (a) | same shape; the anchor / auth / methods / forward / rewriteLocation legs are all substantive
 | `bootsCleanlyOverEmptyRouteTable` (`edge/GatewayEdgeRouteTest`)      | 148 | (a) | construction test, correctly scoped; `registersCatchAllRoute`:159 asserts on the assembled edge
 | `bootsSessionAuthRoute` (`edge/GatewayEdgeRouteTest`)                | 174 | (a) | regression guard for a *removed* boot rejection -- restoring it fails this test
 | `bootsGrpcProtocol` (`edge/GatewayEdgeRouteTest`)                    | 188 | (a) | same shape, gRPC
 | `bootsWebSocketProtocol` (`edge/GatewayEdgeRouteTest`)               | 201 | (a) | same shape, WebSocket
 | `bootsSessionAuthWebSocketRoute` (`edge/GatewayEdgeRouteTest`)       | 214 | (a) | same shape, WebSocket + session
 | `buildsWithFailureMapper` (`edge/GrpcDispatchStageTest`)             | 95 | (a) | matched negative control `rejectsNullFailureMapper`:88 asserts `NullPointerException` over the identical constructor differing only in the mapper argument
-| `shouldAssembleNoAssetProxyPathWithoutThrowing` (`edge/RouteAssemblerTest`) | 539 | (a) | matched control `shouldAssembleAssetRouteWithoutClientOrGuard`:475 asserts the exact inverse shape
+| `shouldAssembleNoAssetProxyPathWithoutThrowing` (`edge/RouteAssemblerTest`) | 578 | (a) | matched control `shouldAssembleAssetRouteWithoutClientOrGuard`:514 asserts the exact inverse shape
 | `acceptsCleanPath` (`pipeline/CanonicalPathGuardTest`)               | 62 | (a) | matched negative control `rejectsNonCanonicalPaths`:49 -- six non-canonical raw paths through the same guard, each asserted to raise `SECURITY_FILTER_VIOLATION`
+| `shouldCarryMaterializedEffectivePosture` (`routing/RouteTest`)      | 314 | (a) | narrow scope, as for `anchorConfigExposesEveryPolicyBlock`; the anchor / auth / methods / forward / location-rewriter legs are all substantive
+| `shouldAcceptEachSingleTerminalAction` (`routing/RouteTest`)         | 420 | (a) | matched negative controls `shouldRefuseZeroTerminalActions`:433 and `shouldRefuseSeveralTerminalActions`:445 refuse zero, two and three terminal actions over the same constructor
 |===
 
 Six of these thirty -- the five `edge/GatewayEdgeRouteTest` rows and

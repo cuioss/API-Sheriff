@@ -19,8 +19,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-
 /**
  * The immutable, exact-first then longest-prefix-ordered table of fully materialized
  * {@link Route routes} the gateway serves.
@@ -54,44 +52,17 @@ public record RouteTable(List<Route> routes) {
     /**
      * Finds the most specific route whose path matcher covers the given request path.
      * <p>
-     * An exact route matches only a path equal to its {@code match.path} (un-normalized, so a
-     * trailing slash is significant); a prefix route matches a path at or below its
-     * {@code path_prefix} on a segment boundary. Because the routes are ordered exact-first, then
-     * longest-prefix-first, the first match is the most specific one. This is a path lookup only;
-     * the full matcher set (host, methods, headers) is applied by the request pipeline.
+     * The path test is each route's compiled {@link RouteMatcher#matchesPath(String)} — the same
+     * rule the request pipeline selects through, so this lookup cannot drift from it. Because the
+     * routes are ordered exact-first, then longest-prefix-first, the first match is the most
+     * specific one. This is a path lookup only; the full matcher set (host, methods, headers) is
+     * applied by the request pipeline.
      *
      * @param path the request path to resolve
      * @return the most specific path-matching route, or empty when none matches
      */
     public Optional<Route> lookup(String path) {
         Objects.requireNonNull(path, "path");
-        return routes.stream().filter(route -> matchesPath(path, route.match())).findFirst();
-    }
-
-    /**
-     * Tests whether {@code path} is covered by the route's path matcher: string equality for an
-     * exact matcher, the segment-boundary prefix rule otherwise.
-     */
-    private static boolean matchesPath(String path, MatchConfig match) {
-        return match.isExact() ? path.equals(match.matchKey()) : matchesPrefix(path, match.matchKey());
-    }
-
-    /**
-     * Tests whether {@code path} is covered by {@code prefix} on segment boundaries.
-     * <p>
-     * A path matches a prefix when it equals the prefix exactly or continues it at a segment
-     * boundary, so {@code /proxy} matches {@code /proxy} and {@code /proxy/x} but not
-     * {@code /proxy-helper}. A prefix that already ends in {@code /} is treated as a segment
-     * boundary directly.
-     *
-     * @param path   the request path to test
-     * @param prefix the route {@code path_prefix} to test against
-     * @return {@code true} when the path is at or below the prefix on a segment boundary
-     */
-    private static boolean matchesPrefix(String path, String prefix) {
-        if (path.equals(prefix)) {
-            return true;
-        }
-        return prefix.endsWith("/") ? path.startsWith(prefix) : path.startsWith(prefix + "/");
+        return routes.stream().filter(route -> route.matcher().matchesPath(path)).findFirst();
     }
 }
