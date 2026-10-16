@@ -1195,11 +1195,12 @@ public class GatewayEdgeRoute {
                     route.effectiveForward(), route.notModifiedEnabled());
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
-            // and relays response trailers. Every other protocol takes the HTTP dispatch path.
-            switch (route.protocol()) {
-                case WEBSOCKET -> dispatchWebSocket(ctx, request, route, forward);
-                case GRPC -> dispatchGrpc(ctx, request, route, forward);
-                default -> dispatchAndRelay(ctx, request, route, forward);
+            // and relays response trailers; HTTP and GraphQL take the HTTP dispatch path. The split is
+            // RouteAssembler.DispatchPath, the same one the assembler built clients and guards from.
+            switch (RouteAssembler.DispatchPath.of(route.protocol())) {
+                case WEBSOCKET_RELAY -> dispatchWebSocket(ctx, request, route, forward);
+                case GRPC_DISPATCH -> dispatchGrpc(ctx, request, route, forward);
+                case HTTP_DISPATCH -> dispatchAndRelay(ctx, request, route, forward);
             }
         } catch (GatewayException rejected) {
             handleGatewayRejection(ctx, request, rejected);

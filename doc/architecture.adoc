@@ -1758,16 +1758,19 @@ shared objects are immutable.
   referenced by every matching route's `Route`.
 
 | Data-plane Vert.x `HttpClient` + its connection pool
-| Immutable options, thread-safe client. One Vert.x client per *distinct upstream target
-  tuple* (resolved host + connect/read timeouts + TLS context) -- *deduplicated across routes*,
-  so N routes to the same backend with the same options share one client and one connection
-  pool, rather than opening N pools (link:adr/0008-data-plane-transport.adoc[ADR-0008]). This
-  is the single biggest "reuse a large object" lever. The resilience guards (SmallRye FT) are
-  built once at boot as well, one per distinct resilience shape. Neither the client nor the guard
-  is a route component -- both are framework types, and `Route` stays framework-free -- so
-  `RouteAssembler` holds them in the immutable per-upstream `UpstreamClients` table, from which the
-  dispatch stage resolves a proxy route's client and guard. A WebSocket route is dialed by the
-  edge-wide WebSocket client and gets neither.
+| Immutable options, thread-safe client. One Vert.x client per *distinct upstream target*
+  (`RouteAssembler.UpstreamTarget`: scheme + host + port + forced HTTP/2, the last set for a gRPC
+  route) -- *deduplicated across routes*, so N routes to the same backend share one client and one
+  connection pool, rather than opening N pools
+  (link:adr/0008-data-plane-transport.adoc[ADR-0008]). This is the single biggest "reuse a large
+  object" lever. The resilience guards (SmallRye FT) are built once at boot as well, one per
+  distinct *resilience shape* (`RouteAssembler.ResilienceShape`: the upstream target plus the
+  route's retry setting), so two routes to one upstream that differ in retry hold separate guards
+  and separate circuit breakers. Neither the client nor the guard is a route component -- both are
+  framework types, and `Route` stays framework-free -- so `RouteAssembler` holds them in the
+  immutable `UpstreamClients` lookup, clients keyed by upstream target and guards by resilience
+  shape, from which the dispatch stage resolves a proxy route's client and guard. A WebSocket route
+  is dialed by the edge-wide WebSocket client and gets neither.
 
 | `TokenValidator`
 | A single shared, cache-backed, thread-safe instance created at startup (already the rule --
@@ -1778,16 +1781,21 @@ shared objects are immutable.
   reused for every request.
 
 | `routing.RouteTable` / per-route `routing.Route`
-| One per-route record, `Route`, carries everything the request path reads for a route. It is
-  built in two steps. `RouteTableBuilder` builds it on the framework-free pre-boot path --
-  matcher, effective auth, effective `allowed_methods`, `allowed_paths`, forward sets, location
+| One per-route record, `Route`, carries everything the request path reads for a route except
+  its shared upstream client and resilience guard, which live in `UpstreamClients` (row above). It
+  is built in two steps. `RouteTableBuilder` builds it on the framework-free pre-boot path --
+  effective auth, effective `allowed_methods`, effective `security_filter`, forward sets, location
   rewriter -- with any anchor policy already resolved into these effective values
-  (link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]), so the pre-boot route table carries no
+  (link:adr/0007-anchor-scoped-policy.adoc[ADR-0007]); the route itself compiles its matcher from
+  its `match` block and reads its `allowed_paths` whitelist off its effective `security_filter`, so
+  neither derivation can drift from its source. The pre-boot route table therefore carries no
   framework type and the offline configuration check can build it. At boot, `RouteAssembler`
   completes each route through `toBuilder()` with the boot-only components (protocol processor,
-  security posture, asset source); no field is copied by hand. `routing.RouteTable` is the lookup
-  the request path reads; the runtime never consults an anchor. The request path *looks up* an
-  immutable `Route`; it compiles nothing.
+  security posture, asset source); no field is copied by hand. `routing.RouteTable` holds the
+  pre-boot routes and is what the assembler completes; the request path never reads it. Stage 2
+  walks the *assembled* route list (`RouteAssembler.AssembledRoutes.routes()`, in the table's
+  order), and the runtime never consults an anchor. The request path *looks up* an immutable
+  `Route`; it compiles nothing.
 
 | Event counters (`GatewayEventCounter`, cui-http `SecurityEventCounter`)
 | Shared, lock-free (`ConcurrentHashMap` + `AtomicLong`); safe to increment concurrently.

@@ -104,7 +104,7 @@ class PreBootFrameworkFreeArchTest {
             .importPackages(BASE_PACKAGE);
 
     @Test
-    @DisplayName("Pre-boot configuration packages must not depend on framework packages")
+    @DisplayName("Pre-boot configuration and routing packages must not depend on framework packages")
     void preBootPackagesMustNotDependOnFrameworks() {
         ArchRule rule = noClasses()
                 .that().resideInAnyPackage(PRE_BOOT_PACKAGES)

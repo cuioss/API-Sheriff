@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -105,37 +106,78 @@ class RouteTest {
         }
 
         @Test
-        @DisplayName("Should keep an explicitly supplied matcher instead of recompiling it")
-        void shouldKeepSuppliedMatcher() {
-            RouteMatcher supplied = RouteMatcher.from(MatchConfig.builder().pathPrefix("/supplied").build());
+        @DisplayName("Should keep a supplied matcher compiled from the route's own match block")
+        void shouldKeepMatcherCompiledFromOwnMatch() {
+            MatchConfig match = MatchConfig.builder().pathPrefix("/" + Generators.letterStrings(3, 12).next()).build();
+            RouteMatcher supplied = RouteMatcher.from(match);
 
-            Route route = proxyRoute().matcher(supplied).build();
+            Route route = proxyRoute().match(match).matcher(supplied).build();
 
-            assertSame(supplied, route.matcher(), "A supplied matcher is held as given");
+            assertSame(supplied, route.matcher(), "A matcher compiled from this very block is held as given");
         }
 
         @Test
-        @DisplayName("Should derive an absent allowed-paths whitelist from the effective security filter")
-        void shouldDeriveAbsentAllowedPathsFromSecurityFilter() {
+        @DisplayName("Should recompile a supplied matcher that was compiled from a different match block")
+        void shouldRecompileMatcherCompiledFromOtherMatch() {
+            String routePrefix = "/" + Generators.letterStrings(3, 12).next();
+            RouteMatcher stale = RouteMatcher.from(MatchConfig.builder().pathPrefix(routePrefix + "-stale").build());
+
+            Route route = proxyRoute().match(MatchConfig.builder().pathPrefix(routePrefix).build())
+                    .matcher(stale).build();
+
+            assertAll("recompiled matcher",
+                    () -> assertNotSame(stale, route.matcher(), "A matcher of another block is not kept"),
+                    () -> assertEquals(routePrefix, route.matcher().matchKey(),
+                            "The matcher is compiled from the route's own match block"));
+        }
+
+        @Test
+        @DisplayName("Should recompile the matcher when a toBuilder() copy changes the match block")
+        void shouldRecompileMatcherWhenCopyChangesMatch() {
+            String changedPrefix = "/" + Generators.letterStrings(3, 12).next() + "/changed";
+            Route original = proxyRoute().build();
+
+            Route changed = original.toBuilder().match(MatchConfig.builder().pathPrefix(changedPrefix).build()).build();
+
+            assertAll("matcher follows match",
+                    () -> assertEquals(changedPrefix, changed.matcher().matchKey(),
+                            "The copy selects on its new match block, not the carried-over matcher"),
+                    () -> assertTrue(changed.matcher().matchesPath(changedPrefix + "/x"),
+                            "The recompiled matcher matches below the new prefix"),
+                    () -> assertFalse(changed.matcher().matchesPath(original.matchKey()),
+                            "The recompiled matcher no longer matches the old prefix"));
+        }
+
+        @Test
+        @DisplayName("Should derive the allowed-paths whitelist from the effective security filter")
+        void shouldDeriveAllowedPathsFromSecurityFilter() {
             String allowed = "/api/" + Generators.letterStrings(3, 12).next();
             SecurityFilterConfig filter = SecurityFilterConfig.builder().allowedPaths(List.of(allowed)).build();
 
             Route route = proxyRoute().effectiveSecurityFilter(filter).build();
 
             assertEquals(List.of(allowed), route.effectiveAllowedPaths(),
-                    "A whitelist the filter declares is never dropped because the derived component was omitted");
+                    "A whitelist the filter declares is the route's whitelist");
         }
 
         @Test
-        @DisplayName("Should keep an explicitly supplied allowed-paths whitelist instead of re-deriving it")
-        void shouldKeepSuppliedAllowedPaths() {
-            SecurityFilterConfig filter = SecurityFilterConfig.builder().allowedPaths(List.of("/api/filter")).build();
+        @DisplayName("Should re-derive the allowed-paths whitelist when a toBuilder() copy changes the filter")
+        void shouldRederiveAllowedPathsWhenCopyChangesFilter() {
+            String changed = "/api/" + Generators.letterStrings(3, 12).next();
+            Route original = proxyRoute()
+                    .effectiveSecurityFilter(SecurityFilterConfig.builder().allowedPaths(List.of("/api/old")).build())
+                    .build();
 
-            Route route = proxyRoute().effectiveSecurityFilter(filter)
-                    .effectiveAllowedPaths(List.of("/api/supplied")).build();
+            Route copy = original.toBuilder()
+                    .effectiveSecurityFilter(SecurityFilterConfig.builder().allowedPaths(List.of(changed)).build())
+                    .build();
+            Route withoutFilter = original.toBuilder().effectiveSecurityFilter(null).build();
 
-            assertEquals(List.of("/api/supplied"), route.effectiveAllowedPaths(),
-                    "A supplied whitelist is held as given");
+            assertAll("allowed paths follow the filter",
+                    () -> assertEquals(List.of(changed), copy.effectiveAllowedPaths(),
+                            "The copy enforces its new filter's whitelist, not the old one"),
+                    () -> assertTrue(withoutFilter.effectiveAllowedPaths().isEmpty(),
+                            "Dropping the filter drops its whitelist"));
         }
 
         @Test
@@ -198,7 +240,6 @@ class RouteTest {
             Route route = proxyRoute()
                     .effectiveAllowedMethods(null)
                     .neededScopes(null)
-                    .effectiveAllowedPaths(null)
                     .effectiveAllowedOrigins(null)
                     .build();
 
@@ -420,7 +461,7 @@ class RouteTest {
             Route route = proxyRoute()
                     .effectiveAllowedMethods(methods)
                     .neededScopes(scopes)
-                    .effectiveAllowedPaths(paths)
+                    .effectiveSecurityFilter(SecurityFilterConfig.builder().allowedPaths(paths).build())
                     .effectiveAllowedOrigins(origins)
                     .build();
 
@@ -445,7 +486,7 @@ class RouteTest {
             Route route = proxyRoute()
                     .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .neededScopes(Set.of("read"))
-                    .effectiveAllowedPaths(List.of("/allowed"))
+                    .effectiveSecurityFilter(SecurityFilterConfig.builder().allowedPaths(List.of("/allowed")).build())
                     .effectiveAllowedOrigins(Set.of("https://app.example"))
                     .build();
             Set<HttpMethod> methods = route.effectiveAllowedMethods();
@@ -770,7 +811,6 @@ class RouteTest {
                 .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                 .neededScopes(Set.of("read"))
                 .effectiveSecurityFilter(SecurityFilterConfig.builder().allowedPaths(List.of("/api/ok")).build())
-                .effectiveAllowedPaths(List.of("/api/ok"))
                 .securityHeaders(SecurityHeadersConfig.builder().build())
                 .effectiveForward(ForwardConfig.builder().headersAllow(List.of("Accept")).build())
                 .retryEnabled(true)
@@ -785,7 +825,6 @@ class RouteTest {
                 .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .neededScopes(Set.of("read"))
                 .effectiveSecurityFilter(SecurityFilterConfig.builder().allowedPaths(List.of("/api/ok")).build())
-                .effectiveAllowedPaths(List.of("/api/ok"))
                 .securityHeaders(SecurityHeadersConfig.builder().build())
                 .notModifiedEnabled(true)
                 .build();

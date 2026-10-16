@@ -54,6 +54,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class RouteMatcher {
 
+    private final MatchConfig source;
     private final String matchKey;
     private final boolean exact;
     private final Set<HttpMethod> matchMethods;
@@ -61,8 +62,9 @@ public final class RouteMatcher {
     private final List<HeaderMatcher> headers;
     private final List<String> matchHeaderNames;
 
-    private RouteMatcher(String matchKey, boolean exact, Set<HttpMethod> matchMethods, @Nullable String host,
-            List<HeaderMatcher> headers) {
+    private RouteMatcher(MatchConfig source, String matchKey, boolean exact, Set<HttpMethod> matchMethods,
+            @Nullable String host, List<HeaderMatcher> headers) {
+        this.source = source;
         this.matchKey = matchKey;
         this.exact = exact;
         this.matchMethods = matchMethods;
@@ -92,7 +94,19 @@ public final class RouteMatcher {
                 .map(header -> new HeaderMatcher(header.name().toLowerCase(Locale.ROOT), header.present(),
                         header.value()))
                 .toList();
-        return new RouteMatcher(match.matchKey(), match.isExact(), methods, match.host(), headers);
+        return new RouteMatcher(match, match.matchKey(), match.isExact(), methods, match.host(), headers);
+    }
+
+    /**
+     * Returns whether this matcher is the compilation of the given {@code match} block — the test
+     * {@link Route} applies to keep a carried-over matcher only while it still reflects the route's
+     * own block, and to recompile it once the block has changed.
+     *
+     * @param match the match block to compare against
+     * @return {@code true} when this matcher was compiled from a block equal to {@code match}
+     */
+    boolean isCompiledFrom(MatchConfig match) {
+        return source.equals(match);
     }
 
     /**

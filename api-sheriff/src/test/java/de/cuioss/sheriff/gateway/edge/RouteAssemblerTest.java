@@ -155,7 +155,7 @@ class RouteAssemblerTest {
         RouteAssembler.UpstreamClients clients = assemble(new RouteTable(List.of(r1, r2, r3))).upstreamClients();
 
         HttpClient shared = clients.client(RouteAssembler.UpstreamTarget.of(r1)).orElseThrow();
-        assertAll("one client and one guard per upstream tuple",
+        assertAll("one client per upstream tuple and one guard per resilience shape",
                 () -> assertEquals(2, clientInvocations.get(), "Three routes over two tuples build two clients"),
                 () -> assertEquals(2, guardInvocations.get(), "Three routes over two shapes build two guards"),
                 () -> assertSame(shared, clients.client(RouteAssembler.UpstreamTarget.of(r2)).orElseThrow(),
@@ -305,6 +305,45 @@ class RouteAssemblerTest {
                         "the WebSocket route's resilience shape resolves no guard"),
                 () -> assertEquals(0, clientInvocations.get(), "the client factory is never invoked"),
                 () -> assertEquals(0, guardInvocations.get(), "the guard factory is never invoked"));
+    }
+
+    @Test
+    @DisplayName("Should map every protocol onto the dispatch path the edge serves it on")
+    void shouldMapProtocolsOntoDispatchPaths() {
+        assertAll("the one protocol split",
+                () -> assertEquals(RouteAssembler.DispatchPath.HTTP_DISPATCH,
+                        RouteAssembler.DispatchPath.of(Protocol.HTTP), "HTTP takes the HTTP dispatch"),
+                () -> assertEquals(RouteAssembler.DispatchPath.HTTP_DISPATCH,
+                        RouteAssembler.DispatchPath.of(Protocol.GRAPHQL), "GraphQL takes the HTTP dispatch"),
+                () -> assertEquals(RouteAssembler.DispatchPath.GRPC_DISPATCH,
+                        RouteAssembler.DispatchPath.of(Protocol.GRPC), "gRPC takes the forced-h2 dispatch"),
+                () -> assertEquals(RouteAssembler.DispatchPath.WEBSOCKET_RELAY,
+                        RouteAssembler.DispatchPath.of(Protocol.WEBSOCKET), "WebSocket takes the opaque relay"),
+                () -> assertTrue(RouteAssembler.DispatchPath.HTTP_DISPATCH.usesDispatchStage(),
+                        "the HTTP dispatch runs through DispatchStage"),
+                () -> assertTrue(RouteAssembler.DispatchPath.GRPC_DISPATCH.usesDispatchStage(),
+                        "the gRPC dispatch delegates to DispatchStage"),
+                () -> assertFalse(RouteAssembler.DispatchPath.WEBSOCKET_RELAY.usesDispatchStage(),
+                        "the WebSocket relay does not touch DispatchStage"));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Protocol.class)
+    @DisplayName("Should build a client and a guard for a proxy route exactly when its dispatch path needs them")
+    void shouldBuildClientExactlyForDispatchStagePaths(Protocol protocol) {
+        List<RouteAssembler.UpstreamTarget> requestedClients = new ArrayList<>();
+        Route proxy = route("p", protocol, Require.NONE, null, upstream("a.example"));
+
+        RouteAssembler.AssembledRoutes assembled = assembler.assemble(new RouteTable(List.of(proxy)),
+                securityConfigFactory, capturingClientFactory(requestedClients), guardFactory, assetSourceFactory);
+
+        boolean needsClient = RouteAssembler.DispatchPath.of(protocol).usesDispatchStage();
+        assertAll("the assembler and the dispatch switch read the same split for " + protocol,
+                () -> assertEquals(needsClient, !requestedClients.isEmpty(),
+                        "a client is requested exactly for a DispatchStage path"),
+                () -> assertEquals(needsClient,
+                        assembled.upstreamClients().guard(RouteAssembler.ResilienceShape.of(proxy)).isPresent(),
+                        "a guard is held exactly for a DispatchStage path"));
     }
 
     /**

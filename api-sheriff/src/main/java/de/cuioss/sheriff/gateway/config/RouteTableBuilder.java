@@ -80,8 +80,9 @@ import org.jspecify.annotations.Nullable;
  * wholesale, deny lists included), the effective upstream base path (the route-level
  * {@code upstream.path} appended to the alias-derived base path when declared), and the
  * needed scope set ({@code oidc.scopes} united with the owning endpoint's {@code scopes})
- * into a {@link Route}, together with the pure derivations of those values: the compiled
- * {@link RouteMatcher}, the effective {@code allowed_paths} whitelist and — for a proxy route
+ * into a {@link Route}. The route derives the compiled {@link RouteMatcher} and the effective
+ * {@code allowed_paths} whitelist from those values itself, so neither derivation is restated here;
+ * the builder adds only the one derivation the route cannot make on its own — for a proxy route
  * that opts into {@code upstream.rewrite_location} (absent meaning off, no inheritance) — its
  * {@link LocationRewriter}. The boot-only components (protocol processor, security posture and
  * asset source) are attached later by the edge's route assembler and are left unset here, so this
@@ -226,8 +227,8 @@ public final class RouteTableBuilder {
     }
 
     /**
-     * Resolves one route into its {@link Route}: every resolved value plus the pure derivations
-     * (matcher, {@code allowed_paths} whitelist, location rewriter). Every policy block is read through
+     * Resolves one route into its {@link Route}: every resolved value plus the location rewriter; the
+     * route derives its matcher and {@code allowed_paths} whitelist itself. Every policy block is read through
      * its {@link PolicyBlock} descriptor, so no block chain is restated here. The boot-only components
      * are left unset for the edge's route assembler to attach.
      */
@@ -267,11 +268,9 @@ public final class RouteTableBuilder {
                 .protocol(protocol)
                 .anchor(anchor == null ? null : anchor.name())
                 .match(match)
-                .matcher(RouteMatcher.from(match))
                 .effectiveAuth(auth)
                 .effectiveAllowedMethods(Set.copyOf(allowedMethods))
                 .effectiveSecurityFilter(securityFilter)
-                .effectiveAllowedPaths(securityFilter == null ? List.of() : securityFilter.allowedPaths())
                 .securityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)

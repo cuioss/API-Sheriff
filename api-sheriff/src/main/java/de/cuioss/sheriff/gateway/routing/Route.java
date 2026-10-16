@@ -63,8 +63,10 @@ import org.jspecify.annotations.Nullable;
  *       {@code securityHeaders}, {@code effectiveForward}, {@code retryEnabled},
  *       {@code notModifiedEnabled}, the one terminal action {@code upstream} / {@code asset} /
  *       {@code redirect}, {@code effectiveAllowedOrigins} and
- *       {@code effectiveWebSocketIdleTimeoutSeconds}) plus the pure derivations {@code matcher},
- *       {@code effectiveAllowedPaths} and {@code locationRewriter}. This pass starts nothing.</li>
+ *       {@code effectiveWebSocketIdleTimeoutSeconds}) plus the pure derivation
+ *       {@code locationRewriter}. The two derivations the route can make from its own values — the
+ *       compiled {@code matcher} and the {@link #effectiveAllowedPaths()} whitelist — are made here,
+ *       by the route, and are never supplied by a caller. This pass starts nothing.</li>
  *   <li><em>Runtime assembly, boot only.</em> The assembly step attaches the components whose
  *       construction needs a framework-backed factory — {@code protocolProcessor},
  *       {@code securityProfile}, {@code securityConfiguration} and, for an asset route,
@@ -75,9 +77,16 @@ import org.jspecify.annotations.Nullable;
  * components and the fail-closed {@link SecurityProfile#STRICT} profile until the second pass
  * completes it; only assembled routes reach the request pipeline.
  * <p>
+ * <strong>Derived values follow their source.</strong> The compiled {@code matcher} is always the
+ * compilation of {@code match}, and the {@link #effectiveAllowedPaths()} whitelist is always read
+ * off {@code effectiveSecurityFilter}. A {@code toBuilder()} copy that changes {@code match} or
+ * {@code effectiveSecurityFilter} therefore re-derives both, never carrying a stale value forward.
+ * <p>
  * <strong>Framework-free.</strong> This type holds no Vert.x or SmallRye type: the shared upstream
- * client and the resilience guard are kept per upstream tuple outside the route, so the pre-boot
- * path can build a route without starting anything (ADR-0061, ADR-0062). Absence is a
+ * client and the resilience guard are kept outside the route — a client per upstream target
+ * (scheme, host, port and forced HTTP/2), a guard per resilience shape (that upstream target plus
+ * the route's retry setting) — so the pre-boot path can build a route without starting anything
+ * (ADR-0061, ADR-0062). Absence is a
  * {@link Nullable} component, never a stored {@code Optional} (ADR-0033).
  * <p>
  * <strong>Thread safety.</strong> Instances are immutable and safe to share across threads: every
@@ -91,7 +100,11 @@ import org.jspecify.annotations.Nullable;
  *                               unanchored
  * @param match                  the resolved matcher set (mandatory)
  * @param matcher                the compiled matcher set (exact path or prefix, methods, host,
- *                               headers); compiled from {@code match} when absent
+ *                               headers), always the compilation of {@code match}: a supplied
+ *                               matcher is kept only when it was compiled from this route's
+ *                               {@code match} block (so {@code toBuilder()} carries it through as the
+ *                               same instance); an absent one, or one compiled from a different
+ *                               block, is compiled afresh from {@code match}
  * @param effectiveAuth          the materialized auth posture (mandatory)
  * @param effectiveAllowedMethods the effective {@code allowed_methods} verb allowlist for the
  *                               stage-2b verb gate (405), copied as an {@link EnumSet}; empty when
@@ -104,15 +117,9 @@ import org.jspecify.annotations.Nullable;
  *                               requests it at login and compares the session's active scope set
  *                               against it on every request. Empty when neither level declares a
  *                               scope, which skips both checks
- * @param effectiveSecurityFilter the materialized security filter, {@code null} when none resolves
- * @param effectiveAllowedPaths  the effective {@code allowed_paths} whitelist enforced by stage 3,
- *                               resolved from the effective {@code security_filter}; derived from
- *                               {@code effectiveSecurityFilter} when absent, so it is empty only when
- *                               the route declares no whitelist (unrestricted). Carried separately from
- *                               {@code securityConfiguration} because {@code allowed_paths} is a
- *                               gateway concept the cui-http {@link SecurityConfiguration} does not
- *                               model
- * @param securityHeaders        the effective response-header posture (the anchor block, else the
+ * @param effectiveSecurityFilter the materialized security filter, {@code null} when none resolves;
+ *                               the source of the {@link #effectiveAllowedPaths()} whitelist
+ * @param securityHeaders       the effective response-header posture (the anchor block, else the
  *                               gateway block, resolved wholesale), applied by the stage-2a
  *                               {@code SecurityHeadersStage.applyRouteHeaders} to every response
  *                               produced after route selection; {@code null} when none resolves,
@@ -178,7 +185,6 @@ AuthConfig effectiveAuth,
 Set<HttpMethod> effectiveAllowedMethods,
 Set<String> neededScopes,
 @Nullable SecurityFilterConfig effectiveSecurityFilter,
-List<String> effectiveAllowedPaths,
 @Nullable SecurityHeadersConfig securityHeaders,
 ForwardConfig effectiveForward,
 boolean retryEnabled,
@@ -198,10 +204,9 @@ SecurityProfile securityProfile,
      * Canonical constructor requiring the mandatory components ({@code id}, {@code match},
      * {@code effectiveAuth}), enforcing the terminal-action invariant — exactly one of
      * {@code upstream} (proxy), {@code asset} or {@code redirect} resolves — and applying the
-     * defaults: an absent {@code protocol} becomes {@link Protocol#HTTP}, an absent {@code matcher}
-     * is compiled from {@code match}, an absent {@code effectiveAllowedPaths} is taken from the
-     * effective security filter's {@code allowed_paths} (fail-closed: a declared whitelist is never
-     * dropped by omission), an absent {@code effectiveForward} becomes the all-absent
+     * defaults: an absent {@code protocol} becomes {@link Protocol#HTTP}, a {@code matcher} that is
+     * absent or was not compiled from {@code match} is compiled from {@code match}, an absent
+     * {@code effectiveForward} becomes the all-absent
      * forward-all {@link ForwardConfig}, an absent {@code securityProfile} becomes the fail-closed
      * {@link SecurityProfile#STRICT}, and every collection is defensively copied into an
      * unmodifiable form, an absent one becoming empty.
@@ -220,19 +225,12 @@ SecurityProfile securityProfile,
                     + "' must resolve exactly one terminal action (one of upstream, asset, redirect)");
         }
         protocol = protocol == null ? Protocol.HTTP : protocol;
-        matcher = matcher == null ? RouteMatcher.from(match) : matcher;
+        // The matcher follows its source: one compiled from this very match block is kept (so a
+        // toBuilder() copy carries the same instance), anything else is recompiled, so a copy that
+        // changes match can never keep selecting on the old block.
+        matcher = matcher != null && matcher.isCompiledFrom(match) ? matcher : RouteMatcher.from(match);
         effectiveAllowedMethods = toMethodSet(effectiveAllowedMethods);
         neededScopes = neededScopes == null ? Set.of() : Set.copyOf(neededScopes);
-        // Fail-closed derivation, mirroring the matcher default above: an absent whitelist is taken from
-        // the effective security filter, so a route carrying a filter that declares allowed_paths can
-        // never reach stage 3 unrestricted merely because the derived component was not stated.
-        if (effectiveAllowedPaths != null) {
-            effectiveAllowedPaths = List.copyOf(effectiveAllowedPaths);
-        } else if (effectiveSecurityFilter != null) {
-            effectiveAllowedPaths = effectiveSecurityFilter.allowedPaths();
-        } else {
-            effectiveAllowedPaths = List.of();
-        }
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
         effectiveAllowedOrigins = effectiveAllowedOrigins == null ? Set.of() : Set.copyOf(effectiveAllowedOrigins);
         securityProfile = securityProfile == null ? SecurityProfile.STRICT : securityProfile;
@@ -247,6 +245,21 @@ SecurityProfile securityProfile,
      */
     public String matchKey() {
         return match.matchKey();
+    }
+
+    /**
+     * The effective {@code allowed_paths} whitelist enforced by stage 3, read off the effective
+     * {@code security_filter} on every call rather than stored, so it can never drift from
+     * {@link #effectiveSecurityFilter()} — a route carrying a filter that declares
+     * {@code allowed_paths} can never reach stage 3 unrestricted. Kept apart from
+     * {@code securityConfiguration} because {@code allowed_paths} is a gateway concept the cui-http
+     * {@link SecurityConfiguration} does not model.
+     *
+     * @return the declared whitelist as an unmodifiable list, empty when no security filter
+     *         resolves or the resolved filter declares no whitelist (unrestricted)
+     */
+    public List<String> effectiveAllowedPaths() {
+        return effectiveSecurityFilter == null ? List.of() : effectiveSecurityFilter.allowedPaths();
     }
 
     private static Set<HttpMethod> toMethodSet(@Nullable Set<HttpMethod> methods) {

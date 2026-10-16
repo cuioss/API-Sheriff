@@ -416,10 +416,8 @@ class GatewayEdgeRouteBffWiringTest {
                     .match(MatchConfig.builder().pathPrefix("/auth").build())
                     .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                     .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                    // The allowed_paths whitelist is read off this filter by the route itself.
                     .effectiveSecurityFilter(filter)
-                    // Derived from the effective filter by the route-table builder on the pre-boot pass;
-                    // a hand-built route states it, since the boot assembly derives nothing.
-                    .effectiveAllowedPaths(filter.allowedPaths())
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, 1, ""))
                     .build();
         }

@@ -277,10 +277,12 @@ public final class DispatchStage {
         if (upstream == null) {
             throw new IllegalStateException("proxy dispatch requires a resolved upstream");
         }
-        RouteAssembler.UpstreamTarget target = RouteAssembler.UpstreamTarget.of(route);
-        HttpClient httpClient = upstreamClients.client(target)
+        // The one shape derivation the assembler keyed the client and guard under, so the lookup can
+        // never miss because the two sides derived the key differently.
+        RouteAssembler.ResilienceShape shape = RouteAssembler.ResilienceShape.of(route);
+        HttpClient httpClient = upstreamClients.client(shape.target())
                 .orElseThrow(() -> new IllegalStateException("proxy dispatch requires an upstream client"));
-        Guard guard = upstreamClients.guard(new RouteAssembler.ResilienceShape(target, route.retryEnabled()))
+        Guard guard = upstreamClients.guard(shape)
                 .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resilience guard"));
         DispatchBody body = new DispatchBody(requestBody, framing);
         boolean handedToCaller = false;

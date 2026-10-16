@@ -241,7 +241,7 @@ public final class PipelineRequest {
     /**
      * Records the route selected by stage 2.
      *
-     * @param selectedRoute the matched route runtime
+     * @param selectedRoute the matched, boot-assembled {@link Route}
      */
     public void selectedRoute(Route selectedRoute) {
         this.selectedRoute = Objects.requireNonNull(selectedRoute, "selectedRoute");

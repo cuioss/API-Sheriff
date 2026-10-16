@@ -854,10 +854,8 @@ class GatewayEdgePipelineTest {
                 .match(MatchConfig.builder().pathPrefix("/open").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
+                // The allowed_paths whitelist is read off this filter by the route itself.
                 .effectiveSecurityFilter(filter)
-                // The whitelist the route-table builder derives from the effective filter on the
-                // pre-boot pass; a hand-built route states it, since the boot assembly derives nothing.
-                .effectiveAllowedPaths(filter.allowedPaths())
                 // Resolved, not omitted. A route whose securityHeaders is null makes stage 2a
                 // remove the gateway-owned names and reseed nothing — correct per ADR-0007, but it is
                 // the shape a route takes only when NEITHER its anchor NOR the gateway declares a

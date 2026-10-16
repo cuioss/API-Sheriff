@@ -28,8 +28,9 @@
  * <strong>Framework-free.</strong> The pre-boot route table, which the offline
  * {@code --validate-config} check also builds (ADR-0061), is built from
  * {@link de.cuioss.sheriff.gateway.routing.Route}, so this package holds no Vert.x or SmallRye type
- * (ADR-0062). The shared upstream client and the resilience guard are kept per upstream tuple by the
- * edge, outside the route.
+ * (ADR-0062). The shared upstream client and the resilience guard are kept by the edge, outside the
+ * route: a client per upstream target, a guard per resilience shape (that target plus the route's
+ * retry setting).
  *
  * @author API Sheriff Team
  * @since 1.0

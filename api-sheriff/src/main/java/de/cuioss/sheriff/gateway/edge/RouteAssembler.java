@@ -16,13 +16,11 @@
 package de.cuioss.sheriff.gateway.edge;
 
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
@@ -47,7 +45,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Completing a route.</strong> Each table route is completed through
  * {@link Route#toBuilder()} followed by {@code build()} — never copied field by field — so every
- * resolved value the route-table builder set stays exactly as it was. Three components are attached:
+ * resolved value the route-table builder set stays exactly as it was. Four components are attached:
  * <ul>
  *   <li>{@code protocolProcessor}, from the {@link ProtocolProcessorRegistry}, which fails boot on an
  *       unsupported protocol;</li>
@@ -68,11 +66,12 @@ import org.jspecify.annotations.Nullable;
  *       (scheme, host, port, forced-HTTP/2);</li>
  *   <li>one {@link Guard} per distinct {@linkplain ResilienceShape resilience shape}.</li>
  * </ul>
- * The lookup is populated only for the proxy routes whose protocol {@link DispatchStage} serves —
- * {@link Protocol#HTTP}, {@link Protocol#GRAPHQL} and {@link Protocol#GRPC}. A
- * {@link Protocol#WEBSOCKET} route is dialed by the edge-wide WebSocket client and gets neither a
- * client nor a guard; an asset or redirect route never contacts a proxy upstream and gets neither
- * either.
+ * The lookup is populated only for the proxy routes whose {@linkplain DispatchPath dispatch path}
+ * runs through {@link DispatchStage} — {@link Protocol#HTTP}, {@link Protocol#GRAPHQL} and
+ * {@link Protocol#GRPC}. A {@link Protocol#WEBSOCKET} route is dialed by the edge-wide WebSocket
+ * client and gets neither a client nor a guard; an asset or redirect route never contacts a proxy
+ * upstream and gets neither either. {@link DispatchPath} is the one statement of that protocol split,
+ * read both here and by the edge's dispatch switch, so the two cannot disagree.
  * <p>
  * The heavy objects are produced by the injected factories, so tests supply fakes and the production
  * wiring supplies the real Vert.x / SmallRye instances. {@code require: session} routes are assembled
@@ -87,10 +86,6 @@ import org.jspecify.annotations.Nullable;
  * @since 1.0
  */
 public final class RouteAssembler {
-
-    /** The protocols whose proxy routes {@link DispatchStage} dispatches, and so need a client and a guard. */
-    private static final Set<Protocol> DISPATCHED_PROTOCOLS = EnumSet.of(Protocol.HTTP, Protocol.GRAPHQL,
-            Protocol.GRPC);
 
     private final ProtocolProcessorRegistry protocolRegistry;
 
@@ -155,10 +150,10 @@ public final class RouteAssembler {
             // source's own SSRF-controlled fetch seam, a redirect route never contacts an upstream, and a
             // WebSocket route is dialed by the edge-wide WebSocket client.
             ResolvedUpstream upstream = route.upstream();
-            if (upstream != null && DISPATCHED_PROTOCOLS.contains(route.protocol())) {
-                UpstreamTarget target = UpstreamTarget.of(route);
-                clientCache.computeIfAbsent(target, clientFactory::create);
-                guardCache.computeIfAbsent(ResilienceShape.of(route), guardFactory::create);
+            if (upstream != null && DispatchPath.of(route.protocol()).usesDispatchStage()) {
+                ResilienceShape shape = ResilienceShape.of(route);
+                clientCache.computeIfAbsent(shape.target(), clientFactory::create);
+                guardCache.computeIfAbsent(shape, guardFactory::create);
             }
 
             assembled.add(completed.build());
@@ -275,6 +270,54 @@ public final class RouteAssembler {
          */
         public static ResilienceShape of(Route route) {
             return new ResilienceShape(UpstreamTarget.of(route), route.retryEnabled());
+        }
+    }
+
+    /**
+     * The path the edge serves a proxy route of a given protocol on — the single statement of the
+     * protocol split. The assembler reads it to decide which routes get a shared client and guard
+     * ({@link #usesDispatchStage()}), and the edge's protocol-dispatch switch reads it to pick the
+     * dispatch, so the two can never disagree about which protocols {@link DispatchStage} serves.
+     * <p>
+     * {@link #of} is an exhaustive switch with no default arm: a {@link Protocol} constant added
+     * without a decided path breaks compilation here, instead of reaching a request on a route that was
+     * assembled without the client or guard its dispatch needs.
+     */
+    enum DispatchPath {
+
+        /** The HTTP dispatch over {@link DispatchStage}, serving HTTP and GraphQL routes. */
+        HTTP_DISPATCH(true),
+
+        /** The forced-HTTP/2 {@link GrpcDispatchStage}, which delegates to {@link DispatchStage}. */
+        GRPC_DISPATCH(true),
+
+        /** The opaque WebSocket relay, dialed by the edge-wide WebSocket client rather than a route client. */
+        WEBSOCKET_RELAY(false);
+
+        private final boolean dispatchStage;
+
+        DispatchPath(boolean dispatchStage) {
+            this.dispatchStage = dispatchStage;
+        }
+
+        /**
+         * @param protocol the route's effective protocol
+         * @return the path a proxy route of that protocol is served on
+         */
+        static DispatchPath of(Protocol protocol) {
+            return switch (protocol) {
+                case HTTP, GRAPHQL -> HTTP_DISPATCH;
+                case GRPC -> GRPC_DISPATCH;
+                case WEBSOCKET -> WEBSOCKET_RELAY;
+            };
+        }
+
+        /**
+         * @return {@code true} when this path dispatches through {@link DispatchStage} and so needs the
+         *         route's shared upstream client and resilience guard
+         */
+        boolean usesDispatchStage() {
+            return dispatchStage;
         }
     }
 

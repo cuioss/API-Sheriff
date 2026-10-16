@@ -88,7 +88,10 @@ public final class GrpcDispatchStage {
      * @param declaredLength the request's checked declared {@code Content-Length}, or a negative
      *                       value when it declares none
      * @return the upstream response (body and trailers still streaming)
-     * @throws GatewayException carrying the mapped error-contract event on any dispatch failure
+     * @throws GatewayException      carrying the mapped error-contract event on any dispatch failure
+     * @throws IllegalStateException when the route resolves no upstream, or the upstream-clients lookup
+     *                               holds no client or guard for it — a boot-assembly defect, never a
+     *                               request's fault (raised by the delegate {@link DispatchStage})
      */
     public HttpClientResponse dispatch(Route route, HttpMethod method, String requestUri,
             Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody, long declaredLength) {
