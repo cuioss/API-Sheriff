@@ -1166,7 +1166,8 @@ The upstream client is split by plane
   (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
   it judges a rolling window of the last 20 calls, opens when half or more of them failed, stays
   open for `BREAKER_RESET_SECONDS` = 5 s, and closes after two successful trial calls. Its state is
-  per upstream target on this node, and state transitions surface as
+  per guard on this node -- one per upstream target and retry setting, so two routes to one upstream
+  that differ in retry do not share breaker state -- and state transitions surface as
   WARN LogRecords and metrics. Only upstream failures count as failures: a dispatch the client
   itself ended -- a body-cap breach, an aborted inbound body (<<_aborted_inbound_body>>), a body
   byte on a bodyless method, a body that disagrees with its declared length
