@@ -115,6 +115,30 @@ class RouteTest {
         }
 
         @Test
+        @DisplayName("Should derive an absent allowed-paths whitelist from the effective security filter")
+        void shouldDeriveAbsentAllowedPathsFromSecurityFilter() {
+            String allowed = "/api/" + Generators.letterStrings(3, 12).next();
+            SecurityFilterConfig filter = SecurityFilterConfig.builder().allowedPaths(List.of(allowed)).build();
+
+            Route route = proxyRoute().effectiveSecurityFilter(filter).build();
+
+            assertEquals(List.of(allowed), route.effectiveAllowedPaths(),
+                    "A whitelist the filter declares is never dropped because the derived component was omitted");
+        }
+
+        @Test
+        @DisplayName("Should keep an explicitly supplied allowed-paths whitelist instead of re-deriving it")
+        void shouldKeepSuppliedAllowedPaths() {
+            SecurityFilterConfig filter = SecurityFilterConfig.builder().allowedPaths(List.of("/api/filter")).build();
+
+            Route route = proxyRoute().effectiveSecurityFilter(filter)
+                    .effectiveAllowedPaths(List.of("/api/supplied")).build();
+
+            assertEquals(List.of("/api/supplied"), route.effectiveAllowedPaths(),
+                    "A supplied whitelist is held as given");
+        }
+
+        @Test
         @DisplayName("Should default an absent effectiveForward to the all-absent forward-all block")
         void shouldDefaultForwardToForwardAll() {
             Route route = proxyRoute().effectiveForward(null).build();

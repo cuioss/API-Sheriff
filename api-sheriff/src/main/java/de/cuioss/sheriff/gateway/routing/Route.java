@@ -106,8 +106,9 @@ import org.jspecify.annotations.Nullable;
  *                               scope, which skips both checks
  * @param effectiveSecurityFilter the materialized security filter, {@code null} when none resolves
  * @param effectiveAllowedPaths  the effective {@code allowed_paths} whitelist enforced by stage 3,
- *                               resolved from the effective {@code security_filter}; empty when the
- *                               route declares no whitelist (unrestricted). Carried separately from
+ *                               resolved from the effective {@code security_filter}; derived from
+ *                               {@code effectiveSecurityFilter} when absent, so it is empty only when
+ *                               the route declares no whitelist (unrestricted). Carried separately from
  *                               {@code securityConfiguration} because {@code allowed_paths} is a
  *                               gateway concept the cui-http {@link SecurityConfiguration} does not
  *                               model
@@ -198,7 +199,9 @@ SecurityProfile securityProfile,
      * {@code effectiveAuth}), enforcing the terminal-action invariant — exactly one of
      * {@code upstream} (proxy), {@code asset} or {@code redirect} resolves — and applying the
      * defaults: an absent {@code protocol} becomes {@link Protocol#HTTP}, an absent {@code matcher}
-     * is compiled from {@code match}, an absent {@code effectiveForward} becomes the all-absent
+     * is compiled from {@code match}, an absent {@code effectiveAllowedPaths} is taken from the
+     * effective security filter's {@code allowed_paths} (fail-closed: a declared whitelist is never
+     * dropped by omission), an absent {@code effectiveForward} becomes the all-absent
      * forward-all {@link ForwardConfig}, an absent {@code securityProfile} becomes the fail-closed
      * {@link SecurityProfile#STRICT}, and every collection is defensively copied into an
      * unmodifiable form, an absent one becoming empty.
@@ -220,7 +223,16 @@ SecurityProfile securityProfile,
         matcher = matcher == null ? RouteMatcher.from(match) : matcher;
         effectiveAllowedMethods = toMethodSet(effectiveAllowedMethods);
         neededScopes = neededScopes == null ? Set.of() : Set.copyOf(neededScopes);
-        effectiveAllowedPaths = effectiveAllowedPaths == null ? List.of() : List.copyOf(effectiveAllowedPaths);
+        // Fail-closed derivation, mirroring the matcher default above: an absent whitelist is taken from
+        // the effective security filter, so a route carrying a filter that declares allowed_paths can
+        // never reach stage 3 unrestricted merely because the derived component was not stated.
+        if (effectiveAllowedPaths != null) {
+            effectiveAllowedPaths = List.copyOf(effectiveAllowedPaths);
+        } else if (effectiveSecurityFilter != null) {
+            effectiveAllowedPaths = effectiveSecurityFilter.allowedPaths();
+        } else {
+            effectiveAllowedPaths = List.of();
+        }
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
         effectiveAllowedOrigins = effectiveAllowedOrigins == null ? Set.of() : Set.copyOf(effectiveAllowedOrigins);
         securityProfile = securityProfile == null ? SecurityProfile.STRICT : securityProfile;
