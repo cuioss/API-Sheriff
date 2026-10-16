@@ -191,9 +191,12 @@ public final class ConfigBootPipeline {
     /**
      * The largest {@code max_body_bytes} declared anywhere in the configuration set, at every scope
      * {@link PolicyBlock#SECURITY_FILTER} is declarable at. The scopes are read from the descriptor
-     * rather than named here, so a scope the block gains is reached without editing this reader —
-     * {@link #securityFilterDeclarations} maps each one to the declarations it holds and refuses a
-     * scope it has no mapping for. Every declaration counts, not only the one a route resolves: the
+     * rather than named here, and {@link #securityFilterDeclarations} maps each one to the
+     * declarations it holds. A scope the block gains has one of three outcomes: one that switch
+     * already maps ({@code ANCHOR}, {@code ENDPOINT}, {@code ROUTE}) is reached without editing this
+     * reader; a new {@link PolicyBlock.Scope} constant fails the compile in that exhaustive switch;
+     * and {@code GATEWAY}, which it does not map, is refused at run time with an
+     * {@link IllegalStateException}. Every declaration counts, not only the one a route resolves: the
      * declared cap is the effective one (ADR-0023), so a declaration the framework ceiling would
      * silently cut is refused wherever it sits.
      *
