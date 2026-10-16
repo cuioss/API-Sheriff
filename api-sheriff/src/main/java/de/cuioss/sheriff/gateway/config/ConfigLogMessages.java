@@ -124,13 +124,18 @@ public final class ConfigLogMessages {
          * <p>
          * Which blocks are announced is derived from the descriptors, not listed here: every
          * {@link PolicyBlock} whose {@link PolicyBlock#overrideWarn()} flag is set opts in, and the
-         * record is emitted at most once per route and opted-in block. The last template argument
-         * is the block's yaml key.
+         * record is emitted at most once per route and opted-in block.
+         * <p>
+         * The template arguments are, in order: the route id, the id of the endpoint owning the
+         * route, the anchor name, the block's yaml key, and the replacing scope — {@code endpoint}
+         * or {@code route}, the nearest scope declaring the block, which is the declaration
+         * {@link PolicyBlock#declared} resolves the block from. Naming the endpoint and the scope
+         * tells the operator which document carries the replacing declaration.
          */
         public static final LogRecord ANCHOR_POLICY_OVERRIDDEN = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(101)
-                .template("Route '%s' overrides anchor '%s' %s policy (wholesale replacement)")
+                .template("Route '%s' of endpoint '%s' overrides anchor '%s' %s policy at %s scope (wholesale replacement)")
                 .build();
 
         /**

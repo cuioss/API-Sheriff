@@ -32,9 +32,9 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
  * {@link #require(Protocol, String)} only fails boot for a protocol that is genuinely absent from
  * the {@link Protocol} enum's served set.
  * <p>
- * A {@code protocol: websocket} route with {@code session} auth is still boot-rejected upstream by
- * {@code RouteRuntimeAssembler} (session-auth WebSocket routes remain unimplemented until Plan 07);
- * this registry only decides which processor serves the protocol.
+ * The edge's {@code RouteAssembler} consults the registry once per {@link Route} at boot, attaching
+ * the resolved processor to the route; this registry only decides which processor serves the
+ * protocol.
  *
  * @author API Sheriff Team
  * @since 1.0

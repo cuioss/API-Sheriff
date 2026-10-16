@@ -59,11 +59,11 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -630,13 +630,13 @@ class GatewayEdgeSessionRelayTest {
         return started;
     }
 
-    private static ResolvedRoute wsRoute(String id, String pathPrefix, Require require, int upstreamPort) {
-        return ResolvedRoute.builder()
+    private static Route wsRoute(String id, String pathPrefix, Require require, int upstreamPort) {
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.WEBSOCKET)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(Set.of(ORIGIN))
                 .effectiveForward(ForwardConfig.builder().headersAllow(List.of()).build())

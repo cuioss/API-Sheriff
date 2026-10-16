@@ -31,15 +31,17 @@ import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.http.security.database.AttackTestCase;
 import de.cuioss.http.security.database.OWASPTop10AttackDatabase;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteMatcher;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -144,7 +146,7 @@ class ThoroughChecksStageTest {
     @DisplayName("falls back to the stage-1 baseline when a route carries no resolved configuration")
     void fallsBackToBaselineWhenRouteDeclaresNoConfig() {
         // Arrange — the posture resolver leaves every assembler-produced route with a configuration,
-        // so this covers only a RouteRuntime built without one. The fallback is observable through the
+        // so this covers only a Route built without one. The fallback is observable through the
         // unconditional body cap: with no route policy, the baseline's cap is the effective one.
         long baselineCap = defaultConfiguration.maxBodySize();
         PipelineRequest overCap = bodyRequest(baselineCap + 1, routeWithConfig(null));
@@ -164,7 +166,7 @@ class ThoroughChecksStageTest {
                 "a body at the baseline cap is within it — the fallback applies the cap, not a refusal");
     }
 
-    private static PipelineRequest bodyRequest(long declaredContentLength, RouteRuntime route) {
+    private static PipelineRequest bodyRequest(long declaredContentLength, Route route) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.POST)
                 .requestPath("/api/orders")
@@ -824,7 +826,7 @@ class ThoroughChecksStageTest {
         return SecurityConfigurations.builderSeededFrom(baseline).maxHeaderValueLength(cap).build();
     }
 
-    private static PipelineRequest requestWithHeaders(Map<String, List<String>> headers, RouteRuntime route) {
+    private static PipelineRequest requestWithHeaders(Map<String, List<String>> headers, Route route) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
@@ -836,7 +838,7 @@ class ThoroughChecksStageTest {
         return request;
     }
 
-    private static PipelineRequest requestFor(String canonicalPath, RouteRuntime route) {
+    private static PipelineRequest requestFor(String canonicalPath, Route route) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath(canonicalPath)
@@ -849,7 +851,7 @@ class ThoroughChecksStageTest {
     }
 
     private static PipelineRequest requestWithParameters(List<QueryParameter> parameters,
-            RouteRuntime route) {
+            Route route) {
         PipelineRequest request = PipelineRequest.builder()
                 .method(HttpMethod.GET)
                 .requestPath("/api/orders")
@@ -861,14 +863,16 @@ class ThoroughChecksStageTest {
         return request;
     }
 
-    private static RouteRuntime routeWithConfig(@Nullable SecurityConfiguration config) {
+    private static Route routeWithConfig(@Nullable SecurityConfiguration config) {
         return route(SecurityProfile.STRICT, config);
     }
 
-    private static RouteRuntime route(SecurityProfile profile, @Nullable SecurityConfiguration config) {
-        return RouteRuntime.builder()
+    private static Route route(SecurityProfile profile, @Nullable SecurityConfiguration config) {
+        return Route.builder()
                 .id("r")
-                .matcher(RouteMatcher.from(MatchConfig.builder().pathPrefix("/api").build()))
+                .match(MatchConfig.builder().pathPrefix("/api").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .upstream(new ResolvedUpstream("https", "api.example", 443, ""))
                 .securityProfile(profile)
                 .securityConfiguration(config)
                 .build();

@@ -14,18 +14,23 @@
  * limitations under the License.
  */
 /**
- * The compiled per-route runtime model.
+ * The per-route model.
  * <p>
- * {@link de.cuioss.sheriff.gateway.routing.RouteRuntime} is the immutable, boot-assembled runtime
- * for one route; {@link de.cuioss.sheriff.gateway.routing.RouteMatcher} is its compiled matcher;
- * and the {@link de.cuioss.sheriff.gateway.routing.ProtocolProcessor} /
+ * {@link de.cuioss.sheriff.gateway.routing.Route} is the one immutable per-route type — every
+ * resolved value, its pure derivations and the boot-attached collaborators;
+ * {@link de.cuioss.sheriff.gateway.routing.RouteTable} is the exact-first then longest-prefix-ordered
+ * table of them; {@link de.cuioss.sheriff.gateway.routing.RouteMatcher} is a route's compiled
+ * matcher; and the {@link de.cuioss.sheriff.gateway.routing.ProtocolProcessor} /
  * {@link de.cuioss.sheriff.gateway.routing.HttpProtocolProcessor} /
  * {@link de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry} triad selects and shares
  * the protocol strategy, rejecting unsupported protocols at boot.
  * <p>
- * <strong>Framework-coupled by design.</strong> {@code RouteRuntime} holds the shared Vert.x
- * {@code HttpClient} reference and the per-route SmallRye Fault-Tolerance guard directly. The
- * framework-free gate covers the pre-boot configuration packages only (ADR-0062).
+ * <strong>Framework-free.</strong> The pre-boot route table, which the offline
+ * {@code --validate-config} check also builds (ADR-0061), is built from
+ * {@link de.cuioss.sheriff.gateway.routing.Route}, so this package holds no Vert.x or SmallRye type
+ * (ADR-0062). The shared upstream client and the resilience guard are kept by the edge, outside the
+ * route: a client per upstream target, a guard per resilience shape (that target plus the route's
+ * retry setting).
  *
  * @author API Sheriff Team
  * @since 1.0

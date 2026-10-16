@@ -45,11 +45,11 @@ public final class ApiSheriffLogMessages {
     @UtilityClass
     public static final class INFO {
 
-        /** The route table was compiled into the immutable per-route runtime at boot. */
+        /** The route table was compiled and every route assembled with its boot-attached components. */
         public static final LogRecord ROUTE_TABLE_COMPILED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(1)
-                .template("Route table compiled: %s route runtime(s) assembled")
+                .template("Route table compiled: %s route(s) assembled")
                 .build();
 
         /** A WebSocket upgrade was accepted and the opaque bidirectional relay was established. */

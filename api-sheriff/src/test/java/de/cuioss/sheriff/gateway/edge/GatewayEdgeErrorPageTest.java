@@ -43,9 +43,7 @@ import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
@@ -55,6 +53,8 @@ import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.portal.PortalRenderer;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -164,7 +164,7 @@ class GatewayEdgeErrorPageTest {
                 // Covers the reserved client JWKS path, so that path's 404 cannot be an unrouted one.
                 proxyRoute("auth", "/auth", upstreamServer.actualPort()).build(),
                 proxyRoute("capped", "/capped", upstreamServer.actualPort())
-                        .effectiveAllowedMethods(List.of(HttpMethod.POST))
+                        .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                         .effectiveSecurityFilter(SecurityFilterConfig.builder().maxBodyBytes(16).build()).build(),
                 proxyRoute("scoped", "/scoped", upstreamServer.actualPort())
                         .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
@@ -173,15 +173,15 @@ class GatewayEdgeErrorPageTest {
                 proxyRoute("breaker", "/breaker", breakerPort).build(),
                 proxyRoute("session", "/s", upstreamServer.actualPort())
                         .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                        .effectiveAllowedMethods(List.of(HttpMethod.POST)).build(),
+                        .effectiveAllowedMethods(Set.of(HttpMethod.POST)).build(),
                 proxyRoute("grpc", "/grpc", upstreamServer.actualPort()).protocol(Protocol.GRPC)
                         .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
-                        .effectiveAllowedMethods(List.of(HttpMethod.POST)).build(),
-                ResolvedRoute.builder().id("assets").protocol(Protocol.HTTP)
+                        .effectiveAllowedMethods(Set.of(HttpMethod.POST)).build(),
+                Route.builder().id("assets").protocol(Protocol.HTTP)
                         .match(MatchConfig.builder().pathPrefix("/assets").build())
                         .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                        .effectiveSecurityHeaders(globalHeaders())
+                        .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                        .securityHeaders(globalHeaders())
                         .asset(ResolvedAsset.directory(assetDirectory.toString(), AccessLevel.PUBLIC, null, null))
                         .build()));
     }
@@ -488,14 +488,14 @@ class GatewayEdgeErrorPageTest {
         return SecurityHeadersConfig.builder().contentSecurityPolicy(GLOBAL_POLICY).build();
     }
 
-    private static ResolvedRoute.ResolvedRouteBuilder proxyRoute(String id, String pathPrefix, int upstreamPort) {
-        return ResolvedRoute.builder()
+    private static Route.RouteBuilder proxyRoute(String id, String pathPrefix, int upstreamPort) {
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                .effectiveSecurityHeaders(globalHeaders())
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                .securityHeaders(globalHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""));
     }
 

@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -50,12 +51,12 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -770,20 +771,20 @@ class GatewayEdgeEarlyResponseResetTest {
         TokenValidator tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         RouteTable routes = new RouteTable(List.of(
-                ResolvedRoute.builder()
+                Route.builder()
                         .id(ROUTE)
                         .protocol(Protocol.HTTP)
                         .match(MatchConfig.builder().pathPrefix("/" + ROUTE).build())
                         .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                        .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                         .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
                         .build(),
-                ResolvedRoute.builder()
+                Route.builder()
                         .id("moved")
                         .protocol(Protocol.HTTP)
                         .match(MatchConfig.builder().pathPrefix("/moved").build())
                         .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                        .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                         .redirect(RedirectConfig.builder().location("/" + ROUTE + "/new-home").status(308).build())
                         .build()));
         GatewayConfig gatewayConfig = GatewayConfig.builder().version(1)

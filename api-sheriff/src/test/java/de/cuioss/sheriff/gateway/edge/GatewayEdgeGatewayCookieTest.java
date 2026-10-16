@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -49,11 +50,11 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -712,32 +713,32 @@ class GatewayEdgeGatewayCookieTest {
         return SESSION_COOKIE_NAME + "=" + handle;
     }
 
-    private List<ResolvedRoute> allRoutes() {
+    private List<Route> allRoutes() {
         return List.of(
                 httpRoute("session", SESSION_ROUTE, Require.SESSION),
                 httpRoute("open", OPEN_ROUTE, Require.NONE),
-                ResolvedRoute.builder()
+                Route.builder()
                         .id("session-grpc")
                         .protocol(Protocol.GRPC)
                         .match(MatchConfig.builder().pathPrefix(GRPC_ROUTE).build())
                         .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                        .effectiveAllowedMethods(List.of(HttpMethod.POST))
+                        .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                         .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                         .build());
     }
 
-    private ResolvedRoute httpRoute(String id, String pathPrefix, Require require) {
-        return ResolvedRoute.builder()
+    private Route httpRoute(String id, String pathPrefix, Require require) {
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                 .build();
     }
 
-    private void startFront(BffRuntime runtime, GatewayConfig gatewayConfig, List<ResolvedRoute> routes)
+    private void startFront(BffRuntime runtime, GatewayConfig gatewayConfig, List<Route> routes)
             throws Exception {
         TokenValidator tokenValidator = TokenValidator.builder()
                 .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();

@@ -25,7 +25,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -66,7 +66,7 @@ public final class PipelineRequest {
     private final Map<String, String> responseDefaultHeaders = new LinkedHashMap<>();
     private final List<String> responseSetCookies = new ArrayList<>();
     private @Nullable String canonicalPath;
-    private @Nullable RouteRuntime selectedRoute;
+    private @Nullable Route selectedRoute;
     private @Nullable Integer shortCircuitStatus;
     private @Nullable String mediatedBearer;
     private @Nullable AdmittingSession admittingSession;
@@ -173,7 +173,7 @@ public final class PipelineRequest {
 
     /**
      * A single-valued view of the headers (first value per name) for the compiled
-     * {@link RouteRuntime#matcher() route matcher}, which matches on scalar header values.
+     * {@link Route#matcher() route matcher}, which matches on scalar header values.
      *
      * @return the first value per header name, lower-case-keyed
      */
@@ -234,16 +234,16 @@ public final class PipelineRequest {
     /**
      * @return the route selected by stage 2, or {@code null} before selection
      */
-    public @Nullable RouteRuntime selectedRoute() {
+    public @Nullable Route selectedRoute() {
         return selectedRoute;
     }
 
     /**
      * Records the route selected by stage 2.
      *
-     * @param selectedRoute the matched route runtime
+     * @param selectedRoute the matched, boot-assembled {@link Route}
      */
-    public void selectedRoute(RouteRuntime selectedRoute) {
+    public void selectedRoute(Route selectedRoute) {
         this.selectedRoute = Objects.requireNonNull(selectedRoute, "selectedRoute");
     }
 

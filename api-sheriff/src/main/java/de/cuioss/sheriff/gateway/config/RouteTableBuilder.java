@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.config;
 
 import java.io.Serial;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -32,16 +33,15 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
@@ -49,6 +49,10 @@ import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.routing.LocationRewriter;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteMatcher;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -71,13 +75,18 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The builder materializes each route's effective auth, effective {@code allowed_methods},
  * effective {@code security_filter} / {@code security_headers}, effective retry
- * / not-modified toggles, the {@code upstream.rewrite_location} toggle (absent meaning off, no
- * inheritance), the effective {@code forward} filter (whose
+ * / not-modified toggles, the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
- * wholesale, deny lists included), and the effective upstream base path (the route-level
+ * wholesale, deny lists included), the effective upstream base path (the route-level
  * {@code upstream.path} appended to the alias-derived base path when declared), and the
  * needed scope set ({@code oidc.scopes} united with the owning endpoint's {@code scopes})
- * into a {@link ResolvedRoute}. Every policy block is resolved through its
+ * into a {@link Route}. The route derives the compiled {@link RouteMatcher} and the effective
+ * {@code allowed_paths} whitelist from those values itself, so neither derivation is restated here;
+ * the builder adds only the one derivation the route cannot make on its own — for a proxy route
+ * that opts into {@code upstream.rewrite_location} (absent meaning off, no inheritance) — its
+ * {@link LocationRewriter}. The boot-only components (protocol processor, security posture and
+ * asset source) are attached later by the edge's route assembler and are left unset here, so this
+ * pass starts nothing. Every policy block is resolved through its
  * {@link PolicyBlock} descriptor — the single place the inheritance chains live
  * (gateway → anchor → endpoint → route, nearest declared scope wins, wholesale replacement —
  * ADR-0007) — and it is resolved here, once, so the request pipeline never re-implements
@@ -98,14 +107,14 @@ import org.jspecify.annotations.Nullable;
 //
 // What the dependencies ARE matters more than how many. Nearly all of them are DATA records from the
 // single config.model package, not behavioural collaborators: this class is the ONE assembly point
-// that maps the whole configuration record model onto ResolvedRoute, so naming every record type is
+// that maps the whole configuration record model onto routing.Route, so naming every record type is
 // precisely its job. The metric counts breadth of a mapping surface as if it were entanglement.
 //
 // Further extraction was considered and rejected on the terms the ADRs set, not for convenience:
 //   - The gateway -> anchor -> endpoint -> route inheritance chains (ADR-0007) already live in ONE
 //     place, the PolicyBlock descriptors, which this class and ConfigValidator both resolve through.
 //     What remains here is the mapping itself: resolveRoute has to name every resolved block type to
-//     feed the ResolvedRoute builder, so moving that orchestration into another class would not drop
+//     feed the Route builder, so moving that orchestration into another class would not drop
 //     the aggregate coupling, it would only spread it across two files plus a new carrier type.
 //   - normalizePrefix, effectiveAccessLevel, globalProfile and effectiveProfile are documented SHARED SEAMS that
 //     ConfigValidator resolves through (ADR-0009 single-reporter), so relocating them would break the
@@ -129,9 +138,9 @@ public final class RouteTableBuilder {
      * The route-table order: exact routes before prefix routes, then the longer ordering key
      * first, then the ordering key lexically for a deterministic tie-break.
      */
-    private static final Comparator<ResolvedRoute> ROUTE_ORDER = Comparator
-            .comparing((ResolvedRoute route) -> !route.match().isExact())
-            .thenComparing(Comparator.comparingInt((ResolvedRoute route) -> orderingKey(route).length()).reversed())
+    private static final Comparator<Route> ROUTE_ORDER = Comparator
+            .comparing((Route route) -> !route.match().isExact())
+            .thenComparing(Comparator.comparingInt((Route route) -> orderingKey(route).length()).reversed())
             .thenComparing(RouteTableBuilder::orderingKey);
 
     /**
@@ -150,7 +159,7 @@ public final class RouteTableBuilder {
         Objects.requireNonNull(endpoints, "endpoints");
         Objects.requireNonNull(topology, "topology");
 
-        List<ResolvedRoute> resolved = new ArrayList<>();
+        List<Route> resolved = new ArrayList<>();
         for (EndpointConfig endpoint : endpoints) {
             if (!endpoint.enabled()) {
                 continue;
@@ -194,7 +203,7 @@ public final class RouteTableBuilder {
      * compared un-normalized, so {@code /a} and {@code /a/} stay distinct), the normalized
      * {@code path_prefix} for a prefix route.
      */
-    private static String orderingKey(ResolvedRoute route) {
+    private static String orderingKey(Route route) {
         return route.match().isExact() ? route.matchKey() : normalizePrefix(route.matchKey());
     }
 
@@ -218,10 +227,12 @@ public final class RouteTableBuilder {
     }
 
     /**
-     * Resolves one route into its {@link ResolvedRoute}. Every policy block is read through its
-     * {@link PolicyBlock} descriptor, so no block chain is restated here.
+     * Resolves one route into its {@link Route}: every resolved value plus the location rewriter; the
+     * route derives its matcher and {@code allowed_paths} whitelist itself. Every policy block is read through
+     * its {@link PolicyBlock} descriptor, so no block chain is restated here. The boot-only components
+     * are left unset for the edge's route assembler to attach.
      */
-    private static ResolvedRoute resolveRoute(PolicyBlock.ScopeChain chain, @Nullable ResolvedUpstream upstream,
+    private static Route resolveRoute(PolicyBlock.ScopeChain chain, @Nullable ResolvedUpstream upstream,
             ResolvedTopology topology) {
         GatewayConfig gateway = chain.gateway();
         EndpointConfig endpoint = chain.endpoint();
@@ -251,18 +262,18 @@ public final class RouteTableBuilder {
         WebSocketConfig websocket = PolicyBlock.WEBSOCKET.resolve(chain);
         Set<String> allowedOrigins = effectiveAllowedOrigins(websocket);
         Integer idleTimeout = resolveWebSocketIdleTimeout(websocket, protocol);
-        ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
+        MatchConfig match = route.match();
+        Route.RouteBuilder builder = Route.builder()
                 .id(route.id())
                 .protocol(protocol)
                 .anchor(anchor == null ? null : anchor.name())
-                .match(route.match())
+                .match(match)
                 .effectiveAuth(auth)
-                .effectiveAllowedMethods(allowedMethods)
+                .effectiveAllowedMethods(Set.copyOf(allowedMethods))
                 .effectiveSecurityFilter(securityFilter)
-                .effectiveSecurityHeaders(securityHeaders)
+                .securityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
-                .rewriteLocation(routeUpstream != null && Boolean.TRUE.equals(routeUpstream.rewriteLocation()))
                 .effectiveForward(effectiveForward)
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeout)
@@ -279,9 +290,19 @@ public final class RouteTableBuilder {
         } else if (redirect != null) {
             builder.redirect(redirect);
         } else {
-            builder.upstream(applyRouteUpstreamPath(Objects.requireNonNull(upstream, "upstream"), route));
+            ResolvedUpstream effectiveUpstream =
+                    applyRouteUpstreamPath(Objects.requireNonNull(upstream, "upstream"), route);
+            builder.upstream(effectiveUpstream);
+            // Built once here, from the effective upstream (alias base + upstream.path), the match key
+            // and the matcher's exactness, so the relay applies a ready mapping and derives nothing per
+            // request. Exactness is part of the mapping rule, not a detail of matching: an exact route
+            // routes its match key and nothing below it, so the rewriter must not emit a mapping the
+            // route's own matcher would reject. An absent rewrite_location key means off.
+            if (routeUpstream != null && Boolean.TRUE.equals(routeUpstream.rewriteLocation())) {
+                builder.locationRewriter(new LocationRewriter(effectiveUpstream, match.matchKey(), match.isExact()));
+            }
         }
-        ResolvedRoute resolved = builder.build();
+        Route resolved = builder.build();
         logPosture(resolved, gateway);
         return resolved;
     }
@@ -358,10 +379,13 @@ public final class RouteTableBuilder {
      * {@code /anything/graphql}. A gRPC route rides an alias with an empty base path, so its
      * {@code upstream.path: /{package}.{Service}} is the whole effective base path and the full
      * method path reaches the upstream unchanged. The alias host / port / scheme are carried
-     * through unchanged, so the client- and guard-sharing tuple
-     * ({@link de.cuioss.sheriff.gateway.edge.RouteRuntimeAssembler.UpstreamTarget}, keyed on
-     * scheme/host/port) is unaffected. A route without a non-blank {@code upstream.path} keeps the
-     * alias-derived base path unchanged — the default proxy behavior.
+     * through unchanged, so neither sharing key is affected: the clients are keyed by
+     * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler.UpstreamTarget} (scheme, host, port and
+     * the forced-HTTP/2 flag), the resilience guards by
+     * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler.ResilienceShape} (that upstream target
+     * plus the route's retry setting), and the base path is part of neither. A route without a
+     * non-blank {@code upstream.path} keeps the alias-derived base path unchanged — the default
+     * proxy behavior.
      *
      * @param aliasUpstream the endpoint's alias-resolved upstream (shared across the endpoint's
      *                      routes)
@@ -486,7 +510,7 @@ public final class RouteTableBuilder {
      * {@code require: bearer} route that additionally serves the session branch is visible at boot
      * rather than reading as a plain bearer route.
      */
-    private static void logPosture(ResolvedRoute route, GatewayConfig gateway) {
+    private static void logPosture(Route route, GatewayConfig gateway) {
         String anchorName = route.anchor() != null ? route.anchor() : NO_ANCHOR_NAME;
         SecurityProfile effectiveProfile = effectiveProfile(route.effectiveSecurityFilter(), gateway);
         AuthConfig effectiveAuth = route.effectiveAuth();
@@ -540,7 +564,10 @@ public final class RouteTableBuilder {
      * ({@link PolicyBlock#overrideWarn()}), one {@link ConfigLogMessages.WARN#ANCHOR_POLICY_OVERRIDDEN}
      * is emitted when the route's anchor declares the block <em>and</em> at least one nearer scope —
      * endpoint or route — declares it too. A route whose endpoint and route both replace the anchor
-     * block is announced once, not twice. An unanchored route has no anchor policy to override.
+     * block is announced once, not twice, naming the nearest declaring scope: the one the block is
+     * actually resolved from ({@link PolicyBlock#declared}). The record also names the owning
+     * endpoint, so the operator can find the replacing declaration. An unanchored route has no
+     * anchor policy to override.
      *
      * @param chain the route's scope chain
      */
@@ -550,11 +577,27 @@ public final class RouteTableBuilder {
             return;
         }
         for (PolicyBlock<?> block : PolicyBlock.ALL) {
-            if (block.overrideWarn() && replacesAnchor(block.declaringScopes(chain))) {
-                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, chain.route().id(), anchor.name(),
-                        block.yamlKey());
+            if (!block.overrideWarn()) {
+                continue;
+            }
+            Set<PolicyBlock.Scope> declaring = block.declaringScopes(chain);
+            if (replacesAnchor(declaring)) {
+                LOGGER.warn(ConfigLogMessages.WARN.ANCHOR_POLICY_OVERRIDDEN, chain.route().id(),
+                        chain.endpoint().id(), anchor.name(), block.yamlKey(), nearestScope(declaring));
             }
         }
+    }
+
+    /**
+     * The nearest of a block's declaring scopes, rendered as it appears in the override WARN —
+     * {@code endpoint} or {@code route}. It is the scope {@link PolicyBlock#declared} resolves the
+     * block from, because {@link PolicyBlock.Scope} orders the scopes broadest first.
+     *
+     * @param declaring the scopes declaring one block for one route; never empty
+     * @return the lower-case name of the nearest declaring scope
+     */
+    private static String nearestScope(Set<PolicyBlock.Scope> declaring) {
+        return Collections.max(declaring).name().toLowerCase(Locale.ROOT);
     }
 
     /**

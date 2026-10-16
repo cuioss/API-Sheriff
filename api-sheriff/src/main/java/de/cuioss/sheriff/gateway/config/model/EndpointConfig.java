@@ -59,7 +59,7 @@ import org.jspecify.annotations.Nullable;
  * gateway's {@code oidc.scopes}. It is additive only — an endpoint can add scopes but never
  * remove one — and it lives on the endpoint, outside {@code auth}, so a route- or anchor-level
  * {@code auth} block never replaces it. The route-table builder unites it with
- * {@code oidc.scopes} into each route's {@link ResolvedRoute#neededScopes()}.
+ * {@code oidc.scopes} into each route's {@link de.cuioss.sheriff.gateway.routing.Route#neededScopes()}.
  *
  * @param id               the unique endpoint id (mandatory)
  * @param enabled          whether the endpoint is active

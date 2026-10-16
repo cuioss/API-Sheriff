@@ -55,8 +55,7 @@ import org.junit.jupiter.api.Test;
  * {@code SOURCE} retention, so it is invisible to ArchUnit, which reads bytecode. The bytecode-visible
  * proxy is the generated accessor itself: a field is exempt when its owner declares a matching public
  * no-arg accessor. This proxy deliberately <em>over</em>-exempts — it cannot tell a Lombok-generated
- * getter from a hand-written one, so a hand-written public getter exempts its field too. The known
- * consequence is that {@code routing.RouteRuntime} sits outside this guard's reach. The exemption is
+ * getter from a hand-written one, so a hand-written public getter exempts its field too. The exemption is
  * accepted rather than tightened because the alternative (no exemption) would make the gate
  * unusable against every Lombok-annotated bean in the tree.
  * <p>
@@ -178,8 +177,8 @@ class NoStoredOptionalArchTest {
                 .should().haveRawType(Optional.class)
                 .because("a stored Optional is retired in favour of a JSpecify @Nullable type; a field is "
                         + "exempt only when a matching public no-arg accessor stands in for Lombok @Getter "
-                        + "(which over-exempts a hand-written getter too, putting routing.RouteRuntime "
-                        + "outside this guard's reach), and record components are never exempt");
+                        + "(which over-exempts a hand-written getter too), and record components are never "
+                        + "exempt");
 
         rule.check(PRODUCTION_CLASSES);
     }

@@ -352,8 +352,10 @@ cap rather than only the one a route resolves (ADR-0023). It iterates `PolicyBlo
 and maps each scope to the declarations it holds through an exhaustive switch over `PolicyBlock.Scope`.
 A new scope constant therefore fails the compile there, and the one scope the switch has no
 declaration for -- `GATEWAY` -- throws an `IllegalStateException` instead of being skipped. Widening
-`security_filter` to the gateway scope cannot slip past that reader: every run fails until the
-`GATEWAY` arm reads the new declaration.
+`security_filter` to the gateway scope cannot slip past that reader: a boot, which always supplies
+the framework ceiling, fails until the `GATEWAY` arm reads the new declaration. The offline
+`--validate-config` run is the exception: it passes no ceiling, reports the body-limit check as
+NOT CHECKED and never reaches `maxDeclaredBodyBytes`, so it does not fail there.
 
 The other two readers that had to cover the endpoint scope when `security_filter` and `forward` gained
 it were extended by hand, both in `ConfigValidator`: the token-relay/`Authorization` conflict now

@@ -537,7 +537,7 @@ That changes how the population reads. Eleven test classes in this repository co
 `Vertx.vertx()` -- verified first-hand against the tree at the time of writing:
 `GatewayEdgePipelineTest`, `GatewayEdgeRouteBffWiringTest`, `GatewayEdgeRouteTest`,
 `GrpcDispatchStageTest`, `GrpcStatusMapperTest`, `PassthroughRelayTest`, `ReservedBodyCeilingTest`,
-`RouteRuntimeAssemblerTest`, `SniFrontListenerTest`, `TlsEdgeProducerTest` and
+`RouteAssemblerTest`, `SniFrontListenerTest`, `TlsEdgeProducerTest` and
 `WebSocketRelayStageTest`. *Seven of those eleven* have now carried the stall signature: the five
 named above, plus `GrpcStatusMapperTest` by the method just named, plus `SniFrontListenerTest` --
 which is counted on class timing alone (31.16 s locally against 0.944 s in CI, consistent with one

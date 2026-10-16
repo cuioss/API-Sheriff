@@ -37,7 +37,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.tools.logging.CuiLogger;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Context;
@@ -55,7 +55,10 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * Stage 6 — upstream dispatch over the route's shared Vert.x {@code HttpClient}, invoked through
- * that route's SmallRye Fault-Tolerance guard.
+ * that route's SmallRye Fault-Tolerance guard. Neither is a component of the route: both are
+ * resolved from the boot-built {@link RouteAssembler.UpstreamClients} lookup, by the route's
+ * {@linkplain RouteAssembler.UpstreamTarget upstream target} and
+ * {@linkplain RouteAssembler.ResilienceShape resilience shape} respectively.
  * <p>
  * The request body is <strong>streamed, never buffered</strong>: it flows through a
  * {@link ByteCappedBodyStream} that forwards each chunk to the upstream request as it arrives and
@@ -195,11 +198,14 @@ public final class DispatchStage {
      */
     private static final ScopedValue<RetryState> RETRY_STATE = ScopedValue.newInstance();
 
+    private final RouteAssembler.UpstreamClients upstreamClients;
     private final long maxBodyBytes;
     private final long bodyIdleTimeoutMillis;
     private final UpstreamFailureMapper failureMapper;
 
     /**
+     * @param upstreamClients       the boot-built lookup the route's shared client and guard are
+     *                              resolved from
      * @param maxBodyBytes          the streaming request-body ceiling in bytes ({@code max_body_bytes})
      * @param bodyIdleTimeoutMillis how long, in milliseconds, a body-carrying attempt holding its
      *                              upstream connection may go without request-body progress before it
@@ -208,10 +214,12 @@ public final class DispatchStage {
      * @param failureMapper         the mapper turning guarded-dispatch failures into the error contract
      * @throws IllegalArgumentException when {@code bodyIdleTimeoutMillis} is negative
      */
-    public DispatchStage(long maxBodyBytes, long bodyIdleTimeoutMillis, UpstreamFailureMapper failureMapper) {
+    public DispatchStage(RouteAssembler.UpstreamClients upstreamClients, long maxBodyBytes,
+            long bodyIdleTimeoutMillis, UpstreamFailureMapper failureMapper) {
         if (bodyIdleTimeoutMillis < NO_BODY_IDLE_TIMEOUT) {
             throw new IllegalArgumentException("bodyIdleTimeoutMillis must not be negative: " + bodyIdleTimeoutMillis);
         }
+        this.upstreamClients = Objects.requireNonNull(upstreamClients, "upstreamClients");
         this.maxBodyBytes = maxBodyBytes;
         this.bodyIdleTimeoutMillis = bodyIdleTimeoutMillis;
         this.failureMapper = Objects.requireNonNull(failureMapper, "failureMapper");
@@ -244,15 +252,18 @@ public final class DispatchStage {
      *
      * @param method         the request method — used both to build the upstream request and to
      *                       decide whether a failed attempt may be retried
-     * @param route          the resolved route runtime holding the shared client and guard
+     * @param route          the selected proxy route; its upstream target and resilience shape select
+     *                       the shared client and guard from the {@link RouteAssembler.UpstreamClients}
      * @param requestUri     the upstream request URI (see {@link #upstreamRequestUri})
      * @param forwardHeaders the mode-filtered header set computed by stage 5
      * @param requestBody    the inbound request body as a live read stream
      * @param framing        how the body is framed towards the upstream (see {@link BodyFraming})
      * @return the upstream response (body still streaming)
-     * @throws GatewayException carrying the mapped error-contract event on any dispatch failure
+     * @throws GatewayException      carrying the mapped error-contract event on any dispatch failure
+     * @throws IllegalStateException when the route resolves no upstream, or the lookup holds no client
+     *                               or guard for it — a boot-assembly defect, never a request's fault
      */
-    public HttpClientResponse dispatch(RouteRuntime route, HttpMethod method, String requestUri,
+    public HttpClientResponse dispatch(Route route, HttpMethod method, String requestUri,
             Map<String, String> forwardHeaders, ReadStream<Buffer> requestBody, BodyFraming framing) {
         Objects.requireNonNull(route, "route");
         Objects.requireNonNull(method, METHOD_PARAMETER);
@@ -260,17 +271,25 @@ public final class DispatchStage {
         Objects.requireNonNull(forwardHeaders, "forwardHeaders");
         Objects.requireNonNull(requestBody, "requestBody");
         Objects.requireNonNull(framing, "framing");
-        StreamAwareRetryGate retryGate = new StreamAwareRetryGate(route.isRetryEnabled());
+        StreamAwareRetryGate retryGate = new StreamAwareRetryGate(route.retryEnabled());
         io.vertx.core.http.HttpMethod upstreamMethod = io.vertx.core.http.HttpMethod.valueOf(method.name());
-        Guard guard = route.getResilienceGuard();
-        if (guard == null) {
-            throw new IllegalStateException("proxy dispatch requires a resilience guard");
+        ResolvedUpstream upstream = route.upstream();
+        if (upstream == null) {
+            throw new IllegalStateException("proxy dispatch requires a resolved upstream");
         }
+        // The one shape derivation the assembler keyed the client and guard under, so the lookup can
+        // never miss because the two sides derived the key differently.
+        RouteAssembler.ResilienceShape shape = RouteAssembler.ResilienceShape.of(route);
+        HttpClient httpClient = upstreamClients.client(shape.target())
+                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires an upstream client"));
+        Guard guard = upstreamClients.guard(shape)
+                .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resilience guard"));
         DispatchBody body = new DispatchBody(requestBody, framing);
         boolean handedToCaller = false;
         try {
             HttpClientResponse response = guardedDispatch(guard, retryGate, method, body.bytesSent::get,
-                    body.subscribed::get, () -> awaitDispatch(route, upstreamMethod, requestUri, forwardHeaders, body));
+                    body.subscribed::get,
+                    () -> awaitDispatch(upstream, httpClient, upstreamMethod, requestUri, forwardHeaders, body));
             handedToCaller = true;
             return response;
         } finally {
@@ -380,17 +399,9 @@ public final class DispatchStage {
         }
     }
 
-    private HttpClientResponse awaitDispatch(RouteRuntime route, io.vertx.core.http.HttpMethod method,
-            String requestUri, Map<String, String> forwardHeaders, DispatchBody body)
-            throws InterruptedException, ExecutionException {
-        ResolvedUpstream upstream = route.getUpstream();
-        if (upstream == null) {
-            throw new IllegalStateException("proxy dispatch requires a resolved upstream");
-        }
-        HttpClient httpClient = route.getHttpClient();
-        if (httpClient == null) {
-            throw new IllegalStateException("proxy dispatch requires an upstream client");
-        }
+    private static HttpClientResponse awaitDispatch(ResolvedUpstream upstream, HttpClient httpClient,
+            io.vertx.core.http.HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
+            DispatchBody body) throws InterruptedException, ExecutionException {
         RequestOptions options = new RequestOptions()
                 .setMethod(method)
                 .setHost(upstream.host())

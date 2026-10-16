@@ -22,13 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.util.List;
 import java.util.Map;
 
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
+import de.cuioss.sheriff.gateway.config.model.Require;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
-import de.cuioss.sheriff.gateway.routing.RouteMatcher;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
@@ -56,7 +58,7 @@ class RouteSelectionStageTest {
 
         // Assert
         assertNotNull(request.selectedRoute());
-        assertEquals("admin", request.selectedRoute().getId());
+        assertEquals("admin", request.selectedRoute().id());
     }
 
     @Test
@@ -69,7 +71,7 @@ class RouteSelectionStageTest {
         stage.process(request);
 
         // Assert
-        assertEquals("orders", request.selectedRoute().getId());
+        assertEquals("orders", request.selectedRoute().id());
     }
 
     @Test
@@ -96,7 +98,7 @@ class RouteSelectionStageTest {
 
         exactFirst.process(request);
 
-        assertEquals("orders-root", request.selectedRoute().getId());
+        assertEquals("orders-root", request.selectedRoute().id());
     }
 
     @Test
@@ -109,7 +111,7 @@ class RouteSelectionStageTest {
 
         exactFirst.process(request);
 
-        assertEquals("orders", request.selectedRoute().getId());
+        assertEquals("orders", request.selectedRoute().id());
     }
 
     @Test
@@ -154,7 +156,7 @@ class RouteSelectionStageTest {
 
             pairStage(presentFirst).process(request);
 
-            assertEquals(WITH_HEADER, request.selectedRoute().getId(),
+            assertEquals(WITH_HEADER, request.selectedRoute().id(),
                     "The header-carrying request must reach the present: true route whatever the declaration order");
         }
 
@@ -166,7 +168,7 @@ class RouteSelectionStageTest {
 
             pairStage(presentFirst).process(request);
 
-            assertEquals(WITHOUT_HEADER, request.selectedRoute().getId(),
+            assertEquals(WITHOUT_HEADER, request.selectedRoute().id(),
                     "The header-less request must reach the present: false route whatever the declaration order");
         }
 
@@ -180,28 +182,24 @@ class RouteSelectionStageTest {
 
             single.process(request);
 
-            assertEquals(WITH_HEADER, request.selectedRoute().getId(),
+            assertEquals(WITH_HEADER, request.selectedRoute().id(),
                     "A matcher declared as X-Variant must match a request spelling it X-VARIANT");
         }
 
         private RouteSelectionStage pairStage(boolean presentFirst) {
-            RouteRuntime withHeader = headerRoute(WITH_HEADER, CONFIGURED_NAME, true);
-            RouteRuntime withoutHeader = headerRoute(WITHOUT_HEADER, CONFIGURED_NAME, false);
+            Route withHeader = headerRoute(WITH_HEADER, CONFIGURED_NAME, true);
+            Route withoutHeader = headerRoute(WITHOUT_HEADER, CONFIGURED_NAME, false);
             return new RouteSelectionStage(presentFirst
                     ? List.of(withHeader, withoutHeader)
                     : List.of(withoutHeader, withHeader));
         }
     }
 
-    private static RouteRuntime headerRoute(String id, String headerName, boolean present) {
-        MatchConfig match = MatchConfig.builder()
+    private static Route headerRoute(String id, String headerName, boolean present) {
+        return route(id, MatchConfig.builder()
                 .pathPrefix("/variants")
                 .headers(List.of(HeaderMatcher.builder().name(headerName).present(present).build()))
-                .build();
-        return RouteRuntime.builder()
-                .id(id)
-                .matcher(RouteMatcher.from(match))
-                .build();
+                .build());
     }
 
     private static PipelineRequest requestWithHeaders(String canonicalPath, Map<String, List<String>> headers) {
@@ -215,19 +213,21 @@ class RouteSelectionStageTest {
         return request;
     }
 
-    private static RouteRuntime route(String id, String pathPrefix) {
-        MatchConfig match = MatchConfig.builder().pathPrefix(pathPrefix).build();
-        return RouteRuntime.builder()
-                .id(id)
-                .matcher(RouteMatcher.from(match))
-                .build();
+    private static Route route(String id, String pathPrefix) {
+        return route(id, MatchConfig.builder().pathPrefix(pathPrefix).build());
     }
 
-    private static RouteRuntime exactRoute(String id, String path) {
-        MatchConfig match = MatchConfig.builder().path(path).build();
-        return RouteRuntime.builder()
+    private static Route exactRoute(String id, String path) {
+        return route(id, MatchConfig.builder().path(path).build());
+    }
+
+    /** A proxy route whose matcher is compiled from {@code match}. */
+    private static Route route(String id, MatchConfig match) {
+        return Route.builder()
                 .id(id)
-                .matcher(RouteMatcher.from(match))
+                .match(match)
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .upstream(new ResolvedUpstream("https", "upstream.example", 443, ""))
                 .build();
     }
 

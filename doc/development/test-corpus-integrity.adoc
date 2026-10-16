@@ -470,7 +470,7 @@ published census -- no read is required to justify it.
 | `quarkus/ConfigProducerTest.java`              |  7 | 8 | gate 2, both  | 3
 | `auth/TokenValidatorProducerTest.java`         |  6 | 4 | mandatory     | 7
 | `bff/csrf/CsrfDefenceTest.java`                |  6 | 0 | gate 2, leg A | 4
-| `edge/RouteRuntimeAssemblerTest.java`          |  6 | 6 | gate 2, leg A | 1
+| `edge/RouteAssemblerTest.java`                 |  6 | 6 | gate 2, leg A | 1
 | `auth/AuthenticationStageTest.java`            |  5 | 0 | gate 2, leg A | 3
 | `bff/runtime/SessionAuthenticationStageTest.java` | 5 | 0 | gate 2, leg A | 0
 | `quarkus/BffRuntimeProducerTest.java`          |  2 | 8 | gate 2, leg B | 1
@@ -604,13 +604,13 @@ none has a control, and swapping the arrange blocks of `noFrontListenerWhenPasst
 | `shouldAssembleWithoutDiscovery` | 97 | *strengthen* | (d) claims assembly resolves *no OIDC discovery*; not throwing cannot show discovery was skipped
 |===
 
-=== `edge/RouteRuntimeAssemblerTest.java` -- 1 flagged (F2)
+=== `edge/RouteAssemblerTest.java` -- 1 flagged (F2)
 
 [cols="3,1,1,4",options="header"]
 |===
 | Method | Line | Verdict | Evidence
 
-| `shouldAssembleSessionRoutes` | 163 | *strengthen* | (b) F2 -- three further scenarios (WebSocket+session, gRPC, WebSocket+none) each assemble a route table and discard the result, asserted only by `assertDoesNotThrow`
+| `shouldAssembleSessionRoutes` | 210 | *strengthen* | (b) F2 -- three further scenarios (WebSocket+session, gRPC, WebSocket+none) each assemble a route table and discard the result, asserted only by `assertDoesNotThrow`
 |===
 
 === `auth/AuthenticationStageTest.java` -- 3 flagged
@@ -753,7 +753,7 @@ the thing that was previously unchecked and now has to hold.
   discovery round-trip would exhaust the connect timeout; the assembled runtime is then asserted
   active and its reserved endpoints reachable.
 
-| `RouteRuntimeAssemblerTest`:163
+| `RouteAssemblerTest`:210
 | discretionary
 | Each of the three previously result-discarding legs now asserts on the runtime it produced --
   an `assemble()` that quietly dropped a route returns an empty list and satisfied the old no-throw
@@ -1543,8 +1543,8 @@ body:
   same method* (`:137` and `:164`), which is the strongest form: the control cannot drift away from
   the case it attributes.
 
-| `RouteRuntimeAssemblerTest`:163
-| `shouldAssembleSessionRoutes`:168 asserts on the runtime it produced across all four legs, including
+| `RouteAssemblerTest`:210
+| `shouldAssembleSessionRoutes`:210 asserts on the runtime it produced across all four legs, including
   the gRPC route's captured `UpstreamTarget.forcedHttp2() == true` against a non-gRPC control.
 
 | `TokenValidatorProducerTest`:67, :85, :247
@@ -1623,7 +1623,7 @@ One row per flagged method, with a `file:line` citation at `3abc370` and exactly
   name claiming the route boots "through the session-aware `AuthenticationStage`". *No matched
   control in the file* -- `shouldRegisterCatchAll`:185 uses the same active runtime over an EMPTY
   table and asserts only the route count. The sibling
-  `RouteRuntimeAssemblerTest.shouldAssembleSessionRoutes`:168 shows the available shape.
+  `RouteAssemblerTest.shouldAssembleSessionRoutes`:210 shows the available shape.
 
 | `shouldDispatchLogin`
   (`edge/GatewayEdgeRouteBffWiringTest`)
@@ -1712,17 +1712,17 @@ Grouped by file. Every row names the thing that makes the admission attributable
 | `trustedOriginMatchIsCaseInsensitive` (`bff/csrf/CsrfDefenceTest`)   | 99 | (a) | matched control :91
 | `absentOriginSameOriginFetchAccepted` (`bff/csrf/CsrfDefenceTest`)   | 108 | (a) | matched control `absentOriginCrossSiteFetchRejected`:117
 | `theBarAppliesToTheDefaultProfile` (`config/SingleSourceTlsContractTest`) | 155 | (c) | self-declared standing guard; its own comment states the assertion is vacuous today, and the population is pinned by `ShippedApplicationPropertiesTest`
-| `resolvedRouteAcceptsEachSingleTerminalAction` (`config/model/ConfigModelContractTest`) | 998 | (a) | matched negative control `resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction`:962 refuses zero, two and three terminal actions over the same constructor
 | `anchorConfigExposesEveryPolicyBlock` (`config/model/ConfigModelContractTest`) | 1104 | (a) | narrow scope -- `securityFilter()` and `securityHeaders()` are distinctly typed, so presence IS the carried-through claim
-| `resolvedRouteCarriesTheMaterializedEffectivePosture` (`config/model/ConfigModelContractTest`) | 1117 | (a) | same shape; the anchor / auth / methods / forward / rewriteLocation legs are all substantive
 | `bootsCleanlyOverEmptyRouteTable` (`edge/GatewayEdgeRouteTest`)      | 148 | (a) | construction test, correctly scoped; `registersCatchAllRoute`:159 asserts on the assembled edge
 | `bootsSessionAuthRoute` (`edge/GatewayEdgeRouteTest`)                | 174 | (a) | regression guard for a *removed* boot rejection -- restoring it fails this test
 | `bootsGrpcProtocol` (`edge/GatewayEdgeRouteTest`)                    | 188 | (a) | same shape, gRPC
 | `bootsWebSocketProtocol` (`edge/GatewayEdgeRouteTest`)               | 201 | (a) | same shape, WebSocket
 | `bootsSessionAuthWebSocketRoute` (`edge/GatewayEdgeRouteTest`)       | 214 | (a) | same shape, WebSocket + session
 | `buildsWithFailureMapper` (`edge/GrpcDispatchStageTest`)             | 95 | (a) | matched negative control `rejectsNullFailureMapper`:88 asserts `NullPointerException` over the identical constructor differing only in the mapper argument
-| `shouldAssembleNoAssetProxyPathWithoutThrowing` (`edge/RouteRuntimeAssemblerTest`) | 436 | (a) | matched control `shouldAssembleAssetRouteWithoutClientOrGuard`:375 asserts the exact inverse shape
+| `shouldAssembleNoAssetProxyPathWithoutThrowing` (`edge/RouteAssemblerTest`) | 578 | (a) | matched control `shouldAssembleAssetRouteWithoutClientOrGuard`:514 asserts the exact inverse shape
 | `acceptsCleanPath` (`pipeline/CanonicalPathGuardTest`)               | 62 | (a) | matched negative control `rejectsNonCanonicalPaths`:49 -- six non-canonical raw paths through the same guard, each asserted to raise `SECURITY_FILTER_VIOLATION`
+| `shouldCarryMaterializedEffectivePosture` (`routing/RouteTest`)      | 314 | (a) | narrow scope, as for `anchorConfigExposesEveryPolicyBlock`; the anchor / auth / methods / forward / location-rewriter legs are all substantive
+| `shouldAcceptEachSingleTerminalAction` (`routing/RouteTest`)         | 420 | (a) | matched negative controls `shouldRefuseZeroTerminalActions`:433 and `shouldRefuseSeveralTerminalActions`:445 refuse zero, two and three terminal actions over the same constructor
 |===
 
 Six of these thirty -- the five `edge/GatewayEdgeRouteTest` rows and

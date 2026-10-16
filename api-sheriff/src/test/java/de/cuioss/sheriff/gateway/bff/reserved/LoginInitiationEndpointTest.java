@@ -43,9 +43,9 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -122,11 +122,11 @@ class LoginInitiationEndpointTest {
 
     /** A route table with one {@code require: session} route under {@code /dashboard}. */
     private static ReturnTargetScopes returnTargetScopes() {
-        ResolvedRoute dashboard = ResolvedRoute.builder()
+        Route dashboard = Route.builder()
                 .id("dashboard")
                 .match(MatchConfig.builder().pathPrefix("/dashboard").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", "dashboard.example", 443, ""))
                 .neededScopes(DASHBOARD_SCOPES)
                 .build();

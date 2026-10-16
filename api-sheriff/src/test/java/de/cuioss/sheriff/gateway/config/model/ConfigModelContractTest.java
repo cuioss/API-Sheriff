@@ -52,8 +52,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <ul>
  *   <li>the record {@code equals}/{@code hashCode}/{@code toString} contract for
  *       every model record (top-level and nested), including the D1/D2 anchor
- *       additions ({@link AnchorConfig}, and the anchor / effective-policy fields on
- *       {@link EndpointConfig}, {@link RouteConfig}, {@link ResolvedRoute}),</li>
+ *       additions ({@link AnchorConfig}, and the anchor fields on {@link EndpointConfig} and
+ *       {@link RouteConfig}); the resolved per-route record lives in the routing package and is
+ *       covered by its own contract test there,</li>
  *   <li>the Lombok {@code @Builder} produces instances equal to the canonical
  *       constructor,</li>
  *   <li>a {@link org.jspecify.annotations.Nullable} component round-trips
@@ -246,38 +247,6 @@ class ConfigModelContractTest {
     private static WebSocketConfig webSocketConfig() {
         return WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com")).idleTimeoutSeconds(300)
                 .build();
-    }
-
-    private static ResolvedRoute resolvedRoute() {
-        return ResolvedRoute.builder()
-                .id("orders-read")
-                .protocol(Protocol.HTTP)
-                .anchor("api")
-                .match(matchConfig())
-                .effectiveAuth(auth())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
-                .effectiveSecurityFilter(securityFilterConfig())
-                .effectiveSecurityHeaders(securityHeadersConfig())
-                .retryEnabled(true)
-                .notModifiedEnabled(true)
-                .rewriteLocation(true)
-                .upstream(resolvedUpstream())
-                .effectiveForward(forwardConfig())
-                .build();
-    }
-
-    private static ResolvedRoute resolvedRouteWithRewriteLocation(boolean rewriteLocation) {
-        return ResolvedRoute.builder()
-                .id("orders-read")
-                .match(matchConfig())
-                .effectiveAuth(auth())
-                .rewriteLocation(rewriteLocation)
-                .upstream(resolvedUpstream())
-                .build();
-    }
-
-    private static ResolvedUpstream resolvedUpstream() {
-        return new ResolvedUpstream("https", "orders.internal", 443, "");
     }
 
     private static MatchConfig matchConfig() {
@@ -534,9 +503,6 @@ class ConfigModelContractTest {
                             AuthConfig.builder().require(Require.BEARER).sessionFallback(false).build()),
                     voCase("RouteConfig", routeConfig(), routeConfig(),
                             RouteConfig.builder().id("other").match(matchConfig()).build()),
-                    voCase("ResolvedRoute", resolvedRoute(), resolvedRoute(),
-                            ResolvedRoute.builder().id("other").match(matchConfig()).effectiveAuth(auth())
-                                    .upstream(resolvedUpstream()).build()),
                     voCase("MatchConfig", matchConfig(), matchConfig(),
                             MatchConfig.builder().pathPrefix("/other").build()),
                     // The matcher form participates in identity: an exact path and a prefix
@@ -580,14 +546,12 @@ class ConfigModelContractTest {
                             WebSocketConfig.builder().allowedOrigins(List.of("https://other.example.com"))
                                     .idleTimeoutSeconds(60).build()),
                     voCase("UpstreamConfig", upstreamConfig(), upstreamConfig(), UpstreamConfig.builder().build()),
-                    // rewrite_location participates in identity on both records: each case varies only
-                    // that component, so dropping it from equals() fails its own case alone.
+                    // rewrite_location participates in identity: the case varies only that component, so
+                    // dropping it from equals() fails this case alone.
                     voCase("UpstreamConfig (rewrite_location)",
                             UpstreamConfig.builder().path("/v1").rewriteLocation(true).build(),
                             UpstreamConfig.builder().path("/v1").rewriteLocation(true).build(),
                             UpstreamConfig.builder().path("/v1").build()),
-                    voCase("ResolvedRoute (rewrite_location)", resolvedRouteWithRewriteLocation(true),
-                            resolvedRouteWithRewriteLocation(true), resolvedRouteWithRewriteLocation(false)),
                     voCase("UpstreamConfig.Retry",
                             UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build(),
                             UpstreamConfig.Retry.builder().enabled(true).maxAttempts(3).idempotentOnly(true).build(),
@@ -907,30 +871,6 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void resolvedRouteNormalizesAbsentComponents() {
-            ResolvedRoute cfg = new ResolvedRoute("id", null, null, matchConfig(), auth(), null, null, null, true,
-                    true, false, resolvedUpstream(), null, null, null, null, null, null);
-            assertTrue(cfg.neededScopes().isEmpty(), "an absent needed-scope set normalizes to empty");
-            assertNull(cfg.anchor());
-            assertNull(cfg.effectiveSecurityFilter());
-            assertNull(cfg.effectiveSecurityHeaders());
-            assertTrue(cfg.effectiveAllowedMethods().isEmpty());
-            assertEquals(Protocol.HTTP, cfg.protocol());
-            assertNull(cfg.effectiveForward().headersAllow(),
-                    "an absent forward block normalizes to the forward-all posture: every list stays"
-                            + " null (absent), never an empty allowlist that would forward nothing");
-            assertNull(cfg.effectiveForward().headersDeny());
-            assertNull(cfg.effectiveForward().queryAllow());
-            assertNull(cfg.effectiveForward().queryDeny());
-            assertTrue(cfg.effectiveForward().setHeaders().isEmpty(),
-                    "set_headers carries no mode semantics and keeps the absent-means-empty normalization");
-            assertTrue(cfg.effectiveAllowedOrigins().isEmpty(),
-                    "an absent WebSocket origin allowlist normalizes to an empty set");
-            assertNull(cfg.effectiveWebSocketIdleTimeoutSeconds(),
-                    "an absent WebSocket idle timeout stays null");
-        }
-
-        @Test
         void collectionBearingRecordsNormalizeNullToEmpty() {
             // Positional on purpose: every canonical constructor's null-to-empty normalization is the subject.
             assertTrue(new TokenValidationConfig(null).issuers().isEmpty());
@@ -1225,79 +1165,6 @@ class ConfigModelContractTest {
             return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null);
         }
 
-        @Test
-        void resolvedRouteRequiresIdMatchAuthAndExactlyOneTerminalAction() {
-            MatchConfig match = matchConfig();
-            AuthConfig auth = auth();
-            ResolvedUpstream upstream = resolvedUpstream();
-            ResolvedUpstream noUpstream = null;
-            ResolvedAsset noAsset = null;
-            ResolvedAsset asset = ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, null);
-            RedirectConfig noRedirect = null;
-            RedirectConfig redirect = redirectConfig();
-
-            assertThrows(NullPointerException.class,
-                    () -> resolvedRouteWith(null, match, auth, upstream, noAsset, noRedirect));
-            assertThrows(NullPointerException.class,
-                    () -> resolvedRouteWith("id", null, auth, upstream, noAsset, noRedirect));
-            assertThrows(NullPointerException.class,
-                    () -> resolvedRouteWith("id", match, null, upstream, noAsset, noRedirect));
-            IllegalArgumentException none = assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, noUpstream, noAsset, noRedirect),
-                    "a route with no terminal action is rejected");
-            assertEquals("route 'id' must resolve exactly one terminal action (one of upstream, asset, redirect)",
-                    none.getMessage());
-            assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, upstream, asset, noRedirect),
-                    "a route with both an upstream and an asset terminal action is rejected");
-            assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, upstream, noAsset, redirect),
-                    "a route with both an upstream and a redirect terminal action is rejected");
-            assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, noUpstream, asset, redirect),
-                    "a route with both an asset and a redirect terminal action is rejected");
-            assertThrows(IllegalArgumentException.class,
-                    () -> resolvedRouteWith("id", match, auth, upstream, asset, redirect),
-                    "a route with all three terminal actions is rejected");
-        }
-
-        @Test
-        void resolvedRouteAcceptsEachSingleTerminalAction() {
-            MatchConfig match = matchConfig();
-            AuthConfig auth = auth();
-
-            assertAll("exactly one terminal action is accepted, whichever it is",
-                    () -> assertNotNull(resolvedRouteWith("proxy", match, auth, resolvedUpstream(), null, null)
-                            .upstream()),
-                    () -> assertNotNull(resolvedRouteWith("asset", match, auth, null,
-                            ResolvedAsset.directory("/srv", AccessLevel.PUBLIC, null, null), null).asset()),
-                    () -> assertEquals(redirectConfig(),
-                            resolvedRouteWith("redirect", match, auth, null, null, redirectConfig()).redirect()));
-        }
-
-        @Test
-        void resolvedRouteExposesTheMatchKeyForBothMatcherForms() {
-            AuthConfig auth = auth();
-            ResolvedRoute prefixRoute = resolvedRouteWith("prefix", matchConfig(), auth, resolvedUpstream(), null,
-                    null);
-            ResolvedRoute exactRoute = resolvedRouteWith("exact", MatchConfig.builder().path("/orders/1").build(),
-                    auth, resolvedUpstream(), null, null);
-
-            assertAll("the match key delegates to the matcher",
-                    () -> assertEquals("/orders", prefixRoute.matchKey()),
-                    () -> assertEquals("/orders/1", exactRoute.matchKey()));
-        }
-
-        /**
-         * Builds an otherwise-valid {@link ResolvedRoute} so a mandatory-field or terminal-action test
-         * can vary exactly one component, keeping each {@code assertThrows} lambda to a single
-         * invocation.
-         */
-        private ResolvedRoute resolvedRouteWith(String id, MatchConfig match, AuthConfig auth,
-                ResolvedUpstream upstream, ResolvedAsset asset, RedirectConfig redirect) {
-            return new ResolvedRoute(id, Protocol.HTTP, null, match, auth, List.of(), null,
-                    null, true, true, false, upstream, asset, redirect, null, null, null, null);
-        }
     }
 
     // --- New fields introduced for this deliverable ------------------------
@@ -1353,21 +1220,6 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void resolvedRouteCarriesMaterializedWebSocketSettings() {
-            ResolvedRoute cfg = ResolvedRoute.builder()
-                    .id("ws")
-                    .protocol(Protocol.WEBSOCKET)
-                    .match(matchConfig())
-                    .effectiveAuth(auth())
-                    .upstream(resolvedUpstream())
-                    .effectiveAllowedOrigins(Set.of("https://app.example.com"))
-                    .effectiveWebSocketIdleTimeoutSeconds(300)
-                    .build();
-            assertEquals(Set.of("https://app.example.com"), cfg.effectiveAllowedOrigins());
-            assertEquals(300, cfg.effectiveWebSocketIdleTimeoutSeconds());
-        }
-
-        @Test
         void anchorConfigExposesEveryPolicyBlock() {
             AnchorConfig cfg = anchorConfig();
             assertEquals("api", cfg.name());
@@ -1381,31 +1233,11 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void resolvedRouteCarriesTheMaterializedEffectivePosture() {
-            ResolvedRoute cfg = resolvedRoute();
-            assertEquals("api", cfg.anchor());
-            assertEquals(Require.BEARER, cfg.effectiveAuth().require());
-            assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.effectiveAllowedMethods());
-            assertNotNull(cfg.effectiveSecurityFilter());
-            assertNotNull(cfg.effectiveSecurityHeaders());
-            assertEquals(List.of("Accept"), cfg.effectiveForward().headersAllow(),
-                    "the materialized forward allowlist is carried on the resolved route");
-            assertTrue(cfg.rewriteLocation(), "the materialized rewrite_location toggle is carried on the resolved route");
-        }
-
-        @Test
         void upstreamConfigRewriteLocationRoundTripsAndDefaultsToAbsent() {
             assertAll("rewrite_location is a nullable toggle whose absence means off",
                     () -> assertEquals(Boolean.TRUE, upstreamConfig().rewriteLocation()),
                     () -> assertNull(UpstreamConfig.builder().build().rewriteLocation(),
                             "the record applies no default; absent stays null and resolves to off at assembly"));
-        }
-
-        @Test
-        void resolvedRouteRewriteLocationDefaultsToFalseOnTheBuilder() {
-            ResolvedRoute cfg = ResolvedRoute.builder().id("r").match(matchConfig()).effectiveAuth(auth())
-                    .upstream(resolvedUpstream()).build();
-            assertFalse(cfg.rewriteLocation(), "an unset toggle is the relay-unchanged default");
         }
 
         @Test

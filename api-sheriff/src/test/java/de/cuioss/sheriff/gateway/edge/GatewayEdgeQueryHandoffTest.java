@@ -24,6 +24,7 @@ import java.lang.annotation.Annotation;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,13 +39,13 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -433,7 +434,7 @@ class GatewayEdgeQueryHandoffTest {
      * @param profile the route's declared {@code security_filter.profile}, or {@code null} for a route
      *                declaring no block — which inherits the gateway-wide default, {@code strict}
      */
-    private static ResolvedRoute route(String id, int upstreamPort, @Nullable String profile) {
+    private static Route route(String id, int upstreamPort, @Nullable String profile) {
         return route(id, upstreamPort, profile, null);
     }
 
@@ -443,14 +444,14 @@ class GatewayEdgeQueryHandoffTest {
      * @param profile the route's declared {@code security_filter.profile}, or {@code null} for strict
      * @param forward the route's {@code forward} block, or {@code null} for forward-all
      */
-    private static ResolvedRoute route(String id, int upstreamPort, @Nullable String profile,
+    private static Route route(String id, int upstreamPort, @Nullable String profile,
             @Nullable ForwardConfig forward) {
-        ResolvedRoute.ResolvedRouteBuilder builder = ResolvedRoute.builder()
+        Route.RouteBuilder builder = Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .effectiveForward(forward)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""));
         if (profile != null) {

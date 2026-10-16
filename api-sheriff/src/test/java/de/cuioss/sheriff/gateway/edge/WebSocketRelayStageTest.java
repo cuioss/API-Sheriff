@@ -71,16 +71,15 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.edge.WebSocketRelayStage.RelayObserver;
 import de.cuioss.sheriff.gateway.edge.WebSocketRelayStage.RelayObserver.Direction;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -1358,12 +1357,7 @@ class WebSocketRelayStageTest {
      */
     private HttpServer startRelayOnlyServer(int upstreamTargetPort, Runnable releaseAdmission,
             RelayObserver wiringDelegate, Supplier<SessionRelayRegistry.Tracked> sessionRelay) throws Exception {
-        RouteRuntime route = RouteRuntime.builder()
-                .id("relay-only")
-                .protocol(Protocol.WEBSOCKET)
-                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamTargetPort, ""))
-                .effectiveWebSocketIdleTimeoutSeconds(300)
-                .build();
+        Route route = relayOnlyRoute("relay-only", upstreamTargetPort);
         WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
                 new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
                 relayTimeline.observer(wiringDelegate));
@@ -1391,12 +1385,7 @@ class WebSocketRelayStageTest {
      */
     private HttpServer startHoppingRelayServer(int upstreamTargetPort, WebSocketClient dialer,
             RelayObserver wiringDelegate, Consumer<Thread> routerThreadSink) throws Exception {
-        RouteRuntime route = RouteRuntime.builder()
-                .id("hopping-relay")
-                .protocol(Protocol.WEBSOCKET)
-                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamTargetPort, ""))
-                .effectiveWebSocketIdleTimeoutSeconds(300)
-                .build();
+        Route route = relayOnlyRoute("hopping-relay", upstreamTargetPort);
         WebSocketRelayStage stage = new WebSocketRelayStage(dialer,
                 new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
                 relayTimeline.observer(wiringDelegate));
@@ -1412,6 +1401,18 @@ class WebSocketRelayStageTest {
         return Awaits.connect(
                 vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the hopping relay server to start listening");
+    }
+
+    /** The unauthenticated WebSocket route a relay-only server hands its stage, dialing loopback {@code port}. */
+    private static Route relayOnlyRoute(String id, int upstreamTargetPort) {
+        return Route.builder()
+                .id(id)
+                .protocol(Protocol.WEBSOCKET)
+                .match(MatchConfig.builder().pathPrefix("/relay").build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamTargetPort, ""))
+                .effectiveWebSocketIdleTimeoutSeconds(300)
+                .build();
     }
 
     private static WebSocketConnectOptions relayOnlyOptions(int port) {
@@ -1755,13 +1756,13 @@ class WebSocketRelayStageTest {
             RouteTable table = new RouteTable(List.of(
                     wsRoute("wssession", "/ws-session", Require.SESSION, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
                             positiveListNamingNothing()),
-                    ResolvedRoute.builder()
+                    Route.builder()
                             .id("httpsession")
                             .protocol(Protocol.HTTP)
                             .match(MatchConfig.builder().pathPrefix("/http-session").build())
                             .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                            .effectiveAllowedMethods(List.of(HttpMethod.GET))
-                            .effectiveSecurityHeaders(securityHeaders())
+                            .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                            .securityHeaders(securityHeaders())
                             .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, httpUpstream.actualPort(), ""))
                             .build()));
             TokenValidator tokenValidator = TokenValidator.builder()
@@ -1933,18 +1934,18 @@ class WebSocketRelayStageTest {
      * made these fixtures silently change meaning when the absent state flipped from nothing-crosses
      * to forward-all, so the posture is now stated at each call site.
      */
-    private static ResolvedRoute wsRoute(String id, String pathPrefix, Require require, int upstreamPort,
+    private static Route wsRoute(String id, String pathPrefix, Require require, int upstreamPort,
             Set<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds, @Nullable ForwardConfig forward) {
-        return ResolvedRoute.builder()
+        return Route.builder()
                 .id(id)
                 .protocol(Protocol.WEBSOCKET)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 // Every route here is unanchored, so it resolves the gateway block — exactly what
                 // RouteTableBuilder materializes. Stage 2a applies the ROUTE's block after route
                 // selection (ADR-0007 Amendment A1), so a fixture route carrying none would strip them.
-                .effectiveSecurityHeaders(securityHeaders())
+                .securityHeaders(securityHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeoutSeconds)

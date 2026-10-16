@@ -133,13 +133,12 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
-import de.cuioss.sheriff.gateway.config.model.ResolvedRoute;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.RouteTable;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
-import de.cuioss.sheriff.gateway.routing.RouteRuntime;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
@@ -1047,11 +1046,18 @@ class BffRuntimeProducerTest {
                 .headers(Map.of("cookie", List.of(cookieHeader), "accept", List.of(accept)))
                 .build();
         request.canonicalPath("/orders/list");
-        request.selectedRoute(RouteRuntime.builder().id("orders")
+        request.selectedRoute(sessionRoute(neededScopes));
+        return request;
+    }
+
+    /** The {@code require: session} proxy route under {@code /orders} needing {@code neededScopes}. */
+    private static Route sessionRoute(Set<String> neededScopes) {
+        return Route.builder().id("orders")
+                .match(MatchConfig.builder().pathPrefix("/orders").build())
                 .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                 .neededScopes(neededScopes)
-                .build());
-        return request;
+                .upstream(new ResolvedUpstream("https", "orders.example", 443, ""))
+                .build();
     }
 
     /**
@@ -2626,10 +2632,7 @@ class BffRuntimeProducerTest {
                     .headers(Map.of("accept", List.of("text/html")))
                     .build();
             request.canonicalPath(SCOPED_ROUTE_PREFIX + "/list");
-            request.selectedRoute(RouteRuntime.builder().id("orders")
-                    .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .neededScopes(SCOPED_NEEDED_SCOPES)
-                    .build());
+            request.selectedRoute(sessionRoute(SCOPED_NEEDED_SCOPES));
 
             StubIdentityProvider.ReceivedRequest pushed = receivedBy(
                     StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST,
@@ -4299,12 +4302,12 @@ class BffRuntimeProducerTest {
                     .bffRuntime();
         }
 
-        private static ResolvedRoute scopedRoute(String id, String pathPrefix, Set<String> neededScopes) {
-            return ResolvedRoute.builder()
+        private static Route scopedRoute(String id, String pathPrefix, Set<String> neededScopes) {
+            return Route.builder()
                     .id(id)
                     .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                     .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .effectiveAllowedMethods(List.of(HttpMethod.GET))
+                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("https", id + ".example", 443, ""))
                     .neededScopes(neededScopes)
                     .build();
