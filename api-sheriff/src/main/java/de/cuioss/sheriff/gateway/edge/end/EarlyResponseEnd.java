@@ -69,7 +69,7 @@ import io.vertx.core.http.HttpServerRequest;
  * @author API Sheriff Team
  * @since 1.0
  */
-public final class EarlyResponseEnd {
+final class EarlyResponseEnd {
 
     private static final CuiLogger LOGGER = new CuiLogger(EarlyResponseEnd.class);
 
@@ -93,8 +93,7 @@ public final class EarlyResponseEnd {
      * @param reset   resets the stream; run on the stream's event loop, at most once
      * @return a future completing with the outcome of the end once the reset has been decided
      */
-    public static Future<Void> endWhenQuiet(HttpServerRequest request, Supplier<Future<Void>> ending,
-            Runnable reset) {
+    static Future<Void> endWhenQuiet(HttpServerRequest request, Supplier<Future<Void>> ending, Runnable reset) {
         Optional<InboundStreamWindow> attached = InboundStreamWindow.of(request);
         if (attached.isEmpty()) {
             LOGGER.debug("No transport view of HTTP/2 stream %s — ending its response without waiting",

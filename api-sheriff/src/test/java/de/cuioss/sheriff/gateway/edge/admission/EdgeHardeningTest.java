@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.concurrent.TimeUnit;
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
-import de.cuioss.sheriff.gateway.edge.GatewayEdgeRoute;
+import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpServerOptions;
 import org.junit.jupiter.api.DisplayName;
@@ -233,7 +233,7 @@ class EdgeHardeningTest {
         @Test
         @DisplayName("stays below the upstream guard's whole-dispatch timeout")
         void staysBelowTheUpstreamGuardTimeout() {
-            long guardTimeoutMillis = TimeUnit.SECONDS.toMillis(GatewayEdgeRoute.UPSTREAM_TIMEOUT_SECONDS);
+            long guardTimeoutMillis = TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS);
 
             assertTrue(new EdgeHardeningOptions().requestBodyIdleTimeoutMillis() < guardTimeoutMillis,
                     "A body that stopped arriving must be ended before the guard would end the dispatch as an "

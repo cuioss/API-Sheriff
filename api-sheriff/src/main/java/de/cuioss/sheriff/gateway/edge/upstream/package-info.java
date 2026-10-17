@@ -22,8 +22,12 @@
  * {@link de.cuioss.sheriff.gateway.edge.upstream.DispatchStage}, the forced-HTTP/2
  * {@link de.cuioss.sheriff.gateway.edge.upstream.GrpcDispatchStage} that delegates to it, the
  * {@link de.cuioss.sheriff.gateway.edge.upstream.StreamAwareRetryGate} deciding whether a failed
- * attempt may be retried, and the
- * {@link de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper}.
+ * attempt may be retried, the
+ * {@link de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper}, the
+ * {@link de.cuioss.sheriff.gateway.edge.upstream.EgressClients} every upstream client and the
+ * edge-wide WebSocket client are built by, and the
+ * {@link de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards} every resilience guard is built
+ * by.
  * <p>
  * <strong>Dependencies.</strong> This package may depend on
  * {@link de.cuioss.sheriff.gateway.edge.assembly} only.

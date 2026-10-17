@@ -25,8 +25,11 @@
  * {@link de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget} and
  * {@link de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape}, the
  * {@link de.cuioss.sheriff.gateway.edge.assembly.DispatchPath} protocol split, the resolved
- * {@link de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture}, and the four factory interfaces
- * the assembler is driven by.
+ * {@link de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture}, the four factory interfaces
+ * the assembler is driven by, and the two boot-time resolvers behind two of them:
+ * {@link de.cuioss.sheriff.gateway.edge.assembly.SecurityPostures}, which also resolves the
+ * gateway-wide {@code Cookie} and {@code Authorization} header-value carve-outs, and
+ * {@link de.cuioss.sheriff.gateway.edge.assembly.AssetSources}.
  * <p>
  * <strong>Dependencies.</strong> This package depends on no other edge package: every other edge
  * sub-package may read it, and it reads none of them.

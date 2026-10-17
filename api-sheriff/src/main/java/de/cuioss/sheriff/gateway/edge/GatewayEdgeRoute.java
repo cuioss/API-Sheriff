@@ -15,84 +15,59 @@
  */
 package de.cuioss.sheriff.gateway.edge;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.WeakHashMap;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.config.SecurityConfiguration;
-import de.cuioss.http.security.config.SecurityConfigurationBuilder;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
-import de.cuioss.sheriff.gateway.asset.AssetSource;
-import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
-import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
-import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
-import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
-import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
-import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
-import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
-import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.OidcConfig;
-import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
-import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
-import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.assembly.AssetSources;
 import de.cuioss.sheriff.gateway.edge.assembly.DispatchPath;
-import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
 import de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler;
-import de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture;
+import de.cuioss.sheriff.gateway.edge.assembly.SecurityPostures;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
-import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
-import de.cuioss.sheriff.gateway.edge.end.EarlyResponseEnd;
-import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
+import de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement;
+import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
+import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
+import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
+import de.cuioss.sheriff.gateway.edge.request.EdgeRequests;
+import de.cuioss.sheriff.gateway.edge.reserved.ReservedBodyReader;
+import de.cuioss.sheriff.gateway.edge.reserved.ReservedPathHandler;
 import de.cuioss.sheriff.gateway.edge.terminal.RedirectStage;
+import de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch;
 import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
-import de.cuioss.sheriff.gateway.edge.upstream.GrpcDispatchStage;
+import de.cuioss.sheriff.gateway.edge.upstream.EgressClients;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
-import de.cuioss.sheriff.gateway.events.EventCategory;
+import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -104,7 +79,6 @@ import de.cuioss.sheriff.gateway.pipeline.FramingGate;
 import de.cuioss.sheriff.gateway.pipeline.OriginValidationStage;
 import de.cuioss.sheriff.gateway.pipeline.PassthroughHostGuardStage;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
-import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import de.cuioss.sheriff.gateway.pipeline.RouteSelectionStage;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.pipeline.ThoroughChecksStage;
@@ -120,34 +94,31 @@ import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.tools.logging.CuiLogger;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.virtual.threads.VirtualThreads;
-import io.smallrye.faulttolerance.api.Guard;
-import io.vertx.core.Context;
-import io.vertx.core.Future;
-import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
-import io.vertx.core.buffer.Buffer;
-import io.vertx.core.http.HttpClient;
-import io.vertx.core.http.HttpClientOptions;
-import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServerRequest;
-import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.http.HttpVersion;
-import io.vertx.core.http.WebSocketClientOptions;
-import io.vertx.core.net.TrustOptions;
-import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
-import org.jspecify.annotations.Nullable;
 
 /**
  * The public data-plane edge: a single catch-all Vert.x route that runs every inbound request
  * through the fixed pipeline (stages 0-7) on a virtual thread, then relays the streamed upstream
  * response back to the client.
+ * <p>
+ * This class is the edge's entry point and holds only the wiring and the per-request flow: the CDI
+ * constructor, {@link #registerRoutes}, the shutdown observer, {@code handle}, {@code dispatchProcessing}
+ * and {@code process}. Every job the flow hands off lives in a sub-package of
+ * {@code de.cuioss.sheriff.gateway.edge}, none of which depends back on this class:
+ * {@code assembly} (boot-time route completion and posture resolution), {@code upstream} (guarded
+ * dispatch, egress clients and guards), {@code end} (the one end rule and connection retirement),
+ * {@code relay} (streaming an upstream answer back), {@code admission} (admission and drain),
+ * {@code request} (building the pipeline request), {@code error} (rejection metering and rendering),
+ * {@code reserved} (the reserved paths and the portal) and {@code terminal} (serving a route's
+ * terminal action).
  * <p>
  * <strong>Boot-time assembly.</strong> The constructor completes every {@link Route} of the frozen
  * {@link RouteTable} with its boot-attached components via the {@link RouteAssembler}, which also
@@ -164,22 +135,23 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Per-request flow.</strong> The catch-all is registered {@linkplain io.vertx.ext.web.Route#last()
  * last} so management / health routes keep working. Each request is admitted under a bounded
- * {@linkplain EdgeHardeningOptions#admissionCap() admission cap} <em>before</em> a virtual thread is
- * dispatched (a flood is rejected {@code 503} rather than spawning unbounded virtual threads), then
- * the request stream is paused and the whole pipeline runs on a virtual thread (the one body-carrying
- * reserved POST path — back-channel logout — instead has its small body read on the event loop
- * first, under the {@linkplain EdgeHardeningOptions#reservedBodyMaxBytes() reserved-body byte
- * ceiling}, then dispatches, so a handler never has to drain a paused stream from a virtual thread):
+ * {@linkplain EdgeHardeningOptions#admissionCap() admission cap} ({@link EdgeAdmission}) <em>before</em>
+ * a virtual thread is dispatched (a flood is rejected {@code 503} rather than spawning unbounded
+ * virtual threads), then the request stream is paused and the whole pipeline runs on a virtual thread
+ * (the one body-carrying reserved POST path — back-channel logout — instead has its small body read on
+ * the event loop first, under the {@linkplain EdgeHardeningOptions#reservedBodyMaxBytes() reserved-body
+ * byte ceiling}, by the {@link ReservedBodyReader}, then dispatches, so a handler never has to drain a
+ * paused stream from a virtual thread):
  * <ol>
  *   <li>stage 0 — global response security headers + global CORS (short-circuits a preflight here,
  *       before route selection and authentication);</li>
  *   <li>stage 1 — baseline security filter (records the single canonical path), the canonical-path
  *       guard, and the framing gate;</li>
- *   <li>the gateway's own reserved paths, ahead of the route table and after the passthrough host
- *       guard: first the OIDC reserved paths (exact; on the OIDC host, except for the two kinds the
- *       identity provider dials server-to-server — back-channel logout and the client JWKS — which
- *       are matched on every host), then the application portal's {@code portal.path} (exact, on
- *       any host) — so a prefix route never swallows either;</li>
+ *   <li>the gateway's own reserved paths ({@link ReservedPathHandler}), ahead of the route table and
+ *       after the passthrough host guard: first the OIDC reserved paths (exact; on the OIDC host,
+ *       except for the two kinds the identity provider dials server-to-server — back-channel logout
+ *       and the client JWKS — which are matched on every host), then the application portal's
+ *       {@code portal.path} (exact, on any host) — so a prefix route never swallows either;</li>
  *   <li>stage 2 / 2a / 2b — deny-by-default route selection, then the selected route's resolved
  *       {@code security_headers} block replacing the global one wholesale (ADR-0007 Amendment A1),
  *       then the per-route verb gate;</li>
@@ -192,17 +164,18 @@ import org.jspecify.annotations.Nullable;
  *       selected branch against {@link SheriffMetrics#AUTH_BRANCH_TOTAL};</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
  *       {@link Route#effectiveForward() effectiveForward} and the global forwarded block;</li>
- *   <li>stage 6 / 7 — the route's terminal action: streamed upstream dispatch (byte-capped) and the
- *       streamed response relay for a proxy route, the buffered governed asset response for an
- *       asset route, or — for a redirect route — the {@link RedirectStage} answer (configured
- *       status, {@code Location}, the accumulated stage headers, {@code Cache-Control: no-store}
- *       when the route is authenticated or the answer carries a {@code Set-Cookie}, {@code Vary}
- *       naming the route's {@code match.headers} matchers, empty body)
- *       written without consuming the forward policy or contacting any upstream. A redirect is
+ *   <li>stage 6 / 7 — the route's terminal action ({@link TerminalDispatch}): streamed upstream
+ *       dispatch (byte-capped) and the streamed response relay for a proxy route, the buffered
+ *       governed asset response for an asset route, or — for a redirect route — the
+ *       {@link RedirectStage} answer (configured status, {@code Location}, the accumulated stage
+ *       headers, {@code Cache-Control: no-store} when the route is authenticated or the answer carries
+ *       a {@code Set-Cookie}, {@code Vary} naming the route's {@code match.headers} matchers, empty
+ *       body) written without consuming the forward policy or contacting any upstream. A redirect is
  *       answered only after stage 4, so an unauthenticated request under an authenticated anchor is
  *       challenged before the location is disclosed.</li>
  * </ol>
- * A {@link GatewayException} at any stage is rendered as an RFC 9457 {@code application/problem+json}
+ * A {@link GatewayException} at any stage is metered and logged by the {@link RejectionReporter} and
+ * rendered by the {@link ErrorResponseWriter} as an RFC 9457 {@code application/problem+json}
  * response carrying the failing event's status and problem type, followed by the exception's
  * {@linkplain GatewayException#getProblemExtensions() problem extension members} when it carries any,
  * never leaking internal detail.
@@ -225,179 +198,32 @@ public class GatewayEdgeRoute {
 
     private static final CuiLogger LOGGER = new CuiLogger(GatewayEdgeRoute.class);
 
-    private static final String PROBLEM_JSON = "application/problem+json";
     private static final String DEFAULT_EMIT_MODE = "x-forwarded";
-
-    /**
-     * Headroom added to the configured sealed-cookie budget when deriving the pre-route
-     * {@code Cookie} header-value cap. The header value carries {@code <name>=<value>} and may carry
-     * co-resident cookies alongside the session cookie — the short-lived binding cookie and, in cookie
-     * mode, the activity cookie that remembers the session's last access — so the cap cannot be the
-     * bare value budget. The headroom is shared by every cookie the browser sends beside the session
-     * cookie, the proxied applications' own included. The sum stays far below the gateway's 16 KiB inbound
-     * header-block limit ({@link EdgeHardeningOptions}) even at the configurable budget ceiling.
-     */
-    private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
-    private static final String COOKIE_HEADER = "Cookie";
-    /** The request header whose explicit {@code text/html} range selects an HTML error page. */
-    private static final String ACCEPT_HEADER = "Accept";
-    private static final String LOCATION_HEADER = "Location";
-    /** The {@code Cache-Control} response header the redirect terminal action governs. */
-    private static final String CACHE_CONTROL_HEADER = "Cache-Control";
-    /** The {@code Cache-Control} value forced on an authenticated or cookie-bearing redirect answer. */
-    private static final String NO_STORE = "no-store";
-    /** The {@code Vary} response header a redirect answer carries for its route's header matchers. */
-    private static final String VARY_HEADER = "Vary";
-    private static final String SET_COOKIE_HEADER = "Set-Cookie";
-    private static final String CONTENT_LENGTH_HEADER = "Content-Length";
-    private static final String CONNECTION_HEADER = "Connection";
-    private static final String CONNECTION_CLOSE = "close";
-    /** The {@code Retry-After} response header an open-circuit {@code 503} carries. */
-    static final String RETRY_AFTER_HEADER = "Retry-After";
-    /**
-     * How long an upstream circuit breaker stays open before it lets a trial request through, in
-     * seconds. It is both the breaker's delay ({@link #guardFor}) and the value of the
-     * {@code Retry-After} header on the {@code 503} an open circuit answers ({@link #seedRetryAfter}),
-     * so the hint a client is given can never differ from the window the breaker applies.
-     */
-    static final int BREAKER_RESET_SECONDS = 5;
-    /**
-     * The upstream guard's whole-dispatch timeout, in seconds ({@link #guardFor}). The request-body idle
-     * timeout ({@link EdgeHardeningOptions#requestBodyIdleTimeoutMillis()}) is shorter, so a dispatch
-     * whose body stopped arriving is ended as the request's before the guard would end it as the
-     * upstream's.
-     */
-    public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
-    private static final String CLAIMS_PARAM = "claims";
-    private static final String RETURN_URL_PARAM = "returnUrl";
-    private static final String STATE_PARAM = "state";
     private static final int SERVICE_UNAVAILABLE = 503;
-    private static final int INTERNAL_ERROR = 500;
-    private static final int NOT_FOUND = 404;
-    private static final int FIRST_ERROR_STATUS = 400;
-    private static final int BAD_GATEWAY = 502;
-    private static final long DRAIN_POLL_INTERVAL_MILLIS = 50L;
-    // Fail-closed deadline for reading a tiny reserved-POST form body (a back-channel logout_token —
-    // the only such body left). It bounds a genuinely slow/stalled body so it cannot
-    // pin admission indefinitely; it is deliberately generous because the body is read on a shared event
-    // loop that can be scheduling-starved under CPU contention, and the deadline handler still honours a
-    // body that has already fully arrived (see readReservedBodyThenDispatch), so a legitimate body is
-    // never falsely rejected — the deadline only fires for a body that truly never completes.
-    private static final long RESERVED_BODY_READ_TIMEOUT_SECONDS = 20L;
-
-    /** Per-request {@link RoutingContext} data key holding the resolved metrics route label. */
-    private static final String ROUTE_KEY = "sheriff.route";
-    /** Holds the fully-read {@code application/x-www-form-urlencoded} body of the one body-carrying
-     * reserved POST path (back-channel logout), buffered on the event loop in {@link #handle} before
-     * the virtual-thread dispatch so the handler never has to re-arm a paused stream. Left unset on a
-     * read failure or timeout, so {@link #readFormBody} reads {@code null} and the receiver fails closed
-     * to {@code 400}. */
-    private static final String RESERVED_BODY_KEY = "sheriff.reservedbody";
-    /** Holds the per-request admission-release CAS guard stashed in {@link #handle} so a terminal path
-     * that runs <em>after</em> the virtual-thread hop — where only the {@link RoutingContext} is in
-     * scope — can still release the permit exactly once. The WebSocket relay is the one such path:
-     * a completed upgrade takes the connection over, so the HTTP end handler never fires and
-     * {@link #dispatchWebSocket} must hand the relay its own release callback. */
-    private static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
-    /** Holds the client connection's own Vert.x {@link Context}, captured in {@link #handle} on that
-     * connection's event loop before the virtual-thread hop, for the same reason as
-     * {@link #ADMISSION_GUARD_KEY}: the hop carries only the {@link RoutingContext}. The WebSocket relay
-     * is its one reader — {@link #dispatchWebSocket} hands it to {@link WebSocketRelayStage#relay}, which
-     * runs the upstream dial and the client upgrade on it, whatever thread called {@code relay()}. */
-    private static final String CLIENT_CONTEXT_KEY = "sheriff.clientcontext";
-    /** Holds the per-request release guard for the WebSocket relay sub-permit. Present ONLY once
-     * {@link #dispatchWebSocket} has actually acquired that sub-permit, so its absence is how every
-     * release site knows there is no sub-permit to return. */
-    private static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
-    /** Holds the {@link SessionRelayRegistry.Tracked} handle of a WebSocket upgrade a session was let
-     * through with. Present ONLY once {@link #dispatchWebSocket} has tracked the relay; every site that
-     * returns the admission permit stops the tracking through it (see {@link #releaseAdmission}), so a
-     * tracked relay is released exactly where its permit is. */
-    private static final String SESSION_RELAY_KEY = "sheriff.sessionrelay";
-    /** Set once a framing rejection — the framing gate's, or a body the dispatch could not finish
-     * reading — has fallen on an HTTP/1.x request: the writer that answers it then retires the
-     * connection the answer is written on (see {@link #markFramingRejection}). The virtual-thread hop
-     * carries only the {@link RoutingContext}, so the marker rides on it to the event-loop writer. */
-    private static final String RETIRE_CONNECTION_KEY = "sheriff.retireconnection";
-    /** The failure an end deferred by {@link #endResponse} reports when another writer ended the
-     * response while it waited. */
-    private static final String RESPONSE_ALREADY_ENDED = "The response was ended by another writer while its end waited";
-    /** Holds the flag a bodyless request's late body refusal sets (see {@link #lateBodyRefusal}): the
-     * response it reset is never ended afterwards by a relay failure. */
-    private static final String LATE_BODY_REFUSED_KEY = "sheriff.latebodyrefused";
-    /** The HTTP/2 error code {@code NO_ERROR}: the stream is ended without signalling a fault. */
-    private static final long HTTP2_NO_ERROR = 0L;
-    /** The HTTP/2 error code {@code CANCEL}: the stream is abandoned before its response completed. */
-    private static final long HTTP2_CANCEL = 0x8L;
-    /** Holds the request body armed in {@link #handle} as a {@link DispatchStage.InboundBody}, so the
-     * upstream dispatch — which runs after the virtual-thread hop — streams the body through the
-     * decorator that remembers an inbound failure, and so that {@link #endResponse} can mark the
-     * stream as reset by the gateway before it ends the response. Absent on the reserved-body path,
-     * which reads its body itself and never dispatches upstream. */
-    private static final String INBOUND_BODY_KEY = "sheriff.inboundbody";
-    /** The fixed disposition the aborted-inbound-body record carries; nothing the client supplied. */
-    private static final String INBOUND_BODY_ABORTED_DISPOSITION = "body-stream-failed";
 
     private final List<Route> routes;
-    /** The shared upstream clients and guards every proxy dispatch resolves its route's pair from. */
-    private final UpstreamClients upstreamClients;
     private final ExecutorService virtualThreadExecutor;
-    private final EdgeHardeningOptions hardening;
-
-    private final long defaultMaxBodySize;
-    private final GatewayEventCounter gatewayEventCounter;
-    private final UpstreamFailureMapper upstreamFailureMapper;
     private final SheriffMetrics sheriffMetrics;
-    private final ReservedPathRegistry reservedPathRegistry;
     private final BffRuntime bffRuntime;
-    private final PortalEndpoint portalEndpoint;
-    private final GatewayJson gatewayJson;
 
     private final SecurityHeadersStage securityHeadersStage;
     private final BasicChecksStage basicChecksStage;
     private final CanonicalPathGuard canonicalPathGuard;
-    private final FramingGate framingGate;
     private final PassthroughHostGuardStage passthroughHostGuardStage;
     private final RouteSelectionStage routeSelectionStage;
     private final VerbGateStage verbGateStage;
     private final ThoroughChecksStage thoroughChecksStage;
     private final AuthenticationStage authenticationStage;
     private final ForwardPolicyStage forwardPolicyStage;
-    private final ResponseStage responseStage;
     private final RedirectStage redirectStage;
-    private final OriginValidationStage originValidationStage;
-    private final WebSocketRelayStage webSocketRelayStage;
-    private final GrpcStatusMapper grpcStatusMapper;
 
-    private final Semaphore admission;
-    /**
-     * The WebSocket relay sub-budget: acquired <em>in addition to</em> {@link #admission}, never
-     * instead of it. A relay holds its general admission permit for the connection's whole lifetime,
-     * so without this second bound a handful of long-lived relays would consume the general pool and
-     * starve ordinary HTTP traffic — trading the permit leak for a slow squeeze.
-     */
-    private final Semaphore webSocketRelayAdmission;
-    private final AtomicInteger inFlight = new AtomicInteger();
-    /**
-     * The HTTP/1.x connections retired by a framing-gate rejection. A request that arrives on one of
-     * them is never processed (see {@link #handle}). An HTTP/2 connection is never recorded here: a
-     * framing rejection there ends only the rejected stream. Held weakly and by identity —
-     * {@link HttpConnection} implementations do not override {@code equals} — so an entry disappears
-     * with its connection and no close handler has to be claimed on a connection the edge does not own.
-     */
-    private final Set<HttpConnection> retiredConnections =
-            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
-    /**
-     * The route ids an aborted inbound body has already been reported for at {@code INFO} (see
-     * {@link #logInboundBodyAborted}). Bounded by the number of configured routes.
-     */
-    private final Set<String> inboundBodyAbortReported = ConcurrentHashMap.newKeySet();
-    /**
-     * The route ids a request-body idle timeout has already been reported for at {@code INFO} (see
-     * {@link #logRequestBodyTimeout}). Bounded by the number of configured routes.
-     */
-    private final Set<String> requestBodyTimeoutReported = ConcurrentHashMap.newKeySet();
-    private volatile boolean draining;
+    private final EdgeAdmission edgeAdmission;
+    private final ConnectionRetirement connectionRetirement;
+    private final RejectionReporter rejectionReporter;
+    private final ErrorResponseWriter errorResponseWriter;
+    private final ReservedBodyReader reservedBodyReader;
+    private final ReservedPathHandler reservedPathHandler;
+    private final TerminalDispatch terminalDispatch;
 
     /**
      * Assembles the routes and every stage once, at boot.
@@ -478,13 +304,11 @@ public class GatewayEdgeRoute {
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
             GatewayJson gatewayJson, WebSocketRelayStage.RelayObserver relayObserver) {
         this.virtualThreadExecutor = virtualThreadExecutor;
-        this.hardening = hardening;
         this.sheriffMetrics = sheriffMetrics;
         this.bffRuntime = bffRuntime;
-        this.portalEndpoint = Objects.requireNonNull(portalEndpoint, "portalEndpoint");
-        this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
-        this.admission = new Semaphore(hardening.admissionCap());
-        this.webSocketRelayAdmission = new Semaphore(hardening.webSocketRelayCap());
+        Objects.requireNonNull(portalEndpoint, "portalEndpoint");
+        Objects.requireNonNull(gatewayJson, "gatewayJson");
+        this.edgeAdmission = new EdgeAdmission(hardening);
 
         SecurityEventCounter securityEventCounter = new SecurityEventCounter();
         // The gateway-wide baseline is seeded from the RESOLVED security_defaults profile rather
@@ -498,9 +322,9 @@ public class GatewayEdgeRoute {
         Boolean allowExtendedAscii = securityDefaultsConfig == null ? null : securityDefaultsConfig.allowExtendedAscii();
         SecurityConfiguration defaultConfiguration = SecurityConfigurations.withDeclaredCharacterPolicy(
                 SecurityProfile.limitsProfile(globalProfile, globalProfile).preset(), allowExtendedAscii);
-        this.defaultMaxBodySize = defaultConfiguration.maxBodySize();
-        this.gatewayEventCounter = new GatewayEventCounter();
-        this.upstreamFailureMapper = new UpstreamFailureMapper(gatewayEventCounter);
+        long defaultMaxBodySize = defaultConfiguration.maxBodySize();
+        GatewayEventCounter gatewayEventCounter = new GatewayEventCounter();
+        UpstreamFailureMapper upstreamFailureMapper = new UpstreamFailureMapper(gatewayEventCounter);
 
         ForwardedConfig forwardedConfig = gatewayConfig.forwarded();
         List<String> trustedProxies = forwardedConfig == null ? List.of() : forwardedConfig.trustedProxies();
@@ -516,45 +340,21 @@ public class GatewayEdgeRoute {
         // The add-only asset content-type additions are resolved ONCE here, at boot, and handed to
         // every asset source the assembler builds — so the request path performs no config lookup
         // and the sources hold an immutable map rather than a live view of configuration.
-        Map<String, String> assetContentTypes = assetContentTypesOf(gatewayConfig);
+        Map<String, String> assetContentTypes = AssetSources.assetContentTypesOf(gatewayConfig);
 
-        // The egress-TLS settings are gateway-global by necessity, not by convenience (ADR-0040):
-        // both are fixed at client construction, and one of the governed clients is the edge-wide
-        // WebSocket client, which no per-route value could bind. So they are resolved ONCE here and
-        // handed to every construction site below — the two clientFor branches and that WebSocket
-        // client. There is no per-route override and no per-request one; Vert.x offers neither.
-        // The egress_tls block governs those three Vert.x clients and no others. It does NOT reach
-        // the asset-origin leg: UpstreamAssetSource.httpFetcher builds a JDK java.net.http.HttpClient,
-        // which carries neither of these settings, so an https asset origin keeps full hostname
-        // verification and the JVM default trust store whatever this block says.
-        EgressTlsConfig egressTls = egressTlsOf(gatewayConfig);
-        boolean upstreamVerifyHostname = egressTls.upstreamVerifyHostname();
-        String upstreamTlsProfile = egressTls.upstreamTlsProfile();
-        // Both postures boot with a WARN and never a refusal, exactly as BROAD_TRUSTED_PROXY (102) and
-        // MANAGEMENT_PLAIN_HTTP (115) do: each is a legitimate deployment, so blocking it would be
-        // wrong — but neither may reach production silently.
-        if (!upstreamVerifyHostname) {
-            LOGGER.warn(ConfigLogMessages.WARN.EGRESS_HOSTNAME_VERIFICATION_DISABLED);
-        }
-        if (upstreamTlsProfile != null) {
-            LOGGER.warn(ConfigLogMessages.WARN.EGRESS_TRUST_PROFILE_IN_EFFECT, upstreamTlsProfile);
-        }
-        // Only a NAMED profile reaches the resolver. With none named, no setTrustOptions call is made
-        // at any of the three sites, so the clients keep the JVM default trust store byte-for-byte as
-        // before — the resolved anchors REPLACE a client's trust rather than adding to it, so binding
-        // an unrequested profile would silently narrow what every terminated upstream dial trusts.
-        TrustOptions upstreamTrustOptions = upstreamTlsProfile == null
-                ? null
-                : egressTrustProfileResolver.resolve(upstreamTlsProfile);
+        // The gateway-global egress-TLS settings (ADR-0040) are resolved ONCE here, with their WARNs,
+        // and bound to every governed egress client: the per-tuple clients the assembler builds below
+        // and the edge-wide WebSocket client further down.
+        EgressClients egressClients = new EgressClients(vertx, gatewayConfig, egressTrustProfileResolver);
+        UpstreamGuards upstreamGuards = new UpstreamGuards(upstreamFailureMapper);
 
         RouteAssembler assembler = new RouteAssembler(new ProtocolProcessorRegistry());
         RouteAssembler.AssembledRoutes assembled = assembler.assemble(routeTable,
-                filter -> securityPostureFor(filter, globalProfile, allowExtendedAscii),
-                target -> clientFor(vertx, target, upstreamVerifyHostname, upstreamTrustOptions),
-                this::guardFor,
-                asset -> assetSourceFor(asset, assetContentTypes));
+                filter -> SecurityPostures.securityPostureFor(filter, globalProfile, allowExtendedAscii),
+                egressClients::clientFor,
+                upstreamGuards::guardFor,
+                asset -> AssetSources.assetSourceFor(asset, assetContentTypes));
         this.routes = assembled.routes();
-        this.upstreamClients = assembled.upstreamClients();
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 
         // Reserved OIDC endpoints (D2) are carved out of the proxy route table: the registry is
@@ -564,7 +364,7 @@ public class GatewayEdgeRoute {
         // url-parameter pipeline is now STRUCTURAL rather than predicate-driven: handleReservedPath
         // returns before route selection, and the parameter pipeline moved after it into
         // ThoroughChecksStage, so a reserved path never reaches it (ADR-0019, amended).
-        this.reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
+        ReservedPathRegistry reservedPathRegistry = ReservedPathRegistry.from(gatewayConfig.oidc());
         this.securityHeadersStage = new SecurityHeadersStage(gatewayConfig.securityHeaders());
         // Both header-value carve-outs are resolved ONCE and handed to BOTH stages that measure a
         // header value. Stage 3 re-validates every header under the ROUTE's configuration whenever
@@ -572,15 +372,15 @@ public class GatewayEdgeRoute {
         // undo the carve-outs one stage later — and it runs before the authentication stage, so an
         // Authorization value is still present when it does.
         SecurityConfiguration cookieHeaderConfiguration =
-                cookieHeaderConfigurationFor(gatewayConfig, bffRuntime, defaultConfiguration);
+                SecurityPostures.cookieHeaderConfigurationFor(gatewayConfig, bffRuntime, defaultConfiguration);
         SecurityConfiguration authorizationHeaderConfiguration =
-                authorizationHeaderConfigurationFor(gatewayConfig, defaultConfiguration);
+                SecurityPostures.authorizationHeaderConfigurationFor(gatewayConfig, defaultConfiguration);
         this.basicChecksStage = new BasicChecksStage(defaultConfiguration, securityEventCounter,
                 cookieHeaderConfiguration, authorizationHeaderConfiguration);
         this.canonicalPathGuard = new CanonicalPathGuard();
         // The GET-body opt-in is gateway-wide by necessity, not by convenience: the framing gate runs
         // at stage 1, before route selection, so there is no resolved route to scope it to.
-        this.framingGate = new FramingGate(securityDefaultsConfig != null
+        FramingGate framingGate = new FramingGate(securityDefaultsConfig != null
                 && securityDefaultsConfig.effectiveAllowGetWithContentLengthBody());
         TlsConfig tlsConfig = gatewayConfig.tls();
         this.passthroughHostGuardStage = new PassthroughHostGuardStage(
@@ -598,23 +398,29 @@ public class GatewayEdgeRoute {
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         // The names of the cookies the session runtime sets; empty for a bearer-only gateway. An
         // upstream Set-Cookie line naming one of them is not relayed.
-        this.responseStage = new ResponseStage(bffRuntime.gatewayCookieNames());
+        ResponseStage responseStage = new ResponseStage(bffRuntime.gatewayCookieNames());
         this.redirectStage = new RedirectStage();
-        this.originValidationStage = new OriginValidationStage();
-        // One WebSocketClient for the whole edge: HttpClient.webSocket(...) is deprecated in favour of
-        // the dedicated client, and the dialer carries no per-route state — the upstream host, port,
-        // TLS flag and URI all ride on the per-dial WebSocketConnectOptions. It does carry the
-        // gateway-global egress-TLS values, because WebSocketConnectOptions declares neither a
-        // hostname-verification nor a trust field: a wss:// relay honours them only if they are bound
-        // here, at client construction.
-        WebSocketClientOptions webSocketClientOptions =
-                new WebSocketClientOptions().setVerifyHost(upstreamVerifyHostname);
-        if (upstreamTrustOptions != null) {
-            webSocketClientOptions.setTrustOptions(upstreamTrustOptions);
-        }
-        this.webSocketRelayStage = new WebSocketRelayStage(vertx.createWebSocketClient(webSocketClientOptions),
+        OriginValidationStage originValidationStage = new OriginValidationStage();
+        // One WebSocketClient for the whole edge, carrying the gateway-global egress-TLS values (see
+        // EgressClients#webSocketClient).
+        WebSocketRelayStage webSocketRelayStage = new WebSocketRelayStage(egressClients.webSocketClient(),
                 upstreamFailureMapper, gatewayEventCounter, relayObserver);
-        this.grpcStatusMapper = new GrpcStatusMapper();
+        GrpcStatusMapper grpcStatusMapper = new GrpcStatusMapper();
+
+        // The collaborators the per-request flow hands its jobs to, each owning the state of its job.
+        this.connectionRetirement = new ConnectionRetirement(framingGate);
+        this.rejectionReporter = new RejectionReporter(gatewayEventCounter, sheriffMetrics,
+                hardening.requestBodyIdleTimeoutMillis());
+        this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
+                rejectionReporter);
+        this.reservedBodyReader = new ReservedBodyReader(reservedPathRegistry, hardening.reservedBodyMaxBytes(),
+                gatewayEventCounter, rejectionReporter, errorResponseWriter);
+        this.reservedPathHandler = new ReservedPathHandler(reservedPathRegistry, bffRuntime, portalEndpoint,
+                errorResponseWriter);
+        this.terminalDispatch = new TerminalDispatch(assembled.upstreamClients(), defaultMaxBodySize, hardening,
+                upstreamFailureMapper, sheriffMetrics, gatewayEventCounter, bffRuntime, edgeAdmission,
+                connectionRetirement, rejectionReporter, errorResponseWriter, responseStage,
+                originValidationStage, webSocketRelayStage);
 
         // Bind the boot-shared cui-http counter to Micrometer so the per-UrlSecurityFailureType
         // security-filter counts surface as sheriff_security_events_total. It is the one meter of the
@@ -636,390 +442,60 @@ public class GatewayEdgeRoute {
 
     /**
      * Stops admitting new requests on {@code SIGTERM} and drains in-flight ones within a bounded
-     * window so the shutdown completes cleanly within the Quarkus shutdown timeout.
+     * window so the shutdown completes cleanly within the Quarkus shutdown timeout (see
+     * {@link EdgeAdmission#drain()}).
      *
      * @param event the Quarkus shutdown event
      */
     void onShutdown(@Observes ShutdownEvent event) {
-        draining = true;
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(hardening.drainTimeoutMillis());
-        while (inFlight.get() > 0 && System.nanoTime() < deadline) {
-            try {
-                Thread.sleep(DRAIN_POLL_INTERVAL_MILLIS);
-            } catch (InterruptedException _) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-        LOGGER.debug("Edge drain finished; in-flight=%s", inFlight.get());
+        edgeAdmission.drain();
     }
 
     private void handle(RoutingContext ctx) {
         HttpConnection connection = ctx.request().connection();
-        if (retiredConnections.contains(connection)) {
+        if (connectionRetirement.isRetired(connection)) {
             // The HTTP/1.x connection was retired by a framing rejection: its request boundaries are no
             // longer trusted, so nothing that arrives on it is processed, answered or forwarded.
             connection.close();
             return;
         }
-        if (draining || !admission.tryAcquire()) {
-            reject(ctx, SERVICE_UNAVAILABLE);
+        if (!edgeAdmission.tryAdmit()) {
+            ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE);
             return;
         }
         long startNanos = System.nanoTime();
-        inFlight.incrementAndGet();
         // Guard the admission accounting so it is rolled back exactly once. The end handler releases
         // it on the normal path; the executor-rejection path below also rolls it back, and both must
         // never double-release (reject() ends the response, which itself fires this end handler).
         // The end handler is NOT the only release site: a protocol: websocket route that completes its
         // upgrade takes the connection over, so the HTTP response never ends and this handler never
         // fires. That route therefore releases through the same guard from the relay's teardown
-        // callback (see dispatchWebSocket / WebSocketRelayStage); the guard is stashed on the context
-        // under ADMISSION_GUARD_KEY because the virtual-thread hop carries only the RoutingContext.
+        // callback (see TerminalDispatch.dispatchWebSocket / WebSocketRelayStage); the guard is stashed
+        // on the context under ADMISSION_GUARD_KEY because the virtual-thread hop carries only the
+        // RoutingContext.
         AtomicBoolean admissionReleased = new AtomicBoolean();
-        ctx.put(ADMISSION_GUARD_KEY, admissionReleased);
+        ctx.put(EdgeAdmission.ADMISSION_GUARD_KEY, admissionReleased);
         // This handler runs on the client connection's event loop, so the current context IS that
         // connection's context. It is captured here, before the virtual-thread hop, because a WebSocket
-        // relay must run its upstream dial and client upgrade on it (see dispatchWebSocket).
-        ctx.put(CLIENT_CONTEXT_KEY, Vertx.currentContext());
+        // relay must run its upstream dial and client upgrade on it (see TerminalDispatch.dispatchWebSocket).
+        ctx.put(TerminalDispatch.CLIENT_CONTEXT_KEY, Vertx.currentContext());
         ctx.addEndHandler(result -> {
-            releaseAdmission(ctx, admissionReleased);
-            recordRequestMetrics(ctx, startNanos);
+            edgeAdmission.releaseAdmission(ctx, admissionReleased);
+            rejectionReporter.recordRequestMetrics(ctx, startNanos);
         });
-        if (needsReservedBodyRead(ctx)) {
+        if (reservedBodyReader.needsReservedBodyRead(ctx)) {
             // The one body-carrying reserved POST (back-channel logout) is dispatched on a virtual
             // thread that cannot reliably re-arm a paused request stream. Read the small, gateway-
             // terminated body here on its own event loop — the natural Vert.x path — under a bounded
             // deadline, stash it, then dispatch. This avoids any paused-stream / cross-thread resume.
-            readReservedBodyThenDispatch(ctx, admissionReleased);
+            reservedBodyReader.readReservedBodyThenDispatch(ctx, () -> dispatchProcessing(ctx, admissionReleased));
         } else {
             // Armed here, on the connection's own event loop and before the virtual-thread hop: an
             // inbound failure from now on is remembered and reaches the upstream dispatch even when
             // that dispatch subscribes to the body only later (see DispatchStage.InboundBody).
-            ctx.put(INBOUND_BODY_KEY, DispatchStage.InboundBody.arm(ctx.request()));
+            ctx.put(ResponseEnds.INBOUND_BODY_KEY, DispatchStage.InboundBody.arm(ctx.request()));
             ctx.request().pause();
             dispatchProcessing(ctx, admissionReleased);
-        }
-    }
-
-    /**
-     * @return {@code true} when the request is a reserved POST path whose {@code x-www-form-urlencoded}
-     *         body a handler consumes. Matched on the raw path against the reserved registry's
-     *         exact-match set, so only an exact clean reserved path (raw == canonical) triggers the
-     *         eager body read; every other request pauses as before.
-     *         <p>
-     *         <strong>Allowlist decision — {@code CALLBACK} was removed, deliberately.</strong> The
-     *         gateway now drives the authorization request with {@code response_mode=query}, so the
-     *         OIDC callback is a top-level GET carrying its {@code code}/{@code state} in the query
-     *         string and consuming no body at all. Leaving {@code ReservedEndpoint.CALLBACK} in this
-     *         allowlist would not have been inert: it would keep granting <em>any unauthenticated</em>
-     *         {@code POST} to the callback path a pre-authentication, pre-pipeline body read of up to
-     *         {@link EdgeHardeningOptions#reservedBodyMaxBytes()} before the handler could reject it —
-     *         a retained surface with no remaining purpose. The tighter posture was chosen. A stray
-     *         {@code POST} to the callback path now takes the ordinary paused-stream path, reaches the
-     *         callback with no body, and is rejected {@code 400} for a missing {@code state} (see
-     *         {@code BffRuntime.callbackParameters}) — an honest rejection, never a {@code 500}. An
-     *         IdP still configured to {@code form_post} to this gateway is therefore no longer
-     *         supported, which is intended: the gateway itself selects the mode.
-     *         <p>
-     *         <strong>Back-channel logout is unaffected.</strong> It remains a genuinely
-     *         body-carrying reserved POST — it stays in this allowlist and its ceiling is unchanged.
-     */
-    private boolean needsReservedBodyRead(RoutingContext ctx) {
-        if (!"POST".equalsIgnoreCase(ctx.request().method().name())) {
-            return false;
-        }
-        String host = authorityHost(ctx.request());
-        return reservedPathRegistry.match(host, ctx.request().path())
-                .filter(kind -> kind == ReservedEndpoint.BACKCHANNEL_LOGOUT)
-                .isPresent();
-    }
-
-    /**
-     * Reads the reserved-POST body on the event loop under a byte ceiling, stashes it under
-     * {@link #RESERVED_BODY_KEY}, then dispatches processing exactly once. The request is NOT paused:
-     * the stream drains on its own event loop, fully asynchronously — no virtual-thread {@code .get()}
-     * blocks on a contended event loop.
-     * <p>
-     * <strong>Two bounds, both mandatory.</strong> The back-channel logout path is read
-     * <em>pre-authentication</em> and <em>before</em> {@code basicChecksStage} /
-     * {@code thoroughChecksStage} run, so the per-route {@link SecurityConfiguration#maxBodySize()} cap
-     * that bounds every ordinary proxied route can never apply here, and the transport's
-     * {@link EdgeHardeningOptions} chunk bound caps only one chunk, not the cumulative body:
-     * <ol>
-     *   <li><strong>Byte ceiling</strong> ({@link EdgeHardeningOptions#reservedBodyMaxBytes()}),
-     *       enforced twice — a {@code Content-Length} pre-check that refuses before a single body byte
-     *       is buffered, and a streaming cumulative counter that aborts mid-read. The pre-check alone
-     *       is not sufficient: {@code Content-Length} is attacker-controlled and is absent entirely
-     *       under chunked transfer-encoding. Either breach is rejected {@code 413}
-     *       ({@link EventType#RESERVED_BODY_TOO_LARGE}) — never a {@code 500}, and never by silently
-     *       truncating the body into the handler.</li>
-     *   <li><strong>Wall-clock deadline</strong> ({@value #RESERVED_BODY_READ_TIMEOUT_SECONDS}s),
-     *       guarding a body that truly never completes. The deadline handler still honours a body that
-     *       has already fully arrived (it inspects {@link HttpServerRequest#isEnded()}), so a
-     *       legitimate body delayed only by event-loop scheduling under CPU contention is never falsely
-     *       rejected.</li>
-     * </ol>
-     */
-    private void readReservedBodyThenDispatch(RoutingContext ctx, AtomicBoolean admissionReleased) {
-        HttpServerRequest request = ctx.request();
-        long ceiling = hardening.reservedBodyMaxBytes();
-        // Bound 1a — declared size. Refuse before the stream is ever resumed, so an oversized declared
-        // body costs the gateway zero heap.
-        if (parseContentLength(request) > ceiling) {
-            rejectOversizedReservedBody(ctx, ceiling, "declared-content-length");
-            return;
-        }
-        AtomicBoolean bodyDone = new AtomicBoolean();
-        Buffer accumulated = Buffer.buffer();
-        long timer = ctx.vertx().setTimer(TimeUnit.SECONDS.toMillis(RESERVED_BODY_READ_TIMEOUT_SECONDS), id -> {
-            if (bodyDone.compareAndSet(false, true)) {
-                if (request.isEnded()) {
-                    // The body actually arrived; only the end callback had not yet drained from this
-                    // (contention-starved) event loop's queue. Honour it rather than falsely reject.
-                    ctx.put(RESERVED_BODY_KEY, accumulated);
-                } else {
-                    // A body that truly never completed within the deadline — leave RESERVED_BODY_KEY
-                    // unset so the receiver fails closed to 400 rather than pinning on it indefinitely.
-                    LOGGER.debug("Reserved form body read did not complete within %s s — failing closed",
-                            RESERVED_BODY_READ_TIMEOUT_SECONDS);
-                }
-                dispatchProcessing(ctx, admissionReleased);
-            }
-        });
-        // Bound 1b — actual size. Count cumulatively as the chunks land and abort the moment the next
-        // chunk would cross the ceiling, so a chunked (or lying-Content-Length) body is bounded by what
-        // it really sends rather than by what it claimed.
-        request.handler(chunk -> {
-            if (bodyDone.get()) {
-                return;
-            }
-            if (accumulated.length() + (long) chunk.length() > ceiling) {
-                bodyDone.set(true);
-                ctx.vertx().cancelTimer(timer);
-                rejectOversizedReservedBody(ctx, ceiling, "streamed-body");
-                return;
-            }
-            accumulated.appendBuffer(chunk);
-        });
-        request.exceptionHandler(cause -> {
-            if (bodyDone.compareAndSet(false, true)) {
-                ctx.vertx().cancelTimer(timer);
-                // Read failure: leave RESERVED_BODY_KEY unset (fail closed to 400).
-                LOGGER.debug(cause, "Reserved form body read failed — failing closed");
-                dispatchProcessing(ctx, admissionReleased);
-            }
-        });
-        request.endHandler(end -> {
-            if (bodyDone.compareAndSet(false, true)) {
-                ctx.vertx().cancelTimer(timer);
-                ctx.put(RESERVED_BODY_KEY, accumulated);
-                dispatchProcessing(ctx, admissionReleased);
-            }
-        });
-        // The inbound request stream arrives in fetch/paused mode; resume() (on this event loop)
-        // re-arms it so the body is delivered to the handlers registered above.
-        request.resume();
-    }
-
-    /**
-     * Fails an over-ceiling reserved-path body closed with {@code 413}, the honest status for a payload
-     * the gateway refuses on size. The pipeline never runs for such a request, so this meters and
-     * renders directly rather than raising a {@link GatewayException}; the WARN records the ceiling and
-     * a fixed disposition only — never the offending body.
-     * <p>
-     * The request body is left unconsumed, so how much of the inbound transport the rejection ends
-     * follows the negotiated HTTP version of the request, on both paths (the pre-read
-     * {@code Content-Length} refusal and the mid-stream ceiling abort):
-     * <ul>
-     *   <li><strong>HTTP/1.x — the connection.</strong> The {@code 413} advertises
-     *       {@code Connection: close} and the connection is closed once it has been written (see
-     *       {@link #retireConnectionAfterResponse}), because unread body bytes would otherwise frame
-     *       the next request on the same keep-alive connection.</li>
-     *   <li><strong>HTTP/2 — the stream.</strong> The offending stream, its body still open, passes the
-     *       one end rule (see {@link #endResponse}): the gateway stops receiving the body, and once
-     *       its data stops arriving or the wait's time cap passes the {@code 413} is ended and the
-     *       stream reset with {@code NO_ERROR}. The connection and every other stream on it stay
-     *       open. No {@code Connection} header is written.</li>
-     * </ul>
-     */
-    private void rejectOversizedReservedBody(RoutingContext ctx, long ceiling, String disposition) {
-        LOGGER.warn(ApiSheriffLogMessages.WARN.RESERVED_BODY_TOO_LARGE, ceiling, disposition);
-        gatewayEventCounter.increment(EventType.RESERVED_BODY_TOO_LARGE);
-        recordError(ctx, EventType.RESERVED_BODY_TOO_LARGE);
-        if (isHttp1(ctx.request().version())) {
-            retireConnectionAfterResponse(ctx);
-        }
-        // Ending the response releases the admission permit through the end handler registered in
-        // handle(), exactly like every other terminal path.
-        renderProblem(ctx, null, EventType.RESERVED_BODY_TOO_LARGE);
-    }
-
-    /**
-     * Retires the connection the response under construction is written on: the response advertises
-     * {@code Connection: close} (HTTP/1.x only — the header is forbidden in HTTP/2), and the
-     * connection is closed once the response has been written. Must be called on the event loop,
-     * before the response is ended.
-     * <p>
-     * It has two callers, both for an HTTP/1.x request only — an HTTP/2 rejection ends just its
-     * stream instead (see {@link #endResponse}) — and both retire the connection because
-     * the bytes behind the rejected request cannot be trusted to frame the next one:
-     * <ul>
-     *   <li>a {@code 413} reserved-body rejection, on BOTH of its paths (the pre-read
-     *       {@code Content-Length} refusal and the mid-stream ceiling abort). The request body is
-     *       deliberately left <em>unconsumed</em> — reading an attacker-supplied oversized body to
-     *       completion is exactly the work the ceiling exists to avoid, so draining it is not an
-     *       option. But unread bytes left pending on a reused HTTP/1.1 keep-alive connection desync
-     *       the next request framed on that connection, or pin the connection until the idle timeout —
-     *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
-     *       still tie up connections by repeatedly tripping the {@code 413};</li>
-     *   <li>a framing rejection of an HTTP/1.x request — the framing gate's, or a body the dispatch
-     *       could not finish reading (see {@link #markFramingRejection}).</li>
-     * </ul>
-     */
-    private static void retireConnectionAfterResponse(RoutingContext ctx) {
-        HttpServerResponse response = ctx.response();
-        if (!response.headWritten() && isHttp1(ctx.request().version())) {
-            response.putHeader(CONNECTION_HEADER, CONNECTION_CLOSE);
-        }
-        // addEndHandler is additive, so this composes with the admission-release handler handle()
-        // registered rather than replacing it.
-        ctx.addEndHandler(result -> ctx.request().connection().close());
-    }
-
-    /**
-     * The one rule every HTTP response end passes through: <strong>an HTTP/2 response answered while
-     * its request body is still open is ended only once request data stops arriving or a time cap
-     * passes, and its stream is then reset with {@code NO_ERROR}</strong>; the connection stays open.
-     * Every writer that ends a response hands the call that ends it here instead of making it — the relay
-     * ({@link #relayOnEventLoop}, through the {@link ResponseEnd} it gives {@link ResponseStage}) and its
-     * failure answer ({@link #failRelay}), the problem document, the HTML error page and the portal
-     * page, the reserved-path answer, the buffered asset, the redirect, the short-circuit, the gRPC
-     * trailers-only status (through {@link GrpcStatusMapper}) and the admission {@code 503}.
-     * <ul>
-     *   <li><strong>HTTP/1.x, or a request body that has ended</strong> — the response is ended at once
-     *       and nothing else happens. An HTTP/1.x request is never reset; where the bytes behind a
-     *       rejected request cannot be trusted, its connection is retired instead
-     *       ({@link #retireMarkedConnection}).</li>
-     *   <li><strong>HTTP/2, request body still open</strong> — an upstream that answered before reading
-     *       the whole body, and every gateway-written answer to an upload, a framing rejection and a
-     *       reserved-body {@code 413} among them. The gateway stops receiving the body at once; the end
-     *       of the response and the reset then follow together, once request data stops arriving or
-     *       the time cap passes (see {@link EarlyResponseEnd}).</li>
-     * </ul>
-     * <p>
-     * <strong>Stopping the body.</strong> The armed {@link DispatchStage.InboundBody} is marked
-     * {@linkplain DispatchStage.InboundBody#resetByGateway() reset by the gateway}: the upstream request
-     * still receiving the body is reset — its forwarding stops — the inbound stream is paused for good,
-     * and neither the reset nor the transport error it may surface is ever recorded as an
-     * {@link EventType#INBOUND_BODY_ABORTED}. A request with no armed body is paused directly. A paused
-     * HTTP/2 request returns no flow-control window, so from here on the client can send no more than
-     * the window it already holds.
-     * <p>
-     * <strong>Why the end waits for the data in flight.</strong> The reset tells the client to stop
-     * sending the rest of the request (RFC 9113 §8.1) before it sees a complete response and resets the
-     * stream itself — a client reset the Rapid-Reset guard counts. A reset written while request data is
-     * still on the way would not help: the transport answers each data frame arriving after it with a
-     * {@code STREAM_CLOSED} reset of its own, counted against the same limit. Holding the final frame
-     * back until request data stops arriving avoids both. The wait is capped, and at the cap request
-     * data may still be in flight (see {@link EarlyResponseEnd}).
-     * <p>
-     * <strong>The reset waits for the write, not for the end.</strong> A response is <em>ended</em> the
-     * moment its last frame is handed to the transport, which may still hold that frame behind HTTP/2
-     * flow control; a reset written then would discard it. The reset is decided once the end has been
-     * written, and only a stream the client has not ended in the meantime is reset. Every other stream
-     * multiplexed on the connection is untouched. No {@code Connection} header is written — it is a
-     * connection-specific field HTTP/2 forbids.
-     * <p>
-     * Not routed through here: the late body refusal of a bodyless request ({@link #lateBodyRefusal},
-     * which resets with {@code CANCEL} before any end), the WebSocket upgrade and the L4 passthrough
-     * relay.
-     *
-     * @param ctx    the request whose response is to be ended
-     * @param ending the call that ends the response, returning the future of that end
-     * @return the future of the end — on the deferred path completing once the reset has been decided
-     */
-    private static Future<Void> endResponse(RoutingContext ctx, Supplier<Future<Void>> ending) {
-        HttpServerRequest request = ctx.request();
-        if (isHttp1(request.version()) || request.isEnded()) {
-            return ending.get();
-        }
-        DispatchStage.InboundBody armed = ctx.get(INBOUND_BODY_KEY);
-        if (armed != null) {
-            armed.resetByGateway();
-        } else {
-            request.pause();
-        }
-        HttpServerResponse response = ctx.response();
-        // The response may have been ended by another writer while this end waited; it is then left as
-        // it is.
-        return EarlyResponseEnd.endWhenQuiet(request,
-                () -> response.ended() ? Future.failedFuture(RESPONSE_ALREADY_ENDED) : ending.get(),
-                () -> response.reset(HTTP2_NO_ERROR));
-    }
-
-    private static boolean isHttp1(HttpVersion version) {
-        return version == HttpVersion.HTTP_1_0 || version == HttpVersion.HTTP_1_1;
-    }
-
-    /**
-     * Runs the framing gate and, when it rejects, marks how much of the inbound transport the
-     * rejection ends before it is rendered. The scope follows the negotiated HTTP version of the
-     * request, because that is what decides how far a framing ambiguity reaches.
-     * <p>
-     * <strong>HTTP/1.x — the connection.</strong> Requests share one byte stream there, so a request
-     * whose message boundaries two parsers can read differently leaves the bytes behind it on the same
-     * connection without trustworthy framing either. Nothing behind a framing rejection is processed:
-     * the connection is recorded as retired at once — on this virtual thread, before any response is
-     * written, so a request already queued behind the rejected one is refused by {@link #handle} — and
-     * the writer that answers the rejection advertises {@code Connection: close} and closes the
-     * connection once the {@code 400} has been written.
-     * <p>
-     * <strong>HTTP/2 — the stream.</strong> Each request is framed by the transport on its own stream,
-     * so a rejected request says nothing about its siblings. Only the rejected stream is ended, by the
-     * one end rule every response passes ({@link #endResponse}): the {@code 400} is written and, while
-     * the rejected body is still open, the stream is then reset with {@code NO_ERROR}; nothing further
-     * arriving on it is processed. No mark is needed for that. The connection stays open, it is never
-     * recorded as retired, and every other stream on it completes normally.
-     * <p>
-     * The connection mark is acted on by {@link #retireMarkedConnection}. The gate itself is unchanged: the
-     * rejection is rethrown as it was raised and is metered, logged and rendered like every other
-     * {@link EventType#SECURITY_FILTER_VIOLATION}.
-     *
-     * @throws GatewayException the gate's own rejection, unchanged
-     */
-    private void rejectFramingAndRetire(RoutingContext ctx, PipelineRequest request) {
-        try {
-            framingGate.process(request);
-        } catch (GatewayException framingRejection) {
-            markFramingRejection(ctx);
-            throw framingRejection;
-        }
-    }
-
-    /**
-     * Marks how much of the inbound transport a framing rejection ends, by the negotiated HTTP
-     * version, exactly as {@link #rejectFramingAndRetire} describes: an HTTP/1.x connection is
-     * recorded as retired at once and the answer retires it; an HTTP/2 request needs no mark, its
-     * stream being ended by the one end rule (see {@link #endResponse}). Shared by the framing gate and
-     * by the dispatch, which leaves behind a body it could not finish reading — one it refused on its
-     * framing, or one that stopped arriving (see {@link #dispatchMarkingUnreadBody}).
-     */
-    private void markFramingRejection(RoutingContext ctx) {
-        if (isHttp1(ctx.request().version())) {
-            retiredConnections.add(ctx.request().connection());
-            ctx.put(RETIRE_CONNECTION_KEY, Boolean.TRUE);
-        }
-    }
-
-    /**
-     * Applies the connection mark {@link #rejectFramingAndRetire} left on the request: retires the
-     * HTTP/1.x connection; a no-op for every other request. Called by the gateway-originated error
-     * writers on the event loop, immediately before they end the response.
-     */
-    private static void retireMarkedConnection(RoutingContext ctx) {
-        if (ctx.get(RETIRE_CONNECTION_KEY) != null) {
-            retireConnectionAfterResponse(ctx);
         }
     }
 
@@ -1039,86 +515,9 @@ public class GatewayEdgeRoute {
             // NullPointerException arm is unreachable), and process(ctx) runs on the virtual thread
             // rather than inline, so no pipeline exception can surface here.
             LOGGER.debug(rejected, "Virtual-thread dispatch rejected: %s", rejected.getMessage());
-            releaseAdmission(ctx, admissionReleased);
-            reject(ctx, SERVICE_UNAVAILABLE);
+            edgeAdmission.releaseAdmission(ctx, admissionReleased);
+            ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE);
         }
-    }
-
-    /**
-     * Releases this request's admission permits and decrements the in-flight counter exactly once,
-     * guarded by {@code released} so the normal end-handler path, the executor-rejection rollback
-     * path and the WebSocket relay-teardown callback (see {@link #dispatchWebSocket}) can all call it
-     * without double-counting.
-     * <p>
-     * The general permit and the WebSocket relay sub-permit are an ordered pair that must be returned
-     * together: a request that acquired both would otherwise strand the sub-permit whenever the
-     * general permit is released by a different site than the relay callback (the upstream-dial
-     * failure ends the HTTP response, so the end handler gets there first). Both are therefore
-     * released here, each behind its own idempotence latch.
-     * <p>
-     * A WebSocket relay tracked with its session stops being tracked here too, for the same reason: the
-     * registry entry then leaves on every path the permit does — the relay's teardown, a failed client
-     * upgrade, a failed upstream dial, a refused relay budget — and cannot outlive the relay.
-     */
-    private void releaseAdmission(RoutingContext ctx, AtomicBoolean released) {
-        SessionRelayRegistry.Tracked sessionRelay = ctx.get(SESSION_RELAY_KEY);
-        if (sessionRelay != null) {
-            // Idempotent, and a no-op once the session itself has ended.
-            sessionRelay.release();
-        }
-        releaseWebSocketRelayPermit(ctx);
-        if (released.compareAndSet(false, true)) {
-            admission.release();
-            inFlight.decrementAndGet();
-        }
-    }
-
-    /**
-     * Returns the WebSocket relay sub-permit exactly once, and only for a request that actually
-     * acquired one — the guard is stashed on the context by {@link #dispatchWebSocket} at acquisition,
-     * so an absent guard means an HTTP/gRPC request (or a refused upgrade) with nothing to return.
-     */
-    private void releaseWebSocketRelayPermit(RoutingContext ctx) {
-        AtomicBoolean relayReleased = ctx.get(WEBSOCKET_RELAY_GUARD_KEY);
-        if (relayReleased != null && relayReleased.compareAndSet(false, true)) {
-            webSocketRelayAdmission.release();
-        }
-    }
-
-    /**
-     * Records the terminal {@link SheriffMetrics#REQUESTS_TOTAL request count} and
-     * {@link SheriffMetrics#REQUEST_DURATION_SECONDS request-duration timer} for one served request
-     * from the single end-of-response hook, so every terminal path (streamed success, short-circuit,
-     * and rendered failure) is metered exactly once. The bounded {@code route} label is the id
-     * stashed at route selection, or {@link SheriffMetrics#NO_ROUTE} for an unmatched or
-     * short-circuited request. The method is handed over parsed — an {@link HttpMethod}, or
-     * {@code null} for a method the gateway does not parse — so the raw method token never reaches the
-     * bounded {@code method} label.
-     */
-    private void recordRequestMetrics(RoutingContext ctx, long startNanos) {
-        Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-        String route = routeLabel(ctx);
-        @Nullable HttpMethod method = parseMethod(ctx.request().method().name()).orElse(null);
-        sheriffMetrics.recordRequest(route, method, SheriffMetrics.statusFamily(ctx.response().getStatusCode()));
-        sheriffMetrics.recordRequestDuration(route, elapsed);
-    }
-
-    /**
-     * Counts one categorized failure against {@link SheriffMetrics#ERRORS_TOTAL}, keyed by the
-     * request's stashed route (or {@link SheriffMetrics#NO_ROUTE}), the failure
-     * {@link EventCategory} and the {@link EventType} name as the {@code event} label. An
-     * uncategorized failure (e.g. an unexpected internal error) carries no category, records nothing
-     * here and surfaces only through the {@code 5xx} bucket of {@link SheriffMetrics#REQUESTS_TOTAL}.
-     */
-    private void recordError(RoutingContext ctx, EventType eventType) {
-        if (eventType.category() != null) {
-            sheriffMetrics.recordError(routeLabel(ctx), eventType);
-        }
-    }
-
-    private static String routeLabel(RoutingContext ctx) {
-        String route = ctx.get(ROUTE_KEY);
-        return route != null ? route : SheriffMetrics.NO_ROUTE;
     }
 
     private void process(RoutingContext ctx) {
@@ -1133,37 +532,37 @@ public class GatewayEdgeRoute {
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             HttpServerRequest raw = ctx.request();
-            Optional<HttpMethod> parsedMethod = parseMethod(raw.method().name());
+            Optional<HttpMethod> parsedMethod = EdgeRequests.parseMethod(raw.method().name());
             if (parsedMethod.isEmpty()) {
-                renderProblem(ctx, null, EventType.METHOD_NOT_ALLOWED);
+                errorResponseWriter.renderProblem(ctx, null, EventType.METHOD_NOT_ALLOWED);
                 return;
             }
             HttpMethod method = parsedMethod.get();
-            request = buildPipelineRequest(raw, method);
+            request = EdgeRequests.buildPipelineRequest(raw, method);
 
             securityHeadersStage.process(request);
             basicChecksStage.process(request);
             canonicalPathGuard.process(request);
-            rejectFramingAndRetire(ctx, request);
+            connectionRetirement.rejectFramingAndRetire(ctx, request);
             if (request.shortCircuitStatus().isPresent()) {
-                writeShortCircuit(ctx, request);
+                terminalDispatch.writeShortCircuit(ctx, request);
                 return;
             }
             passthroughHostGuardStage.process(request);
-            if (handleReservedPath(ctx, request)) {
+            if (reservedPathHandler.handleReservedPath(ctx, request)) {
                 return;
             }
-            if (handlePortal(ctx, request)) {
+            if (reservedPathHandler.handlePortal(ctx, request)) {
                 return;
             }
             routeSelectionStage.process(request);
-            Route route = requireSelectedRoute(request);
+            Route route = EdgeRequests.requireSelectedRoute(request);
             // Stash the metrics label the moment the route is known, not after the stages below have
             // agreed to serve it. Every one of them can end the request by throwing — the verb gate's
             // 405 first among them — and a label written after them would leave those terminal
             // responses metered under NO_ROUTE, which is both wrong and the opposite of what makes
             // them worth metering: a route answering 405 is exactly what an operator needs to find.
-            ctx.put(ROUTE_KEY, route.id());
+            ctx.put(RejectionReporter.ROUTE_KEY, route.id());
             // Stage 2a: from here on every response — the 405 of the verb gate included — is
             // route-scoped, so the route's resolved security_headers block (anchor before global,
             // wholesale) replaces the global block seeded at stage 0. Everything answered earlier
@@ -1195,7 +594,7 @@ public class GatewayEdgeRoute {
             // the request would fall through to the upstream (200) instead of being redirected — a
             // security defect. Mirrors the post-framing short-circuit gate above.
             if (request.shortCircuitStatus().isPresent()) {
-                writeShortCircuit(ctx, request);
+                terminalDispatch.writeShortCircuit(ctx, request);
                 return;
             }
             // A redirect route is answered here, after authentication and the short-circuit gate
@@ -1204,7 +603,7 @@ public class GatewayEdgeRoute {
             // contacted, so REQUEST_FORWARDED is deliberately not incremented.
             RedirectConfig redirect = route.redirect();
             if (redirect != null) {
-                writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query(),
+                terminalDispatch.writeRedirect(ctx, request, redirectStage.answer(redirect, ctx.request().query(),
                         route.effectiveAuth(), request.responseSetCookies(),
                         route.matcher().matchHeaderNames()));
                 return;
@@ -1216,1526 +615,15 @@ public class GatewayEdgeRoute {
             // and relays response trailers; HTTP and GraphQL take the HTTP dispatch path. The split is
             // DispatchPath, the same one the assembler built clients and guards from.
             switch (DispatchPath.of(route.protocol())) {
-                case WEBSOCKET_RELAY -> dispatchWebSocket(ctx, request, route, forward);
-                case GRPC_DISPATCH -> dispatchGrpc(ctx, request, route, forward);
-                case HTTP_DISPATCH -> dispatchAndRelay(ctx, request, route, forward);
+                case WEBSOCKET_RELAY -> terminalDispatch.dispatchWebSocket(ctx, request, route, forward);
+                case GRPC_DISPATCH -> terminalDispatch.dispatchGrpc(ctx, request, route, forward);
+                case HTTP_DISPATCH -> terminalDispatch.dispatchAndRelay(ctx, request, route, forward);
             }
         } catch (GatewayException rejected) {
-            handleGatewayRejection(ctx, request, rejected);
+            errorResponseWriter.handleGatewayRejection(ctx, request, rejected);
         } catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
-            renderProblem(ctx, request, null);
+            errorResponseWriter.renderProblem(ctx, request, null);
         }
-    }
-
-    /**
-     * Resolves and dispatches a reserved OIDC carve-out (D2/D16): a reserved endpoint is matched here,
-     * ahead of the route table, so a proxy route such as {@code path_prefix: /bff} can never swallow
-     * the exact {@code /bff/callback}. When the server-mode BFF runtime is wired the matched path is
-     * DISPATCHED to its handler; a bearer-only / cookie-mode gateway carves it out of proxy dispatch
-     * and renders {@code NO_ROUTE_MATCHED} (the empty reserved registry never matches there anyway).
-     *
-     * @return {@code true} when the request was a reserved path and has been handled (the caller must
-     *         stop processing); {@code false} when no reserved path matched and normal routing continues
-     */
-    private boolean handleReservedPath(RoutingContext ctx, PipelineRequest request) {
-        Optional<ReservedEndpoint> reserved =
-                reservedPathRegistry.match(request.host(), requireCanonicalPath(request));
-        if (reserved.isEmpty()) {
-            return false;
-        }
-        if (bffRuntime.isActive()) {
-            dispatchReserved(ctx, request, reserved.get());
-        } else {
-            LOGGER.debug("Reserved gateway path carved out of proxy dispatch: %s",
-                    requireCanonicalPath(request));
-            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
-        }
-        return true;
-    }
-
-    /**
-     * Answers the application portal's own reserved path. It runs immediately after
-     * {@link #handleReservedPath} and before route selection: the stage-0/1 checks and the passthrough
-     * host guard have already run, an OIDC reserved path has already won, and a prefix route covering
-     * {@code portal.path} never sees the request. The match is exact and host-independent (see
-     * {@link PortalEndpoint#matches}); the {@linkplain PortalEndpoint#inert() inert} endpoint never
-     * matches.
-     * <p>
-     * The page is rendered here, on the virtual thread — session resolution may reach the session
-     * store — and the response is written on the event loop by {@link #writePortal}. The {@code notice}
-     * parameter is handed over in its raw, still-encoded wire form, so only an exact vocabulary value
-     * is ever recognised.
-     *
-     * @return {@code true} when the request addressed the portal path and has been answered (the
-     *         caller must stop processing); {@code false} when normal routing continues
-     */
-    private boolean handlePortal(RoutingContext ctx, PipelineRequest request) {
-        if (!portalEndpoint.matches(requireCanonicalPath(request))) {
-            return false;
-        }
-        PortalEndpoint.PortalResponse response = portalEndpoint.handle(request.method(),
-                firstRawQueryValue(request, PortalEndpoint.NOTICE_PARAM),
-                request.firstHeader(COOKIE_HEADER).orElse(null), Instant.now());
-        writePortal(ctx, request, response, List.of());
-        return true;
-    }
-
-    /**
-     * The single negotiation point of the gateway-originated error writers ({@link #renderProblem},
-     * {@link #renderReserved} for a failed callback, {@link #writeBufferedAsset} for a directory-asset
-     * miss): answers the error with the portal's HTML error page — and reports {@code true} — only when
-     * all three hold:
-     * <ol>
-     *   <li>{@code portal.error_pages} is on ({@link PortalEndpoint#errorPagesEnabled()});</li>
-     *   <li>the {@link ErrorPageClassifier} classifies the exit
-     *       {@link ErrorPageClassifier.Classification#HTML_ELIGIBLE HTML_ELIGIBLE};</li>
-     *   <li>the request's {@code Accept} lists {@code text/html} explicitly
-     *       ({@link ErrorPageClassifier#offersHtml(String)} — a wildcard never qualifies).</li>
-     * </ol>
-     * Otherwise it writes nothing and reports {@code false}, and the caller answers in the exit's
-     * current shape. The status is preserved either way; the page carries the stage headers, the
-     * stage {@code Set-Cookie} lines plus {@code extraSetCookies}, and the portal
-     * {@code Content-Security-Policy} / {@code nosniff} composed by
-     * {@link SecurityHeadersStage#applyPortalHeaders}. A response relayed from an origin never reaches
-     * this method.
-     * <p>
-     * A page that fails to render falls back to the current shape rather than leaving the response
-     * unanswered: the error being reported must still reach the client.
-     *
-     * @param request         the pipeline request, {@code null} for an exit answered before one was
-     *                        built — such an exit never negotiates
-     * @param classification  the exit's classification
-     * @param status          the status the exit answers with
-     * @param extraSetCookies {@code Set-Cookie} lines the exit itself emits beyond the stage's own
-     * @return {@code true} when the HTML error page was written and the caller must stop
-     */
-    private boolean answeredWithErrorPage(RoutingContext ctx, @Nullable PipelineRequest request,
-            ErrorPageClassifier.Classification classification, int status, List<String> extraSetCookies) {
-        if (request == null || !portalEndpoint.errorPagesEnabled()
-                || classification != ErrorPageClassifier.Classification.HTML_ELIGIBLE
-                || !ErrorPageClassifier.offersHtml(acceptHeader(request))) {
-            return false;
-        }
-        PortalEndpoint.PortalResponse page;
-        // A deliberate last-resort net for one error response: the page renders an operator-authored
-        // template, and a failure there must degrade to the exit's current shape instead of escaping
-        // an error writer and abandoning the response. The failure goes to the debug log only.
-        // cui-rewrite:disable InvalidExceptionUsageRecipe
-        try {
-            page = portalEndpoint.renderError(status);
-        } catch (RuntimeException renderFailure) {
-            LOGGER.debug(renderFailure, "HTML error page rendering failed — answering in the current shape: %s",
-                    renderFailure.getMessage());
-            return false;
-        }
-        writePortal(ctx, request, page, extraSetCookies);
-        return true;
-    }
-
-    /**
-     * Every {@code Accept} line of the request joined into one list value, or {@code null} when the
-     * request carries none — so a range sent on a second header line still counts.
-     */
-    private static @Nullable String acceptHeader(PipelineRequest request) {
-        List<String> values = request.headerValues(ACCEPT_HEADER);
-        return values.isEmpty() ? null : String.join(",", values);
-    }
-
-    /**
-     * Writes a portal answer on the event loop: the portal's fixed security headers are composed
-     * onto the stage headers first ({@link SecurityHeadersStage#applyPortalHeaders} — the portal
-     * {@code Content-Security-Policy} and {@code nosniff} replace whatever the resolved block declared),
-     * then the envelope headers are written last so they win any name collision. {@code Vary} is the
-     * one merge: the envelope's {@code Cookie} joins, never displaces, a {@code Vary} the stage
-     * already announced (the CORS reflection's {@code Origin}). The stage's {@code Set-Cookie} lines
-     * ride along as on every gateway-authored response, followed by {@code extraSetCookies} — the
-     * lines an answered exit emits itself (a failed callback's clearing cookie), each on its own line.
-     */
-    private static void writePortal(RoutingContext ctx, PipelineRequest request,
-            PortalEndpoint.PortalResponse portal, List<String> extraSetCookies) {
-        SecurityHeadersStage.applyPortalHeaders(request);
-        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
-        List<String> stageSetCookies = request.responseSetCookies();
-        ctx.vertx().runOnContext(v -> {
-            HttpServerResponse response = ctx.response();
-            if (response.ended()) {
-                return;
-            }
-            response.setStatusCode(portal.status());
-            stageHeaders.forEach(response::putHeader);
-            applyStageSetCookies(response, stageSetCookies);
-            applyStageSetCookies(response, extraSetCookies);
-            portal.headers().forEach((name, value) -> response.putHeader(name, VARY_HEADER.equalsIgnoreCase(name)
-                    ? SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), List.of(value))
-                    : value));
-            // A page that sets a cookie is never cacheable, whatever the envelope declared: written
-            // after the envelope headers so it wins the name.
-            if (!stageSetCookies.isEmpty() || !extraSetCookies.isEmpty()) {
-                response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
-            }
-            retireMarkedConnection(ctx);
-            endResponse(ctx, () -> response.end(portal.body()));
-        });
-    }
-
-    /**
-     * The raw, still-encoded value of the first query pair named exactly {@code name}, or {@code null}
-     * when no such pair exists or it is bare (no {@code =}).
-     */
-    private static @Nullable String firstRawQueryValue(PipelineRequest request, String name) {
-        for (QueryParameter parameter : request.queryParameters()) {
-            if (name.equals(parameter.name())) {
-                return parameter.value();
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Meters and renders a categorized {@link GatewayException} rejection: increments the event counter
-     * (except for upstream failures already metered inside {@code UpstreamFailureMapper}), emits the
-     * security-relevant WARN for filter violations and smuggled passthrough hosts and the latched INFO
-     * for an aborted inbound body and for a request-body idle timeout, records the error metric, and
-     * renders the rejection.
-     */
-    private void handleGatewayRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
-        reportRejection(ctx, rejected);
-        renderRejection(ctx, request, rejected);
-    }
-
-    /**
-     * Meters and logs a categorized {@link GatewayException} rejection without answering it — the
-     * accounting half of {@link #handleGatewayRejection}, shared with {@link #lateBodyRefusal}.
-     */
-    private void reportRejection(RoutingContext ctx, GatewayException rejected) {
-        // Upstream failures are already metered inside UpstreamFailureMapper; meter the rest here.
-        if (rejected.getEventType().category() != EventCategory.UPSTREAM) {
-            gatewayEventCounter.increment(rejected.getEventType());
-        }
-        switch (rejected.getEventType()) {
-            // Security-relevant WARN (D4): the failure-type detail only, never the raw payload —
-            // rejected.getMessage() already carries a sanitized description (see GatewayException).
-            case SECURITY_FILTER_VIOLATION -> LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION,
-                    routeLabel(ctx), rejected.getMessage());
-            // Security-relevant WARN: a terminated Host named a reserved passthrough SNI. The
-            // message is a fixed disposition (never the raw Host value).
-            case PASSTHROUGH_HOST_SMUGGLED -> LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED,
-                    rejected.getMessage());
-            // A client-caused termination, not a security event: an INFO, latched per route.
-            case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx));
-            // A body that stopped arriving while the dispatch held an upstream connection: an INFO,
-            // latched per route.
-            case REQUEST_BODY_TIMEOUT -> logRequestBodyTimeout(routeLabel(ctx));
-            default -> {
-                // Every other rejection is rendered without a log record; it is metered above.
-            }
-        }
-        recordError(ctx, rejected.getEventType());
-    }
-
-    /**
-     * Records one {@link EventType#INBOUND_BODY_ABORTED} — a request body that failed after dispatch
-     * began, such as a client disconnecting mid-upload.
-     * <p>
-     * <strong>Latched per route.</strong> Every caller a route admits can end its own upload at will,
-     * and on a route without authentication that is any caller at all, so a record per occurrence
-     * would hand out a log line per request (CWE-779). The first occurrence on a route is recorded at
-     * {@code INFO}; every repeat on that route is a {@code DEBUG} diagnostic. The latch is keyed by the
-     * route id, so it holds at most one entry per configured route. The absence of a repeated
-     * {@code INFO} says nothing about the rate — {@link SheriffMetrics#ERRORS_TOTAL} carries that.
-     * <p>
-     * The record carries the route id and a fixed disposition only: never the failure's message, which
-     * can describe what the client sent.
-     */
-    private void logInboundBodyAborted(String route) {
-        if (inboundBodyAbortReported.add(route)) {
-            LOGGER.info(ApiSheriffLogMessages.INFO.INBOUND_BODY_ABORTED, route, INBOUND_BODY_ABORTED_DISPOSITION);
-            return;
-        }
-        LOGGER.debug("Request body on route '%s' did not arrive whole again (%s) — already reported once for "
-                + "this route, stays at DEBUG for the rest of the process", route, INBOUND_BODY_ABORTED_DISPOSITION);
-    }
-
-    /**
-     * Records one {@link EventType#REQUEST_BODY_TIMEOUT} — a proxied request whose body made no
-     * progress for the request-body idle timeout while its dispatch held an upstream connection, which
-     * was then released.
-     * <p>
-     * <strong>Latched per route, to bound the log volume.</strong> The first occurrence on a route is
-     * recorded at {@code INFO}; every repeat on that route is a {@code DEBUG} diagnostic, so the log
-     * holds one record per route. The latch is keyed by the route id, so it holds at most one entry per
-     * configured route. The rate is carried by {@link SheriffMetrics#ERRORS_TOTAL}, not by this record.
-     * <p>
-     * The record carries the route id and the fixed timeout in seconds only — never body content or
-     * headers.
-     */
-    private void logRequestBodyTimeout(String route) {
-        long timeoutSeconds = TimeUnit.MILLISECONDS.toSeconds(hardening.requestBodyIdleTimeoutMillis());
-        if (requestBodyTimeoutReported.add(route)) {
-            LOGGER.info(ApiSheriffLogMessages.INFO.REQUEST_BODY_TIMEOUT, route, timeoutSeconds);
-            return;
-        }
-        LOGGER.debug("Request body on route '%s' made no progress for %s seconds again — already reported once "
-                + "for this route, stays at DEBUG for the rest of the process", route, timeoutSeconds);
-    }
-
-    /**
-     * Dispatches a matched reserved OIDC path (D16): extracts the raw request pieces each handler
-     * consumes, drives the {@link BffRuntime#dispatch reserved dispatch}, and renders the normalized
-     * response. Runs on the virtual thread (the handler may reach the confidential-client engine), then
-     * hops the response mutation back onto the event loop like every other terminal path.
-     */
-    private void dispatchReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind) {
-        String cookieHeader = request.firstHeader(COOKIE_HEADER).orElse(null);
-        String method = ctx.request().method().name();
-        // Back-channel logout is the ONE reserved path that still consumes a request body, so it is the
-        // only kind that reads the eagerly buffered body here (and the only kind needsReservedBodyRead
-        // buffers one for). The OIDC callback carries its code/state in the query under
-        // response_mode=query and is handed ctx.request().query() below — the genuinely raw, never
-        // map-collapsed query string the BFF-13 duplicate-parameter defence re-parses.
-        String rawFormBody = kind == ReservedEndpoint.BACKCHANNEL_LOGOUT ? readFormBody(ctx) : null;
-        BffRuntime.ReservedHttpRequest reservedRequest = new BffRuntime.ReservedHttpRequest(
-                ctx.request().query(), cookieHeader, firstQueryParam(ctx, CLAIMS_PARAM),
-                firstQueryParam(ctx, RETURN_URL_PARAM), firstQueryParam(ctx, STATE_PARAM), rawFormBody, method);
-        BffRuntime.ReservedHttpResponse response = bffRuntime.dispatch(kind, reservedRequest, Instant.now());
-        renderReserved(ctx, request, kind, response);
-    }
-
-    /**
-     * Writes a dispatched reserved path's normalized response. A failed OIDC callback — an error
-     * status without a {@code Location} — negotiates an HTML error page
-     * ({@link ErrorPageClassifier.Exit#CALLBACK_FAILURE}); its own {@code Set-Cookie} lines ride
-     * on the page. Every other reserved outcome written here, the user-info JSON and every redirect
-     * included, is written in its current shape.
-     * <p>
-     * <strong>One outcome is not written here at all</strong>: the {@code 404} of the client JWKS
-     * endpoint's withheld form (client-secret mode, where there is no key set to publish). It is
-     * handed to {@link #renderProblem} with {@link EventType#NO_ROUTE_MATCHED} — the renderer and the
-     * event of a path no route matches — so the status, the media type, the body, the headers and the
-     * HTML error-page negotiation are those of an unknown path by construction, not by imitation. A
-     * {@code 404} written in a shape of its own would let an anonymous caller tell a client-secret
-     * gateway from a gateway without the endpoint. The path stays reserved all the same: the request
-     * was matched by the reserved-path registry and never reaches route selection.
-     */
-    private void renderReserved(RoutingContext ctx, PipelineRequest request, ReservedEndpoint kind,
-            BffRuntime.ReservedHttpResponse response) {
-        if (isWithheldClientJwks(kind, response)) {
-            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED);
-            return;
-        }
-        if (isFailedCallback(kind, response) && answeredWithErrorPage(ctx, request,
-                ErrorPageClassifier.classify(ErrorPageClassifier.Exit.CALLBACK_FAILURE), response.status(),
-                response.setCookieHeaders())) {
-            return;
-        }
-        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
-        List<String> stageSetCookies = request.responseSetCookies();
-        ctx.vertx().runOnContext(v -> {
-            HttpServerResponse httpResponse = ctx.response();
-            if (httpResponse.ended()) {
-                return;
-            }
-            httpResponse.setStatusCode(response.status());
-            stageHeaders.forEach(httpResponse::putHeader);
-            applyStageSetCookies(httpResponse, stageSetCookies);
-            response.headers().forEach(httpResponse::putHeader);
-            response.locationOptional().ifPresent(location -> httpResponse.putHeader(LOCATION_HEADER, location));
-            // Multiple Set-Cookie headers must each be a distinct header line (never a comma-joined value).
-            response.setCookieHeaders().forEach(cookie -> httpResponse.headers().add(SET_COOKIE_HEADER, cookie));
-            endResponse(ctx, () -> response.jsonBodyOptional().map(httpResponse::end).orElseGet(httpResponse::end));
-        });
-    }
-
-    /**
-     * @return {@code true} for a callback outcome answering an error status without a redirect
-     */
-    private static boolean isFailedCallback(ReservedEndpoint kind, BffRuntime.ReservedHttpResponse response) {
-        return kind == ReservedEndpoint.CALLBACK && response.status() >= FIRST_ERROR_STATUS
-                && response.locationOptional().isEmpty();
-    }
-
-    /**
-     * @return {@code true} for the {@code 404} the client JWKS endpoint yields in its withheld form.
-     *         The publishing form answers {@code 200} or {@code 405} only, so the status identifies
-     *         the form
-     */
-    private static boolean isWithheldClientJwks(ReservedEndpoint kind, BffRuntime.ReservedHttpResponse response) {
-        return kind == ReservedEndpoint.CLIENT_JWKS && response.status() == NOT_FOUND;
-    }
-
-    /**
-     * Writes the pipeline's accumulated {@code Set-Cookie} values as distinct header lines.
-     * {@code Set-Cookie} is legitimately multi-valued (RFC 6265 §3) — the session runtime can emit a
-     * clearing cookie and a login-binding cookie on the same response — so each value gets its own
-     * line and is never comma-joined into, or overwritten in, the single-valued stage-header map.
-     */
-    private static void applyStageSetCookies(HttpServerResponse response, List<String> setCookieHeaders) {
-        setCookieHeaders.forEach(cookie -> response.headers().add(SET_COOKIE_HEADER, cookie));
-    }
-
-    /**
-     * Reads the first <em>decoded</em> value of a reserved-path query parameter ({@code claims},
-     * {@code returnUrl}, {@code state}) from the transport. The pipeline query carries the raw,
-     * still-encoded pair sequence (ADR-0047), which is the wrong form for these consumers: they compare or
-     * redirect on the value's meaning, so they read Vert.x's decoded view instead.
-     * <p>
-     * {@code returnUrl} is read one way for every kind, so the login-initiation and the step-up
-     * endpoints receive the identical decoded target; each same-origin-validates it before it can
-     * become a redirect location, and the raw pair has already passed the stage-1 checks, which run
-     * before any reserved path is matched (ADR-0019).
-     */
-    private static @Nullable String firstQueryParam(RoutingContext ctx, String name) {
-        return ctx.request().getParam(name);
-    }
-
-    /**
-     * Returns the raw {@code application/x-www-form-urlencoded} body of the one reserved POST path that
-     * still carries one — the back-channel logout receiver — buffered on the event loop in
-     * {@link #handle} before this virtual-thread dispatch. A read failure or timeout leaves
-     * {@link #RESERVED_BODY_KEY} unset, so this returns {@code null} — the fail-closed default a
-     * receiver rejects {@code 400} (a body the gateway could not read is not an accepted token). An
-     * over-ceiling body never reaches here at all: it is refused {@code 413} at the read itself.
-     */
-    private static @Nullable String readFormBody(RoutingContext ctx) {
-        Buffer body = ctx.get(RESERVED_BODY_KEY);
-        return body == null ? null : body.toString(StandardCharsets.UTF_8);
-    }
-
-    private void dispatchAndRelay(RoutingContext ctx, PipelineRequest request, Route route,
-            ForwardPolicyStage.Result forward) {
-        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
-        // An asset route serves its terminal action directly — the buffered, gateway-governed
-        // asset response — instead of streaming to an upstream. Auth (stage 4) has already run,
-        // so an unauthorized request never reaches the source (auth-before-source, ADR-0014).
-        if (route.assetSource() != null) {
-            serveAsset(ctx, request, route, remainder);
-            return;
-        }
-        String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.upstream();
-        if (upstreamTarget == null) {
-            throw new IllegalStateException("proxy dispatch requires a resolved upstream");
-        }
-        String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        SecurityConfiguration routeSecurity = route.securityConfiguration();
-        long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
-
-        DispatchStage dispatchStage = new DispatchStage(upstreamClients, cap,
-                hardening.requestBodyIdleTimeoutMillis(), upstreamFailureMapper);
-        DispatchStage.BodyFraming framing = DispatchStage.BodyFraming.of(request.method(),
-                request.declaredContentLength(), lateBodyRefusal(ctx));
-        long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> dispatchStage.dispatch(route,
-                request.method(), uri, forward.headers(), inboundBody(ctx), framing));
-        sheriffMetrics.recordUpstreamDuration(route.id(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
-        gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
-        // The relay mutates the Vert.x HttpServerResponse (status, headers) and subscribes the
-        // upstream pipe — all of which are event-loop-bound and NOT safe to touch from this
-        // virtual thread. Hop back onto the event loop exactly like every other terminal path
-        // (renderProblem / writeShortCircuit / failRelay); doing the relay off-loop races the
-        // response object and corrupts / truncates the streamed body.
-        List<String> stageSetCookies = request.responseSetCookies();
-        // Snapshot both header maps on this virtual thread: the relay runs on the event loop, and a
-        // proxied response is the one path where the default-mode map defers to an origin header.
-        Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
-        Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        relayOnEventLoop(ctx, stageSetCookies, upstream, end -> responseStage.relay(upstream, ctx.response(),
-                route.notModifiedEnabled(), route.locationRewriter(), setHeaders, defaultHeaders, end));
-    }
-
-    /**
-     * Dispatches a {@code protocol: websocket} route: validates the handshake {@code Origin} against
-     * the route's effective allowlist (a foreign / absent origin throws a
-     * {@link EventType#WEBSOCKET_ORIGIN_REJECTED} {@link GatewayException} rendered as {@code 403}
-     * before any upstream contact — GW-09 / CSWSH), then hands the upgrade to the opaque
-     * {@link WebSocketRelayStage}. The upstream dial and the client upgrade are performed by the
-     * relay stage, so no HTTP {@link ResponseStage} relay runs for a WebSocket route.
-     * <p>
-     * <strong>Admission accounting.</strong> Because a completed upgrade takes the connection over, the
-     * HTTP end handler registered in {@link #handle} never fires for an established relay — the permit
-     * would otherwise be stranded for the process lifetime. The per-request CAS guard stashed under
-     * {@link #ADMISSION_GUARD_KEY} is therefore read back here and handed to the relay as a release
-     * callback, which the relay invokes on each of its teardown paths. Routing the release through the
-     * same guard keeps it idempotent against the end handler and the executor-rejection rollback, so an
-     * upstream-dial failure (which does end the response) can never double-release.
-     * <p>
-     * <strong>Relay sub-budget.</strong> Because that permit is held for the connection's lifetime, an
-     * upgrade must additionally acquire the {@linkplain EdgeHardeningOptions#webSocketRelayCap()
-     * WebSocket relay sub-budget} before the hand-off — a second permit taken <em>in addition to</em>
-     * the general one, so long-lived relays cannot squeeze ordinary HTTP traffic out of the admission
-     * pool. An upgrade beyond that cap is refused {@code 503}, releasing the general permit through
-     * the shared guard on the way out so a refusal strands nothing.
-     * <p>
-     * <strong>Session-bound relays.</strong> An upgrade a session was let through with is tracked in
-     * the session runtime's relay registry before the upstream is dialed, and the relay is closed at
-     * the session's absolute expiry and — where sessions are held server-side — when the session is
-     * destroyed or evicted. A registry at its capacity refuses the upgrade {@code 503}, exactly like
-     * an exhausted relay sub-budget; no session-bound relay is ever opened untracked. A relay on a
-     * route without a session is not tracked.
-     * <p>
-     * <strong>Client connection context.</strong> This method runs on a virtual thread, whose Vert.x
-     * context is whatever the executor bound to it — the client connection's own context only when the
-     * executor propagates it. The relay is therefore handed the context {@link #handle} captured on the
-     * connection's event loop under {@link #CLIENT_CONTEXT_KEY}, so the upstream dial, the client upgrade
-     * and every relay callback run on the client connection's context regardless of the executor.
-     */
-    private void dispatchWebSocket(RoutingContext ctx, PipelineRequest request, Route route,
-            ForwardPolicyStage.Result forward) {
-        originValidationStage.validate(request, route.id(), route.effectiveAllowedOrigins());
-        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
-        String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.upstream();
-        if (upstreamTarget == null) {
-            throw new IllegalStateException("WebSocket dispatch requires a resolved upstream");
-        }
-        String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        AtomicBoolean admissionGuard = Objects.requireNonNull(ctx.get(ADMISSION_GUARD_KEY),
-                "admission guard missing — handle() must stash it before dispatch");
-        Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
-                "client connection context missing — handle() must capture it before dispatch");
-        // A relay opened for a request a session was let through with is tracked under that session, so
-        // it is closed when the session ends. Tracked here, on the virtual thread and before the
-        // upstream is dialed: the tracking looks the session up again, which must not run on an event
-        // loop, and a relay the registry cannot take is refused before anything is opened.
-        SessionRelayRegistry.Tracked sessionRelay = SessionRelayRegistry.untracked();
-        Optional<PipelineRequest.AdmittingSession> admittingSession = request.admittingSession();
-        if (admittingSession.isPresent()) {
-            Optional<SessionRelayRegistry.Tracked> tracked = bffRuntime.trackSessionRelay(
-                    admittingSession.get().sessionId(), admittingSession.get().expiresAt());
-            if (tracked.isEmpty()) {
-                LOGGER.debug("Session relay registry at its capacity on route '%s' — refusing the upgrade",
-                        route.id());
-                releaseAdmission(ctx, admissionGuard);
-                ctx.vertx().runOnContext(v -> reject(ctx, SERVICE_UNAVAILABLE));
-                return;
-            }
-            sessionRelay = tracked.get();
-            ctx.put(SESSION_RELAY_KEY, sessionRelay);
-        }
-        if (!webSocketRelayAdmission.tryAcquire()) {
-            // The relay sub-budget is exhausted. The general admission permit is still held and this
-            // request will never reach the relay teardown that would return it, so release it here —
-            // through the shared guard, so the 503 response's own end handler cannot double-release.
-            LOGGER.debug("WebSocket relay budget exhausted on route '%s' — refusing the upgrade",
-                    route.id());
-            releaseAdmission(ctx, admissionGuard);
-            ctx.vertx().runOnContext(v -> reject(ctx, SERVICE_UNAVAILABLE));
-            return;
-        }
-        // Stashed only now, on the acquired path: every release site keys off its presence to decide
-        // whether there is a sub-permit to return.
-        ctx.put(WEBSOCKET_RELAY_GUARD_KEY, new AtomicBoolean());
-        applyStageSetCookies(ctx.response(), request.responseSetCookies());
-        // A handshake-failure response is gateway-authored — there is no origin header to defer to — so
-        // the relay receives both header maps merged.
-        webSocketRelayStage.relay(ctx, clientContext, route, forward.headers(),
-                request.gatewayAuthoredResponseHeaders(), uri, () -> releaseAdmission(ctx, admissionGuard),
-                sessionRelay);
-    }
-
-    /**
-     * Dispatches a {@code protocol: grpc} route: streams the request opaquely to the forced-h2
-     * upstream via {@link GrpcDispatchStage}, then relays the upstream response — including its
-     * {@code grpc-status} / {@code grpc-message} trailers — with {@link ResponseStage#relayWithTrailers}.
-     * A dispatch failure (including an h2-negotiation failure) surfaces as a {@link GatewayException}
-     * that {@link #renderRejection} renders as a trailers-only gRPC status rather than problem+json.
-     */
-    private void dispatchGrpc(RoutingContext ctx, PipelineRequest request, Route route,
-            ForwardPolicyStage.Result forward) {
-        String remainder = remainderAfterMatchKey(route, requireCanonicalPath(request));
-        String query = renderQuery(forward.query());
-        ResolvedUpstream upstreamTarget = route.upstream();
-        if (upstreamTarget == null) {
-            throw new IllegalStateException("gRPC dispatch requires a resolved upstream");
-        }
-        String uri = DispatchStage.upstreamRequestUri(upstreamTarget, remainder, query);
-        SecurityConfiguration routeSecurity = route.securityConfiguration();
-        long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
-
-        GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(upstreamClients, cap, upstreamFailureMapper);
-        long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> grpcDispatchStage.dispatch(route,
-                request.method(), uri, forward.headers(), inboundBody(ctx), request.declaredContentLength()));
-        sheriffMetrics.recordUpstreamDuration(route.id(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
-        gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
-        // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
-        // like the HTTP relay path.
-        List<String> stageSetCookies = request.responseSetCookies();
-        Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
-        Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
-        relayOnEventLoop(ctx, stageSetCookies, upstream, end -> responseStage.relayWithTrailers(upstream,
-                ctx.response(), route.notModifiedEnabled(), setHeaders, defaultHeaders, end));
-    }
-
-    /**
-     * Serves an asset route's terminal action: resolves the confined asset through the route's
-     * {@link AssetSource} (behind the shared {@code PathConfinement} and gateway-owned
-     * {@code AssetResponseEnvelope}) and writes the buffered, governed response back to the
-     * client. GET/HEAD-only enforcement and header governance live in the source and envelope;
-     * this method only routes and writes.
-     */
-    private void serveAsset(RoutingContext ctx, PipelineRequest request, Route route, String remainder) {
-        AssetSource source = route.assetSource();
-        if (source == null) {
-            throw new IllegalStateException("asset dispatch requires an asset source");
-        }
-        AssetSource.Served served = DispatchStage.serveAsset(source, request.method(), remainder);
-        writeBufferedAsset(ctx, request, served, source instanceof DirectoryAssetSource);
-    }
-
-    /**
-     * Writes a buffered asset response. A {@code source: directory} miss ({@code 404}) is the one asset
-     * outcome that negotiates an HTML error page ({@link ErrorPageClassifier.Exit#DIRECTORY_ASSET_NOT_FOUND});
-     * every other outcome — and every {@code source: upstream} response, which relays what a secondary
-     * origin said ({@link ErrorPageClassifier.Exit#UPSTREAM_ASSET}) — is written in its governed shape.
-     */
-    private void writeBufferedAsset(RoutingContext ctx, PipelineRequest request, AssetSource.Served served,
-            boolean directorySource) {
-        if (directorySource && served.status() == NOT_FOUND && answeredWithErrorPage(ctx, request,
-                ErrorPageClassifier.classify(ErrorPageClassifier.Exit.DIRECTORY_ASSET_NOT_FOUND), served.status(),
-                List.of())) {
-            return;
-        }
-        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
-        List<String> stageSetCookies = request.responseSetCookies();
-        ctx.vertx().runOnContext(v -> {
-            HttpServerResponse response = ctx.response();
-            if (response.ended()) {
-                return;
-            }
-            response.setStatusCode(served.status());
-            applyStageSetCookies(response, stageSetCookies);
-            // The stage-0 security headers (HSTS, frame options, …) apply to every response; the
-            // envelope's governed headers (fixed Content-Type, nosniff, no-store) are written last
-            // so they win any name collision.
-            stageHeaders.forEach(response::putHeader);
-            served.headers().forEach(response::putHeader);
-            endResponse(ctx, () -> response.end(Buffer.buffer(served.body())));
-        });
-    }
-
-    /**
-     * Runs an upstream dispatch and, when it ends with a body the dispatch could not finish reading,
-     * marks the request exactly as a framing-gate rejection is marked ({@link #markFramingRejection})
-     * before the failure propagates. Two triggers leave such a body behind:
-     * <ul>
-     *   <li>the dispatch refused the body on its framing — a body byte on a bodyless method, or a body
-     *       disagreeing with its declared length, both a {@link EventType#SECURITY_FILTER_VIOLATION}
-     *       answered {@code 400};</li>
-     *   <li>the body made no progress for the request-body idle timeout —
-     *       {@link EventType#REQUEST_BODY_TIMEOUT}, answered {@code 408}.</li>
-     * </ul>
-     * Either way the bytes behind the answer were not read, so they cannot frame a following request:
-     * on HTTP/1.x the connection is retired — recorded at once, the answer carries
-     * {@code Connection: close} and the connection is closed once it has been written. On HTTP/2 the
-     * answer ends that one stream through the one end rule ({@link #endResponse}), its open body is
-     * reset with {@code NO_ERROR}, and the connection stays open.
-     */
-    private HttpClientResponse dispatchMarkingUnreadBody(RoutingContext ctx, Supplier<HttpClientResponse> dispatch) {
-        try {
-            return dispatch.get();
-        } catch (GatewayException rejected) {
-            EventType eventType = rejected.getEventType();
-            if (eventType == EventType.SECURITY_FILTER_VIOLATION || eventType == EventType.REQUEST_BODY_TIMEOUT) {
-                markFramingRejection(ctx);
-            }
-            throw rejected;
-        }
-    }
-
-    /**
-     * The late-violation callback of a proxied request (see {@link DispatchStage.BodyFraming}): a body
-     * byte on a bodyless method that arrived only after the dispatch handed the upstream response over
-     * for relay.
-     * <p>
-     * The dispatch can no longer answer it with a {@code 400} then, and ending the response would
-     * present a truncated answer as complete, so the client response is <strong>reset</strong> instead
-     * — on HTTP/2 the one stream, with {@code CANCEL}. The refusal is metered and logged like every
-     * other {@link EventType#SECURITY_FILTER_VIOLATION} ({@link #reportRejection}). The callback runs on
-     * the inbound request's event loop, before the dispatch resets the upstream request, so the
-     * response is reset before the aborted relay could end it; the flag stashed under
-     * {@link #LATE_BODY_REFUSED_KEY} keeps {@link #failRelay} from ending it afterwards.
-     */
-    private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
-        AtomicBoolean refused = new AtomicBoolean();
-        ctx.put(LATE_BODY_REFUSED_KEY, refused);
-        return violation -> {
-            refused.set(true);
-            reportRejection(ctx, violation);
-            HttpServerResponse response = ctx.response();
-            if (!response.ended()) {
-                response.reset(HTTP2_CANCEL);
-            }
-        };
-    }
-
-    /** @return whether a late body refusal has reset this request's response */
-    private static boolean bodyRefusedLate(RoutingContext ctx) {
-        AtomicBoolean refused = ctx.get(LATE_BODY_REFUSED_KEY);
-        return refused != null && refused.get();
-    }
-
-    /**
-     * The request body to stream upstream: the decorator armed in {@link #handle}, which remembers an
-     * inbound failure, or the bare request where none was armed.
-     */
-    private static ReadStream<Buffer> inboundBody(RoutingContext ctx) {
-        DispatchStage.InboundBody armed = ctx.get(INBOUND_BODY_KEY);
-        return armed != null ? armed : ctx.request();
-    }
-
-    /**
-     * Starts a streamed response relay on the request's event loop — the relay mutates the
-     * event-loop-bound {@link HttpServerResponse} — after applying the pipeline's {@code Set-Cookie}
-     * values, and routes <em>every</em> relay failure to {@link #failRelay}: one the relay reports on
-     * its future, and one thrown while the relay is being started (an upstream response that can no
-     * longer be piped throws from {@code pipe} synchronously). A thrown failure must not escape this
-     * runOnContext task: it would reach only Vert.x's uncaught-exception handler, the client response
-     * would never end, and the client would wait for its own timeout.
-     * <p>
-     * <strong>A relay that fails to start releases the upstream response.</strong> The dispatched
-     * upstream response is still paused when the relay is started, and only the relay would consume
-     * it. When starting the relay throws, the upstream exchange is therefore reset before the client is
-     * answered — on HTTP/1.x its connection is closed instead of being held, on HTTP/2 the one stream is
-     * reset. For a response that already ended the reset is a no-op. A failure the relay reports on its
-     * future goes to {@code failRelay} as described above; the upstream exchange is not reset on that
-     * path.
-     * <p>
-     * <strong>A relay ends its response through the one end rule.</strong> The relay is handed a
-     * {@link ResponseEnd} that routes the end of the client response through {@link #endResponse}:
-     * once the upstream response has been streamed, an HTTP/2 stream whose request body is still open —
-     * an upstream that answered before reading the whole body — stops receiving that body, the
-     * upstream request still receiving it is reset, and the end and a {@code NO_ERROR} reset follow
-     * once the body stops arriving or the time cap passes. The relay's future completes after that.
-     *
-     * @param ctx             the request whose response the relay writes
-     * @param stageSetCookies the pipeline's accumulated {@code Set-Cookie} values
-     * @param upstream        the dispatched upstream response the relay streams
-     * @param relay           starts the relay with the {@link ResponseEnd} it must end the response
-     *                        through, and returns the future completing when it has finished
-     */
-    static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, HttpClientResponse upstream,
-            Function<ResponseEnd, Future<Void>> relay) {
-        ctx.vertx().runOnContext(v -> startRelay(ctx, stageSetCookies, upstream, relay)
-                .onFailure(failure -> failRelay(ctx, failure)));
-    }
-
-    /**
-     * Starts the relay on the event loop, turning a failure thrown while starting it into a failed
-     * future after releasing the paused upstream response (see {@link #relayOnEventLoop}).
-     */
-    private static Future<Void> startRelay(RoutingContext ctx, List<String> stageSetCookies,
-            HttpClientResponse upstream, Function<ResponseEnd, Future<Void>> relay) {
-        // Deliberately the broad RuntimeException: whatever starting the relay throws, the client
-        // must be answered, so no narrower catch is correct. The failure is not swallowed — it is
-        // handed to failRelay exactly like a failure the relay reports on its future.
-        // cui-rewrite:disable InvalidExceptionUsageRecipe
-        try {
-            applyStageSetCookies(ctx.response(), stageSetCookies);
-            return relay.apply(ending -> endResponse(ctx, ending));
-        } catch (RuntimeException startFailure) {
-            // Nothing consumes the paused upstream response once the relay did not start: release it.
-            upstream.request().reset();
-            return Future.failedFuture(startFailure);
-        }
-    }
-
-    /**
-     * Answers a relay that failed: a {@code 502} when the response head was not yet written, otherwise
-     * the end of the truncated response, so the client is never left waiting. That end passes the one
-     * end rule ({@link #endResponse}) like every other response end: an HTTP/2 stream whose request
-     * body is still open is reset with {@code NO_ERROR} once it has been written. A response a late
-     * body refusal reset ({@link #lateBodyRefusal}) is never ended here.
-     *
-     * @param ctx     the request whose relay failed
-     * @param failure the relay's failure, logged at {@code DEBUG} only
-     */
-    private static void failRelay(RoutingContext ctx, Throwable failure) {
-        LOGGER.debug(failure, "Response relay failed: %s", failure.getMessage());
-        ctx.vertx().runOnContext(v -> {
-            HttpServerResponse response = ctx.response();
-            // A response a late body refusal reset is never ended: an end would present the truncated
-            // answer as complete.
-            if (response.ended() || bodyRefusedLate(ctx)) {
-                return;
-            }
-            // If the relay failed mid-stream after the response head was already written, the status
-            // line is gone — Vert.x throws IllegalStateException on setStatusCode once headWritten()
-            // is true. Only set the 502 when the head has not yet been written; either way end() the
-            // (possibly truncated) response so the client connection is closed cleanly.
-            if (!response.headWritten()) {
-                // The relay copies the upstream Content-Length onto the response before it streams the
-                // body. Left in place, it would frame this empty 502 as carrying the upstream body, and
-                // the client would wait for bytes that never come instead of receiving the answer.
-                response.headers().remove(CONTENT_LENGTH_HEADER);
-                response.setStatusCode(BAD_GATEWAY);
-            }
-            endResponse(ctx, response::end);
-        });
-    }
-
-    /**
-     * Writes a redirect route's terminal answer on the event loop: the configured status, the
-     * accumulated stage headers and {@code Set-Cookie} lines, the gateway-owned
-     * {@code Cache-Control: no-store} when the answer is {@linkplain RedirectStage.Answer#noStore()
-     * uncacheable} and the gateway-owned {@code Vary} when the answer names
-     * {@linkplain RedirectStage.Answer#vary() varying request headers}, then the {@code Location} —
-     * written last so no stage header can displace it — and an empty body.
-     * <p>
-     * All three gateway-owned headers are written <em>after</em> the stage headers, so none can be
-     * displaced by an accumulated value of the same name. Neither {@code Cache-Control} nor
-     * {@code Vary} is a gateway-owned security header, so neither carries a {@code header_modes}
-     * entry and the set/default precedence does not apply to them — and a redirect answer has no
-     * origin response to defer to in any case.
-     * <p>
-     * {@code Vary} is the one exception to "written after, so it wins": writing it last would
-     * otherwise DISCARD the stage value rather than override a competing one, and the stage value is
-     * load-bearing — the CORS reflection announces {@code Origin} there. It is therefore merged with
-     * the answer's names through {@link SecurityHeadersStage#mergedVary}, the same rule the stage
-     * itself uses.
-     */
-    private void writeRedirect(RoutingContext ctx, PipelineRequest request, RedirectStage.Answer answer) {
-        Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
-        List<String> stageSetCookies = request.responseSetCookies();
-        ctx.vertx().runOnContext(v -> {
-            HttpServerResponse response = ctx.response();
-            if (response.ended()) {
-                return;
-            }
-            response.setStatusCode(answer.status());
-            stageHeaders.forEach(response::putHeader);
-            applyStageSetCookies(response, stageSetCookies);
-            if (answer.noStore()) {
-                response.putHeader(CACHE_CONTROL_HEADER, NO_STORE);
-            }
-            if (!answer.vary().isEmpty()) {
-                // MERGE, not replace. The stage headers written above can already carry a Vary — the
-                // CORS reflection announces Origin there — and overwriting it would drop that name
-                // while adding these, trading one cache-variant bug for another.
-                response.putHeader(VARY_HEADER,
-                        SecurityHeadersStage.mergedVary(stageHeaders.get(VARY_HEADER), answer.vary()));
-            }
-            response.putHeader(LOCATION_HEADER, answer.location());
-            endResponse(ctx, response::end);
-        });
-    }
-
-    private void writeShortCircuit(RoutingContext ctx, PipelineRequest request) {
-        int status = request.shortCircuitStatus().orElse(204);
-        Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
-        List<String> setCookies = request.responseSetCookies();
-        ctx.vertx().runOnContext(v -> {
-            HttpServerResponse response = ctx.response();
-            if (response.ended()) {
-                return;
-            }
-            response.setStatusCode(status);
-            responseHeaders.forEach(response::putHeader);
-            applyStageSetCookies(response, setCookies);
-            endResponse(ctx, response::end);
-        });
-    }
-
-    /**
-     * Renders a post-route-resolution rejection: a {@code protocol: grpc} route emits a trailers-only
-     * gRPC status via {@link GrpcStatusMapper} (a gRPC client cannot consume problem+json), every
-     * other route renders the RFC 9457 problem+json response, carrying the rejection's
-     * {@linkplain GatewayException#getProblemExtensions() problem extension members}. A rejection that
-     * fires before route selection (no selected route) always renders problem+json. A gRPC status has
-     * no place for extension members, so they are not rendered there.
-     * <p>
-     * An open circuit's {@code 503} is given its {@code Retry-After} header first
-     * ({@link #seedRetryAfter}), so it rides on whichever of the three shapes answers.
-     */
-    private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
-        EventType eventType = rejected.getEventType();
-        seedRetryAfter(request, eventType);
-        Route selected = request != null ? request.selectedRoute() : null;
-        if (selected != null && selected.protocol() == Protocol.GRPC) {
-            Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
-            List<String> setCookies = request.responseSetCookies();
-            ctx.vertx().runOnContext(v -> {
-                applyStageSetCookies(ctx.response(), setCookies);
-                // The trailers-only status passes the one end rule like every other answer.
-                grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders,
-                        ending -> endResponse(ctx, ending));
-            });
-            return;
-        }
-        renderProblem(ctx, request, eventType, rejected.getProblemExtensions());
-    }
-
-    /**
-     * Gives the {@code 503} of an open circuit ({@link EventType#UPSTREAM_CIRCUIT_OPEN}) its
-     * {@code Retry-After} header, as the error contract in {@code architecture.adoc} states: the
-     * header is seeded onto the request's {@linkplain PipelineRequest#responseHeaders() response-header
-     * map}, which every writer of a gateway-authored answer applies — the problem document, the
-     * negotiated HTML error page and the trailers-only gRPC status alike. Every other rejection is left
-     * as it is.
-     * <p>
-     * The value is {@value #BREAKER_RESET_SECONDS}, the whole seconds the breaker stays open
-     * ({@link #BREAKER_RESET_SECONDS}); a delay in seconds is the one form of the header that needs no
-     * clock (RFC 9110 §10.2.3). It is a constant of the gateway and carries nothing of the request or
-     * of the upstream.
-     * <p>
-     * Package-private rather than private so the header is asserted directly by
-     * {@code GatewayEdgeRouteRetryAfterTest}, matching the precedent {@link #problemBody} sets.
-     *
-     * @param request   the rejected request, {@code null} for a rejection answered before one was
-     *                  built — such a rejection is never an open circuit and gets no header
-     * @param eventType the event the rejection reports
-     */
-    static void seedRetryAfter(@Nullable PipelineRequest request, EventType eventType) {
-        if (request != null && eventType == EventType.UPSTREAM_CIRCUIT_OPEN) {
-            request.responseHeaders().put(RETRY_AFTER_HEADER, Integer.toString(BREAKER_RESET_SECONDS));
-        }
-    }
-
-    /**
-     * Renders a gateway rejection that carries no problem extension members — the unrouted/unreserved
-     * {@code 404}, a rejection answered before a {@link GatewayException} exists, and an unexpected
-     * internal failure ({@code eventType == null}).
-     */
-    private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType) {
-        renderProblem(ctx, request, eventType, Map.of());
-    }
-
-    /**
-     * Renders a gateway rejection — every {@link GatewayException} outside a gRPC route, the
-     * unrouted/unreserved {@code 404}, the {@code 404} of the withheld client JWKS path (see
-     * {@link #renderReserved}) and an unexpected internal failure ({@code eventType == null}).
-     * An {@link ErrorPageClassifier#classify(EventType) HTML-eligible} event negotiates the portal's
-     * HTML error page first ({@link #answeredWithErrorPage}); otherwise, or when the request does not
-     * explicitly accept {@code text/html}, the RFC 9457 {@code application/problem+json} body is
-     * written with the same status. The body carries the standard members first and then
-     * {@code problemExtensions}; the HTML error page never does.
-     */
-    private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType,
-            Map<String, Object> problemExtensions) {
-        int status;
-        String type;
-        String title;
-        ErrorPageClassifier.Classification classification;
-        if (eventType == null) {
-            status = INTERNAL_ERROR;
-            type = "about:blank";
-            title = "Internal Server Error";
-            classification = ErrorPageClassifier.classify(ErrorPageClassifier.Exit.UNEXPECTED_INTERNAL);
-        } else {
-            status = eventType.hasHttpMapping() ? eventType.httpStatus() : INTERNAL_ERROR;
-            EventCategory category = eventType.category();
-            type = category != null ? category.problemType() : "about:blank";
-            title = category != null ? category.title() : "Internal Server Error";
-            classification = ErrorPageClassifier.classify(eventType);
-        }
-        if (answeredWithErrorPage(ctx, request, classification, status, List.of())) {
-            return;
-        }
-        String body = problemBody(gatewayJson, type, title, status, problemExtensions);
-        Map<String, String> responseHeaders = request != null ? request.gatewayAuthoredResponseHeaders() : Map.of();
-        // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
-        // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
-        List<String> setCookies = request != null ? request.responseSetCookies() : List.of();
-        ctx.vertx().runOnContext(v -> {
-            HttpServerResponse response = ctx.response();
-            if (response.ended()) {
-                return;
-            }
-            response.setStatusCode(status);
-            responseHeaders.forEach(response::putHeader);
-            applyStageSetCookies(response, setCookies);
-            response.putHeader("Content-Type", PROBLEM_JSON);
-            retireMarkedConnection(ctx);
-            endResponse(ctx, () -> response.end(body));
-        });
-    }
-
-    /**
-     * Builds the RFC 9457 {@code application/problem+json} body: the standard members {@code type},
-     * {@code title} and {@code status}, followed by the extension members in their iteration order.
-     * The standard members come from the gateway's own event catalogue and are written as they are;
-     * every extension member name and value is serialized through {@link GatewayJson}, which applies
-     * RFC 8259 string escaping. Without extension members the body is exactly the three standard
-     * members.
-     * <p>
-     * Package-private rather than private so the rendering is asserted directly by
-     * {@code GatewayEdgeRouteTest}, matching the precedent {@link #securityPostureFor} sets.
-     *
-     * @param gatewayJson       the serializer the extension members are rendered through
-     * @param type              the problem type URI
-     * @param title             the problem title
-     * @param status            the HTTP status
-     * @param problemExtensions the extension members to append, empty for none
-     * @return the compact JSON body
-     */
-    static String problemBody(GatewayJson gatewayJson, String type, String title, int status,
-            Map<String, Object> problemExtensions) {
-        StringBuilder body = new StringBuilder("{\"type\":\"").append(type)
-                .append("\",\"title\":\"").append(title)
-                .append("\",\"status\":").append(status);
-        problemExtensions.forEach((name, value) -> body.append(',')
-                .append(gatewayJson.toJson(name)).append(':').append(gatewayJson.toJson(value)));
-        return body.append('}').toString();
-    }
-
-    /**
-     * Answers a request the edge refuses before or instead of processing it — the admission or
-     * draining {@code 503}, an executor rejection, an exhausted WebSocket relay budget — with a bare
-     * status. Called on the event loop; the end passes the one end rule ({@link #endResponse}), so an
-     * HTTP/2 upload refused here has its open stream reset with {@code NO_ERROR} once its body stops
-     * arriving or the time cap passes and the answer has been written.
-     */
-    private static void reject(RoutingContext ctx, int status) {
-        HttpServerResponse response = ctx.response();
-        if (!response.ended()) {
-            response.setStatusCode(status);
-            endResponse(ctx, response::end);
-        }
-    }
-
-    private static PipelineRequest buildPipelineRequest(HttpServerRequest raw, HttpMethod method) {
-        String rawUri = raw.uri();
-        int queryStart = rawUri.indexOf('?');
-        String rawPath = queryStart < 0 ? rawUri : rawUri.substring(0, queryStart);
-        long contentLength = parseContentLength(raw);
-        boolean bodyPresent = contentLength > 0 || raw.headers().contains("Transfer-Encoding");
-        return PipelineRequest.builder()
-                .method(method)
-                .requestPath(rawPath)
-                .queryParameters(rawQueryPairs(raw.query()))
-                .headers(toListMap(raw.headers()))
-                .host(authorityHost(raw))
-                .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
-                .declaredContentLength(contentLength)
-                .bodyPresent(bodyPresent)
-                .build();
-    }
-
-    /**
-     * The request's authority host, or {@code null} when the request declares no authority.
-     * <p>
-     * Reads {@link HttpServerRequest#authority()} directly instead of the deprecated
-     * {@code HttpServerRequest#host()}. The two are <em>not</em> interchangeable: {@code host()}
-     * returns the raw {@code Host} header, so it carries the port ({@code example.com:8443}) where
-     * {@code authority().host()} does not ({@code example.com}). Substituting {@code host()} back
-     * would leak the port into the reserved-path match and the security-validated request host.
-     * <p>
-     * Dropping the former {@code host()} fallback is nonetheless behaviour-preserving: it applied
-     * only when {@code authority()} was {@code null}, which happens only when the {@code Host}
-     * header is absent — and there {@code host()} is {@code null} too. A malformed header makes
-     * authority parsing throw rather than return {@code null}, so that path never reached the
-     * fallback either. Both host-reading sites share this one seam so the two cannot drift apart.
-     */
-    private static @Nullable String authorityHost(HttpServerRequest raw) {
-        var authority = raw.authority();
-        return authority == null ? null : authority.host();
-    }
-
-    /**
-     * Splits the raw request-target query into its still-percent-encoded pairs — the form the
-     * security filter validates and the forward path emits verbatim (ADR-0047).
-     * <p>
-     * The query is split on {@code &} and each pair on its <em>first</em> {@code =}; empty segments
-     * are skipped, so {@code a=1&&b=2} yields the same pair count Vert.x reports. Names and values are
-     * left exactly as they arrived: no percent-decoding and no {@code +}-to-space translation, because
-     * decoding here would hand the cui-http pipelines — which decode themselves — an already-decoded
-     * value and would make the forwarded bytes differ from the validated ones. The pairs are kept as
-     * an ordered sequence in wire order and are <em>never grouped by name</em>: {@code a=1&b=2&a=3}
-     * stays three pairs in that order, so the forward path emits the request-target the filter
-     * validated rather than a regrouped {@code a=1&a=3&b=2}. A pair without {@code =} is carried as a
-     * {@code null} value so the forward path can emit its bare form ({@code flag}, not
-     * {@code flag=}) verbatim.
-     *
-     * @param rawQuery the raw query without its leading {@code ?}, or {@code null} when the request
-     *                 carries none
-     * @return the raw pairs in wire order, immutable; empty when there is no query
-     */
-    private static List<QueryParameter> rawQueryPairs(@Nullable String rawQuery) {
-        if (rawQuery == null || rawQuery.isEmpty()) {
-            return List.of();
-        }
-        List<QueryParameter> pairs = new ArrayList<>();
-        for (String segment : rawQuery.split("&", -1)) {
-            if (segment.isEmpty()) {
-                continue;
-            }
-            int separator = segment.indexOf('=');
-            String name = separator < 0 ? segment : segment.substring(0, separator);
-            String value = separator < 0 ? null : segment.substring(separator + 1);
-            pairs.add(new QueryParameter(name, value));
-        }
-        return List.copyOf(pairs);
-    }
-
-    private static Map<String, List<String>> toListMap(MultiMap multiMap) {
-        Map<String, List<String>> map = new LinkedHashMap<>();
-        for (String name : multiMap.names()) {
-            map.put(name, List.copyOf(multiMap.getAll(name)));
-        }
-        return map;
-    }
-
-    private static long parseContentLength(HttpServerRequest raw) {
-        String value = raw.getHeader(CONTENT_LENGTH_HEADER);
-        if (value == null) {
-            return -1L;
-        }
-        try {
-            return Long.parseLong(value.strip());
-        } catch (NumberFormatException _) {
-            return -1L;
-        }
-    }
-
-    /**
-     * Renders the forwarded query from the validated raw pairs, appending each raw name and raw value
-     * as it arrived and in the order the sequence carries them, so the upstream receives the pairs the
-     * security filter validated, in the order it validated them (ADR-0047). A {@code null} value is a
-     * bare pair and is rendered as its bare name.
-     * <p>
-     * <strong>The one exception to verbatim: a raw {@code ;} is written as {@code %3B}.</strong> The
-     * edge splits pairs on {@code &} only, and {@code query_allow} / {@code query_deny} judge the
-     * decoded name of each {@code &}-split pair, while cui-http admits a raw {@code ;} under every
-     * profile. An upstream that also splits on {@code ;} would otherwise read {@code x=1;token=abc} as
-     * a second parameter {@code token} the gateway never judged — HTTP parameter smuggling (CWE-235).
-     * Encoding it keeps the pair one pair on the upstream too. Every route takes this path, whatever
-     * its forward mode; nothing else in the pair is touched, and the decoded meaning is unchanged
-     * ({@code %3B} decodes to {@code ;}), so validated still equals forwarded at the decoded level.
-     */
-    private static String renderQuery(List<QueryParameter> query) {
-        if (query.isEmpty()) {
-            return "";
-        }
-        StringBuilder rendered = new StringBuilder("?");
-        boolean first = true;
-        for (QueryParameter parameter : query) {
-            if (!first) {
-                rendered.append('&');
-            }
-            rendered.append(encodeSemicolons(parameter.name()));
-            String value = parameter.value();
-            if (value != null) {
-                rendered.append('=').append(encodeSemicolons(value));
-            }
-            first = false;
-        }
-        return rendered.toString();
-    }
-
-    /**
-     * Rewrites every raw {@code ;} of a forwarded query name or value as {@code %3B}, leaving every
-     * other byte untouched (see {@link #renderQuery}).
-     */
-    private static String encodeSemicolons(String raw) {
-        return raw.replace(";", "%3B");
-    }
-
-    private static Optional<HttpMethod> parseMethod(String name) {
-        try {
-            return Optional.of(HttpMethod.valueOf(name));
-        } catch (IllegalArgumentException _) {
-            return Optional.empty();
-        }
-    }
-
-    private static Route requireSelectedRoute(PipelineRequest request) {
-        Route route = request.selectedRoute();
-        if (route == null) {
-            throw new IllegalStateException("Route dispatch requires the route selected at stage 2");
-        }
-        return route;
-    }
-
-    private static String requireCanonicalPath(PipelineRequest request) {
-        String canonical = request.canonicalPath();
-        if (canonical == null) {
-            throw new IllegalStateException("Route dispatch requires the canonical path resolved at stage 1");
-        }
-        return canonical;
-    }
-
-    /**
-     * The part of the canonical path below the selected route's match key — the remainder every
-     * dispatch path appends to the upstream base path. An exact route matched the whole address, so
-     * its remainder is empty; a prefix route strips its (trailing-slash-free) prefix.
-     */
-    private static String remainderAfterMatchKey(Route route, String canonical) {
-        if (route.matcher().isExact()) {
-            return "";
-        }
-        String prefix = stripTrailingSlash(route.matcher().matchKey());
-        return canonical.length() >= prefix.length() ? canonical.substring(prefix.length()) : "";
-    }
-
-    private static String stripTrailingSlash(String value) {
-        return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
-    }
-
-    /**
-     * Builds the live {@link AssetSource} for an asset route's resolved terminal action: a
-     * {@link DirectoryAssetSource} rooted at the configured directory — carrying its optional
-     * {@code index} and {@code fallback} file names — for a {@code directory}
-     * source, or an {@link UpstreamAssetSource} over the boot-resolved secondary origin for an
-     * {@code upstream} source. Both apply the gateway's confinement and response envelope; the
-     * upstream source rides its own SSRF-guarded fetch seam (ADR-0014), not the proxy data plane.
-     */
-    private static AssetSource assetSourceFor(ResolvedAsset asset, Map<String, String> assetContentTypes) {
-        return switch (asset.source()) {
-            case DIRECTORY -> {
-                String directory = asset.directory();
-                if (directory == null) {
-                    throw new IllegalStateException("directory asset source requires a directory root");
-                }
-                yield new DirectoryAssetSource(Path.of(directory), asset.access(), asset.index(), asset.fallback(),
-                        assetContentTypes);
-            }
-            case UPSTREAM -> {
-                ResolvedUpstream upstream = asset.upstream();
-                if (upstream == null) {
-                    throw new IllegalStateException("upstream asset source requires a resolved upstream");
-                }
-                yield new UpstreamAssetSource(upstream, asset.access(), assetContentTypes);
-            }
-        };
-    }
-
-    /**
-     * Resolves the global {@code asset_defaults.content_types} block into the map every asset source
-     * is constructed with. An absent block yields an empty map, which is exactly the add-only no-op:
-     * the built-in extension map then governs alone, byte-for-byte as an unconfigured gateway does.
-     */
-    private static Map<String, String> assetContentTypesOf(GatewayConfig gatewayConfig) {
-        AssetDefaultsConfig assetDefaults = gatewayConfig.assetDefaults();
-        return assetDefaults == null ? Map.of() : assetDefaults.contentTypes();
-    }
-
-    /**
-     * Resolves the global {@code egress_tls} block into the settings every egress client is built
-     * with. An absent block yields {@link EgressTlsConfig#defaults()} — both flags on, no profile —
-     * which is exactly the pre-existing behaviour: hostname verification enabled and the JVM default
-     * trust store. An absent KEY inside a present block is resolved to {@code true} one layer
-     * earlier, by {@code ConfigLoader}'s {@code EgressTlsDeserializer}, so this method never sees the
-     * primitive {@code false} Jackson would otherwise bind.
-     */
-    private static EgressTlsConfig egressTlsOf(GatewayConfig gatewayConfig) {
-        EgressTlsConfig egressTls = gatewayConfig.egressTls();
-        return egressTls == null ? EgressTlsConfig.defaults() : egressTls;
-    }
-
-    /**
-     * Builds the shared Vert.x client for an upstream-target tuple. A gRPC route's tuple carries the
-     * {@code forcedHttp2} flag, so it gets a client forced to HTTP/2 (h2 over TLS with ALPN, or
-     * prior-knowledge h2c in cleartext) — gRPC requires HTTP/2 end-to-end. Every other tuple gets the
-     * default client (HTTP/1.1 with h2 upgrade negotiation).
-     * <p>
-     * Both branches construct from an options object so both bind the gateway-global egress-TLS
-     * settings. The default branch's object starts from a bare {@code new HttpClientOptions()} — the
-     * same defaults the no-arg {@code createHttpClient()} uses — and carries {@code setVerifyHost},
-     * {@code setTrustOptions} only under a configured profile, and the abortive close below. It sets no
-     * protocol version, no client-level SSL flag and no change to h2-upgrade negotiation: a route's TLS
-     * is still selected per request ({@code DispatchStage}), so a client-level flag here would change
-     * behaviour rather than preserve it.
-     * <p>
-     * <strong>The default branch closes its connections abortively</strong> ({@code SO_LINGER 0}). On
-     * HTTP/1.1 the gateway's own reset of an upstream request — an early upstream answer to an upload
-     * still in flight, a cap breach, a failed or short inbound body, an abandoned attempt, a relay that
-     * failed to start — costs the whole connection, because HTTP/1.1 has no message-scoped cancel. A
-     * connection the gateway closes in order holds its local port in {@code TIME_WAIT} for a minute, so
-     * a client driving such resets at rate, unauthenticated on a public route, could exhaust the
-     * gateway's ephemeral ports; the connect failures that followed would open the per-upstream breaker
-     * for every client. Closed abortively, a connection holds no local port once it is gone. The
-     * accepted cost: for every connection this client closes, idle-pool evictions included, the
-     * upstream sees a TCP reset instead of a FIN and, on TLS, no {@code close_notify}. The forced-HTTP/2
-     * branch is left as it is: an HTTP/2 connection is shared by its streams, and the gateway resets a
-     * single stream rather than closing the connection.
-     */
-    private static HttpClient clientFor(Vertx vertx, UpstreamTarget target,
-            boolean verifyHostname, @Nullable TrustOptions trustOptions) {
-        if (!target.forcedHttp2()) {
-            return vertx.createHttpClient(
-                    egressTlsBound(new HttpClientOptions().setSoLinger(0), verifyHostname, trustOptions));
-        }
-        HttpClientOptions options = new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2);
-        if ("https".equalsIgnoreCase(target.scheme())) {
-            options.setSsl(true).setUseAlpn(true);
-        } else {
-            // Prior-knowledge h2c: skip the HTTP/1.1 Upgrade dance and speak HTTP/2 in cleartext.
-            options.setHttp2ClearTextUpgrade(false);
-        }
-        return vertx.createHttpClient(egressTlsBound(options, verifyHostname, trustOptions));
-    }
-
-    /**
-     * Applies the gateway-global egress-TLS settings to an HTTP client options object, so both
-     * {@link #clientFor} branches bind them identically rather than each spelling the pair out.
-     * {@code setTrustOptions} is applied only when a profile was configured: a named profile
-     * <em>replaces</em> the client's anchors, so passing {@code null} unconditionally is not the same
-     * no-op as omitting the call.
-     */
-    private static HttpClientOptions egressTlsBound(HttpClientOptions options, boolean verifyHostname,
-            @Nullable TrustOptions trustOptions) {
-        options.setVerifyHost(verifyHostname);
-        if (trustOptions != null) {
-            options.setTrustOptions(trustOptions);
-        }
-        return options;
-    }
-
-    /**
-     * Derives the pre-route {@code Cookie} header-value policy from the gateway document, returning
-     * {@code null} for every gateway that is not an active cookie-mode BFF.
-     * <p>
-     * <strong>Why this exists.</strong> Stage 1 validates every inbound header value against the
-     * resolved baseline {@code maxHeaderValueLength} — whatever {@code security_defaults.profile}
-     * resolves to, 1024 characters under {@code strict} and 8192 under {@code lenient} — while a
-     * cookie-mode BFF's sealed session cookie is designed to a multi-kilobyte budget. Encoded as two
-     * independent constants, the two limits contradicted each other inside the same product: every
-     * request carrying a live sealed cookie was rejected {@code 400} at the edge before any BFF logic
-     * ran. The single declared budget ({@code oidc.session.max_cookie_size}, defaulting to
-     * {@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}) now drives BOTH ends of the round
-     * trip — the codec's seal-time budget and this pre-route cap.
-     * <p>
-     * <strong>The relaxation is scoped twice.</strong> By MODE: a bearer-only or server-mode gateway
-     * gets {@code null}, so no cookie carve-out exists there and its {@code Cookie} /
-     * {@code Set-Cookie} values are measured at the resolved baseline like any other header. By
-     * HEADER: within a cookie-mode gateway the raised cap reaches the {@code Cookie} /
-     * {@code Set-Cookie} values only. {@link BasicChecksStage} selects the value pipeline on the
-     * header NAME across three branches — an {@code Authorization} value takes the separate,
-     * unconditional carve-out of {@link #authorizationHeaderConfigurationFor}, and every OTHER header
-     * keeps the resolved baseline policy. Every non-length validator (null-byte, control-character,
-     * injection-pattern) still applies to the cookie value. It remains a deliberate relaxation of an
-     * inbound hardening control, held as narrow as the pre-route position allows.
-     * <p>
-     * <strong>The cap is {@code max}-bounded, so the carve-out can only ever ADMIT MORE length.</strong>
-     * The effective cap is {@code max(baseline.maxHeaderValueLength(), budget + }{@value #COOKIE_HEADER_OVERHEAD_BYTES}{@code )}.
-     * Setting it outright from the budget made the carve-out LOWER the cap on a {@code lenient}
-     * gateway: the shipped default budget
-     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}, 4019) plus the overhead is 4531,
-     * below that profile's 8192 baseline, so a cookie-mode BFF rejected {@code 400} every request
-     * whose {@code Cookie} value sat between the two — while every OTHER header on the same gateway
-     * was admitted to 8192. No operator misconfiguration was required. The {@code max} restores
-     * ADR-0019's stated bound, "the direction of change is admit-more-length-only", and matches the
-     * two sibling sites: {@code ThoroughChecksStage.carveOutConfigurationFor} caps at
-     * {@code max(routeCap, budget)} post-route, and {@code ConfigValidator} refuses a below-baseline
-     * {@code Authorization} budget outright at boot.
-     * <p>
-     * The returned policy is handed to {@link ThoroughChecksStage} as well as to
-     * {@link BasicChecksStage}: the post-route stage re-validates every header under the ROUTE's
-     * configuration whenever that configuration diverges from the baseline, so it needs the same
-     * budget or it would undo this carve-out one stage later. Only the policy's
-     * {@code maxHeaderValueLength} is read there, as the budget; the remaining dimensions applied
-     * post-route come from the route's own configuration.
-     * <p>
-     * <strong>Recorded constraint — enforcement is gateway-wide, not per-anchor.</strong> Stage 1
-     * runs BEFORE route selection and this bean holds the whole route table, so no anchor exists at
-     * that point. The configuration key lives on the global {@code oidc.session} block for exactly
-     * that reason; its placement must not be read as per-anchor enforcement.
-     * <p>
-     * Package-private rather than private so the seeding is asserted directly by
-     * {@code GatewayEdgeRouteTest} instead of only through a booted edge, matching the precedent
-     * {@link #securityPostureFor} sets.
-     *
-     * @param gatewayConfig the bound gateway document supplying the cookie budget
-     * @param bffRuntime    the BFF runtime whose active-cookie-mode state gates the carve-out
-     * @param baseline      the gateway's resolved baseline configuration the returned policy is
-     *                      seeded from, so it differs from the baseline in
-     *                      {@code maxHeaderValueLength} and nothing else
-     * @return the {@code Cookie} / {@code Set-Cookie} value policy, or {@code null} for a gateway
-     *         that is not an active cookie-mode BFF
-     */
-    static @Nullable SecurityConfiguration cookieHeaderConfigurationFor(GatewayConfig gatewayConfig,
-            BffRuntime bffRuntime, SecurityConfiguration baseline) {
-        OidcConfig oidc = gatewayConfig.oidc();
-        OidcConfig.Session session = oidc == null ? null : oidc.session();
-        // The SHARED cookie-mode predicate on the config model — never a locally-declared constant
-        // compared here. A private constant plus a local comparison is what let this cap relax for a
-        // mode spelling boot validation had already skipped.
-        boolean cookieMode = bffRuntime.isActive() && session != null && session.isCookieMode();
-        if (!cookieMode) {
-            return null;
-        }
-        Integer declaredBudget = session.maxCookieSize();
-        int budget = declaredBudget != null ? declaredBudget : SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET;
-        // max(), not an outright set: a carve-out may only ever ADMIT MORE length. The default budget
-        // plus the overhead is 4531, which sits BELOW the lenient profile's 8192 baseline, so setting
-        // the cap outright turned this carve-out into a per-header TIGHTENING on every shipped-default
-        // lenient cookie-mode gateway. Same bound as ThoroughChecksStage.carveOutConfigurationFor.
-        int cap = Math.max(baseline.maxHeaderValueLength(), budget + COOKIE_HEADER_OVERHEAD_BYTES);
-        // Seeded component-by-component from the RESOLVED baseline, so this differs from it in
-        // maxHeaderValueLength and nothing else — which is what makes ADR-0019's "only the length cap
-        // changes" bound structurally true. Seeding from SecurityConfiguration.builder() instead (its
-        // defaults being the dropped `default` preset) silently relaxed failOnSuspiciousPatterns,
-        // allowExtendedAscii and caseSensitiveComparison for cookie values on a strict gateway.
-        return SecurityConfigurations.builderSeededFrom(baseline)
-                .maxHeaderValueLength(cap)
-                .build();
-    }
-
-    /**
-     * Derives the pre-route {@code Authorization} header-value policy from the gateway document.
-     * <p>
-     * <strong>Why this exists.</strong> A bearer token plus its {@code Bearer } prefix routinely
-     * exceeds the resolved baseline {@code maxHeaderValueLength} — a Keycloak access token measures
-     * above the {@code strict} preset's 1024-character cap — so without a raised cap Stage 1, the
-     * non-skippable pre-route floor, rejects every bearer request {@code 400} before route selection
-     * and bearer validation never runs at all.
-     * <p>
-     * <strong>The relaxation is scoped, but unconditionally present.</strong> By HEADER: the raised
-     * cap reaches {@code Authorization} values only. By VALIDATOR: the returned configuration is
-     * seeded from {@code baseline} and overrides {@code maxHeaderValueLength} alone, so every
-     * non-length validator still applies. Unlike the cookie carve-out there is no MODE axis — every
-     * gateway is bearer-capable, so this policy is always built and never {@code null}. That axis is
-     * genuinely weaker than the cookie carve-out's, not equivalent to it.
-     * <p>
-     * As with the cookie carve-out, the returned policy is handed to {@link ThoroughChecksStage} as
-     * well as to {@link BasicChecksStage}, so the raised cap survives the post-route re-run a route
-     * with a divergent {@code security_filter} triggers — a route declaring nothing more than a
-     * raised {@code max_body_bytes} already diverges. Without that, the floor would admit a bearer
-     * token and the very next stage would reject it, still ahead of bearer validation.
-     * <p>
-     * The budget comes from the operator-declared {@code security_defaults.max_authorization_header_value_length},
-     * defaulting to {@link SecurityDefaultsConfig#DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH}. It
-     * sits on the gateway-wide {@code security_defaults} block because Stage 1 runs before route
-     * selection, so no anchor exists at that point; a declared value below the resolved baseline is
-     * refused at boot by {@code ConfigValidator}.
-     * <p>
-     * Package-private for the same reason as {@link #cookieHeaderConfigurationFor}.
-     *
-     * @param gatewayConfig the bound gateway document supplying the declared budget
-     * @param baseline      the gateway's resolved baseline configuration the returned policy is
-     *                      seeded from
-     * @return the {@code Authorization} value policy, differing from {@code baseline} in
-     *         {@code maxHeaderValueLength} alone
-     */
-    static SecurityConfiguration authorizationHeaderConfigurationFor(GatewayConfig gatewayConfig,
-            SecurityConfiguration baseline) {
-        SecurityDefaultsConfig securityDefaults = gatewayConfig.securityDefaults();
-        int budget = securityDefaults != null
-                ? securityDefaults.effectiveMaxAuthorizationHeaderValueLength()
-                : SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH;
-        return SecurityConfigurations.builderSeededFrom(baseline)
-                .maxHeaderValueLength(budget)
-                .build();
-    }
-
-    /**
-     * Resolves a route's inbound-filter posture: the effective {@link SecurityProfile} after the
-     * {@code security_filter → security_defaults} fallback, plus the cui-http
-     * {@link SecurityConfiguration} carrying its limits.
-     * <p>
-     * The limits are seeded from the <em>preset</em> of the nearest non-{@code minimal} profile in the
-     * chain (see {@link SecurityProfile#limitsProfile}), never from bare builder defaults, and only
-     * the dimensions the route actually declared are overridden on top — so an undeclared dimension
-     * lands exactly on the resolved preset rather than below it. A {@code minimal} route therefore
-     * still carries a concrete, enforceable {@code maxBodySize}. The gateway-wide
-     * {@code security_defaults.allow_extended_ascii} override is applied to that preset before the
-     * route's own limits, exactly as it is applied to the baseline.
-     * <p>
-     * Invoked for every route, including one that declares no {@code security_filter} block at all,
-     * which is what lets a gateway-wide {@code profile} govern a block-less route.
-     * <p>
-     * Package-private rather than private so the posture resolution — the fallback chain and the
-     * preset-seeded limit overrides — is asserted directly by {@code GatewayEdgeRouteTest} instead
-     * of only through a booted edge, whose assembled routes are not observable.
-     */
-    static SecurityPosture securityPostureFor(
-            @Nullable SecurityFilterConfig filter, SecurityProfile globalProfile,
-            @Nullable Boolean allowExtendedAscii) {
-        SecurityProfile effective = SecurityProfile.parse(filter == null ? null : filter.profile())
-                .orElse(globalProfile);
-        SecurityConfiguration preset = SecurityConfigurations.withDeclaredCharacterPolicy(
-                SecurityProfile.limitsProfile(effective, globalProfile).preset(), allowExtendedAscii);
-        return new SecurityPosture(effective,
-                filter == null ? preset : applyDeclaredLimits(preset, filter));
-    }
-
-    /**
-     * Applies a route's declared {@code security_filter} limits on top of the resolved preset. The
-     * builder is seeded component-by-component from {@code preset} because the cui-http
-     * {@link SecurityConfiguration} exposes no preset-seeded builder — {@link SecurityConfiguration#builder()}
-     * starts from {@code defaults()}, so seeding explicitly is the only way an undeclared dimension
-     * keeps the preset's value instead of silently reverting to the default policy. The component
-     * list lives once, in {@link SecurityConfigurations#builderSeededFrom(SecurityConfiguration)}.
-     */
-    private static SecurityConfiguration applyDeclaredLimits(SecurityConfiguration preset,
-            SecurityFilterConfig filter) {
-        SecurityConfigurationBuilder builder = SecurityConfigurations.builderSeededFrom(preset);
-        Integer maxBodyBytes = filter.maxBodyBytes();
-        if (maxBodyBytes != null) {
-            builder.maxBodySize(maxBodyBytes.longValue());
-        }
-        Integer maxQueryParams = filter.maxQueryParams();
-        if (maxQueryParams != null) {
-            builder.maxParameterCount(maxQueryParams);
-        }
-        Integer maxHeaderCount = filter.maxHeaderCount();
-        if (maxHeaderCount != null) {
-            builder.maxHeaderCount(maxHeaderCount);
-        }
-        Integer maxParamValueLength = filter.maxParamValueLength();
-        if (maxParamValueLength != null) {
-            builder.maxParameterValueLength(maxParamValueLength);
-        }
-        Integer maxHeaderValueLength = filter.maxHeaderValueLength();
-        if (maxHeaderValueLength != null) {
-            builder.maxHeaderValueLength(maxHeaderValueLength);
-        }
-        if (!filter.allowedHeaderNames().isEmpty()) {
-            builder.allowedHeaderNames(Set.copyOf(filter.allowedHeaderNames()));
-        }
-        if (!filter.blockedHeaderNames().isEmpty()) {
-            builder.blockedHeaderNames(Set.copyOf(filter.blockedHeaderNames()));
-        }
-        if (!filter.allowedContentTypes().isEmpty()) {
-            builder.allowedContentTypes(Set.copyOf(filter.allowedContentTypes()));
-        }
-        return builder.build();
-    }
-
-    /**
-     * Builds the per-shape SmallRye Fault-Tolerance guard: a circuit breaker plus an upstream
-     * timeout, with retry added only for a route that enables it. Gateway rejections
-     * ({@link GatewayException}) are skipped by the breaker, so they never count as an upstream
-     * failure. Whether a failed attempt is retried is decided by the retry predicate
-     * {@link DispatchStage#allowsRetryAfter(Throwable)}, after the attempt failed and before any
-     * re-entry: it never retries a gateway rejection, and a retry it refuses is not recorded by the
-     * breaker. A dispatch the client itself ended — a body-cap breach, an inbound request body that
-     * failed after dispatch began, a body on a bodyless method, a body disagreeing with its declared
-     * length, a body that made no progress for the request-body idle timeout — reaches the guard as
-     * such a skipped {@link GatewayException} (see {@link DispatchStage}). SmallRye Fault Tolerance has
-     * no neutral outcome, so the breaker records a skipped exception as a success; keeping these
-     * dispatches out of its window would need the guarded call to be restructured. The timeout,
-     * {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds the whole dispatch, a steady upload included;
-     * the request-body idle timeout is shorter.
-     */
-    private Guard guardFor(ResilienceShape shape) {
-        // The name identifies the breaker in its description and its transition log lines only. It is
-        // deliberately NOT registered as the breaker's SmallRye name: that registry is JVM-global and
-        // refuses a name it already holds, so a second edge built in the same JVM for the same upstream
-        // host:port — any edge whose upstream port happens to be reused — would fail every dispatch to
-        // it with a 502. The name carries every dimension of the ResilienceShape that keys
-        // RouteAssembler's guardCache — scheme, host, port, the forced-HTTP/2 flag and
-        // retryEnabled — because each distinct shape holds its own breaker: a gRPC route and an HTTP/1.1
-        // route to one host:port, or two routes differing only in retryEnabled, open and close
-        // independently, and an operator reading a transition must be able to tell which one moved.
-        UpstreamTarget target = shape.target();
-        String name = target.scheme() + "://" + target.host() + ":" + target.port()
-                + ":h2=" + target.forcedHttp2() + ":retry=" + shape.retryEnabled();
-        Guard.Builder builder = Guard.create().withDescription("upstream-" + name);
-        builder.withCircuitBreaker()
-                .requestVolumeThreshold(20)
-                .failureRatio(0.5)
-                .delay(BREAKER_RESET_SECONDS, ChronoUnit.SECONDS)
-                .successThreshold(2)
-                .skipOn(GatewayException.class)
-                .onStateChange(state -> upstreamFailureMapper.recordBreakerTransition(name, state))
-                .done();
-        builder.withTimeout().duration(UPSTREAM_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done();
-        if (shape.retryEnabled()) {
-            builder.withRetry().maxRetries(2).delay(100, ChronoUnit.MILLIS)
-                    .whenException(DispatchStage::allowsRetryAfter).done();
-        }
-        return builder.build();
     }
 }

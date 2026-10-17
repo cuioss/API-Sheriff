@@ -17,7 +17,9 @@
  * Transport and admission bounds of the edge: the hardening options the edge's HTTP server and
  * request handling are bounded by, and the admission of requests into the edge.
  * <p>
- * <strong>Contents.</strong> {@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions}.
+ * <strong>Contents.</strong> {@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions}
+ * and {@link de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission}, which admits requests under
+ * those bounds and drains them on shutdown.
  * <p>
  * <strong>Dependencies.</strong> This package depends on no other edge package.
  *
