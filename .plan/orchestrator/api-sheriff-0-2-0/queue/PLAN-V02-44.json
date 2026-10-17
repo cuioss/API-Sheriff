@@ -2,9 +2,9 @@
   "id": "PLAN-V02-44",
   "slug": "route-type-merge",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-44-route-type-merge",
-  "pr": "",
-  "landing": "",
+  "pr": "476",
+  "landing": "landings/PLAN-V02-44.md",
   "seq": 44
 }
