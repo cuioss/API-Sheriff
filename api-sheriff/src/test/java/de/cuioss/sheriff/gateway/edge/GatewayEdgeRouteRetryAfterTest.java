@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.Map;
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
+import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.test.generator.Generators;
@@ -33,9 +35,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * The {@code Retry-After} header of an open circuit's {@code 503}: {@link GatewayEdgeRoute#seedRetryAfter}
+ * The {@code Retry-After} header of an open circuit's {@code 503}: {@link ErrorResponseWriter#seedRetryAfter}
  * seeds it onto the response-header map every gateway-authored answer is written from, for that one
- * event and no other, with the window the breaker itself applies.
+ * event and no other, with the window the breaker itself applies ({@link UpstreamGuards#BREAKER_RESET_SECONDS}).
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — Retry-After on the 503 of an open circuit")
@@ -46,14 +48,14 @@ class GatewayEdgeRouteRetryAfterTest {
     void openCircuitCarriesTheBreakerWindow() {
         PipelineRequest request = anyRequest();
 
-        GatewayEdgeRoute.seedRetryAfter(request, EventType.UPSTREAM_CIRCUIT_OPEN);
+        ErrorResponseWriter.seedRetryAfter(request, EventType.UPSTREAM_CIRCUIT_OPEN);
 
         Map<String, String> authored = request.gatewayAuthoredResponseHeaders();
         assertAll("Retry-After of an open circuit",
                 () -> assertEquals("5", authored.get("Retry-After"),
                         "the header is a delay in whole seconds on the map every gateway-authored answer carries"),
-                () -> assertEquals(Integer.toString(GatewayEdgeRoute.BREAKER_RESET_SECONDS),
-                        authored.get(GatewayEdgeRoute.RETRY_AFTER_HEADER),
+                () -> assertEquals(Integer.toString(UpstreamGuards.BREAKER_RESET_SECONDS),
+                        authored.get(ErrorResponseWriter.RETRY_AFTER_HEADER),
                         "the hint is the window the breaker's own delay is built from"));
     }
 
@@ -63,7 +65,7 @@ class GatewayEdgeRouteRetryAfterTest {
     void everyOtherEventIsLeftAlone(EventType eventType) {
         PipelineRequest request = anyRequest();
 
-        GatewayEdgeRoute.seedRetryAfter(request, eventType);
+        ErrorResponseWriter.seedRetryAfter(request, eventType);
 
         assertFalse(request.gatewayAuthoredResponseHeaders().containsKey("Retry-After"),
                 "only the open circuit's 503 names a time to retry at");
@@ -72,7 +74,7 @@ class GatewayEdgeRouteRetryAfterTest {
     @Test
     @DisplayName("a rejection answered before a request was built is left without the header")
     void absentRequestIsTolerated() {
-        assertDoesNotThrow(() -> GatewayEdgeRoute.seedRetryAfter(null, EventType.UPSTREAM_CIRCUIT_OPEN));
+        assertDoesNotThrow(() -> ErrorResponseWriter.seedRetryAfter(null, EventType.UPSTREAM_CIRCUIT_OPEN));
     }
 
     private static PipelineRequest anyRequest() {

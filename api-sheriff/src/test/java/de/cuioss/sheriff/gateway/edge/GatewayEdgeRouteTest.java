@@ -80,6 +80,13 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture;
+import de.cuioss.sheriff.gateway.edge.assembly.SecurityPostures;
+import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
+import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
+import de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -331,9 +338,6 @@ class GatewayEdgeRouteTest {
     @DisplayName("admission-release guard stashed on the RoutingContext")
     class AdmissionGuardPlumbing {
 
-        /** Mirrors the private {@code GatewayEdgeRoute.ADMISSION_GUARD_KEY}. */
-        private static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
-
         @Test
         @DisplayName("stashes the release guard on the context before the pipeline is dispatched")
         void stashesReleaseGuardBeforeDispatch() throws Exception {
@@ -449,7 +453,7 @@ class GatewayEdgeRouteTest {
             // synchronously up to the asynchronous dispatch, so the stash is visible on return.
             router.route().handler(ctx -> {
                 ctx.next();
-                stashed.complete(ctx.get(ADMISSION_GUARD_KEY));
+                stashed.complete(ctx.get(EdgeAdmission.ADMISSION_GUARD_KEY));
             });
             newEdge(table).registerRoutes(router);
             return Awaits.connect(
@@ -488,7 +492,7 @@ class GatewayEdgeRouteTest {
                     .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
-                    .onSuccess(ended -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(Set.of())
+                    .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(Set.of())
                             .relay(ended, ctx.response(), false, null, Map.of(), Map.of(), end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -546,7 +550,7 @@ class GatewayEdgeRouteTest {
                     }))
                     .onSuccess(received -> {
                         pausedUpstream.set(received);
-                        GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), received, _ -> {
+                        TerminalDispatch.relayOnEventLoop(ctx, List.of(), received, _ -> {
                             throw new IllegalStateException("the relay could not be started");
                         });
                     }));
@@ -616,7 +620,7 @@ class GatewayEdgeRouteTest {
                         received.pause();
                         return received;
                     }))
-                    .onSuccess(received -> GatewayEdgeRoute.relayOnEventLoop(ctx, List.of(), received,
+                    .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
                             end -> new ResponseStage(Set.of())
                                     .relay(received, ctx.response(), false, null, Map.of(), Map.of(), end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
@@ -673,7 +677,7 @@ class GatewayEdgeRouteTest {
         void rendersUnchangedBodyWithoutMembers() {
             GatewayException rejected = new GatewayException(EventType.SCOPE_MISSING, LOG_MESSAGE);
 
-            String body = GatewayEdgeRoute.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
+            String body = ErrorResponseWriter.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
                     rejected.getProblemExtensions());
 
             assertEquals("""
@@ -689,7 +693,7 @@ class GatewayEdgeRouteTest {
             members.put("step_up_url", "/auth/step-up?returnUrl=%2Fapp%2Forders");
             GatewayException rejected = new GatewayException(EventType.SCOPE_MISSING, LOG_MESSAGE, members);
 
-            String body = GatewayEdgeRoute.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
+            String body = ErrorResponseWriter.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(),
                     rejected.getProblemExtensions());
 
             assertAll(
@@ -706,7 +710,7 @@ class GatewayEdgeRouteTest {
         void escapesExtensionMemberNamesAndValues() {
             Map<String, Object> members = Map.of("quoted\"name", "back\\slash and\nnewline");
 
-            String body = GatewayEdgeRoute.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(), members);
+            String body = ErrorResponseWriter.problemBody(GatewayEdgeRouteBffWiringTest.gatewayJson(), TYPE, TITLE, EventType.SCOPE_MISSING.httpStatus(), members);
 
             assertEquals("""
                     {"type":"urn:api-sheriff:problem:authorization","title":"Authorization","status":403,\
@@ -730,10 +734,10 @@ class GatewayEdgeRouteTest {
             // Arrange — the case the previous effectiveSecurityFilter().map(...) shape skipped entirely
 
             // Act
-            RouteAssembler.SecurityPosture strict =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, null);
-            RouteAssembler.SecurityPosture lenient =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT, null);
+            SecurityPosture strict =
+                    SecurityPostures.securityPostureFor(null, SecurityProfile.STRICT, null);
+            SecurityPosture lenient =
+                    SecurityPostures.securityPostureFor(null, SecurityProfile.LENIENT, null);
 
             // Assert
             assertEquals(SecurityProfile.STRICT, strict.profile(),
@@ -752,8 +756,8 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().allowedPaths(List.of("/x")).build();
 
             // Act
-            RouteAssembler.SecurityPosture posture =
-                    GatewayEdgeRoute.securityPostureFor(noProfile, SecurityProfile.LENIENT, null);
+            SecurityPosture posture =
+                    SecurityPostures.securityPostureFor(noProfile, SecurityProfile.LENIENT, null);
 
             // Assert
             assertEquals(SecurityProfile.LENIENT, posture.profile(),
@@ -770,13 +774,13 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration relaxedStrict =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, true).configuration();
+                    SecurityPostures.securityPostureFor(null, SecurityProfile.STRICT, true).configuration();
             SecurityConfiguration tightenedLenient =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT, false).configuration();
+                    SecurityPostures.securityPostureFor(null, SecurityProfile.LENIENT, false).configuration();
             SecurityConfiguration relaxedWithLimits =
-                    GatewayEdgeRoute.securityPostureFor(limitsOnly, SecurityProfile.STRICT, true).configuration();
+                    SecurityPostures.securityPostureFor(limitsOnly, SecurityProfile.STRICT, true).configuration();
             SecurityConfiguration omitted =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, null).configuration();
+                    SecurityPostures.securityPostureFor(null, SecurityProfile.STRICT, null).configuration();
 
             // Assert
             assertAll(
@@ -814,8 +818,8 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().profile("lenient").build();
 
             // Act
-            RouteAssembler.SecurityPosture posture =
-                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT, null);
+            SecurityPosture posture =
+                    SecurityPostures.securityPostureFor(declared, SecurityProfile.STRICT, null);
 
             // Assert
             assertEquals(SecurityProfile.LENIENT, posture.profile(), "the route's own profile wins");
@@ -830,12 +834,12 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().profile("minimal").build();
 
             // Act — chain minimal → lenient, then the all-minimal chain
-            RouteAssembler.SecurityPosture inheritsLenient =
-                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.LENIENT, null);
-            RouteAssembler.SecurityPosture allMinimal =
-                    GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.MINIMAL, null);
-            RouteAssembler.SecurityPosture globalMinimalBlockLess =
-                    GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.MINIMAL, null);
+            SecurityPosture inheritsLenient =
+                    SecurityPostures.securityPostureFor(minimal, SecurityProfile.LENIENT, null);
+            SecurityPosture allMinimal =
+                    SecurityPostures.securityPostureFor(minimal, SecurityProfile.MINIMAL, null);
+            SecurityPosture globalMinimalBlockLess =
+                    SecurityPostures.securityPostureFor(null, SecurityProfile.MINIMAL, null);
 
             // Assert
             assertEquals(SecurityProfile.MINIMAL, inheritsLenient.profile(), "the mode itself stays 'minimal'");
@@ -860,7 +864,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration resolved =
-                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT, null).configuration();
+                    SecurityPostures.securityPostureFor(declared, SecurityProfile.STRICT, null).configuration();
 
             // Assert — the declared dimensions win …
             assertEquals(4096L, resolved.maxBodySize(), "a declared max_body_bytes overrides the preset");
@@ -892,7 +896,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration resolved =
-                    GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.LENIENT, null).configuration();
+                    SecurityPostures.securityPostureFor(declared, SecurityProfile.LENIENT, null).configuration();
 
             // Assert
             assertEquals(11, resolved.maxHeaderCount());
@@ -905,7 +909,7 @@ class GatewayEdgeRouteTest {
 
         /**
          * Semantic drift guard for {@code SecurityConfigurations.builderSeededFrom} — the single
-         * seam {@code GatewayEdgeRoute} seeds through — which mirrors the third-party
+         * seam {@code SecurityPostures} seeds through — which mirrors the third-party
          * {@link SecurityConfiguration} record component-by-component. A component the copy drops
          * silently reverts to the {@code defaults()} policy as soon as a route declares any
          * {@code security_filter} limit — a posture regression with no other failing test.
@@ -948,7 +952,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration resolved =
-                    GatewayEdgeRoute.securityPostureFor(declared, profile, null).configuration();
+                    SecurityPostures.securityPostureFor(declared, profile, null).configuration();
 
             // Assert
             assertEquals(preset, resolved,
@@ -981,14 +985,11 @@ class GatewayEdgeRouteTest {
 
         private static final int DECLARED_AUTHORIZATION_CAP = 12_000;
 
-        /** Mirrors the private {@code GatewayEdgeRoute.COOKIE_HEADER_OVERHEAD_BYTES}. */
-        private static final int COOKIE_HEADER_OVERHEAD_BYTES = 512;
-
         /** The cap the shipped-default cookie budget derives — 4531 (4019 + 512), deliberately
          * compared against BOTH baselines below so the max() bound is pinned from above and from
          * below. */
         private static final int DEFAULT_COOKIE_HEADER_CAP =
-                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET + COOKIE_HEADER_OVERHEAD_BYTES;
+                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET + SecurityPostures.COOKIE_HEADER_OVERHEAD_BYTES;
 
         @Test
         @DisplayName("the Authorization carve-out differs from a strict baseline in the length cap alone")
@@ -997,7 +998,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration baseline = SecurityProfile.STRICT.preset();
 
             // Act
-            SecurityConfiguration carveOut = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+            SecurityConfiguration carveOut = SecurityPostures.authorizationHeaderConfigurationFor(
                     GatewayConfig.builder().version(1).build(), baseline);
 
             // Assert
@@ -1015,7 +1016,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration baseline = SecurityConfiguration.lenient();
 
             // Act
-            SecurityConfiguration carveOut = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+            SecurityConfiguration carveOut = SecurityPostures.authorizationHeaderConfigurationFor(
                     gatewayWithAuthorizationCap(DECLARED_AUTHORIZATION_CAP), baseline);
 
             // Assert
@@ -1032,9 +1033,9 @@ class GatewayEdgeRouteTest {
             // which is a different shape from an entirely absent block and must resolve identically.
 
             // Act
-            SecurityConfiguration blockPresent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+            SecurityConfiguration blockPresent = SecurityPostures.authorizationHeaderConfigurationFor(
                     gatewayWithAuthorizationCap(null), SecurityProfile.STRICT.preset());
-            SecurityConfiguration blockAbsent = GatewayEdgeRoute.authorizationHeaderConfigurationFor(
+            SecurityConfiguration blockAbsent = SecurityPostures.authorizationHeaderConfigurationFor(
                     GatewayConfig.builder().version(1).build(), SecurityProfile.STRICT.preset());
 
             // Assert
@@ -1054,12 +1055,12 @@ class GatewayEdgeRouteTest {
             // before the predicate is reached, so on its own it leaves the defect-prone branch untested.
 
             // Act
-            SecurityConfiguration inertRuntime = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+            SecurityConfiguration inertRuntime = SecurityPostures.cookieHeaderConfigurationFor(
                     cookieModeGateway(), BffRuntime.inert(), SecurityProfile.STRICT.preset());
-            SecurityConfiguration sessionAbsent = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+            SecurityConfiguration sessionAbsent = SecurityPostures.cookieHeaderConfigurationFor(
                     GatewayConfig.builder().version(1).build(), activeCookieRuntime(),
                     SecurityProfile.STRICT.preset());
-            SecurityConfiguration serverMode = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+            SecurityConfiguration serverMode = SecurityPostures.cookieHeaderConfigurationFor(
                     sessionModeGateway(OidcConfig.Session.MODE_SERVER), activeCookieRuntime(),
                     SecurityProfile.STRICT.preset());
 
@@ -1081,7 +1082,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration baseline = SecurityProfile.STRICT.preset();
 
             // Act
-            SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+            SecurityConfiguration carveOut = SecurityPostures.cookieHeaderConfigurationFor(
                     cookieModeGateway(), activeCookieRuntime(), baseline);
 
             // Assert — the max() must not neutralise the carve-out where it is genuinely needed
@@ -1106,7 +1107,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration baseline = SecurityConfiguration.lenient();
 
             // Act
-            SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+            SecurityConfiguration carveOut = SecurityPostures.cookieHeaderConfigurationFor(
                     cookieModeGateway(), activeCookieRuntime(), baseline);
 
             // Assert
@@ -1147,7 +1148,7 @@ class GatewayEdgeRouteTest {
             String cookieHeaderValue = String.join("; ", sessionPair, bindingPair, activityPair);
             SecurityConfiguration baseline = SecurityProfile.STRICT.preset();
 
-            SecurityConfiguration carveOut = GatewayEdgeRoute.cookieHeaderConfigurationFor(
+            SecurityConfiguration carveOut = SecurityPostures.cookieHeaderConfigurationFor(
                     cookieModeGateway(), activeCookieRuntime(), baseline);
 
             assertNotNull(carveOut, "an active cookie-mode BFF gets a carve-out");

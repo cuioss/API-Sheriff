@@ -183,6 +183,102 @@ The edge's three gateway-originated error writers negotiate an HTML error page t
 guided by `ErrorPageClassifier`. Those writers are the problem renderer, a failed OIDC callback and a
 `source: directory` asset miss. See <<_html_error_pages>> for the rule.
 
+[[_edge_package_structure]]
+=== Edge Package Structure
+
+The edge is the framework-bound layer that runs the pipeline above: the package
+`de.cuioss.sheriff.gateway.edge` and nine sub-packages beneath it
+(link:adr/0068-The_edge_is_split_into_acyclic_sub-packages_beneath_a_thin_GatewayEdgeRoute.adoc[ADR-0068]).
+The root holds one class, `GatewayEdgeRoute`, and it holds only the wiring and the per-request flow:
+the CDI constructor and a test-only constructor, `registerRoutes`, the shutdown observer (which hands
+the drain to `EdgeAdmission`), `handle`, `dispatchProcessing` and `process`. `process` keeps the stage
+order of <<_request_pipeline_stages>> and the protocol switch over `assembly.DispatchPath`. Every job
+the flow hands off lives in a sub-package:
+
+[cols="1,3,3", options="header"]
+|===
+| Sub-package | Job | Types
+
+| `assembly`
+| Boot-only route completion: completes every `routing.Route` with its boot-attached components, and
+  holds the deduplicated upstream clients and resilience guards (`UpstreamClients`), the security
+  postures and the asset sources.
+| `RouteAssembler`, `UpstreamClients`, `UpstreamTarget`, `ResilienceShape`, `DispatchPath`,
+  `SecurityPosture`, `SecurityPostures`, `AssetSources`, and the factory interfaces
+  `SecurityConfigurationFactory`, `UpstreamClientFactory`, `ResilienceGuardFactory`,
+  `AssetSourceFactory`
+
+| `upstream`
+| Guarded upstream dispatch and its failure mapping, the egress clients and the upstream guards.
+| `DispatchStage`, `GrpcDispatchStage`, `StreamAwareRetryGate`, `UpstreamFailureMapper`,
+  `EgressClients`, `UpstreamGuards`
+
+| `end`
+| The one end rule every response passes, the early-answer path (<<_http2_post_response_reset>>) and
+  connection retirement.
+| `ResponseEnds`, `ResponseEnd`, `EarlyResponseEnd`, `InboundStreamWindow`, `ConnectionRetirement`
+
+| `relay`
+| Streaming an upstream answer back to the client.
+| `ResponseStage`, `UpstreamSetCookieFilter`, `GrpcStatusMapper`, `WebSocketRelayStage`
+
+| `admission`
+| Transport and admission bounds, admission and the drain on shutdown.
+| `EdgeHardeningOptions`, `EdgeAdmission`
+
+| `request`
+| Turning the Vert.x request into the pipeline request.
+| `EdgeRequests`
+
+| `error`
+| Rejection metering, logging and rendering.
+| `RejectionReporter`, `ErrorResponseWriter`
+
+| `reserved`
+| The reserved OIDC paths, the portal and the reserved-body read.
+| `ReservedPathHandler`, `ReservedBodyReader`
+
+| `terminal`
+| Serving a route's terminal action: proxy, gRPC, WebSocket, asset, redirect and short-circuit.
+| `TerminalDispatch`, `RedirectStage`
+|===
+
+`RouteAssembler` keeps one nested type, its result record `AssembledRoutes`; every other type in
+`assembly` is top-level.
+
+*The dependency rule.* The sub-packages form an acyclic graph, and none of them depends on the root.
+Dependencies are bytecode dependencies; a Javadoc link is not one.
+
+[cols="1,3", options="header"]
+|===
+| Package | Depends on (within the edge)
+
+| `assembly`, `request`, `admission` | no edge package
+| `upstream` | `assembly`
+| `end` | `upstream`
+| `relay` | `end`, `upstream`
+| `error` | `end`, `upstream`, `relay`, `request`
+| `reserved` | `error`, `end`, `request`
+| `terminal` | `relay`, `upstream`, `error`, `end`, `admission`, `request`, `assembly`
+| the root, `GatewayEdgeRoute` | all nine
+|===
+
+*The guard.* `arch.EdgeSubPackageArchTest` fails the build on a cycle between sub-packages and on any
+sub-package class that depends on a class in the root package -- `GatewayEdgeRoute`, the classes
+nested in it, or any class later added to the root. Both rules are written over the root package, not
+over the list above, so a new sub-package is held to them as soon as it exists. The test carries the
+four control legs of
+link:adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030];
+its non-vacuity leg derives the sub-packages from the `package-info` classes declared directly
+beneath the root, rather than from a list in the test, and requires each to hold a class other than
+its `package-info`.
+It does not check the table edge by edge: a new dependency that closes no cycle passes, and the table
+is then the record to update.
+
+*Log categories.* Each class logs under its own class name, so a record is emitted under the category
+of the sub-package class that owns its job, for example `de.cuioss.sheriff.gateway.edge.error.RejectionReporter`.
+The `ApiSheriff-NNN` identifiers and texts are listed in link:LogMessages.adoc[Log Messages].
+
 [[_tls_edge_accept_time_sni_split]]
 === TLS Edge (Accept-Time SNI Split)
 
@@ -1712,12 +1808,12 @@ socket. Any operation on the inbound Vert.x connection -- reading the request bo
 event loop, never inline on the per-request virtual thread.
 
 * *Writing the response* from the pipeline: marshal it with
-  `ctx.vertx().runOnContext(v -> ...)` (every renderer in `GatewayEdgeRoute` does this; the sole
-  exception, `reject(...)`, is called only from the event loop and so needs no hop).
+  `ctx.vertx().runOnContext(v -> ...)` (every renderer of the edge does this; the sole exception,
+  `edge.end.ResponseEnds.reject(...)`, is called only from the event loop and so needs no hop).
 * *Reading a body the gateway itself consumes* (the back-channel logout receiver -- the one
   reserved path that still carries a request body): read it on the event loop *before* the
   virtual-thread hop, then dispatch with the buffered bytes -- see
-  `GatewayEdgeRoute#readReservedBodyThenDispatch`. A proxied body is never buffered; it streams on
+  `edge.reserved.ReservedBodyReader#readReservedBodyThenDispatch`. A proxied body is never buffered; it streams on
   the client's event loop (ADR-0008).
 
 The anti-pattern that this rule forbids: pausing the inbound stream, hopping to the virtual
@@ -1760,16 +1856,16 @@ shared objects are immutable.
 
 | Data-plane Vert.x `HttpClient` + its connection pool
 | Immutable options, thread-safe client. One Vert.x client per *distinct upstream target*
-  (`RouteAssembler.UpstreamTarget`: scheme + host + port + forced HTTP/2, the last set for a gRPC
+  (`edge.assembly.UpstreamTarget`: scheme + host + port + forced HTTP/2, the last set for a gRPC
   route) -- *deduplicated across routes*, so N routes to the same backend share one client and one
   connection pool, rather than opening N pools
   (link:adr/0008-data-plane-transport.adoc[ADR-0008]). This is the single biggest "reuse a large
   object" lever. The resilience guards (SmallRye FT) are built once at boot as well, one per
-  distinct *resilience shape* (`RouteAssembler.ResilienceShape`: the upstream target plus the
+  distinct *resilience shape* (`edge.assembly.ResilienceShape`: the upstream target plus the
   route's retry setting), so two routes to one upstream that differ in retry hold separate guards
   and separate circuit breakers. Neither the client nor the guard is a route component -- both are
   framework types, and `Route` stays framework-free -- so `RouteAssembler` holds them in the
-  immutable `UpstreamClients` lookup, clients keyed by upstream target and guards by resilience
+  immutable `edge.assembly.UpstreamClients` lookup, clients keyed by upstream target and guards by resilience
   shape, from which the dispatch stage resolves a proxy route's client and guard. A WebSocket route
   is dialed by the edge-wide WebSocket client and gets neither.
 

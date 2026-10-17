@@ -39,6 +39,7 @@ import java.util.function.Consumer;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -201,7 +202,7 @@ class ReservedBodyCeilingTest {
      * <p>
      * The gateway drives {@code response_mode=query}, so the live callback is a top-level GET
      * carrying {@code code}/{@code state} in the query string. {@code ReservedEndpoint.CALLBACK} was
-     * therefore removed from {@code GatewayEdgeRoute.needsReservedBodyRead}'s allowlist — and that
+     * therefore removed from {@code ReservedBodyReader.needsReservedBodyRead}'s allowlist — and that
      * removal was not cosmetic: leaving it there would have kept granting ANY unauthenticated POST
      * to the callback path a pre-authentication, pre-pipeline body read of up to the ceiling, a
      * retained attack surface with no remaining purpose.

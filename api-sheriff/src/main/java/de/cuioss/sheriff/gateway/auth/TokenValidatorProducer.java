@@ -132,9 +132,9 @@ public class TokenValidatorProducer {
         this.gatewayConfig = gatewayConfig;
         this.trustProfileResolver = trustProfileResolver;
         // An absent egress_tls block resolves to the defaults rather than to a null-guarded false —
-        // mirroring GatewayEdgeRoute.egressTlsOf. Reading the primitive off a defaults() instance is
-        // what keeps 'block omitted entirely' and 'block present, key omitted' the same posture:
-        // verification ON. (ConfigLoader's EgressTlsDeserializer handles the second case.)
+        // mirroring de.cuioss.sheriff.gateway.edge.upstream.EgressClients.egressTlsOf. Reading the
+        // primitive off a defaults() instance is what keeps 'block omitted entirely' and 'block present,
+        // key omitted' the same posture: verification ON. (ConfigLoader's EgressTlsDeserializer handles the second case.)
         EgressTlsConfig egressTls = gatewayConfig.egressTls();
         this.jwksVerifyHostname = (egressTls == null ? EgressTlsConfig.defaults() : egressTls).jwksVerifyHostname();
         // Emitted ONCE at bean construction rather than per issuer, so a gateway with a dozen issuers

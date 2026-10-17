@@ -573,7 +573,7 @@ enforces it and the test that pins it:
   on HTTP/2 ends only that stream; once the response has been handed over for relay, the client
   stream is reset, never cleanly ended. A stream that ends with an empty final frame carries no body
   and is served. The opt-in below does not relax this rule
-| edge (`DispatchStage`, `GatewayEdgeRoute`)
+| edge (`DispatchStage`, `TerminalDispatch`, `ResponseEnds`)
 | `GatewayEdgeFramingCorpusTest` (`bodylessMethodNeverCarriesABodyUpstreamOnHttp2`,
   `optInAdmitsOnlyADeclaredLengthGetBodyOnHttp2`, `bodylessMethodEndingWithAnEmptyFrameIsServed`,
   `bodyByteAfterTheResponseStartedResetsTheStream`); `DispatchStageTest.BodylessWatch`,
@@ -607,13 +607,13 @@ enforces it and the test that pins it:
 | On HTTP/1.x nothing behind a `FramingGate` rejection is processed: the answer carries
   `Connection: close`, the connection is closed, and a request already queued on it is neither
   processed nor forwarded
-| edge (`GatewayEdgeRoute`)
+| edge (`ConnectionRetirement`)
 | `GatewayEdgeFramingCorpusTest` (`requestPipelinedBehindGateRejection`)
 
 | On HTTP/2 a `FramingGate` rejection ends only the offending stream: the answer carries no
   `Connection` header, the stream is reset, nothing of it reaches the upstream, and a sibling
   stream and a further stream complete on the same connection
-| edge (`GatewayEdgeRoute`)
+| edge (`ResponseEnds`)
 | `GatewayEdgeFramingCorpusTest` (`gateRejectionOnHttp2EndsOnlyTheOffendingStream`)
 
 | An inbound body failure after dispatch -- broken chunk framing, or a client that disconnects
@@ -621,7 +621,7 @@ enforces it and the test that pins it:
   reused. It is reported as `INBOUND_BODY_ABORTED` (`400`), attributed to the client: it is not a
   `SECURITY_FILTER_VIOLATION`, and it is not counted as a failure by the route's circuit breaker
   and is recorded by it as a success
-| edge (`DispatchStage`, `GatewayEdgeRoute`)
+| edge (`DispatchStage`, `RejectionReporter`, `UpstreamGuards`)
 | `GatewayEdgeFramingCorpusTest` (`inboundFramingFailureAfterDispatchResetsTheUpstreamRequest`,
   `bareLineFeedChunkTerminator`, `clientDisconnectMidUploadIsNotASecurityWarning`);
   `DispatchStageTest.BreakerAttribution`
@@ -712,7 +712,7 @@ strip abuse, GW-02).
 *unconditionally* on the *ingress* path: every inbound header is fed through it before any stage
 reads one. The response direction carries no equivalent re-validation, and saying so is the
 honest statement of the control's reach -- the gateway does not re-run `CharacterValidationStage`
-over upstream response headers. Both response paths (`edge.ResponseStage` for the streamed proxy
+over upstream response headers. Both response paths (`edge.relay.ResponseStage` for the streamed proxy
 relay, `asset.AssetResponseEnvelope` for the buffered asset envelope) copy the source's remaining
 headers through once the gateway-owned never-relay set below has been applied. That direction is
 bounded by *which names* cross rather than by re-checking their characters, so the residual is
@@ -3460,14 +3460,14 @@ outstanding hardening work (next section).
 | ID | Control (short) | Owner | Status
 
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
-| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `GatewayEdgeRoute`, `DispatchStage`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; on HTTP/2 the stream-scoped gate rejection, a declared body on `HEAD`, the refusal of a non-decimal `Content-Length`, the bodyless-method rule and declared-length framing are pinned, the other gate clauses and an inbound body failure after dispatch are not)
+| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; on HTTP/2 the stream-scoped gate rejection, a declared body on `HEAD`, the refusal of a non-decimal `Content-Length`, the bodyless-method rule and declared-length framing are pinned, the other gate clauses and an inbound body failure after dispatch are not)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
-| <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`GatewayEdgeRoute` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
+| <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
@@ -3501,7 +3501,7 @@ outstanding hardening work (next section).
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED
 | <<html-04>> | Catalog `entry` origin-relative, reviewed at boot, never echoed in the refusal | Schema + `PortalRules` (configuration validator) | COVERED
 | <<html-05>> | Error page status-only input, fixed per-status title, always anonymous, detail-free fallback | `PortalEndpoint.renderError` + `ErrorPageClassifier.titleFor` | COVERED
-| <<html-06>> | Gateway-originated errors only, exhaustive compile-checked classification; explicit `text/html` required; relayed origin responses never replaced; status unchanged | `ErrorPageClassifier` + `GatewayEdgeRoute` error writers -- ADR-0053 | COVERED
+| <<html-06>> | Gateway-originated errors only, exhaustive compile-checked classification; explicit `text/html` required; relayed origin responses never replaced; status unchanged | `ErrorPageClassifier` + the edge's error writers, negotiated through `ErrorResponseWriter` -- ADR-0053 | COVERED
 |===
 
 == Gaps to close

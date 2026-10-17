@@ -91,6 +91,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -151,7 +152,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — server-mode BFF runtime edge wiring (D16)")
 @Tag("isolated-fork")
-class GatewayEdgeRouteBffWiringTest {
+// NOSONAR java:S5786 — public only so edge.relay.WebSocketRelayStageTest, outside this package, can reach
+// the shared activeRuntime(SessionBinding) and gatewayJson() fixtures without duplicating their assembly.
+@SuppressWarnings("java:S5786")
+public class GatewayEdgeRouteBffWiringTest {
 
     private static final String OIDC_HOST = "gw.example.com";
     private static final String ORIGIN = "https://gw.example.com";
@@ -1956,11 +1960,12 @@ class GatewayEdgeRouteBffWiringTest {
      * so the paths these tests drive (no-session, no-input, live-session short-circuit) never touch a
      * live IdP. The client JWKS handler is the withheld form: these fixtures hold no client key.
      * <p>
-     * Package-private so {@code GatewayEdgeRouteTest} can assert the cookie-mode header carve-out —
-     * which is gated on {@link BffRuntime#isActive()} — against a real active runtime rather than
-     * duplicating this assembly.
+     * Shared so {@code GatewayEdgeRouteTest} can assert the cookie-mode header carve-out — which is
+     * gated on {@link BffRuntime#isActive()} — against a real active runtime rather than duplicating
+     * this assembly; public because {@code edge.relay.WebSocketRelayStageTest} uses it from outside
+     * this package.
      */
-    static BffRuntime activeRuntime(SessionBinding binding) {
+    public static BffRuntime activeRuntime(SessionBinding binding) {
         return activeRuntime(binding, ClientJwksEndpoint.withheld());
     }
 
@@ -2025,9 +2030,10 @@ class GatewayEdgeRouteBffWiringTest {
 
     /**
      * The serializer every edge fixture hands the edge and the runtime: the production class over a
-     * mapper of its own, so a fixture renders its JSON bodies exactly as the gateway does.
+     * mapper of its own, so a fixture renders its JSON bodies exactly as the gateway does. Public because
+     * {@code edge.relay.WebSocketRelayStageTest} uses it from outside this package.
      */
-    static GatewayJson gatewayJson() {
+    public static GatewayJson gatewayJson() {
         return new GatewayJson(new ObjectMapper());
     }
 
