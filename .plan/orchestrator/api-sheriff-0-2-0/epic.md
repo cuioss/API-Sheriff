@@ -209,6 +209,11 @@ needs no translation.
   **ADR-0037 is rewritten in place, not superseded** (it is still `Proposed`). User docs are part of
   the plan. Eight deliverables, proceeding unsplit: the two directions, the CSRF guard and the record
   are one contract.
+- **2026-10-17 — one plan at a time.** Operator ruling: plans run serially, never two at once. The
+  orchestrator hands out the next command only when the running plan has landed. The order is V02-40
+  (running) → V02-25 → V02-41 → V02-12's second PR → V02-42 → V02-43 → V02-45 → V02-46 → V02-23
+  (re-grounded) → V02-27 → the rest. This replaces the "two at once under the rebase rule" allowance in
+  the slice specs. Off-surface fillers (V02-11, V02-22, V02-04) also wait their turn.
 - **2026-10-15 — plan-marshall findings go to plan-marshall, not into this repository's lesson corpus.**
   This is an operator standing rule, the same one `kidicap-gateway-requirements` follows. Every
   plan-marshall-related finding drained from this epic's inbox is routed to the `lessons-routing` epic of
