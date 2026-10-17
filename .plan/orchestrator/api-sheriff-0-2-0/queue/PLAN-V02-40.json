@@ -2,9 +2,9 @@
   "id": "PLAN-V02-40",
   "slug": "validator-terminal-edge-protocol-rules",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-40-validator-terminal-edge-protocol-rules",
-  "pr": "",
-  "landing": "",
+  "pr": "485",
+  "landing": "landings/PLAN-V02-40.md",
   "seq": 40
 }

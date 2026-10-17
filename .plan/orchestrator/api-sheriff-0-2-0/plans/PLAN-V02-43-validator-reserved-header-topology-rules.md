@@ -32,6 +32,8 @@ Slice-specific notes:
 - **This slice closes the series.** No private rule may remain in `ConfigValidator`: extract any rule a slice missed or another plan added meanwhile. Drop the then-unused `LOGGER`. `ConfigValidatorTest` keeps only the orchestration cases (ValidConfiguration, StructuralVerbRejection, Aggregation).
 - **Write the ADR** that `PLAN-V02-26` proposed and did not create: boot validation rules live in concern classes on the `ValidationRule` seam, and `ConfigValidator` runs one ordered list. Derive the ordinal from `doc/adr/` at write time.
 - `doc/security-threat-model.adoc`: make every moved test-class name current.
+- Add the missing `@param` tags to the seven public rule methods that #485 extracted into `TerminalActionRules`,
+  `EdgeRules` and `ProtocolRules` (a non-blocking advisory from #485's code review).
 
 Estimated diff: ~275 KB (move-only; see the size rule).
 
@@ -55,6 +57,13 @@ Estimated diff: ~275 KB (move-only; see the size rule).
   changes. Any test asserting on the `ConfigValidator` logger is pointed at the rule class.
 - Update member-level references to moved methods in Javadoc, docs, schemas and IT config comments. Leave
   the dated reports under `doc/quality-report/` untouched.
+- **The outline's consumer sweep covers prose as well as code** (#485 needed an extra outline round for
+  this). For every moved test class, nested class or member, search `doc/**/*.adoc` (above all
+  `doc/security-threat-model.adoc`, which cites tests as control evidence), IT Javadoc in
+  `integration-tests/`, and `package-info.java`. When the slice extends one list of `RuleSupport` helpers
+  or rules, update every other list of the same set: the `rule/package-info.java` list and the
+  `ConfigValidator` class Javadoc list.
+- A method made public by the move carries complete Javadoc, including `@param` and `@return`.
 - **Size (operator decision 2026-10-15).** For these move-only slices the 150,000-character cap is lifted.
   It is Sourcery's limit, and Sourcery is optional in `.plan/marshal.json`. The **100-file** cap
   (CodeRabbit, required) still holds. Estimates are V02-26's outline figures × 1.39. Measure
