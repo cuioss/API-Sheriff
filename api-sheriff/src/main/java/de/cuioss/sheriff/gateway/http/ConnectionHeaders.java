@@ -33,7 +33,7 @@ import lombok.experimental.UtilityClass;
  * pattern whose entire premise is that the backend never sees it.
  * <p>
  * <strong>Every path that answers a client reads the response set.</strong> The gateway has two:
- * the proxy data plane's streamed relay ({@code edge.ResponseStage}) and the asset terminal
+ * the proxy data plane's streamed relay ({@code edge.relay.ResponseStage}) and the asset terminal
  * action's buffered envelope ({@code asset.AssetResponseEnvelope}). They apply the policy
  * differently — the proxy path re-establishes framing afterwards because it streams a body it
  * does not hold, the asset path lets the framework compute the length of the buffer it writes —

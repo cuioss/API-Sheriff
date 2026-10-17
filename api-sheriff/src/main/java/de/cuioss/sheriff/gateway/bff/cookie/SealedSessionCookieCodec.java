@@ -94,7 +94,7 @@ import org.jspecify.annotations.Nullable;
  * The budget is <strong>one declared number</strong> ({@code oidc.session.max_cookie_size},
  * defaulting to {@link #DEFAULT_COOKIE_VALUE_BUDGET}) that drives BOTH ends of the round trip: the
  * seal-time budget enforced here, and the gateway's pre-route {@code Cookie} header-value cap in
- * {@code GatewayEdgeRoute}. Encoding the same limit as two independent constants is what made
+ * {@code edge.assembly.SecurityPostures}. Encoding the same limit as two independent constants is what made
  * cookie mode unusable before — every request carrying a live sealed cookie was rejected {@code 400}
  * at the edge by a 2048-character header-value cap that the seal budget of the day (then 4096)
  * contradicted.

@@ -30,10 +30,12 @@ import io.vertx.ext.web.RoutingContext;
 
 /**
  * Retires an HTTP/1.x connection whose request boundaries can no longer be trusted: after a framing
- * rejection — the framing gate's, or a body the dispatch could not finish reading — and after a
- * reserved-body {@code 413}. A retired connection is closed once its answer has been written, and a
- * request that still arrives on it is never processed (see {@link #isRetired}). An HTTP/2 rejection
- * ends only its stream instead, through the one end rule ({@link ResponseEnds#endResponse}).
+ * rejection — the framing gate's, or a body the dispatch could not finish reading. A connection so
+ * marked is closed once its answer has been written, and a request that still arrives on it is never
+ * processed (see {@link #isRetired}). A reserved-body {@code 413} closes its connection after the
+ * answer too, but only through {@link #retireConnectionAfterResponse}: it is not recorded in the
+ * retired set. An HTTP/2 rejection ends only its stream instead, through the one end rule
+ * ({@link ResponseEnds#endResponse}).
  * <p>
  * Thread-safe: the retired-connection set is synchronized, and a mark is recorded on the virtual
  * thread while it is read on the connection's event loop.

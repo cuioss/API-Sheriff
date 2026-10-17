@@ -31,7 +31,7 @@ import io.vertx.core.http.HttpServerOptions;
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
  * rejected by the Vert.x codec, and an idle connection is reaped so a slow-loris / h2 abuse load
  * cannot pin connection slots. Five further limits are consumed by
- * {@link de.cuioss.sheriff.gateway.edge.GatewayEdgeRoute} rather
+ * {@code de.cuioss.sheriff.gateway.edge} and its sub-packages rather
  * than the transport: the {@linkplain #admissionCap() admission cap} bounds the number of requests
  * that may be in flight at once (rejected with {@code 503} <em>before</em> a virtual thread is
  * dispatched, so a flood cannot spawn unbounded virtual threads), the

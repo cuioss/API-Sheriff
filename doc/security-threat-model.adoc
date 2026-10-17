@@ -573,7 +573,7 @@ enforces it and the test that pins it:
   on HTTP/2 ends only that stream; once the response has been handed over for relay, the client
   stream is reset, never cleanly ended. A stream that ends with an empty final frame carries no body
   and is served. The opt-in below does not relax this rule
-| edge (`DispatchStage`, `GatewayEdgeRoute`)
+| edge (`DispatchStage`, `TerminalDispatch`, `ResponseEnds`)
 | `GatewayEdgeFramingCorpusTest` (`bodylessMethodNeverCarriesABodyUpstreamOnHttp2`,
   `optInAdmitsOnlyADeclaredLengthGetBodyOnHttp2`, `bodylessMethodEndingWithAnEmptyFrameIsServed`,
   `bodyByteAfterTheResponseStartedResetsTheStream`); `DispatchStageTest.BodylessWatch`,
@@ -607,13 +607,13 @@ enforces it and the test that pins it:
 | On HTTP/1.x nothing behind a `FramingGate` rejection is processed: the answer carries
   `Connection: close`, the connection is closed, and a request already queued on it is neither
   processed nor forwarded
-| edge (`GatewayEdgeRoute`)
+| edge (`ConnectionRetirement`)
 | `GatewayEdgeFramingCorpusTest` (`requestPipelinedBehindGateRejection`)
 
 | On HTTP/2 a `FramingGate` rejection ends only the offending stream: the answer carries no
   `Connection` header, the stream is reset, nothing of it reaches the upstream, and a sibling
   stream and a further stream complete on the same connection
-| edge (`GatewayEdgeRoute`)
+| edge (`ResponseEnds`)
 | `GatewayEdgeFramingCorpusTest` (`gateRejectionOnHttp2EndsOnlyTheOffendingStream`)
 
 | An inbound body failure after dispatch -- broken chunk framing, or a client that disconnects
@@ -621,7 +621,7 @@ enforces it and the test that pins it:
   reused. It is reported as `INBOUND_BODY_ABORTED` (`400`), attributed to the client: it is not a
   `SECURITY_FILTER_VIOLATION`, and it is not counted as a failure by the route's circuit breaker
   and is recorded by it as a success
-| edge (`DispatchStage`, `GatewayEdgeRoute`)
+| edge (`DispatchStage`, `TerminalDispatch`)
 | `GatewayEdgeFramingCorpusTest` (`inboundFramingFailureAfterDispatchResetsTheUpstreamRequest`,
   `bareLineFeedChunkTerminator`, `clientDisconnectMidUploadIsNotASecurityWarning`);
   `DispatchStageTest.BreakerAttribution`
