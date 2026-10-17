@@ -264,10 +264,14 @@ Dependencies are bytecode dependencies; a Javadoc link is not one.
 |===
 
 *The guard.* `arch.EdgeSubPackageArchTest` fails the build on a cycle between sub-packages and on any
-sub-package class that depends on `GatewayEdgeRoute`. Both rules are written over the root package, not
+sub-package class that depends on a class in the root package -- `GatewayEdgeRoute`, the classes
+nested in it, or any class later added to the root. Both rules are written over the root package, not
 over the list above, so a new sub-package is held to them as soon as it exists. The test carries the
 four control legs of
-link:adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030].
+link:adr/0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030];
+its non-vacuity leg derives the sub-packages from the `package-info` classes declared directly
+beneath the root, rather than from a list in the test, and requires each to hold a class other than
+its `package-info`.
 It does not check the table edge by edge: a new dependency that closes no cycle passes, and the table
 is then the record to update.
 

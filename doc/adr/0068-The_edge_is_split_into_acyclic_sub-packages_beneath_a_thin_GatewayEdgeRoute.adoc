@@ -170,16 +170,19 @@ today's package list:
 
 . the direct sub-packages of `de.cuioss.sheriff.gateway.edge` are slices, and the slices are free of
   cycles;
-. no class in a sub-package depends on `GatewayEdgeRoute` or a class nested in it.
+. no class in a sub-package depends on a class whose package is exactly the root package --
+  `GatewayEdgeRoute`, the classes nested in it, and any class later added to the root.
 
 The second rule closes the path the first cannot see: the root is in no slice, so a cycle through it
 (`sub -> GatewayEdgeRoute -> sub`) is not a cycle between slices.
 
 The test ships with the four control legs of
 link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]:
-a non-vacuity guard (at least two slices resolve, every one of the nine sub-packages resolves to a
-class, and `GatewayEdgeRoute` is present in the root); negative controls that run both rules against
-a specimen root whose sub-packages form a cycle and reference the specimen root class; a matched
+a non-vacuity guard (at least two slices resolve; the sub-packages the production tree declares
+directly beneath the root, derived from their `package-info` classes rather than from a list in the
+test, are at least one, and each resolves to a class other than its `package-info`; and
+`GatewayEdgeRoute` is present in the root); negative controls that run both rules against a specimen
+root whose sub-packages form a cycle and reference a class in the specimen root package; a matched
 positive control showing that `GatewayEdgeRoute` depends on sub-package classes before it shows the
 class is outside the second rule's selection; and an explicit carve-out of the specimen package from
 the production import, with its own control.

@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -43,15 +44,18 @@ import org.junit.jupiter.api.Test;
 /**
  * Standing guard for the shape of the edge (ADR-0068): the sub-packages beneath
  * {@code de.cuioss.sheriff.gateway.edge} form an acyclic graph, and none of them depends back on
- * {@code GatewayEdgeRoute}, the thin entry point that sits in the edge root and wires them.
+ * the edge root package, where {@code GatewayEdgeRoute}, the thin entry point that wires them,
+ * sits.
  * <p>
  * <strong>Two rules, each a property over a root package.</strong>
  * <ol>
  *   <li><em>No cycle between sub-packages</em> — every direct sub-package of the root is one slice
  *       (its classes and everything below it), and the slices are free of cycles.</li>
- *   <li><em>No dependency back on the root class</em> — no class in a sub-package depends on the
- *       root class. A cycle through the root ({@code sub → GatewayEdgeRoute → sub}) is not a cycle
- *       between slices, because the root is in no slice; this rule is what closes that path.</li>
+ *   <li><em>No dependency back on the root package</em> — no class in a sub-package depends on any
+ *       class whose package is exactly the root package: {@code GatewayEdgeRoute}, the classes nested
+ *       in it, and any further class later added to the root. A cycle through the root
+ *       ({@code sub → GatewayEdgeRoute → sub}) is not a cycle between slices, because the root is in
+ *       no slice; this rule is what closes that path.</li>
  * </ol>
  * Neither rule names the current sub-packages: a new sub-package is held to both the moment it
  * exists, without this file being edited. Both are written as methods over a root so the specimen
@@ -59,13 +63,15 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>Four legs, per ADR-0030.</strong>
  * <ol>
- *   <li><em>Non-vacuity</em> — at least two slices resolve, every sub-package the decomposition
- *       created still resolves to at least one class, and {@code GatewayEdgeRoute} is present in the
- *       root. Without these a renamed root or an emptied tree would leave both rules green over
- *       nothing.</li>
+ *   <li><em>Non-vacuity</em> — at least two slices resolve, at least one sub-package of the root is
+ *       declared, every declared sub-package still resolves to at least one class other than its
+ *       {@code package-info}, and {@code GatewayEdgeRoute} is present in the root. The declared
+ *       sub-packages are derived from the {@code package-info} classes the production import holds
+ *       directly beneath the root, not from a list kept in this file. Without these a renamed root or
+ *       an emptied tree would leave both rules green over nothing.</li>
  *   <li><em>Negative controls</em> — both rules must throw when run against the specimen root
  *       {@code arch.specimen.edgecycle}, whose {@code alpha} and {@code beta} sub-packages reference
- *       each other and whose {@code beta} references the specimen root class.</li>
+ *       each other and whose {@code beta} references a class in the specimen root package.</li>
  *   <li><em>Matched positive control</em> — {@code GatewayEdgeRoute} is first asserted to live in
  *       the root and to depend on sub-package classes, and only then asserted to be outside the
  *       selection of the second rule. In that order the exclusion shows that the rule tells the root
@@ -93,13 +99,8 @@ class EdgeSubPackageArchTest {
     private static final String SPECIMEN_ROOT = SPECIMEN_PACKAGE + ".edgecycle";
     private static final String SPECIMEN_ROOT_CLASS = SPECIMEN_ROOT + ".EdgeRootSpecimen";
 
-    /**
-     * The sub-packages the decomposition created. Read by the non-vacuity guard only — neither rule
-     * consults it — so a sub-package that is emptied or renamed is reported by name instead of
-     * quietly dropping out of the rules' reach.
-     */
-    private static final List<String> DECOMPOSED_SUB_PACKAGES = List.of(
-            "admission", "assembly", "end", "error", "relay", "request", "reserved", "terminal", "upstream");
+    /** The simple name ArchUnit gives the class compiled from a {@code package-info.java}. */
+    private static final String PACKAGE_INFO = "package-info";
 
     /**
      * Keeps the specimen package out of an import, independent of the test-source filter. The
@@ -127,37 +128,47 @@ class EdgeSubPackageArchTest {
     }
 
     @Test
-    @DisplayName("No class in an edge sub-package depends on GatewayEdgeRoute")
-    void edgeSubPackagesDoNotDependOnGatewayEdgeRoute() {
-        subPackagesMustNotDependOnRootClass(EDGE_ROOT, EDGE_ROOT_CLASS).check(PRODUCTION_CLASSES);
+    @DisplayName("No class in an edge sub-package depends on a class in the edge root package")
+    void edgeSubPackagesDoNotDependOnTheEdgeRootPackage() {
+        subPackagesMustNotDependOnRootPackage(EDGE_ROOT).check(PRODUCTION_CLASSES);
     }
 
     /**
      * Guards the guard. Both rules pass over an empty selection, and a rule that passes over nothing
      * cannot be told apart from a clean tree by its verdict.
      * <p>
+     * The sub-packages checked here are the ones the production tree declares: every package of
+     * {@code de.cuioss.sheriff.gateway} carries a {@code package-info.java}, whose compiled class the
+     * import holds. A {@code package-info} alone does not count as content, so a sub-package that is
+     * emptied but keeps its declaration is reported by name instead of quietly dropping out of the
+     * rules' reach.
+     * <p>
      * Deliberately direct counts rather than {@link ArchRule}s with always-true conditions: such a
      * condition risks failing for its own reason instead of for emptiness.
      */
     @Test
-    @DisplayName("Edge sub-package guard is non-vacuous: slices, every decomposed sub-package and the root class resolve")
+    @DisplayName("Edge sub-package guard is non-vacuous: slices, every declared sub-package and the root class resolve")
     void guardIsNonVacuous() {
         Set<String> slices = sliceNamesOf(EDGE_ROOT, PRODUCTION_CLASSES);
-        List<String> unresolved = DECOMPOSED_SUB_PACKAGES.stream()
-                .filter(subPackage -> countClassesIn(EDGE_ROOT + "." + subPackage) == 0)
+        Set<String> declared = declaredSubPackagesOf(EDGE_ROOT, PRODUCTION_CLASSES);
+        List<String> unresolved = declared.stream()
+                .filter(subPackage -> countNonPackageInfoClassesIn(EDGE_ROOT + "." + subPackage) == 0)
                 .toList();
 
         assertAll("the edge sub-package guard is non-vacuous",
                 () -> assertTrue(slices.size() >= 2,
                         "Only " + slices + " resolved as slices beneath " + EDGE_ROOT
                                 + " — a cycle needs two slices, so the cycle rule is checking nothing"),
+                () -> assertFalse(declared.isEmpty(),
+                        "No package-info resolved directly beneath " + EDGE_ROOT
+                                + ", so the per-sub-package check below is checking nothing"),
                 () -> assertEquals(List.of(), unresolved,
-                        "These edge sub-packages resolved to NO production class, so both rules are silently "
-                                + "not covering them. Fix DECOMPOSED_SUB_PACKAGES, or remove an entry "
-                                + "deliberately if the sub-package was retired."),
+                        "These declared edge sub-packages resolved to NO production class besides their "
+                                + "package-info, so both rules are silently not covering them. Remove the "
+                                + "sub-package, package-info included, if it was retired."),
                 () -> assertTrue(PRODUCTION_CLASSES.contain(EDGE_ROOT_CLASS),
-                        EDGE_ROOT_CLASS + " did not resolve, so the second rule forbids a dependency on a "
-                                + "class that does not exist"));
+                        EDGE_ROOT_CLASS + " did not resolve, so the edge root package the second rule "
+                                + "protects may hold nothing"));
     }
 
     @Nested
@@ -185,19 +196,18 @@ class EdgeSubPackageArchTest {
         }
 
         /**
-         * Negative control for the root-class rule: the specimen's {@code beta} sub-package references
-         * the specimen root class. {@code allowEmptyShould(true)} for the reason given on
-         * {@link #cycleRuleFailsOnSpecimenCycle()}.
+         * Negative control for the root-package rule: the specimen's {@code beta} sub-package
+         * references {@code EdgeRootSpecimen}, a class in the specimen root package.
+         * {@code allowEmptyShould(true)} for the reason given on {@link #cycleRuleFailsOnSpecimenCycle()}.
          */
         @Test
-        @DisplayName("The root-class rule rejects beta's reference to the specimen root (negative control)")
-        void rootClassRuleFailsOnSpecimenBackReference() {
-            ArchRule rule = subPackagesMustNotDependOnRootClass(SPECIMEN_ROOT, SPECIMEN_ROOT_CLASS)
-                    .allowEmptyShould(true);
+        @DisplayName("The root-package rule rejects beta's reference to the specimen root package (negative control)")
+        void rootPackageRuleFailsOnSpecimenBackReference() {
+            ArchRule rule = subPackagesMustNotDependOnRootPackage(SPECIMEN_ROOT).allowEmptyShould(true);
 
             assertThrows(AssertionError.class, () -> rule.check(SPECIMEN_CLASSES),
-                    "The root-class rule must fail on CycleBetaSpecimen's reference to EdgeRootSpecimen — if "
-                            + "it does not, either the reference was removed or the specimen root no longer "
+                    "The root-package rule must fail on CycleBetaSpecimen's reference to EdgeRootSpecimen — "
+                            + "if it does not, either the reference was removed or the specimen root no longer "
                             + "resolves");
         }
 
@@ -209,8 +219,8 @@ class EdgeSubPackageArchTest {
          * the root or stopped wiring the sub-packages, so both near-miss properties are asserted first.
          */
         @Test
-        @DisplayName("GatewayEdgeRoute depends on the sub-packages and is outside the root-class rule's selection (positive control)")
-        void edgeRootClassIsOutsideTheRootClassRuleSelection() {
+        @DisplayName("GatewayEdgeRoute depends on the sub-packages and is outside the root-package rule's selection (positive control)")
+        void edgeRootClassIsOutsideTheRootPackageRuleSelection() {
             assertTrue(PRODUCTION_CLASSES.contain(EDGE_ROOT_CLASS),
                     EDGE_ROOT_CLASS + " did not resolve, so this control cannot establish anything");
             JavaClass edgeRoute = PRODUCTION_CLASSES.get(EDGE_ROOT_CLASS);
@@ -224,7 +234,7 @@ class EdgeSubPackageArchTest {
                             EDGE_ROOT_CLASS + " depends on no sub-package class, so it is no longer the near-miss "
                                     + "this control needs"),
                     () -> assertFalse(inSubPackage.test(edgeRoute),
-                            "The root-class rule selects " + EDGE_ROOT_CLASS + " itself, so its own wiring of the "
+                            "The root-package rule selects " + EDGE_ROOT_CLASS + " itself, so its own wiring of the "
                                     + "sub-packages would be reported as a violation"));
         }
 
@@ -268,19 +278,19 @@ class EdgeSubPackageArchTest {
     }
 
     /**
-     * The root-class rule over a root: no class in a sub-package of {@code root} depends on
-     * {@code rootClass} or one of its nested classes.
+     * The root-package rule over a root: no class in a sub-package of {@code root} depends on a class
+     * whose package is exactly {@code root}. That covers the wiring class, the classes nested in it
+     * (they share its package) and any further class added to the root, without naming any of them.
      *
-     * @param root      the root package whose sub-packages are selected
-     * @param rootClass the fully qualified name of the class in the root that nothing below may reach
+     * @param root the root package whose sub-packages are selected and that none of them may reach
      * @return the rule
      */
-    private static ArchRule subPackagesMustNotDependOnRootClass(String root, String rootClass) {
+    private static ArchRule subPackagesMustNotDependOnRootPackage(String root) {
         return noClasses()
                 .that(inSubPackageOf(root))
-                .should().dependOnClassesThat(isOrIsNestedIn(rootClass))
-                .because(rootClass + " wires the sub-packages of " + root + "; a dependency back on it would "
-                        + "close a cycle through the root that the slice rule cannot see (ADR-0068)");
+                .should().dependOnClassesThat(resideExactlyIn(root))
+                .because("the root package " + root + " wires its sub-packages; a dependency back on any class "
+                        + "in it would close a cycle through the root that the slice rule cannot see (ADR-0068)");
     }
 
     /**
@@ -298,12 +308,17 @@ class EdgeSubPackageArchTest {
         };
     }
 
-    private static DescribedPredicate<JavaClass> isOrIsNestedIn(String className) {
-        return new DescribedPredicate<>("are " + className + " or nested in it") {
+    /**
+     * Selects the classes whose package is exactly {@code root} — never a class in a sub-package.
+     *
+     * @param root the root package
+     * @return the predicate
+     */
+    private static DescribedPredicate<JavaClass> resideExactlyIn(String root) {
+        return new DescribedPredicate<>("reside in the root package " + root) {
             @Override
             public boolean test(JavaClass javaClass) {
-                String name = javaClass.getName();
-                return name.equals(className) || name.startsWith(className + "$");
+                return javaClass.getPackageName().equals(root);
             }
         };
     }
@@ -315,8 +330,26 @@ class EdgeSubPackageArchTest {
                 .collect(Collectors.toSet());
     }
 
-    private static long countClassesIn(String packageName) {
+    /**
+     * The direct sub-packages of {@code root} that declare themselves with a {@code package-info}.
+     *
+     * @param root    the root package
+     * @param classes the import to read the declarations from
+     * @return the simple names of the declared direct sub-packages, sorted
+     */
+    private static Set<String> declaredSubPackagesOf(String root, JavaClasses classes) {
+        String prefix = root + ".";
+        return classes.stream()
+                .filter(javaClass -> PACKAGE_INFO.equals(javaClass.getSimpleName()))
+                .map(JavaClass::getPackageName)
+                .filter(name -> name.startsWith(prefix) && name.indexOf('.', prefix.length()) < 0)
+                .map(name -> name.substring(prefix.length()))
+                .collect(Collectors.toCollection(TreeSet::new));
+    }
+
+    private static long countNonPackageInfoClassesIn(String packageName) {
         return PRODUCTION_CLASSES.stream()
+                .filter(javaClass -> !PACKAGE_INFO.equals(javaClass.getSimpleName()))
                 .map(JavaClass::getPackageName)
                 .filter(name -> name.equals(packageName) || name.startsWith(packageName + "."))
                 .count();
