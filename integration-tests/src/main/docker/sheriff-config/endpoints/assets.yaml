@@ -24,7 +24,7 @@
 # rather than declaring a new one: a new anchor would have to be added to all four
 # gateway.yaml documents or those overlays would boot-fail on a route resolving to an
 # undeclared anchor. The four instances that do not mount /app/demo are unaffected --
-# ConfigValidator.validateAssetSource requires only that 'directory' be PRESENT and
+# TerminalActionRules.validateAssetSource requires only that 'directory' be PRESENT and
 # performs no filesystem existence check, so they boot unchanged and DirectoryAssetSource
 # answers 404 on that path.
 #
