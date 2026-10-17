@@ -76,6 +76,22 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.assembly.DispatchPath;
+import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
+import de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler;
+import de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture;
+import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
+import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
+import de.cuioss.sheriff.gateway.edge.end.EarlyResponseEnd;
+import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
+import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
+import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
+import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
+import de.cuioss.sheriff.gateway.edge.terminal.RedirectStage;
+import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
+import de.cuioss.sheriff.gateway.edge.upstream.GrpcDispatchStage;
+import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
@@ -135,7 +151,7 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>Boot-time assembly.</strong> The constructor completes every {@link Route} of the frozen
  * {@link RouteTable} with its boot-attached components via the {@link RouteAssembler}, which also
- * builds the {@link RouteAssembler.UpstreamClients} lookup holding the deduplicated shared Vert.x
+ * builds the {@link UpstreamClients} lookup holding the deduplicated shared Vert.x
  * clients and SmallRye guards the proxy dispatch resolves per route. It builds every stage once with the shared
  * {@link SecurityEventCounter}, the gateway-wide {@link SecurityConfiguration} seeded from the
  * resolved {@code security_defaults} {@link SecurityProfile} (an omitted block resolving to
@@ -251,7 +267,7 @@ public class GatewayEdgeRoute {
      * whose body stopped arriving is ended as the request's before the guard would end it as the
      * upstream's.
      */
-    static final int UPSTREAM_TIMEOUT_SECONDS = 30;
+    public static final int UPSTREAM_TIMEOUT_SECONDS = 30;
     private static final String CLAIMS_PARAM = "claims";
     private static final String RETURN_URL_PARAM = "returnUrl";
     private static final String STATE_PARAM = "state";
@@ -324,7 +340,7 @@ public class GatewayEdgeRoute {
 
     private final List<Route> routes;
     /** The shared upstream clients and guards every proxy dispatch resolves its route's pair from. */
-    private final RouteAssembler.UpstreamClients upstreamClients;
+    private final UpstreamClients upstreamClients;
     private final ExecutorService virtualThreadExecutor;
     private final EdgeHardeningOptions hardening;
 
@@ -432,11 +448,13 @@ public class GatewayEdgeRoute {
      * <strong>Test-only.</strong> Assembles the edge exactly as the CDI constructor does, but hands
      * the WebSocket relay stage the given {@link WebSocketRelayStage.RelayObserver}, so a full-edge
      * relay test can observe the wiring time and the first relayed frame per direction of every relay
-     * this edge builds. Its only callers are the full-edge relay tests in {@code WebSocketRelayStageTest}.
+     * this edge builds. Its only callers are the full-edge relay tests in {@code WebSocketRelayStageTest},
+     * which lives with its subject in {@code edge.relay} — the reason this constructor is public.
      * <p>
      * Not a CDI entry point: CDI resolves only the {@link Inject @Inject} constructor, which delegates
      * here with {@link WebSocketRelayStage.RelayObserver#NO_OP}, so production behaviour is unchanged.
-     * The observer type is package-private, and no configuration key or system property selects it.
+     * The observer type is public only so this edge can hand it on to the relay stage, and no
+     * configuration key or system property selects it.
      *
      * @param routeTable                 as for the CDI constructor
      * @param gatewayConfig             as for the CDI constructor
@@ -454,7 +472,7 @@ public class GatewayEdgeRoute {
     // The parameter list mirrors the CDI constructor's by construction, plus the observer; a parameter
     // object would exist only to satisfy the count and would diverge from the CDI signature it mirrors.
     @SuppressWarnings("java:S107") // test-only overload of the @Inject constructor
-    GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig, Instance<TokenValidator> tokenValidator,
+    public GatewayEdgeRoute(RouteTable routeTable, GatewayConfig gatewayConfig, Instance<TokenValidator> tokenValidator,
             Vertx vertx, ExecutorService virtualThreadExecutor, EdgeHardeningOptions hardening,
             SheriffMetrics sheriffMetrics, BffRuntime bffRuntime,
             EgressTrustProfileResolver egressTrustProfileResolver, PortalEndpoint portalEndpoint,
@@ -1196,8 +1214,8 @@ public class GatewayEdgeRoute {
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
             // and relays response trailers; HTTP and GraphQL take the HTTP dispatch path. The split is
-            // RouteAssembler.DispatchPath, the same one the assembler built clients and guards from.
-            switch (RouteAssembler.DispatchPath.of(route.protocol())) {
+            // DispatchPath, the same one the assembler built clients and guards from.
+            switch (DispatchPath.of(route.protocol())) {
                 case WEBSOCKET_RELAY -> dispatchWebSocket(ctx, request, route, forward);
                 case GRPC_DISPATCH -> dispatchGrpc(ctx, request, route, forward);
                 case HTTP_DISPATCH -> dispatchAndRelay(ctx, request, route, forward);
@@ -2432,7 +2450,7 @@ public class GatewayEdgeRoute {
      * branch is left as it is: an HTTP/2 connection is shared by its streams, and the gateway resets a
      * single stream rather than closing the connection.
      */
-    private static HttpClient clientFor(Vertx vertx, RouteAssembler.UpstreamTarget target,
+    private static HttpClient clientFor(Vertx vertx, UpstreamTarget target,
             boolean verifyHostname, @Nullable TrustOptions trustOptions) {
         if (!target.forcedHttp2()) {
             return vertx.createHttpClient(
@@ -2621,14 +2639,14 @@ public class GatewayEdgeRoute {
      * preset-seeded limit overrides — is asserted directly by {@code GatewayEdgeRouteTest} instead
      * of only through a booted edge, whose assembled routes are not observable.
      */
-    static RouteAssembler.SecurityPosture securityPostureFor(
+    static SecurityPosture securityPostureFor(
             @Nullable SecurityFilterConfig filter, SecurityProfile globalProfile,
             @Nullable Boolean allowExtendedAscii) {
         SecurityProfile effective = SecurityProfile.parse(filter == null ? null : filter.profile())
                 .orElse(globalProfile);
         SecurityConfiguration preset = SecurityConfigurations.withDeclaredCharacterPolicy(
                 SecurityProfile.limitsProfile(effective, globalProfile).preset(), allowExtendedAscii);
-        return new RouteAssembler.SecurityPosture(effective,
+        return new SecurityPosture(effective,
                 filter == null ? preset : applyDeclaredLimits(preset, filter));
     }
 
@@ -2691,7 +2709,7 @@ public class GatewayEdgeRoute {
      * {@value #UPSTREAM_TIMEOUT_SECONDS} seconds, bounds the whole dispatch, a steady upload included;
      * the request-body idle timeout is shorter.
      */
-    private Guard guardFor(RouteAssembler.ResilienceShape shape) {
+    private Guard guardFor(ResilienceShape shape) {
         // The name identifies the breaker in its description and its transition log lines only. It is
         // deliberately NOT registered as the breaker's SmallRye name: that registry is JVM-global and
         // refuses a name it already holds, so a second edge built in the same JVM for the same upstream
@@ -2701,7 +2719,7 @@ public class GatewayEdgeRoute {
         // retryEnabled — because each distinct shape holds its own breaker: a gRPC route and an HTTP/1.1
         // route to one host:port, or two routes differing only in retryEnabled, open and close
         // independently, and an operator reading a transition must be able to tell which one moved.
-        RouteAssembler.UpstreamTarget target = shape.target();
+        UpstreamTarget target = shape.target();
         String name = target.scheme() + "://" + target.host() + ":" + target.port()
                 + ":h2=" + target.forcedHttp2() + ":retry=" + shape.retryEnabled();
         Guard.Builder builder = Guard.create().withDescription("upstream-" + name);

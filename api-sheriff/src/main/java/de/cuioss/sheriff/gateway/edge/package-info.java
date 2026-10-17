@@ -16,7 +16,7 @@
 /**
  * The framework edge: the Vert.x-bound catch-all route, edge hardening, streamed upstream
  * dispatch / response, and the boot-time
- * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler} that completes every
+ * {@link de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler} that completes every
  * {@link de.cuioss.sheriff.gateway.routing.Route} of the frozen
  * {@link de.cuioss.sheriff.gateway.routing.RouteTable} with its boot-attached components and holds
  * the deduplicated upstream clients and resilience guards in an immutable lookup beside the routes.

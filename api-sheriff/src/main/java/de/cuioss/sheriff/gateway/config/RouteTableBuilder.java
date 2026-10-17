@@ -372,7 +372,7 @@ public final class RouteTableBuilder {
      * <em>repeated</em> slashes at the seam, so an alias ending {@code /anything//} joined with
      * {@code //graphql} still yields {@code /anything/graphql}. The forward URI is
      * then reconstructed as {@code stripTrailingSlash(effective base path) + remainder-after-match-key}
-     * by {@link de.cuioss.sheriff.gateway.edge.DispatchStage#upstreamRequestUri}.
+     * by {@link de.cuioss.sheriff.gateway.edge.upstream.DispatchStage#upstreamRequestUri}.
      * <p>
      * Aliases therefore carry environments and routes carry paths: an alias
      * {@code http://go-httpbin:8080/anything} with {@code upstream.path: /graphql} forwards to
@@ -380,9 +380,9 @@ public final class RouteTableBuilder {
      * {@code upstream.path: /{package}.{Service}} is the whole effective base path and the full
      * method path reaches the upstream unchanged. The alias host / port / scheme are carried
      * through unchanged, so neither sharing key is affected: the clients are keyed by
-     * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler.UpstreamTarget} (scheme, host, port and
+     * {@link de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget} (scheme, host, port and
      * the forced-HTTP/2 flag), the resilience guards by
-     * {@link de.cuioss.sheriff.gateway.edge.RouteAssembler.ResilienceShape} (that upstream target
+     * {@link de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape} (that upstream target
      * plus the route's retry setting), and the base path is part of neither. A route without a
      * non-blank {@code upstream.path} keeps the alias-derived base path unchanged — the default
      * proxy behavior.

@@ -80,6 +80,9 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture;
+import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -730,9 +733,9 @@ class GatewayEdgeRouteTest {
             // Arrange — the case the previous effectiveSecurityFilter().map(...) shape skipped entirely
 
             // Act
-            RouteAssembler.SecurityPosture strict =
+            SecurityPosture strict =
                     GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.STRICT, null);
-            RouteAssembler.SecurityPosture lenient =
+            SecurityPosture lenient =
                     GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.LENIENT, null);
 
             // Assert
@@ -752,7 +755,7 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().allowedPaths(List.of("/x")).build();
 
             // Act
-            RouteAssembler.SecurityPosture posture =
+            SecurityPosture posture =
                     GatewayEdgeRoute.securityPostureFor(noProfile, SecurityProfile.LENIENT, null);
 
             // Assert
@@ -814,7 +817,7 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().profile("lenient").build();
 
             // Act
-            RouteAssembler.SecurityPosture posture =
+            SecurityPosture posture =
                     GatewayEdgeRoute.securityPostureFor(declared, SecurityProfile.STRICT, null);
 
             // Assert
@@ -830,11 +833,11 @@ class GatewayEdgeRouteTest {
                     SecurityFilterConfig.builder().profile("minimal").build();
 
             // Act — chain minimal → lenient, then the all-minimal chain
-            RouteAssembler.SecurityPosture inheritsLenient =
+            SecurityPosture inheritsLenient =
                     GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.LENIENT, null);
-            RouteAssembler.SecurityPosture allMinimal =
+            SecurityPosture allMinimal =
                     GatewayEdgeRoute.securityPostureFor(minimal, SecurityProfile.MINIMAL, null);
-            RouteAssembler.SecurityPosture globalMinimalBlockLess =
+            SecurityPosture globalMinimalBlockLess =
                     GatewayEdgeRoute.securityPostureFor(null, SecurityProfile.MINIMAL, null);
 
             // Assert

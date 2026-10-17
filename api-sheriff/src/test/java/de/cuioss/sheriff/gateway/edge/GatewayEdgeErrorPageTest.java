@@ -47,6 +47,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
