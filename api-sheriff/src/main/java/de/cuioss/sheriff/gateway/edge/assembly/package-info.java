@@ -31,8 +31,9 @@
  * gateway-wide {@code Cookie} and {@code Authorization} header-value carve-outs, and
  * {@link de.cuioss.sheriff.gateway.edge.assembly.AssetSources}.
  * <p>
- * <strong>Dependencies.</strong> This package depends on no other edge package: every other edge
- * sub-package may read it, and it reads none of them.
+ * <strong>Dependencies.</strong> This package depends on no other edge package: the edge
+ * sub-packages that list it as a dependency (see the dependency table of ADR-0068) read it, and it
+ * reads none of them.
  *
  * @author API Sheriff Team
  * @since 1.0

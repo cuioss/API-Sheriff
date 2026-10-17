@@ -17,8 +17,8 @@ package de.cuioss.sheriff.gateway.arch.specimen.edgecycle;
 
 /**
  * The root class of the specimen root {@code arch.specimen.edgecycle}, standing in for
- * {@code GatewayEdgeRoute} in the edge root: the class {@code EdgeSubPackageArchTest}'s root-class
- * rule forbids every sub-package class to depend on.
+ * {@code GatewayEdgeRoute} in the edge root: a class of the root package, which {@code EdgeSubPackageArchTest}'s
+ * root-package rule forbids every sub-package class to depend on.
  * <p>
  * It is the target of the deliberate back-reference in
  * {@link de.cuioss.sheriff.gateway.arch.specimen.edgecycle.beta.CycleBetaSpecimen}, which is what makes

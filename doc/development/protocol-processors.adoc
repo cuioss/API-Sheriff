@@ -68,12 +68,16 @@ the same split the assembler reads to decide which routes get a shared upstream 
 
 [source,java]
 ----
-switch (DispatchPath.of(route.protocol())) {
-    case WEBSOCKET_RELAY -> terminalDispatch.dispatchWebSocket(ctx, request, route, forward);
-    case GRPC_DISPATCH -> terminalDispatch.dispatchGrpc(ctx, request, route, forward);
-    case HTTP_DISPATCH -> terminalDispatch.dispatchAndRelay(ctx, request, route, forward); // HTTP / GraphQL
-}
+Runnable dispatch = switch (DispatchPath.of(route.protocol())) {
+    case WEBSOCKET_RELAY -> () -> terminalDispatch.dispatchWebSocket(ctx, admitted, route, forward);
+    case GRPC_DISPATCH -> () -> terminalDispatch.dispatchGrpc(ctx, admitted, route, forward);
+    case HTTP_DISPATCH -> () -> terminalDispatch.dispatchAndRelay(ctx, admitted, route, forward); // HTTP / GraphQL
+};
+dispatch.run();
 ----
+
+The switch is an *expression* with no `default` arm, so a `DispatchPath` constant without an arm here is a
+compile error rather than a request left unanswered.
 
 Each arm is a method of `TerminalDispatch` in `de.cuioss.sheriff.gateway.edge.terminal`, which hands
 the dispatch to the stages of `edge.upstream` and `edge.relay` (see

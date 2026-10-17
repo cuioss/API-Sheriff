@@ -25,7 +25,7 @@ import de.cuioss.sheriff.gateway.arch.specimen.edgecycle.alpha.CycleAlphaSpecime
  *   <li>{@link #alpha()} closes the {@code alpha ↔ beta} cycle that {@code EdgeSubPackageArchTest}'s
  *       cycle rule must report;</li>
  *   <li>{@link #root()} depends on {@link EdgeRootSpecimen}, the specimen root class, which the
- *       root-class rule must report.</li>
+ *       root-package rule must report.</li>
  * </ul>
  * <p>
  * <strong>Both references must stay real bytecode dependencies</strong>, for the reason given on
@@ -46,7 +46,7 @@ public final class CycleBetaSpecimen {
     }
 
     /**
-     * The sub-package-to-root dependency the root-class rule forbids.
+     * The sub-package-to-root dependency the root-package rule forbids.
      *
      * @return a new root specimen; never invoked
      */
