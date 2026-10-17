@@ -614,11 +614,14 @@ public class GatewayEdgeRoute {
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
             // and relays response trailers; HTTP and GraphQL take the HTTP dispatch path. The split is
             // DispatchPath, the same one the assembler built clients and guards from.
-            switch (DispatchPath.of(route.protocol())) {
-                case WEBSOCKET_RELAY -> terminalDispatch.dispatchWebSocket(ctx, request, route, forward);
-                case GRPC_DISPATCH -> terminalDispatch.dispatchGrpc(ctx, request, route, forward);
-                case HTTP_DISPATCH -> terminalDispatch.dispatchAndRelay(ctx, request, route, forward);
-            }
+            // A switch expression with no default arm: a DispatchPath constant without an arm won't compile.
+            PipelineRequest admitted = request;
+            Runnable dispatch = switch (DispatchPath.of(route.protocol())) {
+                case WEBSOCKET_RELAY -> () -> terminalDispatch.dispatchWebSocket(ctx, admitted, route, forward);
+                case GRPC_DISPATCH -> () -> terminalDispatch.dispatchGrpc(ctx, admitted, route, forward);
+                case HTTP_DISPATCH -> () -> terminalDispatch.dispatchAndRelay(ctx, admitted, route, forward);
+            };
+            dispatch.run();
         } catch (GatewayException rejected) {
             errorResponseWriter.handleGatewayRejection(ctx, request, rejected);
         } catch (RuntimeException unexpected) {

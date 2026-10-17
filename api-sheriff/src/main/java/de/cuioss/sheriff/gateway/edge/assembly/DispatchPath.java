@@ -24,9 +24,12 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
  * dispatch, so the two can never disagree about which protocols
  * {@link de.cuioss.sheriff.gateway.edge.upstream.DispatchStage} serves.
  * <p>
- * {@link #of} is an exhaustive switch with no default arm: a {@link Protocol} constant added
- * without a decided path breaks compilation here, instead of reaching a request on a route that was
- * assembled without the client or guard its dispatch needs.
+ * Both directions of that agreement are checked by the compiler. {@link #of} is an exhaustive
+ * switch with no default arm: a {@link Protocol} constant added without a decided path breaks
+ * compilation here, instead of reaching a request on a route that was assembled without the client
+ * or guard its dispatch needs. The edge root's dispatch is in turn an exhaustive switch expression
+ * over this enum with no default arm: a constant added here without a dispatch arm breaks
+ * compilation there, instead of leaving a request on such a route unanswered.
  *
  * @author API Sheriff Team
  * @since 1.0
