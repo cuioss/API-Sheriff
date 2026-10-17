@@ -113,7 +113,7 @@ on what "the same host" means.
 
 This runtime guard is distinct from its two boot-time and framing siblings:
 
-* the *boot-time collision rule* (`ConfigValidator.validatePassthroughHostCollision`) fails startup
+* the *boot-time collision rule* (`EdgeRules.validatePassthroughHostCollision`) fails startup
   when a route's `match.host` equals a passthrough SNI; and
 * the framing / anti-smuggling `FramingGate`, which is orthogonal request-framing hygiene.
 

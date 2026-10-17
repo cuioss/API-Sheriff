@@ -301,7 +301,7 @@ object. So the boundary is:
   it `404` before route selection, and `GatewayEdgeRoute` logs `WARN ApiSheriff-108` with the
   disposition only.
 * *An alias that does not resolve, or resolves to a URL with a base path.*
-  `ConfigValidator.validatePassthroughAliasResolvable` refuses it: `ApiSheriff-200`, then
+  `EdgeRules.validatePassthroughAliasResolvable` refuses it: `ApiSheriff-200`, then
   `ApiSheriff-201`.
 * *Combined with `QUARKUS_HTTP_INSECURE_REQUESTS=enabled`.* `ServerTlsDeclarationGate` refuses the
   boot.
