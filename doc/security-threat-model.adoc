@@ -712,7 +712,7 @@ strip abuse, GW-02).
 *unconditionally* on the *ingress* path: every inbound header is fed through it before any stage
 reads one. The response direction carries no equivalent re-validation, and saying so is the
 honest statement of the control's reach -- the gateway does not re-run `CharacterValidationStage`
-over upstream response headers. Both response paths (`edge.ResponseStage` for the streamed proxy
+over upstream response headers. Both response paths (`edge.relay.ResponseStage` for the streamed proxy
 relay, `asset.AssetResponseEnvelope` for the buffered asset envelope) copy the source's remaining
 headers through once the gateway-owned never-relay set below has been applied. That direction is
 bounded by *which names* cross rather than by re-checking their characters, so the residual is
@@ -3467,7 +3467,7 @@ outstanding hardening work (next section).
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
-| <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`GatewayEdgeRoute` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
+| <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
@@ -3501,7 +3501,7 @@ outstanding hardening work (next section).
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED
 | <<html-04>> | Catalog `entry` origin-relative, reviewed at boot, never echoed in the refusal | Schema + `PortalRules` (configuration validator) | COVERED
 | <<html-05>> | Error page status-only input, fixed per-status title, always anonymous, detail-free fallback | `PortalEndpoint.renderError` + `ErrorPageClassifier.titleFor` | COVERED
-| <<html-06>> | Gateway-originated errors only, exhaustive compile-checked classification; explicit `text/html` required; relayed origin responses never replaced; status unchanged | `ErrorPageClassifier` + `GatewayEdgeRoute` error writers -- ADR-0053 | COVERED
+| <<html-06>> | Gateway-originated errors only, exhaustive compile-checked classification; explicit `text/html` required; relayed origin responses never replaced; status unchanged | `ErrorPageClassifier` + the edge's error writers, negotiated through `ErrorResponseWriter` -- ADR-0053 | COVERED
 |===
 
 == Gaps to close

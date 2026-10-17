@@ -692,7 +692,7 @@ link:../development/context-path-verification.adoc[the verification runbook].
 
 === Route selection consumes the raw path, prefix included
 
-`GatewayEdgeRoute.buildPipelineRequest` builds its pipeline request from `HttpServerRequest.uri()` --
+`EdgeRequests.buildPipelineRequest` builds the edge's pipeline request from `HttpServerRequest.uri()` --
 the raw inbound URI -- and the route table is matched against that. It is never handed a
 root-path-relative path.
 

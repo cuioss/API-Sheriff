@@ -56,27 +56,28 @@ below, not in the processor.
 in the served set is registered, so boot fails only for an unsupported protocol -- never merely
 because a route selects WebSocket or gRPC.
 
-`RouteAssembler` calls `require(...)` once per route at assembly time and stores the
-resolved processor on the immutable `Route`.
+`RouteAssembler` (in `de.cuioss.sheriff.gateway.edge.assembly`) calls `require(...)` once per route
+at assembly time and stores the resolved processor on the immutable `Route`.
 
 == The edge protocol-dispatch seam
 
 `GatewayEdgeRoute` runs every request through the fixed pipeline (stages 0--5) uniformly,
 regardless of protocol. After stage 5 (the forward policy) it reaches the *protocol-dispatch
-seam* and branches on the selected route's protocol:
+seam* and branches on the path `edge.assembly.DispatchPath` assigns the selected route's protocol --
+the same split the assembler reads to decide which routes get a shared upstream client and guard:
 
 [source,java]
 ----
-if (route.getProtocol() == Protocol.WEBSOCKET) {
-    dispatchWebSocket(ctx, request, route, forward);
-} else if (route.getProtocol() == Protocol.GRPC) {
-    dispatchGrpc(ctx, request, route, forward);
-} else {
-    dispatchAndRelay(ctx, request, route, forward);   // HTTP / GraphQL
+switch (DispatchPath.of(route.protocol())) {
+    case WEBSOCKET_RELAY -> terminalDispatch.dispatchWebSocket(ctx, request, route, forward);
+    case GRPC_DISPATCH -> terminalDispatch.dispatchGrpc(ctx, request, route, forward);
+    case HTTP_DISPATCH -> terminalDispatch.dispatchAndRelay(ctx, request, route, forward); // HTTP / GraphQL
 }
 ----
 
-Each arm lives in `de.cuioss.sheriff.gateway.edge`:
+Each arm is a method of `TerminalDispatch` in `de.cuioss.sheriff.gateway.edge.terminal`, which hands
+the dispatch to the stages of `edge.upstream` and `edge.relay` (see
+link:../architecture.adoc#_edge_package_structure[Architecture -- Edge Package Structure]):
 
 === WebSocket -- handshake and opaque relay
 
@@ -130,10 +131,10 @@ then relays the upstream response -- including its `grpc-status` / `grpc-message
 `ResponseStage.relayWithTrailers`. Three collaborators carry the gRPC deltas:
 
 * *Forced-h2 upstream client.* gRPC requires HTTP/2 end-to-end, so the h2 protocol version joins
-  the client-sharing tuple key: `RouteAssembler.UpstreamTarget` carries a `forcedHttp2`
+  the client-sharing tuple key: `edge.assembly.UpstreamTarget` carries a `forcedHttp2`
   flag, so a gRPC route to `host:port` holds a client distinct from an HTTP/1.1 route to the same
-  `host:port`. `GatewayEdgeRoute.clientFor(...)` builds that forced-h2 client (h2 over TLS with
-  ALPN, or prior-knowledge h2c in cleartext).
+  `host:port`. `EgressClients.clientFor(...)` (in `edge.upstream`) builds that forced-h2 client (h2
+  over TLS with ALPN, or prior-knowledge h2c in cleartext).
 * *Opaque frame streaming.* `GrpcDispatchStage` reuses the byte-capped streaming dispatch of
   `DispatchStage`, so the request/response bodies stream as opaque length-prefixed frames (the
   gateway never inspects the protobuf payload) under the same body cap and stream-aware retry gate
@@ -164,12 +165,16 @@ To add a future protocol:
   the value, and the per-route config-model support (schema/model fields plus their `ConfigValidator`
   rules) and — where the protocol needs it — the dispatch arm below must also be in place before a
   route of that protocol resolves and boots.
-. *Add a dispatch arm only if needed.* If the protocol rides the standard HTTP path (like GraphQL),
-  no edge change is required -- it falls through to `dispatchAndRelay`. If it needs a distinct
-  dispatch (a handshake, a specialised upstream client, or a non-problem+json rejection), add an
-  arm to the protocol-dispatch seam in `GatewayEdgeRoute.process(...)` and a `dispatch*` method,
-  following `dispatchWebSocket` / `dispatchGrpc`. A distinct upstream client shape joins the
-  `UpstreamTarget` tuple key so it is deduplicated correctly.
+. *Add a dispatch arm only if needed.* Every protocol is mapped onto a path in
+  `edge.assembly.DispatchPath.of`, whose switch has no default arm, so a new `Protocol` constant does
+  not compile until it is mapped. If the protocol rides the standard HTTP path (like GraphQL), map it
+  onto `HTTP_DISPATCH`; no other edge change is required, and it is served by `dispatchAndRelay`. If it needs a distinct
+  dispatch (a handshake, a specialised upstream client, or a non-problem+json rejection), add a
+  constant for it to `edge.assembly.DispatchPath` and map the protocol onto it in `DispatchPath.of`,
+  add its arm to the protocol-dispatch seam in `GatewayEdgeRoute.process(...)`, and add the
+  `dispatch*` method to `edge.terminal.TerminalDispatch`, following `dispatchWebSocket` /
+  `dispatchGrpc`. A distinct upstream client shape joins the `edge.assembly.UpstreamTarget` tuple
+  key so it is deduplicated correctly.
 . *Test it.* Add a processor verb-semantics test (see `GrpcProtocolProcessorTest`) and a
   dispatch/edge test for any new stage (see `GrpcDispatchStageTest`,
   `WebSocketRelayStageTest`).

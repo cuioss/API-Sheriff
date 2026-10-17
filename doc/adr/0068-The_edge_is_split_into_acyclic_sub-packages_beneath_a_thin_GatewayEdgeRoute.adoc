@@ -1,0 +1,275 @@
+= ADR-0068: The edge is split into acyclic sub-packages beneath a thin GatewayEdgeRoute
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: The framework edge de.cuioss.sheriff.gateway.edge is nine sub-packages (assembly, upstream, end, relay, admission, request, error, reserved, terminal) beneath a root that holds only GatewayEdgeRoute -- its CDI wiring, route registration, the shutdown observer and the handle -> process flow. The sub-packages form an acyclic graph and none depends back on the root; an ArchUnit test with the four ADR-0030 control legs holds both properties. routing.Route stays the single, framework-free per-route type and the top-level assembly.UpstreamClients holds the framework collaborators; RouteAssembler's former nested types are top-level types in assembly, with only AssembledRoutes left nested. Each extracted class logs under its own class name, so records that were logged under the GatewayEdgeRoute category now carry their new owner's category, with ApiSheriff-NNN ids and texts unchanged. The split is move-only: no behaviour changes.
+// tags: edge, package-structure, fitness-function, archunit, logging
+// affects: api-sheriff, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+The edge is the one layer of the gateway that is bound to the framework by design: it receives the
+Vert.x request, runs the framework-free pipeline on a virtual thread, and turns the outcome into an
+answer on the client's event loop
+(link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]).
+Everything that touches a Vert.x object, a SmallRye guard or the inbound socket lands there, so the
+layer accumulates jobs that have little to do with one another: assembling the route set at boot,
+admitting and draining requests, reading the one reserved body, the end rule every response passes and
+the connection retirement that goes with it
+(link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]),
+building the pipeline request, the reserved OIDC paths and the portal, serving the terminal action, and
+metering and rendering rejections.
+
+A layer shaped like that has three failure modes, and they compound:
+
+* *One class owns every job.* When the jobs share a class, each one can reach every other one's state,
+  and nothing marks which state belongs to which job. A reader changing the end rule has to read the
+  admission code to be sure it is not affected.
+* *A flat package states no direction.* With every helper beside the entry point, any helper may call
+  any other and the entry point itself. The dependency graph is whatever the last change made it, and a
+  cycle is introduced without anything noticing.
+* *A boundary that is only documented decays.* Package comments describing which part may use which
+  are read by people, not by the build. The first shortcut through a boundary costs nothing locally,
+  and the description quietly stops being true.
+
+The question this record settles is therefore not only where each job lives, but how the boundaries
+between the jobs stay true after the move.
+
+== Decision
+
+*The edge is nine sub-packages beneath a root that holds only `GatewayEdgeRoute`. The sub-packages
+form an acyclic graph, nothing below the root depends on the root, and a fitness function holds both
+properties.*
+
+=== The nine sub-packages
+
+[cols="1,3,3", options="header"]
+|===
+| Sub-package | Job | Types
+
+| `assembly`
+| Boot-only route completion: completes every `routing.Route` with its boot-attached components, and
+  holds the deduplicated upstream clients and resilience guards, the security postures and the asset
+  sources.
+| `RouteAssembler`, `UpstreamClients`, `UpstreamTarget`, `ResilienceShape`, `DispatchPath`,
+  `SecurityPosture`, `SecurityPostures`, `AssetSources` and the factory interfaces
+  `SecurityConfigurationFactory`, `UpstreamClientFactory`, `ResilienceGuardFactory`,
+  `AssetSourceFactory`
+
+| `upstream`
+| Guarded upstream dispatch and its failure mapping, the egress clients and the upstream guards.
+| `DispatchStage`, `GrpcDispatchStage`, `StreamAwareRetryGate`, `UpstreamFailureMapper`,
+  `EgressClients`, `UpstreamGuards`
+
+| `end`
+| The one end rule every response passes, the early-answer path of ADR-0066, and connection
+  retirement.
+| `ResponseEnds`, `ResponseEnd`, `EarlyResponseEnd`, `InboundStreamWindow`, `ConnectionRetirement`
+
+| `relay`
+| Streaming an upstream answer back to the client.
+| `ResponseStage`, `UpstreamSetCookieFilter`, `GrpcStatusMapper`, `WebSocketRelayStage`
+
+| `admission`
+| Transport and admission bounds, admission itself and the drain on shutdown.
+| `EdgeHardeningOptions`, `EdgeAdmission`
+
+| `request`
+| Turning the Vert.x request into the pipeline request.
+| `EdgeRequests`
+
+| `error`
+| Rejection metering, logging and rendering.
+| `RejectionReporter`, `ErrorResponseWriter`
+
+| `reserved`
+| The reserved OIDC paths, the portal and the reserved-body read.
+| `ReservedPathHandler`, `ReservedBodyReader`
+
+| `terminal`
+| Serving a route's terminal action: proxy, gRPC, WebSocket, asset, redirect and short-circuit.
+| `TerminalDispatch`, `RedirectStage`
+|===
+
+Each job's state moves with the job: the admission semaphores, the in-flight count and the draining
+flag belong to `EdgeAdmission`, the set of retired connections to `ConnectionRetirement`, and the
+once-per-route report latches to `RejectionReporter`.
+
+=== The dependency rule
+
+Dependencies are bytecode dependencies; a Javadoc link is not one.
+
+[cols="1,3", options="header"]
+|===
+| Package | May depend on (within the edge)
+
+| `assembly`, `request`, `admission` | no edge package
+| `upstream` | `assembly`
+| `end` | `upstream`
+| `relay` | `end`, `upstream`
+| `error` | `end`, `upstream`, `relay`, `request`
+| `reserved` | `error`, `end`, `request`
+| `terminal` | `relay`, `upstream`, `error`, `end`, `admission`, `request`, `assembly`
+| the root (`GatewayEdgeRoute`) | all nine
+|===
+
+The graph decides where a member lives when its job alone does not:
+
+* The late refusal of a body on a bodyless method sits in `terminal`, not in `end`, because it reports
+  a rejection through `error`, and `error` already depends on `end`.
+* Applying the stage `Set-Cookie` lines to a response sits in `end`, because `relay`, `error`,
+  `reserved` and `terminal` all write such lines and all of them may depend on `end`.
+* `RejectionReporter` and `ReservedBodyReader` receive the request-body idle timeout and the
+  reserved-body byte ceiling as plain values, read once at startup from `EdgeHardeningOptions`,
+  because `error` and `reserved` may not depend on `admission`. The options are immutable, so a value
+  read once at startup is the value a per-request read would return.
+* Where a moved member is reached from another package it is public: `DispatchPath` and its `of`,
+  which the root's protocol switch calls; the `WebSocketRelayStage` constructor and its
+  `RelayObserver`; `DispatchStage.InboundBody`; and the members the root and its tests call on their
+  new owners. A member widened only for a caller that later moved into its own package is narrowed
+  back: `EarlyResponseEnd.endWhenQuiet` is package-private again, because its caller `ResponseEnds`
+  shares its package.
+
+=== What stays in the root
+
+`GatewayEdgeRoute` keeps the CDI constructor, a public test-only constructor that hands the WebSocket
+relay stage an observer for the full-edge relay tests in `edge.relay`, `registerRoutes`, the shutdown
+observer (which delegates the drain to `EdgeAdmission`), `handle`, `dispatchProcessing` and `process`.
+`process` keeps the fixed stage order and the protocol switch over `DispatchPath`. Where an extracted
+member used to call back into the root -- the reserved-body read continuing into the virtual-thread
+dispatch -- the root passes the continuation in, so no class below the root names the root.
+
+The tests that exercise the whole edge stay in the root package beside it; the tests of each moved
+class moved with their subject.
+
+=== The per-route type and the framework collaborators
+
+`routing.Route` is the single per-route type, and it stays framework-free. The framework collaborators
+a route needs -- its shared Vert.x client and its SmallRye guard -- are not route components; they live
+in the top-level `assembly.UpstreamClients` lookup, keyed by upstream target and by resilience shape.
+
+`RouteAssembler`'s former nested types -- `UpstreamClients`, `UpstreamTarget`, `ResilienceShape`,
+`DispatchPath`, `SecurityPosture` and the four factory interfaces -- are top-level types in `assembly`,
+each in its own file. Only `AssembledRoutes`, the assembler's own result record, stays nested: it has
+no meaning apart from `RouteAssembler.assemble`.
+
+=== The fitness function
+
+`arch.EdgeSubPackageArchTest` holds two rules, each written over a root package rather than over
+today's package list:
+
+. the direct sub-packages of `de.cuioss.sheriff.gateway.edge` are slices, and the slices are free of
+  cycles;
+. no class in a sub-package depends on `GatewayEdgeRoute` or a class nested in it.
+
+The second rule closes the path the first cannot see: the root is in no slice, so a cycle through it
+(`sub -> GatewayEdgeRoute -> sub`) is not a cycle between slices.
+
+The test ships with the four control legs of
+link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]:
+a non-vacuity guard (at least two slices resolve, every one of the nine sub-packages resolves to a
+class, and `GatewayEdgeRoute` is present in the root); negative controls that run both rules against
+a specimen root whose sub-packages form a cycle and reference the specimen root class; a matched
+positive control showing that `GatewayEdgeRoute` depends on sub-package classes before it shows the
+class is outside the second rule's selection; and an explicit carve-out of the specimen package from
+the production import, with its own control.
+
+=== Log categories
+
+*Each extracted class logs under its own class name.* A record that was logged under the
+`de.cuioss.sheriff.gateway.edge.GatewayEdgeRoute` category now carries its new owner's category -- for
+example `de.cuioss.sheriff.gateway.edge.error.RejectionReporter` for the inbound-body and request-body
+timeout records. The `ApiSheriff-NNN` identifiers, the message texts and the levels are unchanged, and
+a setting on `de.cuioss.sheriff` or on any parent of the edge still reaches every record. No logger
+keeps the old category by name.
+
+=== Scope
+
+The split is move-only. Methods move verbatim; event-loop hops, guard semantics, ordering and every log
+record stay as they were. The existing suite -- the framing corpus, the early-answer, reserved-body,
+relay, WebSocket, gRPC and BFF wiring tests, and the integration tests -- is the evidence that nothing
+changed in behaviour.
+
+== Consequences
+
+=== Positive
+
+* Each job of the edge can be read in its own package, with only the packages it depends on as
+  context; the dependency table says which those are.
+* A cycle between sub-packages, or a sub-package reaching back into the root, fails the build instead
+  of entering it unnoticed.
+* A new sub-package is held to both rules the moment it exists, because neither rule names the
+  current packages.
+* `GatewayEdgeRoute` reads as the request flow: the stage order and the hand-offs, with the work behind
+  each hand-off named by the class it lands in.
+
+=== Negative
+
+* A deployment that sets a log level or handler on the
+  `de.cuioss.sheriff.gateway.edge.GatewayEdgeRoute` category no longer reaches the records that moved
+  out of it. The shipped configuration sets no such category; a deployment that does has to name the
+  new owner's category, or a parent such as `de.cuioss.sheriff.gateway.edge`.
+* Members that a caller in another package reaches are public. They are public to the whole
+  application, not only to the package that needs them.
+* Several collaborators take long constructor parameter lists and depend on many types. Both are
+  accepted for a move-only change rather than answered with a further split.
+
+=== Risks
+
+* *The guard holds acyclicity and the root rule, not the dependency table.* A new dependency between
+  two sub-packages that closes no cycle passes the build, and the table above is then the record that
+  has to follow. Encoding the table as a layered rule would turn every legitimate new dependency into a
+  test edit, which is the cost this decision does not take.
+* *A widened member can be reached from anywhere.* Making a member public for one cross-package
+  caller makes it available to every package; the ArchUnit rules do not reach visibility.
+
+== Alternatives Considered
+
+*Keep the flat package and only split `GatewayEdgeRoute` into classes.* The class would shrink, but the
+flat package would still state no direction: every new class could call every other one and the entry
+point, and a cycle would still enter unnoticed. Rejected because it removes the size problem and keeps
+the boundary problem.
+
+*Split by protocol instead of by job.* One package each for HTTP, gRPC and WebSocket would mirror the
+protocol switch. Most of the edge is shared across protocols -- the end rule, admission, rejection
+rendering, the pipeline request -- so each protocol package would depend on a common package holding
+nearly everything. Rejected because the common package would be the flat package again under another
+name.
+
+*Enforce the full dependency table as a layered rule.* A rule naming every allowed edge would catch a
+new dependency even where it closes no cycle. It would also make the test restate the package list, so
+the guard would have to be edited with every structural change, and a test that is edited alongside
+the change it guards stops being a guard. Rejected in favour of the two property rules, with the
+residual risk recorded above.
+
+*Keep `RouteAssembler`'s collaborator types nested.* Nesting would keep the moves smaller. Every caller
+in `upstream` and in the root would then name the types through `RouteAssembler`, coupling them to the
+assembler class rather than to the type they use. Rejected; the assembler's own result record is the
+one type whose meaning depends on the assembler, and it is the one left nested.
+
+The alternatives share one shortcoming: each leaves a boundary that is described but not checked, or
+checked in a way that has to be rewritten with the code it checks.
+
+== References
+
+* link:../architecture.adoc#_edge_package_structure[Architecture -- Edge Package Structure] -- the
+  structure as built, and the current place to read it
+* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  -- the four control legs the edge guard ships with
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+  -- why the edge is framework-bound and `routing.Route` is not
+* link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]
+  -- the end rule that `edge.end` owns
+* link:0008-data-plane-transport.adoc[ADR-0008] -- the data-plane transport whose clients
+  `assembly.UpstreamClients` holds
+* link:../LogMessages.adoc[Log Messages] -- the record identifiers, unchanged by the move

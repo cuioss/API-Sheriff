@@ -470,7 +470,7 @@ published census -- no read is required to justify it.
 | `quarkus/ConfigProducerTest.java`              |  7 | 8 | gate 2, both  | 3
 | `auth/TokenValidatorProducerTest.java`         |  6 | 4 | mandatory     | 7
 | `bff/csrf/CsrfDefenceTest.java`                |  6 | 0 | gate 2, leg A | 4
-| `edge/RouteAssemblerTest.java`                 |  6 | 6 | gate 2, leg A | 1
+| `edge/assembly/RouteAssemblerTest.java`        |  6 | 6 | gate 2, leg A | 1
 | `auth/AuthenticationStageTest.java`            |  5 | 0 | gate 2, leg A | 3
 | `bff/runtime/SessionAuthenticationStageTest.java` | 5 | 0 | gate 2, leg A | 0
 | `quarkus/BffRuntimeProducerTest.java`          |  2 | 8 | gate 2, leg B | 1
@@ -604,7 +604,7 @@ none has a control, and swapping the arrange blocks of `noFrontListenerWhenPasst
 | `shouldAssembleWithoutDiscovery` | 97 | *strengthen* | (d) claims assembly resolves *no OIDC discovery*; not throwing cannot show discovery was skipped
 |===
 
-=== `edge/RouteAssemblerTest.java` -- 1 flagged (F2)
+=== `edge/assembly/RouteAssemblerTest.java` -- 1 flagged (F2)
 
 [cols="3,1,1,4",options="header"]
 |===
@@ -1460,7 +1460,7 @@ flagged rows, because it says what the fix looks like in this codebase rather th
 guard a runtime-derived population at its binding site, so a derivation that silently emptied fails
 loudly instead of passing over nothing:
 
-* `edge/RedirectStageTest.admittedRedirectStatuses`:113 -- fails rather than yielding an empty stream;
+* `edge/terminal/RedirectStageTest.admittedRedirectStatuses`:113 -- fails rather than yielding an empty stream;
 * `events/EventTypeTest.shouldClaimEveryConstantExactlyOnce`:233;
 * `config/model/ConfigModelContractTest.everyComponentIsClassified`:1287;
 * `forward/ForwardPolicyStageTest.protocolSetIsDisjointFromTheRequestStrip`:629.
@@ -1718,15 +1718,15 @@ Grouped by file. Every row names the thing that makes the admission attributable
 | `bootsGrpcProtocol` (`edge/GatewayEdgeRouteTest`)                    | 188 | (a) | same shape, gRPC
 | `bootsWebSocketProtocol` (`edge/GatewayEdgeRouteTest`)               | 201 | (a) | same shape, WebSocket
 | `bootsSessionAuthWebSocketRoute` (`edge/GatewayEdgeRouteTest`)       | 214 | (a) | same shape, WebSocket + session
-| `buildsWithFailureMapper` (`edge/GrpcDispatchStageTest`)             | 95 | (a) | matched negative control `rejectsNullFailureMapper`:88 asserts `NullPointerException` over the identical constructor differing only in the mapper argument
-| `shouldAssembleNoAssetProxyPathWithoutThrowing` (`edge/RouteAssemblerTest`) | 578 | (a) | matched control `shouldAssembleAssetRouteWithoutClientOrGuard`:514 asserts the exact inverse shape
+| `buildsWithFailureMapper` (`edge/upstream/GrpcDispatchStageTest`)    | 95 | (a) | matched negative control `rejectsNullFailureMapper`:88 asserts `NullPointerException` over the identical constructor differing only in the mapper argument
+| `shouldAssembleNoAssetProxyPathWithoutThrowing` (`edge/assembly/RouteAssemblerTest`) | 578 | (a) | matched control `shouldAssembleAssetRouteWithoutClientOrGuard`:514 asserts the exact inverse shape
 | `acceptsCleanPath` (`pipeline/CanonicalPathGuardTest`)               | 62 | (a) | matched negative control `rejectsNonCanonicalPaths`:49 -- six non-canonical raw paths through the same guard, each asserted to raise `SECURITY_FILTER_VIOLATION`
 | `shouldCarryMaterializedEffectivePosture` (`routing/RouteTest`)      | 314 | (a) | narrow scope, as for `anchorConfigExposesEveryPolicyBlock`; the anchor / auth / methods / forward / location-rewriter legs are all substantive
 | `shouldAcceptEachSingleTerminalAction` (`routing/RouteTest`)         | 420 | (a) | matched negative controls `shouldRefuseZeroTerminalActions`:433 and `shouldRefuseSeveralTerminalActions`:445 refuse zero, two and three terminal actions over the same constructor
 |===
 
 Six of these thirty -- the five `edge/GatewayEdgeRouteTest` rows and
-`edge/GrpcDispatchStageTest.buildsWithFailureMapper` -- have been strengthened since this pass. The
+`edge/upstream/GrpcDispatchStageTest.buildsWithFailureMapper` -- have been strengthened since this pass. The
 verdicts above are the pass's own and stand as recorded; see <<after-the-passes>>.
 
 === Findings from this pass
@@ -1813,7 +1813,7 @@ also received it" is a security-relevant outcome on a TLS passthrough front.
 [[websocket-heartbeat]]
 ==== `WebSocketRelayStageTest.heartbeatKeepsRelayOpen` -- a timing margin, not a vacuity
 
-`edge/WebSocketRelayStageTest`:334 asserts `assertFalse(closed.isDone())` after three echo round-trips
+`edge/relay/WebSocketRelayStageTest`:334 asserts `assertFalse(closed.isDone())` after three echo round-trips
 spaced by a real `Thread.sleep(400)` against a one-second idle window. It is *not* vacuous -- it can
 fail -- but it is an *absence-of-event* assertion whose entire margin is the difference between
 3×400 ms of wall-clock activity and the reclaim timer. The file's own `assertNoFurtherRelease`:480
@@ -2137,7 +2137,7 @@ behaviour the test names and the poll can still be satisfied transiently by a ne
 and the method still returns green. Re-asserting after the wait moves the evidence onto the
 post-state, which is what the test's name actually claims.
 
-`edge/WebSocketRelayStageTest.awaitReleases`:469 is the corpus's own worked example: the
+`edge/relay/WebSocketRelayStageTest.awaitReleases`:469 is the corpus's own worked example: the
 `Awaits.until(..)` is immediately followed by `assertEquals(1, releases.get(), message)`.
 
 === Why a source sweep rather than an ArchUnit rule
@@ -2185,7 +2185,7 @@ The selection is declared test methods, not every method:: At `3abc370` the lane
 guard's live population (`auth/RetryingJwksLoaderTest` ×3, `auth/TokenValidatorProducerTest` ×1,
 `testsupport/AwaitsTest` ×1). The other five are *wait primitives* -- `RetryingJwksLoaderTest.awaitLog`,
 `edge/GatewayEdgeRouteTest.connectWhenAdmitted` and `.awaitReleased`,
-`edge/WebSocketRelayStageTest.awaitReleases`, `tls/TlsEdgeProducerTest.awaitNotListening` -- named
+`edge/relay/WebSocketRelayStageTest.awaitReleases`, `tls/TlsEdgeProducerTest.awaitNotListening` -- named
 helpers whose re-assertion obligation belongs to whichever test calls them, and several of which
 legitimately end with the await. Sweeping every method body would report four of those five, which is
 a noisy guard rather than a finding, so the scope is the declared test. *The cost is real and is not
@@ -2212,7 +2212,7 @@ and later work does not rewrite a verdict.
 
 All six were `keep` under shape (a): the first pass classified the five `edge/GatewayEdgeRouteTest`
 rows, and <<unit-lane-audit>> classified the same five again together with
-`edge/GrpcDispatchStageTest.buildsWithFailureMapper`. Each was a constructor call inside
+`edge/upstream/GrpcDispatchStageTest.buildsWithFailureMapper`. Each was a constructor call inside
 `assertDoesNotThrow`. Each still constructs, and now asserts something about what was constructed.
 
 An assembled edge exposes no view of its compiled routes, so the five edge rows read what the boot
@@ -2381,7 +2381,7 @@ same census the derivation above uses.
 | `config/topology/TopologyResolverTest.java`        | 2 | 0 |
 | `edge/GatewayEdgePipelineTest.java`                | 0 | 3 |
 | `edge/GatewayEdgeRouteBffWiringTest.java`          | 2 | 0 |
-| `edge/GrpcDispatchStageTest.java`                  | 2 | 0 |
+| `edge/upstream/GrpcDispatchStageTest.java`         | 2 | 0 |
 | `edge/ReservedBodyCeilingTest.java`                | 4 | 0 |
 | `pipeline/CanonicalPathGuardTest.java`             | 2 | 0 |
 | `pipeline/RouteSelectionStageTest.java`            | 0 | 2 |

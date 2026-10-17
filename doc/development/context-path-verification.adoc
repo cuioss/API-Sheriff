@@ -346,7 +346,7 @@ the request reached the gateway, but no route matched. With the *prefixed* confi
 (`path_prefix: /gw/api` -- `ctxpath-gw-prefixed`, host port `8082`), the identical request answered
 `502` with the upstream envelope: route selection succeeded and the forward was attempted.
 
-The cause is in `GatewayEdgeRoute.buildPipelineRequest`, which builds the pipeline request from
+The cause is in `EdgeRequests.buildPipelineRequest` (in `edge.request`), which builds the pipeline request from
 `HttpServerRequest.uri()` -- the raw inbound URI, prefix and all -- and stage 1 canonicalises *that*
 before stage 2 selects on it. Route selection therefore never sees a root-path-relative path.
 
@@ -415,7 +415,7 @@ prefixed executable that no other procedure in this repository expects.
 
 Every response above is a recorded observation from one run, not a contract. Re-run the six cases
 after any change to `application.properties`' context-path declarations, to the two Maven profiles in
-`api-sheriff/pom.xml`, or to `GatewayEdgeRoute`'s request construction. The cheapest single check
+`api-sheriff/pom.xml`, or to the edge's request construction in `EdgeRequests`. The cheapest single check
 that the seam still acts is case 3's artifact inspection: the seam build must put the configured
 values into `BuildTimeRunTimeFixedConfigSourceBuilder`, and the default build must put `/` and `/q`
 there. A green build proves neither.

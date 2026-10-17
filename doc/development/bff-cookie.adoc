@@ -317,7 +317,7 @@ on read. It is declined as a product decision on complexity, and the decisive de
 this gateway rather than a general objection: *the chunks do not arrive separately.* A browser
 concatenates every cookie it holds for the origin into one `Cookie` request header value, so N chunks
 arrive as one header value measured against one cap -- and that cap is
-`GatewayEdgeRoute.cookieHeaderConfigurationFor`'s `max(baseline, budget + 512)`, derived from the
+`SecurityPostures.cookieHeaderConfigurationFor`'s `max(baseline, budget + 512)`, derived from the
 *single declared budget* and sized for one cookie plus co-resident cookies. Under the shipped default
 that is 4531 bytes. Splitting the value therefore does not divide the problem; it moves it to a
 pre-route header cap that the same one declared number drives, and making that cap chunk-aware means

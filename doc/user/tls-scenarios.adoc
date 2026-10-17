@@ -298,7 +298,7 @@ object. So the boundary is:
   `SniFrontListener` fails it closed onto the terminated path and logs `WARN ApiSheriff-107` with the
   disposition only.
 * *A terminated request whose `Host` names a passthrough hostname.* `PassthroughHostGuardStage` rejects
-  it `404` before route selection, and `GatewayEdgeRoute` logs `WARN ApiSheriff-108` with the
+  it `404` before route selection, and `RejectionReporter` logs `WARN ApiSheriff-108` with the
   disposition only.
 * *An alias that does not resolve, or resolves to a URL with a base path.*
   `EdgeRules.validatePassthroughAliasResolvable` refuses it: `ApiSheriff-200`, then
@@ -693,7 +693,7 @@ command:
 
 === Failure mode
 
-* *Every boot with a named profile.* `GatewayEdgeRoute` logs `WARN ApiSheriff-119` with the logical
+* *Every boot with a named profile.* `EgressClients` logs `WARN ApiSheriff-119` with the logical
   profile name, restating that its anchors replace the default trust store on three clients and not
   the asset-origin fetch. That is the expected record.
 * *The profile is not bound, carries no anchors, or sets `trust-all`.* `EgressTrustProfileResolver`
@@ -760,7 +760,7 @@ egress_tls:
 
 === Failure mode
 
-* *Every boot with `upstream_verify_hostname: false`.* `GatewayEdgeRoute` logs `WARN ApiSheriff-118`,
+* *Every boot with `upstream_verify_hostname: false`.* `EgressClients` logs `WARN ApiSheriff-118`,
   stating the scope: proxy, gRPC and WebSocket clients, chain trust untouched, asset-origin fetch not
   governed. That is the expected record.
 * *Every boot with `jwks_verify_hostname: false`.* `TokenValidatorProducer` logs `WARN ApiSheriff-120`
