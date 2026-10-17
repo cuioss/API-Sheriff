@@ -113,7 +113,7 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     /**
      * How long a proxied dispatch holding an upstream connection may go without request-body progress
      * while it reads the body, in milliseconds. Below the upstream guard's whole-dispatch timeout
-     * ({@code GatewayEdgeRoute.UPSTREAM_TIMEOUT_SECONDS}), so it ends such a dispatch first; long enough
+     * ({@code UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS}), so it ends such a dispatch first; long enough
      * that a sender pausing between chunks on a slow link is not affected.
      */
     private static final long REQUEST_BODY_IDLE_TIMEOUT_MILLIS = 10_000L;

@@ -1607,7 +1607,7 @@ class DispatchStageTest {
                 request.body().onSuccess(body -> request.response().end("ok"));
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
 
-            // The breaker rules of the production guard (GatewayEdgeRoute#guardFor), with a window
+            // The breaker rules of the production guard (UpstreamGuards#guardFor), with a window
             // small enough to fill within one test.
             guard = Guard.create()
                     .withCircuitBreaker()
@@ -1952,7 +1952,7 @@ class DispatchStageTest {
         private static final long STEADY_CHUNK_GAP_MILLIS = 100L;
         /** Chunks the slow-and-steady upload sends, one per gap: three idle timeouts' worth of upload. */
         private static final int STEADY_CHUNKS = 30;
-        /** The production breaker's request-volume threshold (GatewayEdgeRoute#guardFor). */
+        /** The production breaker's request-volume threshold (UpstreamGuards#guardFor). */
         private static final int REQUEST_VOLUME_THRESHOLD = 20;
         private static final long PATIENT_TIMEOUT_SECONDS = Awaits.CONNECT_CEILING_SECONDS / 2;
         private static final String ANSWERING_PATH = "/answering";
@@ -2098,7 +2098,7 @@ class DispatchStageTest {
                     .build();
         }
 
-        /** The breaker rules of the production guard (GatewayEdgeRoute#guardFor) inside a patient timeout. */
+        /** The breaker rules of the production guard (UpstreamGuards#guardFor) inside a patient timeout. */
         private Guard breakerGuard() {
             return Guard.create()
                     .withCircuitBreaker()
@@ -2221,7 +2221,7 @@ class DispatchStageTest {
     /**
      * The upstream response is paused before any of its body or its end can be processed, whatever
      * thread dispatched it and however late that thread catches up with the exchange. The relay is
-     * deferred onto the client connection's event loop exactly as {@code GatewayEdgeRoute} defers it,
+     * deferred onto the client connection's event loop exactly as {@code TerminalDispatch} defers it,
      * so a response that ended before the relay subscribed fails the relay with "Response already
      * ended" and the client is never answered.
      * <p>

@@ -65,7 +65,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <h2>Why no port is handed out twice</h2>
  * The edge names an upstream's circuit breaker after the upstream's host and port
- * ({@code GatewayEdgeRoute#guardFor}), and a breaker name is registered once per JVM. Two fixtures
+ * ({@code UpstreamGuards#guardFor}), and a breaker name is registered once per JVM. Two fixtures
  * given the same unreachable port would therefore build two edges whose breakers carry one name, and
  * the second such breaker was observed never to open. The class remembers, for the lifetime of the
  * JVM, every port it handed out and never answers one again, so every caller — a second test class

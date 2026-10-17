@@ -110,7 +110,7 @@ class GatewayEdgeErrorPageTest {
     private static final String TEXT_HTML = "text/html";
     private static final String NEVER_GRANTED_SCOPE = "sheriff-error-page-never-granted";
     private static final String CAPPED_BODY = "x".repeat(64);
-    /** The breaker's request-volume threshold (see {@code GatewayEdgeRoute.guardFor}). */
+    /** The breaker's request-volume threshold (see {@code UpstreamGuards.guardFor}). */
     private static final int BREAKER_VOLUME = 20;
 
     @TempDir

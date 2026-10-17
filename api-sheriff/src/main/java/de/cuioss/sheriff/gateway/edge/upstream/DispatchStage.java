@@ -71,7 +71,7 @@ import org.jspecify.annotations.Nullable;
  * aborts the upstream call the same way and surfaces {@link EventType#INBOUND_BODY_ABORTED} (400), so
  * a request body that did not arrive whole is never completed towards the upstream and its HTTP/1.x
  * upstream connection is never pooled again: it is closed abortively, so it frees the gateway's local
- * port at once instead of holding it in {@code TIME_WAIT} (see {@code GatewayEdgeRoute#clientFor}).
+ * port at once instead of holding it in {@code TIME_WAIT} (see {@code EgressClients#clientFor}).
  * The upstream body is <strong>never materialized</strong> into an {@code HttpResult<byte[]>}
  * (ADR-0006/0008): the returned
  * {@link HttpClientResponse} is a live {@link ReadStream} whose body
