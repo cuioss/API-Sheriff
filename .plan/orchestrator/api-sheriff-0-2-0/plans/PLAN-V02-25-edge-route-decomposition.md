@@ -64,7 +64,10 @@ declines to review it, split at a sub-package boundary and report the split in t
 
 ## Dependencies and Sequencing
 
-- Depends on `PLAN-V02-44` (the per-route type merge) having landed. Kidicap `PLAN-32` (the early-answer
+- **All dependencies have landed.** `PLAN-V02-44` merged as #476 (`68a652a2`). The per-route type is
+  `routing/Route`; runtime assembly is `edge/RouteAssembler` (with `ResilienceShape`: breakers keyed by
+  upstream target plus retry setting). D1 settles which sub-package owns `RouteAssembler`. The ADR this
+  plan writes also records the type merge, because V02-44 deliberately wrote none. Kidicap `PLAN-32` (the early-answer
   IT fix in `GatewayEdgeRoute`) landed as #466 (`73233f1e`) and `PLAN-V02-24` as #465; re-measure the
   eight jobs on that code.
 - Can run alongside whichever validator slice (`PLAN-V02-28`, `PLAN-V02-40` … `-43`) is running: their
