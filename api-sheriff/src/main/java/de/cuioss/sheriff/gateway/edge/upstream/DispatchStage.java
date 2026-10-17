@@ -349,7 +349,7 @@ public final class DispatchStage {
      * @param failure the failure the attempt ended with
      * @return {@code true} only when the attempt may be retried
      */
-    public static boolean allowsRetryAfter(Throwable failure) {
+    static boolean allowsRetryAfter(Throwable failure) {
         if (extractGatewayException(failure) != null || !RETRY_STATE.isBound()) {
             return false;
         }

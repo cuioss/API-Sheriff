@@ -53,7 +53,7 @@ public final class EdgeAdmission {
     /** Holds the per-request release guard for the WebSocket relay sub-permit. Present ONLY once
      * {@link #tryAcquireWebSocketRelay} has actually acquired that sub-permit, so its absence is how
      * every release site knows there is no sub-permit to return. */
-    public static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
+    private static final String WEBSOCKET_RELAY_GUARD_KEY = "sheriff.wsrelayguard";
     /** Holds the {@link SessionRelayRegistry.Tracked} handle of a WebSocket upgrade a session was let
      * through with. Present ONLY once {@code TerminalDispatch.dispatchWebSocket} has tracked the relay;
      * every site that returns the admission permit stops the tracking through it (see

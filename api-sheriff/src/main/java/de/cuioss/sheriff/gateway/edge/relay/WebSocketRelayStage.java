@@ -338,7 +338,7 @@ public final class WebSocketRelayStage {
      * can tell whether that frame was written before the relay was wired.
      * <p>
      * Public only so the edge root, in the parent package, can hand it on; reachable only through the
-     * constructor of this stage and the package-private constructor of {@code GatewayEdgeRoute}: no
+     * constructor of this stage and the test-only constructor of {@code GatewayEdgeRoute}: no
      * configuration key or system property selects an observer, and
      * production always runs with {@link #NO_OP}. The two reporting callbacks default to no-ops; the
      * relay itself neither logs nor meters what it reports here.
