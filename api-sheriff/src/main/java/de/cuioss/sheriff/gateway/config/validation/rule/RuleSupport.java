@@ -15,8 +15,13 @@
  */
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
+import de.cuioss.sheriff.gateway.config.PolicyBlock;
+import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
+import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
@@ -25,7 +30,8 @@ import org.jspecify.annotations.Nullable;
  * The helpers every boot-time {@link ValidationRule} shares, whichever concern class or
  * not-yet-extracted rule of the configuration validator it belongs to: where a {@link ConfigError}
  * is reported (the file and the JSON pointer), how an offending configured value is echoed into a
- * refusal message, and which anchor a route resolves.
+ * refusal message, which anchor a route resolves, which protocol a route rides, which
+ * {@code auth.require} a route resolves, and the wildcard-origin token.
  * <p>
  * Each helper exists exactly once. {@link #renderForMessage} above all must stay the single copy of
  * the CWE-117 escaping. The rule for every refusal: a configured scalar echoed into its message is
@@ -46,6 +52,9 @@ public class RuleSupport {
 
     /** The JSON pointer of the {@code routes} list in an endpoint file. */
     public static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
+
+    /** The wildcard origin token, refused in a WebSocket allowlist and together with CORS credentials. */
+    public static final String WILDCARD_ORIGIN = "*";
 
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
@@ -98,5 +107,28 @@ public class RuleSupport {
      */
     public static @Nullable String declaredAnchorName(EndpointConfig endpoint, RouteConfig route) {
         return route.anchor() != null ? route.anchor() : endpoint.anchor();
+    }
+
+    /**
+     * The route's effective protocol — the declared value, or {@link Protocol#HTTP} when omitted.
+     *
+     * @param route the route whose protocol is resolved
+     * @return the declared protocol, {@link Protocol#HTTP} when the route declares none
+     */
+    public static Protocol effectiveProtocol(RouteConfig route) {
+        Protocol declared = route.protocol();
+        return declared != null ? declared : Protocol.HTTP;
+    }
+
+    /**
+     * The route's effective {@code auth.require}, resolved through {@link PolicyBlock#AUTH};
+     * {@link Require#NONE} when no scope declares an auth block (that route is refused separately).
+     *
+     * @param chain the route's scope chain
+     * @return the effective {@code auth.require}, {@link Require#NONE} when no scope declares an auth block
+     */
+    public static Require requireOf(ScopeChain chain) {
+        AuthConfig auth = PolicyBlock.AUTH.declared(chain);
+        return auth == null ? Require.NONE : auth.require();
     }
 }

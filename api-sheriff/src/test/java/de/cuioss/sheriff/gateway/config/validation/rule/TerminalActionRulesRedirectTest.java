@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.config.validation;
+package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -42,6 +42,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
+import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -56,8 +57,9 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Tests for the {@link ConfigValidator} redirect rules (ADR-0014 Amendment A1): the open-redirect
- * review of {@code location} with and without {@code allow_external}, the refusal of
+ * Tests for the redirect rules the {@link ConfigValidator} runs through {@link TerminalActionRules}
+ * (ADR-0014 Amendment A1): the open-redirect review of {@code location} with and without
+ * {@code allow_external}, the refusal of
  * {@code keep_query} together with {@code allow_external}, terminal-action exclusivity,
  * the http-only protocol restriction, the anchor matrix admitting a redirect under every anchor type,
  * and the boot WARN emitted when a route opts into an external target.
@@ -68,7 +70,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 @EnableGeneratorController
 @EnableTestLogger
 @DisplayName("ConfigValidator — redirect terminal action")
-class ConfigValidatorRedirectTest {
+class TerminalActionRulesRedirectTest {
 
     private static final String ROUTES_POINTER = "/endpoint/routes";
 
@@ -320,7 +322,7 @@ class ConfigValidatorRedirectTest {
         void shouldNotWarnWithoutOptIn() {
             validate(redirectRoute(routeId(), redirect("/new-home", false, false)).build());
 
-            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, ConfigValidator.class);
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, TerminalActionRules.class);
         }
     }
 

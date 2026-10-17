@@ -1475,7 +1475,7 @@ route always has one; only a `require: none` route may omit it
 socket is not authenticated by ambient cookies alone.
 
 *Status:* COVERED. The boot requirement is pinned for both authenticated postures by
-`ConfigValidatorTest.WebSocketOriginAllowlist`: `shouldRefuseAbsentAllowlist` and
+`ProtocolRulesTest.WebSocketOriginAllowlist`: `shouldRefuseAbsentAllowlist` and
 `shouldRefuseEmptyAllowlist` refuse a bearer and a session route, `shouldAcceptPopulatedAllowlist`
 admits both, and `shouldAcceptUnauthenticatedRouteWithoutAllowlist` is the matched control for
 `require: none`. The handshake check is pinned by `OriginValidationStageTest`; it does not read
@@ -1687,7 +1687,7 @@ key, so `header_modes` does not reach it, and it is written after the stage head
 displace it.
 
 *Status:* COVERED. The review is boot-time configuration validation with a table-driven refusal
-corpus (`ConfigValidatorRedirectTest`: `//host`, `/\host`, `\\host`, `/%2F%2Fhost`, `/%5chost`,
+corpus (`TerminalActionRulesRedirectTest`: `//host`, `/\host`, `\\host`, `/%2F%2Fhost`, `/%5chost`,
 `/a/../b`, the double-encoded `%252F`/`%252e` spellings and an over-cap path, an external URI without
 the opt-in, `javascript:` and user-info with it, `#` with
 `keep_query`, the `keep_query` + `allow_external` pair, plus the accepted forms and each flag alone);

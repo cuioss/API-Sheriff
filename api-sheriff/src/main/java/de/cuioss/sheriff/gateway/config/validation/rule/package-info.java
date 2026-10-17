@@ -22,8 +22,9 @@
  *       {@link de.cuioss.sheriff.gateway.config.validation.ConfigValidator} can report every violation
  *       in one pass.</li>
  *   <li>{@link de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport} holds the helpers every
- *       rule shares: the reporting file and pointer, the CWE-117-safe echo of a configured value, and
- *       anchor resolution.</li>
+ *       rule shares: the reporting file and pointer, the CWE-117-safe echo of a configured value,
+ *       anchor resolution, which protocol a route rides, which {@code auth.require} a route
+ *       resolves, and the wildcard-origin token.</li>
  *   <li>One {@code {Concern}Rules} class per concern — for example
  *       {@link de.cuioss.sheriff.gateway.config.validation.rule.PortalRules} — owns the rule bodies
  *       that judge one configuration block, each a stateless {@code public static validateXxx}

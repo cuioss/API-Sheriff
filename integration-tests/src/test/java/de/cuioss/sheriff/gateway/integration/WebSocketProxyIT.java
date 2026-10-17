@@ -57,7 +57,7 @@ import org.junit.jupiter.api.Test;
  * behaviour: opaque relay, Origin enforcement, auth-before-dial, idle-reclaim-vs-heartbeat, and the
  * unmatched-path {@code 404}. The remaining fail-closed contract — a bearer WS route booting with an
  * empty {@code allowed_origins} — cannot coexist with a bootable stack (it aborts boot fail-fast), so
- * it is proven by {@code verify-invalid-config-fails.sh} and the unit-level {@code ConfigValidatorTest}
+ * it is proven by {@code verify-invalid-config-fails.sh} and the unit-level {@code ProtocolRulesTest}
  * rather than against the running edge here.
  * <p>
  * <strong>Admission-permit exhaustion.</strong> One test in this suite deliberately drives a

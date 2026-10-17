@@ -139,7 +139,7 @@ class TlsEdgeActivationWiringTest {
         Map<String, Object> sniMap = (Map<String, Object>) passthrough;
         Properties topology = topology();
 
-        // Act + Assert — mirror ConfigValidator.validatePassthroughAliasResolvable: the alias must be
+        // Act + Assert — mirror EdgeRules.validatePassthroughAliasResolvable: the alias must be
         // present in topology.properties and resolve to an origin without a base path.
         for (Map.Entry<String, Object> entry : sniMap.entrySet()) {
             String alias = String.valueOf(entry.getValue());

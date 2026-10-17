@@ -44,7 +44,6 @@ import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
-import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
@@ -58,12 +57,9 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
-import de.cuioss.sheriff.gateway.config.model.TlsConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
-import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
-import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -83,10 +79,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link ConfigValidator}: one negative case per enforced cross-cutting
- * rule (including the ADR-0007 anchor / effective-auth rules, namespace coverage among them), the D5
- * boot-time hardening rule (real-CIDR {@code trusted_proxies} parsing with
- * full-space rejection and broad-prefix boot-WARN), the structural
- * {@code TRACE}/{@code CONNECT} rejection, and the single-pass aggregation contract that reports
+ * rule (including the ADR-0007 anchor / effective-auth rules, namespace coverage among them), the
+ * structural {@code TRACE}/{@code CONNECT} rejection, and the single-pass aggregation contract that reports
  * every violation together rather than stopping at the first.
  */
 @EnableGeneratorController
@@ -162,21 +156,6 @@ class ConfigValidatorTest {
 
     private static RouteConfig route(String id, HttpMethod... methods) {
         return RouteConfig.builder().id(id).match(match("/" + id, methods)).build();
-    }
-
-    private static RouteConfig routeWithHost(String id, String host, HttpMethod... methods) {
-        MatchConfig match = MatchConfig.builder()
-                .pathPrefix("/" + id)
-                .methods(List.of(methods))
-                .host(host)
-                .build();
-        return RouteConfig.builder().id(id).match(match).build();
-    }
-
-    private static GatewayConfig gatewayWithPassthrough(Map<String, String> passthroughSni) {
-        return validGateway()
-                .tls(TlsConfig.builder().passthroughSni(passthroughSni).build())
-                .build();
     }
 
     private static EndpointConfig endpoint(String id, String alias, List<HttpMethod> allowedMethods,
@@ -315,11 +294,6 @@ class ConfigValidatorTest {
     private static AssetConfig directoryAsset(String root) {
         return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
                 .directory(root).build();
-    }
-
-    private static AssetConfig upstreamAsset(String alias) {
-        return AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
-                .upstream(alias).build();
     }
 
     @Nested
@@ -625,110 +599,6 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("Terminal-action / anchor-type consistency (ADR-0014)")
-    class TerminalActionConsistency {
-
-        @Test
-        @DisplayName("Should accept a directory asset route under an asset anchor")
-        void shouldAcceptDirectoryAssetUnderAssetAnchor() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should accept an upstream asset route whose alias resolves")
-        void shouldAcceptUpstreamAssetWithResolvableAlias() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("cdn", "/assets", "assets", upstreamAsset("SECONDARY"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should reject an asset-type anchor route that declares no asset terminal action")
-        void shouldRejectAssetAnchorWithoutAssetBlock() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    anchoredRoute("noasset", "/assets", "assets", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertHasError(errors, "/endpoint/routes", "declares no asset terminal action");
-        }
-
-        @Test
-        @DisplayName("Should reject an asset block on a route under a proxy anchor")
-        void shouldRejectAssetBlockUnderProxyAnchor() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("api",
-                    matrixAnchor("api", "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("api-ep", "API", "api",
-                    auth(Require.NONE),
-                    assetRoute("mixed", "/api", "api", directoryAsset("/srv/assets"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("API"));
-
-            assertHasError(errors, "/endpoint/routes", "requires an asset-type anchor");
-        }
-
-        @Test
-        @DisplayName("Should reject an asset block on an unanchored route")
-        void shouldRejectAssetBlockOnUnanchoredRoute() {
-            GatewayConfig gateway = validGateway().build();
-            EndpointConfig endpoint = EndpointConfig.builder()
-                    .id("plain").enabled(true).baseUrl("PLAIN")
-                    .auth(auth(Require.NONE))
-                    .routes(List.of(assetRoute("loose", "/loose", null, directoryAsset("/srv/assets"), HttpMethod.GET)))
-                    .build();
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("PLAIN"));
-
-            assertHasError(errors, "/endpoint/routes", "the route is unanchored");
-        }
-
-        @Test
-        @DisplayName("Should reject an upstream asset source whose topology alias does not resolve")
-        void shouldRejectUnresolvableUpstreamAssetAlias() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("cdn", "/assets", "assets", upstreamAsset("MISSING"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertHasError(errors, "/endpoint/routes", "does not resolve in the topology");
-        }
-
-        @Test
-        @DisplayName("Should reject a directory asset source that declares no directory root")
-        void shouldRejectDirectoryAssetWithoutRoot() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("bundle", "/assets", "assets", directoryAsset(null), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WEB"));
-
-            assertHasError(errors, "/endpoint/routes", "no directory root");
-        }
-    }
-
-    @Nested
     @DisplayName("A well-formed configuration")
     class ValidConfiguration {
 
@@ -741,46 +611,6 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should report no violations for a route host that no passthrough_sni host claims")
-        void shouldAcceptRouteHostWithoutPassthroughCollision() {
-            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(),
-                    routeWithHost("orders-list", "api.example.com", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint),
-                    topologyWith("ORDERS", "SECURE"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should report no violations for a passthrough_sni alias resolving without a base path")
-        void shouldAcceptResolvablePassthroughAlias() {
-            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint),
-                    topologyWith("ORDERS", "SECURE"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should report no violations for a passthrough_sni alias resolving to a bare '/' base path")
-        void shouldAcceptPassthroughAliasWithTrailingSlashBasePath() {
-            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
-            ResolvedTopology topology = new ResolvedTopology(Map.of(
-                    "ORDERS", new ResolvedUpstream("https", "orders.internal", 443, ""),
-                    "SECURE", new ResolvedUpstream("https", "secure.internal", 443, "/")));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topology);
-
-            assertTrue(errors.isEmpty(),
-                    () -> "expected no violations for a topology URL ending in a bare '/', got: " + errors);
         }
     }
 
@@ -882,94 +712,6 @@ class ConfigValidatorTest {
 
             assertTrue(errors.isEmpty(),
                     () -> "expected no violations for a millisecond-precision timeout, got: " + errors);
-        }
-
-        static Stream<Arguments> fullAddressSpaceTrustedProxies() {
-            return Stream.of(
-                    Arguments.of("a single full-space IPv4 CIDR", List.of("0.0.0.0/0"), "entire IPv4 address space"),
-                    Arguments.of("a single full-space IPv6 CIDR", List.of("::/0"), "entire IPv6 address space"),
-                    Arguments.of("a complementary /1 IPv4 pair", List.of("0.0.0.0/1", "128.0.0.0/1"),
-                            "entire IPv4 address space"),
-                    Arguments.of("a complementary /1 IPv6 pair", List.of("::/1", "8000::/1"),
-                            "entire IPv6 address space"));
-        }
-
-        @ParameterizedTest(name = "{0}")
-        @MethodSource("fullAddressSpaceTrustedProxies")
-        @DisplayName("Should reject forwarded.trusted_proxies entries that cover the whole address space")
-        void shouldRejectFullAddressSpaceTrustedProxies(String label, List<String> trustedProxies,
-                String expectedDetail) {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(ForwardedConfig.builder().trustedProxies(trustedProxies).build())
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", expectedDetail);
-        }
-
-        /**
-         * Each entry fails CIDR parsing at a different point: no slash at all, a numeric prefix
-         * length outside the address width, a prefix length that is not a number, and an address
-         * part that is not an IP literal. All four must be reported identically.
-         */
-        @ParameterizedTest(name = "trusted_proxies entry \"{0}\" is rejected as malformed")
-        @ValueSource(strings = {"not-a-cidr", "10.0.0.0/33", "10.0.0.0/abc", "not-an-ip/24"})
-        @DisplayName("Should reject a malformed trusted_proxies CIDR entry with file/pointer context")
-        void shouldRejectMalformedCidr(String malformedCidr) {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(ForwardedConfig.builder()
-                            .trustedProxies(List.of(malformedCidr)).build())
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/forwarded/trusted_proxies", "malformed trusted_proxies CIDR: " + malformedCidr);
-        }
-
-        /**
-         * Matched positive/negative controls straddling the broad-prefix threshold in both address
-         * families. The warning fires when one entry spans more than a single operator-provisioned
-         * network: broader than an IPv4 {@code /16}, or broader than an IPv6 {@code /48} site
-         * allocation. Each family carries a range just past the boundary and one exactly at it, so
-         * reverting either constant alone turns at least one case red. The IPv4 {@code /4} row pins the
-         * far end of the band: a very broad range that still stops short of the whole address space
-         * warns and boots, and is never mistaken for the trust-all refusal.
-         */
-        static Stream<Arguments> broadPrefixThresholdControls() {
-            return Stream.of(
-                    Arguments.of("IPv4 /4 is very broad yet short of the whole address space", "10.0.0.0/4", true),
-                    Arguments.of("IPv4 /12 spans many provisioned networks", "172.16.0.0/12", true),
-                    Arguments.of("IPv4 /8 spans many provisioned networks", "10.0.0.0/8", true),
-                    Arguments.of("IPv4 /16 is one provisioned network", "172.16.0.0/16", false),
-                    Arguments.of("IPv6 /32 is broader than one site allocation", "2001:db8::/32", true),
-                    Arguments.of("IPv6 /48 is one site allocation", "2001:db8::/48", false));
-        }
-
-        @ParameterizedTest(name = "{0}")
-        @MethodSource("broadPrefixThresholdControls")
-        @DisplayName("Should warn only on a trusted_proxies range broader than one provisioned network")
-        void shouldApplyBroadPrefixThreshold(String label, String cidr, boolean expectWarning) {
-            GatewayConfig gateway = validGateway()
-                    .forwarded(ForwardedConfig.builder().trustedProxies(List.of(cidr)).build())
-                    .build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("trusted_proxies")),
-                    () -> "a broad-but-not-total CIDR must not fail the boot, got: " + errors);
-            String identifier = ConfigLogMessages.WARN.BROAD_TRUSTED_PROXY.resolveIdentifierString();
-            if (expectWarning) {
-                LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, identifier);
-                LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN, cidr);
-            } else {
-                assertTrue(TestLoggerFactory.getTestHandler()
-                                .resolveLogMessagesContaining(TestLogLevel.WARN, identifier).isEmpty(),
-                        () -> cidr + " is within the broad-prefix threshold and must not emit " + identifier);
-            }
         }
 
         @Test
@@ -1119,46 +861,6 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations for a valid bearer config, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should reject a route whose match.host collides case-insensitively with a passthrough_sni host")
-        void shouldRejectRouteHostCollidingWithPassthroughSni() {
-            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(),
-                    routeWithHost("orders-list", "SECURE.EXAMPLE.COM", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint),
-                    topologyWith("ORDERS", "SECURE"));
-
-            assertHasError(errors, "/tls/passthrough_sni",
-                    "route 'orders-list' matches host 'secure.example.com'");
-        }
-
-        @Test
-        @DisplayName("Should reject a passthrough_sni alias that does not resolve")
-        void shouldRejectUnresolvedPassthroughAlias() {
-            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "MISSING"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/tls/passthrough_sni",
-                    "unresolved topology alias 'MISSING' referenced by passthrough_sni host 'secure.example.com'");
-        }
-
-        @Test
-        @DisplayName("Should reject a passthrough_sni alias resolving to an upstream carrying a base path")
-        void shouldRejectPassthroughAliasWithBasePath() {
-            GatewayConfig gateway = gatewayWithPassthrough(Map.of("secure.example.com", "SECURE"));
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-list", HttpMethod.GET));
-            ResolvedTopology topology = new ResolvedTopology(Map.of(
-                    "ORDERS", new ResolvedUpstream("https", "orders.internal", 443, ""),
-                    "SECURE", new ResolvedUpstream("https", "secure.internal", 443, "/api")));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topology);
-
-            assertHasError(errors, "/tls/passthrough_sni", "must resolve to an origin without a base path");
         }
     }
 
@@ -1772,141 +1474,6 @@ class ConfigValidatorTest {
                     () -> assertHasError(errors, "/version", "unsupported config version"),
                     () -> assertHasError(errors, "/endpoint/base_url", "unresolved topology alias: MISSING"),
                     () -> assertHasError(errors, "/endpoint/routes", "outside the effective allowed_methods"));
-        }
-    }
-
-    @Nested
-    @DisplayName("Fail-closed WebSocket allowlist (ADR-0015)")
-    class WebSocketAllowlist {
-
-        private static GatewayConfig gatewayWithIssuer() {
-            return validGateway()
-                    .tokenValidation(new TokenValidationConfig(List.of(
-                            IssuerConfig.builder().name("main").issuer("https://idp.example").build())))
-                    .build();
-        }
-
-        private static EndpointConfig webSocketEndpoint(String alias, RouteConfig route) {
-            return EndpointConfig.builder()
-                    .id("ws-ep").enabled(true).baseUrl(alias)
-                    .auth(auth(Require.NONE))
-                    .routes(List.of(route))
-                    .build();
-        }
-
-        private static RouteConfig webSocketRoute(String id, @Nullable WebSocketConfig websocket,
-                @Nullable AuthConfig auth) {
-            return RouteConfig.builder()
-                    .id(id)
-                    .protocol(Protocol.WEBSOCKET)
-                    .match(match("/" + id, HttpMethod.GET))
-                    .auth(auth)
-                    .websocket(websocket)
-                    .build();
-        }
-
-        private static AuthConfig bearer() {
-            return auth(Require.BEARER);
-        }
-
-        @Test
-        @DisplayName("Should reject a bearer WebSocket route with no websocket block (fail-closed)")
-        void shouldRejectBearerWebSocketRouteWithAbsentAllowedOrigins() {
-            GatewayConfig gateway = gatewayWithIssuer();
-            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes", "must declare a non-empty allowed_origins allowlist");
-        }
-
-        @Test
-        @DisplayName("Should reject a bearer WebSocket route with an empty allowed_origins allowlist")
-        void shouldRejectBearerWebSocketRouteWithEmptyAllowedOrigins() {
-            GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of()).build();
-            EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", websocket, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes", "fail-closed");
-        }
-
-        @ParameterizedTest(name = "wildcard entry \"{0}\" is rejected")
-        @ValueSource(strings = {"*", "https://*.example.com"})
-        @DisplayName("Should reject wildcard entries in allowed_origins")
-        void shouldRejectWildcardAllowedOrigin(String wildcard) {
-            GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of(wildcard)).build();
-            EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", websocket, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes", "wildcards are not permitted");
-        }
-
-        @ParameterizedTest(name = "idle_timeout_seconds = {0} is rejected")
-        @ValueSource(ints = {0, -1, -300})
-        @DisplayName("Should reject a non-positive idle_timeout_seconds")
-        void shouldRejectNonPositiveIdleTimeout(int timeout) {
-            GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com"))
-                    .idleTimeoutSeconds(timeout).build();
-            EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", websocket, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes", "idle_timeout_seconds must be a positive integer");
-        }
-
-        @Test
-        @DisplayName("Should accept a bearer WebSocket route with exact origins and a positive idle timeout")
-        void shouldAcceptBearerWebSocketRouteWithExactOrigins() {
-            GatewayConfig gateway = gatewayWithIssuer();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com"))
-                    .idleTimeoutSeconds(60).build();
-            EndpointConfig endpoint = webSocketEndpoint("WS",
-                    webSocketRoute("chat", websocket, bearer()));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should not require allowed_origins for a public (require: none) WebSocket route")
-        void shouldNotRequireAllowedOriginsForPublicWebSocketRoute() {
-            GatewayConfig gateway = validGateway().build();
-            EndpointConfig endpoint = webSocketEndpoint("WS", webSocketRoute("chat", null, null));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertTrue(errors.isEmpty(),
-                    () -> "a public (require: none) WebSocket route may omit allowed_origins; got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should reject a non-websocket route that declares a websocket block")
-        void shouldRejectWebSocketBlockOnNonWebSocketRoute() {
-            GatewayConfig gateway = validGateway().build();
-            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com"))
-                    .idleTimeoutSeconds(60).build();
-            RouteConfig httpRoute = RouteConfig.builder()
-                    .id("http-with-ws")
-                    .protocol(Protocol.HTTP)
-                    .match(match("/http-with-ws", HttpMethod.GET))
-                    .auth(null)
-                    .websocket(websocket)
-                    .build();
-            EndpointConfig endpoint = webSocketEndpoint("WS", httpRoute);
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("WS"));
-
-            assertHasError(errors, "/endpoint/routes",
-                    "declares a websocket block but its protocol is not 'websocket'");
         }
     }
 
@@ -2981,147 +2548,6 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("asset.index and asset.fallback (AS-12)")
-    class AssetIndexAndFallback {
-
-        private List<ConfigError> validateAsset(AssetConfig asset) {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "WEB", "assets",
-                    auth(Require.NONE),
-                    assetRoute("spa", "/assets", "assets", asset, HttpMethod.GET));
-            return validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
-        }
-
-        private static AssetConfig directoryWith(@Nullable String index, @Nullable String fallback) {
-            return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY).directory("/srv/spa")
-                    .index(index).fallback(fallback).build();
-        }
-
-        @Test
-        @DisplayName("Should accept a directory asset declaring a single-segment index and fallback")
-        void shouldAcceptDirectoryIndexAndFallback() {
-            List<ConfigError> errors = validateAsset(directoryWith("index.html", "index.html"));
-
-            assertTrue(errors.isEmpty(), () -> "a directory source may declare index and fallback, got: " + errors);
-        }
-
-        @ParameterizedTest(name = "asset.{0} on source: upstream")
-        @ValueSource(strings = {"index", "fallback"})
-        @DisplayName("Should refuse index or fallback on an upstream asset source")
-        void shouldRefuseOnUpstreamSource(String key) {
-            AssetConfig.AssetConfigBuilder asset = AssetConfig.builder().source(AssetConfig.Source.UPSTREAM)
-                    .upstream("SECONDARY");
-            if ("index".equals(key)) {
-                asset.index("index.html");
-            } else {
-                asset.fallback("index.html");
-            }
-
-            List<ConfigError> errors = validateAsset(asset.build());
-
-            assertHasError(errors, "/endpoint/routes",
-                    "asset route 'spa' declares asset." + key + " but its source is 'upstream'");
-        }
-
-        @ParameterizedTest(name = "invalid file name ''{0}''")
-        @ValueSource(strings = {"", ".", "..", "../index.html", "sub/index.html", "sub\\index.html", "index\0.html",
-                "index\r.html"})
-        @DisplayName("Should refuse an index or fallback that is not a single file-name segment")
-        void shouldRefuseInvalidFileName(String name) {
-            List<ConfigError> indexErrors = validateAsset(directoryWith(name, null));
-            List<ConfigError> fallbackErrors = validateAsset(directoryWith(null, name));
-
-            assertAll("both keys are held to the single-segment rule",
-                    () -> assertHasError(indexErrors, "/endpoint/routes",
-                            "asset route 'spa' asset.index must be a single file-name segment"),
-                    () -> assertHasError(fallbackErrors, "/endpoint/routes",
-                            "asset route 'spa' asset.fallback must be a single file-name segment"));
-        }
-
-        @Test
-        @DisplayName("Should never echo the offending file-name value into the refusal message")
-        void shouldNotEchoOffendingValue() {
-            List<ConfigError> errors = validateAsset(directoryWith("../../etc/passwd", null));
-
-            assertTrue(errors.stream().noneMatch(error -> error.message().contains("etc/passwd")),
-                    () -> "the refused value must not reach the operator log, got: " + errors);
-        }
-    }
-
-    @Nested
-    @DisplayName("upstream.rewrite_location protocol restriction (AS-11)")
-    class RewriteLocationProtocol {
-
-        private static final String REWRITE_LOCATION = "upstream.rewrite_location";
-
-        private List<ConfigError> validateRoute(@Nullable Protocol protocol, @Nullable Boolean rewriteLocation) {
-            RouteConfig route = RouteConfig.builder()
-                    .id("rewritten")
-                    .protocol(protocol)
-                    .match(match("/rewritten", HttpMethod.GET))
-                    .upstream(UpstreamConfig.builder().rewriteLocation(rewriteLocation).build())
-                    .build();
-            return validator.validate(validGateway().build(),
-                    List.of(endpoint("orders", "ORDERS", List.of(HttpMethod.GET), route)), topologyWith("ORDERS"));
-        }
-
-        private static boolean hasRewriteLocationError(List<ConfigError> errors) {
-            return errors.stream().anyMatch(error -> error.message().contains(REWRITE_LOCATION));
-        }
-
-        /**
-         * Whether {@code rewrite_location} is refused for this protocol — the expectation half of the
-         * matrix below, as an EXHAUSTIVE switch rather than a hand-written name list. A protocol added
-         * to {@link Protocol} fails to compile here until someone decides which side it belongs on,
-         * where a {@code names = {...}} selector would simply have stopped covering it and left the
-         * validator free to drift with every test still green.
-         */
-        private static boolean rewriteLocationRefused(Protocol protocol) {
-            return switch (protocol) {
-                // The rewrite reads an HTTP Location response header, which neither carries.
-                case GRPC, WEBSOCKET -> true;
-                case HTTP, GRAPHQL -> false;
-            };
-        }
-
-        @ParameterizedTest
-        @EnumSource(Protocol.class)
-        @DisplayName("Should refuse rewrite_location: true on exactly the protocols that cannot carry a Location")
-        void shouldRefuseRewriteLocationPerProtocol(Protocol protocol) {
-            List<ConfigError> errors = validateRoute(protocol, true);
-
-            if (rewriteLocationRefused(protocol)) {
-                assertHasError(errors, "/endpoint/routes", "route 'rewritten' declares " + REWRITE_LOCATION);
-                assertHasError(errors, "/endpoint/routes",
-                        "its protocol is '" + protocol.name().toLowerCase(Locale.ROOT) + "'");
-            } else {
-                assertFalse(hasRewriteLocationError(errors),
-                        () -> protocol + " routes support the Location rewrite, got: " + errors);
-            }
-        }
-
-        @Test
-        @DisplayName("Should accept rewrite_location: true on a route that omits protocol (http)")
-        void shouldAcceptWhenProtocolOmitted() {
-            List<ConfigError> errors = validateRoute(null, true);
-
-            assertTrue(errors.isEmpty(), () -> "an omitted protocol means http, got: " + errors);
-        }
-
-        @ParameterizedTest
-        @EnumSource(Protocol.class)
-        @DisplayName("Should not refuse any protocol's route whose rewrite_location is false or absent")
-        void shouldNotRefuseWhenToggleOff(Protocol protocol) {
-            assertAll("only an enabled toggle is refused",
-                    () -> assertFalse(hasRewriteLocationError(validateRoute(protocol, false)),
-                            "a declared false is not refused"),
-                    () -> assertFalse(hasRewriteLocationError(validateRoute(protocol, null)),
-                            "an absent key is not refused"));
-        }
-    }
-
-    @Nested
     @DisplayName("token_relay: false must not re-admit Authorization through headers_allow")
     class TokenRelayForwardConflict {
 
@@ -3870,108 +3296,6 @@ class ConfigValidatorTest {
 
             assertTrue(errors.stream().noneMatch(error -> PortalRules.PORTAL_PATH_POINTER.equals(error.pointer())),
                     () -> "a path that is not the reserved one does not collide, got: " + errors);
-        }
-    }
-
-    /**
-     * A WebSocket route whose effective auth is {@code bearer} or {@code session} declares a non-empty
-     * {@code allowed_origins}; a {@code require: none} route may omit it. Both authenticated postures
-     * run through the same cases, so the requirement cannot hold for one and lapse for the other.
-     */
-    @Nested
-    @DisplayName("websocket allowed_origins — required on a bearer and on a session route")
-    class WebSocketOriginAllowlist {
-
-        private static final String ROUTES_POINTER = "/endpoint/routes";
-        private static final String ALLOWLIST_KEY = "allowed_origins";
-        private static final String ORIGIN = "https://app.example.com";
-
-        /** The violations of one WebSocket route that name the allowlist key. */
-        private List<ConfigError> allowlistErrors(Require require, String routeId, @Nullable WebSocketConfig websocket) {
-            RouteConfig route = RouteConfig.builder()
-                    .id(routeId)
-                    .protocol(Protocol.WEBSOCKET)
-                    .match(match("/" + routeId, HttpMethod.GET))
-                    .websocket(websocket)
-                    .build();
-            EndpointConfig endpoint = EndpointConfig.builder()
-                    .id("live").enabled(true).baseUrl("LIVE")
-                    .auth(auth(require))
-                    .routes(List.of(route))
-                    .build();
-            return validator.validate(validGateway().build(), List.of(endpoint), topologyWith("LIVE")).stream()
-                    .filter(error -> ROUTES_POINTER.equals(error.pointer()) && error.message().contains(ALLOWLIST_KEY))
-                    .toList();
-        }
-
-        private static WebSocketConfig allowing(String... origins) {
-            return WebSocketConfig.builder().allowedOrigins(List.of(origins)).build();
-        }
-
-        private void assertRefusedForMissingAllowlist(Require require, @Nullable WebSocketConfig websocket) {
-            String routeId = Generators.letterStrings(4, 12).next().toLowerCase(Locale.ROOT);
-            String posture = require.name().toLowerCase(Locale.ROOT);
-
-            List<ConfigError> errors = allowlistErrors(require, routeId, websocket);
-
-            assertEquals(1, errors.size(), () -> "exactly one allowlist refusal, got: " + errors);
-            ConfigError refusal = errors.getFirst();
-            assertAll("the refusal names the file, the route, the key and the route's own posture",
-                    () -> assertEquals("endpoints/live.yaml", refusal.file()),
-                    () -> assertTrue(refusal.message().contains("websocket route '" + routeId + "'"),
-                            refusal::message),
-                    () -> assertTrue(refusal.message().contains("effective auth '" + posture + "'"),
-                            refusal::message),
-                    () -> assertTrue(refusal.message().contains("non-empty " + ALLOWLIST_KEY), refusal::message));
-        }
-
-        @ParameterizedTest(name = "require: {0}")
-        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
-        @DisplayName("Should refuse an authenticated WebSocket route that declares no websocket block")
-        void shouldRefuseAbsentAllowlist(Require require) {
-            assertRefusedForMissingAllowlist(require, null);
-        }
-
-        @ParameterizedTest(name = "require: {0}")
-        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
-        @DisplayName("Should refuse an authenticated WebSocket route whose allowed_origins is empty")
-        void shouldRefuseEmptyAllowlist(Require require) {
-            assertRefusedForMissingAllowlist(require, allowing());
-        }
-
-        @ParameterizedTest(name = "require: {0}")
-        @EnumSource(value = Require.class, names = "NONE", mode = EnumSource.Mode.EXCLUDE)
-        @DisplayName("Should accept an authenticated WebSocket route that declares an exact origin")
-        void shouldAcceptPopulatedAllowlist(Require require) {
-            List<ConfigError> errors = allowlistErrors(require, "socket", allowing(ORIGIN));
-
-            assertEquals(List.of(), errors);
-        }
-
-        /**
-         * The matched control: the same route with no allowlist is admitted once its posture is
-         * {@code require: none}, so the refusals above are about the authenticated postures and not
-         * about every WebSocket route.
-         */
-        @Test
-        @DisplayName("Should accept a require: none WebSocket route without an allowlist (matched control)")
-        void shouldAcceptUnauthenticatedRouteWithoutAllowlist() {
-            assertAll("a require: none route may omit the allowlist",
-                    () -> assertEquals(List.of(), allowlistErrors(Require.NONE, "socket", null),
-                            "no websocket block"),
-                    () -> assertEquals(List.of(), allowlistErrors(Require.NONE, "socket", allowing()),
-                            "an empty allowed_origins"));
-        }
-
-        @ParameterizedTest(name = "require: {0}")
-        @EnumSource(Require.class)
-        @DisplayName("Should hold a declared origin to the exact-match rule whatever the route's posture")
-        void shouldRefuseWildcardOriginOnEveryPosture(Require require) {
-            List<ConfigError> errors = allowlistErrors(require, "socket", allowing("https://*.example.com"));
-
-            assertEquals(1, errors.size(), () -> "exactly one per-entry refusal, got: " + errors);
-            assertTrue(errors.getFirst().message().contains("wildcards are not permitted"),
-                    () -> errors.getFirst().message());
         }
     }
 

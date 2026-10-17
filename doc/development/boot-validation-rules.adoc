@@ -40,8 +40,9 @@ Not every concern has been extracted yet. Until it is, its rules stay `private s
 The helpers every rule shares live once, in
 link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/RuleSupport.java[`RuleSupport`]:
 the reporting file (`GATEWAY_FILE`, `endpointFile`), the `ENDPOINT_ROUTES_POINTER`, the
-CWE-117-safe echo of a configured value (`renderForMessage`) and the declared anchor name
-(`declaredAnchorName`). A helper moves into `RuleSupport` with the first extracted concern class that
+CWE-117-safe echo of a configured value (`renderForMessage`), the declared anchor name
+(`declaredAnchorName`), which protocol a route rides (`effectiveProtocol`), which `auth.require` a
+route resolves (`requireOf`) and the wildcard-origin token (`WILDCARD_ORIGIN`). A helper moves into `RuleSupport` with the first extracted concern class that
 needs it, not before. A rule never resolves a policy block or a route's anchor itself: it reads them
 through `PolicyBlock` and `PolicyBlock.ScopeChain.of` (ADR-0067), so boot validation and the route
 table cannot disagree.
@@ -92,12 +93,12 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `TerminalActionRules`
 | `validateTerminalAction`, `validateAssetIndexAndFallback`
 | route `asset` / `redirect` / `upstream` exclusivity
-| private in `ConfigValidator`
+| extracted
 
 | `EdgeRules`
 | `validateForwardedTrust`, `validatePassthroughHostCollision`, `validatePassthroughAliasResolvable`
 | `forwarded.trusted_proxies`, `tls.passthrough_sni`
-| private in `ConfigValidator`
+| extracted
 
 | `HeaderRules`
 | `validateCors`, `validateContentSecurityPolicy`, `validateHeaderModes`
@@ -124,7 +125,7 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `ProtocolRules`
 | `validateWebSocketConfig`, `validateRewriteLocationProtocol`
 | `protocol`, `websocket`, `upstream.rewrite_location`
-| private in `ConfigValidator`
+| extracted
 
 | `AssetDefaultsRules`
 | `validateAssetContentTypesAddOnly`, `validateAssetContentTypeValues`
