@@ -17,17 +17,18 @@ package de.cuioss.sheriff.gateway.config.validation;
 
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.WILDCARD_ORIGIN;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.declaredAnchorName;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.effectiveProtocol;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.requireOf;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -64,11 +65,10 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
-import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
-import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.LimitRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.ProtocolRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.RouteMatchingRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.config.validation.rule.TerminalActionRules;
@@ -88,8 +88,8 @@ import org.jspecify.annotations.Nullable;
  * configuration block ({@link PortalRules} for the application portal, for example) or — for a
  * concern not yet extracted — as a private method of this class, registered at its position all the
  * same. The helpers every rule shares (the reporting file and pointer, the CWE-117-safe echo of a
- * configured value, anchor resolution, which protocol a route rides) live once, in
- * {@link RuleSupport}.
+ * configured value, anchor resolution, which protocol a route rides, which {@code auth.require} a
+ * route resolves, and the wildcard-origin token) live once, in {@link RuleSupport}.
  * <p>
  * Each rule is a {@link ValidationRule}; {@link #validate} executes them all and
  * returns the combined, file- and path-annotated {@link ConfigError} list — never
@@ -212,7 +212,6 @@ public final class ConfigValidator {
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
     private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
     private static final String ENDPOINT_FORWARD_POINTER = "/endpoint/forward";
-    private static final String WILDCARD_ORIGIN = "*";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
@@ -414,8 +413,8 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughAliasResolvable(gateway, topology,
                     errors),
-            (gateway, endpoints, topology, errors) -> validateWebSocketConfig(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateRewriteLocationProtocol(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> ProtocolRules.validateWebSocketConfig(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> ProtocolRules.validateRewriteLocationProtocol(endpoints, errors),
             (gateway, endpoints, topology, errors) -> TerminalActionRules.validateAssetIndexAndFallback(endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateEdgeHardening(gateway, errors),
@@ -1917,102 +1916,6 @@ public final class ConfigValidator {
     private static boolean isControlOrWhitespace(int character) {
         return Character.isISOControl(character) || Character.isWhitespace(character)
                 || Character.isSpaceChar(character);
-    }
-
-    /**
-     * Rule: the fail-closed WebSocket allowlist contract (ADR-0015). Each
-     * {@code protocol: websocket} route is validated by {@link #validateWebSocketRoute}
-     * (bearer and session allowlist, exact-match origins, positive idle timeout). A route that
-     * declares a {@code websocket} block while its protocol is <em>not</em>
-     * {@code websocket} is rejected here, since those settings would otherwise be
-     * silently ignored. Every violation collects into the shared list; the rule never
-     * fails fast.
-     */
-    private static void validateWebSocketConfig(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                if (effectiveProtocol(route) == Protocol.WEBSOCKET) {
-                    validateWebSocketRoute(gateway, endpoint, route, errors);
-                } else if (route.websocket() != null) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' declares a websocket block but its protocol is not 'websocket'; the websocket settings would be silently ignored"
-                                    .formatted(route.id())));
-                }
-            }
-        }
-    }
-
-    /**
-     * Validates a single {@code protocol: websocket} route against the fail-closed
-     * WebSocket allowlist contract (ADR-0015): a route whose effective auth is authenticated
-     * ({@link Require#isAuthenticated()} — today {@code require: bearer} or
-     * {@code require: session}) needs a non-empty
-     * {@code allowed_origins}, no origin may contain a wildcard, and a declared
-     * {@code idle_timeout_seconds} must be positive.
-     * <p>
-     * A session route is held to the allowlist because its credential is a cookie the browser
-     * attaches to the upgrade on its own, so the handshake {@code Origin} is what tells the
-     * gateway which page opened the socket. A {@code session_fallback} route is a bearer-posture
-     * route and is covered as one. A {@code require: none} route may omit the allowlist. The
-     * per-entry and idle-timeout checks apply to every WebSocket route on the same terms,
-     * whatever its auth posture. Every violation collects into the shared list; the rule never
-     * fails fast.
-     */
-    private static void validateWebSocketRoute(GatewayConfig gateway, EndpointConfig endpoint, RouteConfig route,
-            List<ConfigError> errors) {
-        WebSocketConfig websocket = route.websocket();
-        List<String> origins = websocket == null ? List.of() : websocket.allowedOrigins();
-        Require require = requireOf(ScopeChain.of(gateway, endpoint, route));
-        if (require.isAuthenticated() && origins.isEmpty()) {
-            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                    "websocket route '%s' with effective auth '%s' must declare a non-empty allowed_origins allowlist (fail-closed)"
-                            .formatted(route.id(), require.name().toLowerCase(Locale.ROOT))));
-        }
-        for (String origin : origins) {
-            if (origin.contains(WILDCARD_ORIGIN)) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                        "websocket route '%s' allowed_origins entry '%s' must be an exact origin; wildcards are not permitted"
-                                .formatted(route.id(), origin)));
-            }
-        }
-        Integer timeout = websocket == null ? null : websocket.idleTimeoutSeconds();
-        if (timeout != null && timeout <= 0) {
-            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                    "websocket route '%s' idle_timeout_seconds must be a positive integer, but was %d"
-                            .formatted(route.id(), timeout)));
-        }
-    }
-
-    /**
-     * Rule: {@code upstream.rewrite_location: true} is refused on a {@code grpc} or {@code websocket}
-     * route. The mapping is applied by the HTTP response relay only — a gRPC response is relayed with
-     * its trailers and carries no redirect, and a WebSocket route hands the connection to the opaque
-     * relay — so on those protocols the key would be silently ignored. Every violation collects into
-     * the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateRewriteLocationProtocol(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                UpstreamConfig upstream = route.upstream();
-                Protocol protocol = effectiveProtocol(route);
-                if (upstream != null && Boolean.TRUE.equals(upstream.rewriteLocation())
-                        && (protocol == Protocol.GRPC || protocol == Protocol.WEBSOCKET)) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' declares upstream.rewrite_location but its protocol is '%s'; the Location rewrite applies to http and graphql routes only and would be silently ignored"
-                                    .formatted(route.id(), protocol.name().toLowerCase(Locale.ROOT))));
-                }
-            }
-        }
-    }
-
-    /**
-     * The route's effective {@code auth.require}, resolved through {@link PolicyBlock#AUTH};
-     * {@link Require#NONE} when no scope declares an auth block (that route is refused separately).
-     */
-    private static Require requireOf(ScopeChain chain) {
-        AuthConfig auth = PolicyBlock.AUTH.declared(chain);
-        return auth == null ? Require.NONE : auth.require();
     }
 
     /**
