@@ -9,7 +9,48 @@ workstream: WS-04
 > Operator ruling behind this plan: *"The IDP exposing directly is a bug. Some DNS trickery is not
 > solution … Make a thorough research on this on how to handle sensibly (no hacks, engineering)."*
 
-## Objective
+## Resume Procedure — rebase first, then continue
+
+Operator ruling 2026-10-18: resume the existing plan `plan-v02-12-idp-addressing-model`; do not start a new
+one. It is in `5-execute`. Outline deliverables 1–4, which are spec D4 and its document reconciliation, shipped
+as #450 (`eff0724c`). Outline deliverables 5–7, which are spec D1, D2 and D5, are blocked as TASK-7..11. Spec D3 stays held.
+
+**Do these steps in order. Run no task before step 3 is done.**
+
+1. **Rebase first.** The worktree branch sits at `86102655`, behind `origin/main` by the whole config and edge
+   refactor (#465, #467, #476, #485, #487, #489 and more). Rebase it onto `origin/main` before anything else.
+   The plan's own commits since #450 are none, so the rebase should be trivial. If the branch carries commits,
+   stop and report them rather than resolving conflicts on stale work. Re-run the duplicate-run check
+   afterwards: no other branch or PR may carry this plan id.
+2. **Re-ground against the rebased tree.** Every file and line reference in this spec and in the plan's
+   outline is re-derived from the rebased tree, not from the outline written on 2026-10-13. Ground truth on
+   `origin/main` at `3a252fca`, checked by the orchestrator on 2026-10-18:
+   - token-sheriff is pinned at **0.9.7** (`pom.xml` `version.token-sheriff`), so there is **no version bump**.
+   - `ClientConfiguration.ClientConfigurationBuilder` has `backChannelOrigin` and `allowInsecureHttp`, and **no
+     `discoveryUrl`**. The mapping lives in `internal/BackChannelHttp`.
+   - `OidcConfig` still has a single `issuer` and no back-channel key.
+   - `BffRuntimeProducer.backChannelConfiguration(OidcConfig, List)` (around line 776) builds the
+     `ClientConfiguration`, and `ScopedEngineFlows` reuses it for every scoped variant. Wire D1 there.
+   - All three realm imports still pin `"frontendUrl": "https://keycloak:8443"`. Both compose files set
+     `KC_HOSTNAME=localhost` with `KC_HOSTNAME_STRICT=false`. `demo-client/playwright.config.js` still carries
+     `hostResolverRule()` / `--host-resolver-rules`, which is the target of D2.
+   - Boot validation now runs as an ordered list, `ConfigValidator.DEFAULT_RULES`, with concern classes under
+     `config/validation/rule/` (see `doc/development/boot-validation-rules.adoc`). The `oidc` rules
+     (`validateClientAuthentication`, `validateUserInfo`, `validateLoginPath` and others) are still private
+     methods of `ConfigValidator`. Add D1's boot rules next to them, and `PLAN-V02-42` then moves the whole
+     group. Policy blocks resolve through `config/PolicyBlock`, and the route type is `routing/Route`.
+   - Register any new config record in `quarkus/ConfigModelReflection`.
+   - The next free ADR ordinal is **0069**. 0068 is the edge split; derive it again at write time.
+   - D4 is on `main`: `OidcConfig.ClientAuthenticationSettings.DEFAULT_JWKS_PATH` is `/bff/jwks`, and the
+     `doc/configuration.adoc` OIDC exhibit and its reserved-path list use `/bff/*`. D5's document list is
+     therefore down to the identity and addressing pages, not the path rename.
+3. **Loop back to `3-outline` for outline deliverables 5–7, then re-plan their tasks.** TASK-7..11 describe a
+   "token-sheriff bump and back-channel discovery URL". Neither exists. Rewrite the deliverables to spec D1
+   (an origin-only `oidc` key passed to `backChannelOrigin`), D2 (repoint `frontendUrl` outward and delete the
+   resolver hack; the green Playwright run without the flag is the evidence) and D5 (the ADR and the identity
+   docs). Replace the blocked tasks; do not unblock them as they are.
+4. Continue execute and finalize as normal. The result is the plan's second PR.
+
 
 The gateway's BFF cannot today address an identity provider that is reachable at different
 network locations from the browser and from the gateway. The shipped test and sample topologies
@@ -77,8 +118,11 @@ Both advertise the same issuer string.
    - absent means today's behaviour (one authority for everything);
    - an origin only: refuse a path, query, fragment or userinfo at boot with a gateway message rather
      than relying on the engine's exception text;
-   - the host must pass the existing egress allowlist and the `egress_tls.oidc_*` hostname and trust
-     posture, which the engine applies to the host actually contacted;
+   - the host is contacted under the `egress_tls.oidc_verify_hostname` / `egress_tls.oidc_tls_profile`
+     posture, which the engine applies to the host actually contacted. **There is no egress host allowlist
+     on the OIDC client on `main`.** The only one is `token_validation`'s JWKS `allowed_hosts`. Decide at
+     outline whether the back-channel origin needs an equivalent private-address rule, and record the
+     decision in the ADR;
    - **`http` is refused unless explicitly allowed.** Upstream's `allowInsecureHttp` is client-wide
      (PR #805 "Known limitation", security finding 830d5c): an `http` back-channel origin also permits
      cleartext to every foreign `http` endpoint the metadata advertises. Default to `https` only; if an
@@ -143,7 +187,7 @@ Both advertise the same issuer string.
    calls on the internal hop. If the outline finds a design in which D3 needs no part of D1, that
    is a finding worth reporting, not a shortcut to take silently.
 
-4. **Relocate the reserved BFF paths off `/auth`, and rename the info endpoint.**
+4. **Relocate the reserved BFF paths off `/auth`, and rename the info endpoint.** *Shipped as #450 (`eff0724c`), with its doc reconciliation.*
 
    D3 makes this mandatory rather than cosmetic: `/auth/*` becomes the IdP namespace, so the
    reserved paths must move. That is the seven BFF paths (callback, logout, logout return, back-channel, userinfo, login, step-up) plus the client-authentication JWKS endpoint
@@ -292,7 +336,7 @@ reserved-path namespace is a broken contract rather than a partial one.
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java` — D1
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § `backChannelConfiguration` — D1 passes the origin to the engine there
-- OBSERVED: `api-sheriff/src/main/resources/schema/gateway.schema.json` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D1's key and its boot rules
+- OBSERVED: `api-sheriff/src/main/resources/schema/gateway.schema.json` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` (the `oidc` rules, until `PLAN-V02-42`) — D1's key and its boot rules
 - HYPOTHESIS: `ConfigModelReflection` if D1 adds a record — **a new config record unregistered there boots
   fine on the JVM and fails only in the native image.** (verify-at-outline)
 - OBSERVED: `integration-tests/src/main/docker/keycloak/*.json`,
@@ -332,7 +376,8 @@ reserved-path namespace is a broken contract rather than a partial one.
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-12-idp-addressing-model.md" plan_id=plan-v02-12-idp-addressing-model
 ```
 
-**The explicit `plan_id` is load-bearing — do not drop it.**
+**The explicit `plan_id` is load-bearing — do not drop it.** It resumes the existing plan. Follow the
+Resume Procedure at the top: rebase first, re-ground, then loop back to outline for deliverables 5–7.
 
 ## Write-Boundary
 

@@ -2,9 +2,9 @@
   "id": "PLAN-V02-41",
   "slug": "validator-asset-forwarding-anchor-rules",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-41-validator-asset-forwarding-anchor-rules",
-  "pr": "",
-  "landing": "",
+  "pr": "489",
+  "landing": "landings/PLAN-V02-41.md",
   "seq": 41
 }
