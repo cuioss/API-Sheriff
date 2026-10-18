@@ -2,9 +2,9 @@
   "id": "PLAN-V02-25",
   "slug": "edge-route-decomposition",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-25-edge-route-decomposition",
-  "pr": "",
-  "landing": "",
+  "pr": "487",
+  "landing": "landings/PLAN-V02-25.md",
   "seq": 25
 }

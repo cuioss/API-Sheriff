@@ -44,7 +44,7 @@ Other gateways do it this way:
 ## Deliverables
 
 1. **Refused and queued streams release their body.** Verify the claim first. #431 already ends
-   early-answered streams with `RST_STREAM(NO_ERROR)` (`edge/EarlyResponseEnd`, `edge/InboundStreamWindow`).
+   early-answered streams with `RST_STREAM(NO_ERROR)` (`edge/end/EarlyResponseEnd`, `edge/end/InboundStreamWindow`).
    Establish whether the `503` admission refusal and the queue-for-connection path go through that path
    or not. Where they do not, reset the stream (`REFUSED_STREAM` for admission refusals), return its
    buffered bytes to the connection window, and release them from the admission account. Write a test

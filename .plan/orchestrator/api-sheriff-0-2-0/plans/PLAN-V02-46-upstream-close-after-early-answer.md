@@ -38,20 +38,27 @@ matches them. How they close differs:
    connection" and leaves it "free for the next" request. That is true only when no body byte was sent;
    a partly sent HTTP/1.1 request closes its connection. State that precisely.
 3. **Record it.** If deliverable 1 changes the close, add an amendment to ADR-0066 (A1 records
-   `SO_LINGER 0`), update the `GatewayEdgeRoute` Javadoc on the default branch's abortive close (~2416),
+   `SO_LINGER 0`), update the `edge/upstream/EgressClients` Javadoc on the default branch's abortive close,
    and update the threat model's `gw-07-upstream-ports` section.
+4. **Close the admit/drain window in `edge/admission/EdgeAdmission`.** `tryAdmit` checks `draining` and
+   only then increments `inFlight`. A request that passes the check just before `drain()` sets the flag can
+   still be admitted after `drain()` has read zero in flight and returned, so shutdown can cut it off.
+   Increment first, re-check `draining`, and undo and refuse when it is set. Add a test that pins the
+   ordering. This is a shutdown-lifecycle fix in the same edge lifecycle as deliverable 1. It predates
+   `PLAN-V02-25`; CodeRabbit raised it on #487, which declined it as out of scope for a move.
 
-Split guard: 3 deliverables. This is a behaviour change, so the normal limits apply.
+Split guard: 4 deliverables. This is a behaviour change, so the normal limits apply.
 
 ## Claim Labels
 
-- OBSERVED: the default upstream client sets `SO_LINGER 0` — `edge/GatewayEdgeRoute.java` ~2416–2433 at `73721077`
+- OBSERVED: the default upstream client sets `SO_LINGER 0` — `edge/upstream/EgressClients.java` (`setSoLinger(0)`, moved there by #487)
 - OBSERVED: ADR-0060 A1 says the reset "frees the connection" and makes it "free for the next" (lines ~208, ~229) — `origin/main` at `73721077`
+- OBSERVED: `EdgeAdmission.tryAdmit` checks `draining` before `inFlight.incrementAndGet()`, and `drain()` sets the flag and then waits for `inFlight` to reach zero — `origin/main` at `ef4a3345`
 - HYPOTHESIS: an upstream that does not process the RST keeps its side open until its own idle timeout — from inbox `-004`, observed in PLAN-32's investigation (verify at outline)
 
 ## Expected Surface
 
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/` (upstream client construction, relay close), sub-package names per `PLAN-V02-25`
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/` (`EgressClients`, `DispatchStage`), `edge/admission/EdgeAdmission.java` (deliverable 4)
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeEarlyResponseResetTest.java`
 - OBSERVED: `doc/adr/0060-…adoc`, `doc/adr/0066-…adoc`, `doc/architecture.adoc`, `doc/security-threat-model.adoc`
 
