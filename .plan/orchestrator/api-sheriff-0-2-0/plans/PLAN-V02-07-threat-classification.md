@@ -55,7 +55,7 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
   INPUT_VALIDATION / ROUTING / AUTHENTICATION / AUTHORIZATION / UPSTREAM / CONFIGURATION — `ROUTING` added
   by #383, ADR-0059), surfaced via
   `events/GatewayEventCounter.java` → `quarkus/SheriffMetrics.java` (Micrometer) and WARN logging in
-  `edge/GatewayEdgeRoute.java` (`SECURITY_FILTER_VIOLATION`, payload-safe). Find the WARN site by
+  `edge/error/RejectionReporter.java` (`SECURITY_FILTER_VIOLATION`, payload-safe). Find the WARN site by
   content — `LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, …)` — not by line.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory has six values incl. ROUTING; GatewayEdgeRoute.reportRejection WARNs SECURITY_FILTER_VIOLATION; SheriffMetrics.ERRORS_TOTAL exists
 - OBSERVED absence: no cross-request scoring / campaign notion exists — the counter is global-per-event,
@@ -80,7 +80,7 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/GatewayEventCounter.java` / `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java` — the two-tier signal wiring
 - OBSERVED absence → NEW: an ECS/OCSF structured-emit formatter + a new `LogRecord` ALERT constant (`doc/LogMessages.adoc`)
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**` — weights / window / threshold config; `doc/**`; `api-sheriff/src/test/**`
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` (`reportRejection`, the WARN dispatch site), `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java` (the ALERT record)
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/RejectionReporter.java` (`reportRejection`, the WARN dispatch site), `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java` (the ALERT record)
 
 ## Dependencies and Sequencing
 
@@ -95,7 +95,7 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 - This is the most downstream plan of WS-03; emit it last among them.
 - Overlaps with: `PLAN-V02-06`, and `PLAN-V03-01` (honeypot) in the `api-sheriff-0-3-0` epic — all
   touch the event system and the substrate. Never concurrent with either.
-- `GatewayEdgeRoute.reportRejection` is the WARN dispatch site, and `PASSTHROUGH_HOST_SMUGGLED` is a
+- `RejectionReporter.reportRejection` (`edge/error/`) is the WARN dispatch site, and `PASSTHROUGH_HOST_SMUGGLED` is a
   second WARN case beside `SECURITY_FILTER_VIOLATION`; both are in the Expected Surface.
 - ADR-0062 (platform-first, landed by `PLAN-V02-01`): the ECS/OCSF formatter serialises through
   `bff/runtime/GatewayJson`, not a hand-rolled writer, and the scoring ADR records the reason for any

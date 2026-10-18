@@ -18,8 +18,8 @@ leaky bucket) with a written contract that `PLAN-V02-07` consumes.
 
 ## The rejection contract this plan builds on
 
-`PLAN-V02-13` has landed (#383, ADR-0059). The concerns at the rejection dispatch in
-`GatewayEdgeRoute` are split as follows:
+`PLAN-V02-13` has landed (#383, ADR-0059). The concerns at the rejection dispatch
+(`edge/error/ErrorResponseWriter`, `edge/error/RejectionReporter` since #487) are split as follows:
 
 | Concern | Owner |
 |---|---|
@@ -51,7 +51,7 @@ must work through that negotiation, not around it.
      `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, `PATH_NOT_ALLOWED`, `METHOD_NOT_ALLOWED` and
      `TOKEN_MISSING` as HTML-eligible. Design the uniform-404 against that negotiating renderer, and do not reintroduce
      a status or shape oracle through the HTML branch.
-   - `renderProblem` has several call sites in `GatewayEdgeRoute.java` (six when last counted). The
+   - `renderProblem` is defined in `edge/error/ErrorResponseWriter` and called from several edge classes since #487 (`GatewayEdgeRoute`, `ErrorResponseWriter`, `reserved/ReservedPathHandler`, `reserved/ReservedBodyReader`). The
      trust-boundary branch must account for every one; re-count at outline.
    - Verify at outline whether `PASSTHROUGH_HOST_SMUGGLED` is a further pre-auth 404 event that
      belongs in the uniform-404 scope beside `NO_ROUTE_MATCHED`.
@@ -98,7 +98,7 @@ must work through that negotiation, not around it.
    never forward a client's h2c upgrade headers to the backend. API Sheriff
    terminates h2 via ALPN and proxies gRPC over upstream h2, so both sides inherit this requirement.
 
-   **Part of it is already in place.** `edge/EdgeHardeningOptions` bounds header size, initial-line
+   **Part of it is already in place.** `edge/admission/EdgeHardeningOptions` bounds header size, initial-line
    length, chunk size and idle timeout on every listener. `Upgrade` and `Connection` are already in
    `ConnectionHeaders.REQUEST_STRIP` (#185, pinned in `ConnectionHeadersTest`), so the h2c strip is
    done except for `HTTP2-Settings`, which nothing strips. `maxConcurrentStreams` is done: #466 (kidicap PLAN-32) caps it at 100
@@ -129,7 +129,7 @@ must work through that negotiation, not around it.
    the request body ended used to reach it on an ordinary upload burst (`GOAWAY` `ENHANCE_YOUR_CALM`
    in `run-k6-upload-small-benchmark`, Open Defect 16). #431 (`09edaea9`, ADR-0066) closed that
    source: the gateway now ends such a stream itself with `RST_STREAM(NO_ERROR)`
-   (`edge/EarlyResponseEnd`, `edge/InboundStreamWindow`), and the threat model's `gw-08` section
+   (`edge/end/EarlyResponseEnd`, `edge/end/InboundStreamWindow`), and the threat model's `gw-08` section
    carries a note that early-answered uploads do not feed the reset count. `gw-08` itself is still
    `GAP`. Any reset-rate bound this deliverable adds must keep that path out of its count, and the
    upload benchmark plus `Http2EarlyResponseResetIT` are its regression tests.
@@ -159,7 +159,7 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 ## Claim Labels
 
 - OBSERVED (the oracle): the differentiated codes are real — `events/EventType.java`: `NO_ROUTE_MATCHED`
-  (404), `TOKEN_MISSING` (401), `PATH_NOT_ALLOWED` (400); rendered by `edge/GatewayEdgeRoute.java`
+  (404), `TOKEN_MISSING` (401), `PATH_NOT_ALLOWED` (400); rendered by `edge/error/ErrorResponseWriter.java`
   `renderProblem` per the event's HTTP mapping.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType NO_ROUTE_MATCHED 404, PATH_NOT_ALLOWED 400, TOKEN_MISSING 401; renderProblem derives status from eventType.httpStatus()
 - OBSERVED: deny-by-default routing (no listing) — `pipeline/RouteSelectionStage.java`
@@ -171,7 +171,7 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter is a global EventType-to-AtomicLong map; no per-client or rate construct in main beyond the unused RateLimitConfig
 - HYPOTHESIS: the "trusted / authenticated caller" signal needed for the trust-boundary branch is
   available at the render point (the request carries its auth outcome). Confirm/refute at
-  `edge/GatewayEdgeRoute.java` § where `renderProblem` is called and what auth state is in scope
+  each `renderProblem` call site, for what auth state is in scope there
   (verify-at-outline) — if the reject path cannot see auth state, the branch needs the pipeline to
   thread it, which widens the deliverable. Re-grounding refuted it; D1 now carries the threading.
   - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: PipelineRequest gained an Optional admittingSession (#412, session routes only) but still no bearer or unauthenticated outcome; renderProblem sees none; D1 body re-scoped
@@ -183,7 +183,7 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 
 ## Expected Surface
 
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` `renderProblem` — the trust-boundary-aware uniform-404 branch
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/ErrorResponseWriter.java` `renderProblem` — the trust-boundary-aware uniform-404 branch
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/RouteSelectionStage.java` — the route-miss origin of `NO_ROUTE_MATCHED`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/PipelineRequest.java` — D1: carries no authentication outcome today; the trust-boundary branch needs one threaded to the render point
 - OBSERVED absence → NEW: a per-client recon-detection component under `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/` or a new package
@@ -192,11 +192,11 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 - OBSERVED: `doc/configuration.adoc`, `doc/user/`, `doc/development/`; `api-sheriff/src/test/**`
 - `doc/security-threat-model.adoc` — flip `gw-08` from `GAP` to `COVERED` once D8 lands — D8
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/ErrorPageClassifier.java` — D1 works through the negotiating renderer
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/DispatchStage.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java`, `doc/LogMessages.adoc` — the trip event's metric and log record
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java`, `doc/LogMessages.adoc` — the trip event's metric and log record
 - `doc/architecture.adoc`, `doc/adr/` — the substrate ADR (D6); `benchmarks/**` — the upload benchmark as D8's regression check
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EdgeHardeningOptions.java` — D8: the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcDispatchStage.java` — D8: its Javadoc claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/EarlyResponseEnd.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/InboundStreamWindow.java` — D8: the early-response `NO_ERROR` reset path (#431, ADR-0066) that a reset-rate bound must not count; read, edited only if the bound needs a hook there
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java` — D8: the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/GrpcDispatchStage.java` — D8: its Javadoc claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/end/EarlyResponseEnd.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/end/InboundStreamWindow.java` — D8: the early-response `NO_ERROR` reset path (#431, ADR-0066) that a reset-rate bound must not count; read, edited only if the bound needs a hook there
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RateLimitConfig.java` — D9: the reserved key, read by nothing on the request path
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D9: the boot WARN for a set `rate_limit` (or the route-table build, whichever already emits per-route boot WARNs; verify-at-outline)
@@ -208,8 +208,8 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
   hand-rolled component. The substrate ADR states why the per-source bucket is built here and not
   taken from a platform mechanism.
 - Depends on: none. The taxonomy this plan's uniform-404 branch is built against has landed with
-  `PLAN-V02-13` (#383). Re-read `GatewayEdgeRoute` and `DispatchStage` at outline: both were changed
-  by `PLAN-V02-13` and `PLAN-V02-10` after this spec was last grounded.
+  `PLAN-V02-13` (#383). Re-read `GatewayEdgeRoute`, `edge/error/` and `edge/upstream/DispatchStage` at outline: the edge was
+  decomposed into sub-packages by `PLAN-V02-25` (#487, ADR-0068) after this spec was last grounded.
 - Depended on by: `PLAN-V02-07`, which consumes D3 and D7 and must not run before this plan lands.
 - Overlaps with: `PLAN-V02-05` on `ResponseStage` and the edge. The two are close enough that the
   disjointness check should read `PLAN-V02-05`'s current outline if it is in flight, not only its

@@ -212,7 +212,7 @@ suite is its proof.
   `Authorization`), and `ForwardPolicyStageTest.cookieNeverCrossesEvenWhenAllowListed` asserts the
   ignore.
 - OBSERVED: the response side relays every upstream `Set-Cookie` except a gateway cookie name — read
-  at `edge/UpstreamSetCookieFilter.java` (class Javadoc), constructed in `ResponseStage` from
+  at `edge/relay/UpstreamSetCookieFilter.java` (class Javadoc), constructed in `ResponseStage` from
   `bffRuntime.gatewayCookieNames()`; an empty name set relays every line.
 - OBSERVED: the gateway cookie names are derived from the active BFF and are empty without one —
   read at `quarkus/BffRuntimeProducer.java` § `gatewayCookieNames(SessionBinding)`; constants
@@ -232,15 +232,15 @@ suite is its proof.
 - OBSERVED: Vert.x 4.5.34 joins HTTP/2 `cookie` fields into one value — read in
   `vertx-core-4.5.34-sources.jar` § `io.vertx.core.http.impl.headers.Http2HeadersAdaptor` (constructor,
   citing RFC 7540 §8.1.2.5), used by `Http2ServerRequest`; the gateway copies headers through
-  `GatewayEdgeRoute#toListMap`.
+  `edge/request/EdgeRequests#toListMap`.
 - OBSERVED: HTTP proxy, gRPC and WebSocket dispatch all take stage 5's forwarded header set — read at
-  `edge/DispatchStage.java`, `edge/GrpcDispatchStage.java` and `edge/WebSocketRelayStage.java`
+  `edge/upstream/DispatchStage.java`, `edge/upstream/GrpcDispatchStage.java` and `edge/relay/WebSocketRelayStage.java`
   (`forwardHeaders` parameter).
 - OBSERVED: `CsrfDefence` checks `Origin` and falls back to `Sec-Fetch-Site: same-origin` — read at
   `bff/csrf/CsrfDefence.java` (class Javadoc).
 - HYPOTHESIS: the WebSocket upgrade response and the gRPC response relay upstream `Set-Cookie`
-  through `ResponseStage` / `UpstreamSetCookieFilter` — confirm at `edge/WebSocketRelayStage.java` and
-  `edge/GrpcDispatchStage.java` (verify-at-outline); a path that relays headers past the filter is in
+  through `ResponseStage` / `UpstreamSetCookieFilter` — confirm at `edge/relay/WebSocketRelayStage.java` and
+  `edge/upstream/GrpcDispatchStage.java` (verify-at-outline); a path that relays headers past the filter is in
   D4's scope.
 - HYPOTHESIS: `CsrfDefence` can be reused outside the BFF session branch without a session in scope
   — confirm at `bff/csrf/CsrfDefence.java` and its call site in `bff/runtime/SessionAuthenticationStage.java`
@@ -253,8 +253,8 @@ suite is its proof.
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/ConnectionHeaders.java` — D3
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/ForwardPolicyStage.java` — D3
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/UpstreamSetCookieFilter.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java` — D4
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/WebSocketRelayStage.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GrpcDispatchStage.java` — D3, D4, D5 wiring
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/UpstreamSetCookieFilter.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/ResponseStage.java` — D4
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/WebSocketRelayStage.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/GrpcDispatchStage.java` — D3, D4, D5 wiring
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/csrf/CsrfDefence.java` — D5
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` — D2
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/GatewayConfig.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/AnchorConfig.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/EndpointConfig.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RouteConfig.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/ResolvedRoute.java` — D1

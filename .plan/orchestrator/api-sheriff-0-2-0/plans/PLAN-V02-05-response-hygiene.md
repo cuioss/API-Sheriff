@@ -80,7 +80,7 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
 
 ## Claim Labels
 
-- OBSERVED (confirmed leak): `edge/ResponseStage.java` `isForwardableResponseHeader` filters ONLY
+- OBSERVED (confirmed leak): `edge/relay/ResponseStage.java` `isForwardableResponseHeader` filters ONLY
   hop-by-hop and conditional headers — it does **not** strip `Server`/`X-Powered-By`, so an upstream
   emitting them leaks them through; `relay()` and `relayWithTrailers()` both copy every forwardable
   upstream header through that one filter.
@@ -88,7 +88,7 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
 - OBSERVED: security headers are opt-in today — `pipeline/SecurityHeadersStage.java` emits HSTS /
   nosniff / frame-deny only when the `security_headers` block enables each.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersStage.OwnedHeader emits HSTS, nosniff and frame DENY only when the security_headers block sets them
-- OBSERVED: error bodies are already clean — `edge/GatewayEdgeRoute.java` `renderProblem` emits a
+- OBSERVED: error bodies are already clean — `edge/error/ErrorResponseWriter.java` `renderProblem` emits a
   minimal `{"type","title","status"}` with generic `EventCategory` titles, no stack/framework signature.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem/problemBody emit type, title, status plus extension members only; no stack or framework text
 - HYPOTHESIS: the gateway itself emits no `Server`/`X-Powered-By` by default (Vert.x/Quarkus default;
@@ -103,7 +103,7 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
 
 ## Expected Surface
 
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/ResponseStage.java` — the response-header forward filter
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/ResponseStage.java` — the response-header forward filter
   (add the identity-strip); both `relay()` and `relayWithTrailers()` reach it through `relaysUpstreamHeader`,
   which combines it with `UpstreamSetCookieFilter`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/ConnectionHeaders.java` (`RESPONSE_STRIP`) — the shared
