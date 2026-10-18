@@ -31,6 +31,16 @@ import org.jspecify.annotations.Nullable;
  * secret selects {@code private_key_jwt}, signed with the key the {@code client_authentication}
  * block names or, when it names none, with a key generated at startup. There is no separate switch.
  * Every consumer reads the mode through {@link #usesClientSecret()}.
+ * <p>
+ * <strong>The issuer is the identity; the back-channel origin is transport.</strong>
+ * {@link #issuer()} is the one identity every exact-match check uses — the discovery document's
+ * {@code issuer}, an ID token's {@code iss}, a back-channel logout token's {@code iss} — and it is
+ * the authority the browser is redirected to. {@link #backChannelOrigin()} only changes where the
+ * gateway's own server-to-server calls (discovery, pushed authorization, token, user-info) are
+ * dialled: the engine re-targets the endpoints the issuer advertises on its own origin to the
+ * configured origin and leaves the identity untouched. An absent origin means one authority for
+ * everything, which is the behaviour without the key. The value comes from configuration alone and
+ * is never derived from request data.
  *
  * @param issuer               the OIDC issuer, {@code null} when omitted
  * @param clientId             the client id, {@code null} when omitted
@@ -52,6 +62,18 @@ import org.jspecify.annotations.Nullable;
  * @param senderConstraint     the sender-constraint settings — the key file of the DPoP proof key
  *                             the gateway's access tokens are bound to — {@code null} when omitted.
  *                             Read in both client-authentication modes
+ * @param backChannelOrigin    the origin ({@code scheme://host[:port]}) the gateway dials for its
+ *                             server-to-server calls to the identity provider
+ *                             ({@code oidc.back_channel_origin}), {@code null} when omitted — the
+ *                             issuer's own origin is then dialled for everything. Transport only,
+ *                             never identity: {@link #issuer()} stays the identity every
+ *                             exact-match check uses
+ * @param backChannelAllowInsecureHttp the explicit opt-in that admits an {@code http}
+ *                             {@code back_channel_origin} ({@code oidc.back_channel_allow_insecure_http}),
+ *                             {@code null} when omitted, which reads as {@code false}. Boot
+ *                             validation refuses it when there is nothing to opt in for — no origin,
+ *                             or an {@code https} origin. When in effect it lets the whole OIDC
+ *                             client use cleartext, not just the back-channel origin
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -69,7 +91,9 @@ List<String> scopes,
 @Nullable UserInfo userInfo,
 @Nullable Login login,
 @Nullable ClientAuthenticationSettings clientAuthentication,
-@Nullable SenderConstraintSettings senderConstraint) {
+@Nullable SenderConstraintSettings senderConstraint,
+@Nullable String backChannelOrigin,
+@Nullable Boolean backChannelAllowInsecureHttp) {
 
     /**
      * Canonical constructor defensively copying {@code scopes}.
@@ -118,15 +142,17 @@ List<String> scopes,
      * message, or debugger view that captures this instance.
      * <p>
      * {@link #clientAuthentication()} and {@link #senderConstraint()} are rendered as they are: a
-     * key file is a path, not a secret.
+     * key file is a path, not a secret. {@link #backChannelOrigin()} and
+     * {@link #backChannelAllowInsecureHttp()} are rendered as they are too: an origin is an address,
+     * not a secret.
      *
      * @return a string representation with {@code clientSecret} redacted
      */
     @Override
     public String toString() {
-        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s]"
+        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s, backChannelOrigin=%s, backChannelAllowInsecureHttp=%s]"
                 .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp, userInfo,
-                        login, clientAuthentication, senderConstraint);
+                        login, clientAuthentication, senderConstraint, backChannelOrigin, backChannelAllowInsecureHttp);
     }
 
     /**

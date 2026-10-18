@@ -70,6 +70,9 @@ class ConfigModelContractTest {
 
     // --- Shared fixtures ---------------------------------------------------
 
+    /** The back-channel origin of the {@link #oidcConfig()} fixture: an internal address, not a secret. */
+    private static final String BACK_CHANNEL_ORIGIN = "https://keycloak:8443";
+
     private static AuthConfig auth() {
         return AuthConfig.builder().require(Require.BEARER).build();
     }
@@ -196,6 +199,8 @@ class ConfigModelContractTest {
                 .stepUp(new OidcConfig.StepUp(true, false, "/session/step-up"))
                 .userInfo(userInfo())
                 .login(new OidcConfig.Login("/session/login", null))
+                .backChannelOrigin(BACK_CHANNEL_ORIGIN)
+                .backChannelAllowInsecureHttp(false)
                 .build();
     }
 
@@ -477,6 +482,19 @@ class ConfigModelContractTest {
                                     new OidcConfig.SenderConstraintSettings("/keys/a.pem")).build(),
                             OidcConfig.builder().senderConstraint(
                                     new OidcConfig.SenderConstraintSettings("/keys/b.pem")).build()),
+                    // One case per back-channel component: each unequal instance varies exactly one of the
+                    // two and holds the other fixed, so a component dropped from equals() fails its own
+                    // case alone.
+                    voCase("OidcConfig (back_channel_origin)",
+                            OidcConfig.builder().backChannelOrigin(BACK_CHANNEL_ORIGIN).build(),
+                            OidcConfig.builder().backChannelOrigin(BACK_CHANNEL_ORIGIN).build(),
+                            OidcConfig.builder().backChannelOrigin("https://idp.internal:9443").build()),
+                    voCase("OidcConfig (back_channel_allow_insecure_http)",
+                            OidcConfig.builder().backChannelOrigin("http://keycloak:8080")
+                                    .backChannelAllowInsecureHttp(true).build(),
+                            OidcConfig.builder().backChannelOrigin("http://keycloak:8080")
+                                    .backChannelAllowInsecureHttp(true).build(),
+                            OidcConfig.builder().backChannelOrigin("http://keycloak:8080").build()),
                     voCase("UpstreamDefaultsConfig",
                             UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(),
                             UpstreamDefaultsConfig.builder().retryEnabled(true).notModifiedEnabled(true).build(),
@@ -694,6 +712,26 @@ class ConfigModelContractTest {
                     () -> assertNull(omitted.refreshIntervalSeconds(), "an omitted interval stays absent"),
                     () -> assertNull(omitted.keyRotationGracePeriodSeconds(), "an omitted grace period stays absent"),
                     () -> assertNull(omitted.unknownKidRefreshWindowSeconds(), "an omitted window stays absent"));
+        }
+
+        @Test
+        void oidcConfigBuilderMatchesConstructorAndCarriesTheBackChannelKeys() {
+            // Positional on purpose: the canonical constructor is the subject the builder is compared to.
+            OidcConfig viaCtor = new OidcConfig("https://idp.example.com/realms/demo", null, null, List.of("openid"),
+                    null, null, null, null, null, null, null, null, "http://keycloak:8080", true);
+            OidcConfig viaBuilder = OidcConfig.builder().issuer("https://idp.example.com/realms/demo")
+                    .scopes(List.of("openid")).backChannelOrigin("http://keycloak:8080")
+                    .backChannelAllowInsecureHttp(true).build();
+            OidcConfig omitted = OidcConfig.builder().issuer("https://idp.example.com/realms/demo").build();
+            assertAll("the back-channel origin and its opt-in are the last two components, in that order",
+                    () -> assertEquals(viaCtor, viaBuilder),
+                    () -> assertEquals("http://keycloak:8080", viaCtor.backChannelOrigin()),
+                    () -> assertEquals(Boolean.TRUE, viaCtor.backChannelAllowInsecureHttp()),
+                    () -> assertEquals("https://idp.example.com/realms/demo", viaCtor.issuer(),
+                            "the origin is transport; the issuer stays the identity"),
+                    () -> assertNull(omitted.backChannelOrigin(), "an omitted back_channel_origin stays absent"),
+                    () -> assertNull(omitted.backChannelAllowInsecureHttp(),
+                            "an omitted opt-in stays absent; it reads as false where it is consumed"));
         }
 
         @Test
@@ -1669,6 +1707,10 @@ class ConfigModelContractTest {
             String rendered = oidcConfig().toString();
             assertTrue(rendered.contains("userInfo="), "toString must surface the userInfo block");
             assertTrue(rendered.contains("login="), "toString must surface the login block");
+            assertTrue(rendered.contains("backChannelOrigin=" + BACK_CHANNEL_ORIGIN),
+                    "an origin is an address, not a secret, so toString renders it: " + rendered);
+            assertTrue(rendered.contains("backChannelAllowInsecureHttp=false"),
+                    "toString must surface the cleartext opt-in: " + rendered);
             assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted");
             assertFalse(rendered.contains("${OIDC_SECRET}"), "the raw client-secret reference must never appear");
         }

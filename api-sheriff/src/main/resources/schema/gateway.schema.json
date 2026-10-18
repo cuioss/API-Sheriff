@@ -367,6 +367,14 @@
       "additionalProperties": false,
       "properties": {
         "issuer": { "type": "string" },
+        "back_channel_origin": {
+          "type": "string",
+          "description": "The origin (scheme://host[:port], optionally followed by a single '/') the gateway dials for its own server-to-server calls to the identity provider — discovery, the pushed authorization request, the authorization-code exchange, refresh, user-info and revocation — when the issuer's own address is not reachable from the gateway, for example a container-internal name such as https://keycloak:8443. It is transport only, never identity: issuer stays the identity every exact-match check uses (the discovery document's issuer, an ID token's iss, a logout token's iss) and the authorization endpoint the browser is redirected to is untouched; only the endpoints the issuer advertises on its own origin are re-targeted to this one. When omitted, the issuer's own origin is dialled for everything. The value must be an absolute http or https URI with a host and no user-info, query, fragment or path; an http origin is refused unless back_channel_allow_insecure_http is true (enforced in code). JWKS is not affected: token_validation.issuers[].jwks.url keeps naming its own address."
+        },
+        "back_channel_allow_insecure_http": {
+          "type": "boolean",
+          "description": "Admits an http back_channel_origin; defaults to false. The token engine applies the opt-in to the whole OIDC client rather than to the origin alone, so every endpoint the client dials may then be reached over cleartext http, carrying the client credential and every token unencrypted; the gateway logs a WARN at every boot while it is in effect. Setting it true without a back_channel_origin, or together with an https one, is refused at boot (enforced in code), because there is then nothing to opt in for."
+        },
         "client_id": { "type": "string" },
         "client_secret": {
           "type": "string",

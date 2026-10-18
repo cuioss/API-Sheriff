@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.testsupport;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
@@ -52,12 +53,14 @@ import org.jspecify.annotations.Nullable;
  *
  * <h2>Why it serves TLS</h2>
  *
- * {@code BffRuntimeProducer.backChannelConfiguration} never sets the token engine's
- * {@code allowInsecureHttp}, so a runtime built that way cannot dial plain HTTP on any leg:
- * {@code DiscoveryResolver} refuses a non-{@code https} issuer before it sends anything, and the
- * token, revocation and pushed-request clients build their request through a handler builder that
- * refuses an {@code http} URI. A fixture that is to be reached by a <em>produced</em> runtime
- * therefore has to speak TLS.
+ * {@code BffRuntimeProducer.backChannelConfiguration} sets the token engine's
+ * {@code allowInsecureHttp} only under the explicit opt-in {@code oidc.back_channel_allow_insecure_http},
+ * which boot validation admits only together with an {@code http} {@code oidc.back_channel_origin}.
+ * Without it a produced runtime cannot dial plain HTTP on any leg: {@code DiscoveryResolver} refuses
+ * a non-{@code https} issuer before it sends anything, and the token, revocation and pushed-request
+ * clients build their request through a handler builder that refuses an {@code http} URI. A fixture
+ * that is to be reached by a <em>produced</em> runtime on its default posture therefore has to speak
+ * TLS.
  *
  * <h2>How a runtime reaches it</h2>
  *
@@ -68,6 +71,17 @@ import org.jspecify.annotations.Nullable;
  * subject alternative name is {@link LoopbackHost#ADDRESS}, so hostname verification stays on and
  * is satisfied. No certificate, key or trust store is committed, no system property is set and the
  * JVM default trust store is not touched.
+ *
+ * <h2>Advertising a public issuer</h2>
+ *
+ * {@link #start()} advertises the address it listens on, so the issuer is reachable as declared.
+ * {@link #startAdvertising(String)} instead declares a given public issuer — an origin, optionally
+ * followed by a path — as the discovery document's {@code issuer}, and names every endpoint beneath
+ * it, while the listener stays on loopback and serves each endpoint beneath that issuer's path. A
+ * test can then name an issuer nothing resolves and make {@code oidc.back_channel_origin} set to
+ * {@link #origin()} the only path to the fixture: discovery and every back-channel call reach it only
+ * if the engine re-targets them, and the authorization endpoint the browser is sent to stays on the
+ * public issuer.
  *
  * <h2>What it serves</h2>
  *
@@ -104,12 +118,20 @@ public final class StubIdentityProvider implements AutoCloseable {
 
     private final MockWebServer server;
     private final X509Certificate rootCertificate;
+    /** The advertised issuer, {@code null} when the fixture advertises the address it listens on. */
+    private final @Nullable String advertisedIssuer;
+    /** The path every endpoint is served beneath — the advertised issuer's path, empty for none. */
+    private final String servedPathPrefix;
     private final Map<Endpoint, List<ReceivedRequest>> received = new EnumMap<>(Endpoint.class);
     private final Map<Endpoint, Queue<Answer>> scripts = new EnumMap<>(Endpoint.class);
 
-    private StubIdentityProvider(MockWebServer server, X509Certificate rootCertificate) {
+    private StubIdentityProvider(MockWebServer server, X509Certificate rootCertificate,
+            @Nullable String advertisedIssuer) {
         this.server = server;
         this.rootCertificate = rootCertificate;
+        this.advertisedIssuer = advertisedIssuer;
+        String issuerPath = advertisedIssuer == null ? null : URI.create(advertisedIssuer).getRawPath();
+        this.servedPathPrefix = issuerPath == null ? "" : issuerPath;
         for (Endpoint endpoint : Endpoint.values()) {
             received.put(endpoint, new CopyOnWriteArrayList<>());
             scripts.put(endpoint, new ConcurrentLinkedQueue<>());
@@ -117,12 +139,39 @@ public final class StubIdentityProvider implements AutoCloseable {
     }
 
     /**
-     * Issues the certificate chain and starts the listener.
+     * Issues the certificate chain and starts the listener, advertising the address it listens on:
+     * {@link #issuer()} and {@link #origin()} are the same loopback origin.
      *
      * @return the running fixture; close it to stop the listener
      * @throws IOException when the listener cannot be bound
      */
     public static StubIdentityProvider start() throws IOException {
+        return startListener(null);
+    }
+
+    /**
+     * Issues the certificate chain and starts the listener on loopback, advertising {@code issuer}
+     * instead of the address it listens on: the discovery document declares {@code issuer} and names
+     * every endpoint beneath it, and each endpoint is served beneath {@code issuer}'s path. The fixture
+     * is then reachable only through {@link #origin()}, which is what a test names as
+     * {@code oidc.back_channel_origin}.
+     *
+     * @param issuer the public issuer to advertise: an absolute {@code https} URI, an origin optionally
+     *               followed by a path and with no trailing {@code /}
+     * @return the running fixture; close it to stop the listener
+     * @throws IOException when the listener cannot be bound
+     */
+    public static StubIdentityProvider startAdvertising(String issuer) throws IOException {
+        URI parsed = URI.create(Objects.requireNonNull(issuer, "issuer"));
+        if (!"https".equals(parsed.getScheme()) || parsed.getHost() == null || issuer.endsWith("/")
+                || parsed.getRawQuery() != null || parsed.getRawFragment() != null) {
+            throw new IllegalArgumentException("an advertised issuer is an https origin, optionally followed by "
+                    + "a path, with no trailing '/', no query and no fragment: " + issuer);
+        }
+        return startListener(issuer);
+    }
+
+    private static StubIdentityProvider startListener(@Nullable String advertisedIssuer) throws IOException {
         HeldCertificate root = new HeldCertificate.Builder()
                 .certificateAuthority(0)
                 .commonName("API Sheriff stub identity provider root")
@@ -141,7 +190,7 @@ public final class StubIdentityProvider implements AutoCloseable {
                 .heldCertificate(leaf, root.certificate())
                 .build()
                 .sslSocketFactory());
-        StubIdentityProvider provider = new StubIdentityProvider(server, root.certificate());
+        StubIdentityProvider provider = new StubIdentityProvider(server, root.certificate(), advertisedIssuer);
         server.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
@@ -153,11 +202,20 @@ public final class StubIdentityProvider implements AutoCloseable {
     }
 
     /**
-     * @return the issuer an {@code oidc.issuer} must name to reach this fixture: {@code https}, the
-     *         loopback address and the bound port. It is also the issuer the discovery document
-     *         declares
+     * @return the issuer the discovery document declares, and so the one an {@code oidc.issuer} must
+     *         name: the advertised issuer of {@link #startAdvertising(String)}, otherwise
+     *         {@link #origin()}
      */
     public String issuer() {
+        return advertisedIssuer == null ? origin() : advertisedIssuer;
+    }
+
+    /**
+     * @return the origin the listener is reachable at: {@code https}, the loopback address and the
+     *         bound port. For a fixture started by {@link #startAdvertising(String)} it is the origin an
+     *         {@code oidc.back_channel_origin} must name to reach it
+     */
+    public String origin() {
         return "https://" + LoopbackHost.ADDRESS + ":" + server.getPort();
     }
 
@@ -171,7 +229,9 @@ public final class StubIdentityProvider implements AutoCloseable {
 
     /**
      * @param endpoint the endpoint
-     * @return the absolute URL the endpoint is served at, as the discovery document names it
+     * @return the absolute URL the discovery document names for the endpoint, beneath
+     *         {@link #issuer()} — for a fixture started by {@link #startAdvertising(String)} an address on
+     *         the public issuer, not on {@link #origin()}
      */
     public String url(Endpoint endpoint) {
         return issuer() + endpoint.path;
@@ -205,7 +265,7 @@ public final class StubIdentityProvider implements AutoCloseable {
     private MockResponse serve(RecordedRequest request) {
         String path = request.getUrl().encodedPath();
         for (Endpoint endpoint : Endpoint.values()) {
-            if (endpoint.path.equals(path) && endpoint.method.equals(request.getMethod())) {
+            if ((servedPathPrefix + endpoint.path).equals(path) && endpoint.method.equals(request.getMethod())) {
                 received.get(endpoint).add(ReceivedRequest.of(request));
                 Answer scripted = scripts.get(endpoint).poll();
                 return render(scripted == null ? endpoint.defaultAnswer.apply(issuer()) : scripted);

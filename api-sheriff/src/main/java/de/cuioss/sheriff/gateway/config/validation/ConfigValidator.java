@@ -24,6 +24,8 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.lacks
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.requireOf;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -141,7 +143,10 @@ import org.jspecify.annotations.Nullable;
  * {@code oidc.client_authentication.key_file} select different client authentications, so a document
  * declaring both is refused, and so is a declared {@code oidc.client_secret} that resolves to a blank
  * value. The schema does not encode the exclusion; this rule owns it, because its message has to
- * name both keys.
+ * name both keys. The back-channel origin rule ({@link #validateBackChannelOrigin}) holds
+ * {@code oidc.back_channel_origin} to a bare {@code http}/{@code https} origin, admits an {@code http}
+ * origin only under {@code oidc.back_channel_allow_insecure_http: true}, and refuses that opt-in when
+ * there is nothing to opt in for — each refusal on its key's own pointer, in fixed text.
  * <p>
  * The client JWKS path rule refuses an {@code oidc.client_authentication.jwks_path} — declared, or
  * the default it resolves to when omitted — that another reserved OIDC endpoint already claims. The
@@ -258,6 +263,47 @@ public final class ConfigValidator {
     @SuppressWarnings("java:S1075")
     private static final String OIDC_CLIENT_JWKS_PATH_POINTER = "/oidc/client_authentication/jwks_path";
     private static final String OIDC_CLIENT_JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
+    private static final String OIDC_BACK_CHANNEL_ORIGIN_POINTER = "/oidc/back_channel_origin";
+    private static final String OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER =
+            "/oidc/back_channel_allow_insecure_http";
+    private static final String HTTP_SCHEME = "http";
+    private static final String HTTPS_SCHEME = "https";
+
+    /**
+     * The remedy every shape refusal of {@code oidc.back_channel_origin} closes with. Fixed text, so
+     * the boot log never echoes the configured value.
+     */
+    private static final String BACK_CHANNEL_ORIGIN_REMEDY =
+            " — declare an origin of the form scheme://host[:port] (optionally followed by a single '/'), "
+                    + "or remove oidc.back_channel_origin to dial the issuer's own origin";
+
+    /**
+     * The fixed detail of the refusal of an {@code http} {@code oidc.back_channel_origin} without the
+     * explicit cleartext opt-in.
+     */
+    private static final String BACK_CHANNEL_HTTP_WITHOUT_OPT_IN_DETAIL =
+            "oidc.back_channel_origin uses the http scheme but oidc.back_channel_allow_insecure_http is not true; "
+                    + "a cleartext back channel carries the client credential and every token, so it is admitted "
+                    + "only by the explicit opt-in — declare an https origin, or set "
+                    + "oidc.back_channel_allow_insecure_http: true";
+
+    /**
+     * The fixed detail of the refusal of the cleartext opt-in when no {@code oidc.back_channel_origin}
+     * is declared.
+     */
+    private static final String BACK_CHANNEL_OPT_IN_WITHOUT_ORIGIN_DETAIL =
+            "oidc.back_channel_allow_insecure_http is true but no oidc.back_channel_origin is declared; the "
+                    + "opt-in admits an http back-channel origin and has nothing to admit — remove "
+                    + "oidc.back_channel_allow_insecure_http, or declare the http origin it is meant for";
+
+    /**
+     * The fixed detail of the refusal of the cleartext opt-in when the declared
+     * {@code oidc.back_channel_origin} is {@code https}.
+     */
+    private static final String BACK_CHANNEL_OPT_IN_WITH_HTTPS_DETAIL =
+            "oidc.back_channel_allow_insecure_http is true but oidc.back_channel_origin uses the https scheme; "
+                    + "the opt-in would widen the whole OIDC client to cleartext for nothing — remove "
+                    + "oidc.back_channel_allow_insecure_http";
 
     /** The operator-declared reserved path {@code oidc.user_info.path}, held to {@link #validateReservedPath}. */
     private static final ReservedPathKey USER_INFO_PATH = new ReservedPathKey("oidc user_info path",
@@ -363,6 +409,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateStepUpPath(gateway, errors),
+            (gateway, endpoints, topology, errors) -> validateBackChannelOrigin(gateway, errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughHostCollision(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughAliasResolvable(gateway, topology,
@@ -1283,6 +1330,103 @@ public final class ConfigValidator {
         OidcConfig oidc = gateway.oidc();
         OidcConfig.StepUp stepUp = oidc == null ? null : oidc.stepUp();
         validateReservedPath(STEP_UP_PATH, stepUp == null ? null : stepUp.path(), errors);
+    }
+
+    /**
+     * Rule: the back-channel origin and its cleartext opt-in.
+     * <p>
+     * {@code oidc.back_channel_origin} names where the gateway dials its server-to-server calls to the
+     * identity provider; {@code oidc.issuer} stays the identity. The token engine re-targets only the
+     * endpoints the issuer advertises on its own origin, and the value comes from configuration alone,
+     * so no private-address rule applies — naming an internal address is the purpose of the key. What
+     * is held here is the shape and the transport:
+     * <ul>
+     *   <li><strong>Shape.</strong> A declared origin must be an absolute {@code http} or {@code https}
+     *       URI with a host, carrying no user-info, no query, no fragment and no path other than a
+     *       single trailing {@code /}. A blank value is refused as such. These are the refusals the
+     *       engine itself raises while the runtime is assembled, moved to boot validation so they arrive
+     *       on the key's own pointer instead of as the engine's exception.</li>
+     *   <li><strong>Cleartext.</strong> An {@code http} origin is refused unless
+     *       {@code oidc.back_channel_allow_insecure_http} is {@code true}: the back channel carries the
+     *       client credential and every token, and the opt-in widens the whole OIDC client to cleartext,
+     *       not just this origin.</li>
+     *   <li><strong>An inert opt-in.</strong> {@code oidc.back_channel_allow_insecure_http: true} with no
+     *       origin, or with an {@code https} origin, has nothing to opt in for and is refused rather
+     *       than left in place, where it would still widen the client.</li>
+     * </ul>
+     * An absent origin with no opt-in passes: the issuer's own origin is then dialled for everything. A
+     * value that fails the shape check is not judged against the opt-in as well, so one defect is
+     * reported once. Every refusal is reported on its key's own JSON pointer in fixed text that never
+     * echoes the configured value, and collects into the shared list; the rule never fails fast
+     * (ADR-0009).
+     */
+    private static void validateBackChannelOrigin(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null) {
+            return;
+        }
+        boolean optIn = Boolean.TRUE.equals(oidc.backChannelAllowInsecureHttp());
+        String origin = oidc.backChannelOrigin();
+        if (origin == null) {
+            if (optIn) {
+                errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER,
+                        BACK_CHANNEL_OPT_IN_WITHOUT_ORIGIN_DETAIL));
+            }
+            return;
+        }
+        Optional<String> shapeRefusal = backChannelOriginShapeRefusal(origin);
+        if (shapeRefusal.isPresent()) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ORIGIN_POINTER,
+                    "oidc.back_channel_origin " + shapeRefusal.get() + BACK_CHANNEL_ORIGIN_REMEDY));
+            return;
+        }
+        // The shape check admitted the value, so it parses and its scheme is http or https.
+        boolean cleartext = HTTP_SCHEME.equalsIgnoreCase(URI.create(origin).getScheme());
+        if (cleartext && !optIn) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ORIGIN_POINTER,
+                    BACK_CHANNEL_HTTP_WITHOUT_OPT_IN_DETAIL));
+        } else if (!cleartext && optIn) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER,
+                    BACK_CHANNEL_OPT_IN_WITH_HTTPS_DETAIL));
+        }
+    }
+
+    /**
+     * The reason a declared {@code oidc.back_channel_origin} is not a bare {@code http}/{@code https}
+     * origin, or empty when it is one. Every reason is fixed text; none echoes the configured value.
+     *
+     * @param origin the declared origin, never {@code null}
+     * @return the refusal reason, phrased to follow the key name, or empty when the shape holds
+     */
+    private static Optional<String> backChannelOriginShapeRefusal(String origin) {
+        if (origin.isBlank()) {
+            return Optional.of("is declared but blank");
+        }
+        URI uri;
+        try {
+            uri = new URI(origin);
+        } catch (URISyntaxException _) {
+            return Optional.of("is not a well-formed URI");
+        }
+        String scheme = uri.getScheme();
+        if (!uri.isAbsolute() || uri.getHost() == null
+                || !(HTTP_SCHEME.equalsIgnoreCase(scheme) || HTTPS_SCHEME.equalsIgnoreCase(scheme))) {
+            return Optional.of("must be an absolute http or https URI naming a host");
+        }
+        if (uri.getRawUserInfo() != null) {
+            return Optional.of("must not carry user-info; credentials never belong in an origin");
+        }
+        if (uri.getRawQuery() != null) {
+            return Optional.of("must not carry a query ('?')");
+        }
+        if (uri.getRawFragment() != null) {
+            return Optional.of("must not carry a fragment ('#')");
+        }
+        String path = uri.getRawPath();
+        if (path != null && !path.isEmpty() && !"/".equals(path)) {
+            return Optional.of("must not carry a path; an origin is scheme, host and port only");
+        }
+        return Optional.empty();
     }
 
     /**

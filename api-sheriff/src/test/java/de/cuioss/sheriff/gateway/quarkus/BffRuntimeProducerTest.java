@@ -830,7 +830,8 @@ class BffRuntimeProducerTest {
         private static OidcConfig withStepUpPath(OidcConfig base, @Nullable String path) {
             return new OidcConfig(base.issuer(), base.clientId(), base.clientSecret(), base.scopes(),
                     base.redirectUri(), base.logout(), base.session(), OidcConfig.StepUp.builder().path(path).build(),
-                    base.userInfo(), base.login(), base.clientAuthentication(), base.senderConstraint());
+                    base.userInfo(), base.login(), base.clientAuthentication(), base.senderConstraint(),
+                    base.backChannelOrigin(), base.backChannelAllowInsecureHttp());
         }
 
         @Test
@@ -4369,6 +4370,197 @@ class BffRuntimeProducerTest {
         }
     }
 
+    /**
+     * {@code oidc.back_channel_origin} and {@code oidc.back_channel_allow_insecure_http} are proven to
+     * <em>act</em>, not just parse.
+     * <p>
+     * <strong>The origin.</strong> The issuer is {@link #PUBLIC_ISSUER}, a name under the RFC 2606
+     * {@code .invalid} domain that never resolves, and the stub identity provider advertises exactly that
+     * issuer while it listens on loopback. A login can therefore reach the stub only if the engine dials
+     * the configured origin instead of the issuer: deleting the {@code backChannelOrigin(...)} call from
+     * {@link BffRuntimeProducer#backChannelConfiguration} turns
+     * {@link #shouldReachTheIdentityProviderThroughTheOrigin()} red, because discovery then dials the
+     * unresolvable issuer. {@link #shouldDialTheIssuerWithoutTheKey()} is the matched control: the same
+     * configuration without the key never reaches the stub. The browser, meanwhile, is sent to the
+     * authorization endpoint on the public issuer — the origin is transport, never identity.
+     * <p>
+     * <strong>The cleartext opt-in.</strong> {@code allowInsecureHttp} is set only when the opt-in is
+     * {@code true}, on the base configuration and on every scoped variant alike, and the widening is
+     * reported once per runtime build, never once per scoped variant.
+     */
+    @Nested
+    @EnableTestLogger
+    @DisplayName("Back-channel origin (oidc.back_channel_origin) and its cleartext opt-in")
+    class BackChannelOrigin {
+
+        private static final String PROFILE = "stub-idp";
+        /** RFC 2606: no name under {@code .invalid} resolves, so the issuer itself can never be dialled. */
+        private static final String PUBLIC_ISSUER = "https://idp.example.invalid/realms/demo";
+        /** An {@code http} origin a cleartext case names; nothing dials it, the cases inspect configuration. */
+        private static final String CLEARTEXT_ORIGIN = "http://idp-backchannel.invalid:8080";
+        /** An {@code https} origin a case names to show that the opt-in, not the key, decides cleartext. */
+        private static final String HTTPS_ORIGIN = "https://idp-backchannel.invalid:8443";
+        private static final String SCOPED_ROUTE_PREFIX = "/orders";
+        /** {@code oidc.scopes ∪ endpoint.scopes} for the scoped session route. */
+        private static final Set<String> SCOPED_NEEDED_SCOPES = Set.of("openid", SCOPED_ENDPOINT_SCOPE);
+        private static final List<String> SCOPED_SCOPES = List.of("openid", SCOPED_ENDPOINT_SCOPE);
+
+        private StubIdentityProvider stub;
+
+        @BeforeEach
+        void startStub() throws IOException {
+            stub = StubIdentityProvider.startAdvertising(PUBLIC_ISSUER);
+        }
+
+        @AfterEach
+        void stopStub() {
+            stub.close();
+        }
+
+        @Test
+        @DisplayName("Should reach discovery and the pushed request through the origin while the browser is sent to the public issuer")
+        void shouldReachTheIdentityProviderThroughTheOrigin() {
+            BffRuntime runtime = stubProducer(publicIssuerOidc(stub.origin()), new RouteTable(List.of()))
+                    .bffRuntime();
+
+            BffRuntime.ReservedHttpResponse answer = StubIdentityProviderRuntime.login(runtime, "/");
+
+            String location = answer.locationOptional().orElseThrow();
+            assertAll("a login whose issuer is unresolvable and whose back channel is the stub's origin",
+                    () -> assertEquals(302, answer.status()),
+                    () -> assertEquals(PUBLIC_ISSUER + "/authorize", location.substring(0, location.indexOf('?')),
+                            "the front channel is untouched: the browser is sent to the public issuer"),
+                    () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
+                            "discovery was dialled at the configured origin, beneath the issuer's path"),
+                    () -> assertEquals(1,
+                            stub.received(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST).size(),
+                            "the pushed authorization request was dialled at the configured origin"));
+        }
+
+        @Test
+        @DisplayName("Should dial the unresolvable issuer, and never the stub, without the key (matched control)")
+        void shouldDialTheIssuerWithoutTheKey() {
+            BffRuntime runtime = stubProducer(publicIssuerOidc(null), new RouteTable(List.of())).bffRuntime();
+
+            assertThrows(TransportException.class, () -> StubIdentityProviderRuntime.login(runtime, "/"),
+                    "without the key discovery dials the issuer, which nothing resolves");
+
+            assertAll("the stub is reachable only through the origin",
+                    () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.DISCOVERY)),
+                    () -> assertEquals(List.of(),
+                            stub.received(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST)));
+        }
+
+        @Test
+        @DisplayName("Should carry the origin on every scoped variant, and push a scoped login through it")
+        void shouldCarryTheOriginOnEveryScopedVariant() {
+            OidcConfig oidc = publicIssuerOidc(stub.origin());
+            BffRuntimeProducer producer = stubProducer(oidc, new RouteTable(List.of(
+                    StubIdentityProviderRuntime.scopedRoute("orders", SCOPED_ROUTE_PREFIX, SCOPED_NEEDED_SCOPES))));
+            BffRuntime runtime = producer.bffRuntime();
+
+            BffRuntime.ReservedHttpResponse answer =
+                    StubIdentityProviderRuntime.login(runtime, SCOPED_ROUTE_PREFIX + "/list");
+
+            ClientConfiguration base = producer.backChannelConfiguration(oidc, oidc.scopes());
+            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+            List<StubIdentityProvider.ReceivedRequest> pushed =
+                    stub.received(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST);
+            assertAll("the origin is set on the base configuration and on every scoped variant alike",
+                    () -> assertEquals(stub.origin(), base.getBackChannelOrigin()),
+                    () -> assertEquals(stub.origin(), scoped.getBackChannelOrigin(),
+                            "a scoped variant can never fall back to dialling the issuer"),
+                    () -> assertEquals(302, answer.status(), "the scoped login is redirected"),
+                    () -> assertEquals(1, pushed.size(), "its pushed request reached the stub through the origin"),
+                    () -> assertEquals(SCOPED_NEEDED_SCOPES, Set.of(String.valueOf(pushed.getFirst().form()
+                            .get("scope")).split(" ")), "and it is the scoped login's request"));
+        }
+
+        @Test
+        @DisplayName("Should set no origin and no cleartext posture when the key is absent")
+        void shouldSetNothingWithoutTheKey() {
+            OidcConfig oidc = serverModeOidc();
+            BffRuntimeProducer producer = producer(oidc);
+
+            ClientConfiguration base = assembledBackChannel(producer, oidc, oidc.scopes());
+            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+
+            assertAll("an absent key means one authority for everything, over TLS",
+                    () -> assertNull(base.getBackChannelOrigin()),
+                    () -> assertNull(scoped.getBackChannelOrigin()),
+                    () -> assertFalse(base.isAllowInsecureHttp()),
+                    () -> assertFalse(scoped.isAllowInsecureHttp()),
+                    () -> assertEquals(0, insecureHttpWarnings(), "nothing is widened, so nothing is reported"));
+        }
+
+        @Test
+        @DisplayName("Should admit cleartext on every variant under the opt-in and report it once per runtime build")
+        void shouldAdmitCleartextUnderTheOptInAndReportItOnce() {
+            OidcConfig oidc = withBackChannel(serverModeOidc(), CLEARTEXT_ORIGIN, true);
+            BffRuntimeProducer producer = producer(oidc);
+
+            BffRuntime runtime = producer.bffRuntime();
+            ClientConfiguration base = producer.backChannelConfiguration(oidc, oidc.scopes());
+            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+
+            assertAll("the opt-in widens the whole client, on the base configuration and every scoped variant",
+                    () -> assertTrue(runtime.isActive()),
+                    () -> assertEquals(CLEARTEXT_ORIGIN, base.getBackChannelOrigin()),
+                    () -> assertTrue(base.isAllowInsecureHttp()),
+                    () -> assertTrue(scoped.isAllowInsecureHttp(), "a scoped variant carries the same posture"),
+                    () -> assertEquals(1, insecureHttpWarnings(),
+                            "the widening is reported once per runtime build, never once per scoped variant"));
+        }
+
+        @Test
+        @DisplayName("Should admit no cleartext without the opt-in, whatever the origin")
+        void shouldAdmitNoCleartextWithoutTheOptIn() {
+            OidcConfig oidc = withBackChannel(serverModeOidc(), HTTPS_ORIGIN, null);
+            BffRuntimeProducer producer = producer(oidc);
+
+            producer.bffRuntime();
+            ClientConfiguration base = producer.backChannelConfiguration(oidc, oidc.scopes());
+            ClientConfiguration scoped = producer.backChannelConfiguration(oidc, SCOPED_SCOPES);
+
+            assertAll("the key alone sets the origin and never the cleartext posture",
+                    () -> assertEquals(HTTPS_ORIGIN, base.getBackChannelOrigin()),
+                    () -> assertFalse(base.isAllowInsecureHttp()),
+                    () -> assertFalse(scoped.isAllowInsecureHttp()),
+                    () -> assertEquals(0, insecureHttpWarnings()));
+        }
+
+        /** A server-mode configuration on {@link #PUBLIC_ISSUER} whose back channel is {@code origin}. */
+        private static OidcConfig publicIssuerOidc(@Nullable String origin) {
+            return OidcConfig.builder()
+                    .issuer(PUBLIC_ISSUER)
+                    .clientId("gateway-client")
+                    .scopes(List.of("openid"))
+                    .redirectUri(REDIRECT_URI)
+                    .session(OidcConfig.Session.builder().mode("server").ttlSeconds(3600).build())
+                    .login(OidcConfig.Login.builder().path("/auth/login").build())
+                    .backChannelOrigin(origin)
+                    .build();
+        }
+
+        private static OidcConfig withBackChannel(OidcConfig base, @Nullable String origin,
+                @Nullable Boolean allowInsecureHttp) {
+            return new OidcConfig(base.issuer(), base.clientId(), base.clientSecret(), base.scopes(),
+                    base.redirectUri(), base.logout(), base.session(), base.stepUp(), base.userInfo(), base.login(),
+                    base.clientAuthentication(), base.senderConstraint(), origin, allowInsecureHttp);
+        }
+
+        /** A producer whose back channel trusts the stub's root through the named profile alone. */
+        private BffRuntimeProducer stubProducer(OidcConfig oidc, RouteTable routeTable) {
+            return producer(oidc, new EgressTlsConfig(true, true, null, true, PROFILE),
+                    TestTlsConfigurationRegistry.withAnchor(PROFILE, stub.rootCertificate()), routeTable);
+        }
+
+        private static int insecureHttpWarnings() {
+            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN,
+                    ConfigLogMessages.WARN.OIDC_BACK_CHANNEL_INSECURE_HTTP.resolveIdentifierString()).size();
+        }
+    }
+
     @Nested
     @DisplayName("Gateway-origin derivation (default-port normalization)")
     class OriginDerivation {
@@ -4678,7 +4870,7 @@ class BffRuntimeProducerTest {
      */
     private static ClientConfiguration assembledBackChannel(BffRuntimeProducer producer, OidcConfig oidc,
             List<String> scopes) {
-        producer.reportBackChannelPosture();
+        producer.reportBackChannelPosture(oidc);
         return producer.backChannelConfiguration(oidc, scopes);
     }
 
