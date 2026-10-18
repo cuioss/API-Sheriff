@@ -51,7 +51,6 @@ import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
-import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -64,6 +63,7 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.AssetDefaultsRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.ForwardingRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.LimitRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ProtocolRules;
@@ -129,11 +129,11 @@ import org.jspecify.annotations.Nullable;
  * range</em> is owned by the bundled JSON Schema, so no post-binding range rule exists — only this
  * posture refusal.
  * <p>
- * The forward-mode exclusivity refusal adds one more: neither an endpoint nor a route may declare both
- * {@code *_allow} and {@code *_deny} for the same {@code forward} dimension, because each dimension
- * resolves exactly one of the three modes (positive-list, negative-list, forward-all). The schema bounds the
- * {@code forward} key <em>set</em>; a mutual exclusion between two of its keys is cross-cutting and
- * lives here.
+ * The forward-mode exclusivity refusal (owned by {@link ForwardingRules}) adds one more: neither an
+ * endpoint nor a route may declare both {@code *_allow} and {@code *_deny} for the same {@code forward}
+ * dimension, because each dimension resolves exactly one of the three modes (positive-list,
+ * negative-list, forward-all). The schema bounds the {@code forward} key <em>set</em>; a mutual
+ * exclusion between two of its keys is cross-cutting and lives with the post-binding rules.
  * <p>
  * The session-cookie name refusal adds one more: a declared {@code oidc.session.cookie_name} must
  * keep the {@code __Host-} guarantee the gateway-owned cookies carry, be writable verbatim into a
@@ -164,7 +164,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The session-and-scope rules add three more: a route resolving {@code auth.token_relay: false}
  * must not re-admit {@code Authorization} through the {@code forward.headers_allow} of its effective
- * {@code forward} block, whether the route or its endpoint declares that block; an endpoint
+ * {@code forward} block, whether the route or its endpoint declares that block (owned by
+ * {@link ForwardingRules}); an endpoint
  * declaring {@code scopes} must have at least one route that is not {@code require: none}, since
  * scopes act only on authenticated routes; and a declared {@code oidc.login.default_return_url}
  * must be same-origin with {@code redirect_uri}.
@@ -209,7 +210,6 @@ public final class ConfigValidator {
     private static final String ANCHORS_POINTER = "/anchors";
     private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
     private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
-    private static final String ENDPOINT_FORWARD_POINTER = "/endpoint/forward";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
@@ -234,9 +234,6 @@ public final class ConfigValidator {
             " must be an absolute gateway path starting with a single '/' and carrying no query ('?') and no "
                     + "fragment ('#'), no backslash ('\\'), no control character and no whitespace";
     private static final String ENDPOINT_SCOPES_POINTER = "/endpoint/scopes";
-
-    /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
-    private static final String AUTHORIZATION_HEADER = "Authorization";
 
     /**
      * The fixed detail of the refusal of {@code session_fallback: true} on a posture other than
@@ -384,8 +381,10 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypeValues(gateway,
                     errors),
-            (gateway, endpoints, topology, errors) -> validateForwardModeExclusivity(endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateTokenRelayForwardConflict(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> ForwardingRules.validateForwardModeExclusivity(endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> ForwardingRules.validateTokenRelayForwardConflict(gateway,
+                    endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors),
@@ -436,113 +435,6 @@ public final class ConfigValidator {
         if (gateway.version() != SUPPORTED_VERSION) {
             errors.add(new ConfigError(GATEWAY_FILE, "/version",
                     "unsupported config version %d (supported: %d)".formatted(gateway.version(), SUPPORTED_VERSION)));
-        }
-    }
-
-    /**
-     * Rule: neither an endpoint nor a route may declare both the positive-list and the negative-list
-     * for the same {@code forward} dimension.
-     * <p>
-     * Each dimension — headers, query — resolves <em>exactly one</em> of three modes: a positive-list
-     * when {@code *_allow} is declared, a negative-list when {@code *_deny} is declared, and
-     * forward-all when neither is. Declaring both expresses no coherent posture, and any precedence
-     * the gateway silently picked would be a guess about which one the operator meant. The two are
-     * therefore refused together at boot rather than reconciled at request time.
-     * <p>
-     * The bound is genuinely cross-cutting and cannot move into the bundled JSON Schema: the schema's
-     * {@code additionalProperties: false} bounds the <em>key set</em> of the {@code forward} object,
-     * but a mutual exclusion between two of its optional keys belongs with the other post-binding
-     * rules. The block is declarable at every scope {@link PolicyBlock#FORWARD} names — endpoint and
-     * route — and is checked at each of them, so an endpoint-level block that pairs the two lists is
-     * refused exactly like a route-level one (a block declared at a scope this rule did not read would
-     * reach the runtime unrefused). Both dimensions of every declaration are checked and every
-     * violation is collected rather than failing on the first, per ADR-0009 — the operator sees the
-     * whole list in one boot attempt.
-     */
-    private static void validateForwardModeExclusivity(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            checkForwardModes(endpoint, endpoint.forward(), "endpoint '%s'".formatted(endpoint.id()),
-                    ENDPOINT_FORWARD_POINTER, errors);
-            for (RouteConfig route : endpoint.routes()) {
-                checkForwardModes(endpoint, route.forward(), "route '%s'".formatted(route.id()),
-                        ENDPOINT_ROUTES_POINTER, errors);
-            }
-        }
-    }
-
-    /**
-     * Checks both dimensions of one declared {@code forward} block; an undeclared block has nothing to
-     * check.
-     */
-    private static void checkForwardModes(EndpointConfig endpoint, @Nullable ForwardConfig forward, String subject,
-            String pointer, List<ConfigError> errors) {
-        if (forward == null) {
-            return;
-        }
-        checkForwardDimension(endpoint, subject, pointer, "headers", forward.headersAllow(), forward.headersDeny(),
-                errors);
-        checkForwardDimension(endpoint, subject, pointer, "query", forward.queryAllow(), forward.queryDeny(), errors);
-    }
-
-    /**
-     * Refuses one {@code forward} dimension that declares both of its mutually exclusive lists. A
-     * <em>declared empty</em> list counts as declared: {@code headers_allow: []} is a positive-list
-     * admitting nothing, not an omission, so pairing it with a {@code headers_deny} is the same
-     * contradiction as pairing two populated lists.
-     */
-    private static void checkForwardDimension(EndpointConfig endpoint, String subject, String pointer,
-            String dimension, @Nullable List<String> allow, @Nullable List<String> deny, List<ConfigError> errors) {
-        if (allow == null || deny == null) {
-            return;
-        }
-        String allowKey = dimension + "_allow";
-        String denyKey = dimension + "_deny";
-        errors.add(new ConfigError(endpointFile(endpoint), pointer,
-                ("%s declares both %s and %s; the %s forward dimension resolves exactly one "
-                        + "mode, so the positive-list and the negative-list are mutually exclusive — "
-                        + "declare %s for a positive-list, %s for a negative-list, or neither for the "
-                        + "forward-all baseline")
-                        .formatted(subject, allowKey, denyKey, dimension, allowKey, denyKey)));
-    }
-
-    /**
-     * Rule: a route whose effective {@code auth.token_relay} is {@code false} must not name
-     * {@code Authorization} (in any letter case) in its {@code forward.headers_allow}.
-     * <p>
-     * {@code token_relay: false} states that no access token reaches this route's upstream, while
-     * naming {@code Authorization} in {@code headers_allow} is the one way an inbound
-     * {@code Authorization} header is re-admitted past the gateway-owned never-forward set. The pair
-     * therefore declares two opposite postures for the same header, and whichever one the gateway
-     * silently honoured would be a guess about the operator's intent — so the boot refuses it. The
-     * effective auth and the effective {@code forward} block are resolved through
-     * {@link PolicyBlock#AUTH} and {@link PolicyBlock#FORWARD}, the descriptors the route table
-     * resolves through, so an {@code Authorization} re-admitted by an endpoint-level {@code forward}
-     * block is refused exactly like a route-level one, and a route-level block that replaces it
-     * without {@code Authorization} is not. The refusal points at the scope that declared the
-     * offending block. The message names the route and the two keys, never a header value.
-     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateTokenRelayForwardConflict(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
-                AuthConfig auth = PolicyBlock.AUTH.declared(chain);
-                List<String> headersAllow = PolicyBlock.FORWARD.resolve(chain).headersAllow();
-                if (auth == null || auth.effectiveTokenRelay() || headersAllow == null) {
-                    continue;
-                }
-                if (headersAllow.stream().anyMatch(AUTHORIZATION_HEADER::equalsIgnoreCase)) {
-                    String pointer = PolicyBlock.isDeclared(route.forward()) ? ENDPOINT_ROUTES_POINTER
-                            : ENDPOINT_FORWARD_POINTER;
-                    errors.add(new ConfigError(endpointFile(endpoint), pointer,
-                            ("route '%s' resolves auth.token_relay: false but its forward.headers_allow names "
-                                    + "Authorization; token_relay: false keeps every access token away from the "
-                                    + "upstream, so re-admitting the Authorization header contradicts it — drop "
-                                    + "Authorization from headers_allow, or drop token_relay: false")
-                                    .formatted(route.id())));
-                }
-            }
         }
     }
 
