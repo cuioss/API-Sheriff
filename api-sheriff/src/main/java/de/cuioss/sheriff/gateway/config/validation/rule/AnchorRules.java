@@ -311,10 +311,7 @@ public class AnchorRules {
         Set<String> covered = new HashSet<>();
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
-                if (route.match().isExact()) {
-                    continue;
-                }
-                if (route.match().narrowsBeyondPath()) {
+                if (route.match().isExact() || route.match().narrowsBeyondPath()) {
                     continue;
                 }
                 String declaredName = declaredAnchorName(endpoint, route);
