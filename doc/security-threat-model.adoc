@@ -300,7 +300,7 @@ by a route block (`RouteTableBuilderTest`); an endpoint `security_filter` replac
 announced once per route (`RouteTableBuilderTest`); `minimal` arriving through an endpoint block on an
 authenticated or BFF route, an endpoint `forward` block declaring both lists of one dimension, and an
 endpoint `headers_allow: [Authorization]` on a `token_relay: false` route each fail the boot
-(`ConfigValidatorTest`); an endpoint `max_body_bytes` above the framework floor fails the boot
+(`LimitRulesTest`, `ForwardingRulesTest`); an endpoint `max_body_bytes` above the framework floor fails the boot
 (`ConfigBootPipelineTest`).
 
 == STRIDE per boundary
@@ -486,9 +486,9 @@ routed, authorized, and forwarded against the *same* canonical path -- never aut
 public and dispatched to a protected upstream. Upstream request-count = 0 on every bypass
 attempt. A configuration whose anchor namespace is left uncovered while a broader route encloses it
 fails the boot, and the same configuration with a prefix route at the anchor prefix boots
-(`ConfigValidatorTest.AnchorRules`, rule 4b -- including the partial-coverage case, where an anchored
+(`AnchorRulesTest.AnchorNamespaceAndFloor`, rule 4b -- including the partial-coverage case, where an anchored
 route on a sub-path only is not coverage). The same pair holds with the enclosing route declared
-`protocol: grpc` (`ConfigValidatorTest.GrpcNamespaceExemption`), alongside the controls proving the
+`protocol: grpc` (`AnchorRulesTest.GrpcNamespaceExemption`), alongside the controls proving the
 two declaration-scoped directions are still waived for it. A query accepted by the filter reaches the
 upstream byte for byte, a refused one (including the double encoding `%252F`) reaches it not at all,
 and a percent-encoded spelling of a name on a route's `query_deny` list is withheld.

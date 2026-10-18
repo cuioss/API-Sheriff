@@ -318,9 +318,9 @@ oidc:
     #
     # It CANNOT simply be '/', for two independent and individually fatal reasons:
     #   1. Serving '/' would need an anchor with path_prefix: /, which is structurally illegal —
-    #      ConfigValidator.prefixContains treats a container prefix normalizing to '/' as containing
-    #      everything, so validateAnchorPrefixDisjointness fails the boot fail-closed against every
-    #      one of the ten anchors this document already declares.
+    #      RuleSupport.prefixContains treats a container prefix normalizing to '/' as containing
+    #      everything, so AnchorRules.validateAnchorPrefixDisjointness fails the boot fail-closed
+    #      against every one of the ten anchors this document already declares.
     #   2. Even were it routable, the /assets/demo route declares no asset.index: a bare '/' yields an
     #      empty remainder that resolves to the directory root, and a directory source without an index
     #      answers a directory address 404.
