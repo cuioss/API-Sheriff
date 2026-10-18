@@ -83,8 +83,9 @@ public class AnchorRules {
     /**
      * The {@link PolicyBlock#AUTH} accessor reading the {@code auth} block declared at the route's
      * anchor — {@code null} when the chain resolves no anchor or the anchor declares no {@code auth}.
-     * Looked up once from the descriptor, so the auth floor reads the anchor declaration exactly the
-     * way every other boot reader resolves a policy block.
+     * Looked up once from the descriptor. Only the auth floor reads the anchor's {@code auth} block
+     * this way; the access-to-auth matrix and the authenticated-anchor backing still read
+     * {@code anchor.auth()} from the anchor model directly.
      */
     private static final Function<ScopeChain, @Nullable AuthConfig> ANCHOR_AUTH =
             Objects.requireNonNull(PolicyBlock.AUTH.accessors().get(PolicyBlock.Scope.ANCHOR));
@@ -333,9 +334,9 @@ public class AnchorRules {
      * {@code require: none} — the anchor floor cannot be weakened (ADR-0007).
      * <p>
      * The anchor's declared {@code auth} block is read through the anchor-scope accessor of
-     * {@link PolicyBlock#AUTH}, the descriptor every other boot reader resolves the block through; a
-     * route whose chain resolves no anchor, or whose anchor declares no {@code auth}, has no floor to
-     * weaken and is skipped.
+     * {@link PolicyBlock#AUTH}, the descriptor that declares the {@code auth} block once; a route whose
+     * chain resolves no anchor, or whose anchor declares no {@code auth}, has no floor to weaken and is
+     * skipped.
      *
      * @param gateway   the bound gateway document
      * @param endpoints the enabled endpoints

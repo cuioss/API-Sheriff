@@ -80,9 +80,11 @@ import org.jspecify.annotations.Nullable;
  * order. A rule body lives in the concern class of the {@code rule} package that owns its
  * configuration block ({@link PortalRules} for the application portal, for example) or — for a
  * concern not yet extracted — as a private method of this class, registered at its position all the
- * same. The helpers every rule shares (the reporting file and pointer, the CWE-117-safe echo of a
- * configured value, anchor resolution, which protocol a route rides, which {@code auth.require} a
- * route resolves, and the wildcard-origin token) live once, in {@link RuleSupport}.
+ * same. The helpers every rule shares (the reporting file, pointer and anchors pointer, the
+ * CWE-117-safe echo of a configured value, anchor resolution, which protocol a route rides, which
+ * {@code auth.require} a route resolves, the wildcard-origin token, the RFC 9110 media-type token,
+ * anchor-namespace containment and whether the gateway lacks a configured token issuer) live once, in
+ * {@link RuleSupport}.
  * <p>
  * Each rule is a {@link ValidationRule}; {@link #validate} executes them all and
  * returns the combined, file- and path-annotated {@link ConfigError} list — never

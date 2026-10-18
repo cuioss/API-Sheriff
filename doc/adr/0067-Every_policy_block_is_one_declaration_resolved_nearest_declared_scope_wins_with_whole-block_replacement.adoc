@@ -194,8 +194,9 @@ the subject of a separate plan (PLAN-V02-25).
 declaration: it compares the anchor's declared `auth` block with the resolved one. Its rule lives in
 the `AnchorRules` concern class of the configuration validator, and it reads the anchor's declared
 `auth` block through the anchor-scope accessor of the `PolicyBlock.AUTH` descriptor rather than from
-the anchor model directly, so it goes through the descriptors like every other boot reader. Its
-behaviour and its refusal text are unchanged.
+the anchor model directly. The access-to-auth matrix, the authenticated-anchor backing and the
+session-fallback refusal still read the anchor's `auth` block from the anchor model directly; this
+change does not move them. The floor's behaviour and its refusal text are unchanged.
 
 === The operator decision record
 
