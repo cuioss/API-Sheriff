@@ -389,7 +389,7 @@ class TerminalActionRulesRedirectTest {
          * Validates {@code route} under a {@code site} anchor of {@code type}, built so the ADR-0013
          * access→auth matrix admits the <em>anchor</em> — otherwise a {@code bff} case would fail on
          * the matrix rather than on the redirect rule under test, and the matrix rules are covered by
-         * {@code ConfigValidatorTest}, not here.
+         * {@code AnchorRulesTest}, not here.
          * <p>
          * The discriminator is the validator's own rule — {@code type: bff} implies
          * {@code access: authenticated} with a backed non-{@code none} floor — rather than a list of

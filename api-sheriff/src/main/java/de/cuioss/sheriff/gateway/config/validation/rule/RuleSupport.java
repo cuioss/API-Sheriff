@@ -17,21 +17,26 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
+import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
  * The helpers every boot-time {@link ValidationRule} shares, whichever concern class or
  * not-yet-extracted rule of the configuration validator it belongs to: where a {@link ConfigError}
- * is reported (the file and the JSON pointer), how an offending configured value is echoed into a
- * refusal message, which anchor a route resolves, which protocol a route rides, which
- * {@code auth.require} a route resolves, and the wildcard-origin token.
+ * is reported (the file, the JSON pointer and the anchors pointer), how an offending configured value
+ * is echoed into a refusal message, which anchor a route resolves, which protocol a route rides, which
+ * {@code auth.require} a route resolves, the wildcard-origin token, the RFC 9110 media-type token,
+ * anchor-namespace containment ({@link #prefixContains} and {@link #strictlyContains}), and whether
+ * the gateway lacks a configured token issuer ({@link #lacksConfiguredIssuer}).
  * <p>
  * Each helper exists exactly once. {@link #renderForMessage} above all must stay the single copy of
  * the CWE-117 escaping. The rule for every refusal: a configured scalar echoed into its message is
@@ -53,8 +58,30 @@ public class RuleSupport {
     /** The JSON pointer of the {@code routes} list in an endpoint file. */
     public static final String ENDPOINT_ROUTES_POINTER = "/endpoint/routes";
 
+    /** The JSON pointer of the {@code anchors} map in {@code gateway.yaml}. */
+    public static final String ANCHORS_POINTER = "/anchors";
+
     /** The wildcard origin token, refused in a WebSocket allowlist and together with CORS credentials. */
     public static final String WILDCARD_ORIGIN = "*";
+
+    /**
+     * An RFC 9110 {@code token}: the character set a media type's type, subtype, parameter name and
+     * unquoted parameter value are each drawn from. Notably it excludes CR, LF, whitespace and every
+     * other control character. The asset content-type value rule builds its media-type pattern
+     * ({@code AssetDefaultsRules.MEDIA_TYPE}) from it, and the session-cookie name rule reuses it as
+     * the whole-name shape, so the two gates cannot drift.
+     * <p>
+     * The quantifier is <em>possessive</em> ({@code ++}), not greedy. Every delimiter the surrounding
+     * {@code AssetDefaultsRules.MEDIA_TYPE} pattern places between tokens — {@code /}, {@code ;},
+     * {@code =}, space and tab — is outside this character class, so a token run can never productively
+     * give a character back; forbidding the give-back is therefore behaviour-neutral and removes the
+     * backtracking bookkeeping the engine would otherwise carry.
+     */
+    // java:S6418 — the RFC 9110 `token` character class MEDIA_TYPE is built from, not a credential.
+    // The rule is a name heuristic and fires only on the TOKEN substring in the constant's name;
+    // TOKEN is the correct RFC term here, so the name stays and the finding is suppressed instead.
+    @SuppressWarnings("java:S6418")
+    public static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]++";
 
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
@@ -130,5 +157,51 @@ public class RuleSupport {
     public static Require requireOf(ScopeChain chain) {
         AuthConfig auth = PolicyBlock.AUTH.declared(chain);
         return auth == null ? Require.NONE : auth.require();
+    }
+
+    /**
+     * Whether the gateway declares no usable bearer-validation backing — either no
+     * {@code token_validation} block at all, or one that declares no issuer. The single shared
+     * predicate behind both the effective-auth rule and the {@code access: authenticated} anchor
+     * matrix, so the two can never disagree about what backs a {@code bearer} posture.
+     *
+     * @param gateway the bound gateway document
+     * @return {@code true} when no {@code token_validation} issuer is configured
+     */
+    public static boolean lacksConfiguredIssuer(GatewayConfig gateway) {
+        TokenValidationConfig tokenValidation = gateway.tokenValidation();
+        return tokenValidation == null || tokenValidation.issuers().isEmpty();
+    }
+
+    /**
+     * Whether {@code candidate} lies within the {@code container} namespace on a
+     * segment boundary: an exact match, or a child path under {@code container/}.
+     *
+     * @param container the owning prefix
+     * @param candidate the prefix tested for containment
+     * @return {@code true} when {@code candidate} is inside {@code container}
+     */
+    public static boolean prefixContains(String container, String candidate) {
+        String owner = RouteTableBuilder.normalizePrefix(container);
+        String child = RouteTableBuilder.normalizePrefix(candidate);
+        if ("/".equals(owner)) {
+            return true;
+        }
+        return child.equals(owner) || child.startsWith(owner + "/");
+    }
+
+    /**
+     * Whether {@code candidate} lies <em>strictly</em> within the {@code container} namespace: the
+     * containment of {@link #prefixContains} minus the equal-namespace case, so a route declared at
+     * an anchor's own prefix does not count as containing it.
+     *
+     * @param container the owning prefix
+     * @param candidate the prefix tested for strict containment
+     * @return {@code true} when {@code candidate} is inside, and not equal to, {@code container}
+     */
+    public static boolean strictlyContains(String container, String candidate) {
+        return prefixContains(container, candidate)
+                && !RouteTableBuilder.normalizePrefix(container)
+                .equals(RouteTableBuilder.normalizePrefix(candidate));
     }
 }

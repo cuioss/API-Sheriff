@@ -615,4 +615,74 @@ class LimitRulesTest {
                     () -> "the opt-in carries no cross-cutting boot rule, got: " + errors);
         }
     }
+
+    /**
+     * The {@code profile: minimal} refusal covers the endpoint scope {@code security_filter} is
+     * declarable at: a block declared on the endpoint is refused exactly like a route-level one, and a
+     * route-level block replacing it wholesale is judged on its own.
+     */
+    @Nested
+    @DisplayName("Endpoint-scope security_filter 'minimal' refusals")
+    class EndpointScopeMinimal {
+
+        private static final String ENDPOINT_ID = "orders";
+        private static final String ALIAS = "ORDERS";
+        private static final String MINIMAL_REFUSAL = "resolves inbound-filter profile 'minimal'";
+
+        private static SecurityFilterConfig profile(String profile) {
+            return SecurityFilterConfig.builder().profile(profile).build();
+        }
+
+        private static EndpointConfig.EndpointConfigBuilder endpointWith(AuthConfig auth, RouteConfig... routes) {
+            return EndpointConfig.builder().id(ENDPOINT_ID).enabled(true).baseUrl(ALIAS).auth(auth)
+                    .routes(List.of(routes));
+        }
+
+        private List<ConfigError> validate(GatewayConfig gateway, EndpointConfig endpoint) {
+            return validator.validate(gateway, List.of(endpoint), topologyWith(ALIAS));
+        }
+
+        private static boolean anyMessageContains(List<ConfigError> errors, String fragment) {
+            return errors.stream().anyMatch(error -> error.message().contains(fragment));
+        }
+
+        @Test
+        @DisplayName("Should refuse 'minimal' arriving through an endpoint-level security_filter on an authenticated route")
+        void shouldRefuseEndpointMinimalOnAuthenticatedRoute() {
+            EndpointConfig endpoint = endpointWith(auth(Require.BEARER), route("r", HttpMethod.GET))
+                    .securityFilter(profile("minimal")).build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            assertHasError(errors, "/endpoint/routes", "route 'r' " + MINIMAL_REFUSAL);
+        }
+
+        @Test
+        @DisplayName("Should refuse 'minimal' arriving through an endpoint-level security_filter on a BFF route")
+        void shouldRefuseEndpointMinimalOnBffRoute() {
+            AnchorConfig bff = AnchorConfig.builder().name("app").pathPrefix("/r").type(AnchorType.BFF)
+                    .access(AccessLevel.AUTHENTICATED).auth(auth(Require.SESSION)).build();
+            GatewayConfig gateway = validGateway().anchors(Map.of(bff.name(), bff)).build();
+            EndpointConfig endpoint = endpointWith(null, route("r", HttpMethod.GET)).anchor(bff.name())
+                    .securityFilter(profile("minimal")).build();
+
+            List<ConfigError> errors = validate(gateway, endpoint);
+
+            assertHasError(errors, "/endpoint/routes", "its anchor 'app' is type 'bff'");
+        }
+
+        @Test
+        @DisplayName("Should not refuse 'minimal' at the endpoint when the route restores a non-minimal profile")
+        void shouldAcceptRouteRestoringNonMinimalProfile() {
+            RouteConfig restoring = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                    .securityFilter(profile("strict")).build();
+            EndpointConfig endpoint = endpointWith(auth(Require.BEARER), restoring)
+                    .securityFilter(profile("minimal")).build();
+
+            List<ConfigError> errors = validate(validGateway().build(), endpoint);
+
+            assertFalse(anyMessageContains(errors, MINIMAL_REFUSAL),
+                    () -> "the route-level block replaces the endpoint 'minimal' wholesale, got: " + errors);
+        }
+    }
 }

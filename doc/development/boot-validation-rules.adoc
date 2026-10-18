@@ -39,10 +39,13 @@ Not every concern has been extracted yet. Until it is, its rules stay `private s
 
 The helpers every rule shares live once, in
 link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/RuleSupport.java[`RuleSupport`]:
-the reporting file (`GATEWAY_FILE`, `endpointFile`), the `ENDPOINT_ROUTES_POINTER`, the
-CWE-117-safe echo of a configured value (`renderForMessage`), the declared anchor name
-(`declaredAnchorName`), which protocol a route rides (`effectiveProtocol`), which `auth.require` a
-route resolves (`requireOf`) and the wildcard-origin token (`WILDCARD_ORIGIN`). A helper moves into `RuleSupport` with the first extracted concern class that
+the reporting file (`GATEWAY_FILE`, `endpointFile`), the `ENDPOINT_ROUTES_POINTER` and
+`ANCHORS_POINTER`, the CWE-117-safe echo of a configured value (`renderForMessage`), the declared
+anchor name (`declaredAnchorName`), which protocol a route rides (`effectiveProtocol`), which
+`auth.require` a route resolves (`requireOf`), the wildcard-origin token (`WILDCARD_ORIGIN`), the
+RFC 9110 media-type token (`MEDIA_TYPE_TOKEN`), anchor-namespace containment (`prefixContains`,
+`strictlyContains`) and whether the gateway lacks a configured token issuer
+(`lacksConfiguredIssuer`). A helper moves into `RuleSupport` with the first extracted concern class that
 needs it, not before. A rule never resolves a policy block or a route's anchor itself: it reads them
 through `PolicyBlock` and `PolicyBlock.ScopeChain.of` (ADR-0067), so boot validation and the route
 table cannot disagree.
@@ -77,7 +80,7 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `validateAnchorPrefixDisjointness`, `validateAnchorReferencesExist`,
   `validateAnchorNamespaceMembership`, `validateAnchorAuthFloor`, `validateAccessAuthMatrix`
 | `anchors.*`, endpoint and route `anchor`
-| private in `ConfigValidator`
+| extracted
 
 | `AuthRules`
 | `validateRouteAuthResolvable`, `validateEffectiveAuth`, `validateSessionFallback`,
@@ -130,12 +133,12 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `AssetDefaultsRules`
 | `validateAssetContentTypesAddOnly`, `validateAssetContentTypeValues`
 | `asset_defaults.content_types`
-| private in `ConfigValidator`
+| extracted
 
 | `ForwardingRules`
 | `validateForwardModeExclusivity`, `validateTokenRelayForwardConflict`
 | route `forward` block against `auth.token_relay`
-| private in `ConfigValidator`
+| extracted
 
 | `TokenValidationRules`
 | `validateJwksEgressHosts`, `validateJwksRefresh`

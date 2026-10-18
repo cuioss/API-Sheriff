@@ -15,12 +15,12 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ANCHORS_POINTER;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.WILDCARD_ORIGIN;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.declaredAnchorName;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.effectiveProtocol;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
+import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.lacksConfiguredIssuer;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.requireOf;
 
@@ -29,13 +29,11 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -46,26 +44,21 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
-import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
-import de.cuioss.sheriff.gateway.config.model.AnchorType;
-import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
-import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
-import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
-import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.AnchorRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.AssetDefaultsRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.ForwardingRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.LimitRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ProtocolRules;
@@ -87,9 +80,11 @@ import org.jspecify.annotations.Nullable;
  * order. A rule body lives in the concern class of the {@code rule} package that owns its
  * configuration block ({@link PortalRules} for the application portal, for example) or — for a
  * concern not yet extracted — as a private method of this class, registered at its position all the
- * same. The helpers every rule shares (the reporting file and pointer, the CWE-117-safe echo of a
- * configured value, anchor resolution, which protocol a route rides, which {@code auth.require} a
- * route resolves, and the wildcard-origin token) live once, in {@link RuleSupport}.
+ * same. The helpers every rule shares (the reporting file, pointer and anchors pointer, the
+ * CWE-117-safe echo of a configured value, anchor resolution, which protocol a route rides, which
+ * {@code auth.require} a route resolves, the wildcard-origin token, the RFC 9110 media-type token,
+ * anchor-namespace containment and whether the gateway lacks a configured token issuer) live once, in
+ * {@link RuleSupport}.
  * <p>
  * Each rule is a {@link ValidationRule}; {@link #validate} executes them all and
  * returns the combined, file- and path-annotated {@link ConfigError} list — never
@@ -101,14 +96,14 @@ import org.jspecify.annotations.Nullable;
  * enum, which cannot represent those verbs, so no post-binding rule is needed for
  * them.
  * <p>
- * The anchor rules (ADR-0007) — pairwise-disjoint anchor prefixes, declared-anchor
- * existence, route/namespace membership agreement, anchor-namespace coverage (no route
- * outside an anchor may swallow the anchor's namespace unless a route under the anchor
- * covers it), the non-weakenable auth floor,
- * the per-route auth resolvability (every route must resolve an auth posture from
- * its own {@code auth}, its endpoint, or a declared anchor), and the anchor-aware
- * effective-auth completeness check — all collect into the same shared
- * {@code errors} list with file/pointer context and never fail fast.
+ * The anchor rules (ADR-0007, owned by {@link AnchorRules}) — pairwise-disjoint anchor prefixes,
+ * declared-anchor existence, route/namespace membership agreement, anchor-namespace coverage (no
+ * route outside an anchor may swallow the anchor's namespace unless a route under the anchor covers
+ * it) and the non-weakenable auth floor — are joined by two auth rules that stay in this class: the
+ * per-route auth resolvability (every route must resolve an auth posture from its own {@code auth},
+ * its endpoint, or a declared anchor) and the anchor-aware effective-auth completeness check. All of
+ * them collect into the same shared {@code errors} list with file/pointer context and never fail
+ * fast.
  * <p>
  * The session-fallback refusal adds one more: every declared {@code auth} block — anchor, endpoint
  * or route — that sets {@code session_fallback: true} must declare {@code require: bearer}, since the
@@ -119,7 +114,7 @@ import org.jspecify.annotations.Nullable;
  * and the effective-auth completeness check keeps demanding {@code token_validation} issuers for a
  * session-fallback route's bearer posture, so such a route is held to both backing blocks.
  * <p>
- * The fail-closed access→auth matrix (ADR-0013) adds per-anchor checks: a
+ * The fail-closed access→auth matrix (ADR-0013, owned by {@link AnchorRules}) adds per-anchor checks: a
  * {@code type: bff} anchor requires {@code access: authenticated}; an
  * {@code access: authenticated} anchor requires a non-{@code none} auth floor whose
  * backing block is present; and an {@code access: public} anchor must not declare an
@@ -131,11 +126,11 @@ import org.jspecify.annotations.Nullable;
  * range</em> is owned by the bundled JSON Schema, so no post-binding range rule exists — only this
  * posture refusal.
  * <p>
- * The forward-mode exclusivity refusal adds one more: neither an endpoint nor a route may declare both
- * {@code *_allow} and {@code *_deny} for the same {@code forward} dimension, because each dimension
- * resolves exactly one of the three modes (positive-list, negative-list, forward-all). The schema bounds the
- * {@code forward} key <em>set</em>; a mutual exclusion between two of its keys is cross-cutting and
- * lives here.
+ * The forward-mode exclusivity refusal (owned by {@link ForwardingRules}) adds one more: neither an
+ * endpoint nor a route may declare both {@code *_allow} and {@code *_deny} for the same {@code forward}
+ * dimension, because each dimension resolves exactly one of the three modes (positive-list,
+ * negative-list, forward-all). The schema bounds the {@code forward} key <em>set</em>; a mutual
+ * exclusion between two of its keys is cross-cutting and lives with the post-binding rules.
  * <p>
  * The session-cookie name refusal adds one more: a declared {@code oidc.session.cookie_name} must
  * keep the {@code __Host-} guarantee the gateway-owned cookies carry, be writable verbatim into a
@@ -166,7 +161,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The session-and-scope rules add three more: a route resolving {@code auth.token_relay: false}
  * must not re-admit {@code Authorization} through the {@code forward.headers_allow} of its effective
- * {@code forward} block, whether the route or its endpoint declares that block; an endpoint
+ * {@code forward} block, whether the route or its endpoint declares that block (owned by
+ * {@link ForwardingRules}); an endpoint
  * declaring {@code scopes} must have at least one route that is not {@code require: none}, since
  * scopes act only on authenticated routes; and a declared {@code oidc.login.default_return_url}
  * must be same-origin with {@code redirect_uri}.
@@ -208,10 +204,7 @@ public final class ConfigValidator {
     private static final CuiLogger LOGGER = new CuiLogger(ConfigValidator.class);
 
     private static final int SUPPORTED_VERSION = 1;
-    private static final String ANCHORS_POINTER = "/anchors";
-    private static final String ENDPOINT_ANCHOR_POINTER = "/endpoint/anchor";
     private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
-    private static final String ENDPOINT_FORWARD_POINTER = "/endpoint/forward";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
@@ -236,9 +229,6 @@ public final class ConfigValidator {
             " must be an absolute gateway path starting with a single '/' and carrying no query ('?') and no "
                     + "fragment ('#'), no backslash ('\\'), no control character and no whitespace";
     private static final String ENDPOINT_SCOPES_POINTER = "/endpoint/scopes";
-
-    /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
-    private static final String AUTHORIZATION_HEADER = "Authorization";
 
     /**
      * The fixed detail of the refusal of {@code session_fallback: true} on a posture other than
@@ -320,54 +310,16 @@ public final class ConfigValidator {
     /** The gateway-owned cookie names a configured session cookie name must never collide with. */
     private static final List<String> GATEWAY_OWNED_COOKIE_NAMES = List.of(
             BindingCookieCodec.COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME);
-    private static final String ASSET_DEFAULTS_CONTENT_TYPES_POINTER = "/asset_defaults/content_types";
-
-    /**
-     * An RFC 9110 {@code token}: the character set a media type's type, subtype, parameter name and
-     * unquoted parameter value are each drawn from. Notably it excludes CR, LF, whitespace and every
-     * other control character.
-     * <p>
-     * The quantifier is <em>possessive</em> ({@code ++}), not greedy. Every delimiter the surrounding
-     * {@link #MEDIA_TYPE} pattern places between tokens — {@code /}, {@code ;}, {@code =}, space and
-     * tab — is outside this character class, so a token run can never productively give a character
-     * back; forbidding the give-back is therefore behaviour-neutral and removes the backtracking
-     * bookkeeping the engine would otherwise carry.
-     */
-    // java:S6418 — the RFC 9110 `token` character class MEDIA_TYPE is built from, not a credential.
-    // The rule is a name heuristic and fires only on the TOKEN substring in the constant's name;
-    // TOKEN is the correct RFC term here, so the name stays and the finding is suppressed instead.
-    @SuppressWarnings("java:S6418")
-    private static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]++";
-
-    /**
-     * A well-formed {@code type/subtype} media type with optional {@code ;name=value} parameters,
-     * matched against the WHOLE value ({@link java.util.regex.Matcher#matches()}). The whole-input
-     * match is load-bearing: an {@code ^…$}-anchored {@code find()} would admit a trailing newline,
-     * since Java's {@code $} also matches before a final line terminator — exactly the CR/LF this
-     * gate exists to refuse. Parameter values are tokens only; a quoted-string parameter has no
-     * place in a static asset's {@code Content-Type} and admitting one would widen the character set
-     * this bound narrows.
-     * <p>
-     * Every quantifier here is <em>possessive</em>, the parameter-list repetition included. A greedy
-     * {@code (?:…)*} whose body itself carries quantified runs makes the engine recurse once per
-     * iteration and retain a backtracking position for each, so a long enough input exhausts the
-     * stack ({@code StackOverflowError}) instead of simply failing to match. Possessive quantifiers
-     * turn the repetition into a flat, allocation-free scan. The change is behaviour-neutral for the
-     * same reason it is on {@link #MEDIA_TYPE_TOKEN}: the delimiters are disjoint from the token
-     * character class, so no backtrack into an already-matched run can ever succeed.
-     */
-    private static final Pattern MEDIA_TYPE = Pattern.compile(
-            MEDIA_TYPE_TOKEN + "/" + MEDIA_TYPE_TOKEN
-                    + "(?:[ \\t]*+;[ \\t]*+" + MEDIA_TYPE_TOKEN + "=" + MEDIA_TYPE_TOKEN + ")*+");
 
     /**
      * A non-empty RFC 9110 {@code token} matched against the WHOLE configured session cookie name
      * ({@link java.util.regex.Matcher#matches()}). RFC 6265 draws a cookie name from exactly this
      * character set, and the name is written verbatim into {@code Set-Cookie}: a {@code ;}, {@code =},
      * whitespace or control character in it would be response-header injection. It is the same
-     * {@link #MEDIA_TYPE_TOKEN} class, reused rather than restated so the two gates cannot drift.
+     * {@link RuleSupport#MEDIA_TYPE_TOKEN} class, reused rather than restated so the two gates cannot
+     * drift.
      */
-    private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(MEDIA_TYPE_TOKEN);
+    private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(RuleSupport.MEDIA_TYPE_TOKEN);
 
     /**
      * The built-in rules, one entry per rule, in the order their violations are reported. The
@@ -381,14 +333,16 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateHeaderMatcherConsistency(endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> validateBaseUrlResolvable(endpoints, topology, errors),
-            (gateway, endpoints, topology, errors) -> validateAnchorPrefixDisjointness(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateAnchorReferencesExist(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateAnchorNamespaceMembership(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorPrefixDisjointness(gateway, errors),
+            (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorReferencesExist(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorNamespaceMembership(gateway,
+                    endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateRouteAuthResolvable(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateAnchorAuthFloor(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorAuthFloor(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateSessionFallback(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateAccessAuthMatrix(gateway, errors),
+            (gateway, endpoints, topology, errors) -> AnchorRules.validateAccessAuthMatrix(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateSecurityProfileMinimal(gateway, endpoints,
                     errors),
             TerminalActionRules::validateTerminalAction,
@@ -420,10 +374,14 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> LimitRules.validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateAuthorizationHeaderValueLength(gateway,
                     errors),
-            (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateAssetContentTypeValues(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateForwardModeExclusivity(endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateTokenRelayForwardConflict(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypesAddOnly(gateway,
+                    errors),
+            (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypeValues(gateway,
+                    errors),
+            (gateway, endpoints, topology, errors) -> ForwardingRules.validateForwardModeExclusivity(endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> ForwardingRules.validateTokenRelayForwardConflict(gateway,
+                    endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors),
@@ -474,194 +432,6 @@ public final class ConfigValidator {
         if (gateway.version() != SUPPORTED_VERSION) {
             errors.add(new ConfigError(GATEWAY_FILE, "/version",
                     "unsupported config version %d (supported: %d)".formatted(gateway.version(), SUPPORTED_VERSION)));
-        }
-    }
-
-    /**
-     * Enforces the <strong>add-only</strong> ruling on {@code asset_defaults.content_types}: an entry
-     * whose extension is already carried by the gateway's built-in asset content-type map is refused.
-     * <p>
-     * The refusal is a security bound rather than an ergonomic one. The built-in map is what makes an
-     * asset response's {@code Content-Type} gateway-governed instead of source-dictated, and several
-     * of its entries are load-bearing for that governance — remapping {@code svg} away from
-     * {@code image/svg+xml}, or pointing any built-in extension at {@code text/html}, turns a served
-     * asset into a stored-XSS lever on a security gateway. Refusing at boot (rather than silently
-     * ignoring the entry at request time, which is what the runtime precedence in
-     * {@code AssetResponseEnvelope.contentTypeFor} would otherwise do) means the operator learns the
-     * mapping did not take effect, instead of shipping a descriptor that reads as though it did.
-     * <p>
-     * Every offending entry is collected rather than failing on the first, per ADR-0009 — the operator
-     * sees the whole list in one boot attempt. Keys arrive already lowercased by
-     * {@link AssetDefaultsConfig}, so an entry's case cannot decide whether this refusal sees it.
-     */
-    private static void validateAssetContentTypesAddOnly(GatewayConfig gateway, List<ConfigError> errors) {
-        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
-        if (assetDefaults == null) {
-            return;
-        }
-        Set<String> builtIn = AssetResponseEnvelope.builtInExtensions();
-        for (String extension : assetDefaults.contentTypes().keySet()) {
-            if (builtIn.contains(extension)) {
-                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
-                        ("asset_defaults.content_types declares '%s', which the gateway already maps; "
-                                + "the built-in content-type mappings are immutable and the block is "
-                                + "add-only — declare only extensions the gateway does not map, and "
-                                + "remove this entry")
-                                .formatted(extension)));
-            }
-        }
-    }
-
-    /**
-     * Enforces that every {@code asset_defaults.content_types} <em>value</em> is a well-formed
-     * {@code type/subtype} media type, refusing the entry at boot otherwise.
-     * <p>
-     * The value half needs its own bound because it reaches further than the key half does: the
-     * declared value is what {@code AssetResponseEnvelope.governedHeaders} puts under
-     * {@code Content-Type} and {@code GatewayEdgeRoute} then applies verbatim as a response-header
-     * value. Without this rule a value carrying CR/LF — or any non-media-type text at all — is
-     * accepted at boot and only misbehaves per request, deep inside the response write where the
-     * transport's own header-value validation throws after the status code is already set. That is
-     * the exact inversion of the fail-fast startup-validation posture the rest of this class holds,
-     * and it is asymmetric with the key half, which IS boot-refused.
-     * <p>
-     * This is a <strong>well-formedness</strong> gate, not a policy gate: it does not rank media
-     * types by safety and carries no allow-list of "safe" ones. The policy bound already exists one
-     * rule up — {@link #validateAssetContentTypesAddOnly} fences off every built-in,
-     * script-executable extension, so the stored-XSS lever cannot be reached through a built-in key
-     * whatever this rule permits.
-     * <p>
-     * The refusal names the offending extension and value, because an operator cannot fix a typo
-     * they cannot see. The value is rendered through {@link RuleSupport#renderForMessage} rather than echoed
-     * raw: a {@link ConfigError} is emitted into the boot ERROR log, so echoing an unescaped CR/LF
-     * would forge log lines (CWE-117) through the very key this rule constrains.
-     * <p>
-     * Every offending entry is collected rather than failing on the first, per ADR-0009.
-     */
-    private static void validateAssetContentTypeValues(GatewayConfig gateway, List<ConfigError> errors) {
-        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
-        if (assetDefaults == null) {
-            return;
-        }
-        for (Map.Entry<String, String> entry : assetDefaults.contentTypes().entrySet()) {
-            // A null value is structurally impossible: AssetDefaultsConfig hands back a Map.copyOf,
-            // which refuses null values at binding time.
-            String value = entry.getValue();
-            if (!MEDIA_TYPE.matcher(value).matches()) {
-                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
-                        ("asset_defaults.content_types maps '%s' to '%s', which is not a well-formed media type; "
-                                + "the value is served verbatim as the asset's Content-Type response header, so it "
-                                + "must be a 'type/subtype' (optionally followed by ';name=value' parameters) and "
-                                + "must carry no control characters")
-                                .formatted(entry.getKey(), renderForMessage(value))));
-            }
-        }
-    }
-
-    /**
-     * Rule: neither an endpoint nor a route may declare both the positive-list and the negative-list
-     * for the same {@code forward} dimension.
-     * <p>
-     * Each dimension — headers, query — resolves <em>exactly one</em> of three modes: a positive-list
-     * when {@code *_allow} is declared, a negative-list when {@code *_deny} is declared, and
-     * forward-all when neither is. Declaring both expresses no coherent posture, and any precedence
-     * the gateway silently picked would be a guess about which one the operator meant. The two are
-     * therefore refused together at boot rather than reconciled at request time.
-     * <p>
-     * The bound is genuinely cross-cutting and cannot move into the bundled JSON Schema: the schema's
-     * {@code additionalProperties: false} bounds the <em>key set</em> of the {@code forward} object,
-     * but a mutual exclusion between two of its optional keys belongs with the other post-binding
-     * rules. The block is declarable at every scope {@link PolicyBlock#FORWARD} names — endpoint and
-     * route — and is checked at each of them, so an endpoint-level block that pairs the two lists is
-     * refused exactly like a route-level one (a block declared at a scope this rule did not read would
-     * reach the runtime unrefused). Both dimensions of every declaration are checked and every
-     * violation is collected rather than failing on the first, per ADR-0009 — the operator sees the
-     * whole list in one boot attempt.
-     */
-    private static void validateForwardModeExclusivity(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            checkForwardModes(endpoint, endpoint.forward(), "endpoint '%s'".formatted(endpoint.id()),
-                    ENDPOINT_FORWARD_POINTER, errors);
-            for (RouteConfig route : endpoint.routes()) {
-                checkForwardModes(endpoint, route.forward(), "route '%s'".formatted(route.id()),
-                        ENDPOINT_ROUTES_POINTER, errors);
-            }
-        }
-    }
-
-    /**
-     * Checks both dimensions of one declared {@code forward} block; an undeclared block has nothing to
-     * check.
-     */
-    private static void checkForwardModes(EndpointConfig endpoint, @Nullable ForwardConfig forward, String subject,
-            String pointer, List<ConfigError> errors) {
-        if (forward == null) {
-            return;
-        }
-        checkForwardDimension(endpoint, subject, pointer, "headers", forward.headersAllow(), forward.headersDeny(),
-                errors);
-        checkForwardDimension(endpoint, subject, pointer, "query", forward.queryAllow(), forward.queryDeny(), errors);
-    }
-
-    /**
-     * Refuses one {@code forward} dimension that declares both of its mutually exclusive lists. A
-     * <em>declared empty</em> list counts as declared: {@code headers_allow: []} is a positive-list
-     * admitting nothing, not an omission, so pairing it with a {@code headers_deny} is the same
-     * contradiction as pairing two populated lists.
-     */
-    private static void checkForwardDimension(EndpointConfig endpoint, String subject, String pointer,
-            String dimension, @Nullable List<String> allow, @Nullable List<String> deny, List<ConfigError> errors) {
-        if (allow == null || deny == null) {
-            return;
-        }
-        String allowKey = dimension + "_allow";
-        String denyKey = dimension + "_deny";
-        errors.add(new ConfigError(endpointFile(endpoint), pointer,
-                ("%s declares both %s and %s; the %s forward dimension resolves exactly one "
-                        + "mode, so the positive-list and the negative-list are mutually exclusive — "
-                        + "declare %s for a positive-list, %s for a negative-list, or neither for the "
-                        + "forward-all baseline")
-                        .formatted(subject, allowKey, denyKey, dimension, allowKey, denyKey)));
-    }
-
-    /**
-     * Rule: a route whose effective {@code auth.token_relay} is {@code false} must not name
-     * {@code Authorization} (in any letter case) in its {@code forward.headers_allow}.
-     * <p>
-     * {@code token_relay: false} states that no access token reaches this route's upstream, while
-     * naming {@code Authorization} in {@code headers_allow} is the one way an inbound
-     * {@code Authorization} header is re-admitted past the gateway-owned never-forward set. The pair
-     * therefore declares two opposite postures for the same header, and whichever one the gateway
-     * silently honoured would be a guess about the operator's intent — so the boot refuses it. The
-     * effective auth and the effective {@code forward} block are resolved through
-     * {@link PolicyBlock#AUTH} and {@link PolicyBlock#FORWARD}, the descriptors the route table
-     * resolves through, so an {@code Authorization} re-admitted by an endpoint-level {@code forward}
-     * block is refused exactly like a route-level one, and a route-level block that replaces it
-     * without {@code Authorization} is not. The refusal points at the scope that declared the
-     * offending block. The message names the route and the two keys, never a header value.
-     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateTokenRelayForwardConflict(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
-                AuthConfig auth = PolicyBlock.AUTH.declared(chain);
-                List<String> headersAllow = PolicyBlock.FORWARD.resolve(chain).headersAllow();
-                if (auth == null || auth.effectiveTokenRelay() || headersAllow == null) {
-                    continue;
-                }
-                if (headersAllow.stream().anyMatch(AUTHORIZATION_HEADER::equalsIgnoreCase)) {
-                    String pointer = PolicyBlock.isDeclared(route.forward()) ? ENDPOINT_ROUTES_POINTER
-                            : ENDPOINT_FORWARD_POINTER;
-                    errors.add(new ConfigError(endpointFile(endpoint), pointer,
-                            ("route '%s' resolves auth.token_relay: false but its forward.headers_allow names "
-                                    + "Authorization; token_relay: false keeps every access token away from the "
-                                    + "upstream, so re-admitting the Authorization header contradicts it — drop "
-                                    + "Authorization from headers_allow, or drop token_relay: false")
-                                    .formatted(route.id())));
-                }
-            }
         }
     }
 
@@ -782,233 +552,6 @@ public final class ConfigValidator {
     }
 
     /**
-     * Rule: anchor {@code path_prefix} values are pairwise disjoint — no anchor
-     * prefix (normalized) is a path-prefix of another (ADR-0007).
-     */
-    private static void validateAnchorPrefixDisjointness(GatewayConfig gateway, List<ConfigError> errors) {
-        List<AnchorConfig> anchors = new ArrayList<>(gateway.anchors().values());
-        for (int i = 0; i < anchors.size(); i++) {
-            for (int j = i + 1; j < anchors.size(); j++) {
-                AnchorConfig first = anchors.get(i);
-                AnchorConfig second = anchors.get(j);
-                if (prefixContains(first.pathPrefix(), second.pathPrefix())
-                        || prefixContains(second.pathPrefix(), first.pathPrefix())) {
-                    errors.add(new ConfigError(GATEWAY_FILE, ANCHORS_POINTER,
-                            "anchor prefixes must be pairwise disjoint, but '%s' (%s) and '%s' (%s) overlap"
-                                    .formatted(first.name(), first.pathPrefix(), second.name(), second.pathPrefix())));
-                }
-            }
-        }
-    }
-
-    /**
-     * Rule: every anchor referenced by an endpoint or route is declared in
-     * {@code gateway.anchors} (ADR-0007).
-     */
-    private static void validateAnchorReferencesExist(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            String endpointAnchor = endpoint.anchor();
-            if (endpointAnchor != null && !gateway.anchors().containsKey(endpointAnchor)) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ANCHOR_POINTER,
-                        "endpoint '%s' references undefined anchor '%s'".formatted(endpoint.id(), endpointAnchor)));
-            }
-            for (RouteConfig route : endpoint.routes()) {
-                String routeAnchor = route.anchor();
-                if (routeAnchor != null && !gateway.anchors().containsKey(routeAnchor)) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' references undefined anchor '%s'".formatted(route.id(), routeAnchor)));
-                }
-            }
-        }
-    }
-
-    /**
-     * Rules: (3) every enabled route's match key ({@code match.path_prefix}, or the exact
-     * {@code match.path}) lies inside its
-     * declared anchor's namespace; (4) every enabled route whose path lies inside
-     * any anchor namespace declares exactly that anchor — an undeclared squatter
-     * fails the boot (ADR-0007); (4b) no enabled <em>prefix</em> route whose namespace strictly
-     * contains an anchor's {@code path_prefix} serves that anchor's namespace, unless the anchor
-     * covers it with a prefix route of its own — the mirror of rule (4), see
-     * {@link #checkRouteContainsUncoveredAnchor}.
-     * <p>
-     * {@code protocol: grpc} routes are exempt from rules (3) and (4) — and from those two only.
-     * Both are <em>declaration</em>-scoped: they judge a route by where its own match key sits. A
-     * gRPC method path is the service-rooted {@code /{package}.{Service}/{Method}} whose
-     * service segment is a single opaque path segment (dots, no slashes), so it is
-     * structurally never nested under a gateway path namespace on a segment boundary
-     * — no non-root anchor {@code path_prefix} can contain it, and stock gRPC clients
-     * cannot be told to prepend a namespace prefix.
-     * <p>
-     * Rule (4b) judges the opposite geometry — whether the route's own prefix <em>contains</em> an
-     * anchor namespace — so that rationale does not reach it, and it is applied to gRPC routes
-     * unchanged. Nothing constrains a gRPC route's declared match key to a bare service path, and
-     * selection is protocol-blind ({@code RouteTable.lookup} filters on path alone, and
-     * {@code RouteMatcher} carries no protocol dimension), so a gRPC route declaring a broad
-     * {@code path_prefix} answers plain HTTP requests inside the swallowed anchor namespace with
-     * <em>its</em> auth posture and <em>its</em> {@code security_headers} block — the same CWE-284
-     * desync rule (4b) exists to close.
-     * <p>
-     * Only the two declaration-scoped containment checks are skipped for gRPC routes: a gRPC route
-     * still declares an anchor for its ADR-0013 type/access classification and its ADR-0007 auth
-     * floor, and every other anchor rule (declared-anchor existence, pairwise-disjoint prefixes,
-     * non-weakenable auth floor, access→auth matrix) stays enforced for it unchanged.
-     * {@code websocket} and {@code http} routes keep full containment enforcement.
-     */
-    private static void validateAnchorNamespaceMembership(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        if (gateway.anchors().isEmpty()) {
-            return;
-        }
-        Set<String> coveredAnchors = anchorsCoveredByOwnPrefixRoute(gateway, endpoints);
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                String declaredName = declaredAnchorName(endpoint, route);
-                String routeMatchKey = route.match().matchKey();
-                // gRPC routes ride a service-rooted single-segment path that no gateway path namespace
-                // can contain on a segment boundary, so the two declaration-scoped containment rules
-                // (3) and (4) are skipped for them — and only those two.
-                if (effectiveProtocol(route) != Protocol.GRPC) {
-                    checkRouteInsideDeclaredAnchorNamespace(gateway, endpoint, route, declaredName, routeMatchKey,
-                            errors);
-                    checkRouteDeclaresContainingAnchor(gateway, endpoint, route, declaredName, routeMatchKey, errors);
-                }
-                // Rule 4b judges what the route's prefix CONTAINS, not where its match key sits, and
-                // selection is protocol-blind — so it applies to every protocol, gRPC included.
-                checkRouteContainsUncoveredAnchor(gateway, endpoint, route, declaredName, coveredAnchors, errors);
-            }
-        }
-    }
-
-    /**
-     * Rule (3): an enabled route's match key ({@code match.path_prefix}, or the exact
-     * {@code match.path}) must lie inside its declared anchor's namespace (ADR-0007). A no-op when
-     * the route declares no anchor, or its declared anchor name is not a defined anchor.
-     */
-    private static void checkRouteInsideDeclaredAnchorNamespace(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable String declaredName, String routeMatchKey, List<ConfigError> errors) {
-        AnchorConfig anchor = declaredName == null ? null : gateway.anchors().get(declaredName);
-        if (anchor != null && !prefixContains(anchor.pathPrefix(), routeMatchKey)) {
-            errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                    "route '%s' path '%s' is not inside its declared anchor '%s' namespace '%s'"
-                            .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
-        }
-    }
-
-    /**
-     * Rule (4): an enabled route whose path lies inside any anchor namespace must declare exactly
-     * that anchor — an undeclared squatter fails the boot (ADR-0007).
-     */
-    private static void checkRouteDeclaresContainingAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable String declaredName, String routeMatchKey, List<ConfigError> errors) {
-        for (AnchorConfig anchor : gateway.anchors().values()) {
-            if (prefixContains(anchor.pathPrefix(), routeMatchKey)
-                    && !anchor.name().equals(declaredName)) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                        "route '%s' path '%s' lies inside anchor '%s' namespace '%s' but does not declare it"
-                                .formatted(route.id(), routeMatchKey, anchor.name(), anchor.pathPrefix())));
-            }
-        }
-    }
-
-    /**
-     * Rule (4b): the namespace-coverage mirror of rule (4). A <em>prefix</em> route whose namespace
-     * strictly contains an anchor's {@code path_prefix}, and which does not resolve that anchor,
-     * fails the boot unless the anchor's own namespace is covered by a prefix route that does
-     * resolve it.
-     * <p>
-     * Rules (3) and (4) are <em>declaration</em>-scoped: they judge a route by where its own match
-     * key sits. That leaves the opposite geometry unjudged — a route sitting <em>outside</em> and
-     * <em>above</em> an anchor, whose namespace swallows the anchor's. Selection then decides what
-     * is actually served: for an address inside the anchor namespace, an exact route wins outright
-     * and the longest matching prefix wins among the rest. So with an exact {@code path: /admin}
-     * route as the anchor's only member, {@code /admin/} and {@code /admin/x} match no route
-     * belonging to the anchor and fall through to the broader route — served with <em>its</em> auth
-     * posture and <em>its</em> {@code security_headers} block, with the anchor's floor escaped for
-     * every address in the namespace but the one exact string (CWE-284).
-     * <p>
-     * The coverage exception is what keeps the ordinary topology legal, and it is exact rather than
-     * approximate. Rule (3) confines an anchored route's match key to the anchor's namespace, so
-     * the broadest prefix a member can declare is the anchor prefix itself. When such a route
-     * exists, every address in the namespace matches it at the anchor prefix's full length, while
-     * any containing route matches at a strictly shorter one — so longest-prefix selection always
-     * picks the member, and rule (4) has already refused every exact route outside the anchor whose
-     * path lies inside it. The namespace is then genuinely closed and a broader route alongside it
-     * is not a bypass.
-     * <p>
-     * Only prefix routes are judged here: an exact route covers exactly one address, and an exact
-     * route whose address lies inside an anchor namespace is rule (4)'s case, not this one. Unlike
-     * rules (3) and (4), this rule is <em>not</em> waived for {@code protocol: grpc} routes — see
-     * {@link #validateAnchorNamespaceMembership} for why the exemption's rationale stops at the two
-     * declaration-scoped rules.
-     * <p>
-     * Coverage requires the covering route to match its whole namespace, not merely to name it.
-     * {@link #anchorsCoveredByOwnPrefixRoute} therefore tests prefix equality <em>and</em>
-     * {@link MatchConfig#narrowsBeyondPath()}: a member narrowed on {@code match.methods},
-     * {@code match.host} or {@code match.headers} serves only part of its namespace, and the
-     * complement — a {@code POST} where the member matched {@code GET}, a request from another host —
-     * would fall through to the containing route and be answered under <em>its</em> auth and
-     * {@code security_headers} posture. That is the same bypass this rule exists to refuse, reached
-     * one dimension over, so such a route does not count as coverage and the containing route is
-     * refused as if the anchor had no covering member at all.
-     */
-    private static void checkRouteContainsUncoveredAnchor(GatewayConfig gateway, EndpointConfig endpoint,
-            RouteConfig route, @Nullable String declaredName, Set<String> coveredAnchors, List<ConfigError> errors) {
-        if (route.match().isExact()) {
-            return;
-        }
-        String routePrefix = route.match().matchKey();
-        for (AnchorConfig anchor : gateway.anchors().values()) {
-            if (!anchor.name().equals(declaredName)
-                    && strictlyContains(routePrefix, anchor.pathPrefix())
-                    && !coveredAnchors.contains(anchor.name())) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                        ("route '%s' path_prefix '%s' contains anchor '%s' namespace '%s' without declaring it, and "
-                                + "no route under that anchor covers the namespace; declare a route with "
-                                + "path_prefix '%s' under anchor '%s', or narrow this route so it stays outside "
-                                + "the namespace")
-                                .formatted(route.id(), routePrefix, anchor.name(), anchor.pathPrefix(),
-                                        anchor.pathPrefix(), anchor.name())));
-            }
-        }
-    }
-
-    /**
-     * The names of the anchors whose whole namespace is served by a prefix route resolving that
-     * anchor — a route whose normalized {@code match.path_prefix} equals the normalized anchor
-     * {@code path_prefix}. Computed once per validation pass and consumed by
-     * {@link #checkRouteContainsUncoveredAnchor}.
-     * <p>
-     * Three tests, all required: the route is not exact, it narrows on no dimension beyond the path
-     * ({@link MatchConfig#narrowsBeyondPath()}), and its normalized match key equals the normalized
-     * anchor prefix. The middle test is what makes "covered" mean <em>every</em> address in the
-     * namespace rather than merely every address the member chose to serve — see
-     * {@link #checkRouteContainsUncoveredAnchor} for the bypass it refuses.
-     */
-    private static Set<String> anchorsCoveredByOwnPrefixRoute(GatewayConfig gateway,
-            List<EndpointConfig> endpoints) {
-        Set<String> covered = new HashSet<>();
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                if (route.match().isExact()) {
-                    continue;
-                }
-                if (route.match().narrowsBeyondPath()) {
-                    continue;
-                }
-                String declaredName = declaredAnchorName(endpoint, route);
-                AnchorConfig anchor = declaredName == null ? null : gateway.anchors().get(declaredName);
-                if (anchor != null && RouteTableBuilder.normalizePrefix(route.match().matchKey())
-                        .equals(RouteTableBuilder.normalizePrefix(anchor.pathPrefix()))) {
-                    covered.add(anchor.name());
-                }
-            }
-        }
-        return covered;
-    }
-
-    /**
      * Rule: every enabled route must resolve an auth posture through the same
      * {@code route → endpoint → declared-anchor} chain the route table uses
      * ({@link PolicyBlock#AUTH}); a route for which none of the three supplies an
@@ -1029,31 +572,6 @@ public final class ConfigValidator {
                     errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
                             "route '%s' has no resolvable auth: neither the route, its endpoint '%s', nor a declared anchor provides an auth posture"
                                     .formatted(route.id(), endpoint.id())));
-                }
-            }
-        }
-    }
-
-    /**
-     * Rule: where the route's anchor declares {@code auth.require} of {@code bearer}
-     * or {@code session}, the route's effective auth must not resolve to
-     * {@code require: none} — the anchor floor cannot be weakened (ADR-0007).
-     */
-    private static void validateAnchorAuthFloor(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
-                AnchorConfig anchor = chain.anchor();
-                AuthConfig anchorAuth = anchor == null ? null : anchor.auth();
-                if (anchorAuth == null) {
-                    continue;
-                }
-                Require anchorRequire = anchorAuth.require();
-                if (anchorRequire != Require.NONE && requireOf(chain) == Require.NONE) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' effective auth 'none' weakens the anchor '%s' floor '%s'"
-                                    .formatted(route.id(), anchor.name(), anchorRequire)));
                 }
             }
         }
@@ -1090,7 +608,7 @@ public final class ConfigValidator {
      * <p>
      * Each declared block is judged where it is declared rather than through the effective-auth
      * cascade, so an anchor default that no route inherits is still refused. The anchor floor
-     * ({@link #validateAnchorAuthFloor}) compares {@code require} only and is not consulted here.
+     * ({@link AnchorRules#validateAnchorAuthFloor}) compares {@code require} only and is not consulted here.
      * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
      */
     private static void validateSessionFallback(GatewayConfig gateway, List<EndpointConfig> endpoints,
@@ -1124,72 +642,6 @@ public final class ConfigValidator {
         }
         if (!oidcDeclared) {
             errors.add(new ConfigError(file, pointer, owner + " " + SESSION_FALLBACK_NO_OIDC_DETAIL));
-        }
-    }
-
-    /**
-     * Whether the gateway declares no usable bearer-validation backing — either no
-     * {@code token_validation} block at all, or one that declares no issuer. The single shared
-     * predicate behind both the effective-auth rule and the {@code access: authenticated} anchor
-     * matrix, so the two can never disagree about what backs a {@code bearer} posture.
-     */
-    private static boolean lacksConfiguredIssuer(GatewayConfig gateway) {
-        TokenValidationConfig tokenValidation = gateway.tokenValidation();
-        return tokenValidation == null || tokenValidation.issuers().isEmpty();
-    }
-
-    /**
-     * Rule: the fail-closed access→auth matrix on every anchor (ADR-0013). A
-     * {@code type: bff} anchor must declare {@code access: authenticated}; an
-     * {@code access: authenticated} anchor must declare a non-{@code none} auth floor
-     * whose backing block is present (a {@code bearer} floor needs
-     * {@code token_validation} issuers, a {@code session} floor needs an {@code oidc}
-     * block); and an {@code access: public} anchor must not declare an auth block.
-     * Every violation collects into the shared list; the rule never fails fast.
-     */
-    private static void validateAccessAuthMatrix(GatewayConfig gateway, List<ConfigError> errors) {
-        for (AnchorConfig anchor : gateway.anchors().values()) {
-            String pointer = ANCHORS_POINTER + "/" + anchor.name();
-            if (anchor.type() == AnchorType.BFF && anchor.access() != AccessLevel.AUTHENTICATED) {
-                errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                        "anchor '%s' is type 'bff' and must declare access: authenticated".formatted(anchor.name())));
-            }
-            if (anchor.access() == AccessLevel.PUBLIC) {
-                if (anchor.auth() != null) {
-                    errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                            "anchor '%s' is access: public and must not declare an auth block"
-                                    .formatted(anchor.name())));
-                }
-            } else {
-                validateAuthenticatedAnchorBacking(gateway, anchor, pointer, errors);
-            }
-        }
-    }
-
-    /**
-     * The {@code access: authenticated} half of the matrix (ADR-0013): the anchor must
-     * declare a non-{@code none} auth floor, and that floor's backing block must be
-     * present — a {@code bearer} floor needs {@code token_validation} issuers, a
-     * {@code session} floor needs an {@code oidc} block.
-     */
-    private static void validateAuthenticatedAnchorBacking(GatewayConfig gateway, AnchorConfig anchor, String pointer,
-            List<ConfigError> errors) {
-        AuthConfig anchorAuth = anchor.auth();
-        Require require = anchorAuth == null ? Require.NONE : anchorAuth.require();
-        if (require == Require.NONE) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    "anchor '%s' is access: authenticated but declares no non-'none' auth floor"
-                            .formatted(anchor.name())));
-            return;
-        }
-        if (require == Require.BEARER && lacksConfiguredIssuer(gateway)) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    "anchor '%s' access: authenticated bearer floor requires token_validation with at least one issuer"
-                            .formatted(anchor.name())));
-        }
-        if (require == Require.SESSION && gateway.oidc() == null) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    "anchor '%s' access: authenticated session floor requires an oidc block".formatted(anchor.name())));
         }
     }
 
@@ -1916,37 +1368,5 @@ public final class ConfigValidator {
     private static boolean isControlOrWhitespace(int character) {
         return Character.isISOControl(character) || Character.isWhitespace(character)
                 || Character.isSpaceChar(character);
-    }
-
-    /**
-     * Whether {@code candidate} lies within the {@code container} namespace on a
-     * segment boundary: an exact match, or a child path under {@code container/}.
-     *
-     * @param container the owning prefix
-     * @param candidate the prefix tested for containment
-     * @return {@code true} when {@code candidate} is inside {@code container}
-     */
-    private static boolean prefixContains(String container, String candidate) {
-        String owner = RouteTableBuilder.normalizePrefix(container);
-        String child = RouteTableBuilder.normalizePrefix(candidate);
-        if ("/".equals(owner)) {
-            return true;
-        }
-        return child.equals(owner) || child.startsWith(owner + "/");
-    }
-
-    /**
-     * Whether {@code candidate} lies <em>strictly</em> within the {@code container} namespace: the
-     * containment of {@link #prefixContains} minus the equal-namespace case, so a route declared at
-     * an anchor's own prefix does not count as containing it.
-     *
-     * @param container the owning prefix
-     * @param candidate the prefix tested for strict containment
-     * @return {@code true} when {@code candidate} is inside, and not equal to, {@code container}
-     */
-    private static boolean strictlyContains(String container, String candidate) {
-        return prefixContains(container, candidate)
-                && !RouteTableBuilder.normalizePrefix(container)
-                .equals(RouteTableBuilder.normalizePrefix(candidate));
     }
 }
