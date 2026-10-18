@@ -64,6 +64,10 @@ Estimated diff: ~275 KB (move-only; see the size rule).
   or rules, update every other list of the same set: the `rule/package-info.java` list and the
   `ConfigValidator` class Javadoc list.
 - A method made public by the move carries complete Javadoc, including `@param` and `@return`.
+- **A moved method counts as new code to SonarCloud**, because it sits in a new file (#489 had to loop back for
+  S3776/S135 on a verbatim-moved method; lesson `2026-10-18-13-001`). Before the PR, check every moved method against
+  the new-code rules (cognitive complexity, loop `continue`/`break` counts) and fix them in the extracting
+  deliverable. Batch any late Sonar or review fixes into one commit, so the loop-back re-runs the chain once.
 - **Size (operator decision 2026-10-15).** For these move-only slices the 150,000-character cap is lifted.
   It is Sourcery's limit, and Sourcery is optional in `.plan/marshal.json`. The **100-file** cap
   (CodeRabbit, required) still holds. Estimates are V02-26's outline figures × 1.39. Measure
