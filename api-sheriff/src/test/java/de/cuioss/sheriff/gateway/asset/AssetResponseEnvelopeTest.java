@@ -170,7 +170,7 @@ class AssetResponseEnvelopeTest {
                                     + "removes: the built-in mapping must win at runtime"),
                     () -> assertTrue(AssetResponseEnvelope.builtInExtensions().contains("svg"),
                             "and the boot validator refuses such an entry outright — see "
-                                    + "ConfigValidatorTest"));
+                                    + "AssetDefaultsRulesTest"));
         }
     }
 

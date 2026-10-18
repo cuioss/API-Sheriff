@@ -29,13 +29,11 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
 import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -51,7 +49,6 @@ import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
-import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
@@ -65,6 +62,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.AssetDefaultsRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.LimitRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
@@ -320,54 +318,16 @@ public final class ConfigValidator {
     /** The gateway-owned cookie names a configured session cookie name must never collide with. */
     private static final List<String> GATEWAY_OWNED_COOKIE_NAMES = List.of(
             BindingCookieCodec.COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME);
-    private static final String ASSET_DEFAULTS_CONTENT_TYPES_POINTER = "/asset_defaults/content_types";
-
-    /**
-     * An RFC 9110 {@code token}: the character set a media type's type, subtype, parameter name and
-     * unquoted parameter value are each drawn from. Notably it excludes CR, LF, whitespace and every
-     * other control character.
-     * <p>
-     * The quantifier is <em>possessive</em> ({@code ++}), not greedy. Every delimiter the surrounding
-     * {@link #MEDIA_TYPE} pattern places between tokens — {@code /}, {@code ;}, {@code =}, space and
-     * tab — is outside this character class, so a token run can never productively give a character
-     * back; forbidding the give-back is therefore behaviour-neutral and removes the backtracking
-     * bookkeeping the engine would otherwise carry.
-     */
-    // java:S6418 — the RFC 9110 `token` character class MEDIA_TYPE is built from, not a credential.
-    // The rule is a name heuristic and fires only on the TOKEN substring in the constant's name;
-    // TOKEN is the correct RFC term here, so the name stays and the finding is suppressed instead.
-    @SuppressWarnings("java:S6418")
-    private static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]++";
-
-    /**
-     * A well-formed {@code type/subtype} media type with optional {@code ;name=value} parameters,
-     * matched against the WHOLE value ({@link java.util.regex.Matcher#matches()}). The whole-input
-     * match is load-bearing: an {@code ^…$}-anchored {@code find()} would admit a trailing newline,
-     * since Java's {@code $} also matches before a final line terminator — exactly the CR/LF this
-     * gate exists to refuse. Parameter values are tokens only; a quoted-string parameter has no
-     * place in a static asset's {@code Content-Type} and admitting one would widen the character set
-     * this bound narrows.
-     * <p>
-     * Every quantifier here is <em>possessive</em>, the parameter-list repetition included. A greedy
-     * {@code (?:…)*} whose body itself carries quantified runs makes the engine recurse once per
-     * iteration and retain a backtracking position for each, so a long enough input exhausts the
-     * stack ({@code StackOverflowError}) instead of simply failing to match. Possessive quantifiers
-     * turn the repetition into a flat, allocation-free scan. The change is behaviour-neutral for the
-     * same reason it is on {@link #MEDIA_TYPE_TOKEN}: the delimiters are disjoint from the token
-     * character class, so no backtrack into an already-matched run can ever succeed.
-     */
-    private static final Pattern MEDIA_TYPE = Pattern.compile(
-            MEDIA_TYPE_TOKEN + "/" + MEDIA_TYPE_TOKEN
-                    + "(?:[ \\t]*+;[ \\t]*+" + MEDIA_TYPE_TOKEN + "=" + MEDIA_TYPE_TOKEN + ")*+");
 
     /**
      * A non-empty RFC 9110 {@code token} matched against the WHOLE configured session cookie name
      * ({@link java.util.regex.Matcher#matches()}). RFC 6265 draws a cookie name from exactly this
      * character set, and the name is written verbatim into {@code Set-Cookie}: a {@code ;}, {@code =},
      * whitespace or control character in it would be response-header injection. It is the same
-     * {@link #MEDIA_TYPE_TOKEN} class, reused rather than restated so the two gates cannot drift.
+     * {@link RuleSupport#MEDIA_TYPE_TOKEN} class, reused rather than restated so the two gates cannot
+     * drift.
      */
-    private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(MEDIA_TYPE_TOKEN);
+    private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(RuleSupport.MEDIA_TYPE_TOKEN);
 
     /**
      * The built-in rules, one entry per rule, in the order their violations are reported. The
@@ -420,8 +380,10 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> LimitRules.validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateAuthorizationHeaderValueLength(gateway,
                     errors),
-            (gateway, endpoints, topology, errors) -> validateAssetContentTypesAddOnly(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateAssetContentTypeValues(gateway, errors),
+            (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypesAddOnly(gateway,
+                    errors),
+            (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypeValues(gateway,
+                    errors),
             (gateway, endpoints, topology, errors) -> validateForwardModeExclusivity(endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateTokenRelayForwardConflict(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
@@ -474,87 +436,6 @@ public final class ConfigValidator {
         if (gateway.version() != SUPPORTED_VERSION) {
             errors.add(new ConfigError(GATEWAY_FILE, "/version",
                     "unsupported config version %d (supported: %d)".formatted(gateway.version(), SUPPORTED_VERSION)));
-        }
-    }
-
-    /**
-     * Enforces the <strong>add-only</strong> ruling on {@code asset_defaults.content_types}: an entry
-     * whose extension is already carried by the gateway's built-in asset content-type map is refused.
-     * <p>
-     * The refusal is a security bound rather than an ergonomic one. The built-in map is what makes an
-     * asset response's {@code Content-Type} gateway-governed instead of source-dictated, and several
-     * of its entries are load-bearing for that governance — remapping {@code svg} away from
-     * {@code image/svg+xml}, or pointing any built-in extension at {@code text/html}, turns a served
-     * asset into a stored-XSS lever on a security gateway. Refusing at boot (rather than silently
-     * ignoring the entry at request time, which is what the runtime precedence in
-     * {@code AssetResponseEnvelope.contentTypeFor} would otherwise do) means the operator learns the
-     * mapping did not take effect, instead of shipping a descriptor that reads as though it did.
-     * <p>
-     * Every offending entry is collected rather than failing on the first, per ADR-0009 — the operator
-     * sees the whole list in one boot attempt. Keys arrive already lowercased by
-     * {@link AssetDefaultsConfig}, so an entry's case cannot decide whether this refusal sees it.
-     */
-    private static void validateAssetContentTypesAddOnly(GatewayConfig gateway, List<ConfigError> errors) {
-        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
-        if (assetDefaults == null) {
-            return;
-        }
-        Set<String> builtIn = AssetResponseEnvelope.builtInExtensions();
-        for (String extension : assetDefaults.contentTypes().keySet()) {
-            if (builtIn.contains(extension)) {
-                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
-                        ("asset_defaults.content_types declares '%s', which the gateway already maps; "
-                                + "the built-in content-type mappings are immutable and the block is "
-                                + "add-only — declare only extensions the gateway does not map, and "
-                                + "remove this entry")
-                                .formatted(extension)));
-            }
-        }
-    }
-
-    /**
-     * Enforces that every {@code asset_defaults.content_types} <em>value</em> is a well-formed
-     * {@code type/subtype} media type, refusing the entry at boot otherwise.
-     * <p>
-     * The value half needs its own bound because it reaches further than the key half does: the
-     * declared value is what {@code AssetResponseEnvelope.governedHeaders} puts under
-     * {@code Content-Type} and {@code GatewayEdgeRoute} then applies verbatim as a response-header
-     * value. Without this rule a value carrying CR/LF — or any non-media-type text at all — is
-     * accepted at boot and only misbehaves per request, deep inside the response write where the
-     * transport's own header-value validation throws after the status code is already set. That is
-     * the exact inversion of the fail-fast startup-validation posture the rest of this class holds,
-     * and it is asymmetric with the key half, which IS boot-refused.
-     * <p>
-     * This is a <strong>well-formedness</strong> gate, not a policy gate: it does not rank media
-     * types by safety and carries no allow-list of "safe" ones. The policy bound already exists one
-     * rule up — {@link #validateAssetContentTypesAddOnly} fences off every built-in,
-     * script-executable extension, so the stored-XSS lever cannot be reached through a built-in key
-     * whatever this rule permits.
-     * <p>
-     * The refusal names the offending extension and value, because an operator cannot fix a typo
-     * they cannot see. The value is rendered through {@link RuleSupport#renderForMessage} rather than echoed
-     * raw: a {@link ConfigError} is emitted into the boot ERROR log, so echoing an unescaped CR/LF
-     * would forge log lines (CWE-117) through the very key this rule constrains.
-     * <p>
-     * Every offending entry is collected rather than failing on the first, per ADR-0009.
-     */
-    private static void validateAssetContentTypeValues(GatewayConfig gateway, List<ConfigError> errors) {
-        AssetDefaultsConfig assetDefaults = gateway.assetDefaults();
-        if (assetDefaults == null) {
-            return;
-        }
-        for (Map.Entry<String, String> entry : assetDefaults.contentTypes().entrySet()) {
-            // A null value is structurally impossible: AssetDefaultsConfig hands back a Map.copyOf,
-            // which refuses null values at binding time.
-            String value = entry.getValue();
-            if (!MEDIA_TYPE.matcher(value).matches()) {
-                errors.add(new ConfigError(GATEWAY_FILE, ASSET_DEFAULTS_CONTENT_TYPES_POINTER,
-                        ("asset_defaults.content_types maps '%s' to '%s', which is not a well-formed media type; "
-                                + "the value is served verbatim as the asset's Content-Type response header, so it "
-                                + "must be a 'type/subtype' (optionally followed by ';name=value' parameters) and "
-                                + "must carry no control characters")
-                                .formatted(entry.getKey(), renderForMessage(value))));
-            }
         }
     }
 

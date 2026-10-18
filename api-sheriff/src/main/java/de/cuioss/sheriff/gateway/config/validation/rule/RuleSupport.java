@@ -31,7 +31,7 @@ import org.jspecify.annotations.Nullable;
  * not-yet-extracted rule of the configuration validator it belongs to: where a {@link ConfigError}
  * is reported (the file and the JSON pointer), how an offending configured value is echoed into a
  * refusal message, which anchor a route resolves, which protocol a route rides, which
- * {@code auth.require} a route resolves, and the wildcard-origin token.
+ * {@code auth.require} a route resolves, the wildcard-origin token, and the RFC 9110 media-type token.
  * <p>
  * Each helper exists exactly once. {@link #renderForMessage} above all must stay the single copy of
  * the CWE-117 escaping. The rule for every refusal: a configured scalar echoed into its message is
@@ -55,6 +55,25 @@ public class RuleSupport {
 
     /** The wildcard origin token, refused in a WebSocket allowlist and together with CORS credentials. */
     public static final String WILDCARD_ORIGIN = "*";
+
+    /**
+     * An RFC 9110 {@code token}: the character set a media type's type, subtype, parameter name and
+     * unquoted parameter value are each drawn from. Notably it excludes CR, LF, whitespace and every
+     * other control character. The asset content-type value rule builds its media-type pattern
+     * ({@code AssetDefaultsRules.MEDIA_TYPE}) from it, and the session-cookie name rule reuses it as
+     * the whole-name shape, so the two gates cannot drift.
+     * <p>
+     * The quantifier is <em>possessive</em> ({@code ++}), not greedy. Every delimiter the surrounding
+     * {@code AssetDefaultsRules.MEDIA_TYPE} pattern places between tokens — {@code /}, {@code ;},
+     * {@code =}, space and tab — is outside this character class, so a token run can never productively
+     * give a character back; forbidding the give-back is therefore behaviour-neutral and removes the
+     * backtracking bookkeeping the engine would otherwise carry.
+     */
+    // java:S6418 — the RFC 9110 `token` character class MEDIA_TYPE is built from, not a credential.
+    // The rule is a name heuristic and fires only on the TOKEN substring in the constant's name;
+    // TOKEN is the correct RFC term here, so the name stays and the finding is suppressed instead.
+    @SuppressWarnings("java:S6418")
+    public static final String MEDIA_TYPE_TOKEN = "[A-Za-z0-9!#$%&'*+.^_`|~-]++";
 
     /** The cap on the offending value a refusal message echoes back to the operator. */
     private static final int ECHOED_VALUE_MAX_LENGTH = 60;
