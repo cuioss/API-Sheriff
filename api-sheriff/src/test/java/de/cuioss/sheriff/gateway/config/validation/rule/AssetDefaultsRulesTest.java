@@ -20,17 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.junit.jupiter.api.DisplayName;
@@ -59,12 +56,8 @@ class AssetDefaultsRulesTest {
         return GatewayConfig.builder().version(1);
     }
 
-    private static ResolvedTopology topologyWith(String... aliases) {
-        Map<String, ResolvedUpstream> map = new HashMap<>();
-        for (String alias : aliases) {
-            map.put(alias, new ResolvedUpstream("https", alias.toLowerCase(Locale.ROOT) + ".internal", 443, ""));
-        }
-        return new ResolvedTopology(map);
+    private static ResolvedTopology topologyWith() {
+        return new ResolvedTopology(Map.of());
     }
 
     private static void assertHasError(List<ConfigError> errors, String pointerContains, String messageContains) {
