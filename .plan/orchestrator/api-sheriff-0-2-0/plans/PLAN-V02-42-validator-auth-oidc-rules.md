@@ -19,11 +19,11 @@ into rule classes on the `ValidationRule` seam, together with their tests.
 
 1. **Extract** these groups into `config/validation/rule/`, each in place in `DEFAULT_RULES`:
    - `AuthRules`: `validateRouteAuthResolvable`, `validateEffectiveAuth`, `validateSessionFallback`, `validateEndpointScopesNeedAuthentication`
-   - `OidcClientRules`: `validateClientAuthentication`, `validateDefaultReturnUrl`
+   - `OidcClientRules`: `validateClientAuthentication`, `validateDefaultReturnUrl`, `validateBackChannelOrigin` (added by #492)
    - `OidcSessionRules`: `validateSessionMode`, `validateSessionMaxSessions`, `validateSessionIdleTimeout`, `validateSessionMaxSessionsPerSubject`, `validateSessionMaxCookieSize`, `validateSessionCookieName`
 2. **Move the tests** to each rule class's test class (`git mv` where a whole class moves):
    - for `AuthRules`: `ConfigValidatorTest`: AnchorRules rules 6/7, RuleViolations bearer/session, EndpointScopesNeedAuthentication; `ConfigValidatorSessionFallbackTest` (`git mv`)
-   - for `OidcClientRules`: `ConfigValidatorTest`: DefaultReturnUrl, ClientAuthenticationMode
+   - for `OidcClientRules`: `ConfigValidatorTest`: DefaultReturnUrl, ClientAuthenticationMode; `ConfigValidatorBackChannelOriginTest` (`git mv`, #492)
    - for `OidcSessionRules`: `ConfigValidatorTest`: SessionMaxSessionsPerSubject, RuleViolations session mode, BffOidcFoldRules session part, SessionCookieNameRefusal, SessionIdleTimeout, cookie-size cases
 3. **Update references and docs:** the concern map's state column, and every member-level reference
    listed below.
@@ -31,7 +31,8 @@ into rule classes on the `ValidationRule` seam, together with their tests.
 Slice-specific notes:
 - `effectiveAuth` and `effectiveRequire` no longer exist; #465 replaced them with `PolicyBlock` resolution. Resolve auth through `PolicyBlock.AUTH`. `lacksConfiguredIssuer` moves to `RuleSupport` unless `PLAN-V02-41` already moved it.
 - `validateSessionMaxCookieSize` logs WARN `COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE`.
-- `PLAN-V02-12`'s second PR adds `oidc` back-channel checks to `ConfigValidator`. They move into `OidcClientRules` or `OidcSessionRules` here.
+- `PLAN-V02-12` has landed (#492). Its one new rule, `validateBackChannelOrigin`, moves into `OidcClientRules` with its pointer and remedy constants. The `OIDC_BACK_CHANNEL_INSECURE_HTTP` WARN is logged by `BffRuntimeProducer`, not by the validator, so it stays where it is. `ConfigValidator` is 1,516 lines at `03cb4755`.
+- **Also correct `CLAUDE.md` § Git Workflow (documentation only, one small commit).** cuioss-review-bot (PR-Agent) was removed in #493/#494, and `.plan/marshal.json` now records `required_bots: coderabbit`, `optional_bots: sourcery`. Steps 5, 6 and 8 still name PR-Agent as a merge gate and tell the agent to post `/review`. Rewrite them to CodeRabbit required and Sourcery optional, and drop the PR-Agent re-review instruction. This slice owns the fix because it is the next PR; it does not change the move.
 
 Estimated diff: ~295 KB (move-only; see the size rule).
 
@@ -95,7 +96,7 @@ Estimated diff: ~295 KB (move-only; see the size rule).
 
 ## Dependencies and Sequencing
 
-- After `PLAN-V02-41` **and** after `PLAN-V02-12`'s second PR has merged (its new `oidc` checks).
+- After `PLAN-V02-41` (#489) **and** `PLAN-V02-12`'s second PR (#492), both of which have landed.
 - Before `PLAN-V02-23` (re-grounded) and `PLAN-V02-27`, which both wait for the whole series.
 
 ## Hand-Off Command

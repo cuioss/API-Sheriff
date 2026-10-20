@@ -28,9 +28,10 @@ gaps that remain whichever way it decides.
 Read this before scoping; it is the state on `main`, and each item is either a fact to build on or
 work already done.
 
-- **token-sheriff is pinned at `0.9.7`** since #449 (`5c2a8143`, 2026-10-14). That bump did not
-  re-measure the `pom.xml` BOM comment block ("Re-measure this paragraph on every
-  `${version.token-sheriff}` bump"); this plan owns that re-measurement.
+- **token-sheriff is pinned at `0.9.8`** since #491 (`199a0cda`, 2026-10-20, Dependabot). The step from 0.9.6 to 0.9.7 was #449
+  (`5c2a8143`, 2026-10-14). Neither bump re-measured the `pom.xml` BOM comment block ("Re-measure this paragraph on every
+  `${version.token-sheriff}` bump"); this plan owns that re-measurement. Read every 0.9.7 statement below against the 0.9.8 jar, and record any
+  difference.
 - **0.9.7 changed the health beans this exclusion is about (TokenSheriff PR #795).** Before 0.9.7 the
   extension never registered `JwksEndpointHealthCheck` and `TokenValidatorHealthCheck` in a consuming
   application at all (no bean-archive marker, not in `additionalBeans()`), so readiness answered with

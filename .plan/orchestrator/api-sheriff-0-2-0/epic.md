@@ -416,6 +416,18 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
+- **THE PUBLISHED GATEWAY IMAGE IS AMD64-ONLY** (added 2026-10-20, inbox
+  `plan-v02-12-idp-addressing-model-004`). The release builds the native image on `ubuntu-latest` and
+  pushes it with `docker buildx build --push` without a platform list (`.github/workflows/release.yml`,
+  checked at `03cb4755`). The deployment docs do not state the constraint. An arm64 host (Apple Silicon)
+  running `deployment/compose-sample` has to build a local image and point `API_SHERIFF_IMAGE` at it. The
+  sample's `.env` already supports that override but does not say why it is needed. There are two ways
+  out: a documentation note (sample `.env` and README), or a multi-arch release, which needs an arm64
+  native build, so a new runner and release lane. The operator chooses. No spec until then.
+- **SUPERSEDED REVIEWER: cuioss-review-bot (PR-Agent) was removed on 2026-10-20** (#493, #494). `.plan/marshal.json`
+  records `required_bots: coderabbit`, `optional_bots: sourcery`. `CLAUDE.md` § Git Workflow still names
+  PR-Agent as a gate. `PLAN-V02-42` corrects it.
+
 - **PER-ROUTE UPSTREAM TIMEOUTS PARSE BUT DO NOT ACT — OWNED BY KIDICAP `PLAN-29`** (added 2026-10-15,
   inbox `plan-32-early-answer-it-timeouts-001`). `connect_timeout_ms` and `read_timeout_ms` exist only in
   `UpstreamConfig` and `endpoint.schema.json`, and no runtime reader applies them. Verified with
