@@ -2,9 +2,9 @@
   "id": "PLAN-V02-12",
   "slug": "idp-addressing-model",
   "workstream": "WS-04",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-12-idp-addressing-model",
-  "pr": "",
-  "landing": "",
+  "pr": "492",
+  "landing": "landings/PLAN-V02-12.md",
   "seq": 12
 }

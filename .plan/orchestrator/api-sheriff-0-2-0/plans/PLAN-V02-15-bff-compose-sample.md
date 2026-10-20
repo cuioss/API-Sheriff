@@ -62,8 +62,9 @@ sample exists to save.**
 - `endpoints/demo-api.yaml` declares `require: none` and says of that line *"THIS IS THE FIRST THING
   TO CHANGE when adapting the sample"* — the sample anticipates this change and points at it.
 - `scripts/start-sample.sh` is the single bring-up path, readiness wait included.
-- `sample-realm.json` pins `"frontendUrl": "https://keycloak:8443"`, the container-internal
-  authority. That is the addressing defect `PLAN-V02-12` owns; see D5.
+- `PLAN-V02-12` has landed (#492, `03cb4755`, ADR-0069). `sample-realm.json` no longer pins a `frontendUrl`,
+  Keycloak is 26.8.1 in both compose files, and the `oidc.back_channel_origin` key (with
+  `oidc.back_channel_allow_insecure_http`) is on `main`. Apply ADR-0069; see D5.
 
 ## Deliverables
 
@@ -109,9 +110,9 @@ sample exists to save.**
    > *"IdP Addressing Model — one issuer identity, a frontchannel/backchannel split"*. The IT config's
    > container-internal issuer URLs are one of the things #176 says an adopter must not copy.
    >
-   > The mechanism is known since 2026-10-14: one public issuer identity plus V02-12's `oidc`
-   > back-channel-origin key (token-sheriff-client 0.9.7 `backChannelOrigin`), with the JWKS fetched via
-   > `token_validation.issuers[].jwks.url`. The key's exact name and boot rules are V02-12's.
+   > V02-12 has shipped the mechanism (#492, ADR-0069): one public issuer identity plus
+   > `oidc.back_channel_origin` (token-sheriff-client `backChannelOrigin`), with the JWKS fetched via
+   > `token_validation.issuers[].jwks.url`. Read the key's boot rules from `main`.
    >
    > **Read PLAN-V02-12's verdict and apply it. Do not settle the addressing model inside a sample**
    > — a sample that picks its own answer becomes the de-facto specification, and the wrong one.
