@@ -36,9 +36,11 @@ server {
         # Keycloak serves the stack's self-signed certificate; the upstream leg stays inside the
         # test's own networks, and what the test asserts is the GATEWAY's decision on the proxy leg.
         proxy_ssl_verify off;
-        # A stable upstream Host. Keycloak runs with a static hostname, so it derives every URL it
-        # mints, and the request target it checks a DPoP proof against, from KC_HOSTNAME rather than
-        # from this header; the header only keeps the dialled name independent of the container name.
+        # A stable upstream Host, and a load-bearing one. Keycloak runs with a static hostname, so the
+        # URLs it mints come from KC_HOSTNAME, but it checks a DPoP proof's htu against the request
+        # it received, built from this header. The gateway signs the back-channel URL it dialled,
+        # https://keycloak:8443/..., so the header must carry exactly that authority whatever the
+        # proxy's own container name is.
         proxy_set_header Host keycloak:8443;
         proxy_pass https://${TLS_RELAXATION_UPSTREAM}:8443;
     }
