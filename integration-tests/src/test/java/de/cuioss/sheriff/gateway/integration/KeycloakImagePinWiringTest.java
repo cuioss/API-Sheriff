@@ -221,7 +221,7 @@ class KeycloakImagePinWiringTest {
      * @return {@code true} when the reference is a Keycloak image
      */
     private static boolean isKeycloakReference(String image) {
-        return image.equals(KEYCLOAK_IMAGE) || image.startsWith(KEYCLOAK_IMAGE + ":")
+        return KEYCLOAK_IMAGE.equals(image) || image.startsWith(KEYCLOAK_IMAGE + ":")
                 || image.startsWith(KEYCLOAK_IMAGE + "@");
     }
 
