@@ -71,6 +71,13 @@ The BFF runtime is built from exactly two inputs: a recognised `session.mode` (`
 routes are what *use* the runtime once it exists, not what turns it on. With no recognised
 `session.mode` the runtime stays inert, so a bearer-only deployment is unaffected.
 
+*An identity provider the gateway reaches at a different address.* Keep `oidc.issuer` the
+browser-facing identity, set `oidc.back_channel_origin` to the internal origin the gateway dials, and
+point `token_validation.issuers[].jwks.url` at the internal host. No DNS trick is needed. The setup is
+the same in both BFF variants; see
+link:bff-session.adoc#idp-different-address[Server-Session BFF -- An identity provider the gateway
+reaches at a different address].
+
 [[_key_material]]
 == Key material: the sealing key
 
@@ -364,8 +371,8 @@ gateway's JWKS URL at the client; do not paste the public key into the identity 
   with the same key, which is one more reason to provide the key file.
 * *The DPoP key needs no registration.* A separate DPoP key is never published.
 
-On Keycloak 26.5.7 the key-authenticated clients of this project's integration stack carry these
-settings (shown as they appear in a realm export):
+On the pinned Keycloak image (`integration-tests/docker-compose.yml`) the key-authenticated clients
+of this project's integration stack carry these settings (shown as they appear in a realm export):
 
 [cols="2,3", options="header"]
 |===
@@ -388,9 +395,10 @@ at the token endpoint. This was seen on Keycloak 26.5.7; no test asserts it.
 The gateway pushes the authorization request to the identity provider and redirects the browser to
 the authorization endpoint. It adds two parameters to that URL and no other: `client_id` and
 `request_uri`. No scope, no `state` and no redirect URI travel in that redirect. A query that the
-identity provider's authorization endpoint URL itself carries is kept as it is. Keycloak 26.5.7
-answers that redirect with a further `302` to its own `login-actions/authenticate` page before it
-shows the login form.
+identity provider's authorization endpoint URL itself carries is kept as it is. The pinned Keycloak
+image (`integration-tests/docker-compose.yml`) may answer that redirect with a further `302` to its
+own `login-actions/authenticate` page before it shows the login form; the integration suite's login
+flow accepts exactly that one redirect.
 
 A widening of a live session is pushed in the same way, so the gateway adds `client_id` and
 `request_uri` only to its redirect as well.
@@ -430,8 +438,8 @@ inside that interval can fail. There is no overlap: the old key is not published
 the new one. While replicas are restarted one after another, those still on the old key and those
 already on the new one disagree for as long as the roll takes.
 
-*What a replacement does to live sessions.* On Keycloak 26.5.7 a session survived it in the one case
-observed. The integration
+*What a replacement does to live sessions.* On the pinned Keycloak image
+(`integration-tests/docker-compose.yml`) a session survives it in the one case observed. The integration
 suite restarts a gateway whose two keys are generated, under a live session. The next refresh of
 that session succeeds, the session continues, and the new access token is bound to the new proof
 key.
@@ -442,7 +450,7 @@ That observation has limits, and they are stated here so that it is not read as 
   across the restart. With a generated sealing key a restart drops every session whatever the
   signing keys do.
 * Only generated keys were replaced. Replacing a provided key file was not run.
-* It holds for the identity provider and the version named. Another identity provider may refuse a
+* It holds for the identity provider and the image named. Another identity provider may refuse a
   refresh that presents a proof of a new key.
 
 Plan for the worst case: sessions whose tokens were bound to the old key fail their next refresh,

@@ -306,10 +306,10 @@ Two test-support types matter for this code:
   `require: session` route is declared in the sheriff-config the IT container consumes.
   `BffFapiControlsIT` (key mode), `BffClientSecretModeIT` (client-secret mode) and
   `BffGeneratedKeysIT` (no key configured, restarted under a live session) prove the controls above
-  against Keycloak. The shared login helper `BffKeycloakLoginFlow` follows one redirect more than a
-  front-channel login needed: Keycloak 26.5.7 answers an authorization request that names a pushed
-  `request_uri` with a `302` to its own `login-actions/authenticate`, and only that page is the
-  login form.
+  against Keycloak. The shared login helper `BffKeycloakLoginFlow` follows at most one redirect more
+  than a front-channel login needed: the pinned Keycloak image (`integration-tests/docker-compose.yml`)
+  may answer an authorization request that names a pushed `request_uri` with a `302` to its own
+  `login-actions/authenticate`, and only that page is the login form.
 
 * *Benchmark* -- `benchmarks/src/main/resources/k6-scripts/session_mediated.js` measures the
   steady-state mediation hot path (a pre-established session cookie replayed against a

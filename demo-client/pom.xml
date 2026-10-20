@@ -57,11 +57,10 @@
         <skipPlaywrightTests>true</skipPlaywrightTests>
 
         <!-- ==== Stack coordinates ========================================================= -->
-        <!-- The published ports of the two demo gateway instances and of Keycloak, passed to the
-             suite as environment. Declared here so NO port number is restated inside JavaScript. -->
+        <!-- The published ports of the two demo gateway instances, passed to the suite as
+             environment. Declared here so NO port number is restated inside JavaScript. -->
         <demo.baseUrl.server>https://localhost:10443</demo.baseUrl.server>
         <demo.baseUrl.cookie>https://localhost:10445</demo.baseUrl.cookie>
-        <demo.keycloak.url>https://localhost:1443</demo.keycloak.url>
     </properties>
 
     <profiles>
@@ -270,7 +269,6 @@
                                     <environmentVariables>
                                         <PLAYWRIGHT_BASE_URL_SERVER>${demo.baseUrl.server}</PLAYWRIGHT_BASE_URL_SERVER>
                                         <PLAYWRIGHT_BASE_URL_COOKIE>${demo.baseUrl.cookie}</PLAYWRIGHT_BASE_URL_COOKIE>
-                                        <KEYCLOAK_HOST_URL>${demo.keycloak.url}</KEYCLOAK_HOST_URL>
                                         <!-- Never spawn a report server: a blocked run in CI is
                                              indistinguishable from a hang. -->
                                         <PW_TEST_HTML_REPORT_OPEN>never</PW_TEST_HTML_REPORT_OPEN>

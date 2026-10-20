@@ -385,8 +385,8 @@ client key is generated. All four gateway clients declare
 `require.pushed.authorization.requests: "true"` and `dpop.bound.access.tokens: "true"`, and none of
 them has direct access grants enabled.
 
-These settings were established on the pinned image, Keycloak 26.5.7, on a throwaway container with
-a scratch realm, before the stack was migrated:
+These settings were established on Keycloak 26.5.7, the image pinned at the time, on a throwaway
+container with a scratch realm, before the stack was migrated:
 
 * *They survive a realm import.* All five attributes, the two JWKS URL attributes included, read back
   unchanged after `--import-realm`.
@@ -483,7 +483,8 @@ certificate. `BffClientKeyWiringTest` reads all three without a container and as
 * the Keycloak service trusts the certificate, and the certificate names the alias;
 * every other realm client registered for a signed assertion is the client of a compose instance.
 
-*What the test observed.* On Keycloak 26.5.7 and the native image, in this order:
+*What the test observes.* On the pinned Keycloak image (`integration-tests/docker-compose.yml`) and
+the native image, in this order:
 
 . The gateway boots with no key configured. Its log carries the generated-key record once for client
   authentication and once for the sender constraint, and no member of the published key.
@@ -686,8 +687,9 @@ a class that uses the rig out of the concurrent Failsafe execution: they run in 
 | A dedicated docker network, `sheriff-stub-idp`.
 
 | Stub container
-| `sheriff-stub-idp-wiremock`, under the network alias `keycloak` -- the host the descriptor's issuer
-  and every `jwks.url` name. It serves HTTPS on `8443` from a PKCS12 key store the rig derives below
+| `sheriff-stub-idp-wiremock`, under the network alias `keycloak` -- the host the descriptor's
+  `oidc.back_channel_origin` and every `jwks.url` dial; the issuer is the published identity
+  `https://localhost:1443`, as on the Compose stack. It serves HTTPS on `8443` from a PKCS12 key store the rig derives below
   `target/` from the committed `localhost.crt` and `localhost.key`. The subject alternative names of
   that certificate cover the alias, so the gateway keeps `egress_tls.oidc_tls_profile: benchmark-idp`,
   keeps hostname verification on and needs no new trust material. Its plain-HTTP admin port is its
@@ -721,7 +723,9 @@ token of every token-endpoint answer carries the thumbprint of the committed pro
 because the gateway refuses a token response that is not bound to its own proof key. An access token
 the rig mints for a bearer route carries no `cnf` claim. `BffUnboundTokenResponseIT` scripts
 the other two bindings on purpose -- no `cnf` claim, and a `cnf.jkt` naming another committed key --
-to observe that refusal. The stub validates nothing. Its token endpoint
+to observe that refusal. The stub checks neither the client credential, the authorization code nor
+the PKCE verifier, but the rig asserts every DPoP proof's `htu` and `htm` against the request it
+arrived on, as Keycloak does. Its token endpoint
 refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
 passing unnoticed.
 
@@ -785,7 +789,9 @@ gateway that reaches Keycloak through that proxy only.
   `tls-relaxation-idp/default.conf.template`. On the rig's network it carries the alias
   `keycloak`. It is attached to the Compose network as well, where it dials the Keycloak container by
   its container name, and it forwards every path with `Host: keycloak:8443`. It publishes no host
-  port.
+  port. Keycloak's identity stays its published `https://localhost:1443`, the issuer the fixture
+  descriptor declares; `keycloak:8443` is only the gateway's back channel, named by the descriptor's
+  `jwks.url` and `oidc.back_channel_origin`.
 
 | Echo upstream
 | The Compose `go-httpbin` container, connected for the life of the rig as in <<stub-idp-rig>>.
@@ -1518,5 +1524,6 @@ or accepted, and an accepted one names the reason it is safe to keep.
 | Accepted
 | The admin API is plain HTTP on a loopback port docker assigns and on no other interface, it lives
   only as long as the test that started its rig, and no credential or secret sits behind it: the stub
-  validates nothing and signs with a key generated when the rig starts (<<stub-idp-rig>>).
+  checks no client credential, authorization code or PKCE verifier -- only the `htu` and `htm` of each
+  DPoP proof -- and signs with a key generated when the rig starts (<<stub-idp-rig>>).
 |===

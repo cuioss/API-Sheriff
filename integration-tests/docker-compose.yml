@@ -41,9 +41,11 @@ x-gateway-backend-deps: &gateway-backend-deps
 
 services:
   keycloak:
-    # NOTE: Dependabot cannot automatically update this image version.
-    # Manual updates required. Check: https://quay.io/keycloak/keycloak
-    image: quay.io/keycloak/keycloak:26.5.7@sha256:45ae20191531eb608ddb0b775d012b40d3e4f942697f3214694887dd7c108d13
+    # Updated automatically by the `keycloak` group in .github/dependabot.yml. Tag and digest move
+    # together and must equal the compose sample's pin (deployment/compose-sample/docker-compose.yml),
+    # which KeycloakImagePinWiringTest enforces. To see what a bump changed, read its Dependabot PR and
+    # the Keycloak release notes; the image line below is the record of the pinned version.
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
     command:
       - start-dev
       - --import-realm
@@ -74,7 +76,7 @@ services:
       de.cuioss.sheriff.management-root-path: "/q"
 
     ports:
-      - "1443:8443"  # External HTTPS port for Keycloak admin
+      - "1443:8443"  # Published HTTPS port: Keycloak's browser-facing identity (KC_HOSTNAME below)
       - "1090:9000"  # External port for Keycloak management (health checks)
     volumes:
       - ./src/main/docker/keycloak:/opt/keycloak/data/import:ro
@@ -85,11 +87,17 @@ services:
       - KC_HEALTH_ENABLED=true
       - KC_METRICS_ENABLED=true
       - KC_LOG_LEVEL=INFO
-      # Hostname configuration v2 for well-known discovery endpoint (research-based)
-      - KC_HOSTNAME_STRICT=false
       - KC_HTTP_ENABLED=false
       - KC_HTTPS_PORT=8443
-      - KC_HOSTNAME=localhost
+      # Keycloak's ONE identity is the published, browser-facing https://localhost:1443: every realm
+      # issuer, every discovery document and every redirect the browser follows is minted from this
+      # full URL (scheme and port included), and no realm-level frontendUrl competes with it. The
+      # gateways reach the SAME server at https://keycloak:8443 on the compose network — that dial
+      # address is supplied by oidc.back_channel_origin in each gateway.yaml, never by a second
+      # Keycloak identity. KC_HOSTNAME_BACKCHANNEL_DYNAMIC is deliberately not used: the back channel
+      # is the gateway's routing decision, and Keycloak keeps minting the one public issuer whichever
+      # address a request arrives on.
+      - KC_HOSTNAME=https://localhost:1443
       # Lets Keycloak TRUST the gateway when it DIALS it. Everything else in this file concerns
       # Keycloak as a TLS *server*; there are two legs where Keycloak is the TLS *client*. On
       # back-channel logout it POSTs a logout token to the backchannel.logout.url the
@@ -115,7 +123,6 @@ services:
       # nothing else: localhost.crt and both trust stores stay byte-identical. The entry is inert
       # for every suite that starts no such gateway.
       - KC_TRUSTSTORE_PATHS=/opt/keycloak/certificates/localhost.crt,/opt/keycloak/certificates/generated-keys-gateway.crt
-      # External hostname for Docker container well-known discovery
     networks:
       - api-sheriff
 

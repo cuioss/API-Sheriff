@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;
@@ -31,6 +33,21 @@ import org.jspecify.annotations.Nullable;
  * secret selects {@code private_key_jwt}, signed with the key the {@code client_authentication}
  * block names or, when it names none, with a key generated at startup. There is no separate switch.
  * Every consumer reads the mode through {@link #usesClientSecret()}.
+ * <p>
+ * <strong>The issuer is the identity; the back-channel origin is transport.</strong>
+ * {@link #issuer()} is the one identity every exact-match check uses — the discovery document's
+ * {@code issuer}, an ID token's {@code iss}, a back-channel logout token's {@code iss} — and it is
+ * the authority the browser is redirected to. {@link #backChannelOrigin()} only changes where the
+ * gateway's own server-to-server calls (discovery, the pushed authorization request, the
+ * authorization-code exchange, refresh and refresh-token revocation) are dialled: the engine
+ * re-targets the endpoints the issuer advertises on its own origin to the configured origin and
+ * leaves the identity untouched. Since token-sheriff 0.9.8 the DPoP proof of such a mapped call
+ * names the URL actually dialled, not the advertised one, which is what an identity provider that
+ * compares the proof's {@code htu} with the URL it received (Keycloak) expects. An identity provider
+ * that instead compares {@code htu} with a configured public URL rejects those proofs, and because
+ * the mapping is issuer-wide and all-or-nothing, {@code back_channel_origin} must not be set for such
+ * a provider. An absent origin means one authority for everything, which is the behaviour without
+ * the key. The value comes from configuration alone and is never derived from request data.
  *
  * @param issuer               the OIDC issuer, {@code null} when omitted
  * @param clientId             the client id, {@code null} when omitted
@@ -52,6 +69,18 @@ import org.jspecify.annotations.Nullable;
  * @param senderConstraint     the sender-constraint settings — the key file of the DPoP proof key
  *                             the gateway's access tokens are bound to — {@code null} when omitted.
  *                             Read in both client-authentication modes
+ * @param backChannelOrigin    the origin ({@code scheme://host[:port]}) the gateway dials for its
+ *                             server-to-server calls to the identity provider
+ *                             ({@code oidc.back_channel_origin}), {@code null} when omitted — the
+ *                             issuer's own origin is then dialled for everything. Transport only,
+ *                             never identity: {@link #issuer()} stays the identity every
+ *                             exact-match check uses
+ * @param backChannelAllowInsecureHttp the explicit opt-in that admits an {@code http}
+ *                             {@code back_channel_origin} ({@code oidc.back_channel_allow_insecure_http}),
+ *                             {@code null} when omitted, which reads as {@code false}. Boot
+ *                             validation refuses it when there is nothing to opt in for — no origin,
+ *                             or an {@code https} origin. When in effect it lets the whole OIDC
+ *                             client use cleartext, not just the back-channel origin
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -69,7 +98,9 @@ List<String> scopes,
 @Nullable UserInfo userInfo,
 @Nullable Login login,
 @Nullable ClientAuthenticationSettings clientAuthentication,
-@Nullable SenderConstraintSettings senderConstraint) {
+@Nullable SenderConstraintSettings senderConstraint,
+@Nullable String backChannelOrigin,
+@Nullable Boolean backChannelAllowInsecureHttp) {
 
     /**
      * Canonical constructor defensively copying {@code scopes}.
@@ -118,15 +149,51 @@ List<String> scopes,
      * message, or debugger view that captures this instance.
      * <p>
      * {@link #clientAuthentication()} and {@link #senderConstraint()} are rendered as they are: a
-     * key file is a path, not a secret.
+     * key file is a path, not a secret. {@link #backChannelOrigin()} is rendered with any user-info
+     * masked: boot validation refuses an origin that carries one, but this rendering can be reached
+     * before that refusal is reported, and a user-info component may hold a credential.
+     * {@link #backChannelAllowInsecureHttp()} is rendered as it is.
      *
-     * @return a string representation with {@code clientSecret} redacted
+     * @return a string representation with {@code clientSecret} redacted and any user-info of
+     *         {@code backChannelOrigin} masked
      */
     @Override
     public String toString() {
-        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s]"
+        return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s, backChannelOrigin=%s, backChannelAllowInsecureHttp=%s]"
                 .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp, userInfo,
-                        login, clientAuthentication, senderConstraint);
+                        login, clientAuthentication, senderConstraint, maskUserInfo(backChannelOrigin),
+                        backChannelAllowInsecureHttp);
+    }
+
+    /** A leading RFC 3986 scheme followed by {@code ://}; anything else is masked from the start. */
+    private static final Pattern LEADING_SCHEME = Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*://");
+
+    /**
+     * Masks any user-info of an origin for display, so a credential written as user-info never
+     * reaches a log line. A valid origin never contains {@code @}, so any {@code @} is treated as the
+     * end of a user-info component: everything from just after a leading {@code scheme://} — or from
+     * the start when the value does not open with one — through the last {@code @} is replaced. A
+     * {@code ://} that is not preceded by a valid scheme is part of the user-info, not a separator.
+     * This deliberately does not parse the value, because a malformed one (an unencoded {@code /},
+     * {@code ?} or {@code #} in the password, or no scheme separator) is exactly the value boot
+     * validation is about to refuse, and is the one a parser would get wrong. Only user-info is
+     * masked: a value without {@code @} is rendered as it is, and boot validation refuses every
+     * other component that could carry a secret (query, fragment, path) without echoing it.
+     *
+     * @param origin the configured origin, may be {@code null}
+     * @return the origin with any user-info masked, or {@code null} when absent
+     */
+    private static @Nullable String maskUserInfo(@Nullable String origin) {
+        if (origin == null) {
+            return null;
+        }
+        int at = origin.lastIndexOf('@');
+        if (at < 0) {
+            return origin;
+        }
+        Matcher scheme = LEADING_SCHEME.matcher(origin);
+        int maskStart = scheme.lookingAt() ? scheme.end() : 0;
+        return origin.substring(0, maskStart) + "****" + origin.substring(at);
     }
 
     /**

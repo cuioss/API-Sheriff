@@ -64,13 +64,13 @@ import io.restassured.specification.RequestSpecification;
  * browser flow works.</em> The browser-level proof lives in the demo-client Playwright suite, which
  * drives a real Chromium with a real cookie jar; see {@code demo-client/doc/playwright-suite.adoc}.
  * <p>
- * <strong>Container-network rewrite.</strong> The {@code integration} realm pins
- * {@code frontendUrl https://keycloak:8443}, so every authorization / login-form URL the gateway or
- * Keycloak hands the "browser" carries the container-internal authority {@code keycloak:8443}. The
- * host-driven test JVM cannot resolve that name, so this helper rewrites the authority to the
- * host-published {@code localhost:1443} (compose maps {@code 1443 -> 8443}) before following each
- * redirect. The gateway itself keeps reaching Keycloak container-internally at {@code keycloak:8443}
- * over the shared {@code api-sheriff} network — only the browser leg is rewritten.
+ * <strong>The realm's identity is the published authority.</strong> Keycloak runs with the static
+ * hostname {@code https://localhost:1443} — the host-published port compose maps to its {@code 8443} —
+ * so every authorization, login-form and callback URL the gateway or Keycloak hands the "browser"
+ * already names an authority the host-driven test JVM can reach. This helper therefore follows every
+ * redirect unmodified, exactly as a browser does. The gateway reaches the same Keycloak over its
+ * back channel, {@code oidc.back_channel_origin} {@code https://keycloak:8443} on the shared
+ * {@code api-sheriff} network; that address never appears on the browser leg.
  * <p>
  * <strong>Two disjoint cookie jars.</strong> RFC 6265 cookies are port-agnostic, so a single
  * {@code localhost} jar would mix the gateway session cookie ({@code localhost:10443}) with the
@@ -154,14 +154,14 @@ final class BffKeycloakLoginFlow {
      */
     static final String COOKIE_REFRESH_GATEWAY_ORIGIN = "https://localhost:10455";
 
-    /** The container-internal Keycloak authority the {@code integration} realm frontendUrl pins. */
-    static final String KEYCLOAK_INTERNAL_AUTHORITY = "keycloak:8443";
-
-    /** The host-published Keycloak authority the test JVM can actually reach (compose {@code 1443 -> 8443}). */
+    /**
+     * The authority of Keycloak's one identity: the host-published port (compose {@code 1443 -> 8443})
+     * that {@code KC_HOSTNAME} names, so every URL Keycloak mints for the browser carries it.
+     */
     static final String KEYCLOAK_HOST_AUTHORITY = "localhost:1443";
 
     /** Where every realm of the stack's Keycloak lives, as Keycloak itself names it in a redirect. */
-    private static final String KEYCLOAK_AUTHENTICATION_FLOW_PREFIX = "https://" + KEYCLOAK_INTERNAL_AUTHORITY + "/realms/";
+    private static final String KEYCLOAK_AUTHENTICATION_FLOW_PREFIX = "https://" + KEYCLOAK_HOST_AUTHORITY + "/realms/";
 
     /** The path Keycloak's browser authentication flow is served at, below a realm. */
     private static final String KEYCLOAK_AUTHENTICATION_FLOW_PATH = "/login-actions/authenticate";
@@ -316,8 +316,7 @@ final class BffKeycloakLoginFlow {
      * @param gatewayCookies  the gateway cookie jar, carrying the browser-binding cookie of the pending
      *                        login
      * @param keycloakCookies the Keycloak cookie jar, carrying the cookies of the login page
-     * @param formAction      the action URL of the login form, rewritten to the host-published
-     *                        Keycloak authority
+     * @param formAction      the action URL of the login form, exactly as Keycloak rendered it
      * @param startedAt       the instant taken before the first request of the login was sent
      * @since 1.0
      */
@@ -501,12 +500,12 @@ final class BffKeycloakLoginFlow {
                 .when().get(startPath)
                 .then().statusCode(302).extract().response();
         gatewayCookies.putAll(initiation.getCookies());
-        String authorizationUrl = rewriteToHost(location(initiation));
+        String authorizationUrl = location(initiation);
 
         // Step 2 — navigate to the authorization endpoint, follow Keycloak into its authentication flow
         // and scrape the form action of the login page.
         Response loginPage = loginPage(keycloakCookies, authorizationUrl);
-        String formAction = rewriteToHost(extractFormAction(loginPage.asString()));
+        String formAction = extractFormAction(loginPage.asString());
 
         return new OpenedLogin(gatewayOrigin, gatewayCookies, keycloakCookies, formAction, startedAt);
     }
@@ -546,8 +545,7 @@ final class BffKeycloakLoginFlow {
         // holds only the login page's cookies, and a later prompt=none authorization request would
         // find no SSO session to answer from.
         absorbSetCookies(keycloakCookies, credentials);
-        String redirectTarget = location(credentials);
-        String callbackUrl = rewriteToHost(redirectTarget);
+        String callbackUrl = location(credentials);
 
         // Step 4 — follow that redirect to the gateway callback exactly as a browser would: a plain
         // top-level GET navigation carrying code + state in the query. The gateway parses the code from
@@ -565,7 +563,7 @@ final class BffKeycloakLoginFlow {
                 .when().get(callbackUrl)
                 .then().extract().response();
         gatewayCookies.putAll(callback.getCookies());
-        return new CompletedLogin(redirectTarget, callback);
+        return new CompletedLogin(callbackUrl, callback);
     }
 
     /**
@@ -614,7 +612,7 @@ final class BffKeycloakLoginFlow {
      * query of an authentication-flow URL identifies a pending login.
      *
      * @param keycloakCookies  the Keycloak cookie jar; it gains every cookie the navigation sets
-     * @param authorizationUrl the host-rewritten URL the gateway redirected the browser to
+     * @param authorizationUrl the URL the gateway redirected the browser to, exactly as emitted
      * @return the response that carries the login form
      */
     private static Response loginPage(Map<String, String> keycloakCookies, String authorizationUrl) {
@@ -633,7 +631,7 @@ final class BffKeycloakLoginFlow {
                             + "redirect URI, so this login was not admitted");
             answered = keycloak(keycloakCookies)
                     .redirects().follow(false)
-                    .when().get(rewriteToHost(target))
+                    .when().get(target)
                     .then().extract().response();
             keycloakCookies.putAll(answered.getCookies());
         }
@@ -707,7 +705,7 @@ final class BffKeycloakLoginFlow {
 
     /**
      * A request spec with relaxed HTTPS and the supplied Keycloak cookie jar; Keycloak calls always
-     * use absolute (host-rewritten) URLs, so no base URI is bound.
+     * use the absolute URLs Keycloak or the gateway emitted, so no base URI is bound.
      *
      * @param cookies the Keycloak cookie jar
      * @return the configured request specification
@@ -718,17 +716,6 @@ final class BffKeycloakLoginFlow {
         // them a second time. Disabling it sends the URL verbatim.
         return given().config(clientDeadlines(CONNECT_TIMEOUT_SECONDS, RESPONSE_TIMEOUT_SECONDS))
                 .relaxedHTTPSValidation().urlEncodingEnabled(false).cookies(cookies);
-    }
-
-    /**
-     * Rewrites the container-internal Keycloak authority to the host-published authority so the
-     * host-driven test JVM can follow a redirect the gateway/IdP emitted with the internal authority.
-     *
-     * @param url the URL to rewrite
-     * @return the URL with {@code keycloak:8443} replaced by {@code localhost:1443}
-     */
-    static String rewriteToHost(String url) {
-        return url.replace(KEYCLOAK_INTERNAL_AUTHORITY, KEYCLOAK_HOST_AUTHORITY);
     }
 
     /**

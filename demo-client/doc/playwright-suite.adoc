@@ -241,7 +241,7 @@ lint failure costs no browser download.
 downloaded Node toolchain lands under the already-ignored `target/` tree rather than in a new
 top-level directory needing its own ignore rule.
 
-Base URLs, the Keycloak host URL and `PW_TEST_HTML_REPORT_OPEN=never` are passed to the test
+The two base URLs and `PW_TEST_HTML_REPORT_OPEN=never` are passed to the test
 execution as environment, sourced from POM properties. *No port number is restated inside
 JavaScript* -- when a published port changes, it changes in one place.
 
@@ -294,39 +294,26 @@ and the documentation screenshots under `target/screenshots/{project}/`, one par
 mode. There is deliberately *no* HTML reporter, so no report server is spawned and no run blocks
 waiting for a browser.
 
-== The Chromium Host-Resolver Mapping Is Load-Bearing
+== The Chromium Certificate Flag Is Load-Bearing
 
 `playwright.config.js` launches Chromium with:
 
 [source,text]
 ----
---host-resolver-rules=MAP keycloak:8443 127.0.0.1:1443
 --ignore-certificate-errors
 ----
 
-Neither flag is a convenience, and neither may be removed as "cleanup".
+The flag is not a convenience and may not be removed as "cleanup". The stack serves a self-signed
+`localhost` bundle, on the gateways and on Keycloak alike. The config also sets
+`ignoreHTTPSErrors: true` for the API-level requests; the launch flag covers the browser's own
+navigations.
 
-*Why the resolver mapping is required.* The `integration` realm pins
-`attributes.frontendUrl: https://keycloak:8443`. Every authorization URL Keycloak issues -- and
-every URL the gateway's login `302` sends the browser to -- therefore carries the
-*container-internal* authority `keycloak:8443`. Inside the Compose network that resolves; from the
-host, where the browser runs, it does not. The landed Java integration helper sidesteps this by
-string-rewriting each redirect location to `localhost:1443` before following it. *A real browser
-cannot do that* -- following redirects is the browser's own job, and there is no interception point.
-So the resolution is pushed one layer down, into the browser's resolver: `keycloak:8443` is mapped
-to the published host port.
-
-*Why the certificate flag is required.* The stack serves a self-signed `localhost` bundle. The
-config also sets `ignoreHTTPSErrors: true` for the API-level requests; the launch flag covers the
-browser's own navigations.
-
-[CAUTION]
-====
-Do not "fix" this by changing the realm's `frontendUrl`. That value is the issuer authority baked
-into every token the realm mints, and the gateway's `token_validation` blocks pin it. Changing it
-breaks every landed bearer-token integration test in the repository. The mapping belongs in the
-browser, not in the realm.
-====
+No resolver mapping is needed. Keycloak's one identity is the published authority
+`https://localhost:1443` (`KC_HOSTNAME` in `integration-tests/docker-compose.yml`), so every
+authorization URL Keycloak issues -- and every URL the gateway's login `302` sends the browser to --
+already resolves on the host where the browser runs. The gateways reach the same server
+container-internally at `keycloak:8443` through `oidc.back_channel_origin`; that address never
+reaches the browser.
 
 == The Cookie-Budget Spec: What a Real Browser Measures
 

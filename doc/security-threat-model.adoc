@@ -43,10 +43,11 @@ regression re-opens a known-historical hole loudly. Status values:
 API Sheriff is not implementing these controls from scratch -- two audited libraries own
 large parts of the catalogue, and the residual gateway work is exactly the part they
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
-of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
+of the local `cui-http` and `TokenSheriff` trees; the statements that depend on the `TokenSheriff`
+version were re-checked against the 0.9.8 source. The versions this project resolves are
 `cui-http` 3.1 -- managed by `cui-java-bom` through `cui-quarkus-parent`, with no override in this
 repository; 3.1 is the release carrying the parameter-value line-break switch the `strict` profile
-sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.6, read from the `version.token-sheriff` property in
+sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.8, read from the `version.token-sheriff` property in
 the root `pom.xml`, which is the authoritative source this number mirrors. Its JWKS-loader and
 client-configuration builders both carry the hostname-verification passthrough the gateway binds its
 two identity-provider back-channels through (see <<gw-06>>).
@@ -1136,6 +1137,19 @@ default trust store on this leg, so a profile holding only a private CA stops tr
 authorities for the identity provider; that replacement is reported by `WARN ApiSheriff-126` rather
 than left to be discovered.
 
+*Residual risk (accepted) -- a cleartext BFF OIDC back-channel.* `oidc.back_channel_allow_insecure_http:
+true` is the third operator-selectable relaxation on this leg, and the widest. It admits an `http`
+`oidc.back_channel_origin`, and because the token engine's cleartext switch is a property of the
+*whole* identity-provider client rather than of the origin mapping, every endpoint that client dials
+may then be reached without TLS -- so the client credential, the authorization codes and every token
+cross that leg unencrypted, with no chain or hostname check to fail. The exposure is bounded the same
+way as its siblings: the default is `false`; boot validation admits the opt-in only together with an
+`http` `back_channel_origin` and refuses it, without echoing the value, when there is no origin or an
+`https` one; and an admitted opt-in is reported at every boot of an active BFF gateway by
+`WARN ApiSheriff-138`. It is meant for an identity provider reached over a trusted internal network;
+the mitigation is to serve the identity provider over TLS and declare an `https` origin (see
+link:adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]).
+
 *No deployment-activation instance is owed for the relaxation keys -- recorded, not a gap.* The hostname
 keys are proven at the level they are asserted at, and those levels differ.
 `upstream_verify_hostname` is proven by an integration-stack matched pair, so a *deployed descriptor*
@@ -1328,9 +1342,10 @@ long as that caller wins the claim, the new key is picked up only by a window a 
 claims or, at the latest, by the background refresh. In that worst case the gateway behaves as it
 would without the on-demand refresh; the flood buys a delay of the rotation pick-up bounded by
 `jwks.refresh_interval_seconds`, never the acceptance of a token and never the loss of a key that
-was valid. Closing this residual exactly requires the token library to expose which key ids a loaded
-key set holds, which token-sheriff 0.9.6 does not: a loader only answers a lookup for a named key
-id. A replaced key set is closed only when its grace period ends, so until then its loader
+was valid. Closing this residual exactly requires the refresh to compare the key ids the fetched key
+set holds with those of the current one. The token library exposes them since 0.9.7
+(`JwksLoader.getKeyIds()`), but the refresh does not use them: it publishes a fetched key set only
+when that set resolves the key id that triggered it. A replaced key set is closed only when its grace period ends, so until then its loader
 keeps running its own background refresh beside the current one; at most one replaced key set is
 held per issuer.
 
@@ -2064,7 +2079,8 @@ concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per 
 requests on one session share one redemption, so one instance never presents the same token twice
 and never forks the family itself.
 
-*Observed Keycloak behaviour (Keycloak 26.5.7, pinned by `BffRefreshReuseIT`).* On a detected replay
+*Observed Keycloak behaviour (the pinned Keycloak image, `integration-tests/docker-compose.yml`,
+pinned by `BffRefreshReuseIT`).* On a detected replay
 Keycloak refuses the replayed token *and revokes the successor refresh token*, so the legitimate
 holder's session ends along with the attacker's -- a replay burns the whole grant, which is the
 RFC 9700 §4.14 outcome. The Keycloak *user session* the login created survives, with the client still
@@ -2470,8 +2486,8 @@ the browser binding (<<bff-02>>, <<bff-03>>).
 the matching `ApiSheriff-134` reason, and no record or exception carries token material
 (`BoundTokenEndpointClientTest`, and `BffRuntimeProducerTest` for the assembled runtime, where the
 code exchange of a login and of a widening callback and both refresh legs are each driven against an
-unbound answer). Against
-Keycloak 26.5.7 and the native image, the token forwarded upstream carries the `jkt` of the
+unbound answer). Against the pinned Keycloak image (`integration-tests/docker-compose.yml`) and the
+native image, the token forwarded upstream carries the `jkt` of the
 gateway's proof key and arrives as `Authorization: Bearer` with no proof beside it, for an EC and
 for an RSA proof key, and a token rotated by a refresh carries the same `jkt`
 (`BffFapiControlsIT`); in client-secret mode the token of the code exchange and the token of the
@@ -2878,8 +2894,9 @@ traditional-format block, an unsupported curve, an Ed25519 key, an RSA key below
 absent or unreadable file -- refuses the key with a message naming the configuration key and no key
 material (`ClientSigningKeyTest`); a native gateway given
 a defective key file exits without serving, and one given a secret together with a
-client-authentication key file fails the boot (`verify-invalid-config-fails.sh`). Against Keycloak
-26.5.7, a token request that presents a client secret for the key-authenticated client is refused
+client-authentication key file fails the boot (`verify-invalid-config-fails.sh`). Against the pinned
+Keycloak image (`integration-tests/docker-compose.yml`), a token request that presents a client
+secret for the key-authenticated client is refused
 (`BffFapiControlsIT`); a client-secret instance logs `ApiSheriff-133` and never the secret value,
 while a key-authenticated instance logs no such record (`BffClientSecretModeIT`); a gateway with no
 key configured logs `ApiSheriff-21` once per key and completes a login (`BffGeneratedKeysIT`).
@@ -3035,7 +3052,8 @@ upstream error with its bounded reason, recorded once per reason
 navigation and of the step-up path and the interactive re-drive each push their request -- the
 silent one with `prompt=none` in the pushed body -- and redirect with `client_id` and `request_uri`
 only; a refused push on either attempt is the `502` event with no pending record stored and the
-session unchanged (`BffRuntimeProducerTest`). Against Keycloak 26.5.7, a hand-built
+session unchanged (`BffRuntimeProducerTest`). Against the pinned Keycloak image
+(`integration-tests/docker-compose.yml`), a hand-built
 front-channel authorization request for the gateway's client that carries its parameters in the URL
 is refused while the gateway's own redirect completes a login (`BffFapiControlsIT`), and the same
 holds for a client authenticated with a secret (`BffClientSecretModeIT`). `BffSessionScopeParityIT`

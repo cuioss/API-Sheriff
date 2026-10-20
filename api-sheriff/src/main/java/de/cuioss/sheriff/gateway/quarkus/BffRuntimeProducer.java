@@ -463,7 +463,7 @@ public class BffRuntimeProducer {
         // request, the callback code exchange, the RFC 9470 step-up and revocation. The legs that
         // request one go through ScopedEngineFlows below, whose factory is this same method — so every
         // scoped variant carries the identical pinned posture.
-        reportBackChannelPosture();
+        reportBackChannelPosture(oidc);
         ClientConfiguration clientConfiguration = backChannelConfiguration(oidc, oidc.scopes());
         ClientCredential clientCredential = selectClientCredential(oidc, clientId, issuer);
         ClientAuthentication clientAuthentication = clientCredential.authentication();
@@ -761,13 +761,33 @@ public class BffRuntimeProducer {
      * collision refusal, the hostname posture and the trust context are applied identically on every
      * call, so a scoped variant can never dial the identity provider with a weaker posture than the
      * base configuration. The build is silent; the relaxed or replaced posture is reported once per
-     * runtime by {@link #reportBackChannelPosture()}, never once per scoped variant or per refresh.
+     * runtime by {@link #reportBackChannelPosture(OidcConfig)}, never once per scoped variant or per
+     * refresh.
+     * <p>
+     * <strong>The back-channel origin is transport, never identity.</strong> A declared
+     * {@code oidc.back_channel_origin} is handed to the engine as its back-channel origin, so the
+     * server-to-server calls to an endpoint the issuer advertises on its own origin — discovery, the
+     * pushed authorization request, the authorization-code exchange, refresh and refresh-token
+     * revocation — dial the configured origin instead, while the issuer stays the identity every
+     * exact-match check uses and the authorization endpoint the browser is sent to is untouched. Since
+     * token-sheriff 0.9.8 the DPoP proof of such a re-targeted call names the URL actually dialled, not
+     * the advertised one, which is what an identity provider that compares the proof's {@code htu} with
+     * the URL it received (Keycloak) expects. An identity provider that instead compares {@code htu}
+     * with a configured public URL rejects those proofs, and because the mapping is issuer-wide and
+     * all-or-nothing, {@code back_channel_origin} must not be set for such a provider. Like the TLS
+     * posture it is set on the base configuration and on every scoped variant alike, so no leg can fall
+     * back to dialling the issuer. An absent key sets nothing: one authority for everything. The
+     * cleartext posture follows the explicit opt-in alone: {@code allowInsecureHttp} is set only when
+     * {@code oidc.back_channel_allow_insecure_http} is {@code true}, which boot validation admits only
+     * together with an {@code http} origin. The engine applies that flag to the whole client, not just
+     * the origin — the widening {@link #reportBackChannelPosture(OidcConfig)} reports.
      *
      * @param oidc   the global {@code oidc} block, already cleared by the BFF-mode activation predicate
      * @param scopes the scope list the configuration carries — the {@code scope} value the engine
      *               sends on the authorization request and the refresh grant it drives with it
      * @return the back-channel client configuration carrying {@code scopes}, the resolved hostname
-     *         posture and, when a profile is named, its trust anchors
+     *         posture, the declared back-channel origin and cleartext opt-in and, when a profile is
+     *         named, its trust anchors
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when
      *                          {@code egress_tls.oidc_verify_hostname} is {@code false} while
      *                          {@code egress_tls.oidc_tls_profile} is named, or when the named profile
@@ -805,6 +825,13 @@ public class BffRuntimeProducer {
         }
         if (tlsProfile != null) {
             builder.sslContext(trustProfileResolver.resolveEgressProfile(OIDC_TLS_PROFILE_KEY, tlsProfile));
+        }
+        String backChannelOrigin = oidc.backChannelOrigin();
+        if (backChannelOrigin != null) {
+            builder.backChannelOrigin(backChannelOrigin);
+        }
+        if (Boolean.TRUE.equals(oidc.backChannelAllowInsecureHttp())) {
+            builder.allowInsecureHttp(true);
         }
         return builder.build();
     }
@@ -949,14 +976,18 @@ public class BffRuntimeProducer {
     /**
      * Reports the relaxed or replaced back-channel posture once, at the single build this
      * {@link Singleton} runtime performs: {@code ApiSheriff-125} when {@code oidc_verify_hostname}
-     * resolves {@code false}, {@code ApiSheriff-126} when an {@code oidc_tls_profile} is in effect. The
-     * collision of the two is refused first, so the pair is never reported as if it were in effect.
+     * resolves {@code false}, {@code ApiSheriff-126} when an {@code oidc_tls_profile} is in effect, and
+     * {@link ConfigLogMessages.WARN#OIDC_BACK_CHANNEL_INSECURE_HTTP} when
+     * {@code oidc.back_channel_allow_insecure_http} is {@code true} — the engine then admits cleartext
+     * for the whole OIDC client, not just the back-channel origin. The collision of the first two is
+     * refused first, so the pair is never reported as if it were in effect.
      *
+     * @param oidc the global {@code oidc} block, already cleared by the BFF-mode activation predicate
      * @throws GatewayException with {@link EventType#CONFIG_INVALID} when
      *                          {@code egress_tls.oidc_verify_hostname} is {@code false} while
      *                          {@code egress_tls.oidc_tls_profile} is named
      */
-    void reportBackChannelPosture() {
+    void reportBackChannelPosture(OidcConfig oidc) {
         boolean verifyHostname = egressTls.oidcVerifyHostname();
         String tlsProfile = egressTls.oidcTlsProfile();
         refuseRelaxedProfileCollision(verifyHostname, tlsProfile);
@@ -965,6 +996,9 @@ public class BffRuntimeProducer {
         }
         if (tlsProfile != null) {
             LOGGER.warn(ConfigLogMessages.WARN.OIDC_TRUST_PROFILE_IN_EFFECT, tlsProfile);
+        }
+        if (Boolean.TRUE.equals(oidc.backChannelAllowInsecureHttp())) {
+            LOGGER.warn(ConfigLogMessages.WARN.OIDC_BACK_CHANNEL_INSECURE_HTTP);
         }
     }
 

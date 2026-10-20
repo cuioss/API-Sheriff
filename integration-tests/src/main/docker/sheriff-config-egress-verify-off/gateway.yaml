@@ -111,26 +111,26 @@ token_validation:
         source: file
         file: /app/certificates/test-jwks.json
     - name: benchmark-keycloak
-      issuer: https://keycloak:8443/realms/benchmark
+      issuer: https://localhost:1443/realms/benchmark
       jwks:
         source: http
         url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
         allowed_egress_hosts: ["keycloak"]
         tls_profile: benchmark-idp
     - name: integration-keycloak
-      issuer: https://keycloak:8443/realms/integration
+      issuer: https://localhost:1443/realms/integration
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
         # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host
         tls_profile: benchmark-idp
 # --- Server-mode BFF confidential-client block ---------------------------------------------------
-# Present because the shared endpoints/ directory declares a require: session route and
-# ConfigValidator refuses a session floor with no oidc block. It is the ws-admission block, not the
-# primary's: no step_up.path, and final_redirect is "/". No login is ever driven against this
-# instance; the URLs name its own published port so the document is internally consistent.
+# Present because the shared endpoints/ directory declares a require: session route, which needs an
+# oidc block. It is the ws-admission block (no step_up.path, final_redirect "/"); no login is ever
+# driven here, and the URLs name its own published port so the document is internally consistent.
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
+  back_channel_origin: https://keycloak:8443
   client_id: integration-client
   # The same two key files as the primary gateway.yaml, which carries the explanation.
   client_authentication:

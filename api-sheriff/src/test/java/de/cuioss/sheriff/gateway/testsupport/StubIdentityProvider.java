@@ -17,9 +17,11 @@ package de.cuioss.sheriff.gateway.testsupport;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
+import java.util.Base64;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,6 +37,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import mockwebserver3.Dispatcher;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
@@ -52,12 +56,14 @@ import org.jspecify.annotations.Nullable;
  *
  * <h2>Why it serves TLS</h2>
  *
- * {@code BffRuntimeProducer.backChannelConfiguration} never sets the token engine's
- * {@code allowInsecureHttp}, so a runtime built that way cannot dial plain HTTP on any leg:
- * {@code DiscoveryResolver} refuses a non-{@code https} issuer before it sends anything, and the
- * token, revocation and pushed-request clients build their request through a handler builder that
- * refuses an {@code http} URI. A fixture that is to be reached by a <em>produced</em> runtime
- * therefore has to speak TLS.
+ * {@code BffRuntimeProducer.backChannelConfiguration} sets the token engine's
+ * {@code allowInsecureHttp} only under the explicit opt-in {@code oidc.back_channel_allow_insecure_http},
+ * which boot validation admits only together with an {@code http} {@code oidc.back_channel_origin}.
+ * Without it a produced runtime cannot dial plain HTTP on any leg: {@code DiscoveryResolver} refuses
+ * a non-{@code https} issuer before it sends anything, and the token, revocation and pushed-request
+ * clients build their request through a handler builder that refuses an {@code http} URI. A fixture
+ * that is to be reached by a <em>produced</em> runtime on its default posture therefore has to speak
+ * TLS.
  *
  * <h2>How a runtime reaches it</h2>
  *
@@ -69,6 +75,17 @@ import org.jspecify.annotations.Nullable;
  * is satisfied. No certificate, key or trust store is committed, no system property is set and the
  * JVM default trust store is not touched.
  *
+ * <h2>Advertising a public issuer</h2>
+ *
+ * {@link #start()} advertises the address it listens on, so the issuer is reachable as declared.
+ * {@link #startAdvertising(String)} instead declares a given public issuer — an origin, optionally
+ * followed by a path — as the discovery document's {@code issuer}, and names every endpoint beneath
+ * it, while the listener stays on loopback and serves each endpoint beneath that issuer's path. A
+ * test can then name an issuer nothing resolves and make {@code oidc.back_channel_origin} set to
+ * {@link #origin()} the only path to the fixture: discovery and every back-channel call reach it only
+ * if the engine re-targets them, and the authorization endpoint the browser is sent to stays on the
+ * public issuer.
+ *
  * <h2>What it serves</h2>
  *
  * Each {@link Endpoint} is one entry: its path, its HTTP method, its default answer and the member
@@ -77,10 +94,25 @@ import org.jspecify.annotations.Nullable;
  * and body, and is then answered from the endpoint's script when a test has
  * {@linkplain #script(Endpoint, Answer) filled} it, and otherwise from the endpoint's default.
  * <p>
- * The fixture mints no token and validates nothing. The token endpoint refuses every grant by
- * default, because an assertion on the shape of a request needs the request and not a grant. The
- * pushed-authorization-request endpoint accepts every push by default, because a login has to get
- * past it before the runtime sends anything else.
+ * The fixture mints no token and validates one thing: a DPoP proof's {@code htu} and {@code htm}
+ * against the request it arrived on, as Keycloak does. A recorded request carrying a {@code DPoP}
+ * header is answered {@code 400} {@code invalid_dpop_proof} — without consuming the endpoint's
+ * script — unless the proof's {@code htu} equals the URL the request was received on, built as
+ * {@link #origin()} followed by the request's encoded path with no query and no fragment (RFC 9449
+ * section 4.3), and its {@code htm} equals the request method. A header whose payload segment does
+ * not decode to a JSON object is refused the same way. The check applies to every endpoint, because
+ * a proof is judged wherever one arrives; a request without a {@code DPoP} header is unaffected. The
+ * proof's signature is deliberately not verified: the fixture judges the binding to the request,
+ * not the key. Without this check the stub suites stayed green while Keycloak refused every proof of
+ * a gateway that signed the advertised URL instead of the one it dialled.
+ * <p>
+ * The authority of the comparand comes from {@link #origin()} and never from the URL the server
+ * library reconstructs for a request, whose host spelling may follow the {@code Host} header or a
+ * lookup of the local socket address rather than the URL the client dialled.
+ * <p>
+ * The token endpoint refuses every grant by default, because an assertion on the shape of a request
+ * needs the request and not a grant. The pushed-authorization-request endpoint accepts every push by
+ * default, because a login has to get past it before the runtime sends anything else.
  *
  * <h2>Binding</h2>
  *
@@ -101,15 +133,28 @@ public final class StubIdentityProvider implements AutoCloseable {
     private static final String CONTENT_TYPE = "Content-Type";
     private static final String APPLICATION_JSON = "application/json";
     private static final int NOT_FOUND = 404;
+    private static final String DPOP_HEADER = "DPoP";
+    private static final String HTU_MISMATCH = "DPoP HTTP URL mismatch";
+    private static final String HTM_MISMATCH = "DPoP HTTP method mismatch";
+    private static final ObjectMapper PROOF_READER = new ObjectMapper();
+    private static final Base64.Decoder BASE64_URL = Base64.getUrlDecoder();
 
     private final MockWebServer server;
     private final X509Certificate rootCertificate;
+    /** The advertised issuer, {@code null} when the fixture advertises the address it listens on. */
+    private final @Nullable String advertisedIssuer;
+    /** The path every endpoint is served beneath — the advertised issuer's path, empty for none. */
+    private final String servedPathPrefix;
     private final Map<Endpoint, List<ReceivedRequest>> received = new EnumMap<>(Endpoint.class);
     private final Map<Endpoint, Queue<Answer>> scripts = new EnumMap<>(Endpoint.class);
 
-    private StubIdentityProvider(MockWebServer server, X509Certificate rootCertificate) {
+    private StubIdentityProvider(MockWebServer server, X509Certificate rootCertificate,
+            @Nullable String advertisedIssuer) {
         this.server = server;
         this.rootCertificate = rootCertificate;
+        this.advertisedIssuer = advertisedIssuer;
+        String issuerPath = advertisedIssuer == null ? null : URI.create(advertisedIssuer).getRawPath();
+        this.servedPathPrefix = issuerPath == null ? "" : issuerPath;
         for (Endpoint endpoint : Endpoint.values()) {
             received.put(endpoint, new CopyOnWriteArrayList<>());
             scripts.put(endpoint, new ConcurrentLinkedQueue<>());
@@ -117,12 +162,39 @@ public final class StubIdentityProvider implements AutoCloseable {
     }
 
     /**
-     * Issues the certificate chain and starts the listener.
+     * Issues the certificate chain and starts the listener, advertising the address it listens on:
+     * {@link #issuer()} and {@link #origin()} are the same loopback origin.
      *
      * @return the running fixture; close it to stop the listener
      * @throws IOException when the listener cannot be bound
      */
     public static StubIdentityProvider start() throws IOException {
+        return startListener(null);
+    }
+
+    /**
+     * Issues the certificate chain and starts the listener on loopback, advertising {@code issuer}
+     * instead of the address it listens on: the discovery document declares {@code issuer} and names
+     * every endpoint beneath it, and each endpoint is served beneath {@code issuer}'s path. The fixture
+     * is then reachable only through {@link #origin()}, which is what a test names as
+     * {@code oidc.back_channel_origin}.
+     *
+     * @param issuer the public issuer to advertise: an absolute {@code https} URI, an origin optionally
+     *               followed by a path and with no trailing {@code /}
+     * @return the running fixture; close it to stop the listener
+     * @throws IOException when the listener cannot be bound
+     */
+    public static StubIdentityProvider startAdvertising(String issuer) throws IOException {
+        URI parsed = URI.create(Objects.requireNonNull(issuer, "issuer"));
+        if (!"https".equals(parsed.getScheme()) || parsed.getHost() == null || issuer.endsWith("/")
+                || parsed.getRawQuery() != null || parsed.getRawFragment() != null) {
+            throw new IllegalArgumentException("an advertised issuer is an https origin, optionally followed by "
+                    + "a path, with no trailing '/', no query and no fragment: " + issuer);
+        }
+        return startListener(issuer);
+    }
+
+    private static StubIdentityProvider startListener(@Nullable String advertisedIssuer) throws IOException {
         HeldCertificate root = new HeldCertificate.Builder()
                 .certificateAuthority(0)
                 .commonName("API Sheriff stub identity provider root")
@@ -141,7 +213,7 @@ public final class StubIdentityProvider implements AutoCloseable {
                 .heldCertificate(leaf, root.certificate())
                 .build()
                 .sslSocketFactory());
-        StubIdentityProvider provider = new StubIdentityProvider(server, root.certificate());
+        StubIdentityProvider provider = new StubIdentityProvider(server, root.certificate(), advertisedIssuer);
         server.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
@@ -153,11 +225,20 @@ public final class StubIdentityProvider implements AutoCloseable {
     }
 
     /**
-     * @return the issuer an {@code oidc.issuer} must name to reach this fixture: {@code https}, the
-     *         loopback address and the bound port. It is also the issuer the discovery document
-     *         declares
+     * @return the issuer the discovery document declares, and so the one an {@code oidc.issuer} must
+     *         name: the advertised issuer of {@link #startAdvertising(String)}, otherwise
+     *         {@link #origin()}
      */
     public String issuer() {
+        return advertisedIssuer == null ? origin() : advertisedIssuer;
+    }
+
+    /**
+     * @return the origin the listener is reachable at: {@code https}, the loopback address and the
+     *         bound port. For a fixture started by {@link #startAdvertising(String)} it is the origin an
+     *         {@code oidc.back_channel_origin} must name to reach it
+     */
+    public String origin() {
         return "https://" + LoopbackHost.ADDRESS + ":" + server.getPort();
     }
 
@@ -171,7 +252,9 @@ public final class StubIdentityProvider implements AutoCloseable {
 
     /**
      * @param endpoint the endpoint
-     * @return the absolute URL the endpoint is served at, as the discovery document names it
+     * @return the absolute URL the discovery document names for the endpoint, beneath
+     *         {@link #issuer()} — for a fixture started by {@link #startAdvertising(String)} an address on
+     *         the public issuer, not on {@link #origin()}
      */
     public String url(Endpoint endpoint) {
         return issuer() + endpoint.path;
@@ -205,13 +288,66 @@ public final class StubIdentityProvider implements AutoCloseable {
     private MockResponse serve(RecordedRequest request) {
         String path = request.getUrl().encodedPath();
         for (Endpoint endpoint : Endpoint.values()) {
-            if (endpoint.path.equals(path) && endpoint.method.equals(request.getMethod())) {
+            if ((servedPathPrefix + endpoint.path).equals(path) && endpoint.method.equals(request.getMethod())) {
                 received.get(endpoint).add(ReceivedRequest.of(request));
+                Optional<Answer> refusal = dpopRefusal(request.getHeaders().get(DPOP_HEADER), origin() + path,
+                        request.getMethod());
+                if (refusal.isPresent()) {
+                    return render(refusal.get());
+                }
                 Answer scripted = scripts.get(endpoint).poll();
                 return render(scripted == null ? endpoint.defaultAnswer.apply(issuer()) : scripted);
             }
         }
         return new MockResponse.Builder().code(NOT_FOUND).build();
+    }
+
+    /**
+     * Judges a DPoP proof's binding to the request it arrived on, as Keycloak does: its {@code htu}
+     * must equal the received URL and its {@code htm} the request method. The signature is not
+     * verified.
+     *
+     * @param proof       the {@code DPoP} header value, {@code null} when the request carried none
+     * @param receivedUrl the URL the request was received on: {@link #origin()} followed by the
+     *                    encoded path, with no query and no fragment
+     * @param method      the request method
+     * @return the refusal to answer with, empty when the request carries no proof or the proof matches
+     */
+    private static Optional<Answer> dpopRefusal(@Nullable String proof, String receivedUrl, String method) {
+        if (proof == null) {
+            return Optional.empty();
+        }
+        Optional<JsonNode> claims = proofClaims(proof);
+        if (claims.isEmpty() || !receivedUrl.equals(claims.get().path("htu").asText(null))) {
+            return Optional.of(invalidDpopProof(HTU_MISMATCH));
+        }
+        if (!method.equals(claims.get().path("htm").asText(null))) {
+            return Optional.of(invalidDpopProof(HTM_MISMATCH));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * @param proof a {@code DPoP} header value
+     * @return the proof's payload claims, empty when the value is no three-segment compact JWS whose
+     *         payload segment decodes to a JSON object
+     */
+    private static Optional<JsonNode> proofClaims(String proof) {
+        String[] segments = proof.split("\\.", -1);
+        if (segments.length != 3) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode claims = PROOF_READER.readTree(BASE64_URL.decode(segments[1]));
+            return claims != null && claims.isObject() ? Optional.of(claims) : Optional.empty();
+        } catch (IOException | IllegalArgumentException _) {
+            return Optional.empty();
+        }
+    }
+
+    private static Answer invalidDpopProof(String description) {
+        return Answer.json(400, "{\"error\":\"invalid_dpop_proof\",\"error_description\":\"%s\"}"
+                .formatted(description));
     }
 
     private static MockResponse render(Answer answer) {

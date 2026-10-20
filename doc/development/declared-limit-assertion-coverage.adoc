@@ -557,7 +557,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `MtlsHandshakeIT` (wrong-CA identity rejected; trusted identity admitted)
 
 | `egress_tls.oidc_verify_hostname: false` / `jwks_verify_hostname: false`
-  `sheriff-config-tls-relaxation/gateway.yaml:178,179`
+  `sheriff-config-tls-relaxation/gateway.yaml:180,181`
 | The BFF OIDC back-channel client built in `BffRuntimeProducer` and the JWKS loader built in
   `TokenValidatorProducer` (hostname matching only; chain trust is a separate mechanism)
 | COVERED

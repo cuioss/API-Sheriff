@@ -31,33 +31,10 @@ function required(name) {
   return value;
 }
 
-const keycloakHostUrl = required('KEYCLOAK_HOST_URL');
-
-/**
- * Builds the Chromium host-resolver rule that maps Keycloak's container-internal authority onto its
- * published host address.
- *
- * THIS IS LOAD-BEARING, not a convenience. The `integration` realm pins
- * `frontendUrl https://keycloak:8443`, so every authorization URL the gateway redirects to carries a
- * container-internal authority the host cannot resolve. The landed Java integration helper sidesteps
- * this by string-rewriting each redirect location — a real browser cannot do that, because following
- * redirects is the browser's own job. So the resolution is pushed down into the browser's resolver.
- *
- * Do NOT "fix" this by changing the realm's frontendUrl: that value is the issuer authority baked
- * into every token the realm mints, and changing it breaks every landed bearer-token test.
- *
- * @returns {string} the `--host-resolver-rules` flag value
- */
-function hostResolverRule() {
-  const { hostname, port } = new URL(keycloakHostUrl);
-  return `MAP keycloak:8443 ${hostname === 'localhost' ? '127.0.0.1' : hostname}:${port}`;
-}
-
 const chromiumLaunchArgs = [
   // The stack serves a self-signed localhost bundle; this covers the browser's own navigations,
   // while ignoreHTTPSErrors covers the API-level requests.
   '--ignore-certificate-errors',
-  `--host-resolver-rules=${hostResolverRule()}`,
 ];
 
 export default defineConfig({

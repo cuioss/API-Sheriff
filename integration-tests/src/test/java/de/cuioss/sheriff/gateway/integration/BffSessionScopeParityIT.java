@@ -551,7 +551,7 @@ class BffSessionScopeParityIT {
     private static WideningRoundTrip followWidening(Response initiation, Map<String, String> gatewayCookies,
             Map<String, String> keycloakCookies) {
         gatewayCookies.putAll(initiation.getCookies());
-        String authorizationUrl = BffKeycloakLoginFlow.rewriteToHost(BffKeycloakLoginFlow.location(initiation));
+        String authorizationUrl = BffKeycloakLoginFlow.location(initiation);
 
         Response idp = BffKeycloakLoginFlow.keycloak(keycloakCookies)
                 .redirects().follow(false)
@@ -560,7 +560,7 @@ class BffSessionScopeParityIT {
         assertEquals(302, idp.statusCode(),
                 "the identity provider must answer a prompt=none authorization request with a redirect back to "
                         + "the gateway, not with a page of its own");
-        String callbackUrl = BffKeycloakLoginFlow.rewriteToHost(BffKeycloakLoginFlow.location(idp));
+        String callbackUrl = BffKeycloakLoginFlow.location(idp);
         // The URL itself stays out of the message: on the granted path it carries the authorization code.
         assertTrue(callbackUrl.startsWith(CALLBACK_URL_PREFIX),
                 "the identity provider must redirect the browser to the gateway callback");

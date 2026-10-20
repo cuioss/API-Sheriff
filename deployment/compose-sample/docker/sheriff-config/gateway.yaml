@@ -73,11 +73,12 @@ anchors:
 token_validation:
   issuers:
     - name: sample-keycloak
-      # The CONTAINER-INTERNAL issuer URL, not the host-published one. The realm import pins
-      # frontendUrl to https://keycloak:8443, so every token this realm mints carries exactly this
-      # `iss` value regardless of which host port it was minted through. A host-published URL here
-      # would reject every token with a 401 that looks like a signature problem and is not.
-      issuer: https://keycloak:8443/realms/sample
+      # The IdP's browser-facing identity, the published https://localhost:1443 (KC_HOSTNAME in
+      # docker-compose.yml). Every token this realm mints carries exactly this `iss` value,
+      # whichever address it was minted through. The JWKS fetch below does NOT dial this URL — it
+      # stays on keycloak:8443 inside the bridge. Any other issuer value here would reject every
+      # token with a 401 that looks like a signature problem and is not.
+      issuer: https://localhost:1443/realms/sample
       jwks:
         source: http
         url: https://keycloak:8443/realms/sample/protocol/openid-connect/certs

@@ -34,9 +34,19 @@ and a DPoP proof, accepts the token response only when the access token is bound
 and validates the tokens offline (all through the `token-sheriff-client` engine) -- then, in this
 variant, *encrypts them into an `HttpOnly` cookie* rather than storing them server-side.
 
-How the IdP answers that redirect is specific to the IdP. Keycloak 26.5.7 answers an authorization
-request that names a pushed `request_uri` with a further `302` to its own `login-actions/authenticate`
-page, and that page is the login form; the browser follows it.
+How the IdP answers that redirect is specific to the IdP. The pinned Keycloak image
+(`integration-tests/docker-compose.yml`) may answer an authorization request that names a pushed
+`request_uri` with a further `302` to its own `login-actions/authenticate` page, and that page is the
+login form; the browser follows it, and the integration suite's login flow accepts that one redirect.
+
+The identity provider is addressed as in the session-based variant: `oidc.issuer` is its one
+identity, compared unrelaxed against the discovery `issuer` and every `iss`; the browser follows the
+advertised endpoints; and, when `oidc.back_channel_origin` is configured, the gateway's own
+back-channel calls go there -- but only to endpoints the IdP advertises on the issuer's own origin;
+an endpoint advertised on another origin is dialled as advertised. The split is transport, not
+identity -- see
+link:02-bff-session.adoc[Variant 2] and
+link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069].
 
 image::../resources/diagrams/bff-login-sequence.svg[OIDC confidential-client login: redirect to IdP, code exchange, token validation, cookie binding, align=center]
 

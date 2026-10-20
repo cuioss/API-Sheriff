@@ -78,8 +78,8 @@ import org.junit.jupiter.api.Test;
  *       new WARN {@code ApiSheriff-111} with reason {@code credential-rejected} in the cookie-refresh
  *       instance log. The log line is what separates this disposition from any other way a session can
  *       be lost.</li>
- *   <li><em>Keycloak's reuse verdict is pinned, in two parts.</em> Keycloak 26.5.7 does not stop at
- *       refusing the replayed token.
+ *   <li><em>Keycloak's reuse verdict is pinned, in two parts.</em> The Keycloak of the pinned image
+ *       ({@code integration-tests/docker-compose.yml}) does not stop at refusing the replayed token.
  *       <ol>
  *         <li><strong>The successor grant is revoked too.</strong> This was observed on the live stack:
  *             after the replay, {@code A2} is driven into its own window and its refresh is refused as

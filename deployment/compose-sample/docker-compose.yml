@@ -28,10 +28,10 @@ services:
 
   # --- The identity provider ----------------------------------------------------------------------
   # Pinned BY DIGEST, not by tag alone: a tag is mutable, so a digest is what makes this sample
-  # reproducible. Dependabot cannot update this automatically — check https://quay.io/keycloak/keycloak
-  # and update the digest together with the version.
+  # reproducible. Dependabot's `keycloak` group updates tag and digest together, in the same PR as the
+  # integration-test stack, and KeycloakImagePinWiringTest keeps the two pins equal.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.5.7@sha256:45ae20191531eb608ddb0b775d012b40d3e4f942697f3214694887dd7c108d13
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
     command:
       - start-dev
       - --import-realm
@@ -49,8 +49,10 @@ services:
       # so the JWKS fetch it performs is not a plaintext hop even inside the bridge.
       - KC_HTTP_ENABLED=false
       - KC_HTTPS_PORT=8443
-      - KC_HOSTNAME=localhost
-      - KC_HOSTNAME_STRICT=false
+      # The IdP's ONE identity: the published, browser-facing https://localhost:1443, as a full URL
+      # (scheme and port included). Every realm issuer and every URL Keycloak mints derives from it,
+      # whichever address a request arrives on — the realm carries no frontendUrl of its own.
+      - KC_HOSTNAME=https://localhost:1443
     ports:
       # Published so an operator can reach the admin console and mint a token from the host, and
       # bound to the LOOPBACK interface for the same reason the gateway's management port below is:
@@ -61,8 +63,8 @@ services:
       # Nothing is lost: doc/user/compose-sample.adoc documents the console as
       # https://localhost:1443, which still resolves.
       #
-      # The gateway does NOT use this published port — it reaches Keycloak container-internally as
-      # keycloak:8443, which is why the realm below pins that URL as its frontend.
+      # The realm identity is this published https://localhost:1443 (KC_HOSTNAME above), but the
+      # gateway does NOT dial it — its JWKS fetch stays on keycloak:8443 on the internal network.
       - "127.0.0.1:1443:8443"
     volumes:
       - ./docker/keycloak:/opt/keycloak/data/import:ro

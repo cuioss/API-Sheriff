@@ -425,6 +425,13 @@ oidc:                              # only used by the BFF variants (2 and 3)
                                    #   reserved. The /bff/* spelling is a naming convention nothing
                                    #   validates; any canonical path works
   issuer: https://idp.example.com/realms/main
+  # back_channel_origin: https://idp.internal:8443   # OPTIONAL. Where the GATEWAY reaches the IdP.
+                                   #   Transport, not identity: issuer stays the one identity every
+                                   #   check compares against and the browser keeps the advertised
+                                   #   endpoints; only discovery, the pushed authorization request,
+                                   #   code exchange, refresh and revocation are sent to this origin.
+                                   #   An origin only (scheme, host, optional port), https unless
+                                   #   back_channel_allow_insecure_http: true (ADR-0069)
   client_id: api-sheriff
   client_authentication:           # private_key_jwt client authentication (the default)
     key_file: /etc/sheriff/keys/client-auth.pem   # PEM file on a mount: one unencrypted PKCS#8
@@ -2542,6 +2549,31 @@ canonical gateway path works, and keeping the application's own routes under a s
   (see link:architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response
   mode]), deliberately, because it is coupled to the `SameSite=Lax` browser-binding cookie. The
   response mode travels inside the pushed authorization request.
+
+| `back_channel_origin`
+| *Optional* string. The origin at which the *gateway* reaches the identity provider when that
+  address differs from the one the browser uses. It is transport, not identity: `issuer` stays the
+  one identity every issuer check compares against (RFC 8414 §3.3, RFC 9068, RFC 9207), and the
+  browser keeps the advertised authorization and end-session endpoints. The gateway's own calls --
+  discovery, the pushed authorization request, the token endpoint (code exchange and refresh) and
+  RFC 7009 revocation -- are sent to this origin with path and query unchanged, but only when the
+  identity provider advertises them on the issuer's own origin; an endpoint advertised elsewhere is
+  dialled as advertised. The gateway never calls the identity provider's userinfo endpoint, and the
+  key-set fetch stays on `token_validation.issuers[].jwks.url`. The mapped host is dialled under
+  `egress_tls.oidc_verify_hostname` and `egress_tls.oidc_tls_profile`. A DPoP proof on a mapped call
+  names the URL actually dialled, which is what Keycloak compares; an identity provider that compares
+  `htu` with a configured public URL must not be given this key for a DPoP-constrained client.
+  *Refused at boot*, with a fixed text that never echoes the value: a blank value; anything but an
+  absolute `http` or `https` URI naming a host; a user-info, path, query or fragment component (one
+  trailing `/` is accepted); and an `http` origin without `back_channel_allow_insecure_http: true`.
+  Omitted, every call goes to the advertised endpoints. See
+  link:adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069].
+
+| `back_channel_allow_insecure_http`
+| *Optional* boolean, default `false`. The explicit opt-in that admits an `http` `back_channel_origin`.
+  An admitted `http` origin boots with `WARN` `ApiSheriff-138`, because the engine's cleartext switch
+  applies to the *whole* identity-provider client, not only to the mapped calls. *Refused at boot*
+  when `true` without a `back_channel_origin`, or with an `https` one.
 
 | `client_authentication.key_file`
 | *Optional* string, at least one character. The path of a PEM file on a mount that holds the key

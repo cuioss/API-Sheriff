@@ -102,13 +102,19 @@ The whole leg is navigations the browser performs; your application starts it an
   request, that first redirect carries only `client_id` and `request_uri`*: no scope, no `state` and
   no redirect URI travel in it. A query that is part of the identity provider's authorization
   endpoint URL stays in place.
-. The user authenticates at the identity provider. Keycloak 26.5.7 answers the redirect above with a
-  further `302` to its own `login-actions/authenticate` page, and that page is the login form. The
-  browser follows it; your application does not see it.
+. The user authenticates at the identity provider. The browser reaches Keycloak at its published
+  identity, `https://localhost:1443` in the demo stack -- the same URL the realm's issuer is built
+  on. The pinned Keycloak image (`integration-tests/docker-compose.yml`) may answer the redirect
+  above with a further `302` to its own `login-actions/authenticate` page, and that page is the login
+  form; the integration suite's login flow accepts exactly that one redirect. The browser follows it;
+  your application does not see it.
 . The identity provider `302`s the browser back to `/bff/callback` *as a top-level GET*, with
   `code` and `state` in the query string.
 . The gateway validates the binding cookie and the `state`, exchanges the code for tokens over its
   own back channel, sets the session cookie, and `302`s to the validated same-origin `returnUrl`.
+  The identity provider has one identity, its issuer, which the gateway checks unrelaxed; the
+  gateway's back-channel calls may reach the same server at an internal address
+  (`oidc.back_channel_origin`), which changes the transport and never the identity.
 
 Tokens never reach the browser at any point: the gateway holds them, and the application's only
 credential is the `HttpOnly` session cookie it cannot read.

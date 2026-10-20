@@ -47,11 +47,12 @@ import org.junit.jupiter.api.Test;
 class BffLogoutIT extends BaseIntegrationTest {
 
     /**
-     * The end-session endpoint the integration realm publishes. The realm pins its frontend URL, so
-     * the discovery document names the container-internal authority, and that is what the gateway
-     * redirects the browser to.
+     * The end-session endpoint the integration realm publishes. Keycloak runs with the static hostname
+     * {@code https://localhost:1443}, so the discovery document names that published identity — even
+     * though the gateway fetched it over its back channel, {@code keycloak:8443} — and that is what the
+     * gateway redirects the browser to. A back-channel address on this redirect would strand the browser.
      */
-    private static final String END_SESSION_ENDPOINT = "https://" + BffKeycloakLoginFlow.KEYCLOAK_INTERNAL_AUTHORITY
+    private static final String END_SESSION_ENDPOINT = "https://" + BffKeycloakLoginFlow.KEYCLOAK_HOST_AUTHORITY
             + "/realms/integration/protocol/openid-connect/logout";
 
     @Test

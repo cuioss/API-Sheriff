@@ -51,7 +51,7 @@ anchors:
 token_validation:
   issuers:
     - name: mismatch-keycloak
-      issuer: https://keycloak:8443/realms/integration
+      issuer: https://localhost:1443/realms/integration
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs

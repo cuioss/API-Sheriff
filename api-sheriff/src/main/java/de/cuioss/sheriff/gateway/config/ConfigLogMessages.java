@@ -335,6 +335,31 @@ public final class ConfigLogMessages {
                 .build();
 
         /**
+         * {@code oidc.back_channel_allow_insecure_http} is {@code true} at boot, so the BFF OIDC client
+         * admits an {@code http} back-channel origin — and, because the token engine's
+         * {@code allowInsecureHttp} applies to the whole client rather than to the origin alone, admits
+         * cleartext on every endpoint that client dials.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: an identity provider reached over a trusted
+         * internal network without TLS is a legitimate deployment, and the opt-in is explicit. Boot
+         * validation already refuses the opt-in when there is nothing to opt in for — no origin, or an
+         * {@code https} one — so this record only ever reports a widening that is actually in effect.
+         * What must not happen is that widening reaching production silently: the back channel carries
+         * the client credential, the authorization codes and every token.
+         * <p>
+         * Reported by {@code BffRuntimeProducer} beside {@link #OIDC_HOSTNAME_VERIFICATION_DISABLED} and
+         * {@link #OIDC_TRUST_PROFILE_IN_EFFECT}: once per assembled runtime, never once per scoped
+         * variant, and never for the inert runtime of a bearer-only gateway.
+         * <p>
+         * The template takes no parameter by design, so it names no origin, host or URL.
+         */
+        public static final LogRecord OIDC_BACK_CHANNEL_INSECURE_HTTP = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(138)
+                .template("oidc.back_channel_allow_insecure_http is true — the BFF OIDC client admits a cleartext http back-channel origin, and the token engine applies that to the whole client rather than to oidc.back_channel_origin alone, so any endpoint the client dials (discovery, the pushed authorization request, the authorization-code exchange, refresh and refresh-token revocation) may be reached over http, carrying the client credential and every token unencrypted. Expose that leg only on a trusted network; restore the https-only posture by declaring an https oidc.back_channel_origin and removing oidc.back_channel_allow_insecure_http from gateway.yaml")
+                .build();
+
+        /**
          * The terminated <em>main</em> listener resolved to plain HTTP at startup — no server key
          * material reached it, so no HTTPS listener was started.
          * <p>
