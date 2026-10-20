@@ -1136,6 +1136,19 @@ default trust store on this leg, so a profile holding only a private CA stops tr
 authorities for the identity provider; that replacement is reported by `WARN ApiSheriff-126` rather
 than left to be discovered.
 
+*Residual risk (accepted) -- a cleartext BFF OIDC back-channel.* `oidc.back_channel_allow_insecure_http:
+true` is the third operator-selectable relaxation on this leg, and the widest. It admits an `http`
+`oidc.back_channel_origin`, and because the token engine's cleartext switch is a property of the
+*whole* identity-provider client rather than of the origin mapping, every endpoint that client dials
+may then be reached without TLS -- so the client credential, the authorization codes and every token
+cross that leg unencrypted, with no chain or hostname check to fail. The exposure is bounded the same
+way as its siblings: the default is `false`; boot validation admits the opt-in only together with an
+`http` `back_channel_origin` and refuses it, without echoing the value, when there is no origin or an
+`https` one; and an admitted opt-in is reported at every boot of an active BFF gateway by
+`WARN ApiSheriff-138`. It is meant for an identity provider reached over a trusted internal network;
+the mitigation is to serve the identity provider over TLS and declare an `https` origin (see
+link:adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]).
+
 *No deployment-activation instance is owed for the relaxation keys -- recorded, not a gap.* The hostname
 keys are proven at the level they are asserted at, and those levels differ.
 `upstream_verify_hostname` is proven by an integration-stack matched pair, so a *deployed descriptor*
