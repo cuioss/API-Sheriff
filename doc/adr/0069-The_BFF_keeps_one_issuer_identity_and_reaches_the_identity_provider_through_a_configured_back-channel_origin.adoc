@@ -1,0 +1,348 @@
+= ADR-0069: The BFF keeps one issuer identity and reaches the identity provider through a configured back-channel origin
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: oidc.issuer is the BFF's one identity provider identity and every issuer check (RFC 8414 section 3.3, RFC 9068, RFC 9207) stays exactly as strict; the front channel and the back channel differ in transport only, so the browser follows the advertised endpoints while the gateway reaches discovery, PAR, the token endpoint and refresh-token revocation through oidc.back_channel_origin, the engine's single origin mapping, and never dials the userinfo endpoint; the origin is refused at boot unless it is a bare https origin (http only behind back_channel_allow_insecure_http, which WARNs because the engine's cleartext switch is client-wide), carries no private-address rule, and with token-sheriff 0.9.8 a mapped call's DPoP htu names the URL actually dialled, which is what Keycloak compares; the Keycloak side is a static full-URL KC_HOSTNAME without frontendUrl; Keycloak is pinned by one tag and digest in both compose stacks, moved by one Dependabot group and named in every release's notes; ten alternatives, including DNS overrides, metadata rewriting, two issuer values and gateway-side metadata resolution, are rejected
+// tags: oidc, bff, identity-provider, back-channel, egress, configuration-surface, rejected-alternatives, dpop, keycloak, dependency-pinning
+// affects: api-sheriff, integration-tests, deployment, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Proposed
+
+== Context
+
+A BFF talks to its identity provider over two channels that need not reach it at the same
+address. The *front channel* is the browser: it is redirected to the authorization and end-session
+endpoints and must reach them at whatever address the identity provider publishes to users. The
+*back channel* is the gateway itself: it fetches the discovery document, pushes authorization
+requests, exchanges codes, refreshes and revokes tokens. In a containerised or segmented deployment
+the gateway frequently cannot use the browser-facing address at all — it names a host only the
+browser's network resolves, or a load balancer the gateway is not allowed to reach — while an
+internal address that the gateway can reach is invisible to the browser.
+
+The same identity provider also has an *identity*: its issuer identifier. Three rules hold the
+issuer to one exact string:
+
+* RFC 8414 section 3.3 — the `issuer` in the discovery document is identical to the identifier the
+  discovery URL was built from.
+* RFC 9068 — the `iss` of an access token equals the discovered issuer.
+* RFC 9207 — the `iss` returned with the authorization response equals the metadata issuer, which
+  FAPI 2.0 requires.
+
+The structural choice point is how a deployment whose two channels need two addresses satisfies
+three exact-match rules that admit one. The tempting answers all relax identity — two issuer
+values, a rewritten discovery document, validating against the internal address while the browser
+uses the public one — or move the problem outside the gateway into DNS overrides that only a test
+rig can apply. A second, narrower question follows from sender-constrained tokens (ADR-0058): a
+DPoP proof names the URL of the request it is attached to (`htu`), and when the gateway dials an
+address other than the advertised one, the proof and the identity provider's comparison must agree
+on which URL that is.
+
+Two further questions decide whether the answer stays verifiable: which Keycloak a deployment and
+the test stacks run against, and how a release states it.
+
+== Decision
+
+*`oidc.issuer` is the one identity. The split between front channel and back channel is transport,
+not identity: the browser goes to the endpoints the identity provider advertises, and the gateway
+reaches the identity provider's own origin through `oidc.back_channel_origin`. No issuer check is
+relaxed.*
+
+=== One issuer identity, two transport paths
+
+The three exact-match rules above stay exactly as strict as before: the discovery `issuer`, the
+token `iss` and the authorization-response `iss` are each compared with `oidc.issuer`, the
+browser-facing identifier.
+
+The browser is sent to the advertised authorization endpoint and the advertised end-session
+endpoint, unchanged.
+
+The gateway's own calls are mapped: discovery, the pushed authorization request, the token
+endpoint (the authorization-code exchange and refresh) and RFC 7009 refresh-token revocation are
+sent to `oidc.back_channel_origin` with path and query unchanged — the same list the
+`ApiSheriff-138` boot record names. The gateway *never* dials the identity provider's userinfo
+endpoint: its own `oidc.user_info.path` endpoint answers from the session's validated ID-token
+claims (`IdTokenClaimProjection`), so the engine's userinfo call is never made and is not part of
+this decision.
+
+The mapping is the engine's single origin mapping, `token-sheriff-client`'s `backChannelOrigin`
+(introduced in 0.9.7, DPoP `htu` corrected in 0.9.8). The engine re-targets only an advertised
+endpoint that lies on the issuer's own origin; the value is handed to the one client configuration
+every scoped variant reuses (ADR-0048), so all scope sets share it.
+
+JWKS stays on `token_validation.issuers[].jwks.url`, which names the reachable key-set address
+directly and is untouched by this decision. The 0.9.8 discovery-issuer enforcement in the
+validation library has no effect on this gateway: the issuer identifier is set identically on the
+issuer configuration and on the loader, and every JWKS source is a direct `jwks.url`, never
+well-known discovery — `RetryingJwksLoader` reports its delegate's JWKS type, and no production
+source is of the well-known kind.
+
+=== Boot rules for the origin
+
+* *Origin only.* An absolute `http` or `https` URI naming a host, with an optional port and at most
+  one trailing `/`; a path, query, fragment or user-info component is refused at boot.
+* *Fixed-text refusals.* A refusal never echoes the configured value, which may carry a credential
+  in its user-info.
+* *https only*, unless `oidc.back_channel_allow_insecure_http: true` is set. The opt-in is itself
+  refused when no origin is declared or the origin is `https`. An admitted `http`
+  origin logs `ApiSheriff-138` at WARN, because the engine's `allowInsecureHttp` applies to the
+  *whole* client, not only to the mapped calls — a known limitation of the engine's origin
+  mapping, which this opt-in inherits.
+* *Configuration only.* The origin is never derived from request data.
+* The mapped host is contacted under `egress_tls.oidc_verify_hostname` and
+  `egress_tls.oidc_tls_profile`, which the engine evaluates against the host actually contacted
+  (ADR-0045).
+
+=== No private-address rule
+
+The origin is not refused for naming a private, loopback or link-local address. The key exists to
+name an internal host; refusing internal addresses would refuse its purpose. Server-side request
+forgery is closed by construction instead: the origin comes from configuration alone, and the
+engine re-targets only endpoints advertised on the issuer's origin.
+
+*Residual.* An endpoint the metadata advertises on a *foreign* origin is contacted as advertised.
+That is the engine's existing behaviour; this key does not widen it, except under the cleartext
+opt-in.
+
+=== The Keycloak side
+
+The identity provider publishes one static identity: a full-URL `KC_HOSTNAME` (the published
+`https://localhost:1443` in this repository's stacks), no realm `frontendUrl`, and no
+`hostname-backchannel-dynamic`. With it every advertised endpoint, revocation included, lies on the
+issuer's origin and is therefore mapped. A realm `frontendUrl` would override the static hostname
+for every advertised URL, so no realm import declares one —
+`BackChannelOriginActivationWiringTest` asserts it.
+
+=== The DPoP htu contract
+
+A mapped call's DPoP proof names the URL the engine actually dialled (upstream ADR-0015, _DPoP htu
+names the back-channel URL actually contacted_, token-sheriff 0.9.8). For this gateway that is the
+token endpoint's first attempt and its `use_dpop_nonce` retry, on both the code exchange and the
+refresh. (Upstream applies the same rule to the engine's userinfo call, which this gateway never
+makes.) That URL is the one Keycloak receives and compares: Keycloak derives the URL it checks
+`htu` against from the request it was called on, not from its configured hostname.
+
+*Why not a `Host`-header rewrite.* Keeping the advertised URL in `htu` and sending a `Host` header
+naming the public authority would need the JDK HTTP client to send a restricted header, which it
+allows only under the JVM-wide `jdk.httpclient.allowRestrictedHeaders` property — a process-global
+switch that changes what every other client in the process may send, lives in launch arguments no
+configuration review sees, and makes `Host` disagree with the TLS SNI and the verified certificate.
+
+*Why not an opt-in.* Upstream ADR-0015 rejects a setting that selects the advertised URL because it
+adds configuration surface, documentation and a test matrix for a branch no known deployment needs;
+the primary target compares against the received request and RFC 9449 section 4.2 defines `htu` as
+the target URI of the request; and the unused branch is a misconfiguration vector, since selecting
+it against a request-comparing server reproduces the `DPoP HTTP URL mismatch` it would exist to
+avoid.
+
+*Known limitation (residual).* An identity provider that compares `htu` with a configured public
+URL is not covered. `back_channel_origin` is issuer-wide and all-or-nothing, so such a deployment
+must not set it for a DPoP-constrained client.
+
+*How the contract was found.* The first attempt at this arrangement ran on the engine release that
+still kept the advertised URL in `htu`. It failed exactly here: every real-Keycloak BFF login in the
+Failsafe suite (79 tests) received a callback 400, and Keycloak logged `CODE_TO_TOKEN_ERROR`,
+`invalid_dpop_proof`, `DPoP HTTP URL mismatch`. The stub identity providers stayed green because
+neither checked `htu`. Both now judge every proof's `htu` and `htm` against the URL the request was
+received on (`StubIdentityProvider`, `StubIdentityProviderRig`), which turns that regression class
+red in the stub suites too.
+
+=== The Keycloak pin policy
+
+* *One tag and one digest*, identical in `integration-tests/docker-compose.yml` and
+  `deployment/compose-sample/docker-compose.yml`. `KeycloakImagePinWiringTest` guards the single
+  pin and the Dependabot entry; it asserts no version number.
+* *One Dependabot `docker-compose` group*, `keycloak`, moves both pins in a single pull request.
+  Minor and patch bumps are auto-merged by the organisation's sweeper only once
+  `integration-tests / conclusion` is green; a major bump is never auto-merged.
+* The demo Playwright suite sees a bump only after merge, and the compose sample is not exercised
+  by CI.
+* *Every release's notes name the Keycloak version* the release was verified against, derived from
+  both pins at the release tag (the release runbook, Step 11).
+* *Documentation names no Keycloak version number* for behaviour a suite pins; it names the pinned
+  Keycloak image (`integration-tests/docker-compose.yml`) instead, because the Dependabot group
+  moves the pin and a number in prose goes stale on every merged bump. Dated observations made on
+  an earlier image stay dated as observations of that image.
+
+*Residual.* `.github/dependabot.yml` is on the organisation's docs-only ignore list, so a change to
+that file alone triggers neither the build nor the integration workflow; `KeycloakImagePinWiringTest`
+then runs only locally or on the next build-triggering change.
+
+*Residual — the on-demand APISIX comparison lane.*
+`integration-tests/src/main/docker/apisix/apisix.yaml` discovers at
+`https://keycloak:8443/realms/benchmark/.well-known/openid-configuration` and validates offline
+through the discovered `jwks_uri`. Under a static external hostname that URI is
+`https://localhost:1443/...`, unreachable from the APISIX container. The cause is the static
+`KC_HOSTNAME`, which every Keycloak 26.x line applies. `apisix.yaml` is left unchanged; restoring
+the APISIX bearer check is follow-up work, and no gated suite is affected.
+
+=== Verified on
+
+This record is dated by the image it was verified on. It is a statement of what was observed, not a
+claim about the current pin, which `integration-tests/docker-compose.yml` holds.
+
+Verified on `quay.io/keycloak/keycloak:26.8.1@sha256:79c623a2...d244` (the local image label
+matching the digest pinned in both compose files):
+
+* *Failsafe* (`verify -Pintegration-tests`): green, 312 integration tests, no failure, error or
+  skip. Every BFF suite named here was among them: login (`BffSessionLoginIT`,
+  `BffCookieSessionIT`), refresh (`BffTokenRefreshIT`, `BffCookieRefreshIT`), refresh-token reuse
+  (`BffRefreshReuseIT`), logout (`BffLogoutIT`), back-channel logout (`BffBackchannelLogoutIT`),
+  FAPI controls (`BffFapiControlsIT`, `BffGeneratedKeysIT`, `BffClientSecretModeIT`), scope parity
+  (`BffSessionScopeParityIT`), TLS relaxation (`BffTlsRelaxationIT`) and bearer validation
+  (`BearerValidationIT`), plus the stub-rig suites under the new `htu` check.
+* *Playwright* (the demo end-to-end suite): 28 passed, 14 session-server and 14 session-cookie,
+  without `--host-resolver-rules`.
+* *The compose sample* came up healthy from empty volumes and passed its readiness gate, run with
+  the documented local image override because the published gateway image is amd64-only and the
+  host was arm64. A password-grant token carried `iss=https://localhost:1443/realms/sample`, exactly
+  the configured issuer, while readiness implies the JWKS loaded from `keycloak:8443`.
+* *Falsification of the `htu` case.* The unit-level proof that both token-request proofs of a
+  re-targeted code exchange name the URL actually contacted compiles against token-sheriff 0.9.7 and
+  goes red at its assertion; on 0.9.8 it is green.
+
+Earlier observations made on Keycloak 26.5.7 — among them that the dynamic back-channel hostname
+leaves `revocation_endpoint` on the external origin — stay dated as 26.5.7 observations; none was
+re-observed on 26.8.1.
+
+Version strings in the documentation were classified under the policy above. A statement a suite
+that ran green on 26.8.1 pins was reworded to name the pinned Keycloak image; a dated observation no
+test asserts was kept; no statement fell to a suite that failed, so none is a finding:
+
+[cols="3,1,1,1",options="header"]
+|===
+| Document | Reworded to the pinned image | Kept as a dated observation | Finding
+
+| `demo-client/doc/integration-sample.adoc` | 1 | 0 | 0
+| `doc/architecture.adoc` | 1 | 0 | 0
+| `doc/configuration.adoc` | 0 | 1 | 0
+| `doc/fapi_status.adoc` | 1 | 0 | 0
+| `doc/variants/02-bff-session.adoc` | 1 | 0 | 0
+| `doc/variants/03-bff-cookie.adoc` | 1 | 0 | 0
+| `doc/development/bff-session.adoc` | 1 | 0 | 0
+| `doc/user/bff-session.adoc` | 5 | 1 | 0
+| `doc/user/bff-cookie.adoc` | 3 | 1 | 0
+| `doc/security-threat-model.adoc` | 4 | 0 | 0
+| `doc/development/integration-test-topology.adoc` | 1 | 1 | 0
+| ADR-0058 | 0 | 7 | 0
+|===
+
+The kept observations are the client secret Keycloak generates for a client imported without one
+(seen, never asserted), the realm settings first established on a throwaway 26.5.7 container, and
+ADR-0058's own observations, which are dated history and are not edited.
+
+=== Whether the gateway fronts the identity provider
+
+That is *not* part of this decision. No shipped topology fronts the identity provider, and the
+gateway ships no identity provider. A variant in which the gateway serves the identity provider
+under an `/auth` prefix is held and has no implementation. If it lands, it consumes the back-channel
+origin, because the gateway would otherwise dial its own listener for discovery. Its exposure must
+then be an allowlist, never a catch-all: `/realms/`, `/resources/`, `/.well-known/` and `/lb-check`
+are in; `/admin/`, `/realms/master/`, `/metrics`, `/health` and the management port are out. That
+allowlist is recorded as the rule the variant must follow and is unproven here.
+
+== Consequences
+
+=== Positive
+
+* One issuer identifier serves the browser, the tokens and the metadata, so every exact-match rule
+  holds without exception and no check needs a deployment-specific relaxation.
+* A deployment whose gateway reaches the identity provider at an internal address needs one
+  configuration key and no DNS trick. The test stacks run without resolver overrides, so what the
+  suites prove is the arrangement an operator deploys.
+* Every back-channel call, its TLS posture and its DPoP proof name the one host actually dialled.
+* The Keycloak version a release was verified against is a derived, stated fact, and the two
+  stacks cannot drift apart unnoticed.
+
+=== Negative
+
+* The origin mapping is issuer-wide and all-or-nothing; a deployment cannot map some calls and not
+  others.
+* The cleartext opt-in widens the whole engine client, not only the mapped calls.
+* An identity provider that compares `htu` with a configured public URL cannot use the mapping
+  with a DPoP-constrained client.
+
+=== Risks
+
+* An endpoint advertised on a foreign origin is dialled as advertised.
+* A change to `.github/dependabot.yml` alone runs the pin guard nowhere in CI.
+* The on-demand APISIX comparison lane cannot validate tokens until its discovery is re-addressed.
+* A future Keycloak release that compared `htu` with its configured hostname would turn the
+  real-Keycloak BFF login suites red; that failure is loud, not silent.
+
+== Alternatives Considered
+
+*Browser-side DNS overrides* (`--host-resolver-rules`, `/etc/hosts`) make the internal name resolve
+in the browser. They work only where the test rig controls the browser's resolver, so the suites
+would prove an arrangement no operator can deploy.
+
+*Rewriting the discovery document in flight* replaces the advertised endpoints with internal ones.
+It breaks the RFC 8414 section 3.3 identity check by construction, because the document the gateway
+validates is no longer the one the identity provider published.
+
+*Two issuer values*, a public one for the browser and an internal one for the gateway, break `iss`
+validation and RFC 9207; they are exactly what the exact-match rules exist to prevent.
+
+*A separate discovery URL or per-endpoint overrides* were declined upstream because one declared
+origin mapping covers discovery and every back-channel call with a single rule; a list of overrides
+is one setting per endpoint, each able to drift.
+
+*Keycloak's dynamic back-channel hostname as the mechanism* leaves `revocation_endpoint` on the
+external origin (observed on Keycloak 26.5.7) and couples the gateway's correctness to identity
+provider behaviour the gateway cannot check.
+
+*Validating `iss` against the internal URL while the browser uses the public one* was the previous
+arrangement, and the one that reads most plausible. It makes the identity the gateway checks differ
+from the identity the user authenticated against, which is the two-issuer failure in another form.
+
+*A `Host`-header rewrite* and *an opt-in for the dialled-URL `htu`* are both rejected upstream, for
+the reasons recorded under the DPoP htu contract above.
+
+*An unpinned or per-file Keycloak tag* would let the two stacks drift apart and leave a release
+unable to name what it was verified against.
+
+*Gateway-side metadata resolution* — the gateway fetching and resolving the discovery document
+itself, for example from the internal URL, and handing the engine resolved endpoints as a stand-in
+for the engine option — is rejected because the engine owns discovery. `token-sheriff-client`'s
+single `backChannelOrigin` mapping already fetches discovery, keeps the RFC 8414 section 3.3 issuer
+check against `oidc.issuer`, re-targets only the endpoints advertised on the issuer's own origin,
+and signs every mapped call's DPoP `htu` for the URL it dialled. A gateway-side resolver would have
+to re-implement that issuer check and that origin rule outside the engine, would split one transport
+rule into two places that can drift, and would still leave the engine signing proofs for endpoints
+it did not choose.
+
+The rejected options share one flaw: each either relaxes the identity the exact-match rules
+protect, or moves the transport rule somewhere the engine that applies the identity cannot see it.
+
+== References
+
+* link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]
+  — the back-channel TLS posture the mapped host is contacted under.
+* link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]
+  — the per-scope-set client configuration factory that carries the origin.
+* link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
+  — the FAPI 2.0 controls, including the DPoP binding whose `htu` this record settles.
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+  — the reserved-path model a fronting variant would have to respect.
+* TokenSheriff ADR-0015, _DPoP htu names the back-channel URL actually contacted_ — the upstream
+  `htu` decision and its Keycloak evidence.
+* link:../configuration.adoc[Configuration reference] — `oidc.back_channel_origin` and
+  `oidc.back_channel_allow_insecure_http`.
+* `integration-tests/docker-compose.yml` and `deployment/compose-sample/docker-compose.yml` — the
+  Keycloak pin and the static `KC_HOSTNAME`.
+* `.claude/skills/release/SKILL.md` — the release runbook that derives the Keycloak version line.
+* https://www.rfc-editor.org/rfc/rfc8414#section-3.3[RFC 8414 section 3.3],
+  https://www.rfc-editor.org/rfc/rfc9068[RFC 9068],
+  https://www.rfc-editor.org/rfc/rfc9207[RFC 9207],
+  https://www.rfc-editor.org/rfc/rfc7009[RFC 7009],
+  https://www.rfc-editor.org/rfc/rfc9449#section-4.2[RFC 9449 section 4.2]

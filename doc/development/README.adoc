@@ -150,8 +150,9 @@ to *run* the finished gateway).
 | link:../../demo-client/doc/playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite]
 | The `demo-client` module -- why the demo SPA is served by the gateway rather than a side-car
   static server, the opt-in `skipPlaywrightTests` / `e2e-demo` build mechanism that keeps it out of
-  the default lane, how to run the suite locally, the Chromium host-resolver mapping the pinned
-  realm `frontendUrl` forces, and the standing prohibitions the module carries (the `Accept`-based
+  the default lane, how to run the suite locally, how the browser reaches Keycloak at its published
+  static hostname while the gateway reaches it through `oidc.back_channel_origin` (no browser-side
+  name mapping), and the standing prohibitions the module carries (the `Accept`-based
   info-endpoint assertion, and why a Compose profile cannot express the trimmed bring-up).
 
 | link:compose-sample.adoc[Compose Sample -- Contributor Guide]

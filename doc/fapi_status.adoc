@@ -248,9 +248,9 @@ Three further consequences an operator meets:
 [#_observed_on_the_integration_stack]
 == Observed on the Integration Stack
 
-The statements in this section are observations, not readings of the source. They were made against
-Keycloak 26.5.7 and the native image, by three integration suites. They hold for that identity
-provider and that version.
+The statements in this section are observations, not readings of the source. They are made against
+the pinned Keycloak image (`integration-tests/docker-compose.yml`) and the native image, by three
+integration suites. They hold for that identity provider and that image.
 
 `BffFapiControlsIT` -- key mode, every key provided from a file:
 

@@ -88,6 +88,43 @@ validates the `/bff/` spelling either; it is a naming convention, and any canoni
 your application's own routes under an anchor of their own -- `/app` in the examples below -- so the
 two namespaces stay visibly apart.
 
+[[idp-different-address]]
+=== An identity provider the gateway reaches at a different address
+
+When the gateway cannot reach the identity provider at the address the browser uses -- the public
+name resolves only outside the gateway's network, or the gateway must use an internal service name
+-- keep one identity and change only the gateway's transport:
+
+[source,yaml]
+----
+# gateway.yaml
+oidc:
+  issuer: https://login.example.com/realms/main        # the browser-facing identity, unchanged
+  back_channel_origin: https://idp.internal:8443        # where the gateway itself dials the IdP
+token_validation:
+  issuers:
+    - name: main
+      issuer: https://login.example.com/realms/main     # the same identity
+      jwks:
+        source: http
+        url: https://idp.internal:8443/realms/main/protocol/openid-connect/certs   # internal host
+----
+
+* *`issuer`* stays the browser-facing identity. Every issuer check compares against it, and the
+  browser is sent to the authorization and end-session endpoints the identity provider advertises.
+* *`back_channel_origin`* is the internal origin. Discovery, the pushed authorization request, the
+  token endpoint and revocation are sent there; it is an origin only, and `https` unless
+  `back_channel_allow_insecure_http: true`.
+* *`token_validation.issuers[].jwks.url`* points at the internal host directly.
+
+No DNS trick is needed: neither the browser nor the gateway has to resolve a name the other uses.
+The identity provider must publish one static identity -- for Keycloak a full-URL `KC_HOSTNAME`
+and no front-end URL override on the realm -- so that every endpoint it advertises lies on the
+issuer's origin. A
+DPoP proof on a re-addressed call names the URL the gateway actually dialled. See
+link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] and
+link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069].
+
 [[key-material]]
 == Key material
 
@@ -266,8 +303,8 @@ gateway's JWKS URL at the client; do not paste the public key into the identity 
   the gateway's certificate for the name it dials.
 * *The DPoP key needs no registration.* A separate DPoP key is never published.
 
-On Keycloak 26.5.7 the key-authenticated clients of this project's integration stack carry these
-settings (shown as they appear in a realm export):
+On the pinned Keycloak image (`integration-tests/docker-compose.yml`) the key-authenticated clients
+of this project's integration stack carry these settings (shown as they appear in a realm export):
 
 [cols="2,3", options="header"]
 |===
@@ -290,9 +327,10 @@ at the token endpoint. This was seen on Keycloak 26.5.7; no test asserts it.
 The gateway pushes the authorization request to the identity provider and redirects the browser to
 the authorization endpoint. It adds two parameters to that URL and no other: `client_id` and
 `request_uri`. No scope, no `state` and no redirect URI travel in that redirect. A query that the
-identity provider's authorization endpoint URL itself carries is kept as it is. Keycloak 26.5.7
-answers that redirect with a further `302` to its own `login-actions/authenticate` page before it
-shows the login form.
+identity provider's authorization endpoint URL itself carries is kept as it is. The pinned Keycloak
+image (`integration-tests/docker-compose.yml`) may answer that redirect with a further `302` to its
+own `login-actions/authenticate` page before it shows the login form; the integration suite's login
+flow accepts exactly that one redirect.
 
 A widening of a live session (see <<step-up-path>>) is pushed in the same way, so the gateway adds
 `client_id` and `request_uri` only to its redirect as well.
@@ -331,8 +369,8 @@ so at most once per fetch interval -- ten seconds by default in Keycloak -- so a
 inside that interval can fail. There is no overlap: the old key is not published or accepted next to
 the new one.
 
-*What a replacement does to live sessions.* On Keycloak 26.5.7 a session survived it in the one case
-observed. The integration
+*What a replacement does to live sessions.* On the pinned Keycloak image
+(`integration-tests/docker-compose.yml`) a session survives it in the one case observed. The integration
 suite restarts a gateway whose two keys are generated, under a live session. The next refresh of
 that session succeeds, and the new access token is bound to the new proof key.
 
@@ -342,7 +380,7 @@ That observation has limits, and they are stated here so that it is not read as 
   survived the restart. In this variant sessions are held in memory, and *a restart drops them
   whatever the keys do*.
 * Only generated keys were replaced. Replacing a provided key file was not run.
-* It holds for the identity provider and the version named. Another identity provider may refuse a
+* It holds for the identity provider and the image named. Another identity provider may refuse a
   refresh that presents a proof of a new key.
 
 Plan for the worst case: sessions whose tokens were bound to the old key fail their next refresh,
@@ -840,9 +878,9 @@ link:../adr/0057-Session_routes_obtain_their_declared_scopes_by_refreshing_insid
 
 === What the integration realm showed
 
-The project's integration suite runs these paths against Keycloak 26.5.7 with one realm. Two
-observations from it, each about that version and that realm and not a statement about identity
-providers in general:
+The project's integration suite runs these paths against the pinned Keycloak image
+(`integration-tests/docker-compose.yml`) with one realm. Two observations from it, each about that
+image and that realm and not a statement about identity providers in general:
 
 * A `prompt=none` authorization request from a browser that holds the realm's SSO cookies is
   answered with a code, without a page.
@@ -1082,8 +1120,8 @@ window, a further token is refused until one leaves it, and the IdP's retry then
 
 Every refused token is answered `400` and logged as `ApiSheriff-112` with the reason (see
 link:../LogMessages.adoc[Log Messages]). An IdP whose logout tokens carry no `exp` or no `jti`, or a
-`typ` other than `logout+jwt`, cannot end sessions on this gateway. Keycloak 26.5 sends `typ`
-`logout+jwt`, `exp` and `jti`.
+`typ` other than `logout+jwt`, cannot end sessions on this gateway. The pinned Keycloak image
+(`integration-tests/docker-compose.yml`) sends `typ` `logout+jwt`, `exp` and `jti`.
 
 [[gateway-cookies]]
 == The gateway's cookies and your application

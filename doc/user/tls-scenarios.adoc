@@ -466,13 +466,16 @@ see <<_scenario_relax_hostname_verification>>.
 token_validation:
   issuers:
     - name: benchmark-keycloak
-      issuer: https://keycloak:8443/realms/benchmark
+      issuer: https://localhost:1443/realms/benchmark   # identity: Keycloak's published KC_HOSTNAME
       jwks:
         source: http
-        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
+        url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs   # transport: the internal host
         allowed_egress_hosts: ["keycloak"]
         tls_profile: benchmark-idp
 ----
+
+The issuer is Keycloak's one, browser-facing identity; `keycloak:8443` is only the address the gateway
+dials for the key set, on the internal network. The trust profile verifies the host actually dialled.
 
 *Deployment, JWKS leg* -- bind the profile name to the store. The integration stack loads the binding
 from a mounted properties file.

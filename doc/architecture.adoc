@@ -998,10 +998,11 @@ Three controls sit between the BFF and the identity provider
   is set.
 . The gateway stores the pending authorization, sets the browser-binding cookie and answers `302` to
   the authorization endpoint, carrying `client_id` and `request_uri` only.
-. The identity provider authenticates the user. Keycloak 26.5.7 answers the authorization request
-  that names a pushed `request_uri` with a `302` to its own `login-actions/authenticate` page rather
-  than with the login form itself, so a client that walks the flow follows one more redirect before
-  it sees the form.
+. The identity provider authenticates the user. The pinned Keycloak image
+  (`integration-tests/docker-compose.yml`) may answer the authorization request that names a pushed
+  `request_uri` with a `302` to its own `login-actions/authenticate` page rather than with the login
+  form itself, so a client that walks the flow follows one more redirect before it sees the form; the
+  integration suite's login flow accepts exactly that one redirect.
 . The identity provider redirects the browser to `oidc.redirect_uri` with `code` and `state` in the
   query string (see <<_oidc_callback_response_mode>>).
 . The callback verifies the binding cookie and `state`, and the engine exchanges the code. The token

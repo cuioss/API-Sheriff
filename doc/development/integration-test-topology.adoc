@@ -385,8 +385,8 @@ client key is generated. All four gateway clients declare
 `require.pushed.authorization.requests: "true"` and `dpop.bound.access.tokens: "true"`, and none of
 them has direct access grants enabled.
 
-These settings were established on the pinned image, Keycloak 26.5.7, on a throwaway container with
-a scratch realm, before the stack was migrated:
+These settings were established on Keycloak 26.5.7, the image pinned at the time, on a throwaway
+container with a scratch realm, before the stack was migrated:
 
 * *They survive a realm import.* All five attributes, the two JWKS URL attributes included, read back
   unchanged after `--import-realm`.
@@ -483,7 +483,8 @@ certificate. `BffClientKeyWiringTest` reads all three without a container and as
 * the Keycloak service trusts the certificate, and the certificate names the alias;
 * every other realm client registered for a signed assertion is the client of a compose instance.
 
-*What the test observed.* On Keycloak 26.5.7 and the native image, in this order:
+*What the test observes.* On the pinned Keycloak image (`integration-tests/docker-compose.yml`) and
+the native image, in this order:
 
 . The gateway boots with no key configured. Its log carries the generated-key record once for client
   authentication and once for the sender constraint, and no member of the published key.
@@ -785,7 +786,9 @@ gateway that reaches Keycloak through that proxy only.
   `tls-relaxation-idp/default.conf.template`. On the rig's network it carries the alias
   `keycloak`. It is attached to the Compose network as well, where it dials the Keycloak container by
   its container name, and it forwards every path with `Host: keycloak:8443`. It publishes no host
-  port.
+  port. Keycloak's identity stays its published `https://localhost:1443`, the issuer the fixture
+  descriptor declares; `keycloak:8443` is only the gateway's back channel, named by the descriptor's
+  `jwks.url` and `oidc.back_channel_origin`.
 
 | Echo upstream
 | The Compose `go-httpbin` container, connected for the life of the rig as in <<stub-idp-rig>>.

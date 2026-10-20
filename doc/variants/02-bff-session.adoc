@@ -40,9 +40,20 @@ ends that session before the new one is stored, so an earlier session does not l
 An identity provider that offers no pushed-authorization-request endpoint cannot serve this variant:
 the login is refused with `502`. There is no front-channel fallback.
 
-How the IdP answers that redirect is specific to the IdP. Keycloak 26.5.7 answers an authorization
-request that names a pushed `request_uri` with a further `302` to its own `login-actions/authenticate`
-page, and that page is the login form; the browser follows it.
+How the IdP answers that redirect is specific to the IdP. The pinned Keycloak image
+(`integration-tests/docker-compose.yml`) may answer an authorization request that names a pushed
+`request_uri` with a further `302` to its own `login-actions/authenticate` page, and that page is the
+login form; the browser follows it, and the integration suite's login flow accepts that one redirect.
+
+*One identity provider identity, two transport paths.* `oidc.issuer` is the identity provider's one
+identity: the discovery `issuer`, the token `iss` and the authorization-response `iss` are all
+compared with it, unrelaxed. The browser goes to the authorization and end-session endpoints the IdP
+advertises. The gateway's own calls -- discovery, the pushed authorization request, the code exchange,
+refresh and revocation -- go to the same advertised endpoints unless `oidc.back_channel_origin` names
+an internal origin, in which case they are sent there with path and query unchanged. That split is
+transport, not identity; the gateway never calls the IdP's userinfo endpoint. See
+link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069]
+and link:../user/bff-session.adoc#idp-different-address[the operator guide].
 
 *What the login asks for.* The authorization request's `scope` is the route's `needed(request) =
 oidc.scopes ∪ endpoint.scopes`, derived once at boot per route -- the same set a bearer route checks,

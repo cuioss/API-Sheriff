@@ -2064,7 +2064,8 @@ concurrency half is `TokenRefreshCoordinator`'s single-flight *per session, per 
 requests on one session share one redemption, so one instance never presents the same token twice
 and never forks the family itself.
 
-*Observed Keycloak behaviour (Keycloak 26.5.7, pinned by `BffRefreshReuseIT`).* On a detected replay
+*Observed Keycloak behaviour (the pinned Keycloak image, `integration-tests/docker-compose.yml`,
+pinned by `BffRefreshReuseIT`).* On a detected replay
 Keycloak refuses the replayed token *and revokes the successor refresh token*, so the legitimate
 holder's session ends along with the attacker's -- a replay burns the whole grant, which is the
 RFC 9700 §4.14 outcome. The Keycloak *user session* the login created survives, with the client still
@@ -2470,8 +2471,8 @@ the browser binding (<<bff-02>>, <<bff-03>>).
 the matching `ApiSheriff-134` reason, and no record or exception carries token material
 (`BoundTokenEndpointClientTest`, and `BffRuntimeProducerTest` for the assembled runtime, where the
 code exchange of a login and of a widening callback and both refresh legs are each driven against an
-unbound answer). Against
-Keycloak 26.5.7 and the native image, the token forwarded upstream carries the `jkt` of the
+unbound answer). Against the pinned Keycloak image (`integration-tests/docker-compose.yml`) and the
+native image, the token forwarded upstream carries the `jkt` of the
 gateway's proof key and arrives as `Authorization: Bearer` with no proof beside it, for an EC and
 for an RSA proof key, and a token rotated by a refresh carries the same `jkt`
 (`BffFapiControlsIT`); in client-secret mode the token of the code exchange and the token of the
@@ -2878,8 +2879,9 @@ traditional-format block, an unsupported curve, an Ed25519 key, an RSA key below
 absent or unreadable file -- refuses the key with a message naming the configuration key and no key
 material (`ClientSigningKeyTest`); a native gateway given
 a defective key file exits without serving, and one given a secret together with a
-client-authentication key file fails the boot (`verify-invalid-config-fails.sh`). Against Keycloak
-26.5.7, a token request that presents a client secret for the key-authenticated client is refused
+client-authentication key file fails the boot (`verify-invalid-config-fails.sh`). Against the pinned
+Keycloak image (`integration-tests/docker-compose.yml`), a token request that presents a client
+secret for the key-authenticated client is refused
 (`BffFapiControlsIT`); a client-secret instance logs `ApiSheriff-133` and never the secret value,
 while a key-authenticated instance logs no such record (`BffClientSecretModeIT`); a gateway with no
 key configured logs `ApiSheriff-21` once per key and completes a login (`BffGeneratedKeysIT`).
@@ -3035,7 +3037,8 @@ upstream error with its bounded reason, recorded once per reason
 navigation and of the step-up path and the interactive re-drive each push their request -- the
 silent one with `prompt=none` in the pushed body -- and redirect with `client_id` and `request_uri`
 only; a refused push on either attempt is the `502` event with no pending record stored and the
-session unchanged (`BffRuntimeProducerTest`). Against Keycloak 26.5.7, a hand-built
+session unchanged (`BffRuntimeProducerTest`). Against the pinned Keycloak image
+(`integration-tests/docker-compose.yml`), a hand-built
 front-channel authorization request for the gateway's client that carries its parameters in the URL
 is refused while the gateway's own redirect completes a login (`BffFapiControlsIT`), and the same
 holds for a client authenticated with a secret (`BffClientSecretModeIT`). `BffSessionScopeParityIT`

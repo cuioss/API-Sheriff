@@ -166,7 +166,11 @@ Two other endpoints are published:
   restates. <<_reading_the_container_health_signal>> composes the probe from it.
 
 | `https://localhost:1443`
-| The Keycloak admin console, for inspecting the realm or minting a token by hand.
+| The Keycloak admin console, for inspecting the realm or minting a token by hand. It is also the
+  identity provider's one identity: Keycloak's `KC_HOSTNAME` is this published URL, so the sample
+  realm's issuer is `https://localhost:1443/realms/sample` whichever address a request arrives on,
+  and that is the issuer the gateway validates tokens against. The gateway does not dial it: its
+  key-set fetch stays on `keycloak:8443` on the internal network.
 |===
 
 === 4. Stop it
