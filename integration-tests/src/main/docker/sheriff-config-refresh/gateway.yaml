@@ -250,15 +250,15 @@ token_validation:
         # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host
         tls_profile: benchmark-idp
 # --- Server-mode BFF confidential-client block (BFF-* integration suite) -----------
-# Activates the server-mode BffRuntime (BffRuntimeProducer builds the active runtime
-# only when a global oidc block declares session.mode=server AND a redirect_uri). The
-# reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
-# the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
-# under /bff and never collide with the /app proxy anchor above. Confidential client
-# refresh-client of the 'integration' realm. The issuer is Keycloak's browser-facing identity;
-# the gateway's own discovery, token, refresh and JWKS calls dial the same server over
-# back_channel_origin, keycloak:8443 on the compose network. OIDC discovery is lazy, so boot
-# needs no live IdP; the browser reaches this instance on its published host port 10452.
+# Activates the server-mode BffRuntime (BffRuntimeProducer builds the active runtime only when a
+# global oidc block declares session.mode=server AND a redirect_uri). The reserved OIDC endpoints
+# are carved out of the route table exactly on the oidc host — the host of redirect_uri, i.e.
+# 'localhost' — and matched by exact path, so they live under /bff and never collide with the /app
+# proxy anchor above. Confidential client refresh-client of the 'integration' realm. The issuer is
+# Keycloak's browser-facing identity. The OIDC client's calls (discovery, the pushed authorization
+# request, the authorization-code exchange, refresh and refresh-token revocation) go through
+# back_channel_origin and the JWKS fetch goes to jwks.url, both on keycloak:8443. OIDC discovery is
+# lazy, so boot needs no live IdP; the browser reaches this instance on host port 10452.
 #
 # THIS INSTANCE AUTHENTICATES WITH A CLIENT SECRET, ON PURPOSE. It is the one descriptor of
 # the stack that declares oidc.client_secret, and it exists in that form to prove the

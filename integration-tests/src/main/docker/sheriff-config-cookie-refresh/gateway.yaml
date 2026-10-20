@@ -137,9 +137,9 @@ token_validation:
 # --- Cookie-mode-with-refresh BFF confidential-client block (BffCookieRefreshIT) ------------------
 # Activates the cookie-mode BffRuntime (built for either session.mode given a redirect_uri).
 # Confidential client cookie-refresh-client of the 'integration' realm, on private_key_jwt. The
-# issuer is Keycloak's browser-facing identity; the gateway's own discovery, token, refresh and
-# JWKS calls dial the same server over back_channel_origin, keycloak:8443 on the compose network.
-# OIDC discovery is lazy (first engine use), so boot needs no live IdP.
+# issuer is Keycloak's browser-facing identity. The OIDC client's calls (discovery, pushed
+# authorization request, code exchange, refresh, refresh-token revocation) go through
+# back_channel_origin, the JWKS fetch to jwks.url; both keycloak:8443. Lazy discovery: no IdP at boot.
 oidc:
   issuer: https://localhost:1443/realms/integration
   back_channel_origin: https://keycloak:8443
