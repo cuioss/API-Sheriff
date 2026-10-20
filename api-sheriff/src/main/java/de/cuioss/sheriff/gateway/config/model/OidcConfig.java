@@ -191,7 +191,7 @@ List<String> scopes,
             return origin;
         }
         Matcher scheme = LEADING_SCHEME.matcher(origin);
-        int maskStart = scheme.lookingAt() && scheme.end() <= at ? scheme.end() : 0;
+        int maskStart = scheme.lookingAt() ? scheme.end() : 0;
         return origin.substring(0, maskStart) + "****" + origin.substring(at);
     }
 
