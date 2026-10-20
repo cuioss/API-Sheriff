@@ -41,8 +41,10 @@ x-gateway-backend-deps: &gateway-backend-deps
 
 services:
   keycloak:
-    # NOTE: Dependabot cannot automatically update this image version.
-    # Manual updates required. Check: https://quay.io/keycloak/keycloak
+    # Updated automatically by the `keycloak` group in .github/dependabot.yml. Tag and digest move
+    # together and must equal the compose sample's pin (deployment/compose-sample/docker-compose.yml),
+    # which KeycloakImagePinWiringTest enforces. To see what a bump changed, read its Dependabot PR and
+    # the Keycloak release notes; the image line below is the record of the pinned version.
     image: quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
     command:
       - start-dev

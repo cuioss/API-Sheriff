@@ -179,6 +179,23 @@ Two other endpoints are published:
 This removes the containers, the network and the volumes, so the next bring-up starts from a known
 state and re-imports the realm.
 
+=== After a Keycloak update
+
+The sample's Keycloak image is pinned by tag and digest, and that pin is updated automatically: one
+Dependabot group moves it in the same pull request as the integration-test stack's Keycloak, and a
+build-time test keeps the two pins identical. The image line in
+`deployment/compose-sample/docker-compose.yml` is the record of the version the sample runs.
+
+CI never brings this sample up. The bump pull request runs the integration suite against the
+integration-test stack, and the configuration-validation workflow validates only the gateway
+configuration set -- neither starts the sample's Keycloak.
+
+So after pulling a Keycloak bump, tear the sample down with `stop-sample.sh` before the next start.
+The script runs `down -v`, and that matters here: the `keycloak-quarkus` named volume holds
+`/opt/keycloak/lib/quarkus`, and Docker seeds a named volume from the image only on first use. A
+volume left over from the previous image would keep serving that image's Quarkus libraries to the new
+one.
+
 [[_the_plain_http_variant]]
 == The plain-HTTP variant -- TLS terminated in front of the gateway
 

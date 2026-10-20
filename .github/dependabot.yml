@@ -46,3 +46,28 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 3
+
+  # Keycloak, pinned by tag AND digest in both compose files, and only Keycloak: every other compose
+  # image stays manually pinned. The integration-test stack and the compose sample each import a realm
+  # into the same Keycloak, so the two pins must agree — one group moves both in a single PR, and
+  # KeycloakImagePinWiringTest fails the build when they drift apart or this entry loses a directory.
+  # The bump PR runs the integration suite, and that run is what verifies the new release.
+  #
+  # Who merges: a minor or patch bump is auto-merged by the org sweeper, and only once the required
+  # `integration-tests / conclusion` check is green; a major bump is never auto-merged and needs a
+  # human. Only `default-days`: the `semver-*-days` keys are rejected for the docker ecosystems, and
+  # one rejected key invalidates the whole file and disables every update lane above.
+  - package-ecosystem: docker-compose
+    directories:
+      - "/integration-tests"
+      - "/deployment/compose-sample"
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-name: "quay.io/keycloak/keycloak"
+    groups:
+      keycloak:
+        patterns:
+          - "quay.io/keycloak/keycloak"
+    cooldown:
+      default-days: 3
