@@ -1732,7 +1732,8 @@ class ConfigModelContractTest {
                 "https://admin:pa#ss@keycloak:8443 | pa#ss",
                 "https://admin:pa?ss@keycloak:8443 | pa?ss",
                 "admin:s3cret@keycloak:8443 | s3cret",
-                "https:/admin:s3cret@keycloak | s3cret"})
+                "https:/admin:s3cret@keycloak | s3cret",
+                "svc:pa://ss@keycloak:8443 | svc:pa"})
         void oidcToStringMasksTheUserInfoOfAMalformedBackChannelOrigin(String origin, String secret) {
             String rendered = OidcConfig.builder().backChannelOrigin(origin).build().toString();
             assertFalse(rendered.contains(secret),

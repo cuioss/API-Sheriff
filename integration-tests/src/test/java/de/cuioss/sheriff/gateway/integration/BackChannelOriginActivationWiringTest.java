@@ -109,6 +109,9 @@ class BackChannelOriginActivationWiringTest {
     private static final String KEYCLOAK_SERVICE = "keycloak";
     private static final String HOSTNAME_VARIABLE = "KC_HOSTNAME";
     private static final String DYNAMIC_BACK_CHANNEL_VARIABLE = "KC_HOSTNAME_BACKCHANNEL_DYNAMIC";
+
+    /** The prefix every Keycloak hostname command-line option shares ({@code --hostname}, {@code --hostname-*}). */
+    private static final String HOSTNAME_OPTION_PREFIX = "--hostname";
     private static final String FRONTEND_URL_KEY = "frontendUrl";
 
     @Test
@@ -177,7 +180,7 @@ class BackChannelOriginActivationWiringTest {
     }
 
     @Test
-    @DisplayName("every docker-compose gives Keycloak a full-URL KC_HOSTNAME and no dynamic back channel")
+    @DisplayName("every docker-compose gives Keycloak a full-URL KC_HOSTNAME, no dynamic back channel and no hostname flag")
     void composeGivesKeycloakAFullUrlHostnameAndNoDynamicBackChannel() throws Exception {
         for (Path composeFile : COMPOSE_FILES) {
             List<String> environment = keycloakEnvironment(composeFile);
@@ -195,6 +198,15 @@ class BackChannelOriginActivationWiringTest {
                     composeFile + ": the keycloak service must not set " + DYNAMIC_BACK_CHANNEL_VARIABLE + ": the"
                             + " back channel is the gateway's routing decision through oidc.back_channel_origin,"
                             + " never a second identity Keycloak mints into its documents");
+
+            List<String> hostnameFlags = keycloakCommand(composeFile).stream()
+                    .filter(argument -> argument.startsWith(HOSTNAME_OPTION_PREFIX))
+                    .toList();
+            assertEquals(List.of(), hostnameFlags, composeFile + ": the keycloak service command sets "
+                    + hostnameFlags + ". A command-line option overrides its " + HOSTNAME_VARIABLE + " counterpart,"
+                    + " so a --hostname would replace the published identity and a --hostname-backchannel-dynamic"
+                    + " would mint the dial address into documents; the hostname contract lives in "
+                    + HOSTNAME_VARIABLE + " alone");
         }
     }
 
@@ -291,13 +303,37 @@ class BackChannelOriginActivationWiringTest {
      * @throws IOException when the compose file cannot be read
      */
     private static List<String> keycloakEnvironment(Path composeFile) throws IOException {
-        Map<?, ?> services = assertInstanceOf(Map.class, loadYaml(composeFile).get("services"),
-                composeFile + " must declare services");
-        Map<?, ?> keycloak = assertInstanceOf(Map.class, services.get(KEYCLOAK_SERVICE),
-                composeFile + " must declare the '" + KEYCLOAK_SERVICE + "' service");
-        List<?> environment = assertInstanceOf(List.class, keycloak.get("environment"),
+        List<?> environment = assertInstanceOf(List.class, keycloakService(composeFile).get("environment"),
                 composeFile + ": the '" + KEYCLOAK_SERVICE + "' service environment must be a list");
         return environment.stream().map(String::valueOf).toList();
+    }
+
+    /**
+     * The command arguments of a compose file's {@code keycloak} service, or an empty list when it
+     * declares none (the image default command).
+     *
+     * @param composeFile the compose file to parse
+     * @return the command arguments, in declaration order
+     * @throws IOException when the compose file cannot be read
+     */
+    private static List<String> keycloakCommand(Path composeFile) throws IOException {
+        Object command = keycloakService(composeFile).get("command");
+        if (command == null) {
+            return List.of();
+        }
+        if (command instanceof String line) {
+            return List.of(line.trim().split("\\s+"));
+        }
+        List<?> arguments = assertInstanceOf(List.class, command,
+                composeFile + ": the '" + KEYCLOAK_SERVICE + "' service command must be a list or a string");
+        return arguments.stream().map(String::valueOf).toList();
+    }
+
+    private static Map<?, ?> keycloakService(Path composeFile) throws IOException {
+        Map<?, ?> services = assertInstanceOf(Map.class, loadYaml(composeFile).get("services"),
+                composeFile + " must declare services");
+        return assertInstanceOf(Map.class, services.get(KEYCLOAK_SERVICE),
+                composeFile + " must declare the '" + KEYCLOAK_SERVICE + "' service");
     }
 
     private static Map<?, ?> loadYaml(Path path) throws IOException {

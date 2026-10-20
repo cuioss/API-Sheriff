@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.config.model;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import lombok.Builder;
 import org.jspecify.annotations.Nullable;
@@ -163,11 +165,16 @@ List<String> scopes,
                         backChannelAllowInsecureHttp);
     }
 
+    /** A leading RFC 3986 scheme followed by {@code ://}; anything else is masked from the start. */
+    private static final Pattern LEADING_SCHEME = Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*://");
+
     /**
      * Masks any user-info of an origin for display, so a credential written into the origin never
      * reaches a log line. A valid origin never contains {@code @}, so any {@code @} is treated as the
-     * end of a user-info component: everything from just after {@code ://} — or from the start when
-     * there is none — through the last {@code @} is replaced. This deliberately does not parse the
+     * end of a user-info component: everything from just after a leading {@code scheme://} — or from
+     * the start when the value does not open with one — through the last {@code @} is replaced. A
+     * {@code ://} that is not preceded by a valid scheme is part of the user-info, not a separator.
+     * This deliberately does not parse the
      * value, because a malformed one (an unencoded {@code /}, {@code ?} or {@code #} in the password,
      * or no scheme separator) is exactly the value boot validation is about to refuse, and is the one
      * a parser would get wrong.
@@ -183,8 +190,8 @@ List<String> scopes,
         if (at < 0) {
             return origin;
         }
-        int separator = origin.indexOf("://");
-        int maskStart = separator >= 0 && separator < at ? separator + 3 : 0;
+        Matcher scheme = LEADING_SCHEME.matcher(origin);
+        int maskStart = scheme.lookingAt() && scheme.end() <= at ? scheme.end() : 0;
         return origin.substring(0, maskStart) + "****" + origin.substring(at);
     }
 
