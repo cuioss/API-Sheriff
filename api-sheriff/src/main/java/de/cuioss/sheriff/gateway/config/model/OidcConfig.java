@@ -169,15 +169,16 @@ List<String> scopes,
     private static final Pattern LEADING_SCHEME = Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*://");
 
     /**
-     * Masks any user-info of an origin for display, so a credential written into the origin never
+     * Masks any user-info of an origin for display, so a credential written as user-info never
      * reaches a log line. A valid origin never contains {@code @}, so any {@code @} is treated as the
      * end of a user-info component: everything from just after a leading {@code scheme://} — or from
      * the start when the value does not open with one — through the last {@code @} is replaced. A
      * {@code ://} that is not preceded by a valid scheme is part of the user-info, not a separator.
-     * This deliberately does not parse the
-     * value, because a malformed one (an unencoded {@code /}, {@code ?} or {@code #} in the password,
-     * or no scheme separator) is exactly the value boot validation is about to refuse, and is the one
-     * a parser would get wrong.
+     * This deliberately does not parse the value, because a malformed one (an unencoded {@code /},
+     * {@code ?} or {@code #} in the password, or no scheme separator) is exactly the value boot
+     * validation is about to refuse, and is the one a parser would get wrong. Only user-info is
+     * masked: a value without {@code @} is rendered as it is, and boot validation refuses every
+     * other component that could carry a secret (query, fragment, path) without echoing it.
      *
      * @param origin the configured origin, may be {@code null}
      * @return the origin with any user-info masked, or {@code null} when absent
