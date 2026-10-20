@@ -78,6 +78,13 @@ class BackChannelOriginActivationWiringTest {
     private static final Path COMPOSE_SAMPLE = MODULE.resolve("../deployment/compose-sample").normalize();
 
     /**
+     * The directory holding the {@code sheriff-config*} gateway descriptors of every stack that runs
+     * Keycloak: the integration-test stack and the compose sample. CI never starts the sample, so this
+     * guard is the only check its descriptor gets.
+     */
+    private static final List<Path> GATEWAY_DESCRIPTOR_ROOTS = List.of(DOCKER, COMPOSE_SAMPLE.resolve("docker"));
+
+    /**
      * The realm-import directory of every stack that runs Keycloak: the integration-test stack and the
      * compose sample. CI never starts the sample, so this guard is the only check its realm gets.
      */
@@ -102,7 +109,8 @@ class BackChannelOriginActivationWiringTest {
 
     /**
      * The oidc-bearing descriptors committed today. The enumeration must find at least this many, so
-     * an empty or mis-rooted directory scan fails loudly instead of passing vacuously.
+     * an empty or mis-rooted directory scan fails loudly instead of passing vacuously. All of them sit
+     * in the integration-test stack: the compose sample's descriptor declares no oidc block.
      */
     private static final int OIDC_DESCRIPTOR_FLOOR = 10;
 
@@ -142,7 +150,8 @@ class BackChannelOriginActivationWiringTest {
         }
 
         assertTrue(oidcDescriptorsSeen >= OIDC_DESCRIPTOR_FLOOR, "expected at least " + OIDC_DESCRIPTOR_FLOOR
-                + " committed descriptors with an oidc block under " + DOCKER + ", found " + oidcDescriptorsSeen
+                + " committed descriptors with an oidc block under " + GATEWAY_DESCRIPTOR_ROOTS + ", found "
+                + oidcDescriptorsSeen
                 + " — the back-channel contract would pass vacuously; check the directory enumeration");
     }
 
@@ -164,7 +173,7 @@ class BackChannelOriginActivationWiringTest {
         }
 
         assertTrue(issuersSeen > 0, "no token_validation issuer was found in any committed descriptor under "
-                + DOCKER + " — this control would pass vacuously; check the directory enumeration");
+                + GATEWAY_DESCRIPTOR_ROOTS + " — this control would pass vacuously; check the directory enumeration");
     }
 
     @Test
@@ -211,23 +220,28 @@ class BackChannelOriginActivationWiringTest {
     }
 
     /**
-     * Every committed gateway descriptor under a {@code sheriff-config} directory, enumerated from the
-     * directory so a new instance is covered automatically.
+     * Every committed gateway descriptor under a {@code sheriff-config*} directory of each descriptor
+     * root, enumerated from the directories so a new instance is covered automatically. Each root must
+     * contribute at least one descriptor, so a mis-rooted path cannot pass by finding nothing.
      *
-     * @return the descriptor paths, in directory-stream order
-     * @throws IOException when the docker directory cannot be listed
+     * @return the descriptor paths, root by root, in directory-stream order
+     * @throws IOException when a descriptor root cannot be listed
      */
     private static List<Path> committedGatewayDescriptors() throws IOException {
         List<Path> descriptors = new ArrayList<>();
-        try (DirectoryStream<Path> directories = Files.newDirectoryStream(DOCKER, "sheriff-config*")) {
-            for (Path directory : directories) {
-                Path descriptor = directory.resolve("gateway.yaml");
-                if (Files.isRegularFile(descriptor)) {
-                    descriptors.add(descriptor);
+        for (Path root : GATEWAY_DESCRIPTOR_ROOTS) {
+            int before = descriptors.size();
+            try (DirectoryStream<Path> directories = Files.newDirectoryStream(root, "sheriff-config*")) {
+                for (Path directory : directories) {
+                    Path descriptor = directory.resolve("gateway.yaml");
+                    if (Files.isRegularFile(descriptor)) {
+                        descriptors.add(descriptor);
+                    }
                 }
             }
+            assertTrue(descriptors.size() > before, "no sheriff-config*/gateway.yaml descriptor was found under "
+                    + root + " — this control would pass vacuously; check the directory enumeration");
         }
-        assertFalse(descriptors.isEmpty(), "no sheriff-config*/gateway.yaml descriptor was found under " + DOCKER);
         return descriptors;
     }
 
