@@ -167,16 +167,13 @@ class BackChannelOriginActivationWiringTest {
     @Test
     @DisplayName("no realm import declares a frontendUrl competing with the static hostname")
     void noRealmImportDeclaresAFrontendUrl() throws Exception {
-        List<Path> realms = realmImports();
-
-        for (Path realm : realms) {
+        for (Path realm : realmImports()) {
             List<String> found = new ArrayList<>();
             collectKeyPaths(loadYaml(realm), "", FRONTEND_URL_KEY, found);
             assertEquals(List.of(), found, realm + " declares " + FRONTEND_URL_KEY + " at " + found + ". A"
                     + " frontend URL overrides KC_HOSTNAME for its realm and hands the browser an address other"
                     + " than the published identity " + PUBLISHED_ORIGIN + ".");
         }
-
     }
 
     @Test
