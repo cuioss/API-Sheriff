@@ -1491,13 +1491,22 @@ Every count must be `1`. Any count `>1` is an unmerged duplicate — collapse it
 5 and re-run. Also confirm that no dependency line is missing a version range
 (rule 6).
 
-Then assert that the notes name the Keycloak version derived above (rule 2):
+Then assert that the notes carry the Keycloak line exactly as rule 2 builds it from both values
+derived above: the `(previously …)` part is present when the two versions differ and dropped when
+they are equal or the previous version is unknown. The check compares the whole line, so a wrong previous
+version fails it as surely as a wrong current one:
 
 ```bash
 RELEASE_VERSION='<RELEASE_VERSION from the Step 1a echo>'
 KEYCLOAK_VERSION='<KEYCLOAK_VERSION from the derivation echo>'
-grep -F "Verified against **Keycloak ${KEYCLOAK_VERSION}**" ".plan/temp/release-${RELEASE_VERSION}.md" \
-  || { echo "STOP - Keycloak line missing or wrong" >&2; exit 1; }
+KEYCLOAK_PREV='<the "previously" value from the derivation echo; it prints unknown when there is none>'
+EXPECTED="Verified against **Keycloak ${KEYCLOAK_VERSION}**"
+if [ -n "$KEYCLOAK_PREV" ] && [ "$KEYCLOAK_PREV" != "unknown" ] && [ "$KEYCLOAK_PREV" != "$KEYCLOAK_VERSION" ]; then
+  EXPECTED="${EXPECTED} (previously ${KEYCLOAK_PREV})"
+fi
+EXPECTED="${EXPECTED}."
+grep -Fxq -- "$EXPECTED" ".plan/temp/release-${RELEASE_VERSION}.md" \
+  || { echo "STOP - Keycloak line missing or wrong; expected exactly: ${EXPECTED}" >&2; exit 1; }
 ```
 
 

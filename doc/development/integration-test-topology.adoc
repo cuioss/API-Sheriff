@@ -1524,5 +1524,6 @@ or accepted, and an accepted one names the reason it is safe to keep.
 | Accepted
 | The admin API is plain HTTP on a loopback port docker assigns and on no other interface, it lives
   only as long as the test that started its rig, and no credential or secret sits behind it: the stub
-  validates nothing and signs with a key generated when the rig starts (<<stub-idp-rig>>).
+  checks no client credential, authorization code or PKCE verifier -- only the `htu` and `htm` of each
+  DPoP proof -- and signs with a key generated when the rig starts (<<stub-idp-rig>>).
 |===
