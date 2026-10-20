@@ -43,10 +43,11 @@ regression re-opens a known-historical hole loudly. Status values:
 API Sheriff is not implementing these controls from scratch -- two audited libraries own
 large parts of the catalogue, and the residual gateway work is exactly the part they
 deliberately leave to the application. Attribution below reflects a 2026-07-17 source review
-of the local `cui-http` and `TokenSheriff` trees. The versions this project resolves are
+of the local `cui-http` and `TokenSheriff` trees; the statements that depend on the `TokenSheriff`
+version were re-checked against the 0.9.8 source. The versions this project resolves are
 `cui-http` 3.1 -- managed by `cui-java-bom` through `cui-quarkus-parent`, with no override in this
 repository; 3.1 is the release carrying the parameter-value line-break switch the `strict` profile
-sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.6, read from the `version.token-sheriff` property in
+sets (see <<gw-03>>) -- and `TokenSheriff` 0.9.8, read from the `version.token-sheriff` property in
 the root `pom.xml`, which is the authoritative source this number mirrors. Its JWKS-loader and
 client-configuration builders both carry the hostname-verification passthrough the gateway binds its
 two identity-provider back-channels through (see <<gw-06>>).
@@ -1341,9 +1342,10 @@ long as that caller wins the claim, the new key is picked up only by a window a 
 claims or, at the latest, by the background refresh. In that worst case the gateway behaves as it
 would without the on-demand refresh; the flood buys a delay of the rotation pick-up bounded by
 `jwks.refresh_interval_seconds`, never the acceptance of a token and never the loss of a key that
-was valid. Closing this residual exactly requires the token library to expose which key ids a loaded
-key set holds, which token-sheriff 0.9.6 does not: a loader only answers a lookup for a named key
-id. A replaced key set is closed only when its grace period ends, so until then its loader
+was valid. Closing this residual exactly requires the refresh to compare the key ids the fetched key
+set holds with those of the current one. The token library exposes them since 0.9.7
+(`JwksLoader.getKeyIds()`), but the refresh does not use them: it publishes a fetched key set only
+when that set resolves the key id that triggered it. A replaced key set is closed only when its grace period ends, so until then its loader
 keeps running its own background refresh beside the current one; at most one replaced key set is
 held per issuer.
 

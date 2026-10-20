@@ -39,7 +39,7 @@ scope for this document.
 
 The rows below were verified against the source of API Sheriff. The source of the
 `token-sheriff-client` engine it consumes is not in this repository: what the rows say about the
-engine rests on the behaviour of the published artifact at the pinned version 0.9.6, as the unit
+engine rests on the behaviour of the published artifact at the pinned version 0.9.8, as the unit
 tests and the integration stack exercise it. Where a capability exists in
 the engine but is not wired by the gateway, that distinction is stated explicitly -- *a capability
 present in a dependency is not a capability of the product.* What the running integration stack

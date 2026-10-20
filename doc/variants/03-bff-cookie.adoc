@@ -41,8 +41,10 @@ login form; the browser follows it, and the integration suite's login flow accep
 
 The identity provider is addressed as in the session-based variant: `oidc.issuer` is its one
 identity, compared unrelaxed against the discovery `issuer` and every `iss`; the browser follows the
-advertised endpoints; and the gateway's own back-channel calls go to `oidc.back_channel_origin` when
-one is configured. The split is transport, not identity -- see
+advertised endpoints; and, when `oidc.back_channel_origin` is configured, the gateway's own
+back-channel calls go there -- but only to endpoints the IdP advertises on the issuer's own origin;
+an endpoint advertised on another origin is dialled as advertised. The split is transport, not
+identity -- see
 link:02-bff-session.adoc[Variant 2] and
 link:../adr/0069-The_BFF_keeps_one_issuer_identity_and_reaches_the_identity_provider_through_a_configured_back-channel_origin.adoc[ADR-0069].
 

@@ -113,8 +113,9 @@ token_validation:
 * *`issuer`* stays the browser-facing identity. Every issuer check compares against it, and the
   browser is sent to the authorization and end-session endpoints the identity provider advertises.
 * *`back_channel_origin`* is the internal origin. Discovery, the pushed authorization request, the
-  token endpoint and revocation are sent there; it is an origin only, and `https` unless
-  `back_channel_allow_insecure_http: true`.
+  token endpoint and revocation are sent there when the identity provider advertises them on the
+  issuer's own origin; an endpoint advertised on another origin is dialled as advertised. It is an
+  origin only, and `https` unless `back_channel_allow_insecure_http: true`.
 * *`token_validation.issuers[].jwks.url`* points at the internal host directly.
 
 No DNS trick is needed: neither the browser nor the gateway has to resolve a name the other uses.
