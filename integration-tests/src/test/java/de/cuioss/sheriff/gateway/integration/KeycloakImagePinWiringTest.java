@@ -57,7 +57,8 @@ import org.junit.jupiter.api.Test;
  * {@value #KEYCLOAK_IMAGE} pins it by tag <em>and</em> digest, and all of them carry the identical tag
  * and the identical digest. {@code .github/dependabot.yml} carries exactly one {@code docker-compose}
  * update, covering exactly the directories that hold such a pin, allowing only Keycloak, grouping it in
- * one {@value #GROUP} group so a bump moves every pin in a single pull request, and declaring no
+ * one {@value #GROUP} group with {@code group-by: dependency-name} so a bump moves every pin in a single
+ * pull request across all those directories, and declaring no
  * cooldown key other than {@code default-days} — a {@code semver-*-days} key is rejected for the docker
  * ecosystems and invalidates the whole file.
  * <p>
@@ -99,6 +100,13 @@ class KeycloakImagePinWiringTest {
     private static final String GROUP = "keycloak";
     private static final String ECOSYSTEM = "docker-compose";
     private static final String COOLDOWN_KEY = "default-days";
+
+    /**
+     * The group key and value that make Dependabot open one pull request per dependency across all the
+     * update's directories, instead of one per directory that would leave the pins unequal.
+     */
+    private static final String GROUP_BY_KEY = "group-by";
+    private static final String GROUP_BY_DEPENDENCY_NAME = "dependency-name";
 
     /** A full pin: tag and a 64-hex-digit sha256 digest. A tag-only reference does not match. */
     private static final Pattern PINNED_IMAGE = Pattern
@@ -146,7 +154,7 @@ class KeycloakImagePinWiringTest {
     }
 
     @Test
-    @DisplayName("the docker-compose update allows and groups only Keycloak, with a default-days cooldown alone")
+    @DisplayName("the docker-compose update allows and groups only Keycloak across its directories, with a default-days cooldown alone")
     void theDockerComposeUpdateAllowsAndGroupsKeycloakWithADefaultDaysCooldown() throws Exception {
         Map<?, ?> update = theDockerComposeUpdate();
 
@@ -167,6 +175,10 @@ class KeycloakImagePinWiringTest {
                 + "' must declare patterns");
         assertTrue(patterns.contains(KEYCLOAK_IMAGE), DEPENDABOT + " group '" + GROUP + "' patterns " + patterns
                 + " must contain " + KEYCLOAK_IMAGE);
+        assertEquals(GROUP_BY_DEPENDENCY_NAME, group.get(GROUP_BY_KEY), DEPENDABOT + " group '" + GROUP
+                + "' must declare " + GROUP_BY_KEY + ": " + GROUP_BY_DEPENDENCY_NAME + " — without it Dependabot"
+                + " opens one pull request per directory, and a bump merged in one directory alone leaves the"
+                + " pins unequal");
 
         Map<?, ?> cooldown = assertInstanceOf(Map.class, update.get("cooldown"), DEPENDABOT + " " + ECOSYSTEM
                 + " update must declare a cooldown with " + COOLDOWN_KEY);

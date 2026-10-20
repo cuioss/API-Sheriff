@@ -67,6 +67,7 @@ updates:
       - dependency-name: "quay.io/keycloak/keycloak"
     groups:
       keycloak:
+        group-by: dependency-name
         patterns:
           - "quay.io/keycloak/keycloak"
     cooldown:
