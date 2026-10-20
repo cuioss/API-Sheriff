@@ -90,7 +90,7 @@ token_validation:
         source: file
         file: /app/certificates/test-jwks.json
     - name: benchmark-keycloak
-      issuer: https://keycloak:8443/realms/benchmark
+      issuer: https://localhost:1443/realms/benchmark
       jwks:
         source: http
         url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
@@ -99,25 +99,25 @@ token_validation:
     # The cookie-mode BFF (oidc block below) validates the id/access tokens the 'integration' realm
     # mints for the browser session. The gateway's shared @GatewayValidator TokenValidator is built
     # from THIS token_validation block, so the integration issuer MUST be declared here or every
-    # mediated session token is rejected. Same container-internal iss the integration realm pins via
-    # frontendUrl https://keycloak:8443, reached over the shared api-sheriff network; it relies on the
-    # allowance derived from its jwks.url host, and uses the same self-signed trust profile.
+    # mediated session token is rejected. The issuer is the browser-facing identity every realm token
+    # carries; its key set is reached over the back channel, keycloak:8443 on the shared api-sheriff
+    # network. It relies on the allowance derived from its jwks.url host and the same trust profile.
     - name: integration-keycloak
-      issuer: https://keycloak:8443/realms/integration
+      issuer: https://localhost:1443/realms/integration
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
         # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host
         tls_profile: benchmark-idp
 # --- Cookie-mode BFF confidential-client block (Variant 3, BFF-Cookie-* integration suite) --------
-# Activates the cookie-mode BffRuntime (BffRuntimeProducer builds the active runtime for either
-# recognised session.mode — server or cookie — provided a redirect_uri is configured). Confidential
-# client: integration-client against the compose 'integration' realm, authenticated with
-# private_key_jwt exactly as the primary instance — no client secret is declared. OIDC discovery is
-# lazy (first engine use), so boot needs no live IdP; the browser reaches this instance on the
-# published host port 10445, while the gateway reaches Keycloak container-internally at keycloak:8443.
+# Activates the cookie-mode BffRuntime (built for either session.mode given a redirect_uri).
+# Confidential client integration-client of the 'integration' realm, on private_key_jwt exactly
+# as the primary instance. The issuer is Keycloak's browser-facing identity; the gateway's own
+# discovery, token and JWKS calls dial the same server over back_channel_origin, keycloak:8443 on
+# the compose network. OIDC discovery is lazy (first engine use), so boot needs no live IdP.
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
+  back_channel_origin: https://keycloak:8443
   client_id: integration-client
   # The same two key files as the primary gateway.yaml, which carries the explanation: the
   # client-authentication key by literal path, the DPoP proof key through ${OIDC_DPOP_KEY_FILE}.

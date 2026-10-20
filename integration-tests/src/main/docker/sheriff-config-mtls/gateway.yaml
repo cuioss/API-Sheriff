@@ -97,7 +97,7 @@ token_validation:
         source: file
         file: /app/certificates/test-jwks.json
     - name: benchmark-keycloak
-      issuer: https://keycloak:8443/realms/benchmark
+      issuer: https://localhost:1443/realms/benchmark
       jwks:
         source: http
         url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
@@ -109,12 +109,12 @@ token_validation:
     # from the token-sheriff extension's own sheriff.token.issuers.* property surface,
     # which this gateway leaves unconfigured and whose health probes it excludes — so the
     # integration issuer MUST be declared here or every mediated session token is rejected.
-    # Same container-internal iss the integration realm pins via frontendUrl
-    # https://keycloak:8443, reached over the shared api-sheriff network where 'keycloak'
-    # resolves by service name. It declares no egress list and relies on the allowance derived
+    # The issuer is the browser-facing identity https://localhost:1443 every realm token
+    # carries; its key set is reached over the back channel, keycloak:8443 on the shared
+    # api-sheriff network. It declares no egress list and relies on the allowance derived
     # from its jwks.url host, and uses the same self-signed trust profile as the benchmark issuer.
     - name: integration-keycloak
-      issuer: https://keycloak:8443/realms/integration
+      issuer: https://localhost:1443/realms/integration
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
@@ -125,15 +125,15 @@ token_validation:
 # only when a global oidc block declares session.mode=server AND a redirect_uri). The
 # reserved OIDC endpoints are carved out of the route table exactly on the oidc host —
 # the host of redirect_uri, i.e. 'localhost' — and matched by exact path, so they live
-# under /bff and never collide with the /app proxy anchor above. Confidential
-# client: integration-client against the compose 'integration' realm (standardFlowEnabled,
-# redirectUris '*'), authenticated with private_key_jwt — no client secret is declared.
-# OIDC discovery is lazy (first engine use), so boot needs no live IdP; the browser reaches
-# the gateway on the published host port 10444 (this mTLS instance's own published port) and
-# Keycloak on its published host port, while the gateway reaches Keycloak container-internally
-# at keycloak:8443.
+# under /bff and never collide with the /app proxy anchor above. Confidential client
+# integration-client of the 'integration' realm, authenticated with private_key_jwt. The
+# issuer is Keycloak's browser-facing identity (published port 1443); the gateway's own
+# discovery, token and JWKS calls dial the same server over back_channel_origin, keycloak:8443
+# on the compose network. OIDC discovery is lazy (first engine use), so boot needs no live IdP;
+# the browser reaches this mTLS instance on its own published host port 10444.
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
+  back_channel_origin: https://keycloak:8443
   client_id: integration-client
   # The same two key files as the primary gateway.yaml, which carries the explanation: the
   # client-authentication key by literal path, the DPoP proof key through ${OIDC_DPOP_KEY_FILE}.

@@ -26,7 +26,7 @@
 # resolve the real `keycloak` service unambiguously — a proxy aliased `keycloak` itself could resolve
 # its own upstream to itself.
 #
-# The `issuer` value is the integration realm's pinned frontend issuer, exactly as in the base
+# The `issuer` value is the integration realm's browser-facing identity, exactly as in the base
 # document, so a token minted by the compose Keycloak validates here once the key set loads.
 #
 # REFRESH INTERVAL. The gateway.yaml model exposes no JWKS refresh-interval key, so this issuer runs
@@ -60,7 +60,7 @@ anchors:
 token_validation:
   issuers:
     - name: late-keycloak
-      issuer: https://keycloak:8443/realms/integration
+      issuer: https://localhost:1443/realms/integration
       jwks:
         source: http
         url: https://api-sheriff:8443/realms/integration/protocol/openid-connect/certs

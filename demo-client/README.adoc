@@ -41,18 +41,17 @@ plain `clean` does not run it. See
 link:doc/playwright-suite.adoc#_running_the_suite_locally[Running the Suite Locally].
 
 When iterating on specs, hold the stack up and re-run only the tests. `playwright.config.js` takes
-its three addresses from the environment and fails loudly when any is unset; the `e2e-demo` profile
+its two base URLs from the environment and fails loudly when either is unset; the `e2e-demo` profile
 supplies them from `demo-client/pom.xml`, so a standalone run has to export them itself:
 
 [source,bash]
 ----
 demo-client/scripts/start-dev-environment.sh
 
-# Mirrors the demo.baseUrl.server, demo.baseUrl.cookie and demo.keycloak.url properties in
-# demo-client/pom.xml, which remain the single source of these addresses.
+# Mirrors the demo.baseUrl.server and demo.baseUrl.cookie properties in demo-client/pom.xml,
+# which remain the single source of these addresses.
 export PLAYWRIGHT_BASE_URL_SERVER=https://localhost:10443
 export PLAYWRIGHT_BASE_URL_COOKIE=https://localhost:10445
-export KEYCLOAK_HOST_URL=https://localhost:1443
 
 cd demo-client && npm run test
 demo-client/scripts/stop-dev-environment.sh
@@ -81,7 +80,7 @@ Both layers are authoritative; this file is only the front door.
 * link:doc/playwright-suite.adoc[Demo Client and the Playwright End-to-End Suite] -- the
   *contributor* layer: the link:doc/playwright-suite.adoc#_module_layout[module layout], where a run
   link:doc/playwright-suite.adoc#_running_the_suite_locally[leaves its results and screenshots], the
-  opt-in build mechanism, the Chromium host-resolver mapping and why it is required, and the standing
+  opt-in build mechanism, the Chromium certificate flag and why it is required, and the standing
   prohibitions this module carries.
 
 Read the contributor document before changing the suite. Several of its constraints look arbitrary

@@ -91,8 +91,9 @@ import org.junit.jupiter.api.Test;
  *   <li>a dedicated docker network;</li>
  *   <li>a TLS proxy of the compose Keycloak ({@value #PROXY_IMAGE}, rendered from
  *       {@code tls-relaxation-idp/default.conf.template}), which answers on that network under the
- *       name {@value #IDENTITY_PROVIDER_ALIAS} — the host every identity-provider URL of the fixture
- *       descriptor names — and presents the certificate the test chooses;</li>
+ *       name {@value #IDENTITY_PROVIDER_ALIAS} — the host the fixture descriptor dials, through its
+ *       {@code oidc.back_channel_origin} and every {@code jwks.url}; its issuer stays Keycloak's
+ *       published identity — and presents the certificate the test chooses;</li>
  *   <li>a one-off gateway on that network, mounting the fixture descriptor
  *       {@code sheriff-config-tls-relaxation/gateway.yaml} over the shared configuration directory.
  *       The descriptor names no trust profile, so both legs verify the proxy's chain against the JVM
@@ -178,10 +179,28 @@ class BffTlsRelaxationIT {
     private static final String PROXY = "sheriff-tls-relaxation-idp";
     private static final String GATEWAY = "sheriff-tls-relaxation-gateway";
 
-    /** The name the fixture descriptor's issuer, endpoints and every {@code jwks.url} dial. */
+    /**
+     * The name the fixture descriptor dials the identity provider under: the host of its
+     * {@code oidc.back_channel_origin} and of every {@code jwks.url}. On the rig's network it resolves
+     * to the proxy. It is not the issuer: that stays Keycloak's published identity, {@link #ISSUER}.
+     */
     private static final String IDENTITY_PROVIDER_ALIAS = "keycloak";
-    private static final String ISSUER = "https://" + IDENTITY_PROVIDER_ALIAS + ":8443/realms/integration";
-    private static final String METADATA_URL = ISSUER + "/.well-known/openid-configuration";
+
+    /** The realm path below both the published identity and the dialled origin. */
+    private static final String REALM_PATH = "/realms/integration";
+
+    /**
+     * The realm's issuer: Keycloak's published identity, which its static hostname mints into every
+     * discovery document whichever address the request arrived on — the proxied one included.
+     */
+    private static final String ISSUER = "https://" + BffKeycloakLoginFlow.KEYCLOAK_HOST_AUTHORITY + REALM_PATH;
+
+    /**
+     * Where the serving control fetches the realm metadata: the dialled origin, so the request travels
+     * through the relaxed-TLS proxy exactly as the gateway's own discovery does.
+     */
+    private static final String METADATA_URL = "https://" + IDENTITY_PROVIDER_ALIAS + ":8443" + REALM_PATH
+            + "/.well-known/openid-configuration";
 
     /** The longest one metadata request of the serving control may take, in seconds. */
     private static final String METADATA_REQUEST_SECONDS = "10";
@@ -664,7 +683,8 @@ class BffTlsRelaxationIT {
                 int statusLine = observed.lastIndexOf('\n');
                 if (statusLine > 0 && "200".equals(observed.substring(statusLine + 1).strip())) {
                     assertEquals(ISSUER, JsonPath.from(observed.substring(0, statusLine)).getString("issuer"),
-                            "the proxy must serve the metadata of the realm the fixture descriptor names");
+                            "the proxy must serve the metadata of the realm the fixture descriptor names, "
+                                    + "issued under Keycloak's published identity");
                     return;
                 }
                 lastObservation = observed;

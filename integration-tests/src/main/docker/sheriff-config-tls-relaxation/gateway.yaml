@@ -25,6 +25,7 @@
 #     body, so it keeps the strict default;
 #   * metadata.config_version, a label.
 # The blocks it shares with that document carry their explanation there and in the base document.
+# Shared too: oidc.back_channel_origin, whose host `keycloak` names the relaxed-TLS proxy here.
 version: 1
 metadata:
   config_version: "integration-test-tls-relaxation"
@@ -127,20 +128,21 @@ token_validation:
     # false, a named profile is refused at boot. The key set is fetched over the JVM default trust
     # store. 'keycloak' is the name the test's TLS proxy answers under on its dedicated network.
     - name: benchmark-keycloak
-      issuer: https://keycloak:8443/realms/benchmark
+      issuer: https://localhost:1443/realms/benchmark
       jwks:
         source: http
         url: https://keycloak:8443/realms/benchmark/protocol/openid-connect/certs
         # The explicit-list-wins form, as in the base document: exactly the host of jwks.url.
         allowed_egress_hosts: ["keycloak"]
     - name: integration-keycloak
-      issuer: https://keycloak:8443/realms/integration
+      issuer: https://localhost:1443/realms/integration
       jwks:
         source: http
         url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
         # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
+  back_channel_origin: https://keycloak:8443
   client_id: refresh-client
   client_secret: ${OIDC_CLIENT_SECRET}
   sender_constraint:

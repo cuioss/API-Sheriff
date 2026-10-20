@@ -10,9 +10,6 @@
   "offlineSessionIdleTimeout": 2592000,
   "revokeRefreshToken": true,
   "refreshTokenMaxReuse": 0,
-  "attributes": {
-    "frontendUrl": "https://keycloak:8443"
-  },
   "defaultSignatureAlgorithm": "RS256",
   "components": {
     "org.keycloak.keys.KeyProvider": [

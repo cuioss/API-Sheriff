@@ -607,7 +607,7 @@ anchors:
     auth:
       require: session
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
   client_id: integration-client
   client_secret: ${OIDC_CLIENT_SECRET}
   scopes: ["openid", "profile", "email"]
@@ -729,7 +729,7 @@ anchors:
     auth:
       require: session
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
   client_id: integration-client
   client_secret: ${OIDC_CLIENT_SECRET}
   client_authentication:
@@ -800,7 +800,7 @@ anchors:
     auth:
       require: session
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
   client_id: integration-client
   client_authentication:
     key_file: /app/sheriff-config/client-key.pem
@@ -870,7 +870,7 @@ anchors:
     auth:
       require: session
 oidc:
-  issuer: https://keycloak:8443/realms/integration
+  issuer: https://localhost:1443/realms/integration
   client_id: integration-client
   client_secret: ${OIDC_CLIENT_SECRET}
   scopes: ["openid", "profile", "email"]

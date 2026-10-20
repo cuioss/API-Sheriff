@@ -31,9 +31,10 @@ import { targetUrl } from './lib/target.js';
 const BENCHMARK_NAME = 'bearerProxied';
 const TARGET_URL = __ENV.TARGET_URL || targetUrl('/secure/get');
 
-// Keycloak is reached by service name on the shared api-sheriff network. The benchmark realm
-// import pins frontendUrl to https://keycloak:8443, so a token minted here carries exactly the
-// `iss` claim the gateway's benchmark-realm issuer validates against.
+// Keycloak is reached by service name on the shared api-sheriff network. Its one identity is the
+// browser-facing https://localhost:1443 (KC_HOSTNAME), whichever address a token is minted on, so a
+// token minted here carries exactly the `iss` claim the gateway's benchmark-realm issuer validates
+// against (https://localhost:1443/realms/benchmark).
 const KEYCLOAK_TOKEN_URL = __ENV.KEYCLOAK_TOKEN_URL
     || 'https://keycloak:8443/realms/benchmark/protocol/openid-connect/token';
 // THROWAWAY BENCHMARK-REALM CREDENTIALS, LITERAL BY NECESSITY — read this before "fixing" it.

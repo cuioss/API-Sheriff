@@ -146,8 +146,11 @@ import io.restassured.response.Response;
  *
  * <h2>What the stub serves</h2>
  *
- * The provider metadata document below the issuer, the key set on every {@code jwks.url} path the
- * descriptor names, and the {@link Endpoint endpoints} that document names. Tokens are signed with an
+ * The provider metadata document below the issuer's path, the key set on every {@code jwks.url} path the
+ * descriptor names, and the {@link Endpoint endpoints} that document names. The issuer, and every
+ * endpoint the document advertises but the key set, live on Keycloak's published identity
+ * {@code https://localhost:1443}, as under Keycloak's static hostname; the gateway reaches the stub only
+ * because its descriptor's {@code oidc.back_channel_origin} names the stub's alias. Tokens are signed with an
  * RSA key generated when the rig starts, or with the key the last {@link #replaceSigningKey()} put in
  * its place, and every access token of a token answer carries the thumbprint of the committed proof
  * key as {@code cnf.jkt}, because the gateway refuses a token response that is not bound to its own
@@ -254,12 +257,32 @@ final class StubIdentityProviderRig implements AutoCloseable {
 
     private static final String STUB = "sheriff-stub-idp-wiremock";
 
-    /** The name the descriptor's issuer and every {@code jwks.url} dial. */
+    /**
+     * The name the descriptor dials the identity provider under: the host of its
+     * {@code oidc.back_channel_origin} and of every {@code jwks.url}. On the rig's network it is the
+     * stub's alias.
+     */
     private static final String IDENTITY_PROVIDER_ALIAS = "keycloak";
+
+    /**
+     * The dialled origin: the stub's network alias and port, which the derived descriptor declares as
+     * {@code oidc.back_channel_origin} and every {@code jwks.url} names.
+     */
     private static final String IDENTITY_PROVIDER_ORIGIN = "https://" + IDENTITY_PROVIDER_ALIAS + ":8443";
+
+    /**
+     * The published identity the stub stands in for: Keycloak's static hostname. The issuer, the token
+     * {@code iss} and every endpoint the metadata advertises live on it, exactly as Keycloak's do, so
+     * the gateway reaches the stub only through its back-channel mapping.
+     */
+    private static final String PUBLISHED_ORIGIN = "https://" + BffKeycloakLoginFlow.KEYCLOAK_HOST_AUTHORITY;
     private static final String REALM_PATH = "/realms/integration";
-    private static final String ISSUER = IDENTITY_PROVIDER_ORIGIN + REALM_PATH;
+    private static final String ISSUER = PUBLISHED_ORIGIN + REALM_PATH;
     private static final String AUTHORIZATION_ENDPOINT = ISSUER + "/protocol/openid-connect/auth";
+
+    /** The key-set URL of the realm on the dialled origin, the one every {@code jwks.url} names. */
+    private static final String DIALLED_KEY_SET_URL = IDENTITY_PROVIDER_ORIGIN + REALM_PATH
+            + "/protocol/openid-connect/certs";
 
     /** The compose service the session routes relay to, and the name they dial it under. */
     private static final String ECHO_SERVICE = "go-httpbin";
@@ -273,8 +296,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
     private static final Path WORK_DIRECTORY = Path.of("target", "stub-identity-provider");
 
     /** The line of the committed descriptor the key-rotation keys are written after. */
-    private static final String ROTATING_ISSUER_KEY_SET_LINE =
-            "        url: " + ISSUER + "/protocol/openid-connect/certs\n";
+    private static final String ROTATING_ISSUER_KEY_SET_LINE = "        url: " + DIALLED_KEY_SET_URL + "\n";
     private static final String WINDOW_KEY = "unknown_kid_refresh_window_seconds";
     private static final String GRACE_PERIOD_KEY = "key_rotation_grace_period_seconds";
     private static final String TOKEN_VALIDATION = "token_validation";
@@ -958,11 +980,13 @@ final class StubIdentityProviderRig implements AutoCloseable {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("issuer", ISSUER);
         metadata.put("authorization_endpoint", AUTHORIZATION_ENDPOINT);
-        metadata.put("token_endpoint", IDENTITY_PROVIDER_ORIGIN + Endpoint.TOKEN.path);
+        // Every endpoint on the published origin, as Keycloak advertises them under a static hostname:
+        // the gateway's back-channel mapping, not this document, is what routes its calls to the stub.
+        metadata.put("token_endpoint", PUBLISHED_ORIGIN + Endpoint.TOKEN.path);
         metadata.put("pushed_authorization_request_endpoint",
-                IDENTITY_PROVIDER_ORIGIN + Endpoint.PUSHED_AUTHORIZATION_REQUEST.path);
-        metadata.put("revocation_endpoint", IDENTITY_PROVIDER_ORIGIN + Endpoint.REVOCATION.path);
-        metadata.put("jwks_uri", ISSUER + "/protocol/openid-connect/certs");
+                PUBLISHED_ORIGIN + Endpoint.PUSHED_AUTHORIZATION_REQUEST.path);
+        metadata.put("revocation_endpoint", PUBLISHED_ORIGIN + Endpoint.REVOCATION.path);
+        metadata.put("jwks_uri", DIALLED_KEY_SET_URL);
         metadata.put("code_challenge_methods_supported", List.of("S256"));
         metadata.put("dpop_signing_alg_values_supported", List.of("PS256", "ES256"));
         registerDefault(Endpoint.DISCOVERY, Answer.json(200, json(metadata)));
@@ -1094,7 +1118,8 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * Writes the gateway descriptor of a variant: the committed refresh descriptor with its origin
      * retargeted at the variant's, and — for the key-rotation variant — with the two refresh keys added
      * to the {@code jwks} block of {@value #ROTATING_ISSUER}. The result is asserted to name the rig's
-     * origin in every key that names one and the stub as its issuer, so a change to the committed
+     * origin in every key that names one, the published identity as its issuer and the stub as its
+     * {@code oidc.back_channel_origin}, so a change to the committed
      * descriptor fails here instead of producing a gateway that differs from it in more than the stated
      * way.
      * <p>
@@ -1128,7 +1153,10 @@ final class StubIdentityProviderRig implements AutoCloseable {
         Map<?, ?> oidc = mapping(descriptor.get("oidc"), "oidc");
         Map<?, ?> csrf = mapping(mapping(oidc.get("session"), "oidc.session").get("csrf"), "oidc.session.csrf");
         assertAll("the derived descriptor " + derived,
-                () -> assertEquals(ISSUER, oidc.get("issuer"), "oidc.issuer must be the stub"),
+                () -> assertEquals(ISSUER, oidc.get("issuer"),
+                        "oidc.issuer must be the published identity the stub issues under"),
+                () -> assertEquals(IDENTITY_PROVIDER_ORIGIN, oidc.get("back_channel_origin"),
+                        "oidc.back_channel_origin must dial the stub, the only way the gateway reaches it"),
                 () -> assertEquals(CLIENT_ID, oidc.get("client_id"), "oidc.client_id"),
                 () -> assertEquals(origin + "/bff/callback", oidc.get("redirect_uri"), "oidc.redirect_uri"),
                 () -> assertTrue(String.valueOf(mapping(oidc.get("logout"), "oidc.logout")
@@ -1209,8 +1237,8 @@ final class StubIdentityProviderRig implements AutoCloseable {
             }
         }
         assertEquals(REALM_PATH + "/protocol/openid-connect/certs", paths.get(ROTATING_ISSUER),
-                () -> "the issuer " + ROTATING_ISSUER + " of the descriptor must fetch the key set of " + ISSUER
-                        + ", found " + paths);
+                () -> "the issuer " + ROTATING_ISSUER + " of the descriptor must fetch the key set at "
+                        + DIALLED_KEY_SET_URL + ", found " + paths);
         return paths;
     }
 

@@ -14,7 +14,8 @@
 #   TLS_RELAXATION_UPSTREAM     the container name of the compose Keycloak — the name the proxy dials.
 #
 # Two networks, two names. On the test's dedicated network the container carries the alias `keycloak`,
-# the host every identity-provider URL of the fixture descriptor names, so the gateway under test
+# the host every identity-provider address the fixture descriptor dials names (jwks.url and
+# oidc.back_channel_origin; the issuer stays Keycloak's browser-facing identity), so the gateway under test
 # reaches this proxy and nothing else under that name. The container is also attached to the compose
 # network, where the real Keycloak lives. Because the proxy answers to `keycloak` itself, it must not
 # dial that name — it could resolve to the proxy — so it dials the Keycloak container by its own
@@ -35,8 +36,9 @@ server {
         # Keycloak serves the stack's self-signed certificate; the upstream leg stays inside the
         # test's own networks, and what the test asserts is the GATEWAY's decision on the proxy leg.
         proxy_ssl_verify off;
-        # The realm pins its frontend URL to https://keycloak:8443, and Keycloak checks the request
-        # target of a DPoP proof against the host it was reached under.
+        # A stable upstream Host. Keycloak runs with a static hostname, so it derives every URL it
+        # mints, and the request target it checks a DPoP proof against, from KC_HOSTNAME rather than
+        # from this header; the header only keeps the dialled name independent of the container name.
         proxy_set_header Host keycloak:8443;
         proxy_pass https://${TLS_RELAXATION_UPSTREAM}:8443;
     }

@@ -10,8 +10,8 @@ import { REALM_USER, SPA } from './constants.js';
  *   click Log in -> /bff/login?returnUrl=... -> 302 -> Keycloak authorization endpoint
  *   -> the login form -> 302 -> /bff/callback?code&state -> 302 -> the validated returnUrl
  *
- * The browser reaches Keycloak because Chromium is launched with a host-resolver rule mapping the
- * realm's pinned `keycloak:8443` frontendUrl onto the published host port — see playwright.config.js.
+ * The browser reaches Keycloak directly: the realm's identity is the published authority
+ * `https://localhost:1443`, so every authorization URL the gateway redirects to resolves on the host.
  *
  * @param {import('@playwright/test').Page} page a page already on the SPA entry
  * @returns {Promise<void>} resolves once the browser is back on the SPA with a live session
@@ -20,7 +20,7 @@ export async function login(page) {
   await page.getByTestId('login').click();
 
   // The Keycloak login form. Waiting on the field rather than on a URL keeps the helper independent
-  // of the authority the resolver rule maps to.
+  // of the authority Keycloak is published under.
   const username = page.locator('#username');
   await expect(username).toBeVisible();
   await username.fill(REALM_USER.username);

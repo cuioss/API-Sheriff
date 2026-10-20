@@ -154,10 +154,11 @@ class BearerValidationIT extends BaseIntegrationTest {
     /**
      * Mints a real access token through the {@code integration} realm's direct-grant
      * ({@code grant_type=password}) endpoint, as {@link #TOKEN_MINT_CLIENT_ID} and for the seeded user
-     * the browser-driven BFF suite logs in as. The realm pins {@code frontendUrl https://keycloak:8443},
-     * so the minted token carries the container-internal {@code iss} the gateway's
-     * {@code integration-keycloak} issuer declares — the host-published mint port does not change the
-     * issuer claim.
+     * the browser-driven BFF suite logs in as. Keycloak runs with the static hostname
+     * {@code https://localhost:1443}, so the token's {@code iss} is the published identity
+     * {@code https://localhost:1443/realms/integration} — the value the gateway's
+     * {@code integration-keycloak} issuer declares — whichever port it was minted through: the
+     * host-published one used here, or the gateway's back channel {@code keycloak:8443}.
      *
      * <p>
      * <strong>The requested scope is explicit.</strong> Every bearer route of the gateway checks the

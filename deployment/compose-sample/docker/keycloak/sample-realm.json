@@ -3,10 +3,6 @@
   "displayName": "API Sheriff Compose Sample",
   "enabled": true,
 
-  "attributes": {
-    "frontendUrl": "https://keycloak:8443"
-  },
-
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,

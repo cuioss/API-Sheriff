@@ -1087,10 +1087,12 @@ final class OneOffGatewayContainers {
 
     /**
      * Mints an access token from the compose Keycloak's {@code integration} realm, with the password
-     * grant of the realm's token-mint client — the one client that allows direct access grants. The
-     * realm pins its frontend URL, so the token's {@code iss} is the container-internal issuer
-     * ({@code https://keycloak:8443/realms/integration}) the one-off descriptors declare, whichever
-     * origin the token was minted through.
+     * grant of the realm's token-mint client — the one client that allows direct access grants.
+     * Keycloak runs with the static hostname {@code https://localhost:1443}, so the token's {@code iss}
+     * is the published identity ({@code https://localhost:1443/realms/integration}) the one-off
+     * descriptors declare as their issuer, whichever origin the token was minted through; those
+     * descriptors reach the same Keycloak over {@code keycloak:8443} only for the key set and, where
+     * they carry an {@code oidc} block, through {@code oidc.back_channel_origin}.
      *
      * @return the access token
      */
