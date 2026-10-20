@@ -40,6 +40,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -1723,6 +1724,20 @@ class ConfigModelContractTest {
                     "the user-info of the origin must be masked, its host kept: " + rendered);
             assertFalse(rendered.contains("s3cret"), "a credential written into the origin must never appear");
             assertFalse(rendered.contains("operator"), "the user name of the origin must never appear");
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @CsvSource(delimiter = '|', value = {
+                "https://svc:ab/cd@keycloak:8443 | ab/cd",
+                "https://admin:pa#ss@keycloak:8443 | pa#ss",
+                "https://admin:pa?ss@keycloak:8443 | pa?ss",
+                "admin:s3cret@keycloak:8443 | s3cret",
+                "https:/admin:s3cret@keycloak | s3cret"})
+        void oidcToStringMasksTheUserInfoOfAMalformedBackChannelOrigin(String origin, String secret) {
+            String rendered = OidcConfig.builder().backChannelOrigin(origin).build().toString();
+            assertFalse(rendered.contains(secret),
+                    "a credential in a malformed origin must never appear, found it in: " + rendered);
+            assertTrue(rendered.contains("****@keycloak"), "the masked origin must keep its host: " + rendered);
         }
 
         @Test

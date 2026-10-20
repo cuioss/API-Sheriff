@@ -164,9 +164,13 @@ List<String> scopes,
     }
 
     /**
-     * Masks the user-info component of an origin for display: everything between {@code ://} and the
-     * first {@code @} of the authority is replaced, so a credential written into the origin never
-     * reaches a log line. An origin without user-info is returned unchanged.
+     * Masks any user-info of an origin for display, so a credential written into the origin never
+     * reaches a log line. A valid origin never contains {@code @}, so any {@code @} is treated as the
+     * end of a user-info component: everything from just after {@code ://} — or from the start when
+     * there is none — through the last {@code @} is replaced. This deliberately does not parse the
+     * value, because a malformed one (an unencoded {@code /}, {@code ?} or {@code #} in the password,
+     * or no scheme separator) is exactly the value boot validation is about to refuse, and is the one
+     * a parser would get wrong.
      *
      * @param origin the configured origin, may be {@code null}
      * @return the origin with any user-info masked, or {@code null} when absent
@@ -175,23 +179,13 @@ List<String> scopes,
         if (origin == null) {
             return null;
         }
-        int authorityStart = origin.indexOf("://");
-        if (authorityStart < 0) {
+        int at = origin.lastIndexOf('@');
+        if (at < 0) {
             return origin;
         }
-        authorityStart += 3;
-        int authorityEnd = origin.length();
-        for (char terminator : new char[]{'/', '?', '#'}) {
-            int index = origin.indexOf(terminator, authorityStart);
-            if (index >= 0 && index < authorityEnd) {
-                authorityEnd = index;
-            }
-        }
-        int at = origin.lastIndexOf('@', authorityEnd - 1);
-        if (at < authorityStart) {
-            return origin;
-        }
-        return origin.substring(0, authorityStart) + "****" + origin.substring(at);
+        int separator = origin.indexOf("://");
+        int maskStart = separator >= 0 && separator < at ? separator + 3 : 0;
+        return origin.substring(0, maskStart) + "****" + origin.substring(at);
     }
 
     /**
