@@ -101,7 +101,7 @@ class BackChannelOriginActivationWiringTest {
 
     @Test
     @DisplayName("every descriptor with an oidc block dials keycloak:8443 through back_channel_origin and issues on localhost:1443")
-    void everyOidcDescriptorDeclaresTheBackChannelOriginAndThePublishedIssuer() throws IOException {
+    void everyOidcDescriptorDeclaresTheBackChannelOriginAndThePublishedIssuer() throws Exception {
         int oidcDescriptorsSeen = 0;
 
         for (Path descriptor : committedGatewayDescriptors()) {
@@ -133,7 +133,7 @@ class BackChannelOriginActivationWiringTest {
 
     @Test
     @DisplayName("no token_validation issuer names the back-channel address keycloak:8443")
-    void noTokenValidationIssuerNamesTheBackChannelAddress() throws IOException {
+    void noTokenValidationIssuerNamesTheBackChannelAddress() throws Exception {
         int issuersSeen = 0;
 
         for (Path descriptor : committedGatewayDescriptors()) {
@@ -154,7 +154,7 @@ class BackChannelOriginActivationWiringTest {
 
     @Test
     @DisplayName("no realm import declares a frontendUrl competing with the static hostname")
-    void noRealmImportDeclaresAFrontendUrl() throws IOException {
+    void noRealmImportDeclaresAFrontendUrl() throws Exception {
         List<Path> realms = realmImports();
 
         for (Path realm : realms) {
@@ -171,7 +171,7 @@ class BackChannelOriginActivationWiringTest {
 
     @Test
     @DisplayName("docker-compose gives Keycloak a full-URL KC_HOSTNAME and no dynamic back channel")
-    void composeGivesKeycloakAFullUrlHostnameAndNoDynamicBackChannel() throws IOException {
+    void composeGivesKeycloakAFullUrlHostnameAndNoDynamicBackChannel() throws Exception {
         List<String> environment = keycloakEnvironment();
 
         List<String> hostnames = environment.stream()

@@ -4476,6 +4476,56 @@ class BffRuntimeProducerTest {
                             .get("scope")).split(" ")), "and it is the scoped login's request"));
         }
 
+        /**
+         * The proof of a re-targeted token request names the URL actually contacted, as RFC 9449
+         * section 4.3 requires and Keycloak enforces, and not the endpoint the discovery document
+         * advertises beneath the public issuer. The stub judges each proof's {@code htu} and
+         * {@code htm} against the URL it received the request on and answers {@code invalid_dpop_proof}
+         * otherwise, without serving its script. So the second token request exists only because the
+         * first proof passed that check and was answered with the scripted nonce challenge, and the
+         * second proof names the same received URL, which is exactly the condition under which the stub
+         * does not refuse it. A token-sheriff that signs the advertised URL turns this case red: its
+         * first proof names {@code https://idp.example.invalid/realms/demo/token}, is refused, and is
+         * never retried.
+         */
+        @Test
+        @DisplayName("Should sign every token-request proof for the URL actually contacted")
+        void shouldSignEveryTokenRequestProofForTheUrlActuallyContacted() throws Exception {
+            BffRuntime runtime = stubProducer(publicIssuerOidc(stub.origin()), new RouteTable(List.of()))
+                    .bffRuntime();
+            String nonce = token();
+            stub.script(StubIdentityProvider.Endpoint.TOKEN, new StubIdentityProvider.Answer(400,
+                    Map.of(StubIdentityProviderRuntime.DPOP_NONCE_HEADER, nonce, "Content-Type", "application/json"),
+                    "{\"error\":\"use_dpop_nonce\"}"));
+            BffRuntime.ReservedHttpResponse redirected = StubIdentityProviderRuntime.login(runtime, "/");
+            String state = stub.received(StubIdentityProvider.Endpoint.PUSHED_AUTHORIZATION_REQUEST).getLast().form()
+                    .get(StubIdentityProviderRuntime.PARAM_STATE);
+
+            BffRuntime.ReservedHttpResponse callback = StubIdentityProviderRuntime.callback(runtime,
+                    "code=" + token() + "&state=" + StubIdentityProviderRuntime.encoded(state),
+                    StubIdentityProviderRuntime.bindingCookieOf(redirected));
+
+            String contacted = stub.origin() + "/realms/demo/token";
+            List<StubIdentityProvider.ReceivedRequest> received = stub.received(StubIdentityProvider.Endpoint.TOKEN);
+            assertEquals(2, received.size(),
+                    "the first proof passed the stub's htu check and drew the nonce challenge, so it was retried once");
+            JsonNode first = StubIdentityProviderRuntime.jwtPart(
+                    StubIdentityProviderRuntime.proofOf(received.getFirst()), 1);
+            JsonNode retry = StubIdentityProviderRuntime.jwtPart(
+                    StubIdentityProviderRuntime.proofOf(received.getLast()), 1);
+            assertAll("both proofs of the re-targeted code exchange name the URL the stub received them on",
+                    () -> assertEquals(PUBLIC_ISSUER + "/token", stub.url(StubIdentityProvider.Endpoint.TOKEN),
+                            "precondition: the advertised token endpoint is on the unresolvable public issuer"),
+                    () -> assertEquals(contacted, first.path("htu").asText(), "the first proof's htu"),
+                    () -> assertEquals("POST", first.path("htm").asText(), "the first proof's htm"),
+                    () -> assertTrue(first.path("nonce").isMissingNode(), "the first proof carries no nonce"),
+                    () -> assertEquals(contacted, retry.path("htu").asText(), "the retry's htu"),
+                    () -> assertEquals("POST", retry.path("htm").asText(), "the retry's htm"),
+                    () -> assertEquals(nonce, retry.path("nonce").asText(), "the retry echoes the scripted nonce"),
+                    () -> assertEquals(400, callback.status(),
+                            "the stub refuses the retried grant with its default answer, so no login completes"));
+        }
+
         @Test
         @DisplayName("Should set no origin and no cleartext posture when the key is absent")
         void shouldSetNothingWithoutTheKey() {

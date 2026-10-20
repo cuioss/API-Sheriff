@@ -72,6 +72,7 @@ import java.util.Base64;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -157,8 +158,22 @@ import io.restassured.response.Response;
  * proof key. The one scripted exception is the code-exchange answer of a login driven through
  * {@link #loginCallback(String, Duration, Binding)} with a {@link Binding} other than
  * {@link Binding#BOUND}: its access token carries no {@code cnf} claim, or the thumbprint of another
- * committed key, so a suite can drive that refusal. The stub validates nothing: it does not check the
- * client credential, the authorization code, the PKCE verifier or the DPoP proof.
+ * committed key, so a suite can drive that refusal. The stub checks neither the client credential, the
+ * authorization code nor the PKCE verifier, but the rig asserts every DPoP proof's {@code htu} and
+ * {@code htm} against the request it arrived on, as Keycloak does — see below.
+ *
+ * <h2>The DPoP proof check</h2>
+ *
+ * WireMock cannot decode a JWT, so the rig enforces from the stub's request journal what Keycloak
+ * enforces on arrival. For every journaled request that carries a {@code DPoP} header and was not
+ * checked before, the proof's payload is decoded, and its {@code htu} must equal the URL the stub
+ * recorded the request as received on — scheme, authority and path, with no query and no fragment, as
+ * RFC 9449 section 4.3 compares — and its {@code htm} the request method. The check runs at the end of
+ * every login helper, after the callback, and in {@link #reset()} and {@link #close()} over the requests
+ * journaled since the last check, so the refresh grants of a suite are covered too. A mismatch fails
+ * with the endpoint, the received URL and the proof's {@code htu}, and names no token, no signature and
+ * no other claim. The stub receives every request on the dialled origin {@code https://keycloak:8443},
+ * so a gateway that signs the advertised {@code https://localhost:1443/...} URL instead fails here.
  * <p>
  * Each endpoint answers from its script when a test has {@linkplain #script(Endpoint, Answer) filled}
  * it, one scripted answer per request in the order they were added, and from its default otherwise.
@@ -331,6 +346,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
 
     private static final String CONTENT_TYPE = "Content-Type";
     private static final String APPLICATION_JSON = "application/json";
+    private static final String DPOP_HEADER = "DPoP";
     private static final String PARAM_GRANT_TYPE = "grant_type";
     private static final String GRANT_REFRESH_TOKEN = "refresh_token";
 
@@ -365,6 +381,9 @@ final class StubIdentityProviderRig implements AutoCloseable {
 
     /** The path of the {@code jwks.url} of each {@code http} issuer, by its configured name; filled at boot. */
     private final Map<String, String> keySetPathByIssuer = new LinkedHashMap<>();
+
+    /** The journal ids of the requests whose DPoP proof the rig has already checked. */
+    private final Set<String> checkedProofRequests = new HashSet<>();
 
     /** The compose echo container this rig connected to its network; empty until it is resolved. */
     private String echoContainer = "";
@@ -423,7 +442,8 @@ final class StubIdentityProviderRig implements AutoCloseable {
             return rig;
         } finally {
             if (!started) {
-                rig.close();
+                // Teardown alone: a proof check here would replace the failure of the start itself.
+                rig.removeEverything();
             }
         }
     }
@@ -433,7 +453,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
         assertNotNull(echo, () -> "the compose project runs no '" + ECHO_SERVICE + "' service");
         echoContainer = echo;
         // An aborted earlier run may have left its containers and its network behind.
-        close();
+        removeEverything();
 
         createNetwork(NETWORK);
         String keyStoreSecret = UUID.randomUUID().toString();
@@ -493,12 +513,30 @@ final class StubIdentityProviderRig implements AutoCloseable {
     }
 
     /**
-     * Removes the gateway, the stub and the network, and disconnects the echo container. Every step is
-     * attempted whatever the outcome of the one before, and none of them fails the caller: a teardown
-     * failure must not mask the outcome of the test the rig served. Idempotent.
+     * Checks the DPoP proofs journaled since the last check, then removes the gateway, the stub and the
+     * network, and disconnects the echo container. The removal runs whatever the check found. Every
+     * removal step is attempted whatever the outcome of the one before, and none of them fails the
+     * caller: a teardown failure must not mask the outcome of the test the rig served. Only a proof
+     * that names another request fails a close, and under try-with-resources a failure of the test
+     * itself stays the primary one. Idempotent.
      */
     @Override
     public void close() {
+        try {
+            if (!adminOrigin.isEmpty()) {
+                assertDpopProofsNameTheReceivedUrl();
+            }
+        } finally {
+            removeEverything();
+        }
+    }
+
+    /**
+     * Removes the gateway, the stub and the network, and disconnects the echo container, without the
+     * proof check of {@link #close()}. Every step is attempted whatever the outcome of the one before,
+     * and none of them fails the caller. Idempotent.
+     */
+    private void removeEverything() {
         removeContainer(GATEWAY);
         removeContainer(STUB);
         if (!echoContainer.isEmpty()) {
@@ -630,6 +668,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
                 + URLEncoder.encode(state, StandardCharsets.UTF_8))
                 .then().extract().response();
         gatewayCookies.putAll(callback.getCookies());
+        assertDpopProofsNameTheReceivedUrl();
         return new LoginAttempt(gatewayCookies, callback);
     }
 
@@ -850,7 +889,8 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * Clears what a test reads and scripts through this rig, without restarting anything: every scripted
      * answer is removed — a failure a test injected included, whether or not a request consumed it —
      * and {@link #received(Endpoint)} and {@link #refreshGrants()} report only what arrives from now
-     * on. The endpoints answer from their defaults again.
+     * on. The endpoints answer from their defaults again. Before anything is cleared, the DPoP proofs
+     * journaled since the last check are checked, as the class documentation describes.
      * <p>
      * <strong>What it does not reset.</strong> The gateway is the same process before and after. Its
      * sessions, its caches of the provider metadata and of the key set, its connections to the stub and
@@ -867,6 +907,7 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * that cannot establish that fails here, and names what WireMock answered.
      */
     synchronized void reset() {
+        assertDpopProofsNameTheReceivedUrl();
         List<Map<String, Object>> before = mappings();
         long scriptedBefore = before.stream().filter(StubIdentityProviderRig::isScripted).count();
         long defaultsBefore = before.size() - scriptedBefore;
@@ -970,6 +1011,98 @@ final class StubIdentityProviderRig implements AutoCloseable {
         return received(Endpoint.TOKEN).stream()
                 .filter(request -> GRANT_REFRESH_TOKEN.equals(request.form().get(PARAM_GRANT_TYPE)))
                 .toList();
+    }
+
+    /**
+     * Asserts, as Keycloak does on arrival, that every DPoP proof the stub has journaled since the last
+     * check names the request it arrived on: its {@code htu} must equal the URL the stub recorded the
+     * request as received on, without query and fragment, and its {@code htm} the request method.
+     * <p>
+     * The journal is read over the admin API's {@code /__admin/requests}, whose serve events carry the
+     * recorded request's {@code absoluteUrl}, {@code method} and {@code headers}. A mismatch names the
+     * endpoint, the received URL and the proof's {@code htu} or {@code htm}, and nothing else of the
+     * request — no token, no signature and no other claim.
+     */
+    private synchronized void assertDpopProofsNameTheReceivedUrl() {
+        String listed = adminAccepted("GET", "/__admin/requests");
+        List<Map<String, Object>> events = new JsonPath(listed).getList("requests");
+        assertNotNull(events, () -> "the stub's journal answered no request list");
+        for (Map<String, Object> event : events) {
+            String id = String.valueOf(event.get("id"));
+            Map<?, ?> request = mapping(event.get("request"), "a journaled request");
+            String proof = headerValue(request.get("headers"), DPOP_HEADER);
+            if (proof == null || !checkedProofRequests.add(id)) {
+                continue;
+            }
+            String absoluteUrl = String.valueOf(request.get("absoluteUrl"));
+            int query = absoluteUrl.indexOf('?');
+            String receivedUrl = query < 0 ? absoluteUrl : absoluteUrl.substring(0, query);
+            String method = String.valueOf(request.get("method"));
+            String endpoint = endpointNameOf(URI.create(receivedUrl).getPath());
+            Map<?, ?> claims = proofClaims(proof, endpoint, receivedUrl);
+            String htu = String.valueOf(claims.get("htu"));
+            String htm = String.valueOf(claims.get("htm"));
+            assertEquals(receivedUrl, htu, () -> "the DPoP proof of a request to the " + endpoint
+                    + " endpoint must name the URL it was received on (" + receivedUrl + "), but its htu is "
+                    + htu);
+            assertEquals(method, htm, () -> "the DPoP proof of a request to the " + endpoint
+                    + " endpoint must name the method " + method + " it was received with, but its htm is " + htm);
+        }
+    }
+
+    /**
+     * The decoded payload claims of a compact DPoP proof. A header that is no three-segment compact JWS
+     * whose payload is a JSON object fails, naming the endpoint and the received URL but not the proof.
+     */
+    private static Map<?, ?> proofClaims(String proof, String endpoint, String receivedUrl) {
+        String[] segments = proof.split("\\.", -1);
+        Object payload = null;
+        if (segments.length == 3) {
+            try {
+                payload = new JsonPath(new String(Base64.getUrlDecoder().decode(segments[1]),
+                        StandardCharsets.UTF_8)).get("$");
+            }
+            /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
+            catch (RuntimeException _) { // NOSONAR java:S1166 - the cause may quote the proof payload
+                // Left null: refused below, without the cause, so no part of the proof reaches the report.
+            }
+        }
+        if (payload instanceof Map<?, ?> claims) {
+            return claims;
+        }
+        throw new AssertionError("the DPoP header of a request to the " + endpoint + " endpoint, received on "
+                + receivedUrl + ", does not decode to a JSON payload");
+    }
+
+    /**
+     * The first value of a header in a journaled request's {@code headers} member, matched without
+     * regard to letter case — an HTTP/2 request arrives with lower-cased names. WireMock renders a
+     * header with one value as a string and one with several as a list.
+     */
+    private static String headerValue(Object headers, String name) {
+        if (!(headers instanceof Map<?, ?> byName)) {
+            return null;
+        }
+        for (Map.Entry<?, ?> header : byName.entrySet()) {
+            if (name.equalsIgnoreCase(String.valueOf(header.getKey()))) {
+                Object value = header.getValue();
+                if (value instanceof List<?> values) {
+                    return values.isEmpty() ? null : String.valueOf(values.getFirst());
+                }
+                return value == null ? null : String.valueOf(value);
+            }
+        }
+        return null;
+    }
+
+    /** The name of the endpoint served on {@code path}, or the path itself for none. */
+    private static String endpointNameOf(String path) {
+        for (Endpoint endpoint : Endpoint.values()) {
+            if (endpoint.path.equals(path)) {
+                return endpoint.name();
+            }
+        }
+        return path;
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -31,7 +31,7 @@ services:
   # reproducible. Dependabot cannot update this automatically — check https://quay.io/keycloak/keycloak
   # and update the digest together with the version.
   keycloak:
-    image: quay.io/keycloak/keycloak:26.5.7@sha256:45ae20191531eb608ddb0b775d012b40d3e4f942697f3214694887dd7c108d13
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
     command:
       - start-dev
       - --import-realm

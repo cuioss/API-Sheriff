@@ -21,6 +21,7 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
+import java.util.Base64;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +37,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import mockwebserver3.Dispatcher;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
@@ -91,10 +94,25 @@ import org.jspecify.annotations.Nullable;
  * and body, and is then answered from the endpoint's script when a test has
  * {@linkplain #script(Endpoint, Answer) filled} it, and otherwise from the endpoint's default.
  * <p>
- * The fixture mints no token and validates nothing. The token endpoint refuses every grant by
- * default, because an assertion on the shape of a request needs the request and not a grant. The
- * pushed-authorization-request endpoint accepts every push by default, because a login has to get
- * past it before the runtime sends anything else.
+ * The fixture mints no token and validates one thing: a DPoP proof's {@code htu} and {@code htm}
+ * against the request it arrived on, as Keycloak does. A recorded request carrying a {@code DPoP}
+ * header is answered {@code 400} {@code invalid_dpop_proof} — without consuming the endpoint's
+ * script — unless the proof's {@code htu} equals the URL the request was received on, built as
+ * {@link #origin()} followed by the request's encoded path with no query and no fragment (RFC 9449
+ * section 4.3), and its {@code htm} equals the request method. A header whose payload segment does
+ * not decode to a JSON object is refused the same way. The check applies to every endpoint, because
+ * a proof is judged wherever one arrives; a request without a {@code DPoP} header is unaffected. The
+ * proof's signature is deliberately not verified: the fixture judges the binding to the request,
+ * not the key. Without this check the stub suites stayed green while Keycloak refused every proof of
+ * a gateway that signed the advertised URL instead of the one it dialled.
+ * <p>
+ * The authority of the comparand comes from {@link #origin()} and never from the URL the server
+ * library reconstructs for a request, whose host spelling may follow the {@code Host} header or a
+ * lookup of the local socket address rather than the URL the client dialled.
+ * <p>
+ * The token endpoint refuses every grant by default, because an assertion on the shape of a request
+ * needs the request and not a grant. The pushed-authorization-request endpoint accepts every push by
+ * default, because a login has to get past it before the runtime sends anything else.
  *
  * <h2>Binding</h2>
  *
@@ -115,6 +133,11 @@ public final class StubIdentityProvider implements AutoCloseable {
     private static final String CONTENT_TYPE = "Content-Type";
     private static final String APPLICATION_JSON = "application/json";
     private static final int NOT_FOUND = 404;
+    private static final String DPOP_HEADER = "DPoP";
+    private static final String HTU_MISMATCH = "DPoP HTTP URL mismatch";
+    private static final String HTM_MISMATCH = "DPoP HTTP method mismatch";
+    private static final ObjectMapper PROOF_READER = new ObjectMapper();
+    private static final Base64.Decoder BASE64_URL = Base64.getUrlDecoder();
 
     private final MockWebServer server;
     private final X509Certificate rootCertificate;
@@ -267,11 +290,64 @@ public final class StubIdentityProvider implements AutoCloseable {
         for (Endpoint endpoint : Endpoint.values()) {
             if ((servedPathPrefix + endpoint.path).equals(path) && endpoint.method.equals(request.getMethod())) {
                 received.get(endpoint).add(ReceivedRequest.of(request));
+                Optional<Answer> refusal = dpopRefusal(request.getHeaders().get(DPOP_HEADER), origin() + path,
+                        request.getMethod());
+                if (refusal.isPresent()) {
+                    return render(refusal.get());
+                }
                 Answer scripted = scripts.get(endpoint).poll();
                 return render(scripted == null ? endpoint.defaultAnswer.apply(issuer()) : scripted);
             }
         }
         return new MockResponse.Builder().code(NOT_FOUND).build();
+    }
+
+    /**
+     * Judges a DPoP proof's binding to the request it arrived on, as Keycloak does: its {@code htu}
+     * must equal the received URL and its {@code htm} the request method. The signature is not
+     * verified.
+     *
+     * @param proof       the {@code DPoP} header value, {@code null} when the request carried none
+     * @param receivedUrl the URL the request was received on: {@link #origin()} followed by the
+     *                    encoded path, with no query and no fragment
+     * @param method      the request method
+     * @return the refusal to answer with, empty when the request carries no proof or the proof matches
+     */
+    private static Optional<Answer> dpopRefusal(@Nullable String proof, String receivedUrl, String method) {
+        if (proof == null) {
+            return Optional.empty();
+        }
+        Optional<JsonNode> claims = proofClaims(proof);
+        if (claims.isEmpty() || !receivedUrl.equals(claims.get().path("htu").asText(null))) {
+            return Optional.of(invalidDpopProof(HTU_MISMATCH));
+        }
+        if (!method.equals(claims.get().path("htm").asText(null))) {
+            return Optional.of(invalidDpopProof(HTM_MISMATCH));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * @param proof a {@code DPoP} header value
+     * @return the proof's payload claims, empty when the value is no three-segment compact JWS whose
+     *         payload segment decodes to a JSON object
+     */
+    private static Optional<JsonNode> proofClaims(String proof) {
+        String[] segments = proof.split("\\.", -1);
+        if (segments.length != 3) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode claims = PROOF_READER.readTree(BASE64_URL.decode(segments[1]));
+            return claims != null && claims.isObject() ? Optional.of(claims) : Optional.empty();
+        } catch (IOException | IllegalArgumentException e) {
+            return Optional.empty();
+        }
+    }
+
+    private static Answer invalidDpopProof(String description) {
+        return Answer.json(400, "{\"error\":\"invalid_dpop_proof\",\"error_description\":\"%s\"}"
+                .formatted(description));
     }
 
     private static MockResponse render(Answer answer) {

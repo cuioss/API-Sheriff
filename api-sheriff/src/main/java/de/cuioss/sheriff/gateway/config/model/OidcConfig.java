@@ -36,11 +36,16 @@ import org.jspecify.annotations.Nullable;
  * {@link #issuer()} is the one identity every exact-match check uses — the discovery document's
  * {@code issuer}, an ID token's {@code iss}, a back-channel logout token's {@code iss} — and it is
  * the authority the browser is redirected to. {@link #backChannelOrigin()} only changes where the
- * gateway's own server-to-server calls (discovery, pushed authorization, token, user-info) are
- * dialled: the engine re-targets the endpoints the issuer advertises on its own origin to the
- * configured origin and leaves the identity untouched. An absent origin means one authority for
- * everything, which is the behaviour without the key. The value comes from configuration alone and
- * is never derived from request data.
+ * gateway's own server-to-server calls (discovery, the pushed authorization request, the
+ * authorization-code exchange, refresh and refresh-token revocation) are dialled: the engine
+ * re-targets the endpoints the issuer advertises on its own origin to the configured origin and
+ * leaves the identity untouched. Since token-sheriff 0.9.8 the DPoP proof of such a mapped call
+ * names the URL actually dialled, not the advertised one, which is what an identity provider that
+ * compares the proof's {@code htu} with the URL it received (Keycloak) expects. An identity provider
+ * that instead compares {@code htu} with a configured public URL rejects those proofs, and because
+ * the mapping is issuer-wide and all-or-nothing, {@code back_channel_origin} must not be set for such
+ * a provider. An absent origin means one authority for everything, which is the behaviour without
+ * the key. The value comes from configuration alone and is never derived from request data.
  *
  * @param issuer               the OIDC issuer, {@code null} when omitted
  * @param clientId             the client id, {@code null} when omitted

@@ -765,13 +765,19 @@ public class BffRuntimeProducer {
      * refresh.
      * <p>
      * <strong>The back-channel origin is transport, never identity.</strong> A declared
-     * {@code oidc.back_channel_origin} is handed to the engine as its back-channel origin, so discovery
-     * and every server-to-server call to an endpoint the issuer advertises on its own origin dial the
-     * configured origin instead, while the issuer stays the identity every exact-match check uses and
-     * the authorization endpoint the browser is sent to is untouched. Like the TLS posture it is set on
-     * the base configuration and on every scoped variant alike, so no leg can fall back to dialling the
-     * issuer. An absent key sets nothing: one authority for everything. The cleartext posture follows
-     * the explicit opt-in alone: {@code allowInsecureHttp} is set only when
+     * {@code oidc.back_channel_origin} is handed to the engine as its back-channel origin, so the
+     * server-to-server calls to an endpoint the issuer advertises on its own origin — discovery, the
+     * pushed authorization request, the authorization-code exchange, refresh and refresh-token
+     * revocation — dial the configured origin instead, while the issuer stays the identity every
+     * exact-match check uses and the authorization endpoint the browser is sent to is untouched. Since
+     * token-sheriff 0.9.8 the DPoP proof of such a re-targeted call names the URL actually dialled, not
+     * the advertised one, which is what an identity provider that compares the proof's {@code htu} with
+     * the URL it received (Keycloak) expects. An identity provider that instead compares {@code htu}
+     * with a configured public URL rejects those proofs, and because the mapping is issuer-wide and
+     * all-or-nothing, {@code back_channel_origin} must not be set for such a provider. Like the TLS
+     * posture it is set on the base configuration and on every scoped variant alike, so no leg can fall
+     * back to dialling the issuer. An absent key sets nothing: one authority for everything. The
+     * cleartext posture follows the explicit opt-in alone: {@code allowInsecureHttp} is set only when
      * {@code oidc.back_channel_allow_insecure_http} is {@code true}, which boot validation admits only
      * together with an {@code http} origin. The engine applies that flag to the whole client, not just
      * the origin — the widening {@link #reportBackChannelPosture(OidcConfig)} reports.
