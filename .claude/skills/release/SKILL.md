@@ -1344,6 +1344,64 @@ and that **no PR appears in the new file that was not in the original**.
 > Apply the per-theme rules below to **every subsequent** release; do not reconstruct a PR list for a
 > first release just because the generator emitted one.
 
+#### Derive the Keycloak version the release was verified against
+
+The integration suites and the compose sample run against the Keycloak image pinned in
+`integration-tests/docker-compose.yml` and `deployment/compose-sample/docker-compose.yml`, so those
+two pins — not a document, not memory — name the Keycloak version a release was verified against.
+Read them from the **release tag** with `git show "<ref>:<file>"`, never from the working tree,
+which may already carry a later bump.
+
+The previous release is read from the generated notes' trailing
+`**Full Changelog**: …/compare/<prev>...<version>` line, **not** from Step 1a's `PREV_VERSION`. On
+Path B `current-version` already declares the released version, so `PREV_VERSION` equals
+`RELEASE_VERSION` there; the compare line is computed by GitHub on either path. Run the block after
+the original notes were saved above; `RELEASE_VERSION` comes from the Step 1a echo (tags are bare
+versions, e.g. `0.2.4`), and the block re-declares it because each block is its own shell.
+
+```bash
+RELEASE_VERSION='<RELEASE_VERSION from the Step 1a echo>'
+ORIG_NOTES=".plan/temp/release-${RELEASE_VERSION}-orig.md"
+
+kc_pin() {  # $1 = git ref, $2 = compose file; prints the pinned Keycloak tag
+  git show "$1:$2" 2>/dev/null \
+    | sed -nE 's#^[[:space:]]*image:[[:space:]]*quay\.io/keycloak/keycloak:([0-9][^@[:space:]]*).*#\1#p'
+}
+kc_version() {  # $1 = git ref; prints the Keycloak tag pinned in BOTH compose files, or fails
+  local it sample
+  it=$(kc_pin "$1" integration-tests/docker-compose.yml)
+  sample=$(kc_pin "$1" deployment/compose-sample/docker-compose.yml)
+  [ -n "$it" ] && [ "$it" = "$sample" ] && echo "$it"
+}
+
+[ -f "$ORIG_NOTES" ] || { echo "STOP - ${ORIG_NOTES} missing; save the generated notes first" >&2; exit 1; }
+COMPARE=$(tr -d '\r' < "$ORIG_NOTES" | sed -nE 's#^\*\*Full Changelog\*\*:.*/compare/([^[:space:]]+).*#\1#p' | tail -n 1)
+PREV_TAG=${COMPARE%%...*}
+[ -n "$COMPARE" ] && [ -n "$PREV_TAG" ] && [ "${COMPARE#*...}" = "$RELEASE_VERSION" ] \
+  || { echo "STOP - no Full Changelog compare line ending in ${RELEASE_VERSION} in ${ORIG_NOTES}" >&2; exit 1; }
+for ref in "$RELEASE_VERSION" "$PREV_TAG"; do
+  git rev-parse --verify --quiet "refs/tags/${ref}^{commit}" > /dev/null \
+    || { echo "STOP - tag ${ref} is not in this clone; run: git fetch --tags origin" >&2; exit 1; }
+done
+
+KEYCLOAK_VERSION=$(kc_version "$RELEASE_VERSION") \
+  || { echo "STOP - no single Keycloak pin at ${RELEASE_VERSION}: the two compose files disagree or pin no tag" >&2; exit 1; }
+KEYCLOAK_PREV=$(kc_version "$PREV_TAG" || true)
+echo "KEYCLOAK_VERSION=${KEYCLOAK_VERSION}"
+echo "KEYCLOAK_PREV=${KEYCLOAK_PREV}"
+echo "Keycloak: ${KEYCLOAK_VERSION} (previously ${KEYCLOAK_PREV:-unknown})"
+```
+
+**Both pins must be equal, or the release STOPs.** A failure here is a stop, never a reason to omit
+the line: it means the two compose files disagree or no longer pin a Keycloak tag, and the notes
+would otherwise claim a verification they cannot name. The line is never omitted. Tags are bare
+versions (`26.8.1`); the `@sha256:` digest is not part of the statement.
+
+`KEYCLOAK_PREV` may be empty: when the previous tag predates the pin or the compose layout (no
+`deployment/compose-sample/docker-compose.yml`, as at `relocation-stubs-published` or any pre-0.1.0
+ref) the previous version is unknown and the `(previously …)` part is dropped. No release tag hits
+that case today — both compose files exist at every tag from `0.1.0` on.
+
 #### House format rules (apply exactly)
 
 1. **Three top-level groups, in this order:** `## Quarkus`,
@@ -1358,11 +1416,19 @@ and that **no PR appears in the new file that was not in the original**.
 
    This release targets **Quarkus <new>** (previously <old>).
 
+   Verified against **Keycloak <KEYCLOAK_VERSION>** (previously <KEYCLOAK_PREV>).
+
    * <PR line(s)>
    ```
 
    If Quarkus did **not** change in this cycle, state the unchanged version in the same
    one-line form and omit the PR line. Never also list Quarkus under `### Java`.
+
+   The Keycloak line sits directly under the Quarkus statement in **every** release, with the
+   values derived above. Drop the `(previously …)` part when the two versions are equal or
+   `KEYCLOAK_PREV` is unknown. A Keycloak bump PR is a dependency PR: it is listed under
+   `### Infra` (rule 4), never moved into the Quarkus section, and collapsed by library identity
+   per rule 5.
 3. **Features & Enhancements** — group functional PRs by theme with `###` subheadings:
    - `### API & Code Quality` — also the home for refactor/standards/cleanup recipes, **not** under
      build/tooling
@@ -1425,6 +1491,15 @@ Every count must be `1`. Any count `>1` is an unmerged duplicate — collapse it
 5 and re-run. Also confirm that no dependency line is missing a version range
 (rule 6).
 
+Then assert that the notes name the Keycloak version derived above (rule 2):
+
+```bash
+RELEASE_VERSION='<RELEASE_VERSION from the Step 1a echo>'
+KEYCLOAK_VERSION='<KEYCLOAK_VERSION from the derivation echo>'
+grep -F "Verified against **Keycloak ${KEYCLOAK_VERSION}**" ".plan/temp/release-${RELEASE_VERSION}.md" \
+  || { echo "STOP - Keycloak line missing or wrong" >&2; exit 1; }
+```
+
 
 ### Step 12 — Report
 
@@ -1436,7 +1511,8 @@ observed `visibility` value (Step 9) — report the field verbatim, `public` / `
 never a bare "done", since `internal` is exactly the outcome that reads as done and is not; which
 version-bearing examples (Step 10) were updated, or that they were **checked and already correct**;
 the `reactor=… example=…` line from the Step 7a `build-parent/example/pom.xml` parity check and the
-PR that landed it, so the bump is reported as a *value*, not as a tick; and how many dependency PRs were collapsed or removed while
+PR that landed it, so the bump is reported as a *value*, not as a tick; the Keycloak version the
+release was verified against (`KEYCLOAK_VERSION` from Step 11, with `KEYCLOAK_PREV`); and how many dependency PRs were collapsed or removed while
 reformatting the notes.
 
 State plainly which image checks were made **anonymously** and which were authenticated. An
@@ -1490,6 +1566,8 @@ authenticated check passes.
   rather than trusting the merge command's immediate output.
 - **Never cut on a red `main`**, and never merge a red PR. On Path A gate **both** the base
   `$MAIN_SHA` and the version-bump PR's own checks — neither substitutes for the other.
+- **A release's notes never go out without the `Verified against **Keycloak …**` line**, and its
+  version is derived from both compose pins at the release tag (Step 11), never typed from memory.
 - **Ignore the tag-triggered `benchmark.yml` run** — it fires on `push: tags: ["*"]`, belongs to the
   release rather than to a code change, and its lane is known-flaky.
 - **Always pass `--repo cuioss/API-Sheriff`** to `gh`.
