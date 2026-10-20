@@ -340,7 +340,7 @@ public final class StubIdentityProvider implements AutoCloseable {
         try {
             JsonNode claims = PROOF_READER.readTree(BASE64_URL.decode(segments[1]));
             return claims != null && claims.isObject() ? Optional.of(claims) : Optional.empty();
-        } catch (IOException | IllegalArgumentException e) {
+        } catch (IOException | IllegalArgumentException _) {
             return Optional.empty();
         }
     }

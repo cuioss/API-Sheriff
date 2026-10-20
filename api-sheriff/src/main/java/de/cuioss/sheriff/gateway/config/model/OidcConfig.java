@@ -183,7 +183,7 @@ List<String> scopes,
      * @param origin the configured origin, may be {@code null}
      * @return the origin with any user-info masked, or {@code null} when absent
      */
-    private static String maskUserInfo(String origin) {
+    private static @Nullable String maskUserInfo(@Nullable String origin) {
         if (origin == null) {
             return null;
         }
