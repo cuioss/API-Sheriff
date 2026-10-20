@@ -516,9 +516,10 @@ final class StubIdentityProviderRig implements AutoCloseable {
      * Checks the DPoP proofs journaled since the last check, then removes the gateway, the stub and the
      * network, and disconnects the echo container. The removal runs whatever the check found. Every
      * removal step is attempted whatever the outcome of the one before, and none of them fails the
-     * caller: a teardown failure must not mask the outcome of the test the rig served. Only a proof
-     * that names another request fails a close, and under try-with-resources a failure of the test
-     * itself stays the primary one. Idempotent.
+     * caller: a teardown failure must not mask the outcome of the test the rig served. Only the proof
+     * check fails a close — a proof that names another request, or a request journal that cannot be
+     * read from the stub's admin API — and under try-with-resources a failure of the test itself stays
+     * the primary one. Idempotent.
      */
     @Override
     public void close() {
@@ -1058,12 +1059,13 @@ final class StubIdentityProviderRig implements AutoCloseable {
         String[] segments = proof.split("\\.", -1);
         Object payload = null;
         if (segments.length == 3) {
+            // Deliberately broad: the Base64 decoder and the JSON parser each throw their own unchecked
+            // type for a malformed proof, and every one of them means the same thing here — refuse it.
+            // cui-rewrite:disable InvalidExceptionUsageRecipe
             try {
                 payload = new JsonPath(new String(Base64.getUrlDecoder().decode(segments[1]),
                         StandardCharsets.UTF_8)).get("$");
-            }
-            /*TODO: Catch specific not RuntimeException. Suppress: // cui-rewrite:disable InvalidExceptionUsageRecipe*/
-            catch (RuntimeException _) { // NOSONAR java:S1166 - the cause may quote the proof payload
+            } catch (RuntimeException _) { // NOSONAR java:S1166 - the cause may quote the proof payload
                 // Left null: refused below, without the cause, so no part of the proof reaches the report.
             }
         }

@@ -167,6 +167,13 @@ class ConfigValidatorBackChannelOriginTest {
         }
 
         @Test
+        @DisplayName("a value that is no well-formed URI is refused as such")
+        void refusesAnUnparseableValue() {
+            assertSingleRefusal("https://" + host() + ":" + port() + "/ a b", null, ORIGIN_POINTER,
+                    "oidc.back_channel_origin is not a well-formed URI");
+        }
+
+        @Test
         @DisplayName("an origin carrying user-info is refused without echoing the credential")
         void refusesUserInfo() {
             String user = letters();

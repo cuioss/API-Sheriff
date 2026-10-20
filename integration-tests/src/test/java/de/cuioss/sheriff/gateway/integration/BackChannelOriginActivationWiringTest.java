@@ -57,8 +57,10 @@ import org.junit.jupiter.api.Test;
  * a red surefire run.
  * <p>
  * <strong>Every descriptor is covered, none is listed.</strong> The descriptors are enumerated from the
- * {@code sheriff-config*} directories and the realm imports from the {@code keycloak} directory, so a
- * new instance or realm is held to the contract the moment it is committed. The non-vacuity floor of
+ * {@code sheriff-config*} directories and the realm imports from the {@code keycloak} directory of both
+ * stacks that run Keycloak — the integration-test stack and the compose sample, whose realm and compose
+ * file CI never starts — so a new instance or realm is held to the contract the moment it is committed.
+ * The non-vacuity floor of
  * {@value #OIDC_DESCRIPTOR_FLOOR} oidc-bearing descriptors keeps an empty or mis-rooted enumeration from
  * passing the per-descriptor loop by finding nothing to check.
  * <p>
@@ -73,8 +75,18 @@ class BackChannelOriginActivationWiringTest {
     /** The module base directory (surefire runs with the module root as the working directory). */
     private static final Path MODULE = Path.of(System.getProperty("user.dir"));
     private static final Path DOCKER = MODULE.resolve("src/main/docker");
-    private static final Path REALM_IMPORTS = DOCKER.resolve("keycloak");
-    private static final Path COMPOSE_FILE = MODULE.resolve("docker-compose.yml");
+    private static final Path COMPOSE_SAMPLE = MODULE.resolve("../deployment/compose-sample").normalize();
+
+    /**
+     * The realm-import directory of every stack that runs Keycloak: the integration-test stack and the
+     * compose sample. CI never starts the sample, so this guard is the only check its realm gets.
+     */
+    private static final List<Path> REALM_IMPORT_DIRECTORIES = List.of(DOCKER.resolve("keycloak"),
+            COMPOSE_SAMPLE.resolve("docker/keycloak"));
+
+    /** The compose file of every stack that runs Keycloak, held to the same static-hostname contract. */
+    private static final List<Path> COMPOSE_FILES = List.of(MODULE.resolve("docker-compose.yml"),
+            COMPOSE_SAMPLE.resolve("docker-compose.yml"));
 
     /** Keycloak's one identity: the published, browser-facing origin {@code KC_HOSTNAME} names. */
     private static final String PUBLISHED_ORIGIN = "https://localhost:1443";
@@ -165,28 +177,28 @@ class BackChannelOriginActivationWiringTest {
                     + " than the published identity " + PUBLISHED_ORIGIN + ".");
         }
 
-        assertFalse(realms.isEmpty(), "no realm import was found under " + REALM_IMPORTS
-                + " — this control would pass vacuously; check the directory enumeration");
     }
 
     @Test
-    @DisplayName("docker-compose gives Keycloak a full-URL KC_HOSTNAME and no dynamic back channel")
+    @DisplayName("every docker-compose gives Keycloak a full-URL KC_HOSTNAME and no dynamic back channel")
     void composeGivesKeycloakAFullUrlHostnameAndNoDynamicBackChannel() throws Exception {
-        List<String> environment = keycloakEnvironment();
+        for (Path composeFile : COMPOSE_FILES) {
+            List<String> environment = keycloakEnvironment(composeFile);
 
-        List<String> hostnames = environment.stream()
-                .filter(entry -> entry.startsWith(HOSTNAME_VARIABLE + "="))
-                .map(entry -> entry.substring(HOSTNAME_VARIABLE.length() + 1))
-                .toList();
+            List<String> hostnames = environment.stream()
+                    .filter(entry -> entry.startsWith(HOSTNAME_VARIABLE + "="))
+                    .map(entry -> entry.substring(HOSTNAME_VARIABLE.length() + 1))
+                    .toList();
 
-        assertEquals(List.of(PUBLISHED_ORIGIN), hostnames, "the keycloak service must set " + HOSTNAME_VARIABLE
-                + " exactly once, to the full URL " + PUBLISHED_ORIGIN + " — scheme and port included, so the"
-                + " identity Keycloak mints is the published one whichever address a request arrives on; found "
-                + hostnames);
-        assertFalse(environment.stream().anyMatch(entry -> entry.startsWith(DYNAMIC_BACK_CHANNEL_VARIABLE)),
-                "the keycloak service must not set " + DYNAMIC_BACK_CHANNEL_VARIABLE + ": the back channel is the"
-                        + " gateway's routing decision through oidc.back_channel_origin, never a second identity"
-                        + " Keycloak mints into its documents");
+            assertEquals(List.of(PUBLISHED_ORIGIN), hostnames, composeFile + ": the keycloak service must set "
+                    + HOSTNAME_VARIABLE + " exactly once, to the full URL " + PUBLISHED_ORIGIN + " — scheme and"
+                    + " port included, so the identity Keycloak mints is the published one whichever address a"
+                    + " request arrives on; found " + hostnames);
+            assertFalse(environment.stream().anyMatch(entry -> entry.startsWith(DYNAMIC_BACK_CHANNEL_VARIABLE)),
+                    composeFile + ": the keycloak service must not set " + DYNAMIC_BACK_CHANNEL_VARIABLE + ": the"
+                            + " back channel is the gateway's routing decision through oidc.back_channel_origin,"
+                            + " never a second identity Keycloak mints into its documents");
+        }
     }
 
     /**
@@ -211,15 +223,21 @@ class BackChannelOriginActivationWiringTest {
     }
 
     /**
-     * Every realm import the compose Keycloak loads, enumerated from its import directory.
+     * Every realm import a stack's Keycloak loads, enumerated from each stack's import directory. Each
+     * directory must contribute at least one realm, so a mis-rooted path cannot pass by finding nothing.
      *
      * @return the realm import paths, in directory-stream order
-     * @throws IOException when the import directory cannot be listed
+     * @throws IOException when an import directory cannot be listed
      */
     private static List<Path> realmImports() throws IOException {
         List<Path> realms = new ArrayList<>();
-        try (DirectoryStream<Path> files = Files.newDirectoryStream(REALM_IMPORTS, "*.json")) {
-            files.forEach(realms::add);
+        for (Path directory : REALM_IMPORT_DIRECTORIES) {
+            int before = realms.size();
+            try (DirectoryStream<Path> files = Files.newDirectoryStream(directory, "*.json")) {
+                files.forEach(realms::add);
+            }
+            assertTrue(realms.size() > before, "no realm import was found under " + directory
+                    + " — this control would pass vacuously; check the directory enumeration");
         }
         return realms;
     }
@@ -269,18 +287,19 @@ class BackChannelOriginActivationWiringTest {
     }
 
     /**
-     * The environment list of the compose {@code keycloak} service.
+     * The environment list of a compose file's {@code keycloak} service.
      *
+     * @param composeFile the compose file to parse
      * @return the environment entries, in {@code NAME=value} form
      * @throws IOException when the compose file cannot be read
      */
-    private static List<String> keycloakEnvironment() throws IOException {
-        Map<?, ?> services = assertInstanceOf(Map.class, loadYaml(COMPOSE_FILE).get("services"),
-                COMPOSE_FILE + " must declare services");
+    private static List<String> keycloakEnvironment(Path composeFile) throws IOException {
+        Map<?, ?> services = assertInstanceOf(Map.class, loadYaml(composeFile).get("services"),
+                composeFile + " must declare services");
         Map<?, ?> keycloak = assertInstanceOf(Map.class, services.get(KEYCLOAK_SERVICE),
-                COMPOSE_FILE + " must declare the '" + KEYCLOAK_SERVICE + "' service");
+                composeFile + " must declare the '" + KEYCLOAK_SERVICE + "' service");
         List<?> environment = assertInstanceOf(List.class, keycloak.get("environment"),
-                "the '" + KEYCLOAK_SERVICE + "' service environment must be a list");
+                composeFile + ": the '" + KEYCLOAK_SERVICE + "' service environment must be a list");
         return environment.stream().map(String::valueOf).toList();
     }
 

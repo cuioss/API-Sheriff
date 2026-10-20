@@ -1708,11 +1708,21 @@ class ConfigModelContractTest {
             assertTrue(rendered.contains("userInfo="), "toString must surface the userInfo block");
             assertTrue(rendered.contains("login="), "toString must surface the login block");
             assertTrue(rendered.contains("backChannelOrigin=" + BACK_CHANNEL_ORIGIN),
-                    "an origin is an address, not a secret, so toString renders it: " + rendered);
+                    "an origin without user-info is an address, not a secret, so toString renders it: " + rendered);
             assertTrue(rendered.contains("backChannelAllowInsecureHttp=false"),
                     "toString must surface the cleartext opt-in: " + rendered);
             assertTrue(rendered.contains("***REDACTED***"), "the client secret must stay redacted");
             assertFalse(rendered.contains("${OIDC_SECRET}"), "the raw client-secret reference must never appear");
+        }
+
+        @Test
+        void oidcToStringMasksTheUserInfoOfTheBackChannelOrigin() {
+            String rendered = OidcConfig.builder().backChannelOrigin("https://operator:s3cret@keycloak:8443/")
+                    .build().toString();
+            assertTrue(rendered.contains("backChannelOrigin=https://****@keycloak:8443/"),
+                    "the user-info of the origin must be masked, its host kept: " + rendered);
+            assertFalse(rendered.contains("s3cret"), "a credential written into the origin must never appear");
+            assertFalse(rendered.contains("operator"), "the user name of the origin must never appear");
         }
 
         @Test

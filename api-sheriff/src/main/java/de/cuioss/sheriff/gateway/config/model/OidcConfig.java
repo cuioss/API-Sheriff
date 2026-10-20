@@ -147,17 +147,51 @@ List<String> scopes,
      * message, or debugger view that captures this instance.
      * <p>
      * {@link #clientAuthentication()} and {@link #senderConstraint()} are rendered as they are: a
-     * key file is a path, not a secret. {@link #backChannelOrigin()} and
-     * {@link #backChannelAllowInsecureHttp()} are rendered as they are too: an origin is an address,
-     * not a secret.
+     * key file is a path, not a secret. {@link #backChannelOrigin()} is rendered with any user-info
+     * masked: boot validation refuses an origin that carries one, but this rendering can be reached
+     * before that refusal is reported, and a user-info component may hold a credential.
+     * {@link #backChannelAllowInsecureHttp()} is rendered as it is.
      *
-     * @return a string representation with {@code clientSecret} redacted
+     * @return a string representation with {@code clientSecret} redacted and any user-info of
+     *         {@code backChannelOrigin} masked
      */
     @Override
     public String toString() {
         return "OidcConfig[issuer=%s, clientId=%s, clientSecret=%s, scopes=%s, redirectUri=%s, logout=%s, session=%s, stepUp=%s, userInfo=%s, login=%s, clientAuthentication=%s, senderConstraint=%s, backChannelOrigin=%s, backChannelAllowInsecureHttp=%s]"
                 .formatted(issuer, clientId, redact(clientSecret), scopes, redirectUri, logout, session, stepUp, userInfo,
-                        login, clientAuthentication, senderConstraint, backChannelOrigin, backChannelAllowInsecureHttp);
+                        login, clientAuthentication, senderConstraint, maskUserInfo(backChannelOrigin),
+                        backChannelAllowInsecureHttp);
+    }
+
+    /**
+     * Masks the user-info component of an origin for display: everything between {@code ://} and the
+     * first {@code @} of the authority is replaced, so a credential written into the origin never
+     * reaches a log line. An origin without user-info is returned unchanged.
+     *
+     * @param origin the configured origin, may be {@code null}
+     * @return the origin with any user-info masked, or {@code null} when absent
+     */
+    private static String maskUserInfo(String origin) {
+        if (origin == null) {
+            return null;
+        }
+        int authorityStart = origin.indexOf("://");
+        if (authorityStart < 0) {
+            return origin;
+        }
+        authorityStart += 3;
+        int authorityEnd = origin.length();
+        for (char terminator : new char[]{'/', '?', '#'}) {
+            int index = origin.indexOf(terminator, authorityStart);
+            if (index >= 0 && index < authorityEnd) {
+                authorityEnd = index;
+            }
+        }
+        int at = origin.lastIndexOf('@', authorityEnd - 1);
+        if (at < authorityStart) {
+            return origin;
+        }
+        return origin.substring(0, authorityStart) + "****" + origin.substring(at);
     }
 
     /**

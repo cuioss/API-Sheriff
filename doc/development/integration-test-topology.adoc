@@ -687,8 +687,9 @@ a class that uses the rig out of the concurrent Failsafe execution: they run in 
 | A dedicated docker network, `sheriff-stub-idp`.
 
 | Stub container
-| `sheriff-stub-idp-wiremock`, under the network alias `keycloak` -- the host the descriptor's issuer
-  and every `jwks.url` name. It serves HTTPS on `8443` from a PKCS12 key store the rig derives below
+| `sheriff-stub-idp-wiremock`, under the network alias `keycloak` -- the host the descriptor's
+  `oidc.back_channel_origin` and every `jwks.url` dial; the issuer is the published identity
+  `https://localhost:1443`, as on the Compose stack. It serves HTTPS on `8443` from a PKCS12 key store the rig derives below
   `target/` from the committed `localhost.crt` and `localhost.key`. The subject alternative names of
   that certificate cover the alias, so the gateway keeps `egress_tls.oidc_tls_profile: benchmark-idp`,
   keeps hostname verification on and needs no new trust material. Its plain-HTTP admin port is its
@@ -722,7 +723,9 @@ token of every token-endpoint answer carries the thumbprint of the committed pro
 because the gateway refuses a token response that is not bound to its own proof key. An access token
 the rig mints for a bearer route carries no `cnf` claim. `BffUnboundTokenResponseIT` scripts
 the other two bindings on purpose -- no `cnf` claim, and a `cnf.jkt` naming another committed key --
-to observe that refusal. The stub validates nothing. Its token endpoint
+to observe that refusal. The stub checks neither the client credential, the authorization code nor
+the PKCE verifier, but the rig asserts every DPoP proof's `htu` and `htm` against the request it
+arrived on, as Keycloak does. Its token endpoint
 refuses every grant a test did not script, so a refresh nobody expected ends the session instead of
 passing unnoticed.
 

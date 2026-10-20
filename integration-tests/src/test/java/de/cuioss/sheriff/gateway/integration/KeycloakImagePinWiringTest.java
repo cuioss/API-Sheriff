@@ -206,10 +206,23 @@ class KeycloakImagePinWiringTest {
         }
         services.forEach((name, definition) -> {
             if (definition instanceof Map<?, ?> service && service.get("image") instanceof String image
-                    && image.startsWith(KEYCLOAK_IMAGE + ":")) {
+                    && isKeycloakReference(image)) {
                 pins.add(new KeycloakPin(directory, composeFile, String.valueOf(name), image));
             }
         });
+    }
+
+    /**
+     * Whether an image reference names {@value #KEYCLOAK_IMAGE} in any form — bare, tag-only, digest-only
+     * or tag plus digest. Selecting every form, not only {@code image:tag}, is what lets the pin assertion
+     * refuse an untagged or digest-only Keycloak instead of never comparing it.
+     *
+     * @param image the declared image reference
+     * @return {@code true} when the reference is a Keycloak image
+     */
+    private static boolean isKeycloakReference(String image) {
+        return image.equals(KEYCLOAK_IMAGE) || image.startsWith(KEYCLOAK_IMAGE + ":")
+                || image.startsWith(KEYCLOAK_IMAGE + "@");
     }
 
     /**
