@@ -67,8 +67,12 @@ DIGEST="ghcr.io/cuioss/api-sheriff@$(docker buildx imagetools inspect \
 echo "${DIGEST}"
 ----
 
-The digest the registry reports for the tag is the digest of the index the tag names. Deploy
-`"${DIGEST}"` verbatim.
+For a tag cut by the two-platform lane, the digest the registry reports is the digest of the index
+the tag names. A tag up to `0.2.4` names no index: it names a single `linux/amd64` image, and the
+same command returns that image's own digest. That digest is just as immutable, but it is a platform
+digest with no index above it, so the recipe under <<_pinning_the_index_or_one_platform>> does not
+apply to it -- there is no `manifests` list to read a platform digest out of. Deploy `"${DIGEST}"`
+verbatim.
 ====
 
 [NOTE]
