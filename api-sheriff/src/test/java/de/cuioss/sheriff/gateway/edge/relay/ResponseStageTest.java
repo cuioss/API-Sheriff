@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge.relay;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -53,6 +54,19 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("ResponseStage — stage 7 streamed response header policy")
 @Tag("isolated-fork")
 class ResponseStageTest {
+
+    @ParameterizedTest
+    @ValueSource(longs = {0L, -1L})
+    @DisplayName("a gRPC stream-idle bound built with a non-positive timeout is refused")
+    void nonPositiveStreamIdleTimeoutIsRefused(long timeoutMillis) {
+        Vertx vertx = Vertx.vertx();
+        try {
+            assertThrows(IllegalArgumentException.class,
+                    () -> ResponseStage.GrpcStreamIdleBound.withTimeout(vertx, timeoutMillis));
+        } finally {
+            vertx.close();
+        }
+    }
 
     @Nested
     @DisplayName("hop-by-hop stripping")

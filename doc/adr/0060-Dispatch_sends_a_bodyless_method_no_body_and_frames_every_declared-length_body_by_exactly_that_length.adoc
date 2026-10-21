@@ -489,8 +489,9 @@ for a stream closed before any processing took place, and a stream already answe
   the gRPC dispatch the request stream the bound watches and passes the bound to the relay. A test
   runs a call through that wiring in `TerminalDispatch` itself, with only the bound's timeout
   shortened, so dropping the watched stream inside it or the bound turns it red; the test supplies
-  its own dispatch function, so the part of `dispatchGrpc` that hands the watched stream to the
-  dispatch, and the building of the fixed five-minute bound, are run by no test (see
+  its own dispatch function, so that `dispatchGrpc` hands the watched stream to the dispatch, and
+  the fixed five-minute value it builds, are asserted by no test (`GrpcProxyIT` runs both without
+  asserting either; see
   link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds]).
 
 The amendment supersedes two statements of A1: the rejection of a whole-body deadline, and that the
