@@ -486,10 +486,6 @@ public final class ResponseStage {
         private final ReadStream<Buffer> delegate;
         private final Runnable onFrame;
 
-        /**
-         * @param delegate the watched stream
-         * @param onFrame  run for every delivered frame
-         */
         WatchedStream(ReadStream<Buffer> delegate, Runnable onFrame) {
             this.delegate = Objects.requireNonNull(delegate, "delegate");
             this.onFrame = Objects.requireNonNull(onFrame, "onFrame");
