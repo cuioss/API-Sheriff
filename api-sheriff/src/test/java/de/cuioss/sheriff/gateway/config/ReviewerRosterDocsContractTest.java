@@ -196,13 +196,13 @@ class ReviewerRosterDocsContractTest {
                 () -> assertFalse(rosterDrift(configured, documentedRoster(CONTROL_WRONG_ROLE_DOC),
                         "the wrong-role doc").isEmpty(), "the detector must report bots named in the wrong role"),
                 () -> assertFalse(rosterDrift(configured, documentedRoster(CONTROL_UNKNOWN_BOT_DOC),
-                        "the unknown-bot doc").isEmpty(),
+                                "the unknown-bot doc").isEmpty(),
                         "the detector must report a bot the configuration does not have"),
                 () -> assertFalse(rosterDrift(configuredWithExtraBot, documentedRoster(CONTROL_MATCHING_DOC),
-                        "the matching doc").isEmpty(),
+                                "the matching doc").isEmpty(),
                         "the detector must report a configured bot the document does not name"),
                 () -> assertFalse(rosterDrift(configured, documentedRoster(CONTROL_SILENT_DOC),
-                        "the silent doc").isEmpty(),
+                                "the silent doc").isEmpty(),
                         "the detector must report a document that names no reviewer, not accept it"));
     }
 
