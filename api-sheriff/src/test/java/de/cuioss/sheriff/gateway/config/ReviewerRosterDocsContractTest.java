@@ -148,11 +148,6 @@ class ReviewerRosterDocsContractTest {
         boolean isEmpty() {
             return required.isEmpty() && optional.isEmpty();
         }
-
-        @Override
-        public String toString() {
-            return REQUIRED + "=" + required + ", " + OPTIONAL + "=" + optional;
-        }
     }
 
     @Test
