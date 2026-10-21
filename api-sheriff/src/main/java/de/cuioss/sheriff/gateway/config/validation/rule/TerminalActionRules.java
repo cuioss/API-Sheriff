@@ -100,6 +100,11 @@ public class TerminalActionRules {
      *       {@link #validateRedirectAction}).</li>
      * </ul>
      * Every violation collects into the shared list; the rule never fails fast.
+     *
+     * @param gateway   the bound gateway document, whose anchors resolve each route's anchor type
+     * @param endpoints the enabled endpoints, whose every route's terminal action is judged
+     * @param topology  the resolved topology a {@code source: upstream} asset alias must resolve in
+     * @param errors    the shared violation list every refusal is appended to
      */
     public static void validateTerminalAction(GatewayConfig gateway, List<EndpointConfig> endpoints,
             ResolvedTopology topology, List<ConfigError> errors) {
@@ -378,6 +383,9 @@ public class TerminalActionRules {
      * path-shaped value would widen what the confinement is asked to serve. The segment predicate is
      * the one {@link DirectoryAssetSource} itself enforces, so boot and runtime cannot disagree. The
      * offending value is never echoed. Every violation collects into the shared list (ADR-0009).
+     *
+     * @param endpoints the enabled endpoints, whose every route's {@code asset} block is judged
+     * @param errors    the shared violation list every refusal is appended to
      */
     public static void validateAssetIndexAndFallback(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {

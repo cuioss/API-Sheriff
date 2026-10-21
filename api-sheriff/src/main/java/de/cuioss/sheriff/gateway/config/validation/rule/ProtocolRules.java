@@ -67,6 +67,10 @@ public class ProtocolRules {
      * {@code websocket} is rejected here, since those settings would otherwise be
      * silently ignored. Every violation collects into the shared list; the rule never
      * fails fast.
+     *
+     * @param gateway   the bound gateway document, whose anchors resolve each route's effective auth
+     * @param endpoints the enabled endpoints, whose every route's protocol and {@code websocket} block are judged
+     * @param errors    the shared violation list every refusal is appended to
      */
     public static void validateWebSocketConfig(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
@@ -130,6 +134,9 @@ public class ProtocolRules {
      * its trailers and carries no redirect, and a WebSocket route hands the connection to the opaque
      * relay — so on those protocols the key would be silently ignored. Every violation collects into
      * the shared list; the rule never fails fast (ADR-0009).
+     *
+     * @param endpoints the enabled endpoints, whose every route's {@code upstream.rewrite_location} is judged
+     * @param errors    the shared violation list every refusal is appended to
      */
     public static void validateRewriteLocationProtocol(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         for (EndpointConfig endpoint : endpoints) {
