@@ -64,6 +64,7 @@ import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.RoutingContext;
@@ -604,15 +605,18 @@ public final class TerminalDispatch {
      * client response through {@link ResponseEnds#endResponse} — on HTTP/2 the stream is then reset with
      * {@code NO_ERROR}. The body behind it was not read, so an HTTP/1.x connection is marked for
      * retirement here, before that reset, and the end closes it; a response that has already ended has
-     * its HTTP/1.x connection closed at once.
+     * its HTTP/1.x connection closed instead, decided on the client connection's own context, the one the
+     * response is ended on (see {@link #closeIfEndedOn}).
      */
     private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
         AtomicBoolean refused = new AtomicBoolean();
         ctx.put(LATE_BODY_REFUSED_KEY, refused);
+        Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
+                "client connection context missing — handle() must capture it before dispatch");
         return refusal -> {
             rejectionReporter.reportRejection(ctx, refusal);
             if (refusal.getEventType() == EventType.REQUEST_BODY_TIMEOUT) {
-                retireAfterLateBodyTimeout(ctx);
+                retireAfterLateBodyTimeout(ctx, clientContext);
                 return;
             }
             refused.set(true);
@@ -626,14 +630,38 @@ public final class TerminalDispatch {
     /**
      * Marks the HTTP/1.x connection of a request whose body outlived the request-body deadline after
      * the hand-over for retirement, so the relay's end closes it (see {@link #failRelay}); when the
-     * response has already ended there is no end to come, and the connection is closed at once. A
-     * no-op on HTTP/2, where the one end rule ends just the stream.
+     * response has already ended there is no end to come, and the connection is closed instead (see
+     * {@link #closeIfEndedOn}). A no-op on HTTP/2, where the one end rule ends just the stream.
+     * <p>
+     * The mark is recorded at once, on the thread the callback runs on, so it is in place before the
+     * upstream request is reset and the relay fails.
+     *
+     * @param ctx           the request whose body outlived the deadline
+     * @param clientContext the client connection's own context, the one its response is ended on
      */
-    private void retireAfterLateBodyTimeout(RoutingContext ctx) {
+    private void retireAfterLateBodyTimeout(RoutingContext ctx, Context clientContext) {
         connectionRetirement.markFramingRejection(ctx);
-        if (ResponseEnds.isHttp1(ctx.request().version()) && ctx.response().ended()) {
-            ctx.request().connection().close();
+        if (ResponseEnds.isHttp1(ctx.request().version())) {
+            closeIfEndedOn(clientContext, ctx.request());
         }
+    }
+
+    /**
+     * Closes the HTTP/1.x connection of {@code request} when its response has already ended, deciding on
+     * {@code clientContext}. The late callback runs on the upstream request's event loop, while the
+     * response is ended on the client connection's, so whether it has ended is read there: a response
+     * the relay ends normally just before this decision is seen as ended and its connection is closed. A
+     * response not yet ended is left to the relay's end, which closes the marked connection.
+     *
+     * @param clientContext the client connection's own context
+     * @param request       the request whose body outlived the request-body deadline after the hand-over
+     */
+    static void closeIfEndedOn(Context clientContext, HttpServerRequest request) {
+        clientContext.runOnContext(v -> {
+            if (request.response().ended()) {
+                request.connection().close();
+            }
+        });
     }
 
     /** @return whether a late body refusal has reset this request's response */

@@ -1214,11 +1214,21 @@ public final class DispatchStage {
     }
 
     /**
-     * The refusal of a request body still arriving when the request-body deadline passed: an
-     * {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) like the idle timeout's, told apart from it by
-     * its type so it is reported with its own record — the body made progress, it did not end in time.
-     * Like every client-ended dispatch it is a gateway rejection: the breaker skips it and the retry
-     * predicate refuses it.
+     * The refusal of a request body that did not end within the request-body deadline. It is raised in
+     * every case the deadline ends a body:
+     * <ul>
+     *   <li>the deadline passes while the gateway is reading the body;</li>
+     *   <li>the deadline passed while the body was not being read, because the upstream was not taking
+     *       data, and the body is read again afterwards;</li>
+     *   <li>the deadline passed before the body was read at all, because the attempt obtained its pooled
+     *       upstream connection only after it — the wait for the connection counts against the deadline —
+     *       and the body starts to be read.</li>
+     * </ul>
+     * In the last two cases the body is ended by that read itself, which never reaches the inbound stream.
+     * The refusal is an {@link EventType#REQUEST_BODY_TIMEOUT} ({@code 408}) like the idle timeout's,
+     * told apart from it by its type so it is reported with its own record: the body did not end within the
+     * deadline, whether or not it was still making progress. Like every client-ended dispatch it is a
+     * gateway rejection: the breaker skips it and the retry predicate refuses it.
      *
      * @since 1.0
      */
@@ -1344,6 +1354,11 @@ public final class DispatchStage {
 
         /** Added before a nanosecond remainder is converted, so the re-armed delay rounds up. */
         private static final long MILLIS_ROUNDING_NANOS = TimeUnit.MILLISECONDS.toNanos(1) - 1;
+
+        /** What {@link #resume()} and {@link #fetch(long)} run inside a read's window: nothing. */
+        private static final Runnable NOTHING_IN_THE_READ_WINDOW = () -> {
+            // Only a test places something between the first passed-deadline check and the clock's resume.
+        };
 
         private final ReadStream<Buffer> delegate;
         private final long maxBytes;
@@ -1836,8 +1851,16 @@ public final class DispatchStage {
          */
         @Override
         public ReadStream<Buffer> resume() {
-            if (!endAtPassedDeadline()) {
-                resumeIdleClock();
+            return resume(NOTHING_IN_THE_READ_WINDOW);
+        }
+
+        /**
+         * {@link #resume()}, running {@code inReadWindow} after the read's first passed-deadline check and
+         * before the idle clock resumes (see {@link #readMayProceed}). Package-private so a test can place a
+         * deadline timer in that window; {@link #resume()} runs nothing there.
+         */
+        ReadStream<Buffer> resume(Runnable inReadWindow) {
+            if (readMayProceed(inReadWindow)) {
                 delegate.resume();
             }
             return this;
@@ -1850,11 +1873,40 @@ public final class DispatchStage {
          */
         @Override
         public ReadStream<Buffer> fetch(long amount) {
-            if (!endAtPassedDeadline()) {
-                resumeIdleClock();
+            return fetch(amount, NOTHING_IN_THE_READ_WINDOW);
+        }
+
+        /**
+         * {@link #fetch(long)}, running {@code inReadWindow} after the read's first passed-deadline check
+         * and before the idle clock resumes (see {@link #readMayProceed}). Package-private so a test can
+         * place a deadline timer in that window; {@link #fetch(long)} runs nothing there.
+         */
+        ReadStream<Buffer> fetch(long amount, Runnable inReadWindow) {
+            if (readMayProceed(inReadWindow)) {
                 delegate.fetch(amount);
             }
             return this;
+        }
+
+        /**
+         * Restarts the idle clock for a read of the body, unless the request-body deadline has passed — then
+         * the body is ended instead.
+         * <p>
+         * The passed deadline is checked before the clock resumes and again once it has. Until the clock
+         * has resumed, the stream is still marked paused, so a deadline timer firing in between only records
+         * that the deadline passed; the second check ends the body. A timer firing after the clock resumed
+         * finds the stream no longer paused and ends the body itself.
+         *
+         * @param inReadWindow runs between the first passed-deadline check and the clock's resume
+         * @return {@code true} when the read may reach the inbound stream
+         */
+        private boolean readMayProceed(Runnable inReadWindow) {
+            if (endAtPassedDeadline()) {
+                return false;
+            }
+            inReadWindow.run();
+            resumeIdleClock();
+            return !endAtPassedDeadline();
         }
 
         @Override

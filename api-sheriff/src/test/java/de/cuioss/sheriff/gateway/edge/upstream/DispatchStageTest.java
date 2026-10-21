@@ -592,6 +592,41 @@ class DispatchStageTest {
                     () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
         }
 
+        /**
+         * A read checks the passed deadline before the idle clock resumes and again once it has. A deadline
+         * timer that fires between the two, while the stream is still marked paused, only records that the
+         * deadline passed; the second check then ends the body. The timer is placed in that window through
+         * the stream's read seam, so the interleaving is forced rather than hoped for.
+         */
+        @ParameterizedTest(name = "read again by {0}")
+        @ValueSource(strings = {"resume", "fetch"})
+        @DisplayName("a deadline timer firing between a read's first deadline check and the clock's resume still ends the body")
+        void deadlineTimerInsideTheReadWindowStillEndsTheBody(String restart) {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            probe.capped.startIdleClock();
+            probe.capped.pause();
+            probe.time.advanceMillis(DEADLINE_MILLIS - 1);
+            boolean quietBeforeTheDeadline = probe.failure.get() == null && probe.aborts.get() == 0;
+            Runnable deadlineTimerFires = () -> probe.time.advanceMillis(1);
+
+            if ("resume".equals(restart)) {
+                probe.capped.resume(deadlineTimerFires);
+            } else {
+                probe.capped.fetch(1, deadlineTimerFires);
+            }
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a read whose window a deadline timer fired in",
+                    () -> assertTrue(quietBeforeTheDeadline, "nothing ends the body before its deadline"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the read ends the body at its deadline"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(),
+                            "the inbound stream stays paused: the read that ended the body never reaches it"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
         @Test
         @DisplayName("after the hand-over, a body read again past its deadline reaches the late-violation callback before the reset")
         void deadlinePassedWhilePausedAfterTheHandOverGoesToTheLateCallback() {
