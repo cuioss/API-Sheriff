@@ -1792,7 +1792,8 @@ identically.
 character, on every block, so the header cannot become an injection vector (<<gw-03>>).
 
 *Status:* COVERED. `SecurityHeadersStageTest` and `ResponseStageTest` pin the map routing and the
-set/default relay; `ConfigValidatorTest` pins the orphan-mode and CSP refusals; and
+set/default relay; `HeaderRulesTest` pins the orphan-mode and CSP refusals
+(`HeaderModesOrphanRefusal`, `ContentSecurityPolicyInjection`); and
 `RoutingAndResponseHeadersIT` asserts against the native image that the anchor block applies only
 under its anchor, that it drops the global HSTS (wholesale), that a pre-route `404` and a preflight
 keep the global block, that `default` keeps an origin `X-Frame-Options` and fills an absent one, and
