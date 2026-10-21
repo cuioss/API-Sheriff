@@ -132,9 +132,10 @@ architecture therefore compiles for GraalVM's default target:
   "Verified on"). Graviton 2 is covered by instruction-set inclusion; no Graviton 2 host has booted
   the image.
 
-The arm64 leg's native-image build log states the target machine on its `Graal compiler:` line.
-That line, read from the arm64 leg of the lane's dry run, is the observation the arm64 target
-rests on.
+Each leg's native-image build log states the target machine on its `Graal compiler:` line. The
+lane's dry run (workflow run 39588321108, 2026-10-21) shows `target machine: x86-64-v3` on the
+amd64 leg and `target machine: armv8.1-a` on the arm64 leg, so both defaults are observed and not
+only documented.
 
 The hosts *below* either baseline are not served by the published image, and are named rather than
 left to be discovered:
@@ -205,9 +206,9 @@ posture (ADR-0042) are unchanged; each platform image is that same artifact for 
 * *Leg-local tags persist.* Each release leaves its `leg-<sha>-<arch>` tags on the two platform
   manifests in the package. They name images that are part of a signed release, so they are
   harmless, but they accumulate, and a version badge or tag listing has to ignore them.
-* *The arm64 target rests on GraalVM's documented default until a leg log is read.* Should a
-  builder-image update change the AArch64 default, the supported arm64 population changes with it;
-  the build log line names the target, and nothing else asserts it.
+* *The arm64 target is the builder image's default, not a pinned setting.* The dry run observed
+  `armv8.1-a`, but should a builder-image update change the AArch64 default, the supported arm64
+  population changes with it; the build log line names the target, and nothing else asserts it.
 * *The runner label is an external dependency.* The arm64 leg needs GitHub's arm64 Linux runner;
   losing access to it stops every release, not only arm64.
 
