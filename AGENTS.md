@@ -168,14 +168,14 @@ files.
 1. Branch: `git checkout -b <branch-name>`
 2. Commit, then push with `git push -u origin <branch-name>`
 3. Open the pull request against `main`
-4. Wait for CI and the automated reviewers — CodeRabbit and PR-Agent gate the merge; Sourcery is
-   optional, so its absence or rate-limit never blocks
+4. Wait for CI and the automated reviewers — CodeRabbit gates the merge; Sourcery is optional, so
+   its absence or rate-limit never blocks
 5. Treat the union of every reviewer's comments as the work list, Sourcery's included when it
    comments. Every comment gets a reply
    and is resolved: fix and explain, or explain why not. When not fully confident, ask the user
    rather than deciding
-6. Re-review after a fix push is not uniform — CodeRabbit and Sourcery re-review automatically,
-   PR-Agent does not. Request it explicitly by posting a `/review` comment
+6. Re-review after a fix push is automatic — CodeRabbit and Sourcery both re-review on push, so
+   no re-request is needed
 7. Do not enable auto-merge unless told to
 8. After the merge, check both the PR-attached post-merge run and the main-branch run (the
    snapshot deployment appears only on the merge commit, never on the pull request), and assert

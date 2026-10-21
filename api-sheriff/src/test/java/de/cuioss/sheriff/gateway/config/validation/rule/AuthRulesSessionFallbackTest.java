@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.config.validation;
+package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,6 +40,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.jspecify.annotations.Nullable;
@@ -50,9 +51,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 /**
- * Tests for the {@code auth.session_fallback} boot refusal the {@link ConfigValidator} runs: a declared
- * {@code session_fallback: true} is refused on any posture other than {@code require: bearer}, and
- * refused when the gateway declares no {@code oidc} block — on anchor, endpoint and route blocks alike.
+ * Tests for the {@code auth.session_fallback} boot refusal the {@link ConfigValidator} runs through
+ * {@link AuthRules}: a declared {@code session_fallback: true} is refused on any posture other than
+ * {@code require: bearer}, and refused when the gateway declares no {@code oidc} block — on anchor,
+ * endpoint and route blocks alike.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed. The two refusal fragments are literals on purpose: each is the
@@ -61,7 +63,7 @@ import org.junit.jupiter.params.provider.EnumSource;
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — auth.session_fallback")
-class ConfigValidatorSessionFallbackTest {
+class AuthRulesSessionFallbackTest {
 
     private static final String NOT_BEARER = "declares auth.session_fallback: true on a posture other than require: bearer";
     private static final String NO_OIDC = "declares auth.session_fallback: true but the gateway declares no oidc block";

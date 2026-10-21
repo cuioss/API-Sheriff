@@ -201,8 +201,9 @@ carries the path.
 
 === Key-based or client-secret authentication
 
-The mode is read through one predicate, `OidcConfig.usesClientSecret()`. `ConfigValidator` and the
-producer both call it, so validation and runtime cannot resolve the mode differently.
+The mode is read through one predicate, `OidcConfig.usesClientSecret()`. `OidcClientRules`, which
+holds the boot rule `validateClientAuthentication`, and the producer both call it, so validation and
+runtime cannot resolve the mode differently.
 
 * *No secret* -- `selectClientCredential` resolves the client-authentication key and returns its
   `PrivateKeyJwtAuth` together with a publishing `ClientJwksEndpoint`.

@@ -282,8 +282,8 @@ diagnosable, server-side failure into an invisible client-side one, and the sess
 exists. That is the exact failure this variant already shipped once, and the reason the shipped
 default was moved down to 4019 rather than left at the round 4096.
 
-The gateway does not leave that decision unmarked. `ConfigValidator` derives the *emitted header*
-size from the resolved configuration -- the effective budget plus the actual cookie name and the
+The gateway does not leave that decision unmarked. `OidcSessionRules`, run by `ConfigValidator` at
+boot, derives the *emitted header* size from the resolved configuration -- the effective budget plus the actual cookie name and the
 widest `Max-Age` -- and warns at boot (`COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE`) when it exceeds the
 4096-byte guarantee, naming the value budget that would fit instead. An operator who raises the
 budget anyway is doing so against a boot-time warning that says what it costs, which is the correct

@@ -105,9 +105,10 @@ import org.jspecify.annotations.Nullable;
  * {@code HttpOnly}, {@code SameSite=Lax} and {@code Path=/} are emitted unconditionally from
  * {@code HARDENING_ATTRIBUTES}. The {@code __Host-} prefix is <em>not</em> in that set — it is part
  * of the cookie <em>name</em>. The default {@code session.cookie_name} carries it, and boot
- * validation ({@code ConfigValidator}, the session-cookie name rule) refuses a configured name that
- * does not start with it, so every name this codec is built with keeps the host-binding a browser
- * enforces on the prefix. The codec itself does not re-check the name.
+ * validation ({@code OidcSessionRules}, the session-cookie name rule run by {@code ConfigValidator})
+ * refuses a configured name that does not start with it, so every name this codec is built with
+ * keeps the host-binding a browser enforces on the prefix. The codec itself does not re-check the
+ * name.
  * <p>
  * The codec is framework-agnostic and safe for concurrent use — it holds only immutable
  * configuration and a thread-safe {@link SecureRandom}, and creates a fresh {@link Cipher} per
@@ -198,10 +199,11 @@ public final class SealedSessionCookieCodec {
      * {@link #toSetCookieHeader} uses the <em>configured</em> pair, so a longer cookie name or a TTL
      * past 9999 seconds emits a larger header than this figure describes. The general answer is
      * {@link #setCookieHeaderOverhead(String, Duration)}, which derives the overhead from the
-     * resolved configuration; {@code ConfigValidator} goes through that method, never through this
-     * constant. What survives here is the documented default-configuration figure the reference
-     * material and the {@code ApiSheriff-114} / {@code ApiSheriff-124} catalogue entries cite, kept
-     * pinned to the derivation by {@code SealedSessionCookieCodecTest} so the two cannot drift.
+     * resolved configuration; {@code OidcSessionRules}, run by {@code ConfigValidator} at boot, goes
+     * through that method, never through this constant. What survives here is the documented
+     * default-configuration figure the reference material and the {@code ApiSheriff-114} /
+     * {@code ApiSheriff-124} catalogue entries cite, kept pinned to the derivation by
+     * {@code SealedSessionCookieCodecTest} so the two cannot drift.
      */
     public static final int DEFAULT_SET_COOKIE_HEADER_OVERHEAD = 77;
 
@@ -242,8 +244,9 @@ public final class SealedSessionCookieCodec {
      * overhead it subtracts is the default cookie name and a four-digit {@code Max-Age}; a gateway
      * running a longer {@code session.cookie_name} or a TTL past 9999 seconds emits a wider header
      * around the same value and is still over the guarantee. That case is exactly what
-     * {@code ConfigValidator} warns on, deriving the overhead from the resolved configuration via
-     * {@link #setCookieHeaderOverhead(String, Duration)} rather than from any constant here.
+     * {@code OidcSessionRules} warns on at boot, deriving the overhead from the resolved
+     * configuration via {@link #setCookieHeaderOverhead(String, Duration)} rather than from any
+     * constant here.
      */
     public static final int DEFAULT_COOKIE_VALUE_BUDGET = BROWSER_SAFE_COOKIE_VALUE_BUDGET;
 
