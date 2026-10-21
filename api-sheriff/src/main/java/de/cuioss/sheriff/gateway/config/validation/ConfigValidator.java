@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.gateway.config.validation;
 
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.WILDCARD_ORIGIN;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 
 import java.util.ArrayList;
@@ -29,18 +28,17 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
-import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.AnchorRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.AssetDefaultsRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.AuthRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ForwardingRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.HeaderRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.LimitRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.OidcClientRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.OidcSessionRules;
@@ -265,9 +263,9 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateMethodMembership(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validateForwardedTrust(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateContentSecurityPolicy(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateHeaderModes(gateway, errors),
+            (gateway, endpoints, topology, errors) -> HeaderRules.validateCors(gateway, errors),
+            (gateway, endpoints, topology, errors) -> HeaderRules.validateContentSecurityPolicy(gateway, errors),
+            (gateway, endpoints, topology, errors) -> HeaderRules.validateHeaderModes(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMode(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxSessions(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionIdleTimeout(gateway, errors),
@@ -344,105 +342,6 @@ public final class ConfigValidator {
             rule.validate(gateway, enabledEndpoints, topology, errors);
         }
         return List.copyOf(errors);
-    }
-
-    /**
-     * Rule: the global CORS block must not combine a wildcard origin with {@code allow_credentials}.
-     * <p>
-     * CORS is global only (ADR-0007 Amendment A1): it is evaluated at stage 0, before route selection
-     * and authentication, so no anchor can scope it. The bundled schema refuses a {@code cors} block
-     * under {@code anchors.*.security_headers} at load, which is why only the gateway block is checked
-     * here.
-     */
-    private static void validateCors(GatewayConfig gateway, List<ConfigError> errors) {
-        checkCors(gateway.securityHeaders(), "/security_headers/cors", errors);
-    }
-
-    /**
-     * Rule: a {@code content_security_policy} value must carry no CR, LF or other control character,
-     * on the global block and on every anchor block alike.
-     * <p>
-     * The value is served verbatim as the {@code Content-Security-Policy} response header, so a line
-     * terminator would inject a header (CWE-113). The bundled schema already bounds the value's shape;
-     * this rule is the boot-time authority that names the offending block, echoing the value only
-     * through the injection-safe {@code renderForMessage} (CWE-117). Every violation collects into the
-     * shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateContentSecurityPolicy(GatewayConfig gateway, List<ConfigError> errors) {
-        checkContentSecurityPolicy(gateway.securityHeaders(), "/security_headers/content_security_policy", errors);
-        for (AnchorConfig anchor : gateway.anchors().values()) {
-            checkContentSecurityPolicy(anchor.securityHeaders(),
-                    "/anchors/%s/security_headers/content_security_policy".formatted(anchor.name()), errors);
-        }
-    }
-
-    private static void checkContentSecurityPolicy(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
-            List<ConfigError> errors) {
-        String policy = securityHeaders == null ? null : securityHeaders.contentSecurityPolicy();
-        if (policy == null) {
-            return;
-        }
-        if (policy.isBlank() || policy.chars().anyMatch(Character::isISOControl)) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    "content_security_policy %s must be a non-blank value without CR, LF or other control characters; it is served verbatim as a response header"
-                            .formatted(renderForMessage(policy))));
-        }
-    }
-
-    /**
-     * Rule: a {@code header_modes} entry may only name a header the same block enables — on the global
-     * block and on every anchor block alike.
-     * <p>
-     * A mode for a header that is absent (or {@code false}) in its block would configure the precedence
-     * of a header the gateway never emits for that block: the key would parse and do nothing. It is
-     * refused rather than silently ignored, naming the offending entry. Every violation collects into the
-     * shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateHeaderModes(GatewayConfig gateway, List<ConfigError> errors) {
-        checkHeaderModes(gateway.securityHeaders(), "/security_headers/header_modes", errors);
-        for (AnchorConfig anchor : gateway.anchors().values()) {
-            checkHeaderModes(anchor.securityHeaders(),
-                    "/anchors/%s/security_headers/header_modes".formatted(anchor.name()), errors);
-        }
-    }
-
-    private static void checkHeaderModes(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
-            List<ConfigError> errors) {
-        if (securityHeaders == null) {
-            return;
-        }
-        SecurityHeadersConfig.HeaderModes modes = securityHeaders.headerModes();
-        if (modes == null) {
-            return;
-        }
-        checkHeaderMode(modes.hsts(), securityHeaders.hsts() != null, "hsts", pointer, errors);
-        checkHeaderMode(modes.contentTypeNosniff(), Boolean.TRUE.equals(securityHeaders.contentTypeNosniff()),
-                "content_type_nosniff", pointer, errors);
-        checkHeaderMode(modes.frameDeny(), Boolean.TRUE.equals(securityHeaders.frameDeny()), "frame_deny", pointer,
-                errors);
-        checkHeaderMode(modes.contentSecurityPolicy(), securityHeaders.contentSecurityPolicy() != null,
-                "content_security_policy", pointer, errors);
-    }
-
-    private static void checkHeaderMode(SecurityHeadersConfig.@Nullable HeaderMode mode, boolean headerEnabled,
-            String key, String pointer, List<ConfigError> errors) {
-        if (mode != null && !headerEnabled) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer + "/" + key,
-                    "header_modes.%s is declared but the same security_headers block does not enable %s; a mode for a header the gateway never emits is refused"
-                            .formatted(key, key)));
-        }
-    }
-
-    private static void checkCors(@Nullable SecurityHeadersConfig securityHeaders, String pointer,
-            List<ConfigError> errors) {
-        SecurityHeadersConfig.Cors cors = securityHeaders == null ? null : securityHeaders.cors();
-        if (cors == null) {
-            return;
-        }
-        if (Boolean.TRUE.equals(cors.allowCredentials()) && cors.allowedOrigins().contains(WILDCARD_ORIGIN)) {
-            errors.add(new ConfigError(GATEWAY_FILE, pointer,
-                    "wildcard origin '*' is not permitted together with allow_credentials"));
-        }
     }
 
     /**
