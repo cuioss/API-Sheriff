@@ -7,8 +7,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: The framing gate decides on headers, and dispatch owns what actually crosses to the upstream: a GET or HEAD without a positive declared Content-Length is sent upstream with no body on every protocol and its first inbound body byte, whatever its size, refuses the request (400 while the dispatch is awaited, a stream reset once the response has been handed over for relay), while every other request that declares a checked Content-Length is forwarded with that validated length as the upstream Content-Length and held to exactly that many bytes; a request without a declared length keeps the transport's framing; a headers-time rejection, a size-cap safeguard, an HTTP/2-only rule, a GET-only framing rule and relaying the client's own header are rejected. AMENDED (A1, the request-body idle bound): a dispatch that holds an upstream connection and is reading the request body ends after a fixed 10 s without a forwarded body byte as REQUEST_BODY_TIMEOUT (408, input-validation); the wait for a pooled connection, the upstream's backpressure, the time after the response was handed over, bodyless requests and gRPC routes are not counted or not watched; the upstream request is reset so its connection is released at once; on HTTP/2 the stream is reset NO_ERROR through the one end rule, on HTTP/1.x the answer carries Connection: close; the breaker skips it and the retry predicate refuses it like every client-ended dispatch; the value is a fixed gateway constant like the upstream guard (ADR-0064) and sits below the guard's 30 s timeout, which still bounds the whole dispatch; leaving the guard timeout as the only bound, a configurable value, a whole-body deadline and starting the clock with the dispatch are rejected
-// tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, upstream-connection
+// summary: The framing gate decides on headers, and dispatch owns what actually crosses to the upstream: a GET or HEAD without a positive declared Content-Length is sent upstream with no body on every protocol and its first inbound body byte, whatever its size, refuses the request (400 while the dispatch is awaited, a stream reset once the response has been handed over for relay), while every other request that declares a checked Content-Length is forwarded with that validated length as the upstream Content-Length and held to exactly that many bytes; a request without a declared length keeps the transport's framing; a headers-time rejection, a size-cap safeguard, an HTTP/2-only rule, a GET-only framing rule and relaying the client's own header are rejected. AMENDED (A1, the request-body idle bound): a dispatch that holds an upstream connection and is reading the request body ends after a fixed 10 s without a forwarded body byte as REQUEST_BODY_TIMEOUT (408, input-validation); the wait for a pooled connection, the upstream's backpressure, the time after the response was handed over, bodyless requests and gRPC routes are not counted or not watched; the upstream request is reset so its connection is released at once; on HTTP/2 the stream is reset NO_ERROR through the one end rule, on HTTP/1.x the answer carries Connection: close; the breaker skips it and the retry predicate refuses it like every client-ended dispatch; the value is a fixed gateway constant like the upstream guard (ADR-0064) and sits below the guard's 30 s timeout, which still bounds the whole dispatch; leaving the guard timeout as the only bound, a configurable value, a whole-body deadline and starting the clock with the dispatch are rejected. AMENDED (A2, the request-body deadline and the gRPC stream-idle bound): A1's rejection of a whole-body deadline is reopened, because the guard bounds a dispatch only until the response head and ended a trickling body as an upstream timeout the breaker counts; a body-carrying dispatch now ends its body 25 s after its upstream attempt started -- 408 REQUEST_BODY_TIMEOUT before the response head (breaker skips it, never retried), after the head the upstream request is reset and the relay ends through the one end rule -- the wait for a pooled connection counts towards it, a deadline that passed while the body was not being read (the upstream not taking data, or the connection obtained only after it) ends the body the same way once it is read again, an attempt that ends without handing its response back stops it, logged as INFO ApiSheriff-24; a gRPC call keeps its exemption from both request-body bounds and is ended after a fixed five minutes without a frame in either direction with grpc-status 4 DEADLINE_EXCEEDED, logged as INFO ApiSheriff-25; both are fixed constants and grpc-timeout is not honoured; a refused and a client-reset queued HTTP/2 upload already return their credit and permit, pinned by tests without a production change; REFUSED_STREAM for the admission refusal is rejected and ADR-0066 is not amended; a fixed 2 MiB connection window was measured and rejected
+// tags: security, request-smuggling, framing, http-desync, http2, dispatch, bodyless-method, content-length, upstream-framing, streaming, defence-in-depth, request-body-idle-timeout, request-body-deadline, grpc-stream-idle-timeout, upstream-connection
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -306,6 +306,199 @@ to send.
 The amendment supersedes no statement above: it adds the time bound to the dispatch side that this
 record already makes the owner of what crosses to the upstream.
 
+[[amendment-a2]]
+== Amendment A2 (2026-10-21): a request body ends within 25 s of its attempt, and a gRPC call silent for five minutes is ended
+
+*A1 bounded a body that stops arriving. It left two cases without a bound: a body that keeps
+arriving too slowly to end, and a gRPC call, which neither request-body bound watches. A fixed 25 s
+request-body deadline, counted from the start of the upstream attempt, ends the first as the
+request's. A fixed five-minute stream-idle bound, restarted by a frame in either direction, ends the
+second with `DEADLINE_EXCEEDED`. Two further questions about upload bodies the gateway holds without
+reading them were checked and need no change.*
+
+=== Context
+
+Four questions were open after A1.
+
+. *A body that keeps arriving.* A body that sends a chunk more often than every 10 s never trips the
+  idle bound, and what ended it depended on the upstream. An upstream that reads the whole body
+  before it answers keeps the guarded call waiting, so the guard's 30 s timeout ended the dispatch as
+  `UPSTREAM_TIMEOUT` (`504`): an end attributed to the upstream and counted by the breaker. An
+  upstream that answers at once and keeps reading returns the guarded call with its response head,
+  and the idle clock stops when the attempt's send completes, so nothing ended the body at all. Tests
+  driving both shapes over HTTP/2 and HTTP/1.1 showed both outcomes before the change.
+. *A gRPC call.* A1 exempts `protocol: grpc` routes from the idle bound. Until the upstream sends its
+  response headers the guard's timeout bounds the call. Once they have arrived the guarded call has
+  returned, and nothing in the gateway bounded how long the call stayed open.
+. *An HTTP/2 upload whose body the gateway does not read.* Such a stream returns no flow-control
+  window while it stays open. Two cases were in question: an upload refused `503` by the admission
+  cap, and an upload its client resets while its dispatch waits for a pooled upstream connection.
+  Either one, still holding its credit, would leave the connection window used up for the other
+  streams on the connection.
+. *The size of the inbound connection window.* The window is derived as 100 streams times the
+  65,535-byte stream window, 6,553,500 bytes. A fixed 2 MiB window would hold less buffered per
+  connection.
+
+=== Decision
+
+. *A request body ends within 25 s of the start of its upstream attempt.* A body-carrying dispatch
+  carries a request-body deadline 25 s after its attempt started, which is the moment the guard's
+  30 s timeout starts as well. The deadline's timer is set when the attempt hands its body to the
+  upstream request, after it obtained its pooled connection, and the time waited for that connection
+  counts towards the 25 s. When the deadline passes while the gateway is still reading the body, the
+  upstream request is reset and the body is refused as `REQUEST_BODY_TIMEOUT`.
+  *Before the response head* this is the dispatch's own failure. It is answered `408`
+  (`INPUT_VALIDATION`) and ends what it arrived on, exactly as A1's idle expiry does: on HTTP/2 the
+  stream is reset with `NO_ERROR` through the one end rule of
+  link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]
+  and the connection carries on; on HTTP/1.x the answer carries `Connection: close`. The breaker skips
+  it and records it as a success, and the retry predicate refuses it.
+  *After the response head* the reset of the upstream request fails the relay, and the relayed
+  response is ended through the one end rule. The status the upstream sent stands, also when no body
+  byte of the upstream had been relayed yet and the client response head was still unwritten; that
+  response ends with the upstream's status and no body. On HTTP/2 the stream is then reset with
+  `NO_ERROR`; on HTTP/1.x the connection is closed once the end has been written, and a response
+  whose head was still unwritten carries `Connection: close`.
+. *A passed deadline stays in force; a stopped one reports nothing.* A deadline that passes while the
+  body is not being read ends the body the moment it is read again, on the same path, before or after
+  the response head. Two cases reach this: the forwarding pipe had paused the body because the upstream
+  was not taking data, so the upstream request is not reset while the upstream holds it back but the
+  body is ended when the pipe resumes it; and the attempt obtained its pooled connection only after
+  the deadline, so the body is ended as soon as it starts to be read, answered `408` before any byte
+  crosses. The deadline stops when the body ends, when another abort -- a cap breach, a framing
+  refusal, an idle expiry, an inbound failure -- claims the stream first, and when the attempt ends
+  without handing its response back -- its send failed, the next attempt begins, or the dispatch
+  fails. A stopped deadline neither refuses the body nor resets the upstream request again. A
+  bodyless request does not arm it, and neither does a `protocol: grpc` route.
+. *A gRPC call that carries no frame for five minutes is ended.* Once the upstream has sent its
+  response headers, the gRPC relay carries a stream-idle bound of a fixed five minutes, the default
+  stream idle timeout of Envoy. Every request frame the dispatch reads and every upstream frame the
+  relay writes restarts it, so a call stays open for as long as either side is sending. When five
+  minutes pass with no frame in either direction, the upstream request is reset and the client
+  response is ended through the one end rule with the trailers `grpc-status: 4` (`DEADLINE_EXCEEDED`)
+  and `grpc-message: stream-idle-timeout` in place of the upstream's. Before the response headers the
+  call stays on the guard's 30 s timeout, which ends it as `UPSTREAM_TIMEOUT`, rendered
+  `DEADLINE_EXCEEDED`. A gRPC route keeps its exemption from the 10 s idle bound, and the 25 s deadline
+  is not armed on it.
+. *Fixed values.* The 25 s deadline and the five-minute stream-idle bound are gateway constants with
+  no configuration key or system property, following A1 and ADR-0064. A call's `grpc-timeout` header
+  is not honoured.
+. *Recording.* `INFO` `ApiSheriff-24` records a body that did not end by the deadline, and `INFO`
+  `ApiSheriff-25` a gRPC call the stream-idle bound ended. Each carries the route id and the fixed
+  value only and is latched per route, like `ApiSheriff-23`. `sheriff_errors_total` counts the
+  deadline under `event="REQUEST_BODY_TIMEOUT"`, the event A1's idle expiry carries. No error counter
+  counts a call the stream-idle bound ended.
+. *A refused or queued HTTP/2 upload returns its credit; nothing changed.* An upload refused `503` by
+  the admission cap is ended through the one end rule, which resets the stream with `NO_ERROR`.
+  Closing the stream returns the credit its unread body held, so an admitted upload on the same
+  connection can still send its whole body, and the connection stays open. An upload its client resets
+  while its dispatch waits for a pooled connection is closed by that reset, its credit returns to the
+  connection, and its admission permit comes back at once, while every pooled connection is still
+  held. Both held before this amendment. Two tests in `GatewayEdgeEarlyResponseResetTest` now pin
+  them, and no production code changed. The admission refusal keeps the `NO_ERROR` reset, and
+  ADR-0066 is not amended.
+. *The inbound connection window stays derived.* A fixed 2 MiB window was measured against the
+  derived 6,553,500-byte window with the k6 upload aspects over HTTP/2. It lost more throughput than
+  the 10% a change was allowed to cost, and it was reverted. The protocol, the figures and the limits
+  of the measurement are recorded in
+  link:../architecture.adoc#_http2_connection_window_measurement[the architecture's connection-window
+  measurement].
+
+=== Alternatives considered for the amendment
+
+*Bound the whole body by a deadline -- reopened and adopted.* A1 rejected this alternative because a
+slow but steady upload would be cut off, while the problem was a body that had stopped, and it left a
+body that keeps arriving to the guard's timeout. Two findings show that this judgement no longer
+holds. The guard bounds a dispatch only until the response head, so once an upstream had answered,
+a body that kept arriving was bounded by nothing. And where the guard did end a trickling body, it
+attributed the end to the upstream, as a `504` the breaker counts, for a wait the request caused.
+Before the response head the deadline ends a body 5 s earlier than the guard would have, and as the
+request's. After the head it is the only bound.
+
+*Leave the guard as the only bound on a body that keeps arriving.* Rejected for the same two
+findings.
+
+*Make the deadline or the stream-idle bound configurable.* Rejected on A1's grounds: the deadline
+has to stay below a guard timeout no route can see or change, and ADR-0064 keeps these bounds fixed
+policy of the gateway.
+
+*Arm the 25 s deadline on gRPC routes.* Rejected by operator decision. Long-lived client-streaming
+calls are normal for gRPC, and a call that keeps sending is not waiting for nothing; the stream-idle
+bound ends a call that has gone quiet. A test pins that a gRPC call pausing longer than either
+request-body bound is ended by neither.
+
+*Bound a gRPC call by a request-side idle clock.* Rejected because it would end a bidirectional call
+whose upstream keeps sending while its client is quiet, the shape of a watch or subscription call.
+Counting a frame in either direction, as Envoy's stream idle timeout does, ends only a call silent on
+both sides. The bound therefore lives in the response relay, a scope extension this amendment
+accepted.
+
+*Honour the call's `grpc-timeout`.* Not adopted. The header is the client's statement about its own
+call, and the bound the gateway enforces stays one fixed constant.
+
+*Reset an admission-refused upload with `REFUSED_STREAM`.* Rejected. ADR-0066 routes every response
+end, the admission `503` included, through one end rule that resets an answered stream whose body is
+still open with `NO_ERROR`, and it rejects choosing a reset code per case. A separate code for one
+answer would reopen that decision. `REFUSED_STREAM` also does not fit the case: RFC 9113 §8.7 uses it
+for a stream closed before any processing took place, and a stream already answered with a written
+`503` has been answered.
+
+*A fixed 2 MiB connection window.* Rejected on the measurement above.
+
+=== Consequences of the amendment
+
+*Positive.*
+
+* A body still arriving when the guard would have ended its dispatch as an upstream timeout is ended
+  as the request's: `408`, skipped by the breaker, never retried.
+* A body that keeps arriving after its upstream has answered is bounded: the relayed response ends at
+  the deadline.
+* A gRPC call silent in both directions for five minutes ends with a gRPC status its client
+  understands, and its upstream request is reset.
+* The release of credit by a refused and by a client-reset queued HTTP/2 upload is pinned by tests
+  rather than assumed.
+
+*Negative.*
+
+* An upload whose body has not ended 25 s after its attempt started is ended, however steadily it
+  arrives, and also when its upstream answered at once and would have read it whole. Before the
+  response head this replaces the guard's `504` at 30 s; after the head the cut is new. Time the
+  attempt spent waiting for a pooled connection counts towards the 25 s, so an upload that obtains
+  its connection only after the deadline is answered `408` although its client sent the whole body in
+  time, and a body the upstream resumes reading only after the deadline is ended then.
+* After the response head the client keeps the status the upstream sent, so a `200` can end before
+  its body is complete; on HTTP/2 the stream is then reset, and on HTTP/1.x the connection is closed.
+* A gRPC call that legitimately stays silent in both directions for more than five minutes has to
+  send messages to stay open. Connection-level HTTP/2 `PING` frames are not frames of the call and do
+  not count.
+* A call the stream-idle bound ended is recorded by `ApiSheriff-25` alone; no error counter counts it.
+
+*Risks.*
+
+* *Arming the deadline on the gRPC path.* A long client-streaming call would be ended.
+* *Resetting the upstream request while the upstream is not taking data.* The deadline would end a
+  body the upstream itself holds back; it waits for the next read instead, and ends the body then.
+* *Dropping a passed deadline.* A body read again only after the deadline, or one whose attempt
+  obtained its connection only after it, would no longer be ended at the deadline: before the
+  response head the guard's timeout would end it as an upstream timeout, and after it nothing would.
+* *Leaving the clocks of an attempt that ended running.* A deadline timer would fire against an
+  attempt the dispatch no longer waits for.
+* *Counting one direction only on the gRPC path.* A call whose other side keeps sending would be
+  ended.
+* *Changing how the edge wires the stream-idle bound.* The bound acts only because the edge hands
+  the gRPC dispatch the request stream the bound watches and passes the bound to the relay. A test
+  runs a call through that wiring in `TerminalDispatch` itself, with only the bound's timeout
+  shortened, so dropping the watched stream inside it or the bound turns it red; the test supplies
+  its own dispatch function, so that `dispatchGrpc` hands the watched stream to the dispatch, and
+  the fixed five-minute value it builds, are asserted by no test (`GrpcProxyIT` runs both without
+  asserting either; see
+  link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds]).
+
+The amendment supersedes two statements of A1: the rejection of a whole-body deadline, and that the
+guard's 30 s timeout bounds every dispatch as a whole, a steady upload included. The guard bounds a
+dispatch until its response head; a body still arriving 25 s after its attempt started is ended by
+the deadline.
+
 == References
 
 * link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029 -- The GET-with-body opt-in relaxes only the Content-Length leg] -- the headers-time gate this record completes on the dispatch side; the opt-in `GET` it admits is forwarded framed by its declared length.
@@ -313,7 +506,7 @@ record already makes the owner of what crosses to the upstream.
 * link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037 -- The gateway-owned header sets] -- the never-forward set that withholds the client's `Content-Length`, which dispatch replaces with the value it validated.
 * link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap] -- the streaming counter that also holds a declared-length body to its exact length.
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] and link:0008-data-plane-transport.adoc[ADR-0008 -- Data-plane transport] -- the streaming, never-buffered body model that rules out buffering to learn a length.
-* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the fixed guard and its 30 s timeout the request-body idle bound sits below (Amendment A1).
-* link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066 -- An HTTP/2 response answered while its request body is open] -- the one end rule the `408` of an idle body passes on HTTP/2 (Amendment A1).
-* link:../architecture.adoc[Architecture] -- the inbound pipeline, the framing gate's position and the dispatch stage; link:../architecture.adoc#_request_body_idle_timeout[the request-body idle timeout] (Amendment A1).
-* link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class, and the bodyless-method evidence row.
+* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the fixed guard and its 30 s timeout the request-body idle bound and the request-body deadline sit below (Amendments A1 and A2).
+* link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066 -- An HTTP/2 response answered while its request body is open] -- the one end rule the `408` of an idle body passes on HTTP/2 (Amendment A1), and the end of a body past its deadline, of a gRPC call past its stream-idle bound and of the admission `503` (Amendment A2).
+* link:../architecture.adoc[Architecture] -- the inbound pipeline, the framing gate's position and the dispatch stage; link:../architecture.adoc#_request_body_idle_timeout[the request-body idle timeout] (Amendment A1); link:../architecture.adoc#_request_body_deadline[the request-body deadline], link:../architecture.adoc#_grpc_stream_idle_bound[the gRPC stream-idle bound], link:../architecture.adoc#_http2_unread_upload_release[the release of a refused or queued HTTP/2 upload] and link:../architecture.adoc#_http2_connection_window_measurement[the connection-window measurement] (Amendment A2).
+* link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class, and the bodyless-method evidence row; link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds] (Amendment A2).

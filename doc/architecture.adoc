@@ -539,6 +539,42 @@ hold back the streams it is forwarding. With a connection window of one stream w
 waiting for an upstream connection could use it up, and every upload on that connection already
 holding an upstream connection would then be unable to send another byte.
 
+[[_http2_connection_window_measurement]]
+*The derived window was measured against a fixed 2 MiB window, and it stays derived.* A fixed
+connection window of 2 MiB (2,097,152 bytes) would lower the most a connection can hold buffered from
+6,553,500 bytes to 2,097,152 bytes, 3.1 times less. Before any change, the two were measured against
+each other with the k6 upload aspects `upload-1MB` (`upload_small.js`, 50 virtual users) and
+`upload-50MB` (`upload_large.js`, 5 virtual users), 60 s per run and two runs per side. Each side ran
+the native image in the distroless container, built from the same tree with only the connection
+window changed, in the benchmark-mode integration stack with the static nginx backend. A one-iteration
+probe of the upload against that stack negotiated HTTP/2, so the uploads did exercise the connection
+window. No request failed in any of the eight runs.
+
+[cols="1,2,2,2", options="header"]
+|===
+| Aspect | Connection window | `throughput_mbps` (run 1 / run 2 / mean) | p95 latency, ms (run 1 / run 2 / mean)
+
+| `upload-1MB` | derived, 6,553,500 | 41.20 / 46.42 / *43.81* | 1,986 / 1,274 / *1,630*
+| `upload-1MB` | fixed, 2,097,152 | 35.36 / 41.58 / *38.47* | 1,869 / 1,454 / *1,661*
+| `upload-50MB` | derived, 6,553,500 | 48.80 / 52.50 / *50.65* | 6,455 / 5,628 / *6,041*
+| `upload-50MB` | fixed, 2,097,152 | 29.12 / 40.66 / *34.89* | 8,989 / 8,703 / *8,846*
+|===
+
+`Http2EarlyResponseResetIT` passed on both trees. The fixed window would have been kept only if
+neither aspect lost more than 10% throughput or gained more than 10% p95 latency, the integration test
+stayed green and the worst case shrank. The last two held and the first did not: `upload-1MB` lost
+12.2% throughput (p95 +1.9%), and `upload-50MB` lost 31.1% throughput with p95 46.4% higher. The fixed
+window was therefore reverted.
+
+The measurement has limits, and they are part of the result. It ran on a shared machine whose
+one-minute load average at the end of a run was about 11.7 to 13.9 during the fixed-window runs and
+about 7.2 to 10.1 during the derived-window runs. Each side had two runs only. The `upload-1MB`
+difference lies inside the spread between the derived window's own two runs (41.2 and 46.4 Mbps), so
+that aspect alone would not have decided it. The `upload-50MB` runs do not overlap between the sides
+(48.8 and 52.5 against 29.1 and 40.7 Mbps), so that aspect carries the decision. The fixed window
+would also have accepted a trade-off: 2 MiB holds 32 stream windows, so more than 32 paused streams
+could use up the whole connection window -- the case the derivation exists to prevent.
+
 The late refusal of a body on a bodyless method (below) stays a `CANCEL` reset taken before the
 response ends, and neither the WebSocket upgrade nor the L4 passthrough relay is affected.
 
@@ -579,7 +615,8 @@ recorded as `INBOUND_BODY_ABORTED`.
 
 Not counted as a failure is not the same as not recorded. Like every dispatch the client ended -- a
 body over the cap, a body byte on a bodyless method, a body that disagrees with its declared length,
-a body that stopped arriving (<<_request_body_idle_timeout>>) -- an aborted inbound body reaches the
+a body that stopped arriving (<<_request_body_idle_timeout>>), a body still arriving at the
+request-body deadline before the response head (<<_request_body_deadline>>) -- an aborted inbound body reaches the
 route's guard as a gateway rejection, which the guard skips.
 SmallRye Fault Tolerance has no neutral outcome, so the breaker records a skipped call as a success,
 in the closed and the half-open state alike. Keeping client-ended dispatches out of the breaker's
@@ -629,9 +666,88 @@ dispatches (<<_aborted_inbound_body>>), the route's
 circuit breaker skips it and the retry predicate refuses it. `INFO` `ApiSheriff-23` records it,
 latched per route, and `sheriff_errors_total` counts every occurrence under
 `event="REQUEST_BODY_TIMEOUT"`. The 10 s value is a gateway constant, below the upstream guard's 30 s
-timeout, which still bounds the whole dispatch -- a steady upload included
+timeout, which bounds the dispatch until its response head arrives
 (link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a1[ADR-0060
-Amendment A1]).
+Amendment A1]). A body that keeps arriving is bounded by the request-body deadline below.
+
+[[_request_body_deadline]]
+*A request body that has not ended 25 s after its upstream attempt started is ended there.* A body
+that sends a chunk more often than every 10 s never trips the idle timeout, so a proxied dispatch also
+carries a fixed request-body deadline: 25 s from the start of its upstream attempt, the moment the
+guard's 30 s timeout starts as well. The guard bounds a dispatch only until its response head, and it
+would end a body still arriving then as an `UPSTREAM_TIMEOUT` (`504`) the breaker counts; once an
+upstream has answered and keeps reading, the deadline is the only bound on the body. When the deadline
+passes while the gateway is still reading the body, the upstream request is reset and the body is
+refused as `REQUEST_BODY_TIMEOUT`:
+
+* *Before the response head* the dispatch ends as the request's: `408` (`INPUT_VALIDATION`), ended
+  exactly as the idle timeout's `408` is -- on HTTP/2 the stream is reset with `NO_ERROR` through the
+  one end rule (<<_http2_post_response_reset>>), on HTTP/1.x the answer carries `Connection: close`.
+  The route's circuit breaker skips it and the retry predicate refuses it.
+* *After the response head* the reset fails the relay, and the relayed response is ended through the
+  one end rule. The status the upstream sent stands, also when no body byte of the upstream had been
+  relayed yet and the client response head was therefore still unwritten: that response ends with the
+  upstream's status and no body, never with a `502`. On HTTP/2 the stream is then reset with
+  `NO_ERROR`; on HTTP/1.x the connection is closed once the end has been written, and a response whose
+  head was still unwritten carries `Connection: close`.
+
+Once it has passed, the deadline stays in force for a body that is not being read at that moment, and
+ends it the same way -- before or after the response head -- the moment it is read again:
+
+* *The wait for a pooled upstream connection counts towards the 25 s.* The deadline's timer is set
+  when the attempt hands its body to the upstream request, after the connection was obtained. An
+  attempt that obtains its connection only after the deadline has passed is ended as soon as its body
+  starts to be read, so it is answered `408` before any body byte crosses to the upstream.
+* *A body the upstream is not taking data for is ended when the upstream reads it again.* While the
+  forwarding pipe has paused the body because the upstream is not taking data, the deadline does not
+  reset the upstream request. When the pipe resumes the body after the deadline has passed, the body
+  is ended instead of read.
+
+The deadline stops for good when the body ends, when another abort claims the stream first, and when
+the attempt ends without handing its response back -- its send failed, the next attempt begins, or the
+dispatch fails. A stopped deadline reports nothing: it neither refuses the body nor resets the upstream
+request again. A bodyless request and a route with `protocol: grpc` never arm it. `INFO` `ApiSheriff-24`
+records it, latched per route, and `sheriff_errors_total` counts it under
+`event="REQUEST_BODY_TIMEOUT"`, the event the idle timeout carries. The 25 s value is a gateway
+constant with no configuration key or system property
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[ADR-0060
+Amendment A2]).
+
+[[_grpc_stream_idle_bound]]
+*A gRPC call that carries no frame in either direction for five minutes is ended with
+`DEADLINE_EXCEEDED`.* A `protocol: grpc` dispatch arms neither the request-body idle timeout nor the
+request-body deadline: client-streaming and bidirectional calls legitimately pause between messages
+and are often long-lived, and the forced-HTTP/2 upstream carries the call on a shared connection, so
+there is no pooled connection of its own to free. Until the upstream sends its response headers, the
+guard's 30 s timeout bounds the call, ending it as `UPSTREAM_TIMEOUT`, which a gRPC client receives as
+`DEADLINE_EXCEEDED` (<<_grpc_error_contract>>). Once the headers have arrived the guarded call has
+returned, and the call's stream-idle bound takes over: a fixed five minutes, the default stream idle
+timeout of Envoy. Every request frame the dispatch reads and every upstream frame the relay writes
+restarts it, so a call stays open while either side is sending. Connection-level HTTP/2 `PING` frames
+are not frames of the call and do not count. When the bound expires, the upstream request is reset and
+the client response is ended through the one end rule with the trailers `grpc-status: 4`
+(`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout` in place of the upstream's. `INFO`
+`ApiSheriff-25` records it, latched per route; no error counter counts it. The call's `grpc-timeout`
+header is not honoured, and the value is a gateway constant with no configuration key or system
+property
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[ADR-0060
+Amendment A2]).
+
+[[_http2_unread_upload_release]]
+*An HTTP/2 upload the gateway does not read returns its credit when its stream ends.* A body the
+gateway has not read holds flow-control credit of the stream and of the connection (see
+<<_http2_connection_window>>), so a stream that ends unread has to give it back. Two such streams were
+checked, and both already did, with no change to the gateway. An upload refused `503` by the admission
+cap is ended through the one end rule, which resets the stream with `NO_ERROR`; closing the stream
+returns the credit its body held, an admitted upload on the same connection can still send its whole
+body, and the connection stays open. An upload its client resets while its dispatch waits for a
+pooled upstream connection is closed by that reset, its credit returns to the connection, and its
+admission permit comes back at once, while every pooled connection is still held. The admission
+refusal is reset with `NO_ERROR`, never `REFUSED_STREAM`: the one end rule resets every answered
+stream whose body is still open with `NO_ERROR`, and a stream already answered with a written `503`
+has been answered
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[ADR-0060
+Amendment A2]).
 
 [[_routing_matching]]
 === Routing / Matching
@@ -1268,11 +1384,13 @@ The upstream client is split by plane
   WARN LogRecords and metrics. Only upstream failures count as failures: a dispatch the client
   itself ended -- a body-cap breach, an aborted inbound body (<<_aborted_inbound_body>>), a body
   byte on a bodyless method, a body that disagrees with its declared length
-  (<<_dispatch_body_framing>>), or a body that made no progress for 10 s while the dispatch held its
-  upstream connection (<<_request_body_idle_timeout>>) -- is neither counted as a failure nor
-  retried. The guard's fixed 30 s timeout bounds every dispatch as a whole; the request-body idle
-  timeout is shorter, so a dispatch whose body stopped arriving is ended as the request's before the
-  guard would end it as an upstream timeout. The breaker still
+  (<<_dispatch_body_framing>>), a body that made no progress for 10 s while the dispatch held its
+  upstream connection (<<_request_body_idle_timeout>>), or a body that had not ended 25 s after the
+  attempt started (<<_request_body_deadline>>) -- is neither counted as a failure nor
+  retried. The guard's fixed 30 s timeout bounds a dispatch until its response head; the
+  request-body idle timeout and the request-body deadline are shorter, so a dispatch whose body
+  stopped arriving, or is still arriving, is ended as the request's before the guard would end it as
+  an upstream timeout. The breaker still
   records it, as a success: SmallRye has no neutral outcome, and keeping such dispatches out of the
   window would need the guarded call to be restructured, which the gateway does not do. The edge's
   idle timeout can reap an inbound connection before the route's read timeout fires; that dispatch
@@ -1474,7 +1592,7 @@ The consolidated status mapping:
 | `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`); live session lacking one on a non-navigation request when no refresh can obtain it (no `WWW-Authenticate`; the problem body carries the extension members `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`, while a navigation is redirected into a widening of the session instead -- see <<_scope_enforcement>>); failed CSRF origin check | `AUTHORIZATION`
 | `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `ROUTING`
 | `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `ROUTING`
-| `408` | A proxied request body that made no progress for the fixed 10 s request-body idle timeout while its dispatch held an upstream connection (`REQUEST_BODY_TIMEOUT`, see <<_request_body_idle_timeout>>). The body behind the answer is unread, so the answer ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only that stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>) | `INPUT_VALIDATION`
+| `408` | A proxied request body that made no progress for the fixed 10 s request-body idle timeout while its dispatch held an upstream connection, or that had not ended 25 s after its upstream attempt started, before the response head arrived (`REQUEST_BODY_TIMEOUT`, see <<_request_body_idle_timeout>> and <<_request_body_deadline>>). The body behind the answer is unread, so the answer ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only that stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>) | `INPUT_VALIDATION`
 | `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>), and the connection and its other streams carry on | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
@@ -1588,6 +1706,11 @@ The `429` (rate-limit, reserved) row has no gRPC mapping -- the feature is out o
 carry the category name only, never internal detail, exactly as the problem+json contract does for
 HTTP routes: `grpc-message` is the category slug, so a `404` or a `405` on a gRPC route reads
 `routing`.
+
+A call ended by its stream-idle bound (<<_grpc_stream_idle_bound>>) is not a trailers-only
+rejection: its upstream had already answered, so the relayed response is ended with the gateway's
+trailers in place of the upstream's -- `grpc-status: 4` (`DEADLINE_EXCEEDED`) and the fixed
+`grpc-message: stream-idle-timeout`, which carries nothing either side sent.
 
 [[_metrics]]
 == Metrics
@@ -1758,7 +1881,9 @@ HTTP/3 / QUIC is deferred.
 | gRPC rides on HTTP/2, so it is largely covered by the standard HTTP/2 path: the gateway
   proxies the stream and applies auth + header injection to the request. The upstream dial is
   *forced to h2* (gRPC requires HTTP/2 end-to-end); the response *trailers* (`grpc-status`,
-  `grpc-message`) are relayed back to the client untouched. "gRPCS" is gRPC over terminated TLS.
+  `grpc-message`) are relayed back to the client untouched. A call that carries no frame in either
+  direction for five minutes after the response headers is ended with `DEADLINE_EXCEEDED` instead
+  (see <<_grpc_stream_idle_bound>>). "gRPCS" is gRPC over terminated TLS.
   Body-level (protobuf frame) inspection is out of scope -- the security filter operates on HTTP
   metadata only, never the protobuf payload. Gateway-generated rejections on a `protocol: grpc`
   route are emitted as *trailers-only* gRPC responses (see

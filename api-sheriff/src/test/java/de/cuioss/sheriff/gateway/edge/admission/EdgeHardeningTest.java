@@ -219,6 +219,8 @@ class EdgeHardeningTest {
 
         /** The fixed value, restated as a literal so that a change to it is noticed here. */
         private static final long REQUEST_BODY_IDLE_TIMEOUT_MILLIS = 10_000L;
+        /** The fixed request-body deadline the two-argument test-only constructor keeps. */
+        private static final long REQUEST_BODY_DEADLINE_MILLIS = 25_000L;
 
         @Test
         @DisplayName("is the fixed 10,000 ms, whatever the edge_hardening block declares")
@@ -247,6 +249,35 @@ class EdgeHardeningTest {
             EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
 
             assertThrows(IllegalArgumentException.class, () -> new EdgeHardeningOptions(defaults, timeoutMillis));
+        }
+
+        @ParameterizedTest(name = "{0} ms")
+        @ValueSource(longs = {REQUEST_BODY_DEADLINE_MILLIS, REQUEST_BODY_DEADLINE_MILLIS + 1})
+        @DisplayName("the test-only constructor refuses a timeout not shorter than the fixed 25,000 ms deadline")
+        void constructorForTestsRefusesATimeoutNotBelowTheFixedDeadline(long timeoutMillis) {
+            EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
+
+            assertThrows(IllegalArgumentException.class, () -> new EdgeHardeningOptions(defaults, timeoutMillis));
+        }
+
+        @ParameterizedTest(name = "deadline {0} ms")
+        @ValueSource(longs = {300L, 299L})
+        @DisplayName("the test-only constructor refuses a deadline not longer than a 300 ms idle timeout")
+        void constructorForTestsRefusesADeadlineNotLongerThanTheTimeout(long deadlineMillis) {
+            EdgeHardeningConfig defaults = EdgeHardeningConfig.defaults();
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> new EdgeHardeningOptions(defaults, 300L, deadlineMillis));
+        }
+
+        @Test
+        @DisplayName("the test-only constructor carries a deadline just longer than the idle timeout")
+        void constructorForTestsCarriesTheGivenDeadline() {
+            EdgeHardeningOptions hardening = new EdgeHardeningOptions(EdgeHardeningConfig.defaults(), 300L, 301L);
+
+            assertAll("the test-only construction with both bounds",
+                    () -> assertEquals(300L, hardening.requestBodyIdleTimeoutMillis()),
+                    () -> assertEquals(301L, hardening.requestBodyDeadlineMillis()));
         }
 
         @Test

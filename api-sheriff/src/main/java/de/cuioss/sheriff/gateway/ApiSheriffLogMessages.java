@@ -115,6 +115,37 @@ public final class ApiSheriffLogMessages {
                 .identifier(23)
                 .template("Request body on route '%s' made no progress for %s seconds — upstream request reset; further occurrences on this route stay at DEBUG")
                 .build();
+
+        /**
+         * A proxied request's body was still arriving when the request-body deadline passed: the
+         * upstream request was reset, and the client was answered {@code 408} or, when the upstream had
+         * already answered, its relayed response was ended. Records the route id and the fixed deadline
+         * in seconds only — never body content or headers.
+         * <p>
+         * Latched per route to bound the log volume, like {@code ApiSheriff-23}: the first occurrence on
+         * a route is recorded and every repeat on that route is a {@code DEBUG} diagnostic. The rate is
+         * carried by the error counter, not by this record.
+         */
+        public static final LogRecord REQUEST_BODY_DEADLINE = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(24)
+                .template("Request body on route '%s' did not end within %s seconds — upstream request reset; further occurrences on this route stay at DEBUG")
+                .build();
+
+        /**
+         * A gRPC call carried no frame in either direction for the fixed stream-idle timeout after its
+         * upstream had sent the response headers: the upstream request was reset, and the call was ended
+         * with {@code grpc-status: 4} ({@code DEADLINE_EXCEEDED}). Records the route id and the fixed
+         * timeout in seconds only — never message content or headers.
+         * <p>
+         * Latched per route to bound the log volume, like {@code ApiSheriff-23}: the first occurrence on
+         * a route is recorded and every repeat on that route is a {@code DEBUG} diagnostic.
+         */
+        public static final LogRecord GRPC_STREAM_IDLE_TIMEOUT = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(25)
+                .template("gRPC call on route '%s' carried no frame in either direction for %s seconds — upstream request reset, call ended with DEADLINE_EXCEEDED; further occurrences on this route stay at DEBUG")
+                .build();
     }
 
     /**

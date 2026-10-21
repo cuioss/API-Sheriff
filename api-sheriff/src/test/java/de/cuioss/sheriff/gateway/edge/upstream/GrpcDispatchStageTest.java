@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge.upstream;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -26,11 +27,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Proxy;
 import java.net.ConnectException;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -44,6 +51,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.edge.assembly.AssetSourceFactory;
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceGuardFactory;
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
@@ -53,8 +61,10 @@ import de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClientFactory;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
+import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
+import de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -69,10 +79,19 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.streams.ReadStream;
+import io.vertx.ext.web.Router;
+import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.util.TypeLiteral;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -302,7 +321,8 @@ class GrpcDispatchStageTest {
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
                             .relayWithTrailers(upResp, clientReq.response(), false, Map.of(),
-                                    Map.of(FRAME_OPTIONS, "DENY", CSP, GATEWAY_POLICY), Supplier::get)
+                                    Map.of(FRAME_OPTIONS, "DENY", CSP, GATEWAY_POLICY), Supplier::get,
+                                    ResponseStage.GrpcStreamIdleBound.on(vertx))
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
@@ -420,6 +440,437 @@ class GrpcDispatchStageTest {
                     "the breach raises a GatewayException");
             assertEquals(EventType.CONTENT_TOO_LARGE, raised.getEventType(),
                     "the shared body-abuse bound raises CONTENT_TOO_LARGE on the gRPC path");
+        }
+    }
+
+    /**
+     * What bounds a client-streaming or bidirectional call, driven through the stage against a live
+     * prior-knowledge h2c stub upstream.
+     * <p>
+     * The gRPC dispatch arms neither the request-body idle timeout nor the request-body deadline, so a
+     * call that pauses between messages for longer than either is ended by neither. Before the upstream
+     * sends its response headers the guarded call is still waiting, so the guard's whole-dispatch timeout
+     * bounds the call. Once the headers have arrived the guarded call has returned and the guard no
+     * longer bounds the call; its stream-idle bound does. That bound ends a call that carried no frame in
+     * either direction for its timeout, and only such a call: traffic in either direction alone keeps the
+     * call open.
+     * <p>
+     * <strong>How the stream-idle bound is driven.</strong> The cases on it run the call through a front
+     * HTTP/2 server that composes the production pieces the way {@code TerminalDispatch#dispatchGrpc}
+     * does: the request body armed as the edge root arms it, the dispatch handed the body the bound
+     * watches, the relay started through {@link TerminalDispatch#relayOnEventLoop}, which ends the
+     * response through the one end rule, and {@link ResponseStage#relayWithTrailers} with the bound. The
+     * bound is built with the test-only {@value #IDLE_BOUND_MILLIS} ms timeout in place of the fixed five
+     * minutes. The edge's own wiring of the bound, and the {@code ApiSheriff-25} record of an expiry, are
+     * driven by {@code TerminalDispatchGrpcStreamIdleTest}, which runs the call through
+     * {@code TerminalDispatch} itself.
+     * <p>
+     * <strong>What the stub upstream does.</strong> A call to {@value #CLIENT_STREAMING} is answered
+     * only once its request stream has ended; a call to {@value #BIDI} is answered with its headers and
+     * a first frame at once, and its answer ends when the request stream has ended; a call to
+     * {@value #TICKING} is answered like {@value #BIDI} and then sends one more frame every
+     * {@value #TICK_MILLIS} ms until the request stream has ended. Every call ends with a
+     * {@code grpc-status: 0} trailer. The stub records every frame it read, and whether the request
+     * stream ended or failed — a failed stream is how it observes the gateway resetting the call.
+     */
+    @Nested
+    @DisplayName("stream bounds over a live forced-h2 upstream")
+    class StreamBounds {
+
+        private static final String CLIENT_STREAMING = "/svc.Service/ClientStreaming";
+        private static final String BIDI = "/svc.Service/Bidi";
+        private static final String TICKING = "/svc.Service/Ticking";
+        /** The timeout of the stand-in guard the post-header case runs under, so the case can outlast it. */
+        private static final long SHORT_GUARD_MILLIS = 500L;
+        /**
+         * The timeout of the stand-in guard every other case runs under: longer than any case, so no case
+         * can be ended by the guard and each observes only the bound it is about.
+         */
+        private static final long LONG_GUARD_SECONDS = 120L;
+        /** How far past a bound a pause runs before the call is looked at again. */
+        private static final long PAUSE_MARGIN_MILLIS = 500L;
+        /** The test-only stream-idle timeout the front server's bound is built with. */
+        private static final long IDLE_BOUND_MILLIS = 1_000L;
+        /**
+         * How often one side keeps a call alive while the other stays silent: a fifth of the bound, so a
+         * frame delayed by a loaded machine still arrives well inside it.
+         */
+        private static final long TICK_MILLIS = IDLE_BOUND_MILLIS / 5;
+        /** How long one side stays silent: three stream-idle bounds. */
+        private static final long SILENCE_MILLIS = 3 * IDLE_BOUND_MILLIS;
+        private static final String GRPC_STATUS = "grpc-status";
+        private static final String GRPC_MESSAGE = "grpc-message";
+        private static final String GRPC_OK = "0";
+
+        private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+        private final ResponseStage responseStage = new ResponseStage(Set.of());
+        private final List<String> upstreamFrames = new CopyOnWriteArrayList<>();
+        private final CompletableFuture<Void> upstreamEnded = new CompletableFuture<>();
+        private final CompletableFuture<Throwable> upstreamFailed = new CompletableFuture<>();
+        /** Completed when the stream-idle bound of the front server's call expired. */
+        private final CompletableFuture<Void> boundExpired = new CompletableFuture<>();
+        private Vertx vertx;
+        private HttpServer upstreamServer;
+        private HttpServer frontServer;
+        private HttpClient forcedH2;
+        private HttpClient edgeClient;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            upstreamServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions())
+                    .requestHandler(this::handleUpstreamCall)
+                    .listen(0, LoopbackHost.ADDRESS), "the stub gRPC upstream to start listening");
+            Router front = Router.router(vertx);
+            front.route().handler(this::relayThroughTheGrpcPath);
+            frontServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions())
+                    .requestHandler(front)
+                    .listen(0, LoopbackHost.ADDRESS), "the front gRPC server to start listening");
+            forcedH2 = vertx.createHttpClient(priorKnowledgeH2());
+            edgeClient = vertx.createHttpClient(priorKnowledgeH2());
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(edgeClient.close(), "the client of the front server to close");
+            Awaits.teardown(forcedH2.close(), "the forced-h2 client to close");
+            Awaits.teardown(frontServer.close(), "the front gRPC server to close");
+            Awaits.teardown(upstreamServer.close(), "the stub gRPC upstream to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        private static HttpClientOptions priorKnowledgeH2() {
+            return new HttpClientOptions().setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false);
+        }
+
+        private void handleUpstreamCall(HttpServerRequest request) {
+            HttpServerResponse response = request.response().setChunked(true);
+            boolean ticking = TICKING.equals(request.path());
+            long ticker = ticking ? vertx.setPeriodic(TICK_MILLIS, fired -> response.write("tick")) : -1L;
+            request.handler(frame -> {
+                // An empty final DATA frame carries only the end of the stream, not a message.
+                if (frame.length() > 0) {
+                    upstreamFrames.add(frame.toString());
+                }
+            });
+            request.exceptionHandler(failure -> {
+                vertx.cancelTimer(ticker);
+                upstreamFailed.complete(failure);
+            });
+            request.endHandler(end -> {
+                vertx.cancelTimer(ticker);
+                upstreamEnded.complete(null);
+                response.putTrailer(GRPC_STATUS, GRPC_OK);
+                response.end();
+            });
+            if (ticking || BIDI.equals(request.path())) {
+                response.write("head");
+            }
+        }
+
+        /**
+         * The front server's handler: dispatches the call and relays its answer the way
+         * {@code TerminalDispatch#dispatchGrpc} does, under a stream-idle bound of
+         * {@value #IDLE_BOUND_MILLIS} ms.
+         */
+        private void relayThroughTheGrpcPath(RoutingContext ctx) {
+            ctx.request().pause();
+            DispatchStage.InboundBody inbound = DispatchStage.InboundBody.arm(ctx.request());
+            ctx.put(ResponseEnds.INBOUND_BODY_KEY, inbound);
+            ResponseStage.GrpcStreamIdleBound idleBound =
+                    ResponseStage.GrpcStreamIdleBound.withTimeout(vertx, IDLE_BOUND_MILLIS);
+            idleBound.expiry().onSuccess(expired -> boundExpired.complete(null));
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = stage(route, longGuard());
+            String path = ctx.request().path();
+            Thread.ofVirtual().start(() -> {
+                HttpClientResponse upstream = stage.dispatch(route, HttpMethod.POST, path, Map.of(),
+                        idleBound.watch(inbound), -1L);
+                TerminalDispatch.relayOnEventLoop(ctx, List.of(), upstream, end -> responseStage
+                        .relayWithTrailers(upstream, ctx.response(), false, Map.of(), Map.of(), end, idleBound));
+            });
+        }
+
+        /**
+         * Pins that a gRPC dispatch arms neither request-body bound: the pause outlasts the fixed
+         * request-body idle timeout and the fixed request-body deadline, both counted from before the
+         * pause. The call runs under the long stand-in guard, so the guard's own timeout cannot end it.
+         */
+        @Test
+        @DisplayName("a client-streaming call pausing longer than the request-body idle timeout and deadline is ended by neither")
+        void clientStreamingPauseIsEndedByNeitherRequestBodyBound() throws Exception {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = stage(route, longGuard());
+            PushedBody body = new PushedBody();
+            EdgeHardeningOptions hardening = new EdgeHardeningOptions();
+            long longestRequestBodyBoundMillis =
+                    Math.max(hardening.requestBodyIdleTimeoutMillis(), hardening.requestBodyDeadlineMillis());
+
+            body.push("first");
+            CompletableFuture<HttpClientResponse> answered = CompletableFuture.supplyAsync(
+                    () -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), body, -1L));
+            Awaits.until(() -> upstreamFrames.contains("first"), "the first frame to reach the upstream",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            Awaits.connect(pause(longestRequestBodyBoundMillis + PAUSE_MARGIN_MILLIS),
+                    "a pause longer than the request-body idle timeout and the request-body deadline");
+            boolean openAfterPause = !answered.isDone() && !upstreamFailed.isDone();
+            body.push("second");
+            body.end();
+            HttpClientResponse response = Awaits.connect(answered, "the client-streaming call to be answered");
+
+            assertAll("a client-streaming call pausing between its messages",
+                    () -> assertTrue(openAfterPause, "the pause ended neither the dispatch nor the upstream call"),
+                    () -> assertEquals(200, response.statusCode(), "the call is answered once its stream ends"),
+                    () -> assertEquals(List.of("first", "second"), upstreamFrames,
+                            "every message reached the upstream"),
+                    () -> assertTrue(upstreamEnded.isDone(), "the request stream ended at the upstream"),
+                    () -> assertFalse(upstreamFailed.isDone(), "the upstream call was never reset"));
+        }
+
+        /**
+         * The dispatch alone, without the relay and its stream-idle bound: once the headers have arrived
+         * the guarded call has returned, so its timeout no longer ends the call.
+         */
+        @Test
+        @DisplayName("once the upstream sent its headers, the guard no longer bounds the call: it has returned")
+        void callAfterHeadersOutlivesTheGuardAndEndsOnlyWithItsStream() throws Exception {
+            Route route = grpcRoute();
+            Guard shortGuard = Guard.create().withTimeout().duration(SHORT_GUARD_MILLIS, ChronoUnit.MILLIS).done().build();
+            GrpcDispatchStage stage = stage(route, shortGuard);
+            PushedBody body = new PushedBody();
+
+            body.push("first");
+            HttpClientResponse response = stage.dispatch(route, HttpMethod.POST, BIDI, Map.of(), body, -1L);
+            Awaits.until(() -> upstreamFrames.contains("first"), "the first frame to reach the upstream",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            Awaits.connect(pause(SHORT_GUARD_MILLIS + PAUSE_MARGIN_MILLIS), "a pause longer than the guard's timeout");
+            boolean openAfterPause = !upstreamFailed.isDone() && !upstreamEnded.isDone();
+            body.push("second");
+            Awaits.until(() -> upstreamFrames.contains("second"), "a frame sent after the pause to reach the upstream",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            body.end();
+            Awaits.connect(upstreamEnded, "the call to end with its request stream");
+
+            assertAll("a call whose upstream sent its headers before the request stream ended",
+                    () -> assertEquals(200, response.statusCode(), "the dispatch returned at the response headers"),
+                    () -> assertTrue(openAfterPause,
+                            "the call outlived the guard's timeout: neither ended nor reset by the gateway"),
+                    () -> assertEquals(List.of("first", "second"), upstreamFrames,
+                            "the call still carried frames after the pause"),
+                    () -> assertFalse(upstreamFailed.isDone(), "the upstream call was never reset"));
+        }
+
+        @Test
+        @DisplayName("a call carrying no frame in either direction for the stream-idle bound ends with DEADLINE_EXCEEDED")
+        void callIdleInBothDirectionsIsEndedWithDeadlineExceeded() throws Exception {
+            long openedNanos = System.nanoTime();
+            ClientCall call = open(BIDI);
+
+            Awaits.connect(call.request().write("first"), "the first frame to be sent");
+            Awaits.until(() -> call.frames().contains("head") && upstreamFrames.contains("first"),
+                    "the first frame each way to arrive", Awaits.CONNECT_CEILING_SECONDS);
+            MultiMap trailers = Awaits.connect(call.trailers(), "the idle call to be ended by its stream-idle bound");
+            long endedAfterMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - openedNanos);
+            Awaits.connect(upstreamFailed, "the upstream call to be reset");
+
+            assertAll("a call that went quiet in both directions",
+                    () -> assertEquals(Integer.toString(GrpcStatusMapper.DEADLINE_EXCEEDED), trailers.get(GRPC_STATUS),
+                            "the call ends with DEADLINE_EXCEEDED in its trailers"),
+                    () -> assertEquals("stream-idle-timeout", trailers.get(GRPC_MESSAGE),
+                            "the trailers name the stream-idle bound and nothing either side sent"),
+                    () -> assertTrue(endedAfterMillis >= IDLE_BOUND_MILLIS,
+                            "the call is not ended before the bound: ended after " + endedAfterMillis + " ms"),
+                    () -> assertTrue(boundExpired.isDone(), "the call's stream-idle bound expired"),
+                    () -> assertEquals(List.of("head"), call.frames(),
+                            "the client received the upstream's only frame and then the gateway's trailers"),
+                    () -> assertFalse(upstreamEnded.isDone(), "the request stream never ended at the upstream"));
+        }
+
+        @Test
+        @DisplayName("an upstream that keeps sending keeps the call open while the client is silent past the stream-idle bound")
+        void upstreamTrafficKeepsTheCallOpenWhileTheClientIsSilent() throws Exception {
+            ClientCall call = open(TICKING);
+
+            Awaits.connect(call.request().write("first"), "the first frame to be sent");
+            Awaits.until(() -> call.frames().contains("head") && upstreamFrames.contains("first"),
+                    "the first frame each way to arrive", Awaits.CONNECT_CEILING_SECONDS);
+            Awaits.connect(pause(SILENCE_MILLIS), "the client to stay silent for three stream-idle bounds");
+            boolean openAfterSilence = !call.trailers().isDone() && !upstreamFailed.isDone();
+            Awaits.connect(call.request().end("last"), "the request stream to end");
+            MultiMap trailers = Awaits.connect(call.trailers(), "the call to end with its request stream");
+
+            assertAll("a call whose client stayed silent while its upstream kept sending",
+                    () -> assertTrue(openAfterSilence, "the silence ended neither the client call nor the upstream call"),
+                    () -> assertEquals(GRPC_OK, trailers.get(GRPC_STATUS), "the call ends with the upstream's status"),
+                    () -> assertTrue(String.join("", call.frames()).contains("tick"),
+                            "the upstream's frames reached the client during the silence"),
+                    () -> assertEquals("firstlast", String.join("", upstreamFrames),
+                            "both of the client's frames reached the upstream"),
+                    () -> assertFalse(boundExpired.isDone(), "the stream-idle bound never expired"),
+                    () -> assertFalse(upstreamFailed.isDone(), "the upstream call was never reset"));
+        }
+
+        @Test
+        @DisplayName("a client that keeps sending keeps the call open while the upstream is silent past the stream-idle bound")
+        void clientTrafficKeepsTheCallOpenWhileTheUpstreamIsSilent() throws Exception {
+            ClientCall call = open(BIDI);
+            int pings = (int) (SILENCE_MILLIS / TICK_MILLIS);
+
+            Awaits.connect(call.request().write("first"), "the first frame to be sent");
+            Awaits.until(() -> call.frames().contains("head") && upstreamFrames.contains("first"),
+                    "the first frame each way to arrive", Awaits.CONNECT_CEILING_SECONDS);
+            for (int ping = 0; ping < pings; ping++) {
+                Awaits.connect(pause(TICK_MILLIS), "the gap before the next client frame");
+                Awaits.connect(call.request().write("ping"), "a client frame to be sent");
+            }
+            boolean openAfterSilence = !call.trailers().isDone() && !upstreamFailed.isDone();
+            Awaits.connect(call.request().end(), "the request stream to end");
+            MultiMap trailers = Awaits.connect(call.trailers(), "the call to end with its request stream");
+
+            assertAll("a call whose upstream stayed silent while its client kept sending",
+                    () -> assertTrue(openAfterSilence, "the silence ended neither the client call nor the upstream call"),
+                    () -> assertEquals(GRPC_OK, trailers.get(GRPC_STATUS), "the call ends with the upstream's status"),
+                    () -> assertEquals("first" + "ping".repeat(pings), String.join("", upstreamFrames),
+                            "every client frame reached the upstream"),
+                    () -> assertEquals(List.of("head"), call.frames(), "the upstream sent nothing after its first frame"),
+                    () -> assertFalse(boundExpired.isDone(), "the stream-idle bound never expired"),
+                    () -> assertFalse(upstreamFailed.isDone(), "the upstream call was never reset"));
+        }
+
+        /**
+         * Opens a call to the front server and records what comes back.
+         *
+         * @param path the gRPC method path the stub upstream answers by
+         * @return the open call; its request headers are sent with its first frame
+         */
+        private ClientCall open(String path) throws Exception {
+            HttpClientRequest request = Awaits.connect(edgeClient.request(io.vertx.core.http.HttpMethod.POST,
+                    frontServer.actualPort(), LoopbackHost.ADDRESS, path), "a call to the front server to open");
+            request.setChunked(true);
+            request.exceptionHandler(failure -> {
+                // The one end rule resets an answered stream whose request is still open once the answer is
+                // written; what the call observed is read from its response.
+            });
+            List<String> frames = new CopyOnWriteArrayList<>();
+            CompletableFuture<MultiMap> trailers = new CompletableFuture<>();
+            request.response().onSuccess(response -> {
+                response.handler(frame -> frames.add(frame.toString()));
+                response.exceptionHandler(trailers::completeExceptionally);
+                response.endHandler(end -> trailers.complete(response.trailers()));
+            }).onFailure(trailers::completeExceptionally);
+            return new ClientCall(request, frames, trailers);
+        }
+
+        private Route grpcRoute() {
+            return route("g", Protocol.GRPC,
+                    new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""));
+        }
+
+        private GrpcDispatchStage stage(Route route, Guard guard) {
+            UpstreamTarget target = UpstreamTarget.of(route);
+            UpstreamClients clients = new UpstreamClients(Map.of(target, forcedH2),
+                    Map.of(new ResilienceShape(target, route.retryEnabled()), guard));
+            return new GrpcDispatchStage(clients, 1024L * 1024L, failureMapper);
+        }
+
+        /** The stand-in guard of {@value #LONG_GUARD_SECONDS} s every case but the post-header one runs under. */
+        private static Guard longGuard() {
+            return Guard.create().withTimeout().duration(LONG_GUARD_SECONDS, ChronoUnit.SECONDS).done().build();
+        }
+
+        /** A future completed once {@code millis} have passed. */
+        private CompletableFuture<Void> pause(long millis) {
+            CompletableFuture<Void> passed = new CompletableFuture<>();
+            vertx.setTimer(millis, fired -> passed.complete(null));
+            return passed;
+        }
+    }
+
+    /**
+     * One call to the front server of {@link StreamBounds}: its request, every response frame it received
+     * and the trailers its response ended with.
+     *
+     * @param request  the call's request, its stream still open
+     * @param frames   the response frames received, in order
+     * @param trailers completed with the response trailers once the response has ended
+     */
+    private record ClientCall(HttpClientRequest request, List<String> frames, CompletableFuture<MultiMap> trailers) {
+    }
+
+    /**
+     * A request body the test pushes frames into: frames are delivered to the consumer while it has not
+     * paused the stream, and held until it resumes otherwise; the end is delivered after the last frame.
+     * It starts paused, as the edge hands the dispatch a paused inbound request, so nothing flows before
+     * the forwarding pipe asks for it.
+     * Thread-safe: frames are pushed from the test thread while the consumer pauses and resumes from an
+     * event loop; every member runs under the instance monitor.
+     */
+    private static final class PushedBody implements ReadStream<Buffer> {
+
+        private final Deque<Buffer> pending = new ArrayDeque<>();
+        private @Nullable Handler<Buffer> handler;
+        private @Nullable Handler<Void> endHandler;
+        private boolean paused = true;
+        private boolean ended;
+        private boolean endDelivered;
+
+        synchronized void push(String frame) {
+            pending.add(Buffer.buffer(frame));
+            drain();
+        }
+
+        synchronized void end() {
+            ended = true;
+            drain();
+        }
+
+        private void drain() {
+            while (handler != null && !paused && !pending.isEmpty()) {
+                handler.handle(pending.poll());
+            }
+            if (ended && pending.isEmpty() && endHandler != null && !endDelivered) {
+                endDelivered = true;
+                endHandler.handle(null);
+            }
+        }
+
+        @Override
+        public synchronized ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
+            this.handler = handler;
+            drain();
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
+            return this;
+        }
+
+        @Override
+        public synchronized ReadStream<Buffer> pause() {
+            paused = true;
+            return this;
+        }
+
+        @Override
+        public synchronized ReadStream<Buffer> resume() {
+            paused = false;
+            drain();
+            return this;
+        }
+
+        @Override
+        public synchronized ReadStream<Buffer> fetch(long amount) {
+            paused = false;
+            drain();
+            return this;
+        }
+
+        @Override
+        public synchronized ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
+            this.endHandler = endHandler;
+            drain();
+            return this;
         }
     }
 

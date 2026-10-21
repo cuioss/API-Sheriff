@@ -19,14 +19,20 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import io.vertx.core.Future;
+import io.vertx.core.Handler;
 import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.streams.ReadStream;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -60,6 +66,8 @@ import org.jspecify.annotations.Nullable;
  *       {@code default}) is added only when the upstream response carried no value for that name, so an
  *       origin-set header is relayed untouched.</li>
  * </ul>
+ * The gRPC relay ({@link #relayWithTrailers}) additionally ends a call that carried no frame in either
+ * direction for its {@linkplain GrpcStreamIdleBound stream-idle bound}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -70,6 +78,13 @@ public final class ResponseStage {
     private static final Set<String> CONDITIONAL_RESPONSE_HEADERS = Set.of("etag", "last-modified");
 
     private static final String LOCATION_HEADER = "Location";
+
+    /** The trailer carrying the status a gRPC call ends with. */
+    private static final String GRPC_STATUS_TRAILER = "grpc-status";
+    /** The trailer carrying the message a gRPC call ends with. */
+    private static final String GRPC_MESSAGE_TRAILER = "grpc-message";
+    /** The fixed {@code grpc-message} of a call the stream-idle bound ended; carries nothing either side sent. */
+    private static final String STREAM_IDLE_MESSAGE = "stream-idle-timeout";
 
     private final UpstreamSetCookieFilter upstreamSetCookies;
 
@@ -207,6 +222,16 @@ public final class ResponseStage {
      * has fully arrived, the upstream trailers are copied onto the client response and it is ended
      * through {@code end}, so the client observes the gRPC status. The response is set chunked so
      * trailers are framed on an HTTP/1.1 client (HTTP/2 ignores the flag and frames trailers natively).
+     * <p>
+     * <strong>A call that carries no frame for the stream-idle bound is ended.</strong> The relay starts
+     * {@code idleBound} once the body stream is set up and stops it when the relay settles. Every
+     * upstream frame it relays counts as activity, as does every request frame of the stream
+     * {@link GrpcStreamIdleBound#watch watched} by the same bound. When the bound expires — no frame in
+     * either direction for its whole timeout — the relay resets the upstream request, which fails the
+     * body stream, and ends the client response through {@code end} with the trailers
+     * {@code grpc-status: 4} ({@code DEADLINE_EXCEEDED}) and {@code grpc-message: stream-idle-timeout}
+     * in place of the upstream's. Any other failure of the body stream fails the returned future and
+     * leaves the client response open, as before.
      *
      * @param upstream           the upstream response (body + trailers still streaming)
      * @param client             the client response write stream
@@ -215,17 +240,19 @@ public final class ResponseStage {
      * @param defaultHeaders     the default-mode gateway headers, added only for a name the upstream
      *                           response did not carry in its leading headers
      * @param end                ends the client response once the trailers have been copied onto it
-     * @return a future completing when the body and trailers have been fully relayed and the response
-     *         ended
+     * @param idleBound          the call's stream-idle bound, started and stopped by this relay
+     * @return a future completing when the body and trailers have been fully relayed — or the call was
+     *         ended by its stream-idle bound — and the response ended
      */
     public Future<Void> relayWithTrailers(HttpClientResponse upstream, HttpServerResponse client,
             boolean notModifiedEnabled, Map<String, String> setHeaders, Map<String, String> defaultHeaders,
-            ResponseEnd end) {
+            ResponseEnd end, GrpcStreamIdleBound idleBound) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(client, "client");
         Objects.requireNonNull(setHeaders, "setHeaders");
         Objects.requireNonNull(defaultHeaders, "defaultHeaders");
         Objects.requireNonNull(end, "end");
+        Objects.requireNonNull(idleBound, "idleBound");
 
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
@@ -238,16 +265,30 @@ public final class ResponseStage {
         client.setChunked(true);
 
         Promise<Void> relayed = Promise.promise();
-        upstream.pipe().endOnComplete(false).to(client).onComplete(piped -> {
-            if (piped.failed()) {
-                relayed.fail(piped.cause());
-                return;
-            }
-            for (Map.Entry<String, String> trailer : upstream.trailers()) {
-                client.putTrailer(trailer.getKey(), trailer.getValue());
-            }
-            end.end(client::end).onComplete(relayed);
+        AtomicBoolean idleExpired = new AtomicBoolean();
+        idleBound.expiry().onSuccess(expired -> {
+            // Set before the reset, so the failure the reset causes below is read as this expiry.
+            idleExpired.set(true);
+            upstream.request().reset();
         });
+        new WatchedStream(upstream, idleBound::recordActivity).pipe().endOnComplete(false).to(client)
+                .onComplete(piped -> {
+                    idleBound.stop();
+                    if (piped.succeeded()) {
+                        for (Map.Entry<String, String> trailer : upstream.trailers()) {
+                            client.putTrailer(trailer.getKey(), trailer.getValue());
+                        }
+                    } else if (idleExpired.get()) {
+                        client.putTrailer(GRPC_STATUS_TRAILER, Integer.toString(GrpcStatusMapper.DEADLINE_EXCEEDED));
+                        client.putTrailer(GRPC_MESSAGE_TRAILER, STREAM_IDLE_MESSAGE);
+                    } else {
+                        relayed.fail(piped.cause());
+                        return;
+                    }
+                    end.end(client::end).onComplete(relayed);
+                });
+        // Started only once the body stream is set up, so a relay that fails to start arms nothing.
+        idleBound.start();
         return relayed.future();
     }
 
@@ -276,5 +317,221 @@ public final class ResponseStage {
      */
     static boolean mayCarryBody(int status) {
         return status != 204 && status != 304 && (status < 100 || status >= 200);
+    }
+
+    /**
+     * The stream-idle bound of one gRPC call: a fixed {@value #STREAM_IDLE_TIMEOUT_MILLIS} ms — five
+     * minutes, Envoy's default stream idle timeout — during which the call must carry at least one frame
+     * in either direction.
+     * <p>
+     * A gRPC dispatch arms neither the request-body idle timeout nor the request-body deadline:
+     * client-streaming and bidirectional calls legitimately pause between messages. Before the upstream
+     * sends its response headers the call is bounded by the upstream guard's whole-dispatch timeout; once
+     * they have arrived the guarded call has returned, and this bound is what ends a call that went quiet.
+     * A call's {@code grpc-timeout} header is not honoured, so the bound stays one fixed constant; no
+     * configuration key or system property reaches it.
+     * <p>
+     * <strong>What counts as activity.</strong> Every request frame of the stream
+     * {@linkplain #watch watched} by the bound, and every upstream frame
+     * {@link ResponseStage#relayWithTrailers} relays. A client that stays silent while the upstream keeps
+     * sending, and an upstream that stays silent while the client keeps sending, both keep the call open.
+     * <p>
+     * <strong>Lifecycle.</strong> The relay starts the bound, which arms its clock from that moment, and
+     * stops it when the relay settles. When the timeout passes with no frame in either direction, the
+     * {@linkplain #expiry() expiry} completes, exactly once; the relay then ends the call. A frame only
+     * records when it arrived, so no timer is created or cancelled per frame: one timer is pending at a
+     * time, and when it fires early relative to the last activity it is re-armed for the remainder.
+     * <p>
+     * Thread-safe: frames arrive on the inbound and the upstream connection's event loops, the timer fires
+     * on the Vert.x instance's event loop, and the relay starts and stops the bound from either. The last
+     * activity time is a volatile field; the timer state is held under one monitor.
+     *
+     * @since 1.0
+     */
+    public static final class GrpcStreamIdleBound {
+
+        /** The fixed stream-idle timeout of a gRPC call: five minutes. */
+        public static final long STREAM_IDLE_TIMEOUT_MILLIS = 300_000L;
+
+        /** The pending-timer value while no timer is pending. */
+        private static final long NO_TIMER = -1L;
+
+        /** Added before a nanosecond remainder is converted, so the re-armed delay rounds up. */
+        private static final long MILLIS_ROUNDING_NANOS = TimeUnit.MILLISECONDS.toNanos(1) - 1;
+
+        private final Vertx vertx;
+        private final long timeoutMillis;
+        private final Promise<Void> expired = Promise.promise();
+        /** Guards the timer state below. */
+        private final Object timerLock = new Object();
+        /** When the call last carried a frame in either direction, or when the bound was started. */
+        private volatile long lastActivityNanos = System.nanoTime();
+        private boolean stopped;
+        private long pendingTimer = NO_TIMER;
+
+        private GrpcStreamIdleBound(Vertx vertx, long timeoutMillis) {
+            this.vertx = Objects.requireNonNull(vertx, "vertx");
+            this.timeoutMillis = timeoutMillis;
+        }
+
+        /**
+         * @param vertx the Vert.x instance the bound's timer is set on
+         * @return the bound of one gRPC call, with the fixed {@link #STREAM_IDLE_TIMEOUT_MILLIS}
+         */
+        public static GrpcStreamIdleBound on(Vertx vertx) {
+            return new GrpcStreamIdleBound(vertx, STREAM_IDLE_TIMEOUT_MILLIS);
+        }
+
+        /**
+         * <strong>Test-only.</strong> The bound of one gRPC call with the given timeout in place of the
+         * fixed five minutes, so a test can observe it without waiting for it. Public only because those
+         * tests live outside this package; no configuration key or system property reaches it.
+         *
+         * @param vertx         the Vert.x instance the bound's timer is set on
+         * @param timeoutMillis the stream-idle timeout in milliseconds, positive
+         * @return the bound
+         * @throws IllegalArgumentException when {@code timeoutMillis} is not positive
+         */
+        public static GrpcStreamIdleBound withTimeout(Vertx vertx, long timeoutMillis) {
+            if (timeoutMillis <= 0) {
+                throw new IllegalArgumentException("timeoutMillis must be positive: " + timeoutMillis);
+            }
+            return new GrpcStreamIdleBound(vertx, timeoutMillis);
+        }
+
+        /**
+         * Watches the call's request stream: every frame it delivers counts as activity.
+         *
+         * @param inbound the request body stream to be dispatched upstream
+         * @return the stream to dispatch in its place; it delegates everything else to {@code inbound}
+         */
+        public ReadStream<Buffer> watch(ReadStream<Buffer> inbound) {
+            return new WatchedStream(inbound, this::recordActivity);
+        }
+
+        /**
+         * @return a future completing once — when the call carried no frame in either direction for the
+         *         whole timeout after the bound was started; it never fails, and it never completes for a
+         *         bound stopped in time
+         */
+        public Future<Void> expiry() {
+            return expired.future();
+        }
+
+        /** The call carried a frame: the idle gap restarts from now. */
+        void recordActivity() {
+            lastActivityNanos = System.nanoTime();
+        }
+
+        /**
+         * Arms the clock from now; the relay calls it once. A no-op for a bound already stopped — a relay
+         * that settled before it started.
+         */
+        void start() {
+            synchronized (timerLock) {
+                if (stopped) {
+                    return;
+                }
+                lastActivityNanos = System.nanoTime();
+                armTimer(timeoutMillis);
+            }
+        }
+
+        /** Stops the bound for good and cancels its pending timer. Idempotent. */
+        void stop() {
+            synchronized (timerLock) {
+                stopped = true;
+                if (pendingTimer != NO_TIMER) {
+                    vertx.cancelTimer(pendingTimer);
+                    pendingTimer = NO_TIMER;
+                }
+            }
+        }
+
+        /** Schedules the one pending timer; called holding {@link #timerLock}. */
+        private void armTimer(long delayMillis) {
+            pendingTimer = vertx.setTimer(delayMillis, fired -> onTimer());
+        }
+
+        /**
+         * The pending timer fired. A stopped bound does nothing. A bound whose last activity lies less
+         * than the timeout back re-arms for the remainder; otherwise the call carried no frame for the
+         * whole timeout and the bound expires.
+         */
+        private void onTimer() {
+            synchronized (timerLock) {
+                pendingTimer = NO_TIMER;
+                if (stopped) {
+                    return;
+                }
+                long remainingNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+                        - (System.nanoTime() - lastActivityNanos);
+                if (remainingNanos > 0) {
+                    armTimer(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos + MILLIS_ROUNDING_NANOS)));
+                    return;
+                }
+                stopped = true;
+            }
+            // Outside the monitor: the relay's reaction resets the upstream request.
+            expired.tryComplete();
+        }
+    }
+
+    /**
+     * A {@link ReadStream} decorator that runs {@code onFrame} for every frame the stream delivers, before
+     * handing the frame on; everything else is delegated unchanged.
+     */
+    private static final class WatchedStream implements ReadStream<Buffer> {
+
+        private final ReadStream<Buffer> delegate;
+        private final Runnable onFrame;
+
+        WatchedStream(ReadStream<Buffer> delegate, Runnable onFrame) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+            this.onFrame = Objects.requireNonNull(onFrame, "onFrame");
+        }
+
+        @Override
+        public ReadStream<Buffer> handler(@Nullable Handler<Buffer> handler) {
+            if (handler == null) {
+                delegate.handler(null);
+                return this;
+            }
+            delegate.handler(frame -> {
+                onFrame.run();
+                handler.handle(frame);
+            });
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> exceptionHandler(@Nullable Handler<Throwable> handler) {
+            delegate.exceptionHandler(handler);
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> pause() {
+            delegate.pause();
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> resume() {
+            delegate.resume();
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> fetch(long amount) {
+            delegate.fetch(amount);
+            return this;
+        }
+
+        @Override
+        public ReadStream<Buffer> endHandler(@Nullable Handler<Void> endHandler) {
+            delegate.endHandler(endHandler);
+            return this;
+        }
     }
 }

@@ -130,6 +130,13 @@ import org.junit.jupiter.params.provider.EnumSource;
  * <strong>Abort attribution.</strong> The gateway's own reset is never a client abort: it is neither
  * metered nor logged as {@code INBOUND_BODY_ABORTED}, while a client dropping its connection mid-body
  * still is.
+ * <p>
+ * <strong>Credit a stream holds is given back.</strong> A body the gateway does not read returns no
+ * flow-control window, so a stream that ends without its body being read must hand that window back to
+ * the connection: an upload refused by the admission cap, through the {@code NO_ERROR} reset after its
+ * {@code 503} ({@link #admissionRefusedUploadReturnsItsConnectionWindow}), and an upload its client
+ * resets while its dispatch waits for a pooled upstream connection, which also gives back its admission
+ * permit ({@link #uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit}).
  */
 @EnableGeneratorController
 @EnableTestLogger
@@ -666,27 +673,143 @@ class GatewayEdgeEarlyResponseResetTest {
                 () -> assertEquals(List.of(AFTER_GET), upstreamStarted, "nothing of the upload reached the upstream"));
     }
 
+    /**
+     * The admission {@code 503} written to an upload whose body is still open, on a front server with
+     * Vert.x's default single-stream connection window of 65,535 bytes. The refused upload sends one
+     * whole stream window of body before it is answered, so the body the gateway no longer reads uses
+     * the connection window up. The {@code NO_ERROR} reset the one end rule writes after the {@code 503}
+     * closes the stream, and closing it returns that body's credit to the connection window: the upload
+     * that holds the one admission permit on the same connection — only its head sent until then — can
+     * afterwards send its whole body and is answered. Were the refused stream left open, no further
+     * byte could be sent on the connection and the admitted upload would stall until the gateway's
+     * upstream timeout answered it. The connection itself stays open: once the admitted upload has
+     * given its permit back, a further stream on it is admitted and served.
+     */
     @Test
-    @DisplayName("the admission 503 written to an open HTTP/2 upload is followed by a NO_ERROR reset")
-    void admissionRejectIsFollowedByANoErrorReset() throws Exception {
+    @DisplayName("an admission-refused HTTP/2 upload is reset NO_ERROR and returns the connection window its body used")
+    void admissionRefusedUploadReturnsItsConnectionWindow() throws Exception {
         int port = startEdge(new EdgeHardeningOptions(new EdgeHardeningConfig(1, 1)));
         HttpClient http2Client = client(HttpVersion.HTTP_2);
-        HttpClientRequest holding = open(http2Client, port, "GET", "/up" + HELD + "-admission");
-        Awaits.connect(holding.end(), "the request holding the one admission permit to be sent");
-        Awaits.until(() -> upstreamStarted.contains("GET " + HELD + "-admission"),
-                "the held request to occupy the admission permit", Awaits.CONNECT_CEILING_SECONDS);
+        HttpClientRequest admitted = open(http2Client, port, "POST", "/up/admitted");
+        admitted.setChunked(true);
+        Awaits.connect(admitted.sendHead(), "the head of the upload holding the one admission permit");
+        HttpConnection connection = admitted.connection();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+        AtomicBoolean connectionClosed = new AtomicBoolean();
+        connection.goAwayHandler(goAway -> goAwayCodes.add(goAway.getErrorCode()));
+        connection.closeHandler(closed -> connectionClosed.set(true));
+        Awaits.until(() -> upstreamConnections.size() == 1,
+                "the admitted upload to hold an upstream connection", Awaits.CONNECT_CEILING_SECONDS);
+        int connectionWindow = new Http2Settings().getInitialWindowSize();
 
-        Upload upload = startUpload(http2Client, port, "POST", "/up/refused", Map.of());
-        Answer answer = Awaits.connect(answerOf(upload.request()), "the 503 to arrive");
-        Throwable streamEnd = Awaits.connect(upload.streamEnd(), "the edge to reset the refused upload stream");
+        Upload refused = startUpload(http2Client, port, "POST", "/up/refused", Map.of(),
+                Generators.letterStrings(connectionWindow, connectionWindow).next());
+        Answer answer = Awaits.connect(answerOf(refused.request()), "the 503 to arrive");
+        Answer admittedAnswer = Awaits.connect(
+                admitted.end(Generators.letterStrings(4, 12).next()).compose(sent -> answerOf(admitted)),
+                "the admitted upload to send its whole body on the connection and be answered");
+        Throwable streamEnd = Awaits.connect(refused.streamEnd(), "the edge to reset the refused upload stream");
+        Awaits.until(() -> probeStatus(http2Client, port) == 308,
+                "the admitted upload to give its admission permit back", Awaits.ADMISSION_RELEASE_CEILING_SECONDS);
+        Answer after = probe(http2Client, port);
 
         assertAll("an admission reject of an open HTTP/2 upload",
                 () -> assertEquals(503, answer.response().statusCode()),
                 () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, streamEnd).getCode(),
                         "the stream must be reset with NO_ERROR"),
-                () -> assertSame(holding.connection(), upload.request().connection(),
-                        "the refused stream shares the connection of the held one, which stays open"),
-                () -> assertFalse(upstreamStarted.contains("POST /refused"), "the refused upload never reaches the upstream"));
+                () -> assertEquals(200, admittedAnswer.response().statusCode(),
+                        "the admitted upload sends its body after the refused one used the connection window up"),
+                () -> assertEquals("ok", admittedAnswer.body()),
+                () -> assertTrue(upstreamCompleted.contains("POST /admitted"),
+                        () -> "the upstream must read the admitted body whole: " + upstreamCompleted),
+                () -> assertSame(connection, refused.request().connection(),
+                        "the refused stream shares the connection of the admitted one"),
+                () -> assertEquals(308, after.response().statusCode(), "a further stream is admitted and served"),
+                () -> assertSame(connection, after.connection(), "the further stream reuses the connection"),
+                () -> assertFalse(connectionClosed.get(), "the connection must stay open"),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes),
+                () -> assertFalse(upstreamStarted.contains("POST /refused"),
+                        "the refused upload never reaches the upstream"));
+    }
+
+    /**
+     * An upload that waits for a pooled upstream connection, ended by its client before it got one. The
+     * upstream client's HTTP/1.1 pool holds {@link #upstreamPoolSize()} connections; that many uploads
+     * take every one of them with only their heads sent, and the admission cap leaves exactly one
+     * further permit, which the waiting upload takes. Its dispatch waits for a free connection while it
+     * sends one whole stream window of body the gateway does not read yet — on a front server with
+     * Vert.x's default single-stream connection window that uses the connection window up. The client
+     * then resets the waiting upload. Its admission permit must come back while every pooled connection
+     * is still held — the edge's admission ({@code EdgeAdmission.tryAdmit()}) admits a request to another
+     * route again rather than refusing it {@code 503} — and the window its body used must return to the
+     * connection, so the uploads holding a connection can still send their whole bodies, which the
+     * upstream reads to their end, and are answered on a connection that stays open.
+     */
+    @Test
+    @DisplayName("an upload reset while it waits for an upstream connection returns its connection window and its admission permit")
+    void uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit() throws Exception {
+        int poolSize = upstreamPoolSize();
+        int port = startEdge(new EdgeHardeningOptions(new EdgeHardeningConfig(poolSize + 1, 1)));
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        List<HttpClientRequest> holding = new ArrayList<>();
+        for (int i = 0; i < poolSize; i++) {
+            HttpClientRequest request = open(http2Client, port, "POST", "/up/pooled-" + i);
+            request.setChunked(true);
+            Awaits.connect(request.sendHead(), "the head of the upload holding upstream connection " + i);
+            holding.add(request);
+        }
+        HttpConnection connection = holding.getFirst().connection();
+        List<Long> goAwayCodes = new CopyOnWriteArrayList<>();
+        AtomicBoolean connectionClosed = new AtomicBoolean();
+        connection.goAwayHandler(goAway -> goAwayCodes.add(goAway.getErrorCode()));
+        connection.closeHandler(closed -> connectionClosed.set(true));
+        List<Future<Answer>> answers = holding.stream().map(GatewayEdgeEarlyResponseResetTest::answerOf).toList();
+        List<String> holdingUpstreamRequests = holding.stream()
+                .map(request -> "POST " + request.path().substring(("/" + ROUTE).length()))
+                .toList();
+        Awaits.until(() -> upstreamConnections.size() == poolSize,
+                "the upstream to accept one connection per upload holding one", Awaits.CONNECT_CEILING_SECONDS);
+        int streamWindow = new Http2Settings().getInitialWindowSize();
+        HttpClientRequest waiting = open(http2Client, port, "POST", "/up/queued");
+        waiting.setChunked(true);
+        Awaits.connect(waiting.write(Buffer.buffer(new byte[streamWindow])),
+                "one whole stream window of the upload waiting for a connection to be sent");
+        int probeWhileWaiting = probeStatus(http2Client, port);
+
+        waiting.reset();
+        Awaits.until(() -> probeStatus(http2Client, port) == 308,
+                "the admission permit of the reset upload to be returned", Awaits.ADMISSION_RELEASE_CEILING_SECONDS);
+        int probeAfterTheReset = probeStatus(http2Client, port);
+        List<String> answeredBeforeThePermitReturned = answers.stream().filter(Future::isComplete)
+                .map(answer -> answer.succeeded() ? String.valueOf(answer.result().response().statusCode())
+                        : String.valueOf(answer.cause()))
+                .toList();
+        for (HttpClientRequest request : holding) {
+            request.end(Generators.letterStrings(4, 12).next());
+        }
+        Awaits.connect(Future.all(answers), "every upload holding a connection to be answered");
+
+        assertAll("an upload reset while waiting for an upstream connection",
+                () -> assertEquals(503, probeWhileWaiting,
+                        "precondition: the waiting upload holds the last admission permit"),
+                () -> assertEquals(308, probeAfterTheReset,
+                        "the permit of the reset upload is returned, so the edge admits a request again"),
+                () -> assertEquals(List.of(), answeredBeforeThePermitReturned,
+                        "the permit must return while every pooled connection is still held, not once an upload "
+                                + "holding one has been answered"),
+                () -> assertTrue(answers.stream().allMatch(answer -> answer.result().response().statusCode() == 200
+                                && "ok".equals(answer.result().body())),
+                        () -> "every upload holding a connection must be answered 200 ok: " + answers.stream()
+                                .map(answer -> answer.result().response().statusCode() + " " + answer.result().body())
+                                .toList()),
+                () -> assertTrue(upstreamCompleted.containsAll(holdingUpstreamRequests),
+                        () -> "the upstream must read every body of an upload holding a connection whole: "
+                                + upstreamCompleted),
+                () -> assertTrue(holding.stream().allMatch(request -> request.connection() == connection),
+                        "every upload must share the one connection"),
+                () -> assertSame(connection, waiting.connection(), "the reset upload shared it too"),
+                () -> assertFalse(connectionClosed.get(), "the connection must stay open"),
+                () -> assertTrue(goAwayCodes.isEmpty(), () -> "the edge sent GOAWAY " + goAwayCodes));
     }
 
     @Test
@@ -915,6 +1038,27 @@ class GatewayEdgeEarlyResponseResetTest {
     private Answer sendAfter(HttpClient client, int port) throws Exception {
         HttpClientRequest after = open(client, port, "GET", "/up/after");
         return Awaits.connect(after.end().compose(sent -> answerOf(after)), "a further stream to be answered");
+    }
+
+    /**
+     * Sends a bodyless GET to the redirect route on {@code client}'s connection to {@code port}: it is
+     * answered {@code 308} when the edge admits it and {@code 503} when the admission cap is exhausted,
+     * and it never reaches the upstream or waits for an upstream connection.
+     *
+     * @return the answer to the probe
+     */
+    private static Answer probe(HttpClient client, int port) throws Exception {
+        HttpClientRequest probe = open(client, port, "GET", "/moved/probe");
+        return Awaits.connect(probe.end().compose(sent -> answerOf(probe)), "an admission probe to be answered");
+    }
+
+    /**
+     * Sends the admission {@link #probe probe}.
+     *
+     * @return the status the probe was answered with
+     */
+    private static int probeStatus(HttpClient client, int port) throws Exception {
+        return probe(client, port).response().statusCode();
     }
 
     /** The answer to {@code request}: its response, with the body read whole. */

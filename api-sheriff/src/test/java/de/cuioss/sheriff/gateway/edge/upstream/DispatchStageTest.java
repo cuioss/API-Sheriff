@@ -39,6 +39,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
@@ -133,6 +134,12 @@ class DispatchStageTest {
 
         static Routed of(String id, ResolvedUpstream upstream, boolean retryEnabled, HttpClient client, Guard guard,
                 long bodyIdleTimeoutMillis, UpstreamFailureMapper failureMapper) {
+            return of(id, upstream, retryEnabled, client, guard, bodyIdleTimeoutMillis, DispatchStage.NO_BODY_DEADLINE,
+                    failureMapper);
+        }
+
+        static Routed of(String id, ResolvedUpstream upstream, boolean retryEnabled, HttpClient client, Guard guard,
+                long bodyIdleTimeoutMillis, long bodyDeadlineMillis, UpstreamFailureMapper failureMapper) {
             Route route = Route.builder()
                     .id(id)
                     .match(MatchConfig.builder().pathPrefix("/" + id).build())
@@ -143,7 +150,8 @@ class DispatchStageTest {
             UpstreamTarget target = UpstreamTarget.of(route);
             UpstreamClients clients = new UpstreamClients(Map.of(target, client),
                     Map.of(new ResilienceShape(target, retryEnabled), guard));
-            return new Routed(route, new DispatchStage(clients, BODY_CAP, bodyIdleTimeoutMillis, failureMapper));
+            return new Routed(route, new DispatchStage(clients, BODY_CAP, bodyIdleTimeoutMillis, bodyDeadlineMillis,
+                    failureMapper));
         }
 
         HttpClientResponse dispatch(HttpMethod method, String requestUri, Map<String, String> forwardHeaders,
@@ -203,6 +211,42 @@ class DispatchStageTest {
             // THE EDGE: stripping the whole run must not leave a stray separator behind either.
             ResolvedUpstream rootish = new ResolvedUpstream("http", "orders-svc", 8080, "//");
             assertEquals("/orders", DispatchStage.upstreamRequestUri(rootish, "/orders", ""));
+        }
+    }
+
+    @Nested
+    @DisplayName("constructor refusals of the request-body bounds")
+    class BodyBoundRefusals {
+
+        private static final long IDLE_TIMEOUT_MILLIS = 300L;
+        private static final long DEADLINE_MILLIS = 6 * IDLE_TIMEOUT_MILLIS;
+
+        private final UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
+        private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+
+        @ParameterizedTest(name = "{0} ms")
+        @ValueSource(longs = {-1L, Long.MIN_VALUE})
+        @DisplayName("refuses a negative request-body deadline")
+        void refusesANegativeDeadline(long deadlineMillis) {
+            assertThrows(IllegalArgumentException.class, () -> new DispatchStage(noClients, BODY_CAP,
+                    IDLE_TIMEOUT_MILLIS, deadlineMillis, failureMapper));
+        }
+
+        @Test
+        @DisplayName("refuses a request-body deadline without a request-body idle timeout")
+        void refusesADeadlineWithoutAnIdleTimeout() {
+            assertThrows(IllegalArgumentException.class, () -> new DispatchStage(noClients, BODY_CAP,
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, failureMapper));
+        }
+
+        @Test
+        @DisplayName("control: builds with a deadline and an idle timeout, and with neither")
+        void buildsWithBothBoundsOrNeither() {
+            assertAll("the accepted combinations",
+                    () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP, IDLE_TIMEOUT_MILLIS,
+                            DEADLINE_MILLIS, failureMapper)),
+                    () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
+                            DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, failureMapper)));
         }
     }
 
@@ -546,6 +590,182 @@ class DispatchStageTest {
         }
     }
 
+    /**
+     * The request-body deadline of {@link DispatchStage.ByteCappedBodyStream}, driven by hand on a
+     * {@link ManualTime}. Once it has passed, the deadline stays in force: a body the consumer had paused
+     * when it passed, and a body whose attempt obtained its connection only after it passed, are ended the
+     * moment they are read again, on the same path as an expiry on time. An attempt the dispatch no longer
+     * waits for stops its body's idle clock and deadline, and a stopped clock reports nothing.
+     */
+    @Nested
+    @DisplayName("request-body deadline of the byte-capped body")
+    class BodyDeadline {
+
+        private static final long TIMEOUT_MILLIS = 1_000L;
+        private static final long DEADLINE_MILLIS = 4 * TIMEOUT_MILLIS;
+
+        @ParameterizedTest(name = "read again by {0}")
+        @ValueSource(strings = {"resume", "fetch"})
+        @DisplayName("a deadline that passed while the consumer had paused the body ends it as soon as the body is read again")
+        void deadlinePassedWhilePausedEndsTheBodyWhenItIsReadAgain(String restart) {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            probe.capped.startIdleClock();
+            probe.capped.pause();
+
+            probe.time.advanceMillis(2 * DEADLINE_MILLIS);
+            boolean quietWhilePaused = probe.failure.get() == null && probe.aborts.get() == 0;
+            readAgain(probe, restart);
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a body paused by its consumer when its deadline passed",
+                    () -> assertTrue(quietWhilePaused, "nothing ends the body while the upstream is not taking data"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "reading the body again ends it at its deadline"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(),
+                            "the inbound stream stays paused: the read that ended the body never reaches it"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
+        /**
+         * A read checks the passed deadline before the idle clock resumes and again once it has. A deadline
+         * timer that fires between the two, while the stream is still marked paused, only records that the
+         * deadline passed; the second check then ends the body. The timer is placed in that window through
+         * the stream's read seam, so the interleaving is forced rather than hoped for.
+         */
+        @ParameterizedTest(name = "read again by {0}")
+        @ValueSource(strings = {"resume", "fetch"})
+        @DisplayName("a deadline timer firing between a read's first deadline check and the clock's resume still ends the body")
+        void deadlineTimerInsideTheReadWindowStillEndsTheBody(String restart) {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            probe.capped.startIdleClock();
+            probe.capped.pause();
+            probe.time.advanceMillis(DEADLINE_MILLIS - 1);
+            boolean quietBeforeTheDeadline = probe.failure.get() == null && probe.aborts.get() == 0;
+            Runnable deadlineTimerFires = () -> probe.time.advanceMillis(1);
+
+            if ("resume".equals(restart)) {
+                probe.capped.resume(deadlineTimerFires);
+            } else {
+                probe.capped.fetch(1, deadlineTimerFires);
+            }
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a read whose window a deadline timer fired in",
+                    () -> assertTrue(quietBeforeTheDeadline, "nothing ends the body before its deadline"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the read ends the body at its deadline"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(),
+                            "the inbound stream stays paused: the read that ended the body never reaches it"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
+        @Test
+        @DisplayName("after the hand-over, a body read again past its deadline reaches the late-violation callback before the reset")
+        void deadlinePassedWhilePausedAfterTheHandOverGoesToTheLateCallback() {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            probe.capped.startIdleClock();
+            // The attempt's send completed with the response head: the idle clock stops, the deadline runs on.
+            probe.capped.stopIdleClock();
+            GatewayException atTheHandOver = probe.handOver();
+            probe.capped.pause();
+
+            probe.time.advanceMillis(2 * DEADLINE_MILLIS);
+            probe.capped.resume();
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a relayed answer whose body is read again past its deadline",
+                    () -> assertNull(atTheHandOver, "nothing was refused when the response was handed over"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal),
+                    () -> assertEquals(Collections.singletonList(refusal), probe.lateViolations,
+                            "the refusal reaches the late-violation callback once"),
+                    () -> assertEquals(List.of(IdleProbe.LATE, IdleProbe.ABORT), probe.sequence,
+                            "the edge learns of the refusal before the upstream request is reset"));
+        }
+
+        @Test
+        @DisplayName("a deadline that passed before the attempt held its connection ends the body as soon as it is first read")
+        void deadlinePassedBeforeTheClockStartedEndsTheBodyWhenItIsFirstRead() {
+            IdleProbe probe = deadlineProbe(0L);
+            // The attempt obtains its connection only after its deadline passed.
+            probe.time.advanceMillis(1);
+            probe.capped.startIdleClock();
+            boolean quietBeforeTheFirstRead = probe.failure.get() == null && probe.aborts.get() == 0;
+
+            probe.capped.resume();
+
+            GatewayException refusal = probe.capped.clientAbort();
+            assertAll("a body whose attempt held its connection only after the deadline",
+                    () -> assertTrue(quietBeforeTheFirstRead, "nothing ends the body before it is read"),
+                    () -> assertInstanceOf(DispatchStage.RequestBodyDeadlineExceeded.class, refusal,
+                            "the first read ends the body at its deadline"),
+                    () -> assertSame(refusal, probe.failure.get(), "the refusal is propagated to the consumer"),
+                    () -> assertEquals(1, probe.aborts.get(), "the upstream request is reset exactly once"),
+                    () -> assertTrue(probe.source.paused(), "the inbound stream is paused and never read"),
+                    () -> assertEquals(List.of(), probe.forwarded, "no body byte crosses to the upstream"),
+                    () -> assertEquals(0, probe.time.pendingCount(), "nothing is pending once the body was ended"));
+        }
+
+        @Test
+        @DisplayName("an attempt the dispatch no longer waits for stops its body's idle clock and deadline; nothing fires afterwards")
+        void abandonedAttemptStopsTheClocksOfItsBody() {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            DispatchStage.UpstreamAttempt attempt = new DispatchStage.UpstreamAttempt();
+            attempt.attachBody(probe.capped);
+            probe.capped.startIdleClock();
+            int pendingWhileWaitedFor = probe.time.pendingCount();
+
+            attempt.abandon();
+            int pendingOnceAbandoned = probe.time.pendingCount();
+            probe.time.advanceMillis(2 * DEADLINE_MILLIS);
+            probe.capped.resume();
+
+            assertAll("the body of an abandoned attempt",
+                    () -> assertEquals(2, pendingWhileWaitedFor,
+                            "the idle clock and the deadline are pending while the attempt is waited for"),
+                    () -> assertEquals(0, pendingOnceAbandoned, "abandoning the attempt cancels both"),
+                    () -> assertNull(probe.failure.get(), "a stopped clock reports nothing to the consumer"),
+                    () -> assertNull(probe.capped.clientAbort(), "a stopped clock records no refusal"),
+                    () -> assertEquals(0, probe.aborts.get(), "a stopped clock resets no upstream request"),
+                    () -> assertEquals(List.of(), probe.lateViolations, "a stopped clock reaches no callback"));
+        }
+
+        @Test
+        @DisplayName("a body handed to an attempt the dispatch already stopped waiting for never starts its clocks")
+        void bodyOfAnAlreadyAbandonedAttemptNeverStartsItsClocks() {
+            IdleProbe probe = deadlineProbe(DEADLINE_MILLIS);
+            DispatchStage.UpstreamAttempt attempt = new DispatchStage.UpstreamAttempt();
+            attempt.abandon();
+
+            attempt.attachBody(probe.capped);
+            probe.capped.startIdleClock();
+            probe.time.advanceMillis(2 * DEADLINE_MILLIS);
+
+            assertAll("the body of an attempt abandoned before it was attached",
+                    () -> assertEquals(0, probe.time.scheduledCount(), "neither clock is ever scheduled"),
+                    () -> assertNull(probe.failure.get()),
+                    () -> assertNull(probe.capped.clientAbort()),
+                    () -> assertEquals(0, probe.aborts.get()));
+        }
+
+        /** A probe whose deadline passes {@code deadlineMillis} after its creation, with the fixed idle timeout. */
+        private IdleProbe deadlineProbe(long deadlineMillis) {
+            return new IdleProbe(TIMEOUT_MILLIS, DispatchStage.NO_DECLARED_LENGTH, OptionalLong.of(deadlineMillis));
+        }
+
+        /** Reads the paused body again the way {@code restart} names: a resume or a fetch. */
+        private void readAgain(IdleProbe probe, String restart) {
+            if ("resume".equals(restart)) {
+                probe.capped.resume();
+            } else {
+                probe.capped.fetch(1);
+            }
+        }
+    }
+
     /** An abort that claims the stream before its idle clock would expire, with the event it records. */
     enum EarlierAbort {
         CAP_BREACH(DispatchStage.NO_DECLARED_LENGTH, EventType.CONTENT_TOO_LARGE),
@@ -574,10 +794,14 @@ class DispatchStageTest {
 
     /**
      * A {@link DispatchStage.ByteCappedBodyStream} over an armed {@link DispatchStage.InboundBody}, as the
-     * dispatch builds one, whose idle clock runs on a {@link ManualTime}; it records what it forwards, its
-     * failure, its end and every abort.
+     * dispatch builds one, whose idle clock and request-body deadline run on a {@link ManualTime}; it records
+     * what it forwards, its failure, its end, every abort and every late refusal, and the order the abort
+     * action and the late-violation callback ran in.
      */
     private static final class IdleProbe {
+
+        private static final String ABORT = "abort";
+        private static final String LATE = "late";
 
         private final TestReadStream source = new TestReadStream();
         private final DispatchStage.InboundBody inbound = DispatchStage.InboundBody.arm(source);
@@ -586,16 +810,47 @@ class DispatchStageTest {
         private final AtomicReference<@Nullable Throwable> failure = new AtomicReference<>();
         private final AtomicInteger aborts = new AtomicInteger();
         private final AtomicBoolean ended = new AtomicBoolean();
+        /** The abort action and the late-violation callback, in the order they ran. */
+        private final List<String> sequence = new CopyOnWriteArrayList<>();
+        private final List<GatewayException> lateViolations = new CopyOnWriteArrayList<>();
         private final DispatchStage.ByteCappedBodyStream capped;
 
+        /** A probe without a request-body deadline. */
         IdleProbe(long timeoutMillis, long declaredLength) {
-            capped = new DispatchStage.ByteCappedBodyStream(inbound, BODY_CAP, declaredLength, aborts::incrementAndGet,
-                    _ -> {
-                        // The forwarded count feeds the retry gate, which these cases do not exercise.
-                    }, new DispatchStage.IdleClock(timeoutMillis, time, time::nanoTime));
+            this(timeoutMillis, declaredLength, OptionalLong.empty());
+        }
+
+        /**
+         * @param deadlineMillis how long after the probe's creation its request-body deadline passes —
+         *                       {@code 0} for one passing at once — or empty for none
+         */
+        IdleProbe(long timeoutMillis, long declaredLength, OptionalLong deadlineMillis) {
+            OptionalLong deadlineNanos = deadlineMillis.isPresent()
+                    ? OptionalLong.of(time.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis.getAsLong()))
+                    : OptionalLong.empty();
+            capped = new DispatchStage.ByteCappedBodyStream(inbound, BODY_CAP, declaredLength, () -> {
+                aborts.incrementAndGet();
+                sequence.add(ABORT);
+            }, _ -> {
+                // The forwarded count feeds the retry gate, which these cases do not exercise.
+            }, new DispatchStage.IdleClock(timeoutMillis, time, time::nanoTime), deadlineNanos);
             capped.handler(forwarded::add);
             capped.exceptionHandler(failure::set);
             capped.endHandler(_ -> ended.set(true));
+        }
+
+        /**
+         * Hands the probe's response over for relay: a deadline refusal from now on reaches
+         * {@link #lateViolations}.
+         *
+         * @return the deadline refusal that came before the hand-over, or {@code null} when there was none
+         */
+        @Nullable
+        GatewayException handOver() {
+            return capped.handOver(violation -> {
+                sequence.add(LATE);
+                lateViolations.add(violation);
+            });
         }
     }
 
@@ -1468,6 +1723,64 @@ class DispatchStageTest {
             assertEquals(1, attempts.get(),
                     "a retry that would reuse an already-subscribed one-shot body stream must be refused");
         }
+
+        /**
+         * A request-body idle expiry is refused a retry because it is a {@link GatewayException}, and for
+         * no other reason. On a live dispatch the expiry always follows the subscription of the one-shot
+         * body stream, which refuses the retry on its own, so a live case passes whether or not the
+         * expiry itself is refused. Here the dispatch's state allows a retry — an idempotent PUT, no
+         * body byte sent, the body stream not subscribed — as the upstream failure under the same state
+         * shows by being retried; the attempt then fails with the {@link EventType#REQUEST_BODY_TIMEOUT}
+         * an expired idle clock recorded, and only the refusal of a gateway rejection keeps it from being
+         * re-sent.
+         */
+        @Test
+        @DisplayName("never retries a request-body idle expiry, though the dispatch's state would allow a retry")
+        void neverRetriesARequestBodyIdleExpiry() {
+            GatewayException expiry = idleExpiry();
+            AtomicInteger upstreamFailureAttempts = new AtomicInteger();
+            AtomicInteger idleExpiryAttempts = new AtomicInteger();
+
+            GatewayException afterUpstreamFailure = assertThrows(GatewayException.class,
+                    () -> dispatchPutWithNoBodySent(() -> {
+                        upstreamFailureAttempts.incrementAndGet();
+                        throw new ExecutionException("upstream down", new IllegalStateException("upstream down"));
+                    }));
+            GatewayException afterIdleExpiry = assertThrows(GatewayException.class,
+                    () -> dispatchPutWithNoBodySent(() -> {
+                        idleExpiryAttempts.incrementAndGet();
+                        throw expiry;
+                    }));
+
+            assertAll("an idle expiry under a state that allows a retry",
+                    () -> assertEquals(3, upstreamFailureAttempts.get(),
+                            "the state allows a retry: an upstream failure is retried (1 attempt + 2 retries)"),
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, afterUpstreamFailure.getEventType()),
+                    () -> assertEquals(1, idleExpiryAttempts.get(), "an idle expiry must never be retried"),
+                    () -> assertEquals(EventType.REQUEST_BODY_TIMEOUT, afterIdleExpiry.getEventType(),
+                            "the expiry ends the dispatch as the request's"));
+        }
+
+        /**
+         * Runs {@code attempt} as an idempotent PUT on a retry-enabled route whose body stream was never
+         * subscribed and has sent no byte.
+         */
+        private HttpClientResponse dispatchPutWithNoBodySent(Callable<HttpClientResponse> attempt) {
+            return newStage().guardedDispatch(retryGuard(), new StreamAwareRetryGate(true), HttpMethod.PUT,
+                    () -> 0L, () -> false, attempt);
+        }
+
+        /** @return the {@link EventType#REQUEST_BODY_TIMEOUT} a byte-capped body records when its idle clock expires */
+        private GatewayException idleExpiry() {
+            long timeoutMillis = 1_000L;
+            IdleProbe probe = new IdleProbe(timeoutMillis, DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startIdleClock();
+            probe.time.advanceMillis(timeoutMillis);
+            GatewayException expiry = assertInstanceOf(GatewayException.class, probe.capped.clientAbort(),
+                    "the idle clock must have expired");
+            assertEquals(EventType.REQUEST_BODY_TIMEOUT, expiry.getEventType());
+            return expiry;
+        }
     }
 
     /**
@@ -1934,7 +2247,9 @@ class DispatchStageTest {
     /**
      * The request-body idle timeout over a live upstream: a body that stops arriving while its dispatch
      * holds a pooled upstream connection ends the dispatch as {@link EventType#REQUEST_BODY_TIMEOUT} and
-     * frees the connection at once, while a body that keeps arriving, however slowly, is never cut off.
+     * frees the connection at once, while a body that keeps arriving, however slowly, is never cut off,
+     * and neither is a body that goes idle only after the upstream answered: the clock stops when the
+     * attempt's send completes.
      * <p>
      * The upstream client holds at most one HTTP/1.1 connection, so a follow-up dispatch on the same
      * client is served only once the idle dispatch released it. Every route's guard leaves the dispatch
@@ -1956,6 +2271,16 @@ class DispatchStageTest {
         private static final int REQUEST_VOLUME_THRESHOLD = 20;
         private static final long PATIENT_TIMEOUT_SECONDS = Awaits.CONNECT_CEILING_SECONDS / 2;
         private static final String ANSWERING_PATH = "/answering";
+        /** The path the stub upstream answers at once, before it reads the request body. */
+        private static final String EARLY_PATH = "/early";
+        /** How long the body of the clock-stop case goes without a byte after the answer: three idle timeouts. */
+        private static final long IDLE_GAP_MILLIS = 3 * IDLE_TIMEOUT_MILLIS;
+        /** The path whose upstream connection the stub upstream closes as soon as the request head arrives. */
+        private static final String FAILING_PATH = "/failing";
+        /** The request-body deadline of the failed-attempt case: five idle timeouts. */
+        private static final long BODY_DEADLINE_MILLIS = 5 * IDLE_TIMEOUT_MILLIS;
+        /** How long after the failed dispatch the failed-attempt case takes its first look at the body. */
+        private static final long SETTLE_MILLIS = 200L;
         private static final String ANSWER = "ok";
 
         private Vertx vertx;
@@ -1963,6 +2288,11 @@ class DispatchStageTest {
         private HttpServer upstream;
         private HttpClient upstreamClient;
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+        /**
+         * The request body the stub upstream read for the early path: its text once it ended, or the
+         * failure it ended with.
+         */
+        private final CompletableFuture<String> earlyBody = new CompletableFuture<>();
         /** Every connection the stub upstream accepted. */
         private final AtomicInteger acceptedConnections = new AtomicInteger();
         /** The path of every request the stub upstream received a head for, in arrival order. */
@@ -1976,13 +2306,25 @@ class DispatchStageTest {
         void setUp() throws Exception {
             vertx = Vertx.vertx();
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-            // The stub upstream answers every request once its body has arrived whole. It is HTTP/1.1
-            // only: without h2c to detect, it reports a connection when it is accepted rather than with
-            // its first bytes, and a request whose body never arrives sends none.
+            // The stub upstream answers every request once its body has arrived whole, except one to the
+            // early path, which it answers at once and then reads to its end, and one to the failing path,
+            // whose connection it closes as soon as the head arrives. It is HTTP/1.1 only: without h2c to
+            // detect, it reports a connection when it is accepted rather than with its first bytes, and a
+            // request whose body never arrives sends none.
             upstream = Awaits.connect(vertx.createHttpServer(new HttpServerOptions().setHttp2ClearTextEnabled(false))
                     .connectionHandler(_ -> acceptedConnections.incrementAndGet())
                     .requestHandler(request -> {
                         receivedPaths.add(request.path());
+                        if (FAILING_PATH.equals(request.path())) {
+                            request.connection().close();
+                            return;
+                        }
+                        if (EARLY_PATH.equals(request.path())) {
+                            request.body().onComplete(read -> earlyBody.complete(
+                                    read.succeeded() ? read.result().toString() : "failed: " + read.cause()));
+                            request.response().end(ANSWER);
+                            return;
+                        }
                         request.body().onSuccess(body -> {
                             receivedBodyBytes.put(request.path(), body.length());
                             request.response().end(ANSWER);
@@ -2069,26 +2411,78 @@ class DispatchStageTest {
                     () -> assertEquals(List.of(ANSWERING_PATH), receivedPaths));
         }
 
+        /**
+         * The idle clock stops when the attempt's send completes. The upstream answers at once, before it
+         * reads the body, so the send completes with the response head while the body is still open; the
+         * body then goes {@link #IDLE_GAP_MILLIS} — several idle timeouts — without a byte before it ends.
+         * The stage carries no request-body deadline, so nothing but a still-running idle clock could end
+         * the body in that gap: had it kept running, it would have reset the upstream request, and the
+         * upstream would have seen its body fail instead of end.
+         */
         @Test
-        @DisplayName("an idle expiry on a retry-enabled route is not retried: the upstream sees one connection")
-        void idleExpiryIsNotRetried() {
-            Guard retryGuard = Guard.create()
-                    .withTimeout().duration(PATIENT_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done()
-                    .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                    .whenException(DispatchStage::allowsRetryAfter).done()
-                    .build();
+        @DisplayName("an upstream that answered at once is not ended as REQUEST_BODY_TIMEOUT when the body then idles past the idle timeout")
+        void idleClockStopsWhenTheSendCompletes() throws Exception {
+            TestReadStream inbound = new TestReadStream();
+            String before = Generators.letterStrings(4, 8).next();
+            String after = Generators.letterStrings(4, 8).next();
 
-            AtomicInteger attempts = new AtomicInteger();
-            HttpClient counting = interceptingClient(upstreamClient, _ -> attempts.incrementAndGet());
+            Future<HttpClientResponse> dispatched = dispatch(routed(IDLE_TIMEOUT_MILLIS, patientGuard(), false),
+                    HttpMethod.POST, EARLY_PATH, inbound);
+            Awaits.until(inbound::subscribed, "the dispatch to subscribe to the request body",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            inbound.emit(Buffer.buffer(before));
+            String answer = answerOf(dispatched);
+            vertx.setTimer(IDLE_GAP_MILLIS, _ -> {
+                inbound.emit(Buffer.buffer(after));
+                inbound.end();
+            });
+            String received = Awaits.connect(earlyBody, "the upstream to read the request body to its end");
 
-            // An idempotent PUT, so only the expiry itself can keep the guard from retrying.
-            GatewayException rejection = rejectionOf(dispatch(routed(IDLE_TIMEOUT_MILLIS, counting, retryGuard, true),
-                    HttpMethod.PUT, "/idle-retry", new TestReadStream()));
+            assertAll("a body idling past the idle timeout after the upstream answered",
+                    () -> assertEquals("200 " + ANSWER, answer, "the upstream's answer is handed back"),
+                    () -> assertEquals(before + after, received,
+                            "the body reaches the upstream whole: the idle clock stopped when the send completed"),
+                    () -> assertEquals(List.of(EARLY_PATH), receivedPaths));
+        }
 
-            assertAll("an idle expiry on a retry-enabled route",
-                    () -> assertEquals(EventType.REQUEST_BODY_TIMEOUT, rejection.getEventType()),
-                    () -> assertEquals(1, attempts.get(), "an idle expiry must never be retried"),
-                    () -> assertEquals(1, acceptedConnections.get(), "the upstream saw exactly one connection"));
+        /**
+         * An attempt that ends without handing its response back stops its body's request-body deadline.
+         * The upstream closes the connection as soon as the request head arrives, so the dispatch fails as
+         * an upstream failure long before the deadline. Once the deadline has passed, nothing has touched
+         * the body of that failed attempt: a deadline still running would have paused the inbound stream
+         * and reset the upstream request a second time when it passed.
+         */
+        @Test
+        @DisplayName("an attempt that failed upstream stops its request-body deadline: the body is left alone when the deadline passes")
+        void failedAttemptStopsTheRequestBodyDeadline() throws Exception {
+            TestReadStream inbound = new TestReadStream();
+            List<GatewayException> lateViolations = new CopyOnWriteArrayList<>();
+            Routed routed = Routed.of("body-deadline",
+                    new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""), false, upstreamClient,
+                    patientGuard(), IDLE_TIMEOUT_MILLIS, BODY_DEADLINE_MILLIS, failureMapper);
+
+            Future<HttpClientResponse> dispatched = virtualThreadExecutor.submit(() -> routed.dispatch(HttpMethod.POST,
+                    FAILING_PATH, Map.of(), inbound,
+                    DispatchStage.BodyFraming.of(HttpMethod.POST, DispatchStage.NO_DECLARED_LENGTH, lateViolations::add)));
+            Awaits.until(inbound::subscribed, "the dispatch to subscribe to the request body",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            inbound.emit(Buffer.buffer(Generators.letterStrings(4, 8).next()));
+            GatewayException rejection = rejectionOf(dispatched);
+            int pausesOnceSettled = pauseCountAfter(inbound, SETTLE_MILLIS);
+            int pausesPastTheDeadline = pauseCountAfter(inbound, BODY_DEADLINE_MILLIS);
+
+            assertAll("the body of an attempt that failed upstream",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, rejection.getEventType()),
+                    () -> assertEquals(pausesOnceSettled, pausesPastTheDeadline,
+                            "no request-body deadline pauses the body once its attempt has ended"),
+                    () -> assertEquals(List.of(), lateViolations, "nothing reaches the late-violation callback"));
+        }
+
+        /** @return how often {@code inbound} has been paused, read {@code delayMillis} from now */
+        private int pauseCountAfter(TestReadStream inbound, long delayMillis) throws Exception {
+            CompletableFuture<Integer> count = new CompletableFuture<>();
+            vertx.setTimer(delayMillis, _ -> count.complete(inbound.pauseCount()));
+            return Awaits.connect(count, "the body to be looked at again");
         }
 
         /** A guard whose timeout leaves the dispatch far more time than any idle timeout of these cases. */
@@ -2420,11 +2814,18 @@ class DispatchStageTest {
         private volatile boolean resumed;
         /** Whether the stream is paused now: set by {@link #pause()}, cleared by a resume or a fetch. */
         private volatile boolean paused;
+        /** How often {@link #pause()} was called. */
+        private final AtomicInteger pauseCalls = new AtomicInteger();
         private volatile @Nullable Buffer onResume;
 
         /** @return {@code true} while the last call that changed the flow was a pause */
         boolean paused() {
             return paused;
+        }
+
+        /** @return how often the stream has been paused so far */
+        int pauseCount() {
+            return pauseCalls.get();
         }
 
         /** Emits {@code buffer} the moment a consumer resumes the stream, before {@link #resume()} returns. */
@@ -2474,6 +2875,7 @@ class DispatchStageTest {
 
         @Override
         public ReadStream<Buffer> pause() {
+            pauseCalls.incrementAndGet();
             paused = true;
             return this;
         }

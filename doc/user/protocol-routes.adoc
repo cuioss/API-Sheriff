@@ -127,7 +127,8 @@ A `protocol: grpc` route proxies gRPC calls -- each an HTTP/2 `POST` to a servic
 The gateway forces the *upstream* connection to HTTP/2 (gRPC requires HTTP/2 end-to-end), streams
 the request and response bodies as opaque length-prefixed frames (it never inspects the protobuf
 payload), and relays the upstream response *trailers* (`grpc-status`, `grpc-message`) back to the
-client untouched. Author it in an `endpoints/*.yaml` file:
+client untouched -- except for a call it ends itself because it went quiet (see
+<<_what_bounds_a_long_lived_call>>). Author it in an `endpoints/*.yaml` file:
 
 [source,yaml]
 ----
@@ -163,6 +164,21 @@ routes that share the same service path must be *statically disjoint* (by host, 
 matcher -- see link:endpoint-routes.adoc#_route_ordering[Endpoint Routes -- route ordering]); a
 public route and a bearer route on the *same* service path are not disjoint, so give each its own
 service path.
+
+[[_what_bounds_a_long_lived_call]]
+=== What bounds a long-lived call
+
+A gRPC call is not held to the request-body idle timeout or the request-body deadline of an HTTP
+route, so a client-streaming or bidirectional call may pause between its messages. Until the
+upstream sends its response headers, the upstream guard's 30 s timeout bounds the call. After them,
+the call stays open while a frame travels in either direction, and a call that carries no frame for
+five minutes is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
+`grpc-message: stream-idle-timeout` in place of the upstream's trailers. HTTP/2 `PING` frames do not
+count, and the call's `grpc-timeout` is not honoured. A service whose calls stay silent for longer
+than five minutes has to send messages to keep them open; the bound is fixed and has no
+configuration key. See
+link:endpoint-routes.adoc#_edge_hardening_defaults[Endpoint Routes -- edge hardening defaults] and
+link:../architecture.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 === gRPC rejections are trailers-only
 

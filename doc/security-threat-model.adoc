@@ -317,7 +317,9 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 | *Spoofing* forwarding identity -> <<gw-04>>. *Tampering* with framing/encoding ->
   <<gw-02>>, <<gw-01>>. *DoS* (slowloris, h2 abuse, decompression) -> <<gw-07>>, <<gw-08>>;
   uploads that make the gateway close its own upstream connections until its local ports run out ->
-  <<gw-07-upstream-ports,GW-07>>; an
+  <<gw-07-upstream-ports,GW-07>>; a request body that stops or keeps arriving too slowly to end, a
+  gRPC call that goes quiet, and an HTTP/2 upload the gateway does not read ->
+  <<gw-07-request-body,GW-07>>; an
   unauthenticated login request driving an outbound request to the identity provider -> <<bff-20>>;
   a token naming an arbitrary key id driving a JWKS request to the identity provider ->
   <<gw-07-jwks-refresh,GW-07>>.
@@ -1420,6 +1422,105 @@ receives. The benchmark run above is the system-scale proof, and it is not a sta
 aspects now target a backend that reads the body, so no benchmark aspect drives early answers any
 more, and `Http2EarlyResponseResetIT` guards the shape of an early answer, not the gateway's port use.
 
+[#gw-07-request-body]
+*A proxied dispatch waits a bounded time for its request body, and a gRPC call a bounded time for a
+frame.* A dispatch holds one pooled upstream connection and one admission permit while it forwards
+the request body, a gRPC call holds its stream for as long as it stays open, and an HTTP/2 stream
+whose body the gateway does not read holds flow-control credit of its connection. Each is bounded by
+a fixed gateway constant that no configuration key or system property reaches
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a1[ADR-0060
+Amendment A1],
+link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[Amendment
+A2]):
+
+* *A body that stops.* A dispatch that holds its upstream connection and is reading the body ends
+  after 10 s without a forwarded body byte: the upstream request is reset, which frees the
+  connection, and the client is answered `408` (`REQUEST_BODY_TIMEOUT`)
+  (link:architecture.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout]).
+* *A body that keeps arriving.* A body that has not ended 25 s after its upstream attempt started is
+  ended there, 5 s before the guard's timeout. Before the response head the dispatch is answered
+  `408` (`REQUEST_BODY_TIMEOUT`) and is attributed to the request: the breaker does not count it as a
+  failure and the retry predicate refuses it. After the head the upstream request is reset and the
+  relayed response is ended through the one end rule with the status the upstream sent, also when no
+  body byte of the upstream had been relayed yet. Once passed, the deadline stays in force: the
+  wait for a pooled connection counts towards the 25 s, and a body whose attempt obtains its
+  connection only after the deadline, or that the upstream is not taking data for when it passes, is
+  ended the same way as soon as it is read again. An attempt that ends without handing its response
+  back stops the deadline, which then reports nothing
+  (link:architecture.adoc#_request_body_deadline[Architecture -- request-body deadline]).
+* *A gRPC call that goes quiet.* A gRPC call arms neither request-body bound. Until its upstream sends
+  the response headers the guard's 30 s timeout bounds it; after them, a call that carries no frame
+  in either direction for five minutes has its upstream request reset and ends with
+  `grpc-status: 4` (`DEADLINE_EXCEEDED`)
+  (link:architecture.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound]).
+* *An HTTP/2 upload the gateway does not read.* An upload refused `503` by the admission cap is reset
+  with `NO_ERROR` after its answer, which returns the credit its body held. An upload its client
+  resets while its dispatch waits for a pooled connection returns its credit and, at once, its
+  admission permit. Both held without a change to the gateway; the connection stays open in both
+  cases (link:architecture.adoc#_http2_unread_upload_release[Architecture -- unread upload release]).
+
+The idle timeout and the deadline are recorded as `INFO` `ApiSheriff-23` and `ApiSheriff-24` and
+counted under `sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`; a call ended by the stream-idle
+bound is recorded as `INFO` `ApiSheriff-25`. All three records are latched per route (CWE-779).
+
+*Residual (accepted).* A body may hold its upstream connection for up to 25 s from the start of its
+attempt while it keeps arriving. A body the upstream is not taking data for when the deadline passes
+is ended only once the upstream reads it again; until then the upstream holds it, and before the
+response head the guard's 30 s timeout ends that dispatch. A gRPC call has no bound on its total
+duration: a call that carries a frame at least every five minutes stays open, as long-lived streaming
+calls are normal for gRPC
+(Amendment A2).
+
+*Status of this control:* PARTIAL. `GatewayEdgeRequestBodyIdleTimeoutTest` drives a body trickling
+to an upstream that reads it whole and to one that answered at once, over HTTP/2 and HTTP/1.1
+(`http2TrickleToAWholeBodyReaderIsAnswered408NotTheGuardsTimeout`,
+`http2TrickleToAStreamingUpstreamIsEndedAtTheDeadline`,
+`http1TrickleToAStreamingUpstreamClosesTheConnectionAtTheDeadline`,
+`http1TrickleToAWholeBodyReaderIsAnswered408AndTheConnectionIsClosed`): each is ended at the
+deadline, never as `UPSTREAM_TIMEOUT`, reaches the upstream once and logs `ApiSheriff-24`; the three
+written first were red before the deadline existed, and the HTTP/1.1 whole-body case, added after
+it, was red with the deadline switched off. Two further cases trickle to an upstream that sent its
+response head and no body byte (`http2TrickleToAHeadOnlyUpstreamKeepsTheUpstreamStatus`,
+`http1TrickleToAHeadOnlyUpstreamKeepsTheUpstreamStatus`): the client still receives the upstream's
+status at the deadline; both were red, answered `502`, before the relay failure kept that status.
+`TerminalDispatchLateBodyTimeoutTest` asserts the same decision on the unwritten head directly,
+including a relay that had not set the upstream status yet. `GatewayEdgeRequestBodyIdleTimeoutTest` also asserts that an upload queued for a pooled
+connection longer than the idle timeout but within its deadline is served `200`
+(`uploadQueuedForAPooledConnectionIsServed`), and that one which obtains its connection only after its
+deadline is answered `408` as soon as its body is read (`uploadQueuedPastItsDeadlineIsAnswered408`).
+`DispatchStageTest` asserts that an idle expiry is not retried under a dispatch state that would allow
+a retry (`neverRetriesARequestBodyIdleExpiry`) and that the idle clock stops when the attempt's send
+completes (`idleClockStopsWhenTheSendCompletes`). Its `BodyDeadline` cases assert that a deadline passing while the body is paused, or before the
+attempt held its connection, ends the body when it is read again, before and after the hand-over
+(`deadlinePassedWhilePausedEndsTheBodyWhenItIsReadAgain`,
+`deadlinePassedWhilePausedAfterTheHandOverGoesToTheLateCallback`,
+`deadlinePassedBeforeTheClockStartedEndsTheBodyWhenItIsFirstRead`), and that an abandoned attempt
+stops its body's clocks (`abandonedAttemptStopsTheClocksOfItsBody`,
+`bodyOfAnAlreadyAbandonedAttemptNeverStartsItsClocks`); `failedAttemptStopsTheRequestBodyDeadline`
+asserts the same over a live upstream that fails the attempt. Each of these was red before the
+deadline stayed in force.
+`GrpcDispatchStageTest.StreamBounds` asserts that a paused client-streaming call is ended by neither
+request-body bound (`clientStreamingPauseIsEndedByNeitherRequestBodyBound`), that the guard no longer
+bounds a call once its headers arrived (`callAfterHeadersOutlivesTheGuardAndEndsOnlyWithItsStream`),
+that a call idle in both directions ends with `DEADLINE_EXCEEDED`
+(`callIdleInBothDirectionsIsEndedWithDeadlineExceeded`), and that traffic in either direction alone
+keeps a call open (`upstreamTrafficKeepsTheCallOpenWhileTheClientIsSilent`,
+`clientTrafficKeepsTheCallOpenWhileTheUpstreamIsSilent`). Those cases compose the gRPC path
+themselves; `TerminalDispatchGrpcStreamIdleTest` runs a call through the edge's own wiring,
+`TerminalDispatch.relayGrpcCall`, which `dispatchGrpc` runs once it has resolved the upstream URI and
+the body cap: a call idle in both directions ends with `DEADLINE_EXCEEDED` and is recorded as
+`ApiSheriff-25` (`idleCallIsEndedAndRecorded`), and a client that keeps sending keeps the call open
+(`clientTrafficKeepsTheCallOpen`), which turned red with the `watch(...)` wrap of the request body
+removed. `GatewayEdgeEarlyResponseResetTest` asserts
+the release of credit and permit (`admissionRefusedUploadReturnsItsConnectionWindow`,
+`uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit`). The trickle and pool-wait
+cases run a shorter test-only idle timeout and deadline, and the stream-idle cases a 1 s bound, in
+place of the fixed 10 s, 25 s and five minutes; the gRPC pause case pauses past the fixed 10 s and
+25 s. Two steps of the gRPC wiring are asserted by no test: that the dispatch function `dispatchGrpc`
+passes to `relayGrpcCall` hands the watched request stream to the dispatch (the test supplies its
+own), and the fixed five-minute value `dispatchGrpc` builds. `GrpcProxyIT` sends real calls through
+`dispatchGrpc` and so runs both, but asserts neither.
+
 [#gw-08]
 === GW-08 -- HTTP/2 & gRPC abuse (Rapid Reset, CONTINUATION flood, downgrade smuggling, h2c)
 
@@ -1457,6 +1558,15 @@ untouched: no
 below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
 availability threat of its own: it is recorded, with its control, under
 <<gw-07-upstream-ports,GW-07>>.
+
+*Note -- the request-body and stream-idle bounds end a stream as the gateway, not as the client.*
+Every stream end the bounds of <<gw-07-request-body,GW-07>> produce runs through the same one end
+rule. The admission `503` of a refused upload and the `408` of a body past the idle timeout or the
+request-body deadline are followed by a `NO_ERROR` reset of their stream; a relayed response ended at
+the deadline is reset with `NO_ERROR` once its end has been written; and a gRPC call ended by its
+stream-idle bound ends with trailers, its stream reset with `NO_ERROR` when its request is still open.
+Each is a reset the gateway sends, so none counts towards the client's Rapid-Reset limit, and none
+ends the connection or its other streams. The status below is unchanged.
 
 *Status:* GAP. Quarkus/Netty ship some Rapid-Reset mitigation, but stream-reset rate limiting
 and CONTINUATION bounds must be verified and pinned, and h2c-upgrade non-forwarding asserted.
@@ -3486,6 +3596,7 @@ outstanding hardening work (next section).
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
+| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 Amendments A1 and A2 | PARTIAL (two steps of the edge's gRPC stream-idle wiring in `dispatchGrpc` are asserted by no test: that the dispatch function it hands to `relayGrpcCall` receives the watched request stream, and the fixed five-minute value)
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED

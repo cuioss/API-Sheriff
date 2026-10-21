@@ -38,7 +38,10 @@ import io.vertx.ext.web.RoutingContext;
  * ({@link ResponseEnds#endResponse}).
  * <p>
  * Thread-safe: the retired-connection set is synchronized, and a mark is recorded on the virtual
- * thread while it is read on the connection's event loop.
+ * thread while it is read on the connection's event loop. A retirement recorded from another event
+ * loop — a request body that outlived its deadline after the hand-over — goes through
+ * {@link #recordRetirement} only, never through the context-data mark, which only the virtual thread
+ * and the client connection's loop touch.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -55,9 +58,11 @@ public final class ConnectionRetirement {
 
     private final FramingGate framingGate;
     /**
-     * The HTTP/1.x connections retired by a framing-gate rejection. A request that arrives on one of
-     * them is never processed (see {@link #isRetired}). An HTTP/2 connection is never recorded here: a
-     * framing rejection there ends only the rejected stream. Held weakly and by identity —
+     * The HTTP/1.x connections retired by a framing-gate rejection ({@link #markFramingRejection}) or by
+     * a request body that outlived the request-body deadline after the hand-over
+     * ({@link #recordRetirement}). A request that arrives on one of them is never processed (see
+     * {@link #isRetired}). An HTTP/2 connection is never recorded here: a framing rejection or a late
+     * body timeout there ends only the affected stream. Held weakly and by identity —
      * {@link HttpConnection} implementations do not override {@code equals} — so an entry disappears
      * with its connection and no close handler has to be claimed on a connection the edge does not own.
      */
@@ -73,8 +78,8 @@ public final class ConnectionRetirement {
 
     /**
      * @param connection the connection a request arrived on
-     * @return {@code true} when the connection was retired by a framing rejection, so nothing that
-     *         arrives on it may be processed, answered or forwarded
+     * @return {@code true} when the connection was retired by a framing rejection or a late
+     *         request-body timeout, so nothing that arrives on it may be processed, answered or forwarded
      */
     public boolean isRetired(HttpConnection connection) {
         return retiredConnections.contains(connection);
@@ -123,8 +128,8 @@ public final class ConnectionRetirement {
      * recorded as retired at once and the answer retires it; an HTTP/2 request needs no mark, its
      * stream being ended by the one end rule (see {@link ResponseEnds#endResponse}). Shared by the
      * framing gate and by the dispatch, which leaves behind a body it could not finish reading — one it
-     * refused on its framing, or one that stopped arriving (see
-     * {@code TerminalDispatch.dispatchMarkingUnreadBody}).
+     * refused on its framing, or one that stopped arriving or was still arriving at the request-body
+     * deadline before the hand-over (see {@code TerminalDispatch.dispatchMarkingUnreadBody}).
      *
      * @param ctx the rejected request
      */
@@ -136,13 +141,31 @@ public final class ConnectionRetirement {
     }
 
     /**
+     * Records an HTTP/1.x connection as retired in the synchronized retired set only, leaving the
+     * request's context data untouched; a no-op for an HTTP/2 request. For a caller that runs on an
+     * event loop other than the client connection's: the context data map is a plain map owned by the
+     * client connection's loop, so a mark written to it from a foreign loop is a data race. The
+     * synchronized set carries the retirement across loops instead, and the answer that retires the
+     * connection is told by the caller, not by a mark on the context (see
+     * {@link #retireConnectionAfterResponse}). Used for a request body that outlived the request-body
+     * deadline after the hand-over (see {@code TerminalDispatch.lateBodyRefusal}).
+     *
+     * @param ctx the request whose connection is retired
+     */
+    public void recordRetirement(RoutingContext ctx) {
+        if (ResponseEnds.isHttp1(ctx.request().version())) {
+            retiredConnections.add(ctx.request().connection());
+        }
+    }
+
+    /**
      * Retires the connection the response under construction is written on: the response advertises
      * {@code Connection: close} (HTTP/1.x only — the header is forbidden in HTTP/2), and the
      * connection is closed once the response has been written. Must be called on the event loop,
      * before the response is ended.
      * <p>
-     * It has two callers, both for an HTTP/1.x request only — an HTTP/2 rejection ends just its
-     * stream instead (see {@link ResponseEnds#endResponse}) — and both retire the connection because
+     * It has three callers, all for an HTTP/1.x request only — an HTTP/2 rejection ends just its
+     * stream instead (see {@link ResponseEnds#endResponse}) — and all retire the connection because
      * the bytes behind the rejected request cannot be trusted to frame the next one:
      * <ul>
      *   <li>a {@code 413} reserved-body rejection, on BOTH of its paths (the pre-read
@@ -154,7 +177,10 @@ public final class ConnectionRetirement {
      *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
      *       still tie up connections by repeatedly tripping the {@code 413};</li>
      *   <li>a framing rejection of an HTTP/1.x request — the framing gate's, or a body the dispatch
-     *       could not finish reading (see {@link #markFramingRejection}).</li>
+     *       could not finish reading (see {@link #markFramingRejection});</li>
+     *   <li>the end of a relay that failed after a request body outlived the request-body deadline
+     *       following the hand-over, told by the late refusal's event (see {@link #recordRetirement}
+     *       and {@code TerminalDispatch.retireFailedRelayConnection}).</li>
      * </ul>
      *
      * @param ctx the request whose connection is retired
@@ -172,7 +198,10 @@ public final class ConnectionRetirement {
     /**
      * Applies the connection mark {@link #rejectFramingAndRetire} left on the request: retires the
      * HTTP/1.x connection; a no-op for every other request. Called by the gateway-originated error
-     * writers on the event loop, immediately before they end the response.
+     * writers on the event loop, immediately before they end the response. A request body that outlived
+     * the request-body deadline after the hand-over carries no such mark: it is recorded by
+     * {@link #recordRetirement} and the failed relay's end retires its connection on the late refusal's
+     * event instead (see {@code TerminalDispatch.retireFailedRelayConnection}).
      *
      * @param ctx the request being answered
      */
