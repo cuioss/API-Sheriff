@@ -416,14 +416,13 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
-- **THE PUBLISHED GATEWAY IMAGE IS AMD64-ONLY** (added 2026-10-20, inbox
-  `plan-v02-12-idp-addressing-model-004`). The release builds the native image on `ubuntu-latest` and
-  pushes it with `docker buildx build --push` without a platform list (`.github/workflows/release.yml`,
-  checked at `03cb4755`). The deployment docs do not state the constraint. An arm64 host (Apple Silicon)
-  running `deployment/compose-sample` has to build a local image and point `API_SHERIFF_IMAGE` at it. The
-  sample's `.env` already supports that override but does not say why it is needed. There are two ways
-  out: a documentation note (sample `.env` and README), or a multi-arch release, which needs an arm64
-  native build, so a new runner and release lane. The operator chooses. No spec until then.
+- **THE PUBLISHED GATEWAY IMAGE IS AMD64-ONLY — OWNED BY `PLAN-V02-47`** (added 2026-10-20, inbox
+  `plan-v02-12-idp-addressing-model-004`). `publish-image` in `.github/workflows/release.yml` builds the
+  native image on `ubuntu-latest` through the integration-test lifecycle, then publishes it with `docker tag` +
+  `docker push`, giving one `linux/amd64` manifest. The executable needs x86-64-v3. `README.adoc` documents
+  both limits and sends arm64 users to a locally built image. The operator chose a multi-arch release over a
+  documentation note on 2026-10-21. `PLAN-V02-47` builds one tested native image per architecture and joins
+  them into one signed index.
 - **SUPERSEDED REVIEWER: cuioss-review-bot (PR-Agent) was removed on 2026-10-20** (#493, #494). `.plan/marshal.json`
   records `required_bots: coderabbit`, `optional_bots: sourcery`. `CLAUDE.md` § Git Workflow still names
   PR-Agent as a gate. `PLAN-V02-42` corrects it.
