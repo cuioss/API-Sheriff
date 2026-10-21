@@ -2,10 +2,10 @@
   "id": "PLAN-V02-47",
   "slug": "multi-arch-image",
   "workstream": "WS-05",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
   "plan_marshall_plan_id": "plan-v02-47-multi-arch-image",
-  "pr": "",
-  "landing": "",
+  "pr": "504",
+  "landing": "landings/PLAN-V02-47.md",
   "seq": 47
 }
