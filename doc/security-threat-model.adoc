@@ -1471,7 +1471,7 @@ duration: a call that carries a frame at least every five minutes stays open, as
 calls are normal for gRPC
 (Amendment A2).
 
-*Status of this control:* COVERED. `GatewayEdgeRequestBodyIdleTimeoutTest` drives a body trickling
+*Status of this control:* PARTIAL. `GatewayEdgeRequestBodyIdleTimeoutTest` drives a body trickling
 to an upstream that reads it whole and to one that answered at once, over HTTP/2 and HTTP/1.1
 (`http2TrickleToAWholeBodyReaderIsAnswered408NotTheGuardsTimeout`,
 `http2TrickleToAStreamingUpstreamIsEndedAtTheDeadline`,
@@ -1516,8 +1516,9 @@ the release of credit and permit (`admissionRefusedUploadReturnsItsConnectionWin
 `uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit`). The trickle and pool-wait
 cases run a shorter test-only idle timeout and deadline, and the stream-idle cases a 1 s bound, in
 place of the fixed 10 s, 25 s and five minutes; the gRPC pause case pauses past the fixed 10 s and
-25 s. The one step of the gRPC wiring no test runs is `dispatchGrpc` building the fixed five-minute
-bound and handing it to `relayGrpcCall`.
+25 s. The steps of the gRPC wiring no test runs are the dispatch function `dispatchGrpc` passes to
+`relayGrpcCall`, which hands the watched request stream to the dispatch (the test supplies its own),
+and `dispatchGrpc` building the fixed five-minute bound.
 
 [#gw-08]
 === GW-08 -- HTTP/2 & gRPC abuse (Rapid Reset, CONTINUATION flood, downgrade smuggling, h2c)
