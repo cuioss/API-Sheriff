@@ -34,11 +34,10 @@ negative control proves.
 
 2. **The development start script's printed command (Open Defect 2).**
    `demo-client/scripts/start-dev-environment.sh` prints `cd demo-client && npm run test`, but
-   `demo-client/playwright.config.js` requires three variables at load time that only the Maven
-   execution supplies, so the printed command fails at once. Print a command that sets them, or
+   `demo-client/playwright.config.js` requires two variables at load time (`PLAYWRIGHT_BASE_URL_SERVER`,
+   `PLAYWRIGHT_BASE_URL_COOKIE`, through `required()`) that only the Maven execution supplies, so the printed command fails at once. Print a command that sets them, or
    have the config fall back to the development defaults when they are absent, and say which.
-   Scope it to the two `PLAYWRIGHT_BASE_URL_*` variables. `PLAN-V02-12` (#492) deleted `hostResolverRule()`
-   and `--host-resolver-rules`; confirm at outline that `KEYCLOAK_HOST_URL` went with them.
+   `PLAN-V02-12` (#492) deleted `hostResolverRule()`, `--host-resolver-rules` and `KEYCLOAK_HOST_URL`.
 
    Already in place, not this plan's work: the same script gates on `/health/ready` with one named
    budget (`GATEWAY_READY_ATTEMPTS=30`), and `doc/README.adoc` no longer carries the "fully adapted"
@@ -62,6 +61,10 @@ negative control proves.
      guard job checks out with `fetch-depth: 0` and `fetch-tags: true`, and the guard refuses to run
      if the parent commit is missing.
    - Cite the pinned guard by version and path, so the text has to be re-checked when the pin moves.
+     The pin is now **v0.42.0** (`7115714`, `release.yml` line ~131), not the v0.40.0 these claims were
+     checked at. Re-read `release-guard.py` § `decide` and the `guard` job of `reusable-maven-release.yml`
+     at v0.42.0 before writing. `PLAN-V02-47` (#504) rewrote large parts of this document for the
+     two-platform lane; work on that version.
 
 ## Claim Labels
 
@@ -71,8 +74,7 @@ negative control proves.
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: git ls-tree HEAD doc/plan returns nothing
 - OBSERVED: `start-dev-environment.sh` prints `cd demo-client && npm run test` — read at `demo-client/scripts/start-dev-environment.sh` § the closing hints
   - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: start-dev-environment.sh line 339 still prints cd demo-client && npm run test
-- HYPOTHESIS: `demo-client/playwright.config.js` still requires the three variables at module load — confirm/refute at `demo-client/playwright.config.js` § `required()` (verify-at-outline)
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: playwright.config.js routes three variables through required() at module load
+- OBSERVED: `demo-client/playwright.config.js` requires two variables at module load (`required('PLAYWRIGHT_BASE_URL_SERVER')`, `required('PLAYWRIGHT_BASE_URL_COOKIE')`); `KEYCLOAK_HOST_URL` appears nowhere in the demo client — `origin/main` at `8e218103`
 - OBSERVED: `start-dev-environment.sh` gates on `/health/ready` with `GATEWAY_READY_ATTEMPTS=30`, so the readiness half of the former D2 is already done — read at `demo-client/scripts/start-dev-environment.sh` § the gateway wait
   - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: the script probes /health/ready with GATEWAY_READY_ATTEMPTS=30 (unchanged since #341); the readiness half of D2 removed, claim re-scoped
 - OBSERVED: `doc/README.adoc` carries no "fully adapted" claim; #197 removed it, so the former D3 is discharged — `git grep -i adapted doc/README.adoc`

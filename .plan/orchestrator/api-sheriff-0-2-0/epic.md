@@ -416,16 +416,9 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
-- **THE PUBLISHED GATEWAY IMAGE IS AMD64-ONLY — OWNED BY `PLAN-V02-47`** (added 2026-10-20, inbox
-  `plan-v02-12-idp-addressing-model-004`). `publish-image` in `.github/workflows/release.yml` builds the
-  native image on `ubuntu-latest` through the integration-test lifecycle, then publishes it with `docker tag` +
-  `docker push`, giving one `linux/amd64` manifest. The executable needs x86-64-v3. `README.adoc` documents
-  both limits and sends arm64 users to a locally built image. The operator chose a multi-arch release over a
-  documentation note on 2026-10-21. `PLAN-V02-47` builds one tested native image per architecture and joins
-  them into one signed index.
 - **SUPERSEDED REVIEWER: cuioss-review-bot (PR-Agent) was removed on 2026-10-20** (#493, #494). `.plan/marshal.json`
-  records `required_bots: coderabbit`, `optional_bots: sourcery`. `CLAUDE.md` § Git Workflow still names
-  PR-Agent as a gate. `PLAN-V02-42` corrects it.
+  records `required_bots: coderabbit`, `optional_bots: sourcery`. `CLAUDE.md` and `AGENTS.md` are corrected (#502).
+  `doc/development/README.adoc` and `re-review-on-loopback.adoc` still describe PR-Agent; `PLAN-V02-43` owns them.
 
 - **PER-ROUTE UPSTREAM TIMEOUTS PARSE BUT DO NOT ACT — OWNED BY KIDICAP `PLAN-29`** (added 2026-10-15,
   inbox `plan-32-early-answer-it-timeouts-001`). `connect_timeout_ms` and `read_timeout_ms` exist only in
