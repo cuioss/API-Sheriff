@@ -596,7 +596,7 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                 () -> assertEquals(pooled, upstreamConnections.size(),
                         "the upload obtained one of the held connections, not a new one"),
                 () -> assertEquals(1, upstreamRequestsByConnection().stream()
-                        .filter(requests -> requests.size() == 2 && requests.get(1).equals("POST " + QUEUED)).count(),
+                                .filter(requests -> requests.size() == 2 && requests.get(1).equals("POST " + QUEUED)).count(),
                         () -> "exactly one held connection carried the upload after its GET: "
                                 + upstreamRequestsByConnection()),
                 () -> assertEquals(Collections.nCopies(pooled, 200), heldStatuses, "every holding GET is served"),
