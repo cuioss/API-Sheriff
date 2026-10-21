@@ -30,7 +30,7 @@ import io.vertx.core.http.HttpServerOptions;
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
  * rejected by the Vert.x codec, and an idle connection is reaped so a slow-loris / h2 abuse load
- * cannot pin connection slots. Five further limits are consumed by
+ * cannot pin connection slots. Six further limits are consumed by
  * {@code de.cuioss.sheriff.gateway.edge} and its sub-packages rather
  * than the transport: the {@linkplain #admissionCap() admission cap} bounds the number of requests
  * that may be in flight at once (rejected with {@code 503} <em>before</em> a virtual thread is
@@ -41,14 +41,16 @@ import io.vertx.core.http.HttpServerOptions;
  * {@linkplain #reservedBodyMaxBytes() reserved-body ceiling} bounds the cumulative bytes the edge
  * will buffer for a gateway-terminated reserved POST path (rejected with {@code 413}), so an
  * unauthenticated caller cannot exhaust heap through the pre-authentication back-channel logout
- * path that never reaches the per-route body cap, and the
+ * path that never reaches the per-route body cap, the
  * {@linkplain #requestBodyIdleTimeoutMillis() request-body idle timeout} bounds how long a proxied
  * dispatch holding an upstream connection waits for request-body progress while it reads the body
- * (answered {@code 408}, its upstream connection released). The idle timeout is a fixed gateway
- * constant, like the upstream guard it sits under: it is shorter than the guard's whole-dispatch
- * timeout, so a dispatch whose body stopped arriving is ended and attributed to the request before
- * the guard would end it as an upstream timeout. A bodyless request and a gRPC route are not
- * watched.
+ * (answered {@code 408}, its upstream connection released), and the
+ * {@linkplain #requestBodyDeadlineMillis() request-body deadline} bounds how long, from the start of
+ * its upstream attempt, a proxied dispatch waits for the whole body. Both are fixed gateway constants,
+ * like the upstream guard they sit under: each is shorter than the guard's whole-dispatch timeout, so a
+ * dispatch whose body stopped arriving, or is still arriving when the guard would end it, is ended and
+ * attributed to the request before the guard would end it as an upstream timeout. A bodyless request
+ * and a gRPC route are watched by neither.
  * <p>
  * <strong>The inbound HTTP/2 concurrent streams and connection window are transport bounds too.</strong>
  * A listener admits at most 100 concurrent streams per connection (the Vert.x listener default): a listener announcing more, or announcing no limit at all, is lowered to that bound, and
@@ -64,8 +66,8 @@ import io.vertx.core.http.HttpServerOptions;
  * codec limits above are deliberate secure defaults chosen to keep the abuse surface bounded while
  * comfortably serving ordinary API traffic, and the drain timeout is kept below the Quarkus default
  * shutdown timeout so the drain completes within the shutdown window rather than being cut short.
- * The request-body idle timeout is fixed because the upstream guard it sits under is a fixed gateway
- * policy (ADR-0064); no configuration key or system property reaches it. The two admission caps instead come from the {@code edge_hardening} block of {@code gateway.yaml}
+ * The request-body idle timeout and deadline are fixed because the upstream guard they sit under is a
+ * fixed gateway policy (ADR-0064); no configuration key or system property reaches them. The two admission caps instead come from the {@code edge_hardening} block of {@code gateway.yaml}
  * ({@link EdgeHardeningConfig}), because a deployment's viable concurrency depends on its container
  * memory limit and its traffic mix — and, for the relay cap, on how long its WebSocket connections
  * live. An omitted block resolves to {@link EdgeHardeningConfig#defaults()}, preserving the
@@ -119,6 +121,15 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static final long REQUEST_BODY_IDLE_TIMEOUT_MILLIS = 10_000L;
 
     /**
+     * How long, in milliseconds from the start of its upstream attempt, a proxied dispatch may wait for
+     * the whole request body before it is answered {@code 408}. The attempt start is where the upstream
+     * guard's whole-dispatch timeout ({@code UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS}) starts too, and
+     * this bound is 5 s shorter, so a body still arriving when the guard would end the dispatch as an
+     * upstream timeout is ended as the request's first.
+     */
+    private static final long REQUEST_BODY_DEADLINE_MILLIS = 25_000L;
+
+    /**
      * Upper bound on the HTTP/2 streams one inbound connection may have open at once, announced as the
      * listener's initial {@code SETTINGS_MAX_CONCURRENT_STREAMS} — the Vert.x listener default. A
      * transport bound: it caps the work a single connection can hold in flight, and it is the factor
@@ -130,6 +141,7 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private final int admissionCap;
     private final int webSocketRelayCap;
     private final long requestBodyIdleTimeoutMillis;
+    private final long requestBodyDeadlineMillis;
 
     /**
      * Resolves the operator-configured admission budget, applying the documented defaults for any
@@ -146,21 +158,46 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * <strong>Test-only.</strong> Resolves the admission budget exactly as the public constructor
      * does, but carries the given request-body idle timeout in place of the fixed 10,000 ms, so an
      * edge test can observe the bound without
-     * waiting for it. Public only because those edge tests live in the parent package; no
-     * configuration key or system property reaches this constructor.
+     * waiting for it. The request-body deadline stays the fixed 25,000 ms. Public only because those
+     * edge tests live in the parent package; no configuration key or system property reaches this
+     * constructor.
      *
      * @param hardening                    as for the public constructor
      * @param requestBodyIdleTimeoutMillis the request-body idle timeout in milliseconds, positive
      * @throws IllegalArgumentException when {@code requestBodyIdleTimeoutMillis} is not positive
      */
     public EdgeHardeningOptions(EdgeHardeningConfig hardening, long requestBodyIdleTimeoutMillis) {
+        this(hardening, requestBodyIdleTimeoutMillis, REQUEST_BODY_DEADLINE_MILLIS);
+    }
+
+    /**
+     * <strong>Test-only.</strong> Resolves the admission budget exactly as the public constructor
+     * does, but carries the given request-body idle timeout and request-body deadline in place of the
+     * fixed 10,000 ms and 25,000 ms, so an edge test can observe both bounds without waiting for them.
+     * Public only because those edge tests live in the parent package; no configuration key or system
+     * property reaches this constructor.
+     *
+     * @param hardening                    as for the public constructor
+     * @param requestBodyIdleTimeoutMillis the request-body idle timeout in milliseconds, positive
+     * @param requestBodyDeadlineMillis    the request-body deadline in milliseconds, longer than the
+     *                                     idle timeout
+     * @throws IllegalArgumentException when {@code requestBodyIdleTimeoutMillis} is not positive, or
+     *                                  {@code requestBodyDeadlineMillis} is not longer than it
+     */
+    public EdgeHardeningOptions(EdgeHardeningConfig hardening, long requestBodyIdleTimeoutMillis,
+            long requestBodyDeadlineMillis) {
         if (requestBodyIdleTimeoutMillis <= 0) {
             throw new IllegalArgumentException(
                     "requestBodyIdleTimeoutMillis must be positive: " + requestBodyIdleTimeoutMillis);
         }
+        if (requestBodyDeadlineMillis <= requestBodyIdleTimeoutMillis) {
+            throw new IllegalArgumentException("requestBodyDeadlineMillis must be longer than the idle timeout: "
+                    + requestBodyDeadlineMillis);
+        }
         this.admissionCap = hardening.effectiveAdmissionCap();
         this.webSocketRelayCap = hardening.effectiveWebsocketRelayCap();
         this.requestBodyIdleTimeoutMillis = requestBodyIdleTimeoutMillis;
+        this.requestBodyDeadlineMillis = requestBodyDeadlineMillis;
     }
 
     /** Creates the options carrying the documented default admission budget. */
@@ -255,6 +292,16 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      */
     public long requestBodyIdleTimeoutMillis() {
         return requestBodyIdleTimeoutMillis;
+    }
+
+    /**
+     * @return how long, in milliseconds from the start of its upstream attempt, a proxied dispatch may
+     *         wait for the whole request body before it is answered {@code 408} and its upstream
+     *         request is reset — a fixed gateway constant of 25,000 ms, below the upstream guard's
+     *         timeout, which starts at the same moment
+     */
+    public long requestBodyDeadlineMillis() {
+        return requestBodyDeadlineMillis;
     }
 
     /**

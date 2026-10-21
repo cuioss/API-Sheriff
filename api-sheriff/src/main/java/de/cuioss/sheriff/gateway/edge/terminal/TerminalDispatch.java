@@ -129,7 +129,7 @@ public final class TerminalDispatch {
      * @param defaultMaxBodySize    the baseline body cap a route without its own security
      *                              configuration dispatches under
      * @param hardening             the edge transport / admission bounds (the request-body idle
-     *                              timeout)
+     *                              timeout and deadline)
      * @param upstreamFailureMapper the mapper turning guarded-dispatch failures into the error contract
      * @param sheriffMetrics        the Micrometer adapter the upstream duration is recorded through
      * @param gatewayEventCounter   the shared in-process event counter
@@ -198,7 +198,7 @@ public final class TerminalDispatch {
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
         DispatchStage dispatchStage = new DispatchStage(upstreamClients, cap,
-                hardening.requestBodyIdleTimeoutMillis(), upstreamFailureMapper);
+                hardening.requestBodyIdleTimeoutMillis(), hardening.requestBodyDeadlineMillis(), upstreamFailureMapper);
         DispatchStage.BodyFraming framing = DispatchStage.BodyFraming.of(request.method(),
                 request.declaredContentLength(), lateBodyRefusal(ctx));
         long upstreamStartNanos = System.nanoTime();
@@ -518,8 +518,8 @@ public final class TerminalDispatch {
      *   <li>the dispatch refused the body on its framing — a body byte on a bodyless method, or a body
      *       disagreeing with its declared length, both a {@link EventType#SECURITY_FILTER_VIOLATION}
      *       answered {@code 400};</li>
-     *   <li>the body made no progress for the request-body idle timeout —
-     *       {@link EventType#REQUEST_BODY_TIMEOUT}, answered {@code 408}.</li>
+     *   <li>the body made no progress for the request-body idle timeout, or was still arriving at the
+     *       request-body deadline — {@link EventType#REQUEST_BODY_TIMEOUT}, answered {@code 408}.</li>
      * </ul>
      * Either way the bytes behind the answer were not read, so they cannot frame a following request:
      * on HTTP/1.x the connection is retired — recorded at once, the answer carries
@@ -540,29 +540,55 @@ public final class TerminalDispatch {
     }
 
     /**
-     * The late-violation callback of a proxied request (see {@link DispatchStage.BodyFraming}): a body
-     * byte on a bodyless method that arrived only after the dispatch handed the upstream response over
-     * for relay.
+     * The late-violation callback of a proxied request (see {@link DispatchStage.BodyFraming}): a
+     * refusal of the request body that came only after the dispatch handed the upstream response over
+     * for relay. It runs before the dispatch resets the upstream request, and every refusal is metered
+     * and logged like the same rejection answered before the hand-over
+     * ({@link RejectionReporter#reportRejection}).
      * <p>
-     * The dispatch can no longer answer it with a {@code 400} then, and ending the response would
-     * present a truncated answer as complete, so the client response is <strong>reset</strong> instead
-     * — on HTTP/2 the one stream, with {@code CANCEL}. The refusal is metered and logged like every
-     * other {@link EventType#SECURITY_FILTER_VIOLATION} ({@link RejectionReporter#reportRejection}). The
-     * callback runs on the inbound request's event loop, before the dispatch resets the upstream
-     * request, so the response is reset before the aborted relay could end it; the flag stashed under
+     * <strong>A body byte on a bodyless method</strong> ({@link EventType#SECURITY_FILTER_VIOLATION}):
+     * the dispatch can no longer answer it with a {@code 400}, and ending the response would present a
+     * truncated answer as complete, so the client response is <strong>reset</strong> instead — on HTTP/2
+     * the one stream, with {@code CANCEL}. The callback runs on the inbound request's event loop, so the
+     * response is reset before the aborted relay could end it; the flag stashed under
      * {@link #LATE_BODY_REFUSED_KEY} keeps {@link #failRelay} from ending it afterwards.
+     * <p>
+     * <strong>A body still arriving at the request-body deadline</strong>
+     * ({@link EventType#REQUEST_BODY_TIMEOUT}): the relay is ended through the one end rule. The reset
+     * of the upstream request that follows this callback fails the relay, and {@link #failRelay} ends
+     * the client response through {@link ResponseEnds#endResponse} — on HTTP/2 the stream is then reset
+     * with {@code NO_ERROR}. The body behind it was not read, so an HTTP/1.x connection is marked for
+     * retirement here, on the upstream request's event loop and before that reset, and the end closes
+     * it; a response that has already ended has its HTTP/1.x connection closed at once.
      */
     private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
         AtomicBoolean refused = new AtomicBoolean();
         ctx.put(LATE_BODY_REFUSED_KEY, refused);
-        return violation -> {
+        return refusal -> {
+            rejectionReporter.reportRejection(ctx, refusal);
+            if (refusal.getEventType() == EventType.REQUEST_BODY_TIMEOUT) {
+                retireAfterLateBodyTimeout(ctx);
+                return;
+            }
             refused.set(true);
-            rejectionReporter.reportRejection(ctx, violation);
             HttpServerResponse response = ctx.response();
             if (!response.ended()) {
                 response.reset(HTTP2_CANCEL);
             }
         };
+    }
+
+    /**
+     * Marks the HTTP/1.x connection of a request whose body outlived the request-body deadline after
+     * the hand-over for retirement, so the relay's end closes it (see {@link #failRelay}); when the
+     * response has already ended there is no end to come, and the connection is closed at once. A
+     * no-op on HTTP/2, where the one end rule ends just the stream.
+     */
+    private void retireAfterLateBodyTimeout(RoutingContext ctx) {
+        connectionRetirement.markFramingRejection(ctx);
+        if (ResponseEnds.isHttp1(ctx.request().version()) && ctx.response().ended()) {
+            ctx.request().connection().close();
+        }
     }
 
     /** @return whether a late body refusal has reset this request's response */
@@ -605,8 +631,10 @@ public final class TerminalDispatch {
      * Answers a relay that failed: a {@code 502} when the response head was not yet written, otherwise
      * the end of the truncated response, so the client is never left waiting. That end passes the one
      * end rule ({@link ResponseEnds#endResponse}) like every other response end: an HTTP/2 stream whose
-     * request body is still open is reset with {@code NO_ERROR} once it has been written. A response a
-     * late body refusal reset ({@link #lateBodyRefusal}) is never ended here.
+     * request body is still open is reset with {@code NO_ERROR} once it has been written. An HTTP/1.x
+     * connection marked for retirement — a body that outlived the request-body deadline after the
+     * hand-over ({@link #lateBodyRefusal}) — is closed once the end has been written. A response a late
+     * body refusal reset ({@link #lateBodyRefusal}) is never ended here.
      *
      * @param ctx     the request whose relay failed
      * @param failure the relay's failure, logged at {@code DEBUG} only
@@ -631,6 +659,7 @@ public final class TerminalDispatch {
                 response.headers().remove(CONTENT_LENGTH_HEADER);
                 response.setStatusCode(BAD_GATEWAY);
             }
+            ConnectionRetirement.retireMarkedConnection(ctx);
             ResponseEnds.endResponse(ctx, response::end);
         });
     }

@@ -410,7 +410,7 @@ public class GatewayEdgeRoute {
         // The collaborators the per-request flow hands its jobs to, each owning the state of its job.
         this.connectionRetirement = new ConnectionRetirement(framingGate);
         this.rejectionReporter = new RejectionReporter(gatewayEventCounter, sheriffMetrics,
-                hardening.requestBodyIdleTimeoutMillis());
+                hardening.requestBodyIdleTimeoutMillis(), hardening.requestBodyDeadlineMillis());
         this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
                 rejectionReporter);
         this.reservedBodyReader = new ReservedBodyReader(reservedPathRegistry, hardening.reservedBodyMaxBytes(),

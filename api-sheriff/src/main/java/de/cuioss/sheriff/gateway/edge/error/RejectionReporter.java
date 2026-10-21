@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.edge.request.EdgeRequests;
+import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
@@ -57,6 +58,7 @@ public final class RejectionReporter {
     private final GatewayEventCounter gatewayEventCounter;
     private final SheriffMetrics sheriffMetrics;
     private final long requestBodyIdleTimeoutMillis;
+    private final long requestBodyDeadlineMillis;
     /**
      * The route ids an aborted inbound body has already been reported for at {@code INFO} (see
      * {@link #logInboundBodyAborted}). Bounded by the number of configured routes.
@@ -67,6 +69,11 @@ public final class RejectionReporter {
      * {@link #logRequestBodyTimeout}). Bounded by the number of configured routes.
      */
     private final Set<String> requestBodyTimeoutReported = ConcurrentHashMap.newKeySet();
+    /**
+     * The route ids a request body past its deadline has already been reported for at {@code INFO}
+     * (see {@link #logRequestBodyDeadline}). Bounded by the number of configured routes.
+     */
+    private final Set<String> requestBodyDeadlineReported = ConcurrentHashMap.newKeySet();
 
     /**
      * @param gatewayEventCounter          the shared in-process event counter
@@ -74,12 +81,15 @@ public final class RejectionReporter {
      *                                     recorded through
      * @param requestBodyIdleTimeoutMillis the request-body idle timeout the timeout record reports
      *                                     ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyIdleTimeoutMillis()})
+     * @param requestBodyDeadlineMillis    the request-body deadline the deadline record reports
+     *                                     ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions#requestBodyDeadlineMillis()})
      */
     public RejectionReporter(GatewayEventCounter gatewayEventCounter, SheriffMetrics sheriffMetrics,
-            long requestBodyIdleTimeoutMillis) {
+            long requestBodyIdleTimeoutMillis, long requestBodyDeadlineMillis) {
         this.gatewayEventCounter = Objects.requireNonNull(gatewayEventCounter, "gatewayEventCounter");
         this.sheriffMetrics = Objects.requireNonNull(sheriffMetrics, "sheriffMetrics");
         this.requestBodyIdleTimeoutMillis = requestBodyIdleTimeoutMillis;
+        this.requestBodyDeadlineMillis = requestBodyDeadlineMillis;
     }
 
     /**
@@ -88,8 +98,8 @@ public final class RejectionReporter {
      * refusal of a proxied request ({@code TerminalDispatch.lateBodyRefusal}). Increments the event
      * counter (except for upstream failures already metered inside {@code UpstreamFailureMapper}), emits
      * the security-relevant WARN for filter violations and smuggled passthrough hosts and the latched
-     * INFO for an aborted inbound body and for a request-body idle timeout, and records the error
-     * metric.
+     * INFO for an aborted inbound body, for a request-body idle timeout and for a request body past its
+     * deadline, and records the error metric.
      *
      * @param ctx      the rejected request
      * @param rejected the rejection
@@ -110,9 +120,15 @@ public final class RejectionReporter {
                     rejected.getMessage());
             // A client-caused termination, not a security event: an INFO, latched per route.
             case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx));
-            // A body that stopped arriving while the dispatch held an upstream connection: an INFO,
-            // latched per route.
-            case REQUEST_BODY_TIMEOUT -> logRequestBodyTimeout(routeLabel(ctx));
+            // A body that stopped arriving while the dispatch held an upstream connection, or one still
+            // arriving at the request-body deadline: an INFO each, latched per route.
+            case REQUEST_BODY_TIMEOUT -> {
+                if (rejected instanceof DispatchStage.RequestBodyDeadlineExceeded) {
+                    logRequestBodyDeadline(routeLabel(ctx));
+                } else {
+                    logRequestBodyTimeout(routeLabel(ctx));
+                }
+            }
             default -> {
                 // Every other rejection is rendered without a log record; it is metered above.
             }
@@ -206,5 +222,28 @@ public final class RejectionReporter {
         }
         LOGGER.debug("Request body on route '%s' made no progress for %s seconds again — already reported once "
                 + "for this route, stays at DEBUG for the rest of the process", route, timeoutSeconds);
+    }
+
+    /**
+     * Records one {@link EventType#REQUEST_BODY_TIMEOUT} raised as a
+     * {@link DispatchStage.RequestBodyDeadlineExceeded} — a proxied request whose body was still
+     * arriving when the request-body deadline passed, whose upstream request was then reset.
+     * <p>
+     * <strong>Latched per route, to bound the log volume</strong>, exactly as
+     * {@link #logRequestBodyTimeout}: the first occurrence on a route is recorded at {@code INFO}; every
+     * repeat on that route is a {@code DEBUG} diagnostic. The rate is carried by
+     * {@link SheriffMetrics#ERRORS_TOTAL}, not by this record.
+     * <p>
+     * The record carries the route id and the fixed deadline in seconds only — never body content or
+     * headers.
+     */
+    private void logRequestBodyDeadline(String route) {
+        long deadlineSeconds = TimeUnit.MILLISECONDS.toSeconds(requestBodyDeadlineMillis);
+        if (requestBodyDeadlineReported.add(route)) {
+            LOGGER.info(ApiSheriffLogMessages.INFO.REQUEST_BODY_DEADLINE, route, deadlineSeconds);
+            return;
+        }
+        LOGGER.debug("Request body on route '%s' did not end within %s seconds again — already reported once "
+                + "for this route, stays at DEBUG for the rest of the process", route, deadlineSeconds);
     }
 }
