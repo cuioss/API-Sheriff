@@ -561,8 +561,10 @@ public final class TerminalDispatch {
      *   <li>the dispatch refused the body on its framing — a body byte on a bodyless method, or a body
      *       disagreeing with its declared length, both a {@link EventType#SECURITY_FILTER_VIOLATION}
      *       answered {@code 400};</li>
-     *   <li>the body made no progress for the request-body idle timeout, or was still arriving at the
-     *       request-body deadline — {@link EventType#REQUEST_BODY_TIMEOUT}, answered {@code 408}.</li>
+     *   <li>the body made no progress for the request-body idle timeout, was still arriving at the
+     *       request-body deadline, or was read again only after that deadline had passed — an upstream that
+     *       resumed reading it late, or an attempt that obtained its pooled connection only after the
+     *       deadline — {@link EventType#REQUEST_BODY_TIMEOUT}, answered {@code 408}.</li>
      * </ul>
      * Either way the bytes behind the answer were not read, so they cannot frame a following request:
      * on HTTP/1.x the connection is retired — recorded at once, the answer carries
@@ -596,13 +598,15 @@ public final class TerminalDispatch {
      * response is reset before the aborted relay could end it; the flag stashed under
      * {@link #LATE_BODY_REFUSED_KEY} keeps {@link #failRelay} from ending it afterwards.
      * <p>
-     * <strong>A body still arriving at the request-body deadline</strong>
-     * ({@link EventType#REQUEST_BODY_TIMEOUT}): the relay is ended through the one end rule. The reset
-     * of the upstream request that follows this callback fails the relay, and {@link #failRelay} ends
-     * the client response through {@link ResponseEnds#endResponse} — on HTTP/2 the stream is then reset
-     * with {@code NO_ERROR}. The body behind it was not read, so an HTTP/1.x connection is marked for
-     * retirement here, on the upstream request's event loop and before that reset, and the end closes
-     * it; a response that has already ended has its HTTP/1.x connection closed at once.
+     * <strong>A body still arriving at the request-body deadline, or read again after it passed</strong>
+     * ({@link EventType#REQUEST_BODY_TIMEOUT}) — the deadline stays in force once it has passed, so an
+     * upstream that answered at once and resumes reading the body only after the deadline ends it here
+     * too: the relay is ended through the one end rule. The reset of the upstream request that follows
+     * this callback fails the relay, and {@link #failRelay} ends the client response through
+     * {@link ResponseEnds#endResponse} — on HTTP/2 the stream is then reset with {@code NO_ERROR}. The
+     * body behind it was not read, so an HTTP/1.x connection is marked for retirement here, before that
+     * reset, and the end closes it; a response that has already ended has its HTTP/1.x connection closed
+     * at once.
      */
     private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
         AtomicBoolean refused = new AtomicBoolean();

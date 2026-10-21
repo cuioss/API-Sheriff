@@ -95,7 +95,8 @@ import org.junit.jupiter.api.Test;
  * {@code 408} with the input-validation problem document, and the upstream connection it held is
  * released at once; an upload whose body keeps arriving too slowly to end within the request-body
  * deadline is ended there, whatever the upstream does with it; and the time an upload waits for a pooled
- * upstream connection is not counted against its body.
+ * upstream connection is not counted against its idle timeout, but is counted against its deadline, so an
+ * upload that obtains its connection only after its deadline passed is ended as soon as its body is read.
  * <p>
  * <strong>Why it matters.</strong> A proxied upload holds one of the upstream client's pooled HTTP/1.1
  * connections while the gateway forwards its body. A body that stops arriving would otherwise keep that
@@ -122,7 +123,9 @@ import org.junit.jupiter.api.Test;
  * <strong>What the stub upstream does.</strong> It is HTTP/1.1 only, as the gateway's default upstream
  * client is, so it reports a connection when it is accepted rather than with its first bytes. A request
  * under {@value #SLOW} is answered {@code ok} only {@link #SLOW_ANSWER_MILLIS} after its head arrived,
- * longer than the idle timeout; one under {@value #STREAMING} is answered at once with the head and a
+ * longer than the idle timeout and shorter than the request-body deadline; one under {@value #HELD} is
+ * answered {@code ok} only {@link #HELD_ANSWER_MILLIS} after its head arrived, longer than the request-body
+ * deadline; one under {@value #STREAMING} is answered at once with the head and a
  * first chunk {@code ok}, and its answer ends when its body has ended; every other request is answered
  * {@code ok} once its body has ended. It records every request head it saw, every body it read to its
  * end, every body that failed — which is how it observes the gateway resetting the upstream request —
@@ -147,16 +150,23 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
     /** The idle timeout the edge of this fixture is built with. */
     private static final long IDLE_TIMEOUT_MILLIS = 300L;
     /** The request-body deadline the edge of this fixture is built with. */
-    private static final long BODY_DEADLINE_MILLIS = 4 * IDLE_TIMEOUT_MILLIS;
+    private static final long BODY_DEADLINE_MILLIS = 6 * IDLE_TIMEOUT_MILLIS;
     /** How often a trickling upload sends one body chunk: half the idle timeout, so the idle bound never fires. */
     private static final long TRICKLE_INTERVAL_MILLIS = IDLE_TIMEOUT_MILLIS / 2;
     /** How long a trickling upload keeps sending before it ends its body: longer than the guard's timeout. */
     private static final long TRICKLE_MILLIS =
             TimeUnit.SECONDS.toMillis(UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS) + 2 * IDLE_TIMEOUT_MILLIS;
-    /** How long after its head the stub upstream answers a slow request: well beyond the idle timeout. */
-    private static final long SLOW_ANSWER_MILLIS = 5 * IDLE_TIMEOUT_MILLIS;
+    /**
+     * How long after its head the stub upstream answers a slow request: well beyond the idle timeout, well
+     * inside the request-body deadline.
+     */
+    private static final long SLOW_ANSWER_MILLIS = 3 * IDLE_TIMEOUT_MILLIS;
     /** The upstream path prefix the stub answers only after {@link #SLOW_ANSWER_MILLIS}. */
     private static final String SLOW = "/slow";
+    /** How long after its head the stub upstream answers a held request: twice the request-body deadline. */
+    private static final long HELD_ANSWER_MILLIS = 2 * BODY_DEADLINE_MILLIS;
+    /** The upstream path prefix the stub answers only after {@link #HELD_ANSWER_MILLIS}. */
+    private static final String HELD = "/held";
     /** The upstream path prefix the stub answers at once, ending the answer only when the body has ended. */
     private static final String STREAMING = "/streaming";
     /** The upstream path the stub reads whole before it answers. */
@@ -234,6 +244,10 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                 .ifPresent(tracked -> tracked.requests().add(label));
         if (request.path().startsWith(SLOW)) {
             vertx.setTimer(SLOW_ANSWER_MILLIS, fired -> request.response().end(ANSWER));
+            return;
+        }
+        if (request.path().startsWith(HELD)) {
+            vertx.setTimer(HELD_ANSWER_MILLIS, fired -> request.response().end(ANSWER));
             return;
         }
         boolean streaming = request.path().startsWith(STREAMING);
@@ -556,9 +570,10 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
      * The wait for a pooled upstream connection is not counted against the body. Every connection the
      * upstream client pools — the Vert.x default HTTP/1.1 pool size of a fresh {@link PoolOptions} — is held
      * by a GET the stub upstream answers only {@link #SLOW_ANSWER_MILLIS} after its head, longer than the idle
-     * timeout, so an upload sent behind them waits that long for a connection with its whole body already
-     * sent. The idle clock starts only once the upload has obtained a connection; its body then crosses at
-     * once, and the upload is served on one of the connections the GETs held.
+     * timeout and shorter than the request-body deadline, so an upload sent behind them waits that long for a
+     * connection with its whole body already sent. The idle clock starts only once the upload has obtained a
+     * connection; its body then crosses at once, within its deadline, and the upload is served on one of the
+     * connections the GETs held.
      */
     @Test
     @DisplayName("HTTP/2 — an upload queued for a pooled upstream connection longer than the idle timeout is served 200, not 408")
@@ -601,6 +616,55 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                                 + upstreamRequestsByConnection()),
                 () -> assertEquals(Collections.nCopies(pooled, 200), heldStatuses, "every holding GET is served"),
                 () -> assertEquals(0.0, errorCount(REQUEST_BODY_TIMEOUT), "no request-body timeout is metered"));
+    }
+
+    /**
+     * The wait for a pooled upstream connection counts against the request-body deadline, which runs from
+     * the start of the attempt. Every pooled connection is held by a GET the stub upstream answers only
+     * {@link #HELD_ANSWER_MILLIS} after its head — twice the deadline — so an upload sent behind them, its
+     * whole body already sent, obtains a connection only after its deadline passed. It is ended the moment
+     * its body starts to be read, on the same path as a body still arriving at its deadline: answered
+     * {@code 408} as {@value #REQUEST_BODY_TIMEOUT}, never the {@value #UPSTREAM_TIMEOUT}, and its body never
+     * reaches the upstream.
+     */
+    @Test
+    @DisplayName("HTTP/2 — an upload that obtains a pooled upstream connection only after its deadline: 408 once its body is read")
+    void uploadQueuedPastItsDeadlineIsAnswered408() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        int pooled = new PoolOptions().getHttp1MaxSize();
+        List<Future<Answer>> holding = new ArrayList<>();
+        for (int i = 0; i < pooled; i++) {
+            HttpClientRequest get = open(http2Client, "GET", "/" + ROUTE + HELD + "-" + i);
+            holding.add(get.end().compose(sent -> answerOf(get)));
+        }
+        Awaits.until(() -> upstreamStarted.size() == pooled, "every pooled upstream connection to be held",
+                Awaits.CONNECT_CEILING_SECONDS);
+        String body = Generators.letterStrings(8, 16).next();
+        HttpClientRequest upload = open(http2Client, "POST", "/" + ROUTE + QUEUED);
+
+        long sentNanos = System.nanoTime();
+        Answer answer = Awaits.connect(upload.send(body).compose(response -> response.body()
+                        .map(read -> new Answer(response, read.toString(), upload.connection()))),
+                "the queued upload to be answered");
+        long answeredMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - sentNanos);
+        List<Integer> heldStatuses = new ArrayList<>();
+        for (Future<Answer> held : holding) {
+            heldStatuses.add(Awaits.connect(held, "a GET holding a pooled connection to be answered").response()
+                    .statusCode());
+        }
+
+        assertAll("an upload that obtains its upstream connection only after its deadline",
+                () -> assertEquals(408, answer.response().statusCode(), "ended as the request's once its body is read"),
+                () -> assertEquals(PROBLEM_JSON, answer.response().getHeader("Content-Type")),
+                () -> assertEquals(INPUT_VALIDATION_408, answer.body()),
+                () -> assertTrue(answeredMillis >= BODY_DEADLINE_MILLIS,
+                        () -> "the upload waited past its deadline for its connection: " + answeredMillis + " ms"),
+                () -> assertFalse(upstreamCompleted.contains("POST " + QUEUED), "its body never reached the upstream"),
+                () -> assertEquals(Collections.nCopies(pooled, 200), heldStatuses, "every holding GET is served"),
+                () -> assertEquals(1.0, errorCount(REQUEST_BODY_TIMEOUT), "a request-body timeout, which the breaker skips"),
+                () -> assertEquals(0.0, errorCount(UPSTREAM_TIMEOUT), "never the upstream timeout the breaker counts"),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                        REQUEST_BODY_DEADLINE_RECORD));
     }
 
     /**

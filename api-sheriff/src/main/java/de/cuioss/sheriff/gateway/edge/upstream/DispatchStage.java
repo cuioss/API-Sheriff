@@ -118,10 +118,14 @@ import org.jspecify.annotations.Nullable;
  * would end the dispatch as an upstream timeout is ended as the request's instead. After the hand-over —
  * an upstream that answered at once and keeps reading — the refusal goes to the
  * {@linkplain BodyFraming#lateViolation() late-violation callback}, and the reset upstream request fails
- * the relay, which ends the client response. The deadline does not run while the attempt waits for a pooled
- * connection, does not fire while the upstream is not taking data, and is not armed for an attempt that
- * obtained its connection only after it passed; such a dispatch stays bounded by the guard. A dispatch
- * constructed without a deadline ({@link #NO_BODY_DEADLINE}) never arms it.
+ * the relay, which ends the client response. Once it has passed, the deadline stays in force while the body
+ * is not being read: a body the upstream is not taking data for when it passes is ended the moment the
+ * upstream reads it again, and an attempt that obtained its pooled connection only after the deadline —
+ * the wait for the connection counts against it — is ended as soon as its body starts to be read; either
+ * way on the same path, before or after the hand-over, as a body still arriving when it passes. An attempt
+ * the dispatch no longer waits for stops the deadline and the idle clock of its body (see
+ * {@link UpstreamAttempt}), so neither reports anything afterwards. A dispatch constructed without a
+ * deadline ({@link #NO_BODY_DEADLINE}) never arms it.
  * <p>
  * The dispatch is awaited synchronously on the caller's virtual thread inside the guard so the
  * breaker observes each call's success / failure / timeout. Guard failures are mapped to the error
@@ -624,8 +628,10 @@ public final class DispatchStage {
      *                       response: the {@link EventType#SECURITY_FILTER_VIOLATION} of a bodyless
      *                       request's first body byte, invoked on the inbound request's event loop, or
      *                       the {@link RequestBodyDeadlineExceeded} of a body still arriving at the
-     *                       request-body deadline, invoked on the upstream request's event loop; either
-     *                       way once, before the upstream request is reset
+     *                       request-body deadline or read again after it passed, invoked on the event
+     *                       loop that observed it — the upstream request's for the deadline's timer and
+     *                       a read the upstream resumes; either way once, before the upstream request is
+     *                       reset
      * @since 1.0
      */
     public record BodyFraming(boolean bodyless, long declaredLength, Consumer<GatewayException> lateViolation) {
@@ -752,9 +758,10 @@ public final class DispatchStage {
          * counted — and stops it as soon as the attempt's send completes, whether its response arrived
          * or the send failed. The clock therefore never runs once the response is handed over. The
          * request-body deadline is armed at the same moment, counted from the start of
-         * {@code attempt}, and keeps running after the send completed, until the body ends. Both timers
-         * are scheduled through the Vert.x instance owning the context this callback runs on, the
-         * upstream request's own.
+         * {@code attempt}, and keeps running after the send completed, until the body ends. The body is
+         * attached to {@code attempt} before either is armed, so an attempt the dispatch no longer waits
+         * for stops both. Both timers are scheduled through the Vert.x instance owning the context this
+         * callback runs on, the upstream request's own.
          *
          * @throws IllegalStateException when the idle clock is to be armed and no Vert.x context is
          *                               current — the send callback always runs on one
@@ -782,6 +789,7 @@ public final class DispatchStage {
             ByteCappedBodyStream body = new ByteCappedBodyStream(inbound, maxBodyBytes, declaredLength,
                     request::reset, bytesSent::addAndGet, idleClock(), bodyDeadlineOf(attempt));
             cappedBody.set(body);
+            attempt.attachBody(body);
             body.startIdleClock();
             Future<HttpClientResponse> sent = request.send(body);
             sent.onComplete(_ -> body.stopIdleClock());
@@ -852,25 +860,45 @@ public final class DispatchStage {
     }
 
     /**
-     * The upstream exchange of one attempt: the request it obtained, and whether the dispatch has
-     * stopped waiting for it.
+     * The upstream exchange of one attempt: the request it obtained, the body stream it sends, and
+     * whether the dispatch has stopped waiting for it.
      * <p>
      * <strong>Released exactly when it is no longer waited for.</strong> {@link #abandon()} marks the
      * attempt and resets its request; a request published only after that is reset at once and never
      * sent. Resetting the request also releases a response the attempt already received and paused.
      * <p>
-     * Thread-safe: the request is published on its event loop while the dispatching thread may abandon
-     * the attempt at the same moment. Each side writes its own field before it reads the other's — the
-     * publisher sets the request, then reads the flag; {@link #abandon()} sets the flag, then reads the
-     * request — so whatever the interleaving, at least one of them sees both and performs the reset. A
-     * second reset of the same request is harmless.
+     * <strong>Its body's clocks stop with it.</strong> {@link #abandon()} also stops the request-body idle
+     * clock and deadline of the body stream the attempt sends, and a body attached only after that has
+     * them stopped at once, before they could start. A stopped clock has no timer pending and reports
+     * nothing: it neither refuses the body, nor resets the request, nor reaches the late-violation callback.
+     * <p>
+     * Thread-safe: the request and the body are published on the request's event loop while the
+     * dispatching thread may abandon the attempt at the same moment. Each side writes its own field before
+     * it reads the other's — the publisher sets the request or the body, then reads the flag;
+     * {@link #abandon()} sets the flag, then reads the request and the body — so whatever the interleaving,
+     * at least one of them sees both and performs the reset and the stop. A second reset of the same
+     * request, and a second stop of the same clocks, are harmless.
      */
-    private static final class UpstreamAttempt {
+    static final class UpstreamAttempt {
 
         /** When the attempt began, the moment the guard's timeout for it starts too. */
         private final long startNanos = System.nanoTime();
         private final AtomicBoolean abandoned = new AtomicBoolean();
         private final AtomicReference<@Nullable HttpClientRequest> request = new AtomicReference<>();
+        private final AtomicReference<@Nullable ByteCappedBodyStream> body = new AtomicReference<>();
+
+        /**
+         * Records the body stream this attempt sends, so abandoning the attempt stops its clocks. A body
+         * attached to an attempt already abandoned has its clocks stopped at once.
+         *
+         * @param attached the attempt's body stream, attached before its clocks are started
+         */
+        void attachBody(ByteCappedBodyStream attached) {
+            body.set(attached);
+            if (abandoned.get()) {
+                attached.stopClocks();
+            }
+        }
 
         /** @return the {@link System#nanoTime()} reading at which this attempt began */
         long startNanos() {
@@ -893,10 +921,17 @@ public final class DispatchStage {
             return true;
         }
 
-        /** Stops waiting for this attempt and resets its request, if it obtained one. */
+        /**
+         * Stops waiting for this attempt: resets its request, if it obtained one, and stops the clocks of
+         * its body, if it sends one.
+         */
         void abandon() {
             abandoned.set(true);
             resetRequest();
+            ByteCappedBodyStream attached = body.get();
+            if (attached != null) {
+                attached.stopClocks();
+            }
         }
 
         /** Resets this attempt's request, if it obtained one. */
@@ -1271,9 +1306,13 @@ public final class DispatchStage {
      * it fires while the gateway is reading the body, the expiry takes the single abort claim with a
      * {@link RequestBodyDeadlineExceeded}, pauses the inbound stream, hands the refusal to the
      * late-violation callback when the response was already {@linkplain #handOver handed over}, runs the
-     * abort action and propagates the failure. It does not fire when it passes while the consumer has
-     * paused the stream because the upstream is not taking data, and it is not armed when the deadline
-     * had already passed at {@link #startIdleClock()}: the connection was obtained only after it.
+     * abort action and propagates the failure. A deadline that passes while the body is not being read
+     * stays in force and ends the body the same way the moment it is read again — by a {@link #resume()},
+     * a {@link #fetch(long)} or a forwarded chunk, none of which then reaches the inbound stream. That
+     * covers a stream the consumer had paused because the upstream was not taking data, and a deadline
+     * that had already passed at {@link #startIdleClock()} because the connection was obtained only after
+     * it. {@link #stopClocks()} — the end of the body, an abort, or an attempt the dispatch no longer waits
+     * for — cancels both timers and drops a passed deadline: a stopped clock reports nothing.
      * <p>
      * Thread-safe: chunks arrive on the inbound connection's event loop, the consumer pauses and
      * resumes from either loop, and the timers fire on the loop they were scheduled from. The last
@@ -1323,8 +1362,18 @@ public final class DispatchStage {
         private boolean clockStopped;
         private boolean pausedByConsumer;
         private long pendingTimer = NO_TIMER;
-        /** Whether the deadline can no longer fire: the body ended, an abort was claimed, or it passed. */
+        /**
+         * Whether the deadline can no longer fire: the body ended, an abort was claimed, the clocks were
+         * stopped, or the deadline ended the body.
+         */
         private boolean deadlineEnded;
+        /**
+         * Whether the deadline passed while the body was not being read — paused by the consumer, or not
+         * read yet because the attempt obtained its connection only after the deadline — so the body is
+         * ended the moment it is read again. Written holding {@link #clockLock}; volatile so a forwarded
+         * chunk can read it without the monitor.
+         */
+        private volatile boolean deadlinePassed;
         private long deadlineTimer = NO_TIMER;
         /** Receives a deadline refusal once the response was handed over; {@code null} until then. */
         private @Nullable Consumer<GatewayException> lateViolation;
@@ -1448,7 +1497,7 @@ public final class DispatchStage {
         }
 
         private void onChunk(Buffer chunk) {
-            if (abortReason.get() != null) {
+            if (abortReason.get() != null || endAtPassedDeadline()) {
                 return;
             }
             bytesSeen += chunk.length();
@@ -1510,8 +1559,8 @@ public final class DispatchStage {
         /**
          * Starts the idle clock: from now on, a gap of the clock's timeout without progress ends the
          * stream as {@link EventType#REQUEST_BODY_TIMEOUT}. Arms the request-body deadline at the same
-         * moment, unless it has already passed. A no-op for an unarmed clock, a clock already started,
-         * and one already stopped.
+         * moment; when it has already passed, the body is ended as soon as the consumer starts to read it.
+         * A no-op for an unarmed clock, a clock already started, and one already stopped.
          */
         void startIdleClock() {
             if (!idleClock.armed()) {
@@ -1531,9 +1580,9 @@ public final class DispatchStage {
                     if (remainingNanos > 0) {
                         armDeadlineTimer(remainingNanos);
                     } else {
-                        // The connection was obtained only after the deadline passed: the dispatch is
-                        // left to the guard, as one still waiting for its connection would be.
-                        deadlineEnded = true;
+                        // The connection was obtained only after the deadline passed: the body is ended
+                        // the moment the consumer starts to read it.
+                        deadlinePassed = true;
                     }
                 }
             }
@@ -1556,14 +1605,19 @@ public final class DispatchStage {
             }
         }
 
-        /** Stops the idle clock and the request-body deadline for good: the body ended or was aborted. */
-        private void stopClocks() {
+        /**
+         * Stops the idle clock and the request-body deadline for good and cancels their timers: the body
+         * ended or was aborted, or its attempt is no longer waited for. A stopped clock reports nothing —
+         * a deadline that had already passed unread is dropped with it. Idempotent.
+         */
+        void stopClocks() {
             stopIdleClock();
             if (deadlineNanos.isEmpty()) {
                 return;
             }
             synchronized (clockLock) {
                 deadlineEnded = true;
+                deadlinePassed = false;
                 if (deadlineTimer != NO_TIMER) {
                     idleClock.scheduler().cancel(deadlineTimer);
                     deadlineTimer = NO_TIMER;
@@ -1596,14 +1650,13 @@ public final class DispatchStage {
 
         /**
          * The deadline timer fired. One that fired early re-arms for the remainder. Once the deadline has
-         * passed it fires at most once: not at all while the consumer has paused the stream because the
-         * upstream is not taking data, otherwise by refusing the body as a
-         * {@link RequestBodyDeadlineExceeded} through the single abort claim — handed to the
-         * late-violation callback first when the response was already handed over.
+         * passed it ends the body: at once, by refusing it as a {@link RequestBodyDeadlineExceeded}
+         * through the single abort claim — handed to the late-violation callback first when the response
+         * was already handed over — or, while the consumer has paused the stream because the upstream is
+         * not taking data, the moment the body is read again.
          */
         private void onDeadlineTimer() {
-            RequestBodyDeadlineExceeded exceeded = new RequestBodyDeadlineExceeded();
-            @Nullable Consumer<GatewayException> late;
+            @Nullable DeadlineExpiry expiry;
             synchronized (clockLock) {
                 deadlineTimer = NO_TIMER;
                 if (deadlineEnded) {
@@ -1614,20 +1667,84 @@ public final class DispatchStage {
                     armDeadlineTimer(remainingNanos);
                     return;
                 }
-                deadlineEnded = true;
-                if (pausedByConsumer || !claimAbort(exceeded)) {
+                if (pausedByConsumer) {
+                    // The upstream is not taking data: the deadline stays in force, and the body is ended
+                    // the moment the consumer reads it again.
+                    deadlinePassed = true;
                     return;
                 }
-                late = lateViolation;
+                expiry = claimDeadlineExpiry();
             }
-            // Outside the monitor: the refusal pauses the inbound stream, tells the edge when the
-            // response is already being relayed, resets the upstream request and propagates the failure.
+            if (expiry != null) {
+                expire(expiry);
+            }
+        }
+
+        /**
+         * Ends the body at a deadline that passed while it was not being read, now that it is read again —
+         * on the same path as an expiry on time.
+         *
+         * @return {@code true} when this call ended the body: the read must not reach the inbound stream
+         */
+        private boolean endAtPassedDeadline() {
+            if (!deadlinePassed) {
+                return false;
+            }
+            @Nullable DeadlineExpiry expiry;
+            synchronized (clockLock) {
+                if (!deadlinePassed) {
+                    return false;
+                }
+                expiry = claimDeadlineExpiry();
+            }
+            if (expiry == null) {
+                return false;
+            }
+            expire(expiry);
+            return true;
+        }
+
+        /**
+         * Ends the deadline and takes the single abort claim for its refusal; called holding
+         * {@link #clockLock}, so the claim and the choice of the late-violation callback are made together
+         * with the hand-over.
+         *
+         * @return the expiry to carry out, or {@code null} when another abort was claimed first
+         */
+        private @Nullable DeadlineExpiry claimDeadlineExpiry() {
+            deadlineEnded = true;
+            deadlinePassed = false;
+            RequestBodyDeadlineExceeded exceeded = new RequestBodyDeadlineExceeded();
+            if (!claimAbort(exceeded)) {
+                return null;
+            }
+            return new DeadlineExpiry(exceeded, lateViolation);
+        }
+
+        /**
+         * Carries out a claimed deadline expiry, outside the monitor: pauses the inbound stream, tells the
+         * edge when the response is already being relayed, resets the upstream request and propagates the
+         * failure.
+         */
+        private void expire(DeadlineExpiry expiry) {
             delegate.pause();
+            Consumer<GatewayException> late = expiry.lateViolation();
             if (late != null) {
-                late.accept(exceeded);
+                late.accept(expiry.refusal());
             }
             abortAction.run();
-            propagateFailure(exceeded);
+            propagateFailure(expiry.refusal());
+        }
+
+        /**
+         * A deadline expiry whose abort claim was won.
+         *
+         * @param refusal       the refusal recorded as the stream's client abort
+         * @param lateViolation the late-violation callback when the response was already handed over, or
+         *                      {@code null} when the refusal is the dispatch's own failure
+         */
+        private record DeadlineExpiry(RequestBodyDeadlineExceeded refusal,
+        @Nullable Consumer<GatewayException> lateViolation) {
         }
 
         /** The consumer paused the stream: the gap is not counted until it resumes. */
@@ -1712,19 +1829,31 @@ public final class DispatchStage {
             return this;
         }
 
-        /** Resumes the inbound stream; the idle clock restarts its gap from now. */
+        /**
+         * Resumes the inbound stream; the idle clock restarts its gap from now. When the request-body
+         * deadline passed while the body was not being read, the body is ended instead and the inbound
+         * stream stays paused.
+         */
         @Override
         public ReadStream<Buffer> resume() {
-            resumeIdleClock();
-            delegate.resume();
+            if (!endAtPassedDeadline()) {
+                resumeIdleClock();
+                delegate.resume();
+            }
             return this;
         }
 
-        /** Fetches from the inbound stream; the idle clock restarts its gap from now. */
+        /**
+         * Fetches from the inbound stream; the idle clock restarts its gap from now. When the request-body
+         * deadline passed while the body was not being read, the body is ended instead and the inbound
+         * stream stays paused.
+         */
         @Override
         public ReadStream<Buffer> fetch(long amount) {
-            resumeIdleClock();
-            delegate.fetch(amount);
+            if (!endAtPassedDeadline()) {
+                resumeIdleClock();
+                delegate.fetch(amount);
+            }
             return this;
         }
 
