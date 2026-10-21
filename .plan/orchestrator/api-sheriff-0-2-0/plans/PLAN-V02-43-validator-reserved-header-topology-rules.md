@@ -29,9 +29,11 @@ into rule classes on the `ValidationRule` seam, together with their tests.
    listed below.
 
 Slice-specific notes:
-- **This slice closes the series.** No private rule may remain in `ConfigValidator`: extract any rule a slice missed or another plan added meanwhile. Drop the then-unused `LOGGER`. `ConfigValidatorTest` keeps only the orchestration cases (ValidConfiguration, StructuralVerbRejection, Aggregation).
-- **Write the ADR** that `PLAN-V02-26` proposed and did not create: boot validation rules live in concern classes on the `ValidationRule` seam, and `ConfigValidator` runs one ordered list. Derive the ordinal from `doc/adr/` at write time.
-- `doc/security-threat-model.adoc`: make every moved test-class name current.
+- **This slice closes the series.** No private rule may remain in `ConfigValidator`: extract any rule a slice missed or another plan added meanwhile. At `df84699d` (after #502, 779 lines), the private rules left are exactly the eleven listed above, plus the shared helper `validateReservedPath`, which moves with `ReservedPathRules`. `ConfigValidator` no longer has a `LOGGER`. `ConfigValidatorTest` keeps only the orchestration cases (ValidConfiguration, StructuralVerbRejection, Aggregation).
+- **Add the concern-map contract test.** `doc/development/boot-validation-rules.adoc` requires one concern-map entry per `DEFAULT_RULES` rule, but the map is hand-written and nothing checks it. Once this slice is done every rule is a public method of a `*Rules` class. Add a unit test that lists the `DEFAULT_RULES` registrations and asserts that each has a concern-map row, so a later rule cannot be added without one (inbox `plan-v02-42-validator-auth-oidc-rules-005`, raised by CodeRabbit on #502).
+- **Retire the PR-Agent prose** left after #493/#494 removed the bot and `.github/workflows/pr-agent.yml`: `doc/development/README.adoc` (~line 63) and `doc/development/re-review-on-loopback.adoc` (~lines 33–69, including the link to the deleted workflow). Describe today's reviewers: CodeRabbit required, Sourcery optional. Leave `doc/quality-report/` untouched (series rule).
+- **Write the ADR** that `PLAN-V02-26` proposed and did not create: boot validation rules live in concern classes on the `ValidationRule` seam, and `ConfigValidator` runs one ordered list. Derive the ordinal from `doc/adr/` at write time. `PLAN-V02-45` and `PLAN-V02-47` run in parallel and may each write an ADR, so re-check the next free ordinal against `origin/main` immediately before pushing.
+- `doc/security-threat-model.adoc`: make every moved test-class name current. `PLAN-V02-45` edits other rows of this file in parallel (`gw-08`, request-body bounds). Whichever plan merges second rebases.
 - Add the missing `@param` tags to the seven public rule methods that #485 extracted into `TerminalActionRules`,
   `EdgeRules` and `ProtocolRules` (a non-blocking advisory from #485's code review).
 
@@ -97,7 +99,7 @@ Estimated diff: ~275 KB (move-only; see the size rule).
 
 ## Dependencies and Sequencing
 
-- Last. Runs after `PLAN-V02-42`.
+- Last. `PLAN-V02-42` landed (#502, `df84699d`). Runs in parallel with `PLAN-V02-45` (`edge/`) and `PLAN-V02-47` (release workflow). The only shared files are `doc/security-threat-model.adoc` (with V02-45) and the ADR ordinal.
 - Before `PLAN-V02-23` (re-grounded) and `PLAN-V02-27`, which both wait for the whole series.
 
 ## Hand-Off Command
