@@ -2,9 +2,9 @@
   "id": "PLAN-V02-47",
   "slug": "multi-arch-image",
   "workstream": "WS-05",
-  "status": "staged",
+  "status": "running",
   "lane": "plan-marshall",
-  "plan_marshall_plan_id": "",
+  "plan_marshall_plan_id": "plan-v02-47-multi-arch-image",
   "pr": "",
   "landing": "",
   "seq": 47

@@ -53,15 +53,24 @@ Other gateways do it this way:
    the stream count (about 1–2 MiB) against #466's derived window. Use the k6 upload-small and upload-large
    benchmarks and `Http2EarlyResponseResetIT`, which #466's window fixed. Change the derivation only if
    the measurement supports it, and record the numbers either way.
-3. **A total-body bound next to the idle bound.** For non-streaming HTTP dispatch, add a total
-   request-body deadline or a minimum-rate check alongside the 10 s idle bound. It answers `408` like the
-   idle bound, is not counted against the breaker and is not retried. Settle at outline which of the two
-   to add, and what its default is. Coordinate with kidicap `PLAN-29`, which decides whether the per-route
-   `read_timeout_ms` is wired, so the two bounds do not overlap. Whichever plan runs second reads the
-   other's result.
-4. **gRPC gets a bound instead of an exemption.** Replace the blanket exemption in `GrpcDispatchStage`
-   with a long stream-idle bound, optionally honouring `grpc-timeout` up to a cap. Settle the default at
-   outline, with Envoy's 5 min as the reference point.
+3. **Find out whether a trickling body is actually unbounded before adding a bound.**
+   `UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS` (30 s) is documented as bounding "the whole dispatch, a
+   steady upload included". ADR-0060 A1 also explicitly rejected both a whole-body deadline and a
+   configurable value. First establish what the guard's timeout really covers: does the guarded call end
+   when response headers arrive, or when the body is fully sent? Use a test that sends a body trickling
+   inside the 10 s idle bound for longer than 30 s. If the guard ends it, record that and add nothing new.
+   Only if the test shows a gap, close it, answering `408` like the idle bound: not counted against the
+   breaker and never retried. The amendment must then reopen A1's rejected alternative and say why it
+   no longer holds. Any new bound is a fixed gateway constant like the idle bound and the guard (ADR-0064),
+   with no `gateway.yaml` key. Coordinate with kidicap `PLAN-29` (still staged), which decides whether
+   the per-route `read_timeout_ms` is wired. This plan runs first, and `PLAN-29` reads its result.
+4. **Pin down how gRPC is bounded.** `GrpcDispatchStage` is built with `DispatchStage.NO_BODY_IDLE_TIMEOUT`.
+   Its Javadoc says the guard's whole-dispatch timeout still applies, and says why there is no idle bound:
+   streaming RPCs pause between messages, and a forced-h2 upstream holds no pooled connection to release.
+   Verify what the guard actually bounds on a client-streaming or bidirectional call, both before and
+   after response headers. If a stream can outlive every bound, add a long stream-idle bound, optionally
+   honouring `grpc-timeout` up to a cap, with Envoy's 5 min as the reference point. Otherwise record that
+   the exemption is bounded and add a test that proves it.
 5. **Close the test gaps #466's code review left.** Add tests for: the gRPC behaviour (today's exemption
    has no test); a retry test that can fail for the defect it names; the pool wait not being counted
    against the idle bound; and the clock stopping at send completion.
@@ -70,14 +79,15 @@ Other gateways do it this way:
    `doc/LogMessages.adoc` for any new record, and the threat model, including how this interacts with
    `gw-08`.
 
-Split guard: 6 deliverables. This is a behaviour change, so the normal limits apply: 100 files and 150,000
+Split guard: 6 deliverables; 3 and 4 may close as verified-no-change. Any new bound is a fixed constant, so this plan adds no configuration key and does not touch `config/validation/`. This is a behaviour change, so the normal limits apply: 100 files and 150,000
 diff characters.
 
 ## Claim Labels
 
 - OBSERVED: the 6,553,500-byte window, the 100-stream cap, the 10 s idle bound answered `408`, and the gRPC exemption — #466's PR body and `GrpcDispatchStage.java` (passes no idle bound), merged at `73233f1e`
 - HYPOTHESIS: streams answered `503` at admission, or queued for an upstream connection, keep their buffered DATA and credit — from inbox `-002`; not verified, and #431's `EarlyResponseEnd` may already cover part of it (verify at outline)
-- HYPOTHESIS: a body trickling inside the 10 s idle bound holds its dispatch indefinitely — from inbox `-003`, follows from an idle-only design (verify at outline with a test)
+- OBSERVED: `UpstreamGuards.UPSTREAM_TIMEOUT_SECONDS = 30` bounds "the whole dispatch, a steady upload included", per its Javadoc. `GrpcDispatchStage`'s Javadoc says the guard's timeout still applies to gRPC. ADR-0060 A1 rejects a whole-body deadline and a configurable value — `origin/main` at `9f90bb6b`
+- HYPOTHESIS, LIKELY REFUTED: a body trickling inside the 10 s idle bound holds its dispatch indefinitely — from inbox `-003`. The 30 s guard should end it; deliverable 3 verifies this with a test
 
 ## Expected Surface
 
@@ -96,6 +106,10 @@ diff characters.
 - Coordinates with kidicap `PLAN-29` (per-route upstream timeouts) on deliverable 3. That plan is in the
   other epic; this spec only records the dependency.
 - Before `PLAN-V02-46` (upstream close), which touches the same relay code.
+- Runs in parallel with `PLAN-V02-42` (`config/validation/`) and `PLAN-V02-47` (release workflow, docs).
+  The surfaces are disjoint as long as no configuration key is added (deliverables 3 and 4). If deliverable 6
+  writes a new ADR rather than amending ADR-0060, re-check the next free ordinal against `origin/main`
+  immediately before pushing.
 
 ## Hand-Off Command
 

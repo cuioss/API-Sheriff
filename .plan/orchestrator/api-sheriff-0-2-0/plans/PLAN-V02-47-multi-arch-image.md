@@ -97,10 +97,13 @@ half-done. Deliverables 1–3 are one job graph, 5 proves it, and 4 and 6 descri
 
 ## Dependencies and Sequencing
 
-- No code dependency on the other open plans. It runs after `PLAN-V02-27` by operator decision
-  (2026-10-21) and before the remaining queue.
+- No code dependency on the other open plans. It runs in parallel with `PLAN-V02-42` and `PLAN-V02-45`
+  (operator raised parallelism to 3 on 2026-10-21). Its surfaces are disjoint from both: it touches no Java
+  and not `CLAUDE.md`.
+- ADR ordinal: `PLAN-V02-45` may also write a new ADR. Re-check the next free ordinal against
+  `origin/main` immediately before pushing, and renumber if another plan took it.
 - Surface overlap: `README.adoc` and `doc/user/compose-sample.adoc` are also touched by `PLAN-V02-15`
-  (BFF compose sample). Sequential, as all plans are under the one-plan-at-a-time mode.
+  (BFF compose sample), so never run the two together.
 - The first real release after this plan publishes the first multi-arch image. Its PR-time evidence is
   deliverable 5's dry run.
 

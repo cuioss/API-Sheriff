@@ -4,7 +4,7 @@
 
 ## START HERE
 
-**Resume anchor**: === 2026-10-18 STATE at 03cb4755 (ONE PLAN AT A TIME, operator 2026-10-17; V02-12 shipped; V02-42 running). This anchor states current state only; older paragraphs are in the ledger's git history. ===
+**Resume anchor**: === 2026-10-21 STATE at 9f90bb6b (PARALLELISM n=3, operator 2026-10-21; V02-12 shipped; V02-42, V02-45, V02-47 running). This anchor states current state only; older paragraphs are in the ledger's git history. ===
 
 SHIPPED (20): V02-12 (#450 + #492, 03cb4755, landings/PLAN-V02-12.md: back_channel_origin, one Keycloak identity on 26.8.1, resolver hack deleted, ADR-0069; spec D3 held after V02-23 and V02-15; post-merge main CI + benchmark green), V02-41 (#489, 3a252fca, landings/PLAN-V02-41.md: AssetDefaults/Forwarding/Anchor rules, auth floor via PolicyBlock.AUTH, ADR-0067 amended, ConfigValidator 1,372 lines; post-merge main CI + benchmark green), V02-25 (#487, ef4a3345, landings/PLAN-V02-25.md: edge split into 9 sub-packages beneath a 632-line GatewayEdgeRoute, ADR-0068, EdgeSubPackageArchTest; 620 KB/96 files; post-merge main CI + benchmark green), V02-40 (#485, 6f0169f6, landings/PLAN-V02-40.md: TerminalAction+Edge+Protocol rules, 5/5 met, 211 KB/21 files, ConfigValidator 1,952 lines; post-merge main CI green), V02-01 (#410, #412, #409, #415, #417; ADR-0062), -02, -03, -08, -10, -13, -14, -16, -17, -18, -19, -21 (#439), -24 (#465, 9e05a3d6, landings/PLAN-V02-24.md: 7/7 in one PR; breaking: security_filter and forward declarable on an endpoint; ApiSheriff-101 derived from the descriptor opt-in {allowed_methods, security_filter}; post-merge main CI green), -44 (#476, 68a652a2, landings/PLAN-V02-44.md: routing/Route + edge/RouteAssembler, Open Defect 12 resolved, ApiSheriff-101 names endpoint+scope; ONE 552 KB PR despite the non-move 150k rule; post-merge CI green), -28 (#467, efb3fa7e, landings/PLAN-V02-28.md: LimitRules; ConfigValidator 2,588 lines; post-merge CI green), -26 (#463, 7e5eb579, landings/PLAN-V02-26.md: slice 1 only, RouteMatchingRules + TokenValidationRules + RuleSupport + boot-validation-rules.adoc; ConfigValidator 3,273 -> 2,750 lines; post-merge main CI green).
 RUNNING: V02-42 validator-auth-oidc-rules (emitted 2026-10-20; the only running plan; also moves validateBackChannelOrigin from #492 and corrects CLAUDE.md Git Workflow after the cuioss-review-bot removal). NEXT: V02-43. kidicap PLAN-32 MERGED 2026-10-15 as #466 (73233f1e); its result and inbox messages are analysed by the kidicap session, not here; the kidicap ledger is read-only for this session.
@@ -36,10 +36,12 @@ READ BEFORE EMITTING:
 
 OPEN: Open Defect 14 (#201, V02-11). Open Defect 12 RESOLVED by #476. Watches: V02-21 doc leftovers; HTTP/1.1 drain 502 flake (GatewayEdgeFramingCorpusTest); V02-01 D7 residue; test-cycle rework residue. REVIEWERS since 2026-10-20: CodeRabbit required, Sourcery optional; cuioss-review-bot removed (#493/#494). token-sheriff 0.9.8 (#491). Watch: published image amd64-only (operator decision: doc note vs multi-arch). A /marshall-steward run is owed, best before V02-25 executes: the executor is stale (marshal.json 0.1.1916 vs workflows 0.1.1924; V02-40 hit missing verbs), and the inventory should attribute integration-tests/src/main/docker/**.
 
-NEXT ACTION: ONE PLAN AT A TIME (operator 2026-10-17). On V02-42's landing message: analyze, then hand out V02-43. Serial order after it: V02-45 -> V02-46 -> V02-23 (re-grounded) -> V02-27 -> V02-47 (multi-arch image) -> the rest (V02-05, -06, -07, -20, -11, -22, -04, -09, -15).
+NEXT ACTION: PARALLELISM n=3 (operator 2026-10-21). Running: V02-42 (config/validation), V02-45 (edge request-body/h2 bounds), V02-47 (multi-arch release lane). On each landing: analyze, then fill the free slot with the next plan whose surface is disjoint from the two still running. Order: V02-43 (only after V02-42) -> V02-46 (only after V02-45) -> V02-23 (re-grounded; after the validator series) -> V02-27 (after V02-23) -> the rest (V02-05, -06, -07, -20, -11, -22, -04, -09, -15). Constraints: V02-06 never with V02-45; V02-04 never with an ADR-writing plan; V02-15 never with V02-47 (README, compose-sample doc).
 **Phase**: orchestrating
 **Running**:
 - PLAN-V02-42 (WS-01) — plan=plan-v02-42-validator-auth-oidc-rules
+- PLAN-V02-45 (WS-03) — plan=plan-v02-45-request-body-and-h2-buffer-bounds
+- PLAN-V02-47 (WS-05) — plan=plan-v02-47-multi-arch-image
 **Parked**:
 - PLAN-V02-23 (WS-03) — plan=plan-v02-23-cookie-forwarding-policy
 **Queue** (staged, in order):
@@ -54,9 +56,7 @@ NEXT ACTION: ONE PLAN AT A TIME (operator 2026-10-17). On V02-42's landing messa
 9. PLAN-V02-22 (WS-02)
 10. PLAN-V02-27 (WS-01)
 11. PLAN-V02-43 (WS-01)
-12. PLAN-V02-45 (WS-03)
-13. PLAN-V02-46 (WS-03)
-14. PLAN-V02-47 (WS-05)
+12. PLAN-V02-46 (WS-03)
 - PLAN-V02-01 (WS-01) — plan=plan-v02-01-adr-0005-reversal-quarkus-adoption — PR 409 — landing=landings/PLAN-V02-01.md — status: shipped
 - PLAN-V02-02 (WS-01) — plan=plan-v02-02-java-idiom-sweep — PR 198 — landing=landings/PLAN-V02-02.md — status: shipped
 - PLAN-V02-03 (WS-02) — plan=plan-v02-03-documentation-restructure — PR 197 — landing=landings/PLAN-V02-03.md — status: shipped
@@ -106,6 +106,6 @@ NEXT ACTION: ONE PLAN AT A TIME (operator 2026-10-17). On V02-42's landing messa
 | 11 | PLAN-V02-27 | WS-01 | staged | api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/routing/; integration-tests/src/test/java/ | plan-marshall |
 | 12 | PLAN-V02-42 | WS-01 | running | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/; doc/development/boot-validation-rules.adoc | plan-marshall |
 | 13 | PLAN-V02-43 | WS-01 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/; doc/development/boot-validation-rules.adoc | plan-marshall |
-| 14 | PLAN-V02-45 | WS-03 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/; benchmarks/; doc/LogMessages.adoc; doc/adr/0060-…adoc; doc/architecture.adoc; doc/security-threat-model.adoc; integration-tests/ | plan-marshall |
+| 14 | PLAN-V02-45 | WS-03 | running | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/; benchmarks/; doc/LogMessages.adoc; doc/adr/0060-…adoc; doc/architecture.adoc; doc/security-threat-model.adoc; integration-tests/ | plan-marshall |
 | 15 | PLAN-V02-46 | WS-03 | staged | api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/edge/admission/EdgeAdmission.java; api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/; api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeEarlyResponseResetTest.java; doc/adr/0060-…adoc; doc/adr/0066-…adoc; doc/architecture.adoc; doc/security-threat-model.adoc | plan-marshall |
-| 16 | PLAN-V02-47 | WS-05 | staged | .github/workflows/release.yml; README.adoc; api-sheriff/pom.xml; api-sheriff/src/main/resources/application.properties; deployment/compose-sample/.env; doc/adr/; doc/development/release-process.adoc; doc/user/compose-sample.adoc; doc/user/container-image.adoc | plan-marshall |
+| 16 | PLAN-V02-47 | WS-05 | running | .github/workflows/release.yml; README.adoc; api-sheriff/pom.xml; api-sheriff/src/main/resources/application.properties; deployment/compose-sample/.env; doc/adr/; doc/development/release-process.adoc; doc/user/compose-sample.adoc; doc/user/container-image.adoc | plan-marshall |
