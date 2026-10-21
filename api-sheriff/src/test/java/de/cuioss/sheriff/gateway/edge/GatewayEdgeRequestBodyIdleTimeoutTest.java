@@ -118,7 +118,9 @@ import org.junit.jupiter.api.Test;
  * {@code NO_ERROR}, and the connection carries on; on HTTP/1.1 the answer carries
  * {@code Connection: close} and the connection is closed once it has been written. A relayed answer the
  * deadline ends after its head was written ends the same way, except that on HTTP/1.1 the head is
- * already gone, so the connection is closed without the header.
+ * already gone, so the connection is closed without the header. A relayed answer whose upstream sent
+ * its head but no body byte yet keeps the upstream's status, with no body, and on HTTP/1.1 carries the
+ * header.
  * <p>
  * <strong>What the stub upstream does.</strong> It is HTTP/1.1 only, as the gateway's default upstream
  * client is, so it reports a connection when it is accepted rather than with its first bytes. A request
@@ -126,7 +128,8 @@ import org.junit.jupiter.api.Test;
  * longer than the idle timeout and shorter than the request-body deadline; one under {@value #HELD} is
  * answered {@code ok} only {@link #HELD_ANSWER_MILLIS} after its head arrived, longer than the request-body
  * deadline; one under {@value #STREAMING} is answered at once with the head and a
- * first chunk {@code ok}, and its answer ends when its body has ended; every other request is answered
+ * first chunk {@code ok}, and its answer ends when its body has ended; one under {@value #HEAD_ONLY} is
+ * answered at once with the head alone, and its answer ends when its body has ended; every other request is answered
  * {@code ok} once its body has ended. It records every request head it saw, every body it read to its
  * end, every body that failed — which is how it observes the gateway resetting the upstream request —
  * and every connection it accepted, with the requests that connection carried.
@@ -169,6 +172,11 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
     private static final String HELD = "/held";
     /** The upstream path prefix the stub answers at once, ending the answer only when the body has ended. */
     private static final String STREAMING = "/streaming";
+    /**
+     * The upstream path prefix the stub answers at once with its response head and no body chunk, ending
+     * the answer only when the body has ended.
+     */
+    private static final String HEAD_ONLY = "/head-only";
     /** The upstream path the stub reads whole before it answers. */
     private static final String WHOLE_BODY = "/whole-body";
     /** The upstream path of the upload queued behind every pooled upstream connection. */
@@ -250,7 +258,8 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
             vertx.setTimer(HELD_ANSWER_MILLIS, fired -> request.response().end(ANSWER));
             return;
         }
-        boolean streaming = request.path().startsWith(STREAMING);
+        boolean headOnly = request.path().startsWith(HEAD_ONLY);
+        boolean streaming = headOnly || request.path().startsWith(STREAMING);
         AtomicBoolean settled = new AtomicBoolean();
         request.handler(chunk -> {
             // Read and discard: the body is observed only by whether it ends or fails.
@@ -270,7 +279,9 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                 }
             }
         });
-        if (streaming) {
+        if (headOnly) {
+            request.response().setChunked(true).writeHead();
+        } else if (streaming) {
             request.response().setChunked(true).write(ANSWER);
         }
     }
@@ -515,6 +526,102 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                 () -> assertTrue(closedMillis >= BODY_DEADLINE_MILLIS,
                         () -> "the connection is closed by the deadline, not before it: " + closedMillis + " ms"),
                 () -> assertEquals(List.of("POST " + STREAMING), upstreamAborted,
+                        "the upstream request still reading the body was reset"),
+                () -> assertEquals(1.0, errorCount(TRICKLE_ROUTE, REQUEST_BODY_TIMEOUT)),
+                () -> assertEquals(0.0, errorCount(TRICKLE_ROUTE, UPSTREAM_TIMEOUT)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                        REQUEST_BODY_DEADLINE_RECORD));
+    }
+
+    /**
+     * Shape (b) with an upstream that sent its response head and no body byte yet: the client response
+     * head is written with the first relayed chunk, so it has not been written when the deadline passes.
+     * The status the upstream sent still stands: the relayed answer ends with that status and no body
+     * through the one end rule, and the upload stream is then reset with {@code NO_ERROR}.
+     */
+    @Test
+    @DisplayName("HTTP/2 — a body trickling to an upstream that sent only its head: the upstream status stands at the deadline")
+    void http2TrickleToAHeadOnlyUpstreamKeepsTheUpstreamStatus() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        HttpClientRequest upload = open(http2Client, "POST", "/" + TRICKLE_ROUTE + HEAD_ONLY);
+        CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+        AtomicLong endedNanos = new AtomicLong();
+        upload.exceptionHandler(failure -> {
+            endedNanos.compareAndSet(0L, System.nanoTime());
+            streamEnd.complete(failure);
+        });
+        HttpConnection connection = upload.connection();
+        AtomicBoolean connectionLost = watchForLoss(connection);
+        Future<Answer> answered = answerOf(upload);
+
+        long startNanos = System.nanoTime();
+        Awaits.connect(upload.setChunked(true).sendHead(), "the head of the trickling upload to be sent");
+        trickle(streamEnd::isDone, () -> upload.write(TRICKLE_CHUNK), upload::end);
+        Answer answer = Awaits.connect(answered, "the relayed answer to the trickling upload to end");
+        Throwable reset = Awaits.connect(streamEnd, "the edge to reset the trickling upload stream");
+        Awaits.until(() -> upstreamAborted.contains("POST " + HEAD_ONLY),
+                "the upstream request of the trickling upload to be reset", Awaits.CONNECT_CEILING_SECONDS);
+        Answer after = sendAfter(http2Client);
+        long endedMillis = TimeUnit.NANOSECONDS.toMillis(endedNanos.get() - startNanos);
+
+        assertAll("an HTTP/2 upload trickling to an upstream that sent only its head",
+                () -> assertEquals(200, answer.response().statusCode(), "the status the upstream sent stands"),
+                () -> assertEquals("", answer.body(), "the upstream sent no body byte before the end"),
+                () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, reset).getCode(),
+                        "the stream must be reset with NO_ERROR"),
+                () -> assertTrue(endedMillis >= BODY_DEADLINE_MILLIS,
+                        () -> "the upload is ended by the deadline, not before it: " + endedMillis + " ms"),
+                () -> assertFalse(connectionLost.get(), "the connection must neither close nor receive GOAWAY"),
+                () -> assertEquals(200, after.response().statusCode(), "a second request is served"),
+                () -> assertSame(connection, after.connection(), "the second request reuses the connection"),
+                () -> assertEquals(List.of("POST " + HEAD_ONLY), upstreamAborted,
+                        "the upstream request still reading the body was reset"),
+                () -> assertEquals(1.0, errorCount(TRICKLE_ROUTE, REQUEST_BODY_TIMEOUT)),
+                () -> assertEquals(0.0, errorCount(TRICKLE_ROUTE, UPSTREAM_TIMEOUT)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                        REQUEST_BODY_DEADLINE_RECORD),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, REQUEST_BODY_TIMEOUT_RECORD));
+    }
+
+    /**
+     * Shape (b) on HTTP/1.1 with an upstream that sent its response head and no body byte yet: the client
+     * response head has not been written when the deadline passes, so the answer carries the status the
+     * upstream sent together with {@code Connection: close}, and the connection is closed once it has been
+     * written.
+     */
+    @Test
+    @DisplayName("HTTP/1.1 — a body trickling to an upstream that sent only its head: the upstream status stands, then the connection closes")
+    void http1TrickleToAHeadOnlyUpstreamKeepsTheUpstreamStatus() throws Exception {
+        NetSocket socket = Awaits.connect(netClient.connect(frontServer.actualPort(), LoopbackHost.ADDRESS),
+                "the raw TCP client to connect to the edge");
+        Buffer received = Buffer.buffer();
+        CompletableFuture<String> closed = new CompletableFuture<>();
+        AtomicLong closedNanos = new AtomicLong();
+        socket.handler(received::appendBuffer);
+        socket.closeHandler(end -> {
+            closedNanos.set(System.nanoTime());
+            closed.complete(received.toString());
+        });
+
+        long startNanos = System.nanoTime();
+        socket.write("POST /" + TRICKLE_ROUTE + HEAD_ONLY + " HTTP/1.1" + CRLF + "Host: localhost:"
+                + frontServer.actualPort() + CRLF + "Transfer-Encoding: chunked" + CRLF + CRLF);
+        trickle(closed::isDone, () -> socket.write("1" + CRLF + TRICKLE_CHUNK + CRLF),
+                () -> socket.write("0" + CRLF + CRLF));
+        String exchange = Awaits.connect(closed, "the edge to close the connection of the trickling upload");
+        long closedMillis = TimeUnit.NANOSECONDS.toMillis(closedNanos.get() - startNanos);
+        Awaits.until(() -> upstreamAborted.contains("POST " + HEAD_ONLY),
+                "the upstream request of the trickling upload to be reset", Awaits.CONNECT_CEILING_SECONDS);
+
+        String head = exchange.substring(0, Math.max(0, exchange.indexOf(CRLF + CRLF))).toLowerCase(Locale.ROOT);
+        assertAll("an HTTP/1.1 upload trickling to an upstream that sent only its head",
+                () -> assertTrue(exchange.startsWith("HTTP/1.1 200 "),
+                        () -> "the status the upstream sent stands: " + exchange),
+                () -> assertTrue(head.contains(CRLF + "connection: close"),
+                        () -> "the answer retires the connection: " + exchange),
+                () -> assertTrue(closedMillis >= BODY_DEADLINE_MILLIS,
+                        () -> "the connection is closed by the deadline, not before it: " + closedMillis + " ms"),
+                () -> assertEquals(List.of("POST " + HEAD_ONLY), upstreamAborted,
                         "the upstream request still reading the body was reset"),
                 () -> assertEquals(1.0, errorCount(TRICKLE_ROUTE, REQUEST_BODY_TIMEOUT)),
                 () -> assertEquals(0.0, errorCount(TRICKLE_ROUTE, UPSTREAM_TIMEOUT)),

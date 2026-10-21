@@ -354,9 +354,11 @@ Four questions were open after A1.
   and the connection carries on; on HTTP/1.x the answer carries `Connection: close`. The breaker skips
   it and records it as a success, and the retry predicate refuses it.
   *After the response head* the reset of the upstream request fails the relay, and the relayed
-  response is ended through the one end rule. The status the upstream sent stands. On HTTP/2 the
-  stream is then reset with `NO_ERROR`; on HTTP/1.x, where the head has already been written, the
-  connection is closed once the end has been written.
+  response is ended through the one end rule. The status the upstream sent stands, also when no body
+  byte of the upstream had been relayed yet and the client response head was still unwritten; that
+  response ends with the upstream's status and no body. On HTTP/2 the stream is then reset with
+  `NO_ERROR`; on HTTP/1.x the connection is closed once the end has been written, and a response
+  whose head was still unwritten carries `Connection: close`.
 . *A passed deadline stays in force; a stopped one reports nothing.* A deadline that passes while the
   body is not being read ends the body the moment it is read again, on the same path, before or after
   the response head. Two cases reach this: the forwarding pipe had paused the body because the upstream
@@ -484,9 +486,11 @@ for a stream closed before any processing took place, and a stream already answe
 * *Counting one direction only on the gRPC path.* A call whose other side keeps sending would be
   ended.
 * *Changing how the edge wires the stream-idle bound.* The bound acts only because the edge hands
-  the gRPC dispatch the request stream the bound watches and passes the bound to the relay. The tests
-  of the bound compose that wiring themselves, so they would not catch a change to the edge's own
-  wiring (see link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds]).
+  the gRPC dispatch the request stream the bound watches and passes the bound to the relay. A test
+  runs a call through that wiring in `TerminalDispatch` itself, with only the bound's timeout
+  shortened, so dropping the watched stream or the bound turns it red; the one step it does not run
+  is `dispatchGrpc` building the fixed five-minute bound and handing it on (see
+  link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds]).
 
 The amendment supersedes two statements of A1: the rejection of a whole-body deadline, and that the
 guard's 30 s timeout bounds every dispatch as a whole, a steady upload included. The guard bounds a

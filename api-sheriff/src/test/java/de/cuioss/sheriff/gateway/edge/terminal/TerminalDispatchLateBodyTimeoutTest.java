@@ -17,6 +17,8 @@ package de.cuioss.sheriff.gateway.edge.terminal;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -27,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
+import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
@@ -43,9 +46,21 @@ import org.junit.jupiter.api.Test;
  * The client context is a hand-driven fake: a task it is given runs only when a case runs it, so a
  * case can end the response after the callback and before the decision, the order a relay that ends
  * normally on the client connection's loop just after the callback produces.
+ * <p>
+ * The head the failed relay answers with ({@link TerminalDispatch#prepareFailedRelayHead}) is driven
+ * against a fake response: a relay a late request-body timeout ended before its head was written keeps
+ * the status the upstream sent, also when the relay had not set it yet — the deadline passed between the
+ * hand-over and the relay starting.
  */
-@DisplayName("TerminalDispatch — the connection close after a request body outlived its deadline")
+@DisplayName("TerminalDispatch — the connection close and the answer after a request body outlived its deadline")
 class TerminalDispatchLateBodyTimeoutTest {
+
+    private static final String CONTENT_LENGTH = "Content-Length";
+    private static final String RELAYED_HEADER = "X-Relayed";
+    private static final String RELAYED_VALUE = "kept";
+    /** A status other than the {@code 200} the relay of a fresh response starts from. */
+    private static final int UPSTREAM_STATUS = 201;
+    private static final int BAD_GATEWAY = 502;
 
     @Test
     @DisplayName("HTTP/1.x — a response ended normally after the callback and before the decision: the connection is closed")
@@ -75,6 +90,74 @@ class TerminalDispatchLateBodyTimeoutTest {
                 () -> assertEquals(1, exchange.tasksRun.get(), "the decision runs once, on the client context"),
                 () -> assertEquals(0, exchange.closes.get(),
                         "the connection is not closed here: the relay's end closes the marked connection"));
+    }
+
+    @Test
+    @DisplayName("a relay a late request-body timeout failed before its head was written: the upstream status stands, with no body")
+    void lateBodyTimeoutBeforeTheHeadKeepsTheUpstreamStatus() {
+        FailedRelayResponse response = new FailedRelayResponse(false);
+
+        TerminalDispatch.prepareFailedRelayHead(response.fake(), true, UPSTREAM_STATUS);
+
+        assertAll("the unwritten head of a relay a late request-body timeout ended",
+                () -> assertEquals(List.of(UPSTREAM_STATUS), response.statuses,
+                        "the status the upstream sent is set, whatever the relay had set before it failed"),
+                () -> assertFalse(response.headers.contains(CONTENT_LENGTH), "no body byte follows the head"),
+                () -> assertEquals(RELAYED_VALUE, response.headers.get(RELAYED_HEADER),
+                        "the headers the relay copied are kept"));
+    }
+
+    @Test
+    @DisplayName("a relay that failed for any other reason before its head was written: 502, with no body")
+    void otherFailureBeforeTheHeadIsAnswered502() {
+        FailedRelayResponse response = new FailedRelayResponse(false);
+
+        TerminalDispatch.prepareFailedRelayHead(response.fake(), false, UPSTREAM_STATUS);
+
+        assertAll("the unwritten head of a relay that failed on its own",
+                () -> assertEquals(List.of(BAD_GATEWAY), response.statuses, "the failure is answered 502"),
+                () -> assertFalse(response.headers.contains(CONTENT_LENGTH), "the 502 carries no body"));
+    }
+
+    @Test
+    @DisplayName("a relay that failed after its head was written: the head is left as it was")
+    void failureAfterTheHeadLeavesTheHeadAsItWas() {
+        FailedRelayResponse response = new FailedRelayResponse(true);
+
+        TerminalDispatch.prepareFailedRelayHead(response.fake(), true, UPSTREAM_STATUS);
+
+        assertAll("the written head of a failed relay",
+                () -> assertEquals(List.of(), response.statuses, "no status is set on a written head"),
+                () -> assertTrue(response.headers.contains(CONTENT_LENGTH), "the written head is not changed"));
+    }
+
+    /**
+     * The response of a failed relay as a fake: whether its head was written, the headers the relay copied
+     * from the upstream — a {@code Content-Length} among them — and every status set on it.
+     */
+    private static final class FailedRelayResponse {
+
+        private final boolean headWritten;
+        private final MultiMap headers = MultiMap.caseInsensitiveMultiMap()
+                .add(CONTENT_LENGTH, "42")
+                .add(RELAYED_HEADER, RELAYED_VALUE);
+        private final List<Integer> statuses = new ArrayList<>();
+
+        FailedRelayResponse(boolean headWritten) {
+            this.headWritten = headWritten;
+        }
+
+        HttpServerResponse fake() {
+            return TerminalDispatchLateBodyTimeoutTest.fake(HttpServerResponse.class, (name, args) -> switch (name) {
+                case "headWritten" -> headWritten;
+                case "headers" -> headers;
+                case "setStatusCode" -> {
+                    statuses.add((Integer) args[0]);
+                    yield null;
+                }
+                default -> throw new UnsupportedOperationException("the response fake does not answer " + name);
+            });
+        }
     }
 
     /**

@@ -158,13 +158,15 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * <strong>Test-only.</strong> Resolves the admission budget exactly as the public constructor
      * does, but carries the given request-body idle timeout in place of the fixed 10,000 ms, so an
      * edge test can observe the bound without
-     * waiting for it. The request-body deadline stays the fixed 25,000 ms. Public only because those
-     * edge tests live in the parent package; no configuration key or system property reaches this
-     * constructor.
+     * waiting for it. The request-body deadline stays the fixed 25,000 ms, which the idle timeout must
+     * stay below. Public only because those edge tests live in the parent package; no configuration key
+     * or system property reaches this constructor.
      *
      * @param hardening                    as for the public constructor
-     * @param requestBodyIdleTimeoutMillis the request-body idle timeout in milliseconds, positive
-     * @throws IllegalArgumentException when {@code requestBodyIdleTimeoutMillis} is not positive
+     * @param requestBodyIdleTimeoutMillis the request-body idle timeout in milliseconds, positive and
+     *                                     below 25,000
+     * @throws IllegalArgumentException when {@code requestBodyIdleTimeoutMillis} is not positive, or is
+     *                                  25,000 ms or more — not shorter than the fixed request-body deadline
      */
     public EdgeHardeningOptions(EdgeHardeningConfig hardening, long requestBodyIdleTimeoutMillis) {
         this(hardening, requestBodyIdleTimeoutMillis, REQUEST_BODY_DEADLINE_MILLIS);

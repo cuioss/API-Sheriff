@@ -685,9 +685,11 @@ refused as `REQUEST_BODY_TIMEOUT`:
   one end rule (<<_http2_post_response_reset>>), on HTTP/1.x the answer carries `Connection: close`.
   The route's circuit breaker skips it and the retry predicate refuses it.
 * *After the response head* the reset fails the relay, and the relayed response is ended through the
-  one end rule. The status the upstream sent stands; on HTTP/2 the stream is then reset with
-  `NO_ERROR`, and on HTTP/1.x, whose head has already been written, the connection is closed once
-  the end has been written.
+  one end rule. The status the upstream sent stands, also when no body byte of the upstream had been
+  relayed yet and the client response head was therefore still unwritten: that response ends with the
+  upstream's status and no body, never with a `502`. On HTTP/2 the stream is then reset with
+  `NO_ERROR`; on HTTP/1.x the connection is closed once the end has been written, and a response whose
+  head was still unwritten carries `Connection: close`.
 
 Once it has passed, the deadline stays in force for a body that is not being read at that moment, and
 ends it the same way -- before or after the response head -- the moment it is read again:

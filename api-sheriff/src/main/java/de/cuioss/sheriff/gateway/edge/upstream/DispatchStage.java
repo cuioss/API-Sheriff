@@ -118,7 +118,8 @@ import org.jspecify.annotations.Nullable;
  * would end the dispatch as an upstream timeout is ended as the request's instead. After the hand-over —
  * an upstream that answered at once and keeps reading — the refusal goes to the
  * {@linkplain BodyFraming#lateViolation() late-violation callback}, and the reset upstream request fails
- * the relay, which ends the client response. Once it has passed, the deadline stays in force while the body
+ * the relay, which ends the client response with the status the upstream sent. Once it has passed, the
+ * deadline stays in force while the body
  * is not being read: a body the upstream is not taking data for when it passes is ended the moment the
  * upstream reads it again, and an attempt that obtained its pooled connection only after the deadline —
  * the wait for the connection counts against it — is ended as soon as its body starts to be read; either

@@ -215,6 +215,42 @@ class DispatchStageTest {
     }
 
     @Nested
+    @DisplayName("constructor refusals of the request-body bounds")
+    class BodyBoundRefusals {
+
+        private static final long IDLE_TIMEOUT_MILLIS = 300L;
+        private static final long DEADLINE_MILLIS = 6 * IDLE_TIMEOUT_MILLIS;
+
+        private final UpstreamClients noClients = new UpstreamClients(Map.of(), Map.of());
+        private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+
+        @ParameterizedTest(name = "{0} ms")
+        @ValueSource(longs = {-1L, Long.MIN_VALUE})
+        @DisplayName("refuses a negative request-body deadline")
+        void refusesANegativeDeadline(long deadlineMillis) {
+            assertThrows(IllegalArgumentException.class, () -> new DispatchStage(noClients, BODY_CAP,
+                    IDLE_TIMEOUT_MILLIS, deadlineMillis, failureMapper));
+        }
+
+        @Test
+        @DisplayName("refuses a request-body deadline without a request-body idle timeout")
+        void refusesADeadlineWithoutAnIdleTimeout() {
+            assertThrows(IllegalArgumentException.class, () -> new DispatchStage(noClients, BODY_CAP,
+                    DispatchStage.NO_BODY_IDLE_TIMEOUT, DEADLINE_MILLIS, failureMapper));
+        }
+
+        @Test
+        @DisplayName("control: builds with a deadline and an idle timeout, and with neither")
+        void buildsWithBothBoundsOrNeither() {
+            assertAll("the accepted combinations",
+                    () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP, IDLE_TIMEOUT_MILLIS,
+                            DEADLINE_MILLIS, failureMapper)),
+                    () -> assertDoesNotThrow(() -> new DispatchStage(noClients, BODY_CAP,
+                            DispatchStage.NO_BODY_IDLE_TIMEOUT, DispatchStage.NO_BODY_DEADLINE, failureMapper)));
+        }
+    }
+
+    @Nested
     @DisplayName("streamed request body byte cap")
     class ByteCap {
 

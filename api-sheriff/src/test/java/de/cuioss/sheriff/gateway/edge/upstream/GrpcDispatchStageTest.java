@@ -461,7 +461,9 @@ class GrpcDispatchStageTest {
      * watches, the relay started through {@link TerminalDispatch#relayOnEventLoop}, which ends the
      * response through the one end rule, and {@link ResponseStage#relayWithTrailers} with the bound. The
      * bound is built with the test-only {@value #IDLE_BOUND_MILLIS} ms timeout in place of the fixed five
-     * minutes.
+     * minutes. The edge's own wiring of the bound, and the {@code ApiSheriff-25} record of an expiry, are
+     * driven by {@code TerminalDispatchGrpcStreamIdleTest}, which runs the call through
+     * {@code TerminalDispatch} itself.
      * <p>
      * <strong>What the stub upstream does.</strong> A call to {@value #CLIENT_STREAMING} is answered
      * only once its request stream has ended; a call to {@value #BIDI} is answered with its headers and

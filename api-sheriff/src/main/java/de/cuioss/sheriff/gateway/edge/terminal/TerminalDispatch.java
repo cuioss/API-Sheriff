@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -68,6 +69,7 @@ import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.RoutingContext;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Serves a route's terminal action once the pipeline has admitted the request (stages 6 / 7): the
@@ -88,14 +90,17 @@ public final class TerminalDispatch {
 
     /** Holds the client connection's own Vert.x {@link Context}, captured by the edge root's
      * {@code handle} on that connection's event loop before the virtual-thread hop, for the same reason
-     * as {@link EdgeAdmission#ADMISSION_GUARD_KEY}: the hop carries only the {@link RoutingContext}. The
-     * WebSocket relay is its one reader — {@link #dispatchWebSocket} hands it to
-     * {@link WebSocketRelayStage#relay}, which runs the upstream dial and the client upgrade on it,
-     * whatever thread called {@code relay()}. */
+     * as {@link EdgeAdmission#ADMISSION_GUARD_KEY}: the hop carries only the {@link RoutingContext}. It
+     * has two readers: {@link #dispatchWebSocket} hands it to {@link WebSocketRelayStage#relay}, which
+     * runs the upstream dial and the client upgrade on it, whatever thread called {@code relay()}; and
+     * every proxied HTTP dispatch reads it in {@link #lateBodyRefusal}, where the HTTP/1.x connection
+     * close after a late request-body timeout is decided on it. */
     public static final String CLIENT_CONTEXT_KEY = "sheriff.clientcontext";
-    /** Holds the flag a bodyless request's late body refusal sets (see {@link #lateBodyRefusal}): the
-     * response it reset is never ended afterwards by a relay failure. */
-    private static final String LATE_BODY_REFUSED_KEY = "sheriff.latebodyrefused";
+    /** Holds the event of the late body refusal of a proxied request (see {@link #lateBodyRefusal}),
+     * empty until one is made: a response a bodyless request's refusal reset is never ended afterwards
+     * by a relay failure, and a relay failure that follows a late request-body timeout keeps the status
+     * the upstream sent. */
+    private static final String LATE_BODY_REFUSAL_KEY = "sheriff.latebodyrefusal";
     /** The HTTP/2 error code {@code CANCEL}: the stream is abandoned before its response completed. */
     private static final long HTTP2_CANCEL = 0x8L;
     private static final String LOCATION_HEADER = "Location";
@@ -357,13 +362,32 @@ public final class TerminalDispatch {
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
         GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(upstreamClients, cap, upstreamFailureMapper);
+        relayGrpcCall(ctx, request, route, ResponseStage.GrpcStreamIdleBound.on(ctx.vertx()),
+                body -> grpcDispatchStage.dispatch(route, request.method(), uri, forward.headers(), body,
+                        request.declaredContentLength()));
+    }
+
+    /**
+     * Runs one gRPC call under its stream-idle bound — the wiring of {@link #dispatchGrpc} once the
+     * upstream URI and the body cap are resolved. The dispatch is handed the request body the bound
+     * {@linkplain ResponseStage.GrpcStreamIdleBound#watch watches}, the bound is passed to
+     * {@link ResponseStage#relayWithTrailers}, and its expiry is logged as {@code ApiSheriff-25}.
+     * Package-private so a test can run this wiring with a bound built with a shorter timeout than the
+     * fixed five minutes.
+     *
+     * @param ctx       the request
+     * @param request   the pipeline request, through stage 5
+     * @param route     the selected {@code protocol: grpc} route
+     * @param idleBound the call's stream-idle bound
+     * @param dispatch  dispatches the call upstream with the request body it is given
+     */
+    void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
+            ResponseStage.GrpcStreamIdleBound idleBound, Function<ReadStream<Buffer>, HttpClientResponse> dispatch) {
         // Every request frame the dispatch reads, and every upstream frame the relay writes, keeps the
         // call's stream-idle bound from expiring.
-        ResponseStage.GrpcStreamIdleBound idleBound = ResponseStage.GrpcStreamIdleBound.on(ctx.vertx());
         long upstreamStartNanos = System.nanoTime();
-        HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> grpcDispatchStage.dispatch(route,
-                request.method(), uri, forward.headers(), idleBound.watch(inboundBody(ctx)),
-                request.declaredContentLength()));
+        HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx,
+                () -> dispatch.apply(idleBound.watch(inboundBody(ctx))));
         sheriffMetrics.recordUpstreamDuration(route.id(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
         idleBound.expiry().onSuccess(expired -> logGrpcStreamIdleTimeout(route.id()));
@@ -503,7 +527,7 @@ public final class TerminalDispatch {
     public static void relayOnEventLoop(RoutingContext ctx, List<String> stageSetCookies, HttpClientResponse upstream,
             Function<ResponseEnd, Future<Void>> relay) {
         ctx.vertx().runOnContext(v -> startRelay(ctx, stageSetCookies, upstream, relay)
-                .onFailure(failure -> failRelay(ctx, failure)));
+                .onFailure(failure -> failRelay(ctx, failure, upstream.statusCode())));
     }
 
     /**
@@ -596,30 +620,34 @@ public final class TerminalDispatch {
      * the dispatch can no longer answer it with a {@code 400}, and ending the response would present a
      * truncated answer as complete, so the client response is <strong>reset</strong> instead — on HTTP/2
      * the one stream, with {@code CANCEL}. The callback runs on the inbound request's event loop, so the
-     * response is reset before the aborted relay could end it; the flag stashed under
-     * {@link #LATE_BODY_REFUSED_KEY} keeps {@link #failRelay} from ending it afterwards.
+     * response is reset before the aborted relay could end it; the event stashed under
+     * {@link #LATE_BODY_REFUSAL_KEY} keeps {@link #failRelay} from ending it afterwards.
      * <p>
      * <strong>A body still arriving at the request-body deadline, or read again after it passed</strong>
-     * ({@link EventType#REQUEST_BODY_TIMEOUT}): the relay is ended through the one end rule. The reset of
-     * the upstream request that follows this callback fails the relay, and {@link #failRelay} ends the
-     * client response through {@link ResponseEnds#endResponse} — on HTTP/2 the stream is then reset with
-     * {@code NO_ERROR}. The body behind it was not read, so an HTTP/1.x connection is marked for
+     * ({@link EventType#REQUEST_BODY_TIMEOUT}): the relay is ended through the one end rule, and the status
+     * the upstream sent stands. The reset of the upstream request that follows this callback fails the
+     * relay, and {@link #failRelay} ends the client response through {@link ResponseEnds#endResponse} — on
+     * HTTP/2 the stream is then reset with {@code NO_ERROR}. A client response whose head has not been
+     * written yet — the upstream sent its head but no body byte had been relayed, or the relay had not
+     * started — is ended with the upstream's status and no body, never answered {@code 502}: the event
+     * stashed under {@link #LATE_BODY_REFUSAL_KEY}, recorded here before the reset, tells
+     * {@code failRelay} so. The body behind it was not read, so an HTTP/1.x connection is marked for
      * retirement here, before that reset, and the end closes it; a response that has already ended has
      * its HTTP/1.x connection closed instead, decided on the client connection's own context, the one the
      * response is ended on (see {@link #closeIfEndedOn}).
      */
     private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
-        AtomicBoolean refused = new AtomicBoolean();
-        ctx.put(LATE_BODY_REFUSED_KEY, refused);
+        AtomicReference<@Nullable EventType> lateRefusal = new AtomicReference<>();
+        ctx.put(LATE_BODY_REFUSAL_KEY, lateRefusal);
         Context clientContext = Objects.requireNonNull(ctx.get(CLIENT_CONTEXT_KEY),
                 "client connection context missing — handle() must capture it before dispatch");
         return refusal -> {
             rejectionReporter.reportRejection(ctx, refusal);
+            lateRefusal.set(refusal.getEventType());
             if (refusal.getEventType() == EventType.REQUEST_BODY_TIMEOUT) {
                 retireAfterLateBodyTimeout(ctx, clientContext);
                 return;
             }
-            refused.set(true);
             HttpServerResponse response = ctx.response();
             if (!response.ended()) {
                 response.reset(HTTP2_CANCEL);
@@ -658,10 +686,10 @@ public final class TerminalDispatch {
         });
     }
 
-    /** @return whether a late body refusal has reset this request's response */
-    private static boolean bodyRefusedLate(RoutingContext ctx) {
-        AtomicBoolean refused = ctx.get(LATE_BODY_REFUSED_KEY);
-        return refused != null && refused.get();
+    /** @return the event of this request's late body refusal, or {@code null} when none was made */
+    private static @Nullable EventType lateBodyRefusalOf(RoutingContext ctx) {
+        AtomicReference<@Nullable EventType> lateRefusal = ctx.get(LATE_BODY_REFUSAL_KEY);
+        return lateRefusal == null ? null : lateRefusal.get();
     }
 
     /**
@@ -695,39 +723,57 @@ public final class TerminalDispatch {
     }
 
     /**
-     * Answers a relay that failed: a {@code 502} when the response head was not yet written, otherwise
-     * the end of the truncated response, so the client is never left waiting. That end passes the one
-     * end rule ({@link ResponseEnds#endResponse}) like every other response end: an HTTP/2 stream whose
-     * request body is still open is reset with {@code NO_ERROR} once it has been written. An HTTP/1.x
-     * connection marked for retirement — a body that outlived the request-body deadline after the
-     * hand-over ({@link #lateBodyRefusal}) — is closed once the end has been written. A response a late
-     * body refusal reset ({@link #lateBodyRefusal}) is never ended here.
+     * Answers a relay that failed, so the client is never left waiting: the end of the truncated response
+     * when its head was already written; otherwise a {@code 502}, except after a late request-body
+     * timeout ({@link #lateBodyRefusal}), where the response ends with the status the upstream sent and no
+     * body (see {@link #prepareFailedRelayHead}). That end passes the one end rule
+     * ({@link ResponseEnds#endResponse}) like every other response end: an HTTP/2 stream whose request
+     * body is still open is reset with {@code NO_ERROR} once it has been written. An HTTP/1.x connection
+     * marked for retirement — a body that outlived the request-body deadline after the hand-over
+     * ({@link #lateBodyRefusal}) — carries {@code Connection: close} when its head is still unwritten and
+     * is closed once the end has been written. A response a bodyless request's late body refusal reset
+     * ({@link #lateBodyRefusal}) is never ended here.
      *
-     * @param ctx     the request whose relay failed
-     * @param failure the relay's failure, logged at {@code DEBUG} only
+     * @param ctx            the request whose relay failed
+     * @param failure        the relay's failure, logged at {@code DEBUG} only
+     * @param upstreamStatus the status of the upstream response the relay was streaming
      */
-    private static void failRelay(RoutingContext ctx, Throwable failure) {
+    private static void failRelay(RoutingContext ctx, Throwable failure, int upstreamStatus) {
         LOGGER.debug(failure, "Response relay failed: %s", failure.getMessage());
         ctx.vertx().runOnContext(v -> {
             HttpServerResponse response = ctx.response();
+            EventType lateRefusal = lateBodyRefusalOf(ctx);
             // A response a late body refusal reset is never ended: an end would present the truncated
             // answer as complete.
-            if (response.ended() || bodyRefusedLate(ctx)) {
+            if (response.ended() || lateRefusal == EventType.SECURITY_FILTER_VIOLATION) {
                 return;
             }
-            // If the relay failed mid-stream after the response head was already written, the status
-            // line is gone — Vert.x throws IllegalStateException on setStatusCode once headWritten()
-            // is true. Only set the 502 when the head has not yet been written; either way end() the
-            // (possibly truncated) response so the client connection is closed cleanly.
-            if (!response.headWritten()) {
-                // The relay copies the upstream Content-Length onto the response before it streams the
-                // body. Left in place, it would frame this empty 502 as carrying the upstream body, and
-                // the client would wait for bytes that never come instead of receiving the answer.
-                response.headers().remove(CONTENT_LENGTH_HEADER);
-                response.setStatusCode(BAD_GATEWAY);
-            }
+            prepareFailedRelayHead(response, lateRefusal == EventType.REQUEST_BODY_TIMEOUT, upstreamStatus);
             ConnectionRetirement.retireMarkedConnection(ctx);
             ResponseEnds.endResponse(ctx, response::end);
         });
+    }
+
+    /**
+     * Sets the head of a failed relay's response that has not been written yet; a written head is left
+     * as it is — Vert.x refuses a status change once {@code headWritten()} is true, and the end that
+     * follows ends the truncated response.
+     * <p>
+     * No body byte follows an unwritten head, so the {@code Content-Length} the relay copied from the
+     * upstream is removed: left in place, it would frame the answer as carrying the upstream body, and
+     * the client would wait for bytes that never come. The status is the one the upstream sent when the
+     * relay failed because a late request-body timeout reset the upstream request — the upstream had
+     * already answered, and its status stands — and {@code 502} for every other failure.
+     *
+     * @param response          the response of the failed relay
+     * @param bodyTimedOutLate  whether a late request-body timeout ended the relay
+     * @param upstreamStatus    the status of the upstream response the relay was streaming
+     */
+    static void prepareFailedRelayHead(HttpServerResponse response, boolean bodyTimedOutLate, int upstreamStatus) {
+        if (response.headWritten()) {
+            return;
+        }
+        response.headers().remove(CONTENT_LENGTH_HEADER);
+        response.setStatusCode(bodyTimedOutLate ? upstreamStatus : BAD_GATEWAY);
     }
 }
