@@ -176,7 +176,7 @@ class BootValidationConcernMapContractTest {
 
     @Test
     @DisplayName("Every DEFAULT_RULES entry registers exactly one concern-class rule")
-    void everyEntryRegistersExactlyOneConcernClassRule() throws IOException {
+    void everyEntryRegistersExactlyOneConcernClassRule() throws Exception {
         List<String> entries = topLevelEntries(
                 ruleListBlock(read(CONFIG_VALIDATOR_SOURCE), CONFIG_VALIDATOR_SOURCE));
 
@@ -198,7 +198,7 @@ class BootValidationConcernMapContractTest {
 
     @Test
     @DisplayName("Every registered rule is listed in the concern-map row of the class it is called through")
-    void everyRegisteredRuleIsListedInItsConcernClassRow() throws IOException {
+    void everyRegisteredRuleIsListedInItsConcernClassRow() throws Exception {
         List<Registration> registrations = registrationsOf(
                 topLevelEntries(ruleListBlock(read(CONFIG_VALIDATOR_SOURCE), CONFIG_VALIDATOR_SOURCE)));
         Map<String, Set<String>> concernMap = concernMap(read(CONCERN_MAP_DOC), CONCERN_MAP_DOC);
@@ -236,7 +236,7 @@ class BootValidationConcernMapContractTest {
                 () -> assertEquals(Set.of("AlphaRules", "BetaRules"), concernMap.keySet(),
                         "the table reader did not recover the two rows of the synthetic concern map"),
                 () -> assertEquals(List.of(new Registration("BetaRules", "validateUnlisted"),
-                        new Registration("GammaRules", "validateRowless")), unmapped,
+                                new Registration("GammaRules", "validateRowless")), unmapped,
                         "the detector must report exactly the rule its row does not list and the rule whose"
                                 + " class has no row, and must accept both rules the AlphaRules row lists,"
                                 + " including the one written on a continuation line of the cell"));
