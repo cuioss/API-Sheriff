@@ -366,7 +366,6 @@ public final class ResponseStage {
         private final Object timerLock = new Object();
         /** When the call last carried a frame in either direction, or when the bound was started. */
         private volatile long lastActivityNanos = System.nanoTime();
-        private boolean started;
         private boolean stopped;
         private long pendingTimer = NO_TIMER;
 
@@ -424,13 +423,15 @@ public final class ResponseStage {
             lastActivityNanos = System.nanoTime();
         }
 
-        /** Arms the clock from now. A no-op for a bound already started or already stopped. */
+        /**
+         * Arms the clock from now; the relay calls it once. A no-op for a bound already stopped — a relay
+         * that settled before it started.
+         */
         void start() {
             synchronized (timerLock) {
-                if (started || stopped) {
+                if (stopped) {
                     return;
                 }
-                started = true;
                 lastActivityNanos = System.nanoTime();
                 armTimer(timeoutMillis);
             }

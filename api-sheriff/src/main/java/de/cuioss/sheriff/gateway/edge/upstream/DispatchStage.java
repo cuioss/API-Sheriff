@@ -1389,8 +1389,8 @@ public final class DispatchStage {
          * @param deadlineNanos  the {@code idleClock}'s {@link IdleClock#nanoTime()} reading at which the
          *                       request-body deadline passes, or empty for none; its timer is scheduled
          *                       through the idle clock's scheduler once {@link #startIdleClock()} is
-         *                       called
-         * @throws IllegalArgumentException when a deadline is given with an unarmed idle clock
+         *                       called; a deadline needs an armed {@code idleClock}, which the
+         *                       dispatch's constructor guarantees
          */
         ByteCappedBodyStream(ReadStream<Buffer> delegate, long maxBytes, long declaredLength, Runnable abortAction,
                 LongConsumer bytesForwarded, IdleClock idleClock, OptionalLong deadlineNanos) {
@@ -1401,9 +1401,6 @@ public final class DispatchStage {
             this.bytesForwarded = Objects.requireNonNull(bytesForwarded, "bytesForwarded");
             this.idleClock = Objects.requireNonNull(idleClock, "idleClock");
             this.deadlineNanos = Objects.requireNonNull(deadlineNanos, "deadlineNanos");
-            if (deadlineNanos.isPresent() && !idleClock.armed()) {
-                throw new IllegalArgumentException("a request-body deadline needs an armed idle clock");
-            }
             delegate.exceptionHandler(this::onInboundFailure);
             delegate.handler(this::onChunk);
         }
@@ -1584,7 +1581,6 @@ public final class DispatchStage {
          */
         @Nullable
         GatewayException handOver(Consumer<GatewayException> lateViolation) {
-            Objects.requireNonNull(lateViolation, "lateViolation");
             synchronized (clockLock) {
                 this.lateViolation = lateViolation;
                 return abortReason.get() instanceof RequestBodyDeadlineExceeded exceeded ? exceeded : null;
