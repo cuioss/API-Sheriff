@@ -60,11 +60,13 @@ restate any of it.
 
 === Route B -- a locally built image
 
-You need Route B in exactly two cases: your host's CPU is below the baseline the published image is
-compiled for -- an x86-64 CPU without AVX2, or an older AArch64 core such as Graviton 1 or the
-Raspberry Pi 4, as listed in link:../../README.adoc#_known_limitations[the README's Known
-Limitations] -- or you want to run the sample against local changes. A local build compiles for the
-host it runs on, so it starts where the published image does not.
+You need Route B in exactly three cases: your host is an arm64 machine and the pin is still a tag
+that predates the two-platform lane (`0.2.4` or earlier, which is `linux/amd64` only); your host's
+CPU is below the baseline the published image is compiled for -- an x86-64 CPU without AVX2, or an
+older AArch64 core such as Graviton 1 or the Raspberry Pi 4, as listed in
+link:../../README.adoc#_known_limitations[the README's Known Limitations]; or you want to run the
+sample against local changes. A local build compiles for the host it runs on, so it starts where the
+published image does not.
 
 To run the sample against your own build, produce the image and point the sample at it:
 

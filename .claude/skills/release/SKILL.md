@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut an API Sheriff release along one of exactly two paths — merging a .github/project.yml version bump, which IS the publishing act once the central cuioss-organization version-changed guard lets it through, or a deliberate workflow_dispatch, which fires unconditionally and is the fallback. Covers the pre-cut safety assertions that must precede the merge, the dispatch, the non-atomic jars-then-image lane and its recovery paths, the post-cut "exactly one of each" verification, the mandatory GHCR public-package action after the first release, and the release-notes house format.
+description: Cut an API Sheriff release along one of exactly two paths — merging a .github/project.yml version bump, which IS the publishing act once the central cuioss-organization version-changed guard lets it through, or a deliberate workflow_dispatch, which fires unconditionally (a dry-run dispatch is refused on every ref and never publishes) and is the fallback. Covers the pre-cut safety assertions that must precede the merge, the dispatch, the non-atomic jars-then-image lane and its recovery paths, the post-cut "exactly one of each" verification, the mandatory GHCR public-package action after the first release, and the release-notes house format.
 user-invocable: true
 allowed-tools: Bash, Read, Edit, Write
 ---
@@ -50,7 +50,7 @@ run*. **A release dispatch never sets it.**
 | Path | When it fires | Role |
 |---|---|---|
 | **Merge of a version bump** — a `pull_request` closed with `merged == true`, base `main`, touching `.github/project.yml` | only when the **central guard** inside the pinned `cuioss-organization` reusable workflow sees `release.current-version` actually changed between the merge commit and its first parent, **and** no tag for that version already exists | the ordinary way a release is cut |
-| **`workflow_dispatch`** | whenever dispatched **from `main`** — the `release` job's `if:` confines the dispatch path to `refs/heads/main`, and nothing else gates it, which includes re-releasing an unchanged version | the deliberate fallback: recover a failed lane, or cut a version whose declaration already landed |
+| **`workflow_dispatch`** | whenever dispatched **from `main`** — the `release` job's `if:` confines the dispatch path to `refs/heads/main` and refuses a `dry_run` dispatch on every ref, and nothing else gates it, which includes re-releasing an unchanged version | the deliberate fallback: recover a failed lane, or cut a version whose declaration already landed |
 
 **State them as a pair.** An operator whose merge did *not* cut a release needs to know which
 mechanism decided that before reaching for the other path — Step 5 *Path A* carries that diagnosis.

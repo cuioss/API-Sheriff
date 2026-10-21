@@ -267,7 +267,7 @@ Rate limiting is not implemented::
 The `rate_limit` field is reserved and accepted, but it is ignored and no `429` is ever produced:
 `RateLimitConfig` is bound into the route model and read by nothing on the request path.
 
-The published image serves linux/amd64 and linux/arm64, each at GraalVM's default CPU baseline::
+From the first two-platform release on, the published image serves linux/amd64 and linux/arm64, each at GraalVM's default CPU baseline::
 From the first release the two-platform lane cuts, `ghcr.io/cuioss/api-sheriff` is one image index
 over two images, `linux/amd64` and `linux/arm64`, each built natively on its own architecture and
 run through the full integration-test suite before it is published. Tags up to and including `0.2.4`

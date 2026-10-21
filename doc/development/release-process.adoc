@@ -27,7 +27,8 @@ withdrawn.
 
 *`workflow_dispatch` is the fallback, and past one ref test it is unconditional.* The `release`
 job's `if:` confines the dispatch path to `refs/heads/main`; a dispatch from any other ref is
-skipped silently and publishes nothing. Dispatched from `main`, Actions -> Release -> Run workflow
+skipped silently and publishes nothing, and a dispatch with `dry_run` set is refused on every ref
+(<<dry-run>>). Dispatched from `main` without `dry_run`, Actions -> Release -> Run workflow
 publishes whatever `.github/project.yml` declares there, including a re-declaration of a version
 already published -- nothing central refuses it. Reach for it when the merge path did not
 fire -- and when a merge cut no release, establish *which* of the guard's two conditions refused it
@@ -377,8 +378,9 @@ empirical control run against that rule, and what that control does and does not
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares two triggers: a
 `workflow_dispatch` carrying no branch filter, and a `pull_request` narrowed by `types: [closed]`,
 `branches: [main]` and `paths: ['.github/project.yml']`. The `release` job's `if:` then narrows each
-path once more -- the dispatch path to `refs/heads/main`, the merge path to `merged == true` -- so a
-dispatch from a non-`main` ref is skipped before anything is published. On the merge path the
+path once more -- the dispatch path to `refs/heads/main` and to a dispatch without `dry_run`, the
+merge path to `merged == true` -- so a dispatch from a non-`main` ref, or any dry-run dispatch, is
+skipped before anything is published. On the merge path the
 question *"is this merge a release?"* is answered by the pinned cuioss-organization workflow's
 *version-changed guard*.
 
