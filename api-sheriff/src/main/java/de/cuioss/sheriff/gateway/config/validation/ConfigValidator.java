@@ -15,53 +15,38 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ANCHORS_POINTER;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.WILDCARD_ORIGIN;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.lacksConfiguredIssuer;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.requireOf;
 
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Pattern;
 
-import de.cuioss.sheriff.gateway.bff.cookie.SealedSessionCookieCodec;
-import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
-import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
-import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationRecord;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
-import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
-import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
-import de.cuioss.sheriff.gateway.config.PolicyBlock;
-import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.AnchorRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.AssetDefaultsRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.AuthRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ForwardingRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.LimitRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.OidcClientRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.OidcSessionRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.PortalRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ProtocolRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.RouteMatchingRules;
@@ -69,7 +54,6 @@ import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.config.validation.rule.TerminalActionRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
-import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -101,17 +85,17 @@ import org.jspecify.annotations.Nullable;
  * The anchor rules (ADR-0007, owned by {@link AnchorRules}) — pairwise-disjoint anchor prefixes,
  * declared-anchor existence, route/namespace membership agreement, anchor-namespace coverage (no
  * route outside an anchor may swallow the anchor's namespace unless a route under the anchor covers
- * it) and the non-weakenable auth floor — are joined by two auth rules that stay in this class: the
- * per-route auth resolvability (every route must resolve an auth posture from its own {@code auth},
- * its endpoint, or a declared anchor) and the anchor-aware effective-auth completeness check. All of
- * them collect into the same shared {@code errors} list with file/pointer context and never fail
- * fast.
+ * it) and the non-weakenable auth floor — are joined by two auth rules owned by {@link AuthRules}:
+ * the per-route auth resolvability (every route must resolve an auth posture from its own
+ * {@code auth}, its endpoint, or a declared anchor) and the anchor-aware effective-auth completeness
+ * check. All of them collect into the same shared {@code errors} list with file/pointer context and
+ * never fail fast.
  * <p>
- * The session-fallback refusal adds one more: every declared {@code auth} block — anchor, endpoint
- * or route — that sets {@code session_fallback: true} must declare {@code require: bearer}, since the
- * key only splits a bearer posture into a bearer and a session branch, and the gateway must declare an
- * {@code oidc} block, since the session branch needs the BFF runtime exactly as a
- * {@code require: session} route does. The two refusals are independent and carry fixed detail
+ * The session-fallback refusal (ADR-0055, owned by {@link AuthRules}) adds one more: every declared
+ * {@code auth} block — anchor, endpoint or route — that sets {@code session_fallback: true} must
+ * declare {@code require: bearer}, since the key only splits a bearer posture into a bearer and a
+ * session branch, and the gateway must declare an {@code oidc} block, since the session branch needs
+ * the BFF runtime exactly as a {@code require: session} route does. The two refusals are independent and carry fixed detail
  * texts. The anchor floor comparison is untouched by the key — it compares {@code require} only —
  * and the effective-auth completeness check keeps demanding {@code token_validation} issuers for a
  * session-fallback route's bearer posture, so such a route is held to both backing blocks.
@@ -134,19 +118,21 @@ import org.jspecify.annotations.Nullable;
  * negative-list, forward-all). The schema bounds the {@code forward} key <em>set</em>; a mutual
  * exclusion between two of its keys is cross-cutting and lives with the post-binding rules.
  * <p>
- * The session-cookie name refusal adds one more: a declared {@code oidc.session.cookie_name} must
- * keep the {@code __Host-} guarantee the gateway-owned cookies carry, be writable verbatim into a
- * {@code Set-Cookie} header, and not collide with a gateway-owned cookie. The schema declares the key
+ * The session-cookie name refusal (owned by {@link OidcSessionRules}) adds one more: a declared
+ * {@code oidc.session.cookie_name} must keep the {@code __Host-} guarantee the gateway-owned cookies
+ * carry, be writable verbatim into a {@code Set-Cookie} header, and not collide with a gateway-owned
+ * cookie. The schema declares the key
  * an unrestricted string; this rule is the single enforcing authority.
  * <p>
- * The client-authentication refusal adds one more: {@code oidc.client_secret} and
- * {@code oidc.client_authentication.key_file} select different client authentications, so a document
- * declaring both is refused, and so is a declared {@code oidc.client_secret} that resolves to a blank
- * value. The schema does not encode the exclusion; this rule owns it, because its message has to
- * name both keys. The back-channel origin rule ({@link #validateBackChannelOrigin}) holds
- * {@code oidc.back_channel_origin} to a bare {@code http}/{@code https} origin, admits an {@code http}
- * origin only under {@code oidc.back_channel_allow_insecure_http: true}, and refuses that opt-in when
- * there is nothing to opt in for — each refusal on its key's own pointer, in fixed text.
+ * The client-authentication refusal (owned by {@link OidcClientRules}) adds one more:
+ * {@code oidc.client_secret} and {@code oidc.client_authentication.key_file} select different client
+ * authentications, so a document declaring both is refused, and so is a declared
+ * {@code oidc.client_secret} that resolves to a blank value. The schema does not encode the exclusion;
+ * this rule owns it, because its message has to name both keys. The back-channel origin rule
+ * ({@link OidcClientRules#validateBackChannelOrigin}) holds {@code oidc.back_channel_origin} to a bare
+ * {@code http}/{@code https} origin, admits an {@code http} origin only under
+ * {@code oidc.back_channel_allow_insecure_http: true}, and refuses that opt-in when there is nothing to
+ * opt in for — each refusal on its key's own pointer, in fixed text.
  * <p>
  * The client JWKS path rule refuses an {@code oidc.client_authentication.jwks_path} — declared, or
  * the default it resolves to when omitted — that another reserved OIDC endpoint already claims. The
@@ -169,8 +155,9 @@ import org.jspecify.annotations.Nullable;
  * {@code forward} block, whether the route or its endpoint declares that block (owned by
  * {@link ForwardingRules}); an endpoint
  * declaring {@code scopes} must have at least one route that is not {@code require: none}, since
- * scopes act only on authenticated routes; and a declared {@code oidc.login.default_return_url}
- * must be same-origin with {@code redirect_uri}.
+ * scopes act only on authenticated routes (owned by {@link AuthRules}); and a declared
+ * {@code oidc.login.default_return_url} must be same-origin with {@code redirect_uri} (owned by
+ * {@link OidcClientRules}).
  * <p>
  * The reserved-path rules hold {@code oidc.user_info.path}, {@code oidc.login.path} and
  * {@code oidc.step_up.path} alike to an absolute gateway path starting with a single {@code /} and
@@ -191,11 +178,12 @@ import org.jspecify.annotations.Nullable;
  * endpoint's exact route; and every enabled endpoint's {@code catalog.entry} must be an
  * origin-relative path on the gateway's own origin.
  * <p>
- * The session idle-timeout rule adds one more: a declared {@code oidc.session.idle_timeout_seconds}
- * must be at least {@code 1} and at most the effective {@code ttl_seconds}. An omitted key is always
- * accepted, because it resolves to a value inside that range. The per-subject session bound follows
- * the same shape: a declared {@code oidc.session.max_sessions_per_subject} must be at least {@code 1}
- * and at most the effective {@code max_sessions}, and is refused in cookie mode.
+ * The session idle-timeout rule (owned by {@link OidcSessionRules}) adds one more: a declared
+ * {@code oidc.session.idle_timeout_seconds} must be at least {@code 1} and at most the effective
+ * {@code ttl_seconds}. An omitted key is always accepted, because it resolves to a value inside that
+ * range. The per-subject session bound (owned by {@link OidcSessionRules} as well) follows the same
+ * shape: a declared {@code oidc.session.max_sessions_per_subject} must be at least {@code 1} and at
+ * most the effective {@code max_sessions}, and is refused in cookie mode.
  * <p>
  * Pre-boot: the offline {@code --validate-config} check runs this validator before the framework
  * starts (ADR-0061, ADR-0062), so the rule set is supplied at construction and the validator carries
@@ -206,10 +194,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ConfigValidator {
 
-    private static final CuiLogger LOGGER = new CuiLogger(ConfigValidator.class);
-
     private static final int SUPPORTED_VERSION = 1;
-    private static final String ENDPOINT_AUTH_POINTER = "/endpoint/auth";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
@@ -217,9 +202,6 @@ public final class ConfigValidator {
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_PATH_POINTER = "/oidc/login/path";
-    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
-    @SuppressWarnings("java:S1075")
-    private static final String OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER = "/oidc/login/default_return_url";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_STEP_UP_PATH_POINTER = "/oidc/step_up/path";
@@ -233,77 +215,10 @@ public final class ConfigValidator {
     private static final String ABSOLUTE_GATEWAY_PATH_REQUIREMENT =
             " must be an absolute gateway path starting with a single '/' and carrying no query ('?') and no "
                     + "fragment ('#'), no backslash ('\\'), no control character and no whitespace";
-    private static final String ENDPOINT_SCOPES_POINTER = "/endpoint/scopes";
-
-    /**
-     * The fixed detail of the refusal of {@code session_fallback: true} on a posture other than
-     * {@code require: bearer}. Fixed text, so the boot log never echoes a configured scalar.
-     */
-    private static final String SESSION_FALLBACK_NOT_BEARER_DETAIL =
-            "declares auth.session_fallback: true on a posture other than require: bearer; session_fallback only "
-                    + "adds a session branch to a bearer posture for requests without an Authorization header — "
-                    + "declare require: bearer, or drop session_fallback";
-
-    /**
-     * The fixed detail of the refusal of {@code session_fallback: true} when the gateway declares no
-     * {@code oidc} block. Fixed text, so the boot log never echoes a configured scalar.
-     */
-    private static final String SESSION_FALLBACK_NO_OIDC_DETAIL =
-            "declares auth.session_fallback: true but the gateway declares no oidc block; the session branch "
-                    + "authenticates through the BFF runtime exactly as a require: session route does — declare "
-                    + "an oidc block, or drop session_fallback";
-    private static final String OIDC_SESSION_MAX_SESSIONS_POINTER = "/oidc/session/max_sessions";
-    private static final String OIDC_SESSION_MAX_COOKIE_SIZE_POINTER = "/oidc/session/max_cookie_size";
-    private static final String OIDC_SESSION_IDLE_TIMEOUT_POINTER = "/oidc/session/idle_timeout_seconds";
-    private static final String OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER =
-            "/oidc/session/max_sessions_per_subject";
-    private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
-    private static final String OIDC_CLIENT_SECRET_POINTER = "/oidc/client_secret";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_CLIENT_JWKS_PATH_POINTER = "/oidc/client_authentication/jwks_path";
     private static final String OIDC_CLIENT_JWKS_PATH_KEY = "oidc.client_authentication.jwks_path";
-    private static final String OIDC_BACK_CHANNEL_ORIGIN_POINTER = "/oidc/back_channel_origin";
-    private static final String OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER =
-            "/oidc/back_channel_allow_insecure_http";
-    private static final String HTTP_SCHEME = "http";
-    private static final String HTTPS_SCHEME = "https";
-
-    /**
-     * The remedy every shape refusal of {@code oidc.back_channel_origin} closes with. Fixed text, so
-     * the boot log never echoes the configured value.
-     */
-    private static final String BACK_CHANNEL_ORIGIN_REMEDY =
-            " — declare an origin of the form scheme://host[:port] (optionally followed by a single '/'), "
-                    + "or remove oidc.back_channel_origin to dial the issuer's own origin";
-
-    /**
-     * The fixed detail of the refusal of an {@code http} {@code oidc.back_channel_origin} without the
-     * explicit cleartext opt-in.
-     */
-    private static final String BACK_CHANNEL_HTTP_WITHOUT_OPT_IN_DETAIL =
-            "oidc.back_channel_origin uses the http scheme but oidc.back_channel_allow_insecure_http is not true; "
-                    + "a cleartext back channel carries the client credential and every token, so it is admitted "
-                    + "only by the explicit opt-in — declare an https origin, or set "
-                    + "oidc.back_channel_allow_insecure_http: true";
-
-    /**
-     * The fixed detail of the refusal of the cleartext opt-in when no {@code oidc.back_channel_origin}
-     * is declared.
-     */
-    private static final String BACK_CHANNEL_OPT_IN_WITHOUT_ORIGIN_DETAIL =
-            "oidc.back_channel_allow_insecure_http is true but no oidc.back_channel_origin is declared; the "
-                    + "opt-in admits an http back-channel origin and has nothing to admit — remove "
-                    + "oidc.back_channel_allow_insecure_http, or declare the http origin it is meant for";
-
-    /**
-     * The fixed detail of the refusal of the cleartext opt-in when the declared
-     * {@code oidc.back_channel_origin} is {@code https}.
-     */
-    private static final String BACK_CHANNEL_OPT_IN_WITH_HTTPS_DETAIL =
-            "oidc.back_channel_allow_insecure_http is true but oidc.back_channel_origin uses the https scheme; "
-                    + "the opt-in would widen the whole OIDC client to cleartext for nothing — remove "
-                    + "oidc.back_channel_allow_insecure_http";
 
     /** The operator-declared reserved path {@code oidc.user_info.path}, held to {@link #validateReservedPath}. */
     private static final ReservedPathKey USER_INFO_PATH = new ReservedPathKey("oidc user_info path",
@@ -324,50 +239,6 @@ public final class ConfigValidator {
     private static final char PERCENT_SIGN = '%';
 
     /**
-     * The fixed detail of the refusal of {@code oidc.client_secret} together with
-     * {@code oidc.client_authentication.key_file}. Fixed text, so the boot log echoes neither the
-     * secret nor the configured path. It says "at most one", not "exactly one": a document declaring
-     * neither is valid and authenticates with a generated key.
-     */
-    private static final String CLIENT_SECRET_WITH_KEY_FILE_DETAIL =
-            "oidc.client_secret and oidc.client_authentication.key_file are both declared; the two select "
-                    + "different client authentications — client_secret selects client_secret_basic, "
-                    + "client_authentication.key_file selects private_key_jwt — so at most one of them may be "
-                    + "configured: remove oidc.client_secret to authenticate with the key, or remove "
-                    + "oidc.client_authentication.key_file to authenticate with the secret";
-
-    /**
-     * The fixed detail of the refusal of a declared {@code oidc.client_secret} that resolves to a
-     * blank value. Fixed text, so the boot log never echoes a configured scalar.
-     */
-    private static final String CLIENT_SECRET_BLANK_DETAIL =
-            "oidc.client_secret is declared but resolves to a blank value; a declared client secret selects "
-                    + "client_secret_basic and must carry a value — set the variable it references, or remove "
-                    + "oidc.client_secret to authenticate with private_key_jwt";
-
-    /**
-     * The cookie-name prefix every gateway-owned cookie carries. A browser honours a
-     * {@code __Host-}-prefixed cookie only when it is {@code Secure}, scoped to {@code Path=/} and
-     * carries no {@code Domain}, so the prefix is what turns those attributes from a gateway habit
-     * into a browser-enforced guarantee.
-     */
-    private static final String HOST_COOKIE_PREFIX = "__Host-";
-
-    /** The gateway-owned cookie names a configured session cookie name must never collide with. */
-    private static final List<String> GATEWAY_OWNED_COOKIE_NAMES = List.of(
-            BindingCookieCodec.COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME);
-
-    /**
-     * A non-empty RFC 9110 {@code token} matched against the WHOLE configured session cookie name
-     * ({@link java.util.regex.Matcher#matches()}). RFC 6265 draws a cookie name from exactly this
-     * character set, and the name is written verbatim into {@code Set-Cookie}: a {@code ;}, {@code =},
-     * whitespace or control character in it would be response-header injection. It is the same
-     * {@link RuleSupport#MEDIA_TYPE_TOKEN} class, reused rather than restated so the two gates cannot
-     * drift.
-     */
-    private static final Pattern COOKIE_NAME_SHAPE = Pattern.compile(RuleSupport.MEDIA_TYPE_TOKEN);
-
-    /**
      * The built-in rules, one entry per rule, in the order their violations are reported. The
      * application-portal rules run after every other rule.
      */
@@ -384,10 +255,11 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorNamespaceMembership(gateway,
                     endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateRouteAuthResolvable(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> AuthRules.validateRouteAuthResolvable(gateway, endpoints,
+                    errors),
             (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorAuthFloor(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateEffectiveAuth(gateway, endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionFallback(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> AuthRules.validateEffectiveAuth(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> AuthRules.validateSessionFallback(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> AnchorRules.validateAccessAuthMatrix(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateSecurityProfileMinimal(gateway, endpoints,
                     errors),
@@ -398,18 +270,19 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> validateCors(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateContentSecurityPolicy(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateHeaderModes(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionMode(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionMaxSessions(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionIdleTimeout(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionMaxSessionsPerSubject(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionMaxCookieSize(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateSessionCookieName(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateClientAuthentication(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMode(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxSessions(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionIdleTimeout(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxSessionsPerSubject(gateway,
+                    errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxCookieSize(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionCookieName(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcClientRules.validateClientAuthentication(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateClientJwksPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateLoginPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> validateStepUpPath(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateBackChannelOrigin(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcClientRules.validateBackChannelOrigin(gateway, errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughHostCollision(gateway, endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> EdgeRules.validatePassthroughAliasResolvable(gateway, topology,
@@ -429,9 +302,9 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> ForwardingRules.validateTokenRelayForwardConflict(gateway,
                     endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateEndpointScopesNeedAuthentication(gateway, endpoints,
-                    errors),
-            (gateway, endpoints, topology, errors) -> validateDefaultReturnUrl(gateway, errors),
+            (gateway, endpoints, topology, errors) -> AuthRules.validateEndpointScopesNeedAuthentication(gateway,
+                    endpoints, errors),
+            (gateway, endpoints, topology, errors) -> OidcClientRules.validateDefaultReturnUrl(gateway, errors),
             (gateway, endpoints, topology, errors) -> TokenValidationRules.validateJwksEgressHosts(gateway, errors),
             (gateway, endpoints, topology, errors) -> TokenValidationRules.validateJwksRefresh(gateway, errors),
             (gateway, endpoints, topology, errors) -> PortalRules.validatePortalPathCanonical(gateway, errors),
@@ -482,77 +355,6 @@ public final class ConfigValidator {
         }
     }
 
-    /**
-     * Rule: an endpoint declaring a non-empty {@code scopes} list must have at least one route whose
-     * effective auth is not {@code require: none}.
-     * <p>
-     * {@code endpoint.scopes} is consumed only by authenticated routes. On an endpoint whose every route
-     * resolves {@code require: none} the key would parse and act nowhere, so an operator reading it
-     * would believe a scope requirement is in force that no request ever meets. The boot refuses it
-     * rather than letting the declaration stand inert. Only enabled endpoints reach this rule. Every
-     * violation collects into the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateEndpointScopesNeedAuthentication(GatewayConfig gateway,
-            List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            if (endpoint.scopes().isEmpty()) {
-                continue;
-            }
-            boolean allUnauthenticated = endpoint.routes().stream()
-                    .allMatch(route -> requireOf(ScopeChain.of(gateway, endpoint, route)) == Require.NONE);
-            if (allUnauthenticated) {
-                errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_SCOPES_POINTER,
-                        ("endpoint '%s' declares scopes but every one of its routes resolves require: none; "
-                                + "scopes are consumed only by authenticated routes, so on an unauthenticated "
-                                + "endpoint they would never act — remove scopes, or give a route of this "
-                                + "endpoint a bearer or session posture")
-                                .formatted(endpoint.id())));
-            }
-        }
-    }
-
-    /**
-     * Rule: a declared {@code oidc.login.default_return_url} must be same-origin with
-     * {@code oidc.redirect_uri}.
-     * <p>
-     * The value is where a browser is sent whenever no usable return target was supplied, so a
-     * cross-origin value would make every such redirect an open redirect to a foreign
-     * origin. The check reuses {@link PendingAuthorizationRecord#sameOrigin}, the single predicate
-     * the runtime applies to a request-supplied return target, so the boot review and the request
-     * path can never disagree about what counts as same-origin: a gateway-relative path is admitted,
-     * an absolute URL only on the {@code redirect_uri} origin, and a scheme-relative, backslash, blank
-     * or unparseable value is refused. With no {@code redirect_uri} there is no origin to compare an
-     * absolute value against, so only a gateway-relative path is admitted. The value is echoed
-     * through {@link RuleSupport#renderForMessage}, so it cannot forge boot log lines (CWE-117).
-     */
-    private static void validateDefaultReturnUrl(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig oidc = gateway.oidc();
-        if (oidc == null) {
-            return;
-        }
-        OidcConfig.Login login = oidc.login();
-        String declared = login == null ? null : login.defaultReturnUrl();
-        if (declared == null) {
-            return;
-        }
-        String redirectUri = oidc.redirectUri();
-        boolean admitted;
-        if (redirectUri == null) {
-            // No origin to compare an absolute value against: only a gateway-relative path passes, and
-            // sameOrigin decides such a path without ever reading the origin argument.
-            admitted = declared.startsWith("/") && PendingAuthorizationRecord.sameOrigin(declared, "/");
-        } else {
-            admitted = PendingAuthorizationRecord.sameOrigin(declared, redirectUri);
-        }
-        if (!admitted) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER,
-                    ("oidc login default_return_url '%s' is not same-origin with redirect_uri; it is the "
-                            + "fallback redirect target, so it must be a gateway path starting with a single "
-                            + "'/' or an absolute URL on the redirect_uri origin")
-                            .formatted(renderForMessage(declared))));
-        }
-    }
-
     private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
         Set<String> seen = new HashSet<>();
         for (EndpointConfig endpoint : endpoints) {
@@ -595,100 +397,6 @@ public final class ConfigValidator {
                 errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
                         "unresolved topology alias: " + baseUrl));
             }
-        }
-    }
-
-    /**
-     * Rule: every enabled route must resolve an auth posture through the same
-     * {@code route → endpoint → declared-anchor} chain the route table uses
-     * ({@link PolicyBlock#AUTH}); a route for which none of the three supplies an
-     * {@code auth} block fails the boot (ADR-0007). Checking per route — rather than
-     * once per endpoint — closes two gaps of a per-endpoint anchor check: it no longer
-     * falsely rejects an endpoint whose every route supplies its own auth, and it
-     * catches a route that overrides to a different, auth-less anchor via
-     * {@code route.anchor} (or omits auth entirely) even when the endpoint-level anchor
-     * would have satisfied a per-endpoint check. This surfaces the failure here, in the
-     * all-violations pass (ADR-0009), instead of letting it escape to a
-     * {@code RouteTableException} thrown during route-table assembly.
-     */
-    private static void validateRouteAuthResolvable(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                if (PolicyBlock.AUTH.declared(ScopeChain.of(gateway, endpoint, route)) == null) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "route '%s' has no resolvable auth: neither the route, its endpoint '%s', nor a declared anchor provides an auth posture"
-                                    .formatted(route.id(), endpoint.id())));
-                }
-            }
-        }
-    }
-
-    private static void validateEffectiveAuth(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        Set<Require> requires = EnumSet.noneOf(Require.class);
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                requires.add(requireOf(ScopeChain.of(gateway, endpoint, route)));
-            }
-        }
-        if (requires.contains(Require.BEARER) && lacksConfiguredIssuer(gateway)) {
-            errors.add(new ConfigError(GATEWAY_FILE, "/token_validation",
-                    "effective auth 'bearer' requires token_validation with at least one issuer"));
-        }
-        if (requires.contains(Require.SESSION) && gateway.oidc() == null) {
-            errors.add(new ConfigError(GATEWAY_FILE, "/oidc", "effective auth 'session' requires an oidc block"));
-        }
-    }
-
-    /**
-     * Rule: every declared {@code auth} block that sets {@code session_fallback: true} — on an anchor,
-     * on an enabled endpoint, or on a route of an enabled endpoint — must declare
-     * {@code require: bearer}, and the gateway must declare an {@code oidc} block.
-     * <p>
-     * The key splits a bearer posture into two branches selected by {@code Authorization}-header
-     * presence; on {@code require: none} or {@code require: session} there is no bearer branch to
-     * split, so it would parse and act nowhere. Its session branch authenticates through the BFF
-     * runtime, which exists only when {@code oidc} is declared. The two refusals are independent — a
-     * block violating both yields both — and each names the owning anchor, endpoint or route with
-     * its JSON pointer and a fixed detail text, never a configured scalar value.
-     * <p>
-     * Each declared block is judged where it is declared rather than through the effective-auth
-     * cascade, so an anchor default that no route inherits is still refused. The anchor floor
-     * ({@link AnchorRules#validateAnchorAuthFloor}) compares {@code require} only and is not consulted here.
-     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateSessionFallback(GatewayConfig gateway, List<EndpointConfig> endpoints,
-            List<ConfigError> errors) {
-        boolean oidcDeclared = gateway.oidc() != null;
-        for (AnchorConfig anchor : gateway.anchors().values()) {
-            checkSessionFallbackBlock(anchor.auth(), oidcDeclared, GATEWAY_FILE,
-                    ANCHORS_POINTER + "/" + anchor.name() + "/auth", "anchor '%s'".formatted(anchor.name()), errors);
-        }
-        for (EndpointConfig endpoint : endpoints) {
-            checkSessionFallbackBlock(endpoint.auth(), oidcDeclared, endpointFile(endpoint), ENDPOINT_AUTH_POINTER,
-                    "endpoint '%s'".formatted(endpoint.id()), errors);
-            for (RouteConfig route : endpoint.routes()) {
-                checkSessionFallbackBlock(route.auth(), oidcDeclared, endpointFile(endpoint),
-                        ENDPOINT_ROUTES_POINTER, "route '%s'".formatted(route.id()), errors);
-            }
-        }
-    }
-
-    /**
-     * Judges one declared {@code auth} block for {@link #validateSessionFallback}: a no-op when the
-     * block is absent or does not set {@code session_fallback: true}.
-     */
-    private static void checkSessionFallbackBlock(@Nullable AuthConfig auth, boolean oidcDeclared, String file,
-            String pointer, String owner, List<ConfigError> errors) {
-        if (auth == null || !auth.effectiveSessionFallback()) {
-            return;
-        }
-        if (auth.require() != Require.BEARER) {
-            errors.add(new ConfigError(file, pointer, owner + " " + SESSION_FALLBACK_NOT_BEARER_DETAIL));
-        }
-        if (!oidcDeclared) {
-            errors.add(new ConfigError(file, pointer, owner + " " + SESSION_FALLBACK_NO_OIDC_DETAIL));
         }
     }
 
@@ -788,327 +496,6 @@ public final class ConfigValidator {
         if (Boolean.TRUE.equals(cors.allowCredentials()) && cors.allowedOrigins().contains(WILDCARD_ORIGIN)) {
             errors.add(new ConfigError(GATEWAY_FILE, pointer,
                     "wildcard origin '*' is not permitted together with allow_credentials"));
-        }
-    }
-
-    /**
-     * Rule: the session mode's mandatory companions (D1/D2b).
-     * <p>
-     * {@code server} mode requires a {@code store}. {@code cookie} mode does <em>not</em> require an
-     * {@code encryption_key} — omitting it selects the generate-on-startup key mode, a first-class
-     * production option (at the cost of dropping every session on restart and being unshareable
-     * across replicas).
-     */
-    private static void validateSessionMode(GatewayConfig gateway, List<ConfigError> errors) {
-        // isServerMode() is the SHARED predicate over the mode value the OidcConfig.Session canonical
-        // constructor already canonicalized. Comparing against a literal here is what previously let
-        // a value like 'Server' skip this rule while the runtime still read it as an active mode.
-        OidcConfig.Session session = oidcSession(gateway);
-        if (session == null) {
-            return;
-        }
-        if (session.isServerMode() && session.store() == null) {
-            errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",
-                    "server session mode requires a store"));
-        }
-    }
-
-    /**
-     * The gateway's {@code oidc.session} block, {@code null} when either the {@code oidc} block or
-     * its {@code session} sub-block is absent.
-     */
-    private static OidcConfig.@Nullable Session oidcSession(GatewayConfig gateway) {
-        OidcConfig oidc = gateway.oidc();
-        return oidc == null ? null : oidc.session();
-    }
-
-    /**
-     * Rule: the server-mode session store bound (D1/D3). When
-     * {@code oidc.session.max_sessions} is present it must be a positive integer —
-     * the bound is a DoS guard on the in-memory store, so a non-positive value is a
-     * misconfiguration. A no-op when the bound is omitted (the store applies its own
-     * documented default bound).
-     */
-    private static void validateSessionMaxSessions(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig.Session session = oidcSession(gateway);
-        Integer max = session == null ? null : session.maxSessions();
-        if (max != null && max <= 0) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_POINTER,
-                    "oidc session max_sessions must be a positive integer, but was %d".formatted(max)));
-        }
-    }
-
-    /**
-     * Rule: the bound on the live sessions of one subject (server mode). A <em>declared</em>
-     * {@code oidc.session.max_sessions_per_subject} must be at least {@code 1} and at most the
-     * effective {@code max_sessions}, and must not be declared in cookie mode.
-     * <p>
-     * A value below {@code 1} would leave no subject able to hold a session. A value above the
-     * effective {@code max_sessions} can never take effect — the store refuses a session at
-     * {@code max_sessions} first — so it states a bound the gateway does not enforce and is refused
-     * rather than silently capped. Cookie mode stores no sessions, so it can neither count a subject's
-     * sessions nor end one: the key would parse and do nothing there, and is refused for that reason.
-     * <p>
-     * The upper bound is the one the runtime resolves
-     * ({@link OidcConfig.Session#effectiveMaxSessions()}), so an omitted {@code max_sessions} is
-     * compared as its default. A no-op when the key is omitted:
-     * {@link OidcConfig.Session#effectiveMaxSessionsPerSubject()} then resolves a value inside the
-     * range by construction, and cookie mode never reads it. Every violation collects into the shared
-     * list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateSessionMaxSessionsPerSubject(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig.Session session = oidcSession(gateway);
-        Integer declared = session == null ? null : session.maxSessionsPerSubject();
-        if (declared == null) {
-            return;
-        }
-        if (session.isCookieMode()) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER,
-                    "oidc session max_sessions_per_subject is declared in cookie session mode, which stores no "
-                            + "sessions and cannot bound them per subject — remove the key, or use server "
-                            + "session mode"));
-            return;
-        }
-        if (declared < 1) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER,
-                    "oidc session max_sessions_per_subject must be at least 1, but was %d".formatted(declared)));
-            return;
-        }
-        int effectiveMaxSessions = session.effectiveMaxSessions();
-        if (declared > effectiveMaxSessions) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER,
-                    ("oidc session max_sessions_per_subject %d exceeds the effective max_sessions %d; the store "
-                            + "refuses a session at max_sessions first, so a bound per subject above it never "
-                            + "takes effect — declare a value of at most max_sessions, or omit the key")
-                            .formatted(declared, effectiveMaxSessions)));
-        }
-    }
-
-    /**
-     * Rule: the session idle timeout, in both session modes. A <em>declared</em>
-     * {@code oidc.session.idle_timeout_seconds} must be at least {@code 1} and at most the effective
-     * {@code ttl_seconds}.
-     * <p>
-     * A value below {@code 1} would end every session at once. A value above the effective
-     * {@code ttl_seconds} can never take effect — the absolute lifetime ends the session first — so
-     * it states an idle timeout the gateway does not enforce, and it is refused rather than silently
-     * capped. The schema already declares the lower bound; it is repeated here because this validator
-     * is also reached with documents the schema did not see, and because the upper bound depends on
-     * another key and cannot be declared there at all.
-     * <p>
-     * The upper bound is the lifetime the runtime producer resolves ({@link #resolvedSessionTtl}), so
-     * an omitted {@code ttl_seconds} is compared as its default. A no-op when the key is omitted:
-     * {@link OidcConfig.Session#effectiveIdleTimeoutSeconds()} then resolves a value inside the range
-     * by construction, for any {@code ttl_seconds}. Every violation collects into the shared list; the
-     * rule never fails fast (ADR-0009).
-     */
-    private static void validateSessionIdleTimeout(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig.Session session = oidcSession(gateway);
-        Integer declared = session == null ? null : session.idleTimeoutSeconds();
-        if (declared == null) {
-            return;
-        }
-        if (declared < 1) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_IDLE_TIMEOUT_POINTER,
-                    "oidc session idle_timeout_seconds must be at least 1, but was %d".formatted(declared)));
-            return;
-        }
-        long effectiveTtlSeconds = resolvedSessionTtl(session).toSeconds();
-        if (declared > effectiveTtlSeconds) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_IDLE_TIMEOUT_POINTER,
-                    ("oidc session idle_timeout_seconds %d exceeds the effective ttl_seconds %d; a session ends "
-                            + "at ttl_seconds whatever its activity, so an idle timeout above it never takes "
-                            + "effect — declare a value of at most ttl_seconds, or omit the key")
-                            .formatted(declared, effectiveTtlSeconds)));
-        }
-    }
-
-    /**
-     * Rule: the cookie-mode sealed-cookie size budget (D1). When
-     * {@code oidc.session.max_cookie_size} is present it must lie between
-     * {@link SealedSessionCookieCodec#COOKIE_VALUE_BUDGET_FLOOR} and
-     * {@link SealedSessionCookieCodec#COOKIE_VALUE_BUDGET_CEILING} inclusive.
-     * <p>
-     * The floor is the encoded length of a structurally minimal sealed value — below it no sealed
-     * cookie could ever be emitted, so the boot fails with a clear message rather than every seal
-     * failing at runtime. The ceiling keeps the budget below what the transport will carry: the same
-     * number also raises the gateway's pre-route {@code Cookie} header-value cap, and a budget at or
-     * above the inbound header-block limit would produce a value the seal accepts but the transport
-     * rejects with {@code 431}. The <em>range</em> check is a no-op when the key is omitted; the
-     * deliverability warning below is not — see "the EFFECTIVE budget" further down.
-     * <p>
-     * <strong>An in-range budget whose emitted header outgrows the browser guarantee is warned,
-     * never refused.</strong> The validated range stays {@code 40..8192} exactly as it is. The
-     * comparison is against the emitted {@code Set-Cookie} <em>header</em>, not against the value
-     * budget: this key declares a sealed <em>value</em> budget, while the ~4096 bytes RFC 6265 6.1
-     * guarantees govern the whole header — name, value and attributes together. Comparing the value
-     * budget against the header guarantee would leave a band silent while the gateway emitted a
-     * header no browser is obliged to keep — the same false guarantee this record exists to
-     * announce. A budget above the threshold is still a legitimate posture for a client that
-     * keeps whatever it is sent, so it boots — and it emits
-     * {@link ConfigLogMessages.WARN#COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE}, because raising the
-     * budget that far silences the {@code ApiSheriff-114} seal refusal without removing the problem:
-     * the browser then drops the oversized {@code Set-Cookie} with no error on either side, and no
-     * later signal exists for the gateway to report.
-     * <p>
-     * <strong>The overhead is derived from THIS gateway's configuration, never from a constant.</strong>
-     * The header {@link SealedSessionCookieCodec#toSetCookieHeader} emits wraps the configured
-     * {@code session.cookie_name} and a {@code Max-Age} carrying the configured
-     * {@code session.ttl_seconds} around the value, so the threshold is
-     * {@link SealedSessionCookieCodec#BROWSER_PER_COOKIE_HEADER_GUARANTEE} less
-     * {@link SealedSessionCookieCodec#setCookieHeaderOverhead(String, java.time.Duration)} for the
-     * <em>resolved</em> pair — the same derivation the header assembly itself counts. A fixed
-     * threshold assumes the default name and a four-digit {@code Max-Age}: a longer cookie name or a
-     * TTL past 9999 seconds emits a larger header than the constant describes, and the warning would
-     * then stay silent on a configuration that is already undeliverable. Both keys fall back to the
-     * values the runtime producer resolves for them, so validation reasons about the header the
-     * gateway will actually send.
-     * <p>
-     * <strong>The warning is cookie-mode only; the range check is not.</strong> Outside
-     * {@code session.mode: cookie} no sealed session {@code Set-Cookie} is ever emitted — a
-     * server-mode or bearer-only gateway has no header for the guarantee to govern — so warning
-     * there is noise about a header that does not exist. The bounds check stays unconditional: an
-     * explicitly declared out-of-range value is a misconfiguration whatever the mode, and refusing
-     * it at boot is what stops it becoming live the moment the mode is switched.
-     * <p>
-     * <strong>The comparison runs on the EFFECTIVE budget, declared or defaulted.</strong> The
-     * gateway emits a {@code Set-Cookie} of exactly the same size whether the operator wrote
-     * {@code max_cookie_size} down or left it to the default, so a guard that only looked at
-     * declared values was blind to the configuration most gateways actually run. That blindness had
-     * a concrete band: with the default at {@code 4096} and the key omitted, every default
-     * cookie-mode gateway emitted a header past the browser guarantee and nothing said so. Closing it
-     * takes both halves — the default is now the browser-safe {@code 4019}
-     * ({@link SealedSessionCookieCodec#DEFAULT_COOKIE_VALUE_BUDGET}), and the comparison below reads
-     * the effective budget rather than returning early on an omitted key.
-     * <p>
-     * Warning on the omitted case therefore no longer fires on every cookie-mode gateway — under the
-     * default name and TTL the default budget lands exactly ON the guarantee, not past it. What it
-     * does still catch is the case that used to be silent: a gateway running a longer
-     * {@code cookie_name} or a wider {@code Max-Age}, where the same default budget produces a header
-     * the browser is not obliged to keep.
-     * <p>
-     * The <em>range</em> check stays gated on a declared value, because there is nothing to range-check
-     * when nothing was declared and the default is in range by construction.
-     */
-    private static void validateSessionMaxCookieSize(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig.Session session = oidcSession(gateway);
-        if (session == null) {
-            return;
-        }
-        Integer declared = session.maxCookieSize();
-        if (declared != null && (declared < SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR
-                || declared > SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING)) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_MAX_COOKIE_SIZE_POINTER,
-                    "oidc session max_cookie_size must be between %d and %d bytes, but was %d"
-                            .formatted(SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_FLOOR,
-                                    SealedSessionCookieCodec.COOKIE_VALUE_BUDGET_CEILING, declared)));
-            return;
-        }
-        // isCookieMode() is the SHARED mode predicate — the spelling is never re-derived here.
-        if (!session.isCookieMode()) {
-            return;
-        }
-        int effectiveBudget = Objects.requireNonNullElse(declared,
-                SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET);
-        int overhead = SealedSessionCookieCodec.setCookieHeaderOverhead(
-                resolvedCookieName(session), resolvedSessionTtl(session));
-        int headerBytes = effectiveBudget + overhead;
-        if (headerBytes > SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE) {
-            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_BUDGET_EXCEEDS_BROWSER_GUARANTEE, effectiveBudget,
-                    headerBytes,
-                    SealedSessionCookieCodec.BROWSER_PER_COOKIE_HEADER_GUARANTEE - overhead);
-        }
-    }
-
-    /**
-     * Rule: a declared {@code oidc.session.cookie_name} must not drop the guarantees the gateway-owned
-     * cookies carry. The name is refused at boot unless it
-     * <ol>
-     * <li>starts with the case-sensitive {@code __Host-} prefix followed by at least one further
-     * character — the prefix shared by {@link SessionCookieCodec#DEFAULT_COOKIE_NAME},
-     * {@link BindingCookieCodec#COOKIE_NAME} and {@link RpInitiatedLogout#LOGOUT_STATE_COOKIE_NAME},
-     * and the one thing that makes the browser <em>enforce</em> {@code Secure} + {@code Path=/} + no
-     * {@code Domain} rather than merely receive them;</li>
-     * <li>is a non-empty RFC 9110 {@code token} ({@link #COOKIE_NAME_SHAPE}) — the runtime writes the
-     * name verbatim into {@code Set-Cookie}, so a {@code ;}, {@code =}, whitespace or control
-     * character would be header injection; and</li>
-     * <li>differs from the binding and logout-state cookie names, since a collision would let one
-     * cookie silently overwrite another in the browser.</li>
-     * </ol>
-     * <p>
-     * The refusal is the only guard: the BFF runtime producer consumes the declared name verbatim, and
-     * the schema declares the key an unrestricted string so this validator stays the single enforcing
-     * authority. It applies in both session modes, because both emit the configured name. An omitted
-     * key is never refused — it resolves to {@link SessionCookieCodec#DEFAULT_COOKIE_NAME}.
-     * <p>
-     * The offending value is echoed through {@link RuleSupport#renderForMessage}, so a name carrying CR/LF cannot
-     * forge boot ERROR log lines (CWE-117). All failed requirements of one name are reported in a
-     * single violation, collected into the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateSessionCookieName(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig.Session session = oidcSession(gateway);
-        String declared = session == null ? null : session.cookieName();
-        if (declared == null) {
-            return;
-        }
-        List<String> failures = new ArrayList<>();
-        if (!declared.startsWith(HOST_COOKIE_PREFIX)) {
-            failures.add("does not start with the case-sensitive '" + HOST_COOKIE_PREFIX + "' prefix");
-        } else if (declared.length() == HOST_COOKIE_PREFIX.length()) {
-            failures.add("is the bare '" + HOST_COOKIE_PREFIX + "' prefix with no name after it");
-        }
-        if (!COOKIE_NAME_SHAPE.matcher(declared).matches()) {
-            failures.add("is not a non-empty RFC 9110 token (no whitespace, control characters or "
-                    + "separators such as ';' or '=')");
-        }
-        if (GATEWAY_OWNED_COOKIE_NAMES.contains(declared)) {
-            failures.add("collides with the gateway-owned cookie of the same name");
-        }
-        if (!failures.isEmpty()) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_COOKIE_NAME_POINTER,
-                    ("oidc session cookie_name '%s' %s; the name is written verbatim into Set-Cookie, so it "
-                            + "must be a '%s'-prefixed RFC 9110 token distinct from the gateway-owned "
-                            + "cookies %s — declare such a name, or omit the key for the default '%s'")
-                            .formatted(renderForMessage(declared), String.join(" and ", failures),
-                                    HOST_COOKIE_PREFIX, String.join(", ", GATEWAY_OWNED_COOKIE_NAMES),
-                                    SessionCookieCodec.DEFAULT_COOKIE_NAME)));
-        }
-    }
-
-    /**
-     * Rule: the client-authentication mode must be unambiguous and usable.
-     * <p>
-     * The presence of {@code oidc.client_secret} selects {@code client_secret_basic}; its absence
-     * selects {@code private_key_jwt}, signed with the key {@code oidc.client_authentication.key_file}
-     * names or with a generated one. The mode is read through
-     * {@link OidcConfig#usesClientSecret()}, the predicate the runtime producer reads as well, so
-     * validation and runtime cannot resolve it differently. Two documents are refused:
-     * <ul>
-     *   <li><strong>Both keys declared.</strong> The two select different client authentications, and
-     *       preferring one would be a silent choice between two credentials. One error is collected
-     *       at {@code /oidc/client_secret}; it names both keys and neither value.</li>
-     *   <li><strong>A blank secret.</strong> A variable set to the empty string resolves to an empty
-     *       secret. It is a present key the token engine cannot use, so it is refused here instead of
-     *       surfacing as the engine's own exception while the runtime is assembled.</li>
-     * </ul>
-     * A document with only the secret, only the key file, or neither is admitted. The rule holds for
-     * a gateway whose BFF runtime is inert as well, because it is a property of the document. Both
-     * detail texts are fixed, so neither the secret nor the configured path reaches the boot log.
-     * Every violation collects into the shared list; the rule never fails fast (ADR-0009).
-     */
-    private static void validateClientAuthentication(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig oidc = gateway.oidc();
-        if (oidc == null || !oidc.usesClientSecret()) {
-            return;
-        }
-        String clientSecret = oidc.clientSecret();
-        if (clientSecret != null && clientSecret.isBlank()) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER, CLIENT_SECRET_BLANK_DETAIL));
-        }
-        OidcConfig.ClientAuthenticationSettings clientAuthentication = oidc.clientAuthentication();
-        if (clientAuthentication != null && clientAuthentication.keyFile() != null) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER,
-                    CLIENT_SECRET_WITH_KEY_FILE_DETAIL));
         }
     }
 
@@ -1237,33 +624,6 @@ public final class ConfigValidator {
     }
 
     /**
-     * The session-cookie name the runtime will resolve, for deriving the emitted header size.
-     * <p>
-     * A blank declared name is folded onto the default rather than passed through: the schema
-     * declares {@code cookie_name} an unrestricted string, so {@code cookie_name: ""} is
-     * schema-valid, and handing it to the codec's overhead derivation would raise from inside a
-     * validator whose contract is to <em>collect</em> violations rather than throw. The fold stays
-     * necessary even though a blank name is now refused at boot by {@link #validateSessionCookieName}:
-     * rules do not fail fast, so this derivation still runs over the refused value in the same pass.
-     */
-    private static String resolvedCookieName(OidcConfig.Session session) {
-        String declared = session.cookieName();
-        return declared == null || declared.isBlank()
-                ? SessionCookieCodec.DEFAULT_COOKIE_NAME
-                : declared;
-    }
-
-    /**
-     * The absolute session lifetime the runtime will resolve, for deriving the {@code Max-Age} width
-     * of the emitted header. Shares {@link OidcConfig.Session#DEFAULT_TTL_SECONDS} with the runtime
-     * producer so validation can never reason about a TTL the gateway does not run.
-     */
-    private static Duration resolvedSessionTtl(OidcConfig.Session session) {
-        return Duration.ofSeconds(Objects.requireNonNullElse(
-                session.ttlSeconds(), OidcConfig.Session.DEFAULT_TTL_SECONDS));
-    }
-
-    /**
      * Rule: the session/user-info reserved endpoint (fold, D1). When an
      * {@code oidc.user_info} block is present, its {@code path} is held to
      * {@link #validateReservedPath} — an absolute gateway path in canonical form, since the path is
@@ -1330,103 +690,6 @@ public final class ConfigValidator {
         OidcConfig oidc = gateway.oidc();
         OidcConfig.StepUp stepUp = oidc == null ? null : oidc.stepUp();
         validateReservedPath(STEP_UP_PATH, stepUp == null ? null : stepUp.path(), errors);
-    }
-
-    /**
-     * Rule: the back-channel origin and its cleartext opt-in.
-     * <p>
-     * {@code oidc.back_channel_origin} names where the gateway dials its server-to-server calls to the
-     * identity provider; {@code oidc.issuer} stays the identity. The token engine re-targets only the
-     * endpoints the issuer advertises on its own origin, and the value comes from configuration alone,
-     * so no private-address rule applies — naming an internal address is the purpose of the key. What
-     * is held here is the shape and the transport:
-     * <ul>
-     *   <li><strong>Shape.</strong> A declared origin must be an absolute {@code http} or {@code https}
-     *       URI with a host, carrying no user-info, no query, no fragment and no path other than a
-     *       single trailing {@code /}. A blank value is refused as such. These are the refusals the
-     *       engine itself raises while the runtime is assembled, moved to boot validation so they arrive
-     *       on the key's own pointer instead of as the engine's exception.</li>
-     *   <li><strong>Cleartext.</strong> An {@code http} origin is refused unless
-     *       {@code oidc.back_channel_allow_insecure_http} is {@code true}: the back channel carries the
-     *       client credential and every token, and the opt-in widens the whole OIDC client to cleartext,
-     *       not just this origin.</li>
-     *   <li><strong>An inert opt-in.</strong> {@code oidc.back_channel_allow_insecure_http: true} with no
-     *       origin, or with an {@code https} origin, has nothing to opt in for and is refused rather
-     *       than left in place, where it would still widen the client.</li>
-     * </ul>
-     * An absent origin with no opt-in passes: the issuer's own origin is then dialled for everything. A
-     * value that fails the shape check is not judged against the opt-in as well, so one defect is
-     * reported once. Every refusal is reported on its key's own JSON pointer in fixed text that never
-     * echoes the configured value, and collects into the shared list; the rule never fails fast
-     * (ADR-0009).
-     */
-    private static void validateBackChannelOrigin(GatewayConfig gateway, List<ConfigError> errors) {
-        OidcConfig oidc = gateway.oidc();
-        if (oidc == null) {
-            return;
-        }
-        boolean optIn = Boolean.TRUE.equals(oidc.backChannelAllowInsecureHttp());
-        String origin = oidc.backChannelOrigin();
-        if (origin == null) {
-            if (optIn) {
-                errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER,
-                        BACK_CHANNEL_OPT_IN_WITHOUT_ORIGIN_DETAIL));
-            }
-            return;
-        }
-        Optional<String> shapeRefusal = backChannelOriginShapeRefusal(origin);
-        if (shapeRefusal.isPresent()) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ORIGIN_POINTER,
-                    "oidc.back_channel_origin " + shapeRefusal.get() + BACK_CHANNEL_ORIGIN_REMEDY));
-            return;
-        }
-        // The shape check admitted the value, so it parses and its scheme is http or https.
-        boolean cleartext = HTTP_SCHEME.equalsIgnoreCase(URI.create(origin).getScheme());
-        if (cleartext && !optIn) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ORIGIN_POINTER,
-                    BACK_CHANNEL_HTTP_WITHOUT_OPT_IN_DETAIL));
-        } else if (!cleartext && optIn) {
-            errors.add(new ConfigError(GATEWAY_FILE, OIDC_BACK_CHANNEL_ALLOW_INSECURE_HTTP_POINTER,
-                    BACK_CHANNEL_OPT_IN_WITH_HTTPS_DETAIL));
-        }
-    }
-
-    /**
-     * The reason a declared {@code oidc.back_channel_origin} is not a bare {@code http}/{@code https}
-     * origin, or empty when it is one. Every reason is fixed text; none echoes the configured value.
-     *
-     * @param origin the declared origin, never {@code null}
-     * @return the refusal reason, phrased to follow the key name, or empty when the shape holds
-     */
-    private static Optional<String> backChannelOriginShapeRefusal(String origin) {
-        if (origin.isBlank()) {
-            return Optional.of("is declared but blank");
-        }
-        URI uri;
-        try {
-            uri = new URI(origin);
-        } catch (URISyntaxException _) {
-            return Optional.of("is not a well-formed URI");
-        }
-        String scheme = uri.getScheme();
-        if (!uri.isAbsolute() || uri.getHost() == null
-                || !(HTTP_SCHEME.equalsIgnoreCase(scheme) || HTTPS_SCHEME.equalsIgnoreCase(scheme))) {
-            return Optional.of("must be an absolute http or https URI naming a host");
-        }
-        if (uri.getRawUserInfo() != null) {
-            return Optional.of("must not carry user-info; credentials never belong in an origin");
-        }
-        if (uri.getRawQuery() != null) {
-            return Optional.of("must not carry a query ('?')");
-        }
-        if (uri.getRawFragment() != null) {
-            return Optional.of("must not carry a fragment ('#')");
-        }
-        String path = uri.getRawPath();
-        if (path != null && !path.isEmpty() && !"/".equals(path)) {
-            return Optional.of("must not carry a path; an origin is scheme, host and port only");
-        }
-        return Optional.empty();
     }
 
     /**
