@@ -32,7 +32,6 @@ import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
-import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -60,9 +59,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link ConfigValidator}: one negative case per enforced cross-cutting
- * rule (the anchor rules, namespace coverage among them, are tested in {@code AnchorRulesTest}, and the
+ * rule (the anchor rules, namespace coverage among them, are tested in {@code AnchorRulesTest}, the
  * auth and OIDC rules in {@code AuthRulesTest}, {@code OidcClientRulesTest} and
- * {@code OidcSessionRulesTest}), the
+ * {@code OidcSessionRulesTest}, and the topology rules in {@code TopologyRulesTest}), the
  * structural {@code TRACE}/{@code CONNECT} rejection, and the single-pass aggregation contract that reports
  * every violation together rather than stopping at the first.
  */
@@ -196,46 +195,8 @@ class ConfigValidatorTest {
                         () -> "the refusal carries no raw line break: " + message));
     }
 
-    private static AnchorConfig matrixAnchor(String name, String prefix, AnchorType type, AccessLevel access,
-            @Nullable Require require) {
-        return AnchorConfig.builder()
-                .name(name)
-                .pathPrefix(prefix)
-                .type(type)
-                .access(access)
-                .auth(require == null ? null : auth(require))
-                .build();
-    }
-
     private static GatewayConfig gatewayWithAnchors(Map<String, AnchorConfig> anchors) {
         return validGateway().anchors(anchors).build();
-    }
-
-    private static EndpointConfig anchoredEndpoint(String id, String alias, String anchorName,
-            @Nullable AuthConfig auth, RouteConfig... routes) {
-        return EndpointConfig.builder()
-                .id(id)
-                .enabled(true)
-                .baseUrl(alias)
-                .anchor(anchorName)
-                .auth(auth)
-                .routes(List.of(routes))
-                .build();
-    }
-
-    private static RouteConfig assetRoute(String id, String prefix, String anchorName, AssetConfig asset,
-            HttpMethod... methods) {
-        return RouteConfig.builder()
-                .id(id)
-                .anchor(anchorName)
-                .match(match(prefix, methods))
-                .asset(asset)
-                .build();
-    }
-
-    private static AssetConfig directoryAsset(String root) {
-        return AssetConfig.builder().source(AssetConfig.Source.DIRECTORY)
-                .directory(root).build();
     }
 
     @Nested
@@ -413,63 +374,6 @@ class ConfigValidatorTest {
     }
 
     @Nested
-    @DisplayName("Conditional base_url — mandatory exactly with a proxy route (AS-4)")
-    class ConditionalBaseUrl {
-
-        private static final String BASE_URL_POINTER = "/endpoint/base_url";
-
-        @Test
-        @DisplayName("Should refuse an endpoint carrying a proxy route but no base_url")
-        void shouldRefuseProxyRouteEndpointWithoutBaseUrl() {
-            EndpointConfig endpoint = endpoint("orders", null, List.of(), route("orders-read", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint), topologyWith());
-
-            assertHasError(errors, BASE_URL_POINTER, "endpoint 'orders' declares proxy route(s) but no base_url");
-        }
-
-        @Test
-        @DisplayName("Should accept an asset-only endpoint that declares no base_url")
-        void shouldAcceptAssetOnlyEndpointWithoutBaseUrl() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", null, "assets",
-                    auth(Require.NONE),
-                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith());
-
-            assertTrue(errors.isEmpty(), () -> "an endpoint without a proxy route needs no base_url, got: " + errors);
-        }
-
-        @Test
-        @DisplayName("Should still refuse a declared base_url alias that does not resolve, proxy route or not")
-        void shouldRefuseUnresolvedDeclaredAliasWithoutProxyRoutes() {
-            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
-                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
-            EndpointConfig endpoint = anchoredEndpoint("web", "MISSING", "assets",
-                    auth(Require.NONE),
-                    assetRoute("bundle", "/assets", "assets", directoryAsset("/srv/assets"), HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith());
-
-            assertHasError(errors, BASE_URL_POINTER, "unresolved topology alias: MISSING");
-        }
-
-        @Test
-        @DisplayName("Should report no base_url violation for a proxy route whose declared alias resolves")
-        void shouldAcceptProxyRouteWithResolvableBaseUrl() {
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("orders-read", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-
-            assertTrue(errors.stream().noneMatch(error -> BASE_URL_POINTER.equals(error.pointer())),
-                    () -> "a resolvable base_url on a proxy-route endpoint is valid, got: " + errors);
-        }
-    }
-
-    @Nested
     @DisplayName("A well-formed configuration")
     class ValidConfiguration {
 
@@ -482,57 +386,6 @@ class ConfigValidatorTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
-        }
-    }
-
-    @Nested
-    @DisplayName("Each enforced rule")
-    class RuleViolations {
-
-        @Test
-        @DisplayName("Should reject an unsupported config version")
-        void shouldRejectUnsupportedVersion() {
-            GatewayConfig gateway = GatewayConfig.builder().version(2).build();
-            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
-
-            assertHasError(errors, "/version", "unsupported config version");
-        }
-
-        @Test
-        @DisplayName("Should reject a duplicate endpoint id across endpoint files")
-        void shouldRejectDuplicateEndpointId() {
-            EndpointConfig first = endpoint("orders", "ORDERS", List.of(), route("r1", HttpMethod.GET));
-            EndpointConfig second = endpoint("orders", "USERS", List.of(), route("r2", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(first, second),
-                    topologyWith("ORDERS", "USERS"));
-
-            assertHasError(errors, "/endpoint/id", "duplicate endpoint id: orders");
-        }
-
-        @Test
-        @DisplayName("Should reject a duplicate route id across endpoint files")
-        void shouldRejectDuplicateRouteId() {
-            EndpointConfig first = endpoint("ep-a", "ORDERS", List.of(), route("shared", HttpMethod.GET));
-            EndpointConfig second = endpoint("ep-b", "USERS", List.of(), route("shared", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(first, second),
-                    topologyWith("ORDERS", "USERS"));
-
-            assertHasError(errors, "/endpoint/routes", "duplicate route id: shared");
-        }
-
-        @Test
-        @DisplayName("Should reject an enabled endpoint whose base_url alias does not resolve")
-        void shouldRejectUnresolvedAliasForEnabledEndpoint() {
-            EndpointConfig endpoint = endpoint("orders", "MISSING", List.of(), route("r", HttpMethod.GET));
-
-            List<ConfigError> errors = validator.validate(validGateway().build(), List.of(endpoint),
-                    topologyWith("ORDERS"));
-
-            assertHasError(errors, "/endpoint/base_url", "unresolved topology alias: MISSING");
         }
 
         @Test
@@ -554,6 +407,11 @@ class ConfigValidatorTest {
             assertTrue(errors.isEmpty(),
                     () -> "expected no violations for a millisecond-precision timeout, got: " + errors);
         }
+    }
+
+    @Nested
+    @DisplayName("Each enforced rule")
+    class RuleViolations {
 
         @Test
         @DisplayName("Should reject a wildcard CORS origin combined with allow_credentials")

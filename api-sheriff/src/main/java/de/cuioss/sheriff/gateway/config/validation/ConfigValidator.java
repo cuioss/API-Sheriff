@@ -15,10 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.config.validation;
 
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.ENDPOINT_ROUTES_POINTER;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.WILDCARD_ORIGIN;
-import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpointFile;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 
 import java.util.ArrayList;
@@ -37,7 +35,6 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
-import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.validation.rule.AnchorRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.AssetDefaultsRules;
@@ -53,6 +50,7 @@ import de.cuioss.sheriff.gateway.config.validation.rule.RouteMatchingRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport;
 import de.cuioss.sheriff.gateway.config.validation.rule.TerminalActionRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.TopologyRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
 import org.jspecify.annotations.Nullable;
 
@@ -194,7 +192,6 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ConfigValidator {
 
-    private static final int SUPPORTED_VERSION = 1;
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_USER_INFO_PATH_POINTER = "/oidc/user_info/path";
@@ -243,13 +240,14 @@ public final class ConfigValidator {
      * application-portal rules run after every other rule.
      */
     private static final List<ValidationRule> DEFAULT_RULES = List.of(
-            (gateway, endpoints, topology, errors) -> validateVersion(gateway, errors),
-            (gateway, endpoints, topology, errors) -> validateEndpointIdUniqueness(endpoints, errors),
-            (gateway, endpoints, topology, errors) -> validateRouteIdUniqueness(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> TopologyRules.validateVersion(gateway, errors),
+            (gateway, endpoints, topology, errors) -> TopologyRules.validateEndpointIdUniqueness(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> TopologyRules.validateRouteIdUniqueness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateRouteDisjointness(endpoints, errors),
             (gateway, endpoints, topology, errors) -> RouteMatchingRules.validateHeaderMatcherConsistency(endpoints,
                     errors),
-            (gateway, endpoints, topology, errors) -> validateBaseUrlResolvable(endpoints, topology, errors),
+            (gateway, endpoints, topology, errors) -> TopologyRules.validateBaseUrlResolvable(endpoints, topology,
+                    errors),
             (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorPrefixDisjointness(gateway, errors),
             (gateway, endpoints, topology, errors) -> AnchorRules.validateAnchorReferencesExist(gateway, endpoints,
                     errors),
@@ -346,58 +344,6 @@ public final class ConfigValidator {
             rule.validate(gateway, enabledEndpoints, topology, errors);
         }
         return List.copyOf(errors);
-    }
-
-    private static void validateVersion(GatewayConfig gateway, List<ConfigError> errors) {
-        if (gateway.version() != SUPPORTED_VERSION) {
-            errors.add(new ConfigError(GATEWAY_FILE, "/version",
-                    "unsupported config version %d (supported: %d)".formatted(gateway.version(), SUPPORTED_VERSION)));
-        }
-    }
-
-    private static void validateEndpointIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        Set<String> seen = new HashSet<>();
-        for (EndpointConfig endpoint : endpoints) {
-            if (!seen.add(endpoint.id())) {
-                errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/id",
-                        "duplicate endpoint id: " + endpoint.id()));
-            }
-        }
-    }
-
-    private static void validateRouteIdUniqueness(List<EndpointConfig> endpoints, List<ConfigError> errors) {
-        Set<String> seen = new HashSet<>();
-        for (EndpointConfig endpoint : endpoints) {
-            for (RouteConfig route : endpoint.routes()) {
-                if (!seen.add(route.id())) {
-                    errors.add(new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
-                            "duplicate route id: " + route.id()));
-                }
-            }
-        }
-    }
-
-    /**
-     * Rule: {@code base_url} is mandatory exactly when the endpoint carries a proxy route
-     * ({@link RouteConfig#isProxyRoute()} — the same predicate the route-table builder resolves the
-     * alias on), and a declared alias must resolve in the topology whether or not a proxy route uses
-     * it. An endpoint serving only {@code asset} and/or {@code redirect} routes may omit
-     * {@code base_url}.
-     */
-    private static void validateBaseUrlResolvable(List<EndpointConfig> endpoints, ResolvedTopology topology,
-            List<ConfigError> errors) {
-        for (EndpointConfig endpoint : endpoints) {
-            String baseUrl = endpoint.baseUrl();
-            if (baseUrl == null) {
-                if (endpoint.routes().stream().anyMatch(RouteConfig::isProxyRoute)) {
-                    errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
-                            "endpoint '%s' declares proxy route(s) but no base_url".formatted(endpoint.id())));
-                }
-            } else if (topology.lookup(baseUrl).isEmpty()) {
-                errors.add(new ConfigError(endpointFile(endpoint), "/endpoint/base_url",
-                        "unresolved topology alias: " + baseUrl));
-            }
-        }
     }
 
     /**
