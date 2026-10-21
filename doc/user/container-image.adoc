@@ -181,6 +181,13 @@ Running it takes more than a bare `docker run`, because the artifact has real pr
   Quarkus listener has to move off it -- set `QUARKUS_HTTP_SSL_PORT=8444` or the two collide on
   8443 at start-up.
 
+Both recipes below start `"${DIGEST}"`, the index digest resolved by the digest recipe under _Which
+tag to use_. Verify it as described under
+<<_verify_the_signature_before_deploying,Verify the signature before deploying>> before starting the
+container. Naming the tag instead makes `docker` resolve the mutable tag again at start, so the image
+that starts need not be the one that was verified. A deployment pinned to one platform passes
+`"${PLATFORM_REF}"` the same way.
+
 [source,bash]
 ----
 docker run -d --name api-sheriff \
@@ -194,7 +201,7 @@ docker run -d --name api-sheriff \
   -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
-  ghcr.io/cuioss/api-sheriff:<version>
+  "${DIGEST}"
 ----
 
 The recipe above is the *terminating* deployment -- Quarkus itself terminates TLS on 8443. If your
@@ -215,7 +222,7 @@ docker run -d --name api-sheriff \
   -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
-  ghcr.io/cuioss/api-sheriff:<version>
+  "${DIGEST}"
 ----
 
 `QUARKUS_HTTP_SSL_PORT=8444` is deliberately *absent* from the terminating recipe rather than set in
