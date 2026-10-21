@@ -38,7 +38,10 @@ import io.vertx.ext.web.RoutingContext;
  * ({@link ResponseEnds#endResponse}).
  * <p>
  * Thread-safe: the retired-connection set is synchronized, and a mark is recorded on the virtual
- * thread while it is read on the connection's event loop.
+ * thread while it is read on the connection's event loop. A retirement recorded from another event
+ * loop — a request body that outlived its deadline after the hand-over — goes through
+ * {@link #recordRetirement} only, never through the context-data mark, which only the virtual thread
+ * and the client connection's loop touch.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -136,6 +139,24 @@ public final class ConnectionRetirement {
     }
 
     /**
+     * Records an HTTP/1.x connection as retired in the synchronized retired set only, leaving the
+     * request's context data untouched; a no-op for an HTTP/2 request. For a caller that runs on an
+     * event loop other than the client connection's: the context data map is a plain map owned by the
+     * client connection's loop, so a mark written to it from a foreign loop is a data race. The
+     * synchronized set carries the retirement across loops instead, and the answer that retires the
+     * connection is told by the caller, not by a mark on the context (see
+     * {@link #retireConnectionAfterResponse}). Used for a request body that outlived the request-body
+     * deadline after the hand-over (see {@code TerminalDispatch.lateBodyRefusal}).
+     *
+     * @param ctx the request whose connection is retired
+     */
+    public void recordRetirement(RoutingContext ctx) {
+        if (ResponseEnds.isHttp1(ctx.request().version())) {
+            retiredConnections.add(ctx.request().connection());
+        }
+    }
+
+    /**
      * Retires the connection the response under construction is written on: the response advertises
      * {@code Connection: close} (HTTP/1.x only — the header is forbidden in HTTP/2), and the
      * connection is closed once the response has been written. Must be called on the event loop,
@@ -172,7 +193,10 @@ public final class ConnectionRetirement {
     /**
      * Applies the connection mark {@link #rejectFramingAndRetire} left on the request: retires the
      * HTTP/1.x connection; a no-op for every other request. Called by the gateway-originated error
-     * writers on the event loop, immediately before they end the response.
+     * writers on the event loop, immediately before they end the response. A request body that outlived
+     * the request-body deadline after the hand-over carries no such mark: it is recorded by
+     * {@link #recordRetirement} and the failed relay's end retires its connection on the late refusal's
+     * event instead (see {@code TerminalDispatch.retireFailedRelayConnection}).
      *
      * @param ctx the request being answered
      */

@@ -625,10 +625,14 @@ public final class TerminalDispatch {
      * written yet — the upstream sent its head but no body byte had been relayed, or the relay had not
      * started — is ended with the upstream's status and no body, never answered {@code 502}: the event
      * stashed under {@link #LATE_BODY_REFUSAL_KEY}, recorded here before the reset, tells
-     * {@code failRelay} so. The body behind it was not read, so an HTTP/1.x connection is marked for
-     * retirement here, before that reset, and the end closes it; a response that has already ended has
-     * its HTTP/1.x connection closed instead, decided on the client connection's own context, the one the
-     * response is ended on (see {@link #closeIfEndedOn}).
+     * {@code failRelay} so. The body behind it was not read, so an HTTP/1.x connection is recorded as
+     * retired here, before that reset, in the synchronized retired set only
+     * ({@link ConnectionRetirement#recordRetirement}) — this callback runs on the upstream request's event
+     * loop, and the request's context data is owned by the client connection's. The end that follows
+     * recognises the late timeout from the event stashed under {@link #LATE_BODY_REFUSAL_KEY} and closes
+     * the connection (see {@link #failRelay}); a response that has already ended has its HTTP/1.x
+     * connection closed instead, decided on the client connection's own context, the one the response is
+     * ended on (see {@link #closeIfEndedOn}).
      */
     private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
         AtomicReference<@Nullable EventType> lateRefusal = new AtomicReference<>();
@@ -650,16 +654,20 @@ public final class TerminalDispatch {
     }
 
     /**
-     * Marks the HTTP/1.x connection of a request whose body outlived the request-body deadline after
-     * the hand-over for retirement, so the relay's end closes it (see {@link #failRelay}); when the
-     * response has already ended there is no end to come, and the connection is closed instead (see
-     * {@link #closeIfEndedOn}). A no-op on HTTP/2, where the one end rule ends just the stream.
+     * Records the HTTP/1.x connection of a request whose body outlived the request-body deadline after
+     * the hand-over as retired, so nothing further is processed on it and the relay's end closes it (see
+     * {@link #failRelay}); when the response has already ended there is no end to come, and the connection
+     * is closed instead (see {@link #closeIfEndedOn}). A no-op on HTTP/2, where the one end rule ends just
+     * the stream.
      * <p>
-     * The mark is recorded at once, on the thread the callback runs on, so it is in place before the
-     * upstream request is reset and the relay fails.
+     * The retirement is recorded at once, on the thread the callback runs on, so it is in place before the
+     * upstream request is reset and the relay fails. This runs on the upstream request's event loop, so it
+     * writes only to the synchronized retired set and never to the request's context data, a plain map the
+     * client connection's loop owns; the relay's end learns of the late timeout from the event stashed
+     * under {@link #LATE_BODY_REFUSAL_KEY}.
      */
     private void retireAfterLateBodyTimeout(RoutingContext ctx, Context clientContext) {
-        connectionRetirement.markFramingRejection(ctx);
+        connectionRetirement.recordRetirement(ctx);
         if (ResponseEnds.isHttp1(ctx.request().version())) {
             closeIfEndedOn(clientContext, ctx.request());
         }
@@ -724,8 +732,9 @@ public final class TerminalDispatch {
      * ({@link ResponseEnds#endResponse}) like every other response end: an HTTP/2 stream whose request
      * body is still open is reset with {@code NO_ERROR} once it has been written. An HTTP/1.x connection
      * marked for retirement — a body that outlived the request-body deadline after the hand-over
-     * ({@link #lateBodyRefusal}) — carries {@code Connection: close} when its head is still unwritten and
-     * is closed once the end has been written. A response a bodyless request's late body refusal reset
+     * ({@link #lateBodyRefusal}), told by the late refusal's event (see {@link #retireFailedRelayConnection})
+     * — carries {@code Connection: close} when its head is still unwritten and is closed once the end has
+     * been written. A response a bodyless request's late body refusal reset
      * ({@link #lateBodyRefusal}) is never ended here.
      *
      * @param ctx            the request whose relay failed
@@ -743,9 +752,30 @@ public final class TerminalDispatch {
                 return;
             }
             prepareFailedRelayHead(response, lateRefusal == EventType.REQUEST_BODY_TIMEOUT, upstreamStatus);
-            ConnectionRetirement.retireMarkedConnection(ctx);
+            retireFailedRelayConnection(ctx, lateRefusal);
             ResponseEnds.endResponse(ctx, response::end);
         });
+    }
+
+    /**
+     * Retires the connection a failed relay's response is written on, when it has to be: the HTTP/1.x
+     * connection of a request whose body outlived the request-body deadline after the hand-over
+     * ({@link EventType#REQUEST_BODY_TIMEOUT}), told by the event the late callback stashed under
+     * {@link #LATE_BODY_REFUSAL_KEY} rather than by a mark on the request's context data, which that
+     * callback — running on the upstream request's event loop — must not write; every other failure
+     * retires the connection only where the request carries the mark an earlier rejection left (see
+     * {@link ConnectionRetirement#retireMarkedConnection}). Runs on the event loop, before the response is
+     * ended.
+     *
+     * @param ctx         the request whose relay failed
+     * @param lateRefusal the event of the request's late body refusal, or {@code null} when none was made
+     */
+    static void retireFailedRelayConnection(RoutingContext ctx, @Nullable EventType lateRefusal) {
+        if (lateRefusal == EventType.REQUEST_BODY_TIMEOUT && ResponseEnds.isHttp1(ctx.request().version())) {
+            ConnectionRetirement.retireConnectionAfterResponse(ctx);
+        } else {
+            ConnectionRetirement.retireMarkedConnection(ctx);
+        }
     }
 
     /**
