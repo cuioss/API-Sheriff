@@ -1610,7 +1610,7 @@ public final class DispatchStage {
          * ended or was aborted, or its attempt is no longer waited for. A stopped clock reports nothing —
          * a deadline that had already passed unread is dropped with it. Idempotent.
          */
-        void stopClocks() {
+        private void stopClocks() {
             stopIdleClock();
             if (deadlineNanos.isEmpty()) {
                 return;

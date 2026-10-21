@@ -599,14 +599,12 @@ public final class TerminalDispatch {
      * {@link #LATE_BODY_REFUSED_KEY} keeps {@link #failRelay} from ending it afterwards.
      * <p>
      * <strong>A body still arriving at the request-body deadline, or read again after it passed</strong>
-     * ({@link EventType#REQUEST_BODY_TIMEOUT}) — the deadline stays in force once it has passed, so an
-     * upstream that answered at once and resumes reading the body only after the deadline ends it here
-     * too: the relay is ended through the one end rule. The reset of the upstream request that follows
-     * this callback fails the relay, and {@link #failRelay} ends the client response through
-     * {@link ResponseEnds#endResponse} — on HTTP/2 the stream is then reset with {@code NO_ERROR}. The
-     * body behind it was not read, so an HTTP/1.x connection is marked for retirement here, before that
-     * reset, and the end closes it; a response that has already ended has its HTTP/1.x connection closed
-     * at once.
+     * ({@link EventType#REQUEST_BODY_TIMEOUT}): the relay is ended through the one end rule. The reset of
+     * the upstream request that follows this callback fails the relay, and {@link #failRelay} ends the
+     * client response through {@link ResponseEnds#endResponse} — on HTTP/2 the stream is then reset with
+     * {@code NO_ERROR}. The body behind it was not read, so an HTTP/1.x connection is marked for
+     * retirement here, before that reset, and the end closes it; a response that has already ended has
+     * its HTTP/1.x connection closed at once.
      */
     private Consumer<GatewayException> lateBodyRefusal(RoutingContext ctx) {
         AtomicBoolean refused = new AtomicBoolean();
