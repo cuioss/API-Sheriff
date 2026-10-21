@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.config.validation;
+package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,6 +29,7 @@ import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
+import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.jspecify.annotations.Nullable;
@@ -38,9 +39,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Tests for the {@code oidc.back_channel_origin} / {@code oidc.back_channel_allow_insecure_http} boot
- * refusals the {@link ConfigValidator} runs: a declared origin is held to a bare {@code http}/{@code https}
- * origin, an {@code http} origin is admitted only under the explicit cleartext opt-in, and the opt-in is
- * refused when there is nothing to opt in for.
+ * refusals the {@link ConfigValidator} runs through {@link OidcClientRules}: a declared origin is held
+ * to a bare {@code http}/{@code https} origin, an {@code http} origin is admitted only under the explicit
+ * cleartext opt-in, and the opt-in is refused when there is nothing to opt in for.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed: each refusal case asserts exactly one refusal on the
@@ -50,7 +51,7 @@ import org.junit.jupiter.api.Test;
  */
 @EnableGeneratorController
 @DisplayName("ConfigValidator — oidc.back_channel_origin and its cleartext opt-in")
-class ConfigValidatorBackChannelOriginTest {
+class OidcClientRulesBackChannelOriginTest {
 
     private static final String GATEWAY_FILE = "gateway.yaml";
     private static final String ORIGIN_POINTER = "/oidc/back_channel_origin";
