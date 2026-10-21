@@ -52,8 +52,8 @@ docker pull ghcr.io/cuioss/api-sheriff:0.2.4
 The bring-up script pulls it for you if it is missing, so this step is optional. From the first
 release the two-platform lane cuts, Route A works on `linux/amd64` and `linux/arm64` hosts alike,
 Apple Silicon and AWS Graviton included: the published tag names an index over one image per
-platform, and the pull selects the image for your host. The `0.2.4` pin above and every earlier tag
-is `linux/amd64` only, so on an arm64 host use Route B until the pin moves to a later release. For
+platform, and the pull selects the image for your host. Tags up to and including `0.2.4` predate that
+lane and are `linux/amd64` only, so on an arm64 host use Route B while the pin names such a tag. For
 what the published image contains, how it is tagged, and how to verify its signatures and SBOMs, see
 link:container-image.adoc[Container Image -- Pulling, Running and Verifying]; this guide does not
 restate any of it.

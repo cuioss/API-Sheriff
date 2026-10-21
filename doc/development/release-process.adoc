@@ -328,8 +328,9 @@ requires write access to the repository, so allowing other refs widens nothing.
 * *Both legs build the dispatching commit*, labelled with the version `dryrun-<run_id>` and with that
   commit as its revision. There is no release tag to check out and no released version to claim, so
   the version-identity assertion is replaced by a check that the tested image carries the
-  `dryrun-<run_id>` version label. Everything after it runs as on a release: the integration-test
-  suite, the SBOM, the Trivy gate, the push, the plain-manifest check and the smoke test by digest.
+  `dryrun-<run_id>` version label. That check runs after the integration-test suite, because it
+  inspects the image the suite built; the rest runs as on a release: the integration-test suite, the
+  SBOM, the Trivy gate, the push, the plain-manifest check and the smoke test by digest.
 * *The join assembles the two-platform index and runs every index assertion*, then signs the index
   and both platform digests and verifies all three. The verification uses an identity derived from
   the dispatching ref -- the published identity with that ref, regex-escaped, in place of

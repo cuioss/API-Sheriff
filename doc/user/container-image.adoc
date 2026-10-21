@@ -18,8 +18,9 @@ guarantee is recorded in link:../development/release-process.adoc[the release pr
 From the first release the two-platform lane cuts, every release publishes exactly two tags, and
 both name the same *image index*: one digest that lists two platform images, `linux/amd64` and
 `linux/arm64`. Tags up to and including `0.2.4` predate that lane: each is a single `linux/amd64`
-image, so on an arm64 host the container exits at start with the CPU-features error and the
-sample's Route B is the way to run the gateway there. Each platform image was built natively
+image, so an arm64 host cannot run it -- under amd64 emulation it exits at start with the
+CPU-features error, and without emulation it fails with `exec format error` -- and the sample's
+Route B is the way to run the gateway there. Each platform image was built natively
 on its own architecture, run through the full integration-test suite, scanned and smoke-tested
 before the index was assembled, and the index points each platform at exactly the image that
 platform's run tested. A pull through either tag resolves to the image for the pulling host's

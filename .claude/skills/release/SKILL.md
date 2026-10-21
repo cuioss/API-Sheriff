@@ -1355,6 +1355,11 @@ anything:**
   the defect instead of fixing it. **Fix what the finding points at, never the finding.**
 - `doc/user/container-image.adoc` — carries `0.1.1` as *signing evidence* (*"the 0.1.1 case is the
   one that settles it"*), in addition to its `<version>` placeholders. Both reasons to leave it alone.
+- The *"tags up to and including 0.2.4 are `linux/amd64` only"* statements in `README.adoc`,
+  `deployment/compose-sample/.env`, `doc/user/compose-sample.adoc` and `doc/user/container-image.adoc`.
+  They record what a past version shipped (the last single-platform tag), not a claim about the
+  release being cut, so a search for the previous version finds them inside files 10b lists as
+  release-coupled. Leave the `0.2.4` there; update only the pin and the other release-coupled claims.
 - Anything that is not a version at all. ⚠ `git grep "0.1.1"` also matches the CIDR `10.1.0.0/16` in
   `ConfigValidatorTest` and `"regexp-tree": "~0.1.1"` in `demo-client/package-lock.json`.
   **Read each hit; do not stream-edit the grep output.**
