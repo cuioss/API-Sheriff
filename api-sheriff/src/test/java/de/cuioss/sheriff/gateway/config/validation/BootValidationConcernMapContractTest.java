@@ -99,10 +99,8 @@ class BootValidationConcernMapContractTest {
     /** Opens the rule list; the parenthesis it ends with is the one the list's own closing one matches. */
     private static final String RULE_LIST_ANCHOR = "DEFAULT_RULES = List.of(";
 
-    /** The section heading the concern-map table sits under. */
     private static final String CONCERN_MAP_HEADING = "== The concern map";
 
-    /** The AsciiDoc delimiter opening and closing a table. */
     private static final String TABLE_DELIMITER = "|===";
 
     /** The AsciiDoc cell separator; the concern map's cells contain no other pipe. */
@@ -111,10 +109,8 @@ class BootValidationConcernMapContractTest {
     /** The first header cell, proving the table read is the concern map and not another one. */
     private static final String CONCERN_CLASS_HEADER = "Concern class";
 
-    /** The column holding the concern class. */
     private static final int CONCERN_CLASS_COLUMN = 0;
 
-    /** The column holding the backticked rule names. */
     private static final int RULES_COLUMN = 1;
 
     /**
