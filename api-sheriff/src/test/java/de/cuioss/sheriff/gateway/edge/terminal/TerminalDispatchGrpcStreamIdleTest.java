@@ -312,10 +312,6 @@ class TerminalDispatchGrpcStreamIdleTest {
     /**
      * One call to the front server: its request, every response frame it received and the trailers its
      * response ended with.
-     *
-     * @param request  the call's request, its stream still open
-     * @param frames   the response frames received, in order
-     * @param trailers completed with the response trailers once the response has ended
      */
     private record ClientCall(HttpClientRequest request, List<String> frames, CompletableFuture<MultiMap> trailers) {
     }

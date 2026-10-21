@@ -374,12 +374,6 @@ public final class TerminalDispatch {
      * {@link ResponseStage#relayWithTrailers}, and its expiry is logged as {@code ApiSheriff-25}.
      * Package-private so a test can run this wiring with a bound built with a shorter timeout than the
      * fixed five minutes.
-     *
-     * @param ctx       the request
-     * @param request   the pipeline request, through stage 5
-     * @param route     the selected {@code protocol: grpc} route
-     * @param idleBound the call's stream-idle bound
-     * @param dispatch  dispatches the call upstream with the request body it is given
      */
     void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
             ResponseStage.GrpcStreamIdleBound idleBound, Function<ReadStream<Buffer>, HttpClientResponse> dispatch) {
@@ -764,10 +758,6 @@ public final class TerminalDispatch {
      * the client would wait for bytes that never come. The status is the one the upstream sent when the
      * relay failed because a late request-body timeout reset the upstream request — the upstream had
      * already answered, and its status stands — and {@code 502} for every other failure.
-     *
-     * @param response          the response of the failed relay
-     * @param bodyTimedOutLate  whether a late request-body timeout ended the relay
-     * @param upstreamStatus    the status of the upstream response the relay was streaming
      */
     static void prepareFailedRelayHead(HttpServerResponse response, boolean bodyTimedOutLate, int upstreamStatus) {
         if (response.headWritten()) {
