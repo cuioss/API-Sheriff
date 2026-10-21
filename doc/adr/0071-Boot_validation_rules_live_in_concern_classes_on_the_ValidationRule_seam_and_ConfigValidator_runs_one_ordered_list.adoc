@@ -1,4 +1,4 @@
-= ADR-0070: Boot validation rules live in concern classes on the ValidationRule seam and ConfigValidator runs one ordered list
+= ADR-0071: Boot validation rules live in concern classes on the ValidationRule seam and ConfigValidator runs one ordered list
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents
