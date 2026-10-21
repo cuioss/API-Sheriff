@@ -895,8 +895,10 @@ deployment that never writes it keeps the behaviour shown here.
   however steadily the body arrives: answered `408` when the upstream has not answered yet, and
   otherwise its relayed response is ended -- on HTTP/2 the stream is then reset, on HTTP/1.x the
   connection is closed. The time spent waiting for a pooled upstream connection counts towards the
-  25 s, but the deadline is not armed during that wait, and it does not fire while the upstream is not
-  taking data. Not applied to bodyless requests or `protocol: grpc` routes; not configurable. See
+  25 s: a request that obtains its connection only after the deadline is answered `408` as soon as its
+  body is read. The deadline does not reset an upstream that is not taking data, but a body that
+  upstream reads again after the deadline is ended then. Not applied to bodyless requests or
+  `protocol: grpc` routes; not configurable. See
   link:../architecture.adoc#_request_body_deadline[Architecture -- request-body deadline].
 
 | gRPC stream-idle timeout

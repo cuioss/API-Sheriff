@@ -689,12 +689,22 @@ refused as `REQUEST_BODY_TIMEOUT`:
   `NO_ERROR`, and on HTTP/1.x, whose head has already been written, the connection is closed once
   the end has been written.
 
-The deadline is armed when the attempt hands its body to the upstream request, so it never runs while
-the attempt waits for a pooled upstream connection; the time waited still counts towards the 25 s, and
-an attempt that obtains its connection only after the deadline has passed is left to the guard. The
-deadline does not fire when, at the moment it passes, the forwarding pipe has paused the body because
-the upstream is not taking data, and it stops when the body ends or another abort claims the stream
-first. A bodyless request and a route with `protocol: grpc` never arm it. `INFO` `ApiSheriff-24`
+Once it has passed, the deadline stays in force for a body that is not being read at that moment, and
+ends it the same way -- before or after the response head -- the moment it is read again:
+
+* *The wait for a pooled upstream connection counts towards the 25 s.* The deadline's timer is set
+  when the attempt hands its body to the upstream request, after the connection was obtained. An
+  attempt that obtains its connection only after the deadline has passed is ended as soon as its body
+  starts to be read, so it is answered `408` before any body byte crosses to the upstream.
+* *A body the upstream is not taking data for is ended when the upstream reads it again.* While the
+  forwarding pipe has paused the body because the upstream is not taking data, the deadline does not
+  reset the upstream request. When the pipe resumes the body after the deadline has passed, the body
+  is ended instead of read.
+
+The deadline stops for good when the body ends, when another abort claims the stream first, and when
+the attempt ends without handing its response back -- its send failed, the next attempt begins, or the
+dispatch fails. A stopped deadline reports nothing: it neither refuses the body nor resets the upstream
+request again. A bodyless request and a route with `protocol: grpc` never arm it. `INFO` `ApiSheriff-24`
 records it, latched per route, and `sheriff_errors_total` counts it under
 `event="REQUEST_BODY_TIMEOUT"`, the event the idle timeout carries. The 25 s value is a gateway
 constant with no configuration key or system property
