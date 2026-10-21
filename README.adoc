@@ -268,9 +268,11 @@ The `rate_limit` field is reserved and accepted, but it is ignored and no `429` 
 `RateLimitConfig` is bound into the route model and read by nothing on the request path.
 
 The published image serves linux/amd64 and linux/arm64, each at GraalVM's default CPU baseline::
-`ghcr.io/cuioss/api-sheriff` is one image index over two images, `linux/amd64` and `linux/arm64`,
-each built natively on its own architecture and run through the full integration-test suite before
-it is published. Every tag resolves to the image for the pulling host's platform, so no
+From the first release the two-platform lane cuts, `ghcr.io/cuioss/api-sheriff` is one image index
+over two images, `linux/amd64` and `linux/arm64`, each built natively on its own architecture and
+run through the full integration-test suite before it is published. Tags up to and including `0.2.4`
+are `linux/amd64` only. Every tag from that release on resolves to the image for the pulling host's
+platform, so no
 `--platform` flag is needed and an arm64 host -- AWS Graviton, Apple Silicon -- runs the arm64 image
 natively rather than under emulation. The native executable in each image is compiled for
 GraalVM's default target -- `quarkus.native.additional-build-args` carries no `-march`:
