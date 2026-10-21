@@ -110,8 +110,9 @@ rules.
 The concern map is written by hand, so a test binds it to the code. `BootValidationConcernMapContractTest`
 reads `ConfigValidator.java` as text, slices `DEFAULT_RULES` into its entries, and takes the
 concern-class call in each entry as its registration. It fails the build when an entry registers no
-concern-class rule or more than one, and when a registered rule is missing from the row of the class
-it is called through. Source text is read because the entries are lambdas, which name no method to
+concern-class rule or more than one, when a registered rule is missing from the row of the class it
+is called through, and when a row names a rule that no entry registers through that row's class -- a
+rule moved, renamed or deleted, or listed under a second owner. Source text is read because the entries are lambdas, which name no method to
 reflection, and widening the class or the seam to expose them would change production code for a
 test. The test ships with a non-vacuity guard and matched negative controls over synthetic specimens,
 following
@@ -126,8 +127,9 @@ link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_sh
   list, visible in one diff.
 * A rule written but not run fails its own tests, because the tests run the list rather than the
   method.
-* An entry that carries a rule body of its own, or a rule registered without its row in the concern
-  map, fails the build.
+* An entry that carries a rule body of its own, a rule registered without its row in the concern map,
+  and a row naming a rule not registered through its class all fail the build, so the map names
+  exactly the rules the list registers, each under the class it is called through.
 * The validator stays framework-free: the list is plain Java, assembled at class initialisation, and
   the validator can be constructed with a custom rule list for the offline check and for tests.
 
@@ -145,8 +147,9 @@ link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_sh
 * *The contract test reads source text.* A registration routed through a helper that is not a concern
   class is not recognised as one; it fails the guard rather than passing unseen, but a reformatting of
   the list or of the map table can break the extraction and needs the test to follow.
-* *The guard holds one direction only.* A row naming a rule that no entry registers any more is not
-  detected, and the configuration-surface column of the map is prose that nothing checks.
+* *The guard covers the rule column only.* It binds the rule names in both directions, but the
+  configuration-surface column of the map is prose that nothing checks, so a row can name the wrong
+  configuration block for its rules and still pass.
 
 == Alternatives Considered
 

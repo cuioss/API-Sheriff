@@ -61,7 +61,8 @@ bodies.
 The map is written by hand, so it is bound to the list by a test:
 link:../../api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/BootValidationConcernMapContractTest.java[`BootValidationConcernMapContractTest`]
 reads the registrations in `DEFAULT_RULES` and fails the build when a registration has no row
-here, or when its rule is missing from the row of the concern class it calls.
+here, when its rule is missing from the row of the concern class it calls, or when a row names a
+rule that `DEFAULT_RULES` does not register through that row's class.
 
 [cols="2,4,3,2"]
 |===

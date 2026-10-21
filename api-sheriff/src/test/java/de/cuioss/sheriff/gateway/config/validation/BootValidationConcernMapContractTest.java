@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -38,8 +39,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Binds the concern map of {@code doc/development/boot-validation-rules.adoc} to the rule list
- * {@code ConfigValidator} actually runs, so a rule registered without its row in the map becomes a red
- * build instead of a silently stale page.
+ * {@code ConfigValidator} actually runs, in both directions, so a rule registered without its row in the
+ * map and a row naming a rule that is not registered through its class both become a red build instead
+ * of a silently stale page.
  * <p>
  * <strong>Why this test exists.</strong> The concern map names, for every boot validation rule, the
  * concern class that owns it. It is written by hand, and nothing else ties it to
@@ -64,26 +66,32 @@ import org.junit.jupiter.api.Test;
  * written privately in {@code ConfigValidator} — fails here, and so does an entry that calls two.</li>
  * <li>Every registered rule is listed in the row of the concern class it is called through. The failure
  * names the rule and the class whose row lacks it, or says that the class has no row at all.</li>
+ * <li>Every rule a concern-map row names is registered in {@code DEFAULT_RULES} through that row's
+ * class. A rule moved to another class but left in its old row, a rule listed under a second owner, and
+ * a rule renamed or deleted whose old name stays in its row all fail here. The failure names the row and
+ * the rule, and says whether the rule is registered through another class or not registered at
+ * all.</li>
  * </ul>
  * <p>
- * <strong>What it does not assert.</strong> The reverse direction: a row naming a rule that no
- * registration calls any longer is not detected. Nor the order of the list, which the map deliberately
- * does not record, nor the configuration-surface and state columns, which are prose. It reads source
- * text, not bytecode, so a registration routed through a helper method that is not itself a concern
- * class is not recognised as one — and fails the first assertion rather than passing unseen.
+ * <strong>What it does not assert.</strong> The order of the list, which the map deliberately does not
+ * record, nor the configuration-surface and state columns, which are prose. It reads source text, not
+ * bytecode, so a registration routed through a helper method that is not itself a concern class is not
+ * recognised as one — and fails the first assertion rather than passing unseen.
  * <p>
  * <strong>No vacuous pass.</strong> Both the parsed entry list and the parsed concern map are asserted
  * non-empty before anything is checked against them, and every anchor the extraction relies on fails
- * naming the file and the anchor when it is not found. Two controls drive synthetic specimens through
+ * naming the file and the anchor when it is not found. Three controls drive synthetic specimens through
  * the same extraction helpers: one asserts that a rule missing from its row and a rule whose class has
- * no row are both reported while the listed rules are not, the other that an entry calling no concern
- * class and an entry calling two are both reported while a well-formed entry is not. Without them the
- * primary assertions would be green today and equally green if the detectors accepted everything.
+ * no row are both reported while the listed rules are not; one that a row naming a rule no entry
+ * registers and a row naming a rule registered through another class are both reported while every
+ * rule registered through its own row is not; the third that an entry calling no concern class and an
+ * entry calling two are both reported while a well-formed entry is not. Without them the primary
+ * assertions would be green today and equally green if the detectors accepted everything.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
-@DisplayName("The boot-validation concern map lists every rule DEFAULT_RULES registers")
+@DisplayName("The boot-validation concern map and DEFAULT_RULES name the same rules under the same classes")
 class BootValidationConcernMapContractTest {
 
     /** The working directory the runner started in — the module root under surefire. */
@@ -135,7 +143,11 @@ class BootValidationConcernMapContractTest {
                     (gateway, endpoints, topology, errors) -> GammaRules.validateRowless(gateway, errors));
             """;
 
-    /** The synthetic concern map the map control reads; see {@link #MAP_CONTROL_SOURCE}. */
+    /**
+     * The synthetic concern map both map controls read; see {@link #MAP_CONTROL_SOURCE}. The
+     * {@code BetaRules} row names a rule that no entry registers and a rule that is registered through
+     * {@code AlphaRules}, so it lists that rule under a second owner.
+     */
     private static final String MAP_CONTROL_DOC = """
             == The concern map
 
@@ -150,7 +162,8 @@ class BootValidationConcernMapContractTest {
             | extracted
 
             | `BetaRules`
-            | `validateSomethingElse`
+            | `validateSomethingElse`,
+              `validateListed`
             | `beta.*`
             | extracted
             |===
@@ -195,25 +208,37 @@ class BootValidationConcernMapContractTest {
     @Test
     @DisplayName("Every registered rule is listed in the concern-map row of the class it is called through")
     void everyRegisteredRuleIsListedInItsConcernClassRow() throws Exception {
-        List<Registration> registrations = registrationsOf(
-                topLevelEntries(ruleListBlock(read(CONFIG_VALIDATOR_SOURCE), CONFIG_VALIDATOR_SOURCE)));
-        Map<String, Set<String>> concernMap = concernMap(read(CONCERN_MAP_DOC), CONCERN_MAP_DOC);
+        List<Registration> registrations = defaultRuleRegistrations();
+        Map<String, Set<String>> concernMap = documentedConcernMap();
 
         List<Registration> unmapped = unmappedRegistrations(registrations, concernMap);
 
-        assertFalse(registrations.isEmpty(), CONFIG_VALIDATOR_SOURCE + ": no concern-class registration was"
-                + " found in DEFAULT_RULES, so this guard would assert over nothing");
-        assertFalse(concernMap.isEmpty(), CONCERN_MAP_DOC + ": the concern-map table under \""
-                + CONCERN_MAP_HEADING + "\" has no rows, so this guard would assert over nothing");
+        assertNeitherSideIsEmpty(registrations, concernMap);
         assertTrue(unmapped.isEmpty(), () -> CONCERN_MAP_DOC + " no longer lists every rule DEFAULT_RULES"
                 + " registers. The concern map is written by hand and tells a contributor which class owns"
                 + " which rule, so add each rule below to the row of its concern class (or add the row): "
                 + describeMisses(unmapped, concernMap));
     }
 
+    @Test
+    @DisplayName("Every rule a concern-map row names is registered through that row's class")
+    void everyConcernMapRowNamesOnlyRulesRegisteredThroughItsClass() throws Exception {
+        List<Registration> registrations = defaultRuleRegistrations();
+        Map<String, Set<String>> concernMap = documentedConcernMap();
+
+        List<Registration> stale = staleRows(registrations, concernMap);
+
+        assertNeitherSideIsEmpty(registrations, concernMap);
+        assertTrue(stale.isEmpty(), () -> CONCERN_MAP_DOC + " names rules that DEFAULT_RULES does not register"
+                + " through the class of their row. Each one is a moved, renamed or deleted rule, or a rule"
+                + " listed under a second owner, so remove it from the row (or register it through that"
+                + " class): " + describeStaleRows(stale, registrations));
+    }
+
     /**
-     * Matched control over the map detector. Without it the assertion above is green today because the
-     * map is complete, and it would be equally green if {@link #unmappedRegistrations} reported nothing.
+     * Matched control over the map detector. Without it the forward-direction assertion above is green
+     * today because the map is complete, and it would be equally green if {@link #unmappedRegistrations}
+     * reported nothing.
      */
     @Test
     @DisplayName("The map detector reports a rule missing from its row and a class with no row, and nothing else")
@@ -236,6 +261,34 @@ class BootValidationConcernMapContractTest {
                         "the detector must report exactly the rule its row does not list and the rule whose"
                                 + " class has no row, and must accept both rules the AlphaRules row lists,"
                                 + " including the one written on a continuation line of the cell"));
+    }
+
+    /**
+     * Matched control over the stale-row detector. Without it the reverse-direction assertion above is
+     * green today because no row names a stale rule, and it would be equally green if
+     * {@link #staleRows} reported nothing.
+     */
+    @Test
+    @DisplayName("The stale-row detector reports a rule no entry registers and a rule under a second owner, and nothing else")
+    void staleRowDetectorReportsExactlyTheRowsNamingUnregisteredRules() {
+        List<Registration> registrations = registrationsOf(
+                topLevelEntries(ruleListBlock(MAP_CONTROL_SOURCE, "the map control")));
+        Map<String, Set<String>> concernMap = concernMap(MAP_CONTROL_DOC, "the map control");
+
+        List<Registration> stale = staleRows(registrations, concernMap);
+
+        assertAll("stale-row control",
+                () -> assertEquals(Set.of("validateSomethingElse", "validateListed"), concernMap.get("BetaRules"),
+                        "the table reader did not recover both rules of the synthetic BetaRules row, one of"
+                                + " them written on a continuation line of the cell"),
+                () -> assertEquals(List.of(new Registration("BetaRules", "validateSomethingElse"),
+                                new Registration("BetaRules", "validateListed")), stale,
+                        "the detector must report, in table order, the rule no entry registers and the rule"
+                                + " the BetaRules row lists although it is registered through AlphaRules, and"
+                                + " must accept both rules the AlphaRules row lists"),
+                () -> assertTrue(describeStaleRows(stale, registrations).contains(
+                                "validateListed, which DEFAULT_RULES registers through AlphaRules"),
+                        "the failure message must name the class a second-owner rule is registered through"));
     }
 
     /**
@@ -461,6 +514,49 @@ class BootValidationConcernMapContractTest {
         return unmapped;
     }
 
+    /**
+     * The concern-map entries that name a rule not registered through the class of their row — a rule
+     * no entry registers at all, or one registered through another concern class.
+     *
+     * @param registrations the registrations read from the rule list
+     * @param concernMap    the concern map read from the page
+     * @return each stale row entry as the row's class and the rule it names, in table order; empty when
+     *         every rule the map names is registered through its own row's class
+     */
+    private static List<Registration> staleRows(List<Registration> registrations,
+            Map<String, Set<String>> concernMap) {
+        Set<Registration> registered = new HashSet<>(registrations);
+        List<Registration> stale = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> row : concernMap.entrySet()) {
+            for (String rule : row.getValue()) {
+                Registration listed = new Registration(row.getKey(), rule);
+                if (!registered.contains(listed)) {
+                    stale.add(listed);
+                }
+            }
+        }
+        return stale;
+    }
+
+    private static String describeStaleRows(List<Registration> stale, List<Registration> registrations) {
+        List<String> lines = new ArrayList<>();
+        for (Registration listed : stale) {
+            List<String> owners = registrations.stream()
+                    .filter(registration -> registration.rule().equals(listed.rule()))
+                    .map(Registration::concernClass)
+                    .distinct()
+                    .toList();
+            String prefix = "the row of " + listed.concernClass() + " lists " + listed.rule();
+            if (owners.isEmpty()) {
+                lines.add(prefix + ", which no DEFAULT_RULES entry registers: a renamed or deleted rule");
+            } else {
+                lines.add(prefix + ", which DEFAULT_RULES registers through " + String.join(", ", owners)
+                        + ": a rule moved to another class, or listed under a second owner");
+            }
+        }
+        return String.join("; ", lines);
+    }
+
     private static String describeMisses(List<Registration> unmapped, Map<String, Set<String>> concernMap) {
         List<String> lines = new ArrayList<>();
         for (Registration registration : unmapped) {
@@ -482,6 +578,30 @@ class BootValidationConcernMapContractTest {
                     + ": " + entries.get(position).replaceAll("\\s+", " "));
         }
         return String.join("; ", lines);
+    }
+
+    private static List<Registration> defaultRuleRegistrations() throws IOException {
+        return registrationsOf(
+                topLevelEntries(ruleListBlock(read(CONFIG_VALIDATOR_SOURCE), CONFIG_VALIDATOR_SOURCE)));
+    }
+
+    private static Map<String, Set<String>> documentedConcernMap() throws IOException {
+        return concernMap(read(CONCERN_MAP_DOC), CONCERN_MAP_DOC);
+    }
+
+    /**
+     * Fails when either side of the comparison parsed to nothing, so a guard comparing the two cannot
+     * pass by asserting over an empty set.
+     *
+     * @param registrations the registrations read from the rule list
+     * @param concernMap    the concern map read from the page
+     */
+    private static void assertNeitherSideIsEmpty(List<Registration> registrations,
+            Map<String, Set<String>> concernMap) {
+        assertFalse(registrations.isEmpty(), CONFIG_VALIDATOR_SOURCE + ": no concern-class registration was"
+                + " found in DEFAULT_RULES, so this guard would assert over nothing");
+        assertFalse(concernMap.isEmpty(), CONCERN_MAP_DOC + ": the concern-map table under \""
+                + CONCERN_MAP_HEADING + "\" has no rows, so this guard would assert over nothing");
     }
 
     private static String read(String relativePath) throws IOException {
