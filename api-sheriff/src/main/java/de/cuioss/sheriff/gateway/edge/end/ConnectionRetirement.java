@@ -58,9 +58,11 @@ public final class ConnectionRetirement {
 
     private final FramingGate framingGate;
     /**
-     * The HTTP/1.x connections retired by a framing-gate rejection. A request that arrives on one of
-     * them is never processed (see {@link #isRetired}). An HTTP/2 connection is never recorded here: a
-     * framing rejection there ends only the rejected stream. Held weakly and by identity —
+     * The HTTP/1.x connections retired by a framing-gate rejection ({@link #markFramingRejection}) or by
+     * a request body that outlived the request-body deadline after the hand-over
+     * ({@link #recordRetirement}). A request that arrives on one of them is never processed (see
+     * {@link #isRetired}). An HTTP/2 connection is never recorded here: a framing rejection or a late
+     * body timeout there ends only the affected stream. Held weakly and by identity —
      * {@link HttpConnection} implementations do not override {@code equals} — so an entry disappears
      * with its connection and no close handler has to be claimed on a connection the edge does not own.
      */
@@ -76,8 +78,8 @@ public final class ConnectionRetirement {
 
     /**
      * @param connection the connection a request arrived on
-     * @return {@code true} when the connection was retired by a framing rejection, so nothing that
-     *         arrives on it may be processed, answered or forwarded
+     * @return {@code true} when the connection was retired by a framing rejection or a late
+     *         request-body timeout, so nothing that arrives on it may be processed, answered or forwarded
      */
     public boolean isRetired(HttpConnection connection) {
         return retiredConnections.contains(connection);
@@ -126,8 +128,8 @@ public final class ConnectionRetirement {
      * recorded as retired at once and the answer retires it; an HTTP/2 request needs no mark, its
      * stream being ended by the one end rule (see {@link ResponseEnds#endResponse}). Shared by the
      * framing gate and by the dispatch, which leaves behind a body it could not finish reading — one it
-     * refused on its framing, or one that stopped arriving (see
-     * {@code TerminalDispatch.dispatchMarkingUnreadBody}).
+     * refused on its framing, or one that stopped arriving or was still arriving at the request-body
+     * deadline before the hand-over (see {@code TerminalDispatch.dispatchMarkingUnreadBody}).
      *
      * @param ctx the rejected request
      */
@@ -162,8 +164,8 @@ public final class ConnectionRetirement {
      * connection is closed once the response has been written. Must be called on the event loop,
      * before the response is ended.
      * <p>
-     * It has two callers, both for an HTTP/1.x request only — an HTTP/2 rejection ends just its
-     * stream instead (see {@link ResponseEnds#endResponse}) — and both retire the connection because
+     * It has three callers, all for an HTTP/1.x request only — an HTTP/2 rejection ends just its
+     * stream instead (see {@link ResponseEnds#endResponse}) — and all retire the connection because
      * the bytes behind the rejected request cannot be trusted to frame the next one:
      * <ul>
      *   <li>a {@code 413} reserved-body rejection, on BOTH of its paths (the pre-read
@@ -175,7 +177,10 @@ public final class ConnectionRetirement {
      *       which would leave the reserved-body DoS guard only half-effective, since an attacker could
      *       still tie up connections by repeatedly tripping the {@code 413};</li>
      *   <li>a framing rejection of an HTTP/1.x request — the framing gate's, or a body the dispatch
-     *       could not finish reading (see {@link #markFramingRejection}).</li>
+     *       could not finish reading (see {@link #markFramingRejection});</li>
+     *   <li>the end of a relay that failed after a request body outlived the request-body deadline
+     *       following the hand-over, told by the late refusal's event (see {@link #recordRetirement}
+     *       and {@code TerminalDispatch.retireFailedRelayConnection}).</li>
      * </ul>
      *
      * @param ctx the request whose connection is retired
