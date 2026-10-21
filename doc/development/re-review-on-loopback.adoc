@@ -26,8 +26,10 @@ same PR, mid-flight, having just received another push.
 It is off because, for both of this repository's reviewers, an explicit request is redundant -- and
 it is never free.
 
-The reviewers are the ones `.plan/marshal.json` names: CodeRabbit is required and gates the merge,
-Sourcery is optional and never blocks it. *Both re-review on push, without being asked.* A loop-back
+The reviewers are the ones `.plan/marshal.json` names: CodeRabbit (required) gates the merge,
+Sourcery (optional) never blocks it. `ReviewerRosterDocsContractTest` fails the build when the names
+or roles on this page, or in its row of the contributor guide, drift from that file. *Both re-review
+on push, without being asked.* A loop-back
 ends in a push, and that push is already each bot's trigger. Requesting a pass explicitly adds
 nothing except a second run over the same diff.
 
