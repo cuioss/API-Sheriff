@@ -186,8 +186,8 @@ class HeaderRulesTest {
 
         @ParameterizedTest(name = "global value #{index}")
         @ValueSource(strings = {"default-src 'self'\r\nSet-Cookie: session=forged", "default-src 'self'\nX-Injected: 1",
-                "default-src 'self'\rX-Injected: 1", "default-src\u0000'self'", "default-src\t'self'",
-                "default-src\u007F'self'", "   "})
+                "default-src 'self'\rX-Injected: 1", "default-src\0'self'", "default-src\t'self'",
+                "default-src\177'self'", "   "})
         @DisplayName("Should refuse a global policy that is blank or carries a CR, LF or other control character")
         void shouldRefuseInjectingGlobalPolicy(String policy) {
             List<ConfigError> errors = validator.validate(gatewayWithPolicies(policy, null), List.of(), topologyWith());
@@ -197,7 +197,7 @@ class HeaderRulesTest {
 
         @ParameterizedTest(name = "anchor value #{index}")
         @ValueSource(strings = {"default-src 'self'\r\nSet-Cookie: session=forged", "default-src 'self'\nX-Injected: 1",
-                "default-src\u0000'self'", "   "})
+                "default-src\0'self'", "   "})
         @DisplayName("Should refuse an anchor policy that is blank or carries a control character, naming the anchor block")
         void shouldRefuseInjectingAnchorPolicy(String policy) {
             List<ConfigError> errors = validator.validate(gatewayWithPolicies(VALID_POLICY, policy), List.of(),
