@@ -1468,6 +1468,64 @@ class DispatchStageTest {
             assertEquals(1, attempts.get(),
                     "a retry that would reuse an already-subscribed one-shot body stream must be refused");
         }
+
+        /**
+         * A request-body idle expiry is refused a retry because it is a {@link GatewayException}, and for
+         * no other reason. On a live dispatch the expiry always follows the subscription of the one-shot
+         * body stream, which refuses the retry on its own, so a live case passes whether or not the
+         * expiry itself is refused. Here the dispatch's state allows a retry — an idempotent PUT, no
+         * body byte sent, the body stream not subscribed — as the upstream failure under the same state
+         * shows by being retried; the attempt then fails with the {@link EventType#REQUEST_BODY_TIMEOUT}
+         * an expired idle clock recorded, and only the refusal of a gateway rejection keeps it from being
+         * re-sent.
+         */
+        @Test
+        @DisplayName("never retries a request-body idle expiry, though the dispatch's state would allow a retry")
+        void neverRetriesARequestBodyIdleExpiry() {
+            GatewayException expiry = idleExpiry();
+            AtomicInteger upstreamFailureAttempts = new AtomicInteger();
+            AtomicInteger idleExpiryAttempts = new AtomicInteger();
+
+            GatewayException afterUpstreamFailure = assertThrows(GatewayException.class,
+                    () -> dispatchPutWithNoBodySent(() -> {
+                        upstreamFailureAttempts.incrementAndGet();
+                        throw new ExecutionException("upstream down", new IllegalStateException("upstream down"));
+                    }));
+            GatewayException afterIdleExpiry = assertThrows(GatewayException.class,
+                    () -> dispatchPutWithNoBodySent(() -> {
+                        idleExpiryAttempts.incrementAndGet();
+                        throw expiry;
+                    }));
+
+            assertAll("an idle expiry under a state that allows a retry",
+                    () -> assertEquals(3, upstreamFailureAttempts.get(),
+                            "the state allows a retry: an upstream failure is retried (1 attempt + 2 retries)"),
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, afterUpstreamFailure.getEventType()),
+                    () -> assertEquals(1, idleExpiryAttempts.get(), "an idle expiry must never be retried"),
+                    () -> assertEquals(EventType.REQUEST_BODY_TIMEOUT, afterIdleExpiry.getEventType(),
+                            "the expiry ends the dispatch as the request's"));
+        }
+
+        /**
+         * Runs {@code attempt} as an idempotent PUT on a retry-enabled route whose body stream was never
+         * subscribed and has sent no byte.
+         */
+        private HttpClientResponse dispatchPutWithNoBodySent(Callable<HttpClientResponse> attempt) {
+            return newStage().guardedDispatch(retryGuard(), new StreamAwareRetryGate(true), HttpMethod.PUT,
+                    () -> 0L, () -> false, attempt);
+        }
+
+        /** @return the {@link EventType#REQUEST_BODY_TIMEOUT} a byte-capped body records when its idle clock expires */
+        private GatewayException idleExpiry() {
+            long timeoutMillis = 1_000L;
+            IdleProbe probe = new IdleProbe(timeoutMillis, DispatchStage.NO_DECLARED_LENGTH);
+            probe.capped.startIdleClock();
+            probe.time.advanceMillis(timeoutMillis);
+            GatewayException expiry = assertInstanceOf(GatewayException.class, probe.capped.clientAbort(),
+                    "the idle clock must have expired");
+            assertEquals(EventType.REQUEST_BODY_TIMEOUT, expiry.getEventType());
+            return expiry;
+        }
     }
 
     /**
@@ -1934,7 +1992,9 @@ class DispatchStageTest {
     /**
      * The request-body idle timeout over a live upstream: a body that stops arriving while its dispatch
      * holds a pooled upstream connection ends the dispatch as {@link EventType#REQUEST_BODY_TIMEOUT} and
-     * frees the connection at once, while a body that keeps arriving, however slowly, is never cut off.
+     * frees the connection at once, while a body that keeps arriving, however slowly, is never cut off,
+     * and neither is a body that goes idle only after the upstream answered: the clock stops when the
+     * attempt's send completes.
      * <p>
      * The upstream client holds at most one HTTP/1.1 connection, so a follow-up dispatch on the same
      * client is served only once the idle dispatch released it. Every route's guard leaves the dispatch
@@ -1956,6 +2016,10 @@ class DispatchStageTest {
         private static final int REQUEST_VOLUME_THRESHOLD = 20;
         private static final long PATIENT_TIMEOUT_SECONDS = Awaits.CONNECT_CEILING_SECONDS / 2;
         private static final String ANSWERING_PATH = "/answering";
+        /** The path the stub upstream answers at once, before it reads the request body. */
+        private static final String EARLY_PATH = "/early";
+        /** How long the body of the clock-stop case goes without a byte after the answer: three idle timeouts. */
+        private static final long IDLE_GAP_MILLIS = 3 * IDLE_TIMEOUT_MILLIS;
         private static final String ANSWER = "ok";
 
         private Vertx vertx;
@@ -1963,6 +2027,11 @@ class DispatchStageTest {
         private HttpServer upstream;
         private HttpClient upstreamClient;
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
+        /**
+         * The request body the stub upstream read for the early path: its text once it ended, or the
+         * failure it ended with.
+         */
+        private final CompletableFuture<String> earlyBody = new CompletableFuture<>();
         /** Every connection the stub upstream accepted. */
         private final AtomicInteger acceptedConnections = new AtomicInteger();
         /** The path of every request the stub upstream received a head for, in arrival order. */
@@ -1976,13 +2045,20 @@ class DispatchStageTest {
         void setUp() throws Exception {
             vertx = Vertx.vertx();
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-            // The stub upstream answers every request once its body has arrived whole. It is HTTP/1.1
-            // only: without h2c to detect, it reports a connection when it is accepted rather than with
-            // its first bytes, and a request whose body never arrives sends none.
+            // The stub upstream answers every request once its body has arrived whole, except one to the
+            // early path, which it answers at once and then reads to its end. It is HTTP/1.1 only: without
+            // h2c to detect, it reports a connection when it is accepted rather than with its first bytes,
+            // and a request whose body never arrives sends none.
             upstream = Awaits.connect(vertx.createHttpServer(new HttpServerOptions().setHttp2ClearTextEnabled(false))
                     .connectionHandler(_ -> acceptedConnections.incrementAndGet())
                     .requestHandler(request -> {
                         receivedPaths.add(request.path());
+                        if (EARLY_PATH.equals(request.path())) {
+                            request.body().onComplete(read -> earlyBody.complete(
+                                    read.succeeded() ? read.result().toString() : "failed: " + read.cause()));
+                            request.response().end(ANSWER);
+                            return;
+                        }
                         request.body().onSuccess(body -> {
                             receivedBodyBytes.put(request.path(), body.length());
                             request.response().end(ANSWER);
@@ -2069,26 +2145,38 @@ class DispatchStageTest {
                     () -> assertEquals(List.of(ANSWERING_PATH), receivedPaths));
         }
 
+        /**
+         * The idle clock stops when the attempt's send completes. The upstream answers at once, before it
+         * reads the body, so the send completes with the response head while the body is still open; the
+         * body then goes {@link #IDLE_GAP_MILLIS} — several idle timeouts — without a byte before it ends.
+         * The stage carries no request-body deadline, so nothing but a still-running idle clock could end
+         * the body in that gap: had it kept running, it would have reset the upstream request, and the
+         * upstream would have seen its body fail instead of end.
+         */
         @Test
-        @DisplayName("an idle expiry on a retry-enabled route is not retried: the upstream sees one connection")
-        void idleExpiryIsNotRetried() {
-            Guard retryGuard = Guard.create()
-                    .withTimeout().duration(PATIENT_TIMEOUT_SECONDS, ChronoUnit.SECONDS).done()
-                    .withRetry().maxRetries(2).delay(0, ChronoUnit.MILLIS)
-                    .whenException(DispatchStage::allowsRetryAfter).done()
-                    .build();
+        @DisplayName("an upstream that answered at once is not ended as REQUEST_BODY_TIMEOUT when the body then idles past the idle timeout")
+        void idleClockStopsWhenTheSendCompletes() throws Exception {
+            TestReadStream inbound = new TestReadStream();
+            String before = Generators.letterStrings(4, 8).next();
+            String after = Generators.letterStrings(4, 8).next();
 
-            AtomicInteger attempts = new AtomicInteger();
-            HttpClient counting = interceptingClient(upstreamClient, _ -> attempts.incrementAndGet());
+            Future<HttpClientResponse> dispatched = dispatch(routed(IDLE_TIMEOUT_MILLIS, patientGuard(), false),
+                    HttpMethod.POST, EARLY_PATH, inbound);
+            Awaits.until(inbound::subscribed, "the dispatch to subscribe to the request body",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            inbound.emit(Buffer.buffer(before));
+            String answer = answerOf(dispatched);
+            vertx.setTimer(IDLE_GAP_MILLIS, _ -> {
+                inbound.emit(Buffer.buffer(after));
+                inbound.end();
+            });
+            String received = Awaits.connect(earlyBody, "the upstream to read the request body to its end");
 
-            // An idempotent PUT, so only the expiry itself can keep the guard from retrying.
-            GatewayException rejection = rejectionOf(dispatch(routed(IDLE_TIMEOUT_MILLIS, counting, retryGuard, true),
-                    HttpMethod.PUT, "/idle-retry", new TestReadStream()));
-
-            assertAll("an idle expiry on a retry-enabled route",
-                    () -> assertEquals(EventType.REQUEST_BODY_TIMEOUT, rejection.getEventType()),
-                    () -> assertEquals(1, attempts.get(), "an idle expiry must never be retried"),
-                    () -> assertEquals(1, acceptedConnections.get(), "the upstream saw exactly one connection"));
+            assertAll("a body idling past the idle timeout after the upstream answered",
+                    () -> assertEquals("200 " + ANSWER, answer, "the upstream's answer is handed back"),
+                    () -> assertEquals(before + after, received,
+                            "the body reaches the upstream whole: the idle clock stopped when the send completed"),
+                    () -> assertEquals(List.of(EARLY_PATH), receivedPaths));
         }
 
         /** A guard whose timeout leaves the dispatch far more time than any idle timeout of these cases. */
