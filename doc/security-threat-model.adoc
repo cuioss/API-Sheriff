@@ -1476,8 +1476,9 @@ to an upstream that reads it whole and to one that answered at once, over HTTP/2
 `http2TrickleToAStreamingUpstreamIsEndedAtTheDeadline`,
 `http1TrickleToAStreamingUpstreamClosesTheConnectionAtTheDeadline`,
 `http1TrickleToAWholeBodyReaderIsAnswered408AndTheConnectionIsClosed`): each is ended at the
-deadline, never as `UPSTREAM_TIMEOUT`, reaches the upstream once and logs `ApiSheriff-24`; all four
-were red before the deadline existed. The same class asserts that an upload queued for a pooled
+deadline, never as `UPSTREAM_TIMEOUT`, reaches the upstream once and logs `ApiSheriff-24`; the three
+written first were red before the deadline existed, and the HTTP/1.1 whole-body case, added after
+it, was red with the deadline switched off. The same class asserts that an upload queued for a pooled
 connection longer than the idle timeout but within its deadline is served `200`
 (`uploadQueuedForAPooledConnectionIsServed`), and that one which obtains its connection only after its
 deadline is answered `408` as soon as its body is read (`uploadQueuedPastItsDeadlineIsAnswered408`).
