@@ -342,7 +342,7 @@ requires write access to the repository, so allowing other refs widens nothing.
 * *It writes no `<version>`, no `sha-<commit>` and no `leg-<commit>-<arch>` tag.* Every tag it pushes
   names the run *and its attempt*: `dryrun-<run_id>-<attempt>-amd64`,
   `dryrun-<run_id>-<attempt>-arm64` or, on the index, `dryrun-<run_id>-<attempt>`, where `<attempt>`
-  is the workflow's run attempt -- `1`, and one more for each *Re-run failed jobs*. Each leg and the
+  is the workflow's run attempt -- `1`, and one more for each re-run. Each leg and the
   join assert this against the run's own id and attempt, anchored at both ends, before their first
   push. The version label stays `dryrun-<run_id>`: it names the run, not the attempt.
 * *It never runs beside a release.* The image jobs accept a skipped `release` job only on a dry-run
@@ -373,6 +373,11 @@ tag the same on every attempt, a *Re-run failed jobs* would push under it again,
 digest, and leave the earlier version untagged and unrecorded -- and the re-run's cleanup would go
 green over it. Under attempt-scoped tags the earlier version keeps its own attempt's tag, and the
 check names it.
+
+*Re-run a dry run with "Re-run all jobs", or dispatch a new one -- not with "Re-run failed jobs".*
+The cleanup of an attempt deletes every digest that attempt recorded, the green leg's included. A
+*Re-run failed jobs* re-runs only the failed leg and the jobs that depend on it, so its join would
+look for the green leg's digest, which the earlier attempt's cleanup has already deleted, and fail.
 
 A green cleanup therefore means the dry run left no package version behind. A red one names what to
 delete by hand in the package settings. A leftover `dryrun-<run_id>-<attempt>` tag is harmless to
