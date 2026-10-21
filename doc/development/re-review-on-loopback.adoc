@@ -23,24 +23,18 @@ same PR, mid-flight, having just received another push.
 == Why the setting is off
 
 `re_review_on_loopback: false` asks plan-marshall not to *request* a review pass on each loop-back.
-It is off because, for this repository's two required bots, an explicit request is either redundant
-or ineffective -- and it is never free.
+It is off because, for both of this repository's reviewers, an explicit request is redundant -- and
+it is never free.
 
-*CodeRabbit re-reviews on push, without being asked.* A loop-back ends in a push, and that push is
-already CodeRabbit's trigger. Requesting a pass explicitly adds nothing except a second run over
-the same diff.
+The reviewers are the ones `.plan/marshal.json` names: CodeRabbit is required and gates the merge,
+Sourcery is optional and never blocks it. *Both re-review on push, without being asked.* A loop-back
+ends in a push, and that push is already each bot's trigger. Requesting a pass explicitly adds
+nothing except a second run over the same diff.
 
-*PR-Agent does not re-trigger on a loop-back, and asking on every loop-back would not be the right
-way to fix that.* link:../../.github/workflows/pr-agent.yml[`.github/workflows/pr-agent.yml`] fires
-on `opened`, `reopened` and `ready_for_review`, plus on-demand `issue_comment` commands. A
-mid-flight push is none of those, so PR-Agent stays quiet through a loop-back by design.
-
-So the two required bots pull in opposite directions, and neither is served by a blanket automatic
-request: one performs the pass anyway, and the other performs it only when asked -- but a plan can
-loop back several times over one pull request, and every automatic request spends review-bot quota
-that the project's rate-window handling then has to wait out. The cost is paid on every loop-back;
-the benefit accrues only on the ones where a re-review would actually have said something new. That
-is the trade the `false` records.
+And the request has a price. A plan can loop back several times over one pull request, and every
+automatic request spends review-bot quota that the project's rate-window handling then has to wait
+out. The cost is paid on every loop-back; the benefit is a second pass over a diff the bots already
+reviewed when it was pushed. That is the trade the `false` records.
 
 == The contrast: re-review does fire at branch cleanup
 
@@ -58,13 +52,14 @@ state that ships.
 == The manual escape hatch
 
 Nothing about `re_review_on_loopback: false` prevents a re-review. It only removes the automatic
-one. When a loop-back changed enough that a fresh pass is genuinely warranted -- a substantive
-rework rather than a small fix -- request it by hand by posting a comment on the pull request:
+request. When a loop-back warrants a pass the push did not produce -- the bot's review on that push
+was skipped or rate-limited, or a substantive rework calls for a fresh look rather than a small fix
+-- request it by hand with the bot's own on-demand review comment on the pull request:
 
 [source,text]
 ----
-/review
+@coderabbitai review
 ----
 
-That is the same on-demand `issue_comment` path the PR-Agent workflow declares, so it reaches the
-bot that a push alone does not. Use it deliberately, on the loop-backs that earned it.
+`@sourcery-ai review` asks Sourcery the same way. Use either deliberately, on the loop-backs that
+earned it.
