@@ -571,7 +571,6 @@ jobs:
       # this split exists to rule out. The leg tag carries the release-tag sha so two releases never
       # contend for one tag.
       - name: Tag and push the leg-local tag
-        id: push
         env:
           IMAGE_ID: ${{ steps.image.outputs.id }}
           LEG_TAG: ${{ steps.tag.outputs.value }}
@@ -579,7 +578,6 @@ jobs:
           set -euo pipefail
           docker tag "$IMAGE_ID" "$LEG_TAG"
           docker push "$LEG_TAG"
-          echo "tag=${LEG_TAG}" >> "$GITHUB_OUTPUT"
 
       # Resolve the pushed registry manifest digest ONCE and assert there is exactly one. From here
       # on the leg's image is addressed by digest, never by tag.
@@ -688,7 +686,7 @@ jobs:
           EXPECTED_VERSION: ${{ steps.target.outputs.version }}
           DIGEST: ${{ steps.digest.outputs.value }}
           TAG_SHA: ${{ steps.commit.outputs.sha }}
-          LEG_TAG: ${{ steps.push.outputs.tag }}
+          LEG_TAG: ${{ steps.tag.outputs.value }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
