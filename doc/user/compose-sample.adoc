@@ -49,12 +49,20 @@ reach `ghcr.io`:
 docker pull ghcr.io/cuioss/api-sheriff:0.2.4
 ----
 
-The bring-up script pulls it for you if it is missing, so this step is optional. For what the
-published image contains, how it is tagged, and how to verify its signature and SBOM, see
+The bring-up script pulls it for you if it is missing, so this step is optional. Route A works on
+`linux/amd64` and `linux/arm64` hosts alike, Apple Silicon and AWS Graviton included: the published
+tag names an index over one image per platform, and the pull selects the image for your host. For
+what the published image contains, how it is tagged, and how to verify its signatures and SBOMs, see
 link:container-image.adoc[Container Image -- Pulling, Running and Verifying]; this guide does not
 restate any of it.
 
 === Route B -- a locally built image
+
+You need Route B in exactly two cases: your host's CPU is below the baseline the published image is
+compiled for -- an x86-64 CPU without AVX2, or an older AArch64 core such as Graviton 1 or the
+Raspberry Pi 4, as listed in link:../../README.adoc#_known_limitations[the README's Known
+Limitations] -- or you want to run the sample against local changes. A local build compiles for the
+host it runs on, so it starts where the published image does not.
 
 To run the sample against your own build, produce the image and point the sample at it:
 

@@ -22,13 +22,15 @@ image:https://sonarcloud.io/api/project_badges/measure?project=cuioss_API-Sherif
 
 *Container Image*
 
-// The version badge deliberately excludes the `sha-` provenance tag and the `sha256-` Cosign
-// signature tag. Without `ignore=`, the newest tag on the package is the signature artifact and the
-// badge renders a signature digest as though it were the release version.
-// The asterisks and the comma are percent-encoded (%2A / %2C) on purpose: a literal `*` pair in a
+// The version badge deliberately excludes every tag that is not a release version: the `sha-`
+// provenance tag, the `sha256-` Cosign signature tags, the `leg-` tags each release leaves on its two
+// platform images, and the `dryrun-` tags of a release-lane dry run whose cleanup left something
+// behind. Without `ignore=`, the newest tag on the package is one of these, and the badge renders a
+// signature digest, a per-architecture leg or a dry run as though it were the release version.
+// The asterisks and the commas are percent-encoded (%2A / %2C) on purpose: a literal `*` pair in a
 // macro target is AsciiDoc bold markup, and a literal comma risks being read as an attribute
 // separator. Both encodings are accepted by the badge service; do not "clean them up".
-image:https://ghcr-badge.egpl.dev/cuioss/api-sheriff/latest_tag?ignore=sha-%2A%2Csha256-%2A&label=ghcr.io&color=blue[Container Image,link=https://github.com/cuioss/API-Sheriff/pkgs/container/api-sheriff]
+image:https://ghcr-badge.egpl.dev/cuioss/api-sheriff/latest_tag?ignore=sha-%2A%2Csha256-%2A%2Cleg-%2A%2Cdryrun-%2A&label=ghcr.io&color=blue[Container Image,link=https://github.com/cuioss/API-Sheriff/pkgs/container/api-sheriff]
 image:https://github.com/cuioss/API-Sheriff/actions/workflows/release.yml/badge.svg[Release,link=https://github.com/cuioss/API-Sheriff/actions/workflows/release.yml]
 
 // There is deliberately no Cosign badge and no Trivy badge, and this is standing guidance against
@@ -53,8 +55,8 @@ image:https://github.com/cuioss/API-Sheriff/actions/workflows/release.yml/badge.
 //     it needs a new publishing step with write access to a pages branch, added to the lane that
 //     holds `id-token: write` for keyless signing and `packages: write` for the GHCR push -- a
 //     security-relevant permission widening bought for a badge. The JSON would also go stale between
-//     releases and on the non-atomic partial-release path, while the "Verify the signature under the
-//     published identity" step and the prose already carry the evidence.
+//     releases and on the non-atomic partial-release path, while the "Verify all three signatures
+//     under the published identity" step and the prose already carry the evidence.
 
 
 *Benchmarks*
@@ -265,14 +267,26 @@ Rate limiting is not implemented::
 The `rate_limit` field is reserved and accepted, but it is ignored and no `429` is ever produced:
 `RateLimitConfig` is bound into the route model and read by nothing on the request path.
 
-The published image runs on x86-64-v3 only::
-`ghcr.io/cuioss/api-sheriff` is published for `linux/amd64` alone, and the native executable inside
-it is compiled for GraalVM's default target -- `quarkus.native.additional-build-args` carries no
-`-march` -- which requires the x86-64-v3 instruction set (AVX2, BMI2, FMA). It therefore does not
-start on arm64 hosts -- Apple Silicon, AWS Graviton -- including under Docker's amd64 emulation, nor on x86-64 CPUs that lack AVX2. The process exits at once with
-*"The current machine does not support all of the following CPU features that are required by the
-image"*. On such a host, build the image locally -- see
-link:doc/user/compose-sample.adoc[Route B -- a locally built image] in the compose sample.
+The published image serves linux/amd64 and linux/arm64, each at GraalVM's default CPU baseline::
+`ghcr.io/cuioss/api-sheriff` is one image index over two images, `linux/amd64` and `linux/arm64`,
+each built natively on its own architecture and run through the full integration-test suite before
+it is published. Every tag resolves to the image for the pulling host's platform, so no
+`--platform` flag is needed and an arm64 host -- AWS Graviton, Apple Silicon -- runs the arm64 image
+natively rather than under emulation. The native executable in each image is compiled for
+GraalVM's default target -- `quarkus.native.additional-build-args` carries no `-march`:
++
+* *`linux/amd64`* requires the x86-64-v3 instruction set (AVX2, BMI2, FMA);
+* *`linux/arm64`* requires GraalVM's AArch64 default, which AWS Graviton 2 and every later Graviton,
+  and Apple Silicon, implement.
++
+A CPU below either baseline -- an x86-64 CPU without AVX2, or an older AArch64 core such as
+Graviton 1 or the Raspberry Pi 4 -- cannot start the published image, and neither can an amd64 image
+forced onto an arm64 host under emulation: the process exits at once with *"The current machine does
+not support all of the following CPU features that are required by the image"*. On such a host, and
+to run local changes, build the image locally -- see
+link:doc/user/compose-sample.adoc[Route B -- a locally built image] in the compose sample. The
+decision and the declined `-march=compatibility` alternative are recorded in
+link:doc/adr/0070-The_gateway_image_is_one_index_over_per-architecture_natively_built_and_tested_images.adoc[ADR-0070].
 
 == External Resources
 
