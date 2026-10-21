@@ -1,0 +1,11 @@
+{
+  "id": "PLAN-V02-47",
+  "slug": "multi-arch-image",
+  "workstream": "WS-05",
+  "status": "staged",
+  "lane": "plan-marshall",
+  "plan_marshall_plan_id": "",
+  "pr": "",
+  "landing": "",
+  "seq": 47
+}
