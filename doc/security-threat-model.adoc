@@ -2649,7 +2649,7 @@ without any `Origin` is admitted (`BffSessionFallbackIT`, `AuthBranchTest`, `Aut
 `GatewayEdgeRouteBffWiringTest`). A live session lacking a needed scope is widened or refused `403`
 on the SESSION branch exactly as on a `require: session` route, and never relayed
 (`BffSessionScopeParityIT`, which runs each of its rows on both kinds of route). Both boot refusals
-are asserted (`ConfigValidatorSessionFallbackTest`, `verify-invalid-config-fails.sh`), and the meter
+are asserted (`AuthRulesSessionFallbackTest`, `verify-invalid-config-fails.sh`), and the meter
 records only on `session_fallback` routes (`MetricsIT`, `SheriffMetricsTest`).
 
 [#bff-17]
@@ -3200,7 +3200,7 @@ request let through extends the idle deadline, and a refused request, a redirect
 user-info endpoint and the session-identity lookup do not (`InMemorySessionStoreTest`,
 `IdleTimeout`, `TtlEviction`; `ServerSessionBindingTest`, `IdleDeadline`; `CookieSessionBindingTest`,
 `IdleDeadline`; `SessionAuthenticationStageTest`, `IdleTimeout`; `UserInfoEndpointTest`,
-`IdleTimeout`). An idle timeout outside its range fails the boot (`ConfigValidatorTest`,
+`IdleTimeout`). An idle timeout outside its range fails the boot (`OidcSessionRulesTest`,
 `SessionIdleTimeout`). An activity cookie that is missing, tampered with, signed under another key,
 bound to another session, or that is a session cookie value never extends a session; a sealed
 session value and a signed activity value are each refused by the other codec; the activity value
@@ -3234,7 +3234,7 @@ the new one, also with the store at its capacity, while a refused callback leave
 bound ends the subject's first-created session and no other subject's (`InMemorySessionStoreTest`,
 `PerSubjectBound`); the declared bound, and ten when the key is omitted, is the one the store
 applies (`ConfigLoaderTest`; `BffRuntimeProducerTest`, `PerSubjectSessionBound`); a bound outside
-its range, or declared in cookie mode, fails the boot (`ConfigValidatorTest`,
+its range, or declared in cookie mode, fails the boot (`OidcSessionRulesTest`,
 `SessionMaxSessionsPerSubject`).
 
 A relayed HTTP or gRPC response on which the gateway sets a cookie reaches the client with

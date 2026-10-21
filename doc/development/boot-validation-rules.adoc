@@ -86,7 +86,7 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `validateRouteAuthResolvable`, `validateEffectiveAuth`, `validateSessionFallback`,
   `validateEndpointScopesNeedAuthentication`
 | `auth.*`, `endpoint.scopes`
-| private in `ConfigValidator`
+| extracted
 
 | `LimitRules`
 | `validateSecurityProfileMinimal`, `validateEdgeHardening`, `validateAuthorizationHeaderValueLength`
@@ -113,12 +113,13 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
   `validateSessionMaxSessionsPerSubject`, `validateSessionMaxCookieSize`,
   `validateSessionCookieName`
 | `oidc.session.*`
-| private in `ConfigValidator`
+| extracted
 
 | `OidcClientRules`
-| `validateClientAuthentication`, `validateDefaultReturnUrl`
-| `oidc.client_secret`, `oidc.client_authentication.key_file`, `oidc.login.default_return_url`
-| private in `ConfigValidator`
+| `validateClientAuthentication`, `validateDefaultReturnUrl`, `validateBackChannelOrigin`
+| `oidc.client_secret`, `oidc.client_authentication.key_file`, `oidc.login.default_return_url`,
+  `oidc.back_channel_origin`, `oidc.back_channel_allow_insecure_http`
+| extracted
 
 | `ReservedPathRules`
 | `validateClientJwksPath`, `validateUserInfo`, `validateLoginPath`, `validateStepUpPath`
@@ -187,8 +188,8 @@ concern-class method directly. That is deliberate: a rule that is written but dr
 `DEFAULT_RULES` -- or registered with the wrong arguments -- then fails its own tests, while a test
 of the bare method would stay green over a rule that never runs.
 
-The tests of a not-yet-extracted concern stay in `ConfigValidatorTest` (or its existing sibling
-`ConfigValidator*Test` classes) until the concern moves, and move with it.
+The tests of a not-yet-extracted concern stay in `ConfigValidatorTest` until the concern moves,
+and move with it.
 
 == Constraints every rule keeps
 
