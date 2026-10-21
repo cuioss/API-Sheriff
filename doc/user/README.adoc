@@ -123,12 +123,14 @@ link:../../README.adoc#_known_limitations[Known Limitations].
   `${VAR:-default}` is listed), the boot refusals the check cannot see, and a CI snippet.
 
 | link:container-image.adoc[Container Image -- Pulling, Running and Verifying]
-| The operator layer for the published image at `ghcr.io/cuioss/api-sheriff`: the two-tag scheme and
-  why no `:latest` exists, a `docker run` that reflects what the artifact actually requires (a
-  mounted configuration directory, deployment-supplied certificate material, and the
-  `QUARKUS_HTTP_SSL_PORT` move under `tls.passthrough_sni`), what the SBOM and the HIGH+CRITICAL
-  vulnerability scan do and do not guarantee, and the complete `cosign verify` recipe with both
-  mandatory flags. Links to the release process for the artifact policy.
+| The operator layer for the published image at `ghcr.io/cuioss/api-sheriff`: the two tags, which
+  name one image index over a `linux/amd64` and a `linux/arm64` image, and why no `:latest` exists;
+  when to pin the index digest and when one platform digest; a `docker run` that reflects what the
+  artifact actually requires (a mounted configuration directory, deployment-supplied certificate
+  material, and the `QUARKUS_HTTP_SSL_PORT` move under `tls.passthrough_sni`); what the
+  per-platform SBOMs and HIGH+CRITICAL vulnerability scans do and do not guarantee; and the
+  `cosign verify` recipe, with both mandatory flags, for the index digest and for each platform
+  digest. Links to the release process for the artifact policy.
 
 | link:compose-sample.adoc[Compose Sample -- a Deployment-Shaped Stack You Can Run]
 | The runnable sample under `deployment/compose-sample`: three containers on one network, brought up

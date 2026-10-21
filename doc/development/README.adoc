@@ -50,12 +50,14 @@ to *run* the finished gateway).
 | link:release-process.adoc[Release Process]
 | How a release is cut -- merge a version change in `.github/project.yml`, which is the publishing
   act once the centrally-owned version-changed guard lets it through, with `workflow_dispatch` as the
-  unconditional fallback -- what one release run produces (Maven coordinates, the GHCR image, its
-  SBOM and its Cosign signature), why the image version is a checked fact rather than a convention,
-  the test-which-builds/push-that-digest inversion that makes "push exactly what was tested" true by
-  construction, the two-tag scheme and the deliberate absence of `:latest`, and the two trigger
-  rules -- the version-changed guard is the release decision, and a trigger removal merges on its
-  own.
+  unconditional fallback -- what one release run produces (Maven coordinates, one GHCR image index
+  over a `linux/amd64` and a `linux/arm64` image, two SBOMs and three Cosign signatures), why the
+  image version is a checked fact rather than a convention, why the release is not atomic and which
+  job to re-run when the image lane fails, the test-which-builds/push-that-digest inversion that
+  makes "push exactly what was tested" true by construction on each architecture's leg, the two-tag
+  scheme and the deliberate absence of `:latest`, the dry run that proves the image lane without a
+  release, and the two trigger rules -- the version-changed guard is the release decision, and a
+  trigger removal merges on its own.
 
 | link:re-review-on-loopback.adoc[Automatic Re-Review on Loop-Back -- Why It Is Off]
 | Why `re_review_on_loopback` is deliberately `false` -- a loop-back is the same pull request

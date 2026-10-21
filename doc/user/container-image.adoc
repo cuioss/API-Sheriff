@@ -3,9 +3,10 @@
 :toclevels: 2
 :sectnums:
 
-An operator guide to the published container image: *which tag to use*, *how to run it* with the
-configuration the artifact genuinely requires, *what the SBOM and the vulnerability scan do and do
-not guarantee*, and *how to cryptographically verify the image before deploying it*.
+An operator guide to the published container image: *which tag or digest to use* on which platform,
+*how to run it* with the configuration the artifact genuinely requires, *what the per-platform SBOMs
+and vulnerability scans do and do not guarantee*, and *how to cryptographically verify the image
+before deploying it*.
 
 The image lives at `ghcr.io/cuioss/api-sheriff`. Its version is always identical to the Maven
 version -- the image is a packaging of the same released source tree, not a separately versioned
@@ -14,7 +15,18 @@ guarantee is recorded in link:../development/release-process.adoc[the release pr
 
 == Which tag to use
 
-Every release publishes exactly two tags, both resolving to the same tested digest.
+From the first release the two-platform lane cuts, every release publishes exactly two tags, and
+both name the same *image index*: one digest that lists two platform images, `linux/amd64` and
+`linux/arm64`. Tags up to and including `0.2.4` predate that lane: each is a single `linux/amd64`
+image, so an arm64 host cannot run it -- under amd64 emulation it exits at start with the
+CPU-features error, and without emulation it fails with `exec format error` -- and the sample's
+Route B is the way to run the gateway there. Each platform image was built natively
+on its own architecture, run through the full integration-test suite, scanned and smoke-tested
+before the index was assembled, and the index points each platform at exactly the image that
+platform's run tested. A pull through either tag resolves to the image for the pulling host's
+platform -- there is no `--platform` flag to pass, and an arm64 host runs the arm64 image natively.
+Which CPUs each platform image runs on is stated in
+link:../../README.adoc#_known_limitations[the README's Known Limitations].
 
 `ghcr.io/cuioss/api-sheriff:<version>`::
 The human-facing release reference -- use it when you want the reference to read like the release
@@ -24,7 +36,12 @@ notes.
 *Provenance, not immutability.* `<commit>` is the full 40-character SHA of the commit the release
 tag points at, so this tag answers "which source produced this image?" unambiguously. It is still an
 ordinary registry tag: nothing at the registry prevents it from being repointed, and it is not the
-image digest. Use it to trace an image back to its source -- not as a deployment pin.
+index digest. Use it to trace an image back to its source -- not as a deployment pin.
+
+The package also lists `leg-<commit>-amd64` and `leg-<commit>-arm64` tags, one pair per release.
+*They are not release tags.* The release lane pushes each platform image under one of them before
+the index exists, and leaves them on the two platform images afterwards. Do not pull or pin them:
+use a release tag, or a digest as described below.
 
 *There is no `:latest` tag, and that is deliberate -- the registry is not broken.* Pin by version,
 or by digest for production. The decision and the reasoning behind it are recorded once, in
@@ -40,18 +57,22 @@ digest once and deploy that:
 ----
 docker pull ghcr.io/cuioss/api-sheriff:<version>
 
-# Filter for THIS repository and require exactly one match. `docker image inspect` reports
-# RepoDigests as a list whose order is not defined, and an image pulled from, or pushed to, more
-# than one repository has more than one entry -- so `{{index .RepoDigests 0}}` can silently hand you
-# a digest belonging to a different repository. The release workflow applies the same filter-and-
-# assert-one rule when it resolves the digest it signs.
-DIGEST="$(docker image inspect \
-  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
-  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
-[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
+# Ask the registry for the digest of the index the tag names. The local image store is the wrong
+# place to read it: `docker image inspect` lists RepoDigests in no defined order, and a host that
+# also pulled a platform digest of this repository, or the same image from another repository, holds
+# several entries -- so `{{index .RepoDigests 0}}` can hand you a platform digest or another
+# repository's digest instead of the index.
+DIGEST="ghcr.io/cuioss/api-sheriff@$(docker buildx imagetools inspect \
+  ghcr.io/cuioss/api-sheriff:<version> --format '{{.Manifest.Digest}}')"
+echo "${DIGEST}"
 ----
 
-Then deploy `"${DIGEST}"` verbatim.
+For a tag cut by the two-platform lane, the digest the registry reports is the digest of the index
+the tag names. A tag up to `0.2.4` names no index: it names a single `linux/amd64` image, and the
+same command returns that image's own digest. That digest is just as immutable, but it is a platform
+digest with no index above it, so the recipe under <<_pinning_the_index_or_one_platform>> does not
+apply to it -- there is no `manifests` list to read a platform digest out of. Deploy `"${DIGEST}"`
+verbatim.
 ====
 
 [NOTE]
@@ -68,6 +89,35 @@ for you but works for a maintainer, this is the reason -- the field to check is 
 `visibility`, and only the literal value `public` serves anonymous consumers.
 ====
 
+[#_pinning_the_index_or_one_platform]
+=== Pinning the index, or one platform
+
+A release has three digests, and all three are immutable and signed: the index, and the two
+platform images it lists. Which one to pin depends on what the pin is meant to fix.
+
+*Pin the index digest* -- the one the recipe above resolves -- when the same reference must deploy
+on hosts of either architecture. The index is fixed, so the pair of platform images it lists is
+fixed too, and each host still resolves the image for its own platform. This is the default choice.
+
+*Pin a platform digest* when the deployment must run one architecture and nothing else. A platform
+digest names one image directly and bypasses the index: a host of the other architecture pulling
+it gets an image it cannot run rather than its own. Read the platform digest out of the index you
+already resolved, never out of a fresh tag lookup, so it comes from the same release:
+
+[source,bash]
+----
+# DIGEST is the index digest resolved above. `--raw` prints the index document itself; the platform
+# digests are its `manifests` entries. Requires jq. Replace arm64 with amd64 for the other platform,
+# and require exactly one match, as above.
+PLATFORM_DIGEST="$(docker buildx imagetools inspect --raw "${DIGEST}" \
+  | jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest')"
+[ "$(printf '%s\n' "$PLATFORM_DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one linux/arm64 entry, got: $PLATFORM_DIGEST"; exit 1; }
+PLATFORM_REF="ghcr.io/cuioss/api-sheriff@${PLATFORM_DIGEST}"
+----
+
+Deploy `"${PLATFORM_REF}"` verbatim. Both kinds of pin are verified the same way -- see
+<<_verify_the_signature_before_deploying,Verify the signature before deploying>>.
+
 === Reading the source commit off the image
 
 The published image carries the same commit in an OCI label, so you can recover it from an image you
@@ -81,10 +131,11 @@ docker image inspect \
 ----
 
 The value is the full 40-character SHA of the release-tag commit -- the same commit
-`ghcr.io/cuioss/api-sheriff:sha-<commit>` names. `org.opencontainers.image.version` sits beside it
-and carries the released version. The release lane reads both off the *pulled* image and fails the
-release when either disagrees with what it just published, so a released image whose labels lie does
-not ship.
+`ghcr.io/cuioss/api-sheriff:sha-<commit>` names, and the same in both platform images of a release.
+`org.opencontainers.image.version` sits beside it and carries the released version. The release lane
+reads both off each *pulled* platform image, on that image's own architecture, and fails the release
+when either disagrees with what it just published, so a released image whose labels lie does not
+ship.
 
 *This is a convenience, not a security control.* An image label is ordinary image metadata: anyone
 who can build an image can write any value into it, and reading one back proves nothing about where
@@ -112,6 +163,9 @@ being unidiomatic.
 docker pull ghcr.io/cuioss/api-sheriff:<version>
 ----
 
+For a tag cut by the two-platform lane, the pull selects the image for the host's platform from the
+index, so the same command serves an amd64 and an arm64 host; a tag up to `0.2.4` serves amd64 only.
+
 Running it takes more than a bare `docker run`, because the artifact has real prerequisites:
 
 * *A mounted configuration directory is mandatory.* `sheriff.config.dir` is a relative path that
@@ -127,6 +181,13 @@ Running it takes more than a bare `docker run`, because the artifact has real pr
   Quarkus listener has to move off it -- set `QUARKUS_HTTP_SSL_PORT=8444` or the two collide on
   8443 at start-up.
 
+Both recipes below start `"${DIGEST}"`, the index digest resolved by the digest recipe under _Which
+tag to use_. Verify it as described under
+<<_verify_the_signature_before_deploying,Verify the signature before deploying>> before starting the
+container. Naming the tag instead makes `docker` resolve the mutable tag again at start, so the image
+that starts need not be the one that was verified. A deployment pinned to one platform passes
+`"${PLATFORM_REF}"` the same way.
+
 [source,bash]
 ----
 docker run -d --name api-sheriff \
@@ -140,7 +201,7 @@ docker run -d --name api-sheriff \
   -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
-  ghcr.io/cuioss/api-sheriff:<version>
+  "${DIGEST}"
 ----
 
 The recipe above is the *terminating* deployment -- Quarkus itself terminates TLS on 8443. If your
@@ -161,7 +222,7 @@ docker run -d --name api-sheriff \
   -e QUARKUS_HTTP_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/server.crt \
   -e QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/server.key \
-  ghcr.io/cuioss/api-sheriff:<version>
+  "${DIGEST}"
 ----
 
 `QUARKUS_HTTP_SSL_PORT=8444` is deliberately *absent* from the terminating recipe rather than set in
@@ -215,19 +276,29 @@ precisely how one probe stays correct under both the HTTPS default and the plain
 
 == What the SBOM and the scan guarantee -- and what they do not
 
-Each release produces an SPDX SBOM for the exact published image -- retained as an artifact of the
-release workflow run, not attached to the registry or to a GitHub release -- and the release fails
-before the image is pushed to GHCR if Trivy reports a finding at *HIGH or CRITICAL* on that same
-image. The gate is the `Scan the tested image (gating, HIGH and CRITICAL)` step of
-link:../../.github/workflows/release.yml[`.github/workflows/release.yml`], which runs ahead of the
-registry login. It cannot hold back the Maven artifacts, which the release has already published by
-then -- see link:../development/release-process.adoc#release-not-atomic[The release is NOT atomic].
+Each release produces two SPDX SBOMs, one per platform image --
+`api-sheriff-<version>-amd64-sbom.spdx.json` and `api-sheriff-<version>-arm64-sbom.spdx.json`,
+retained as artifacts of the release workflow run, not attached to the registry or to a GitHub
+release. The two cannot be merged into one: each platform image carries its own executable over its
+own variant of the base image. The index itself has no SBOM, because it contains no software -- it
+only lists the two images.
 
-*Read the scope honestly.* The image is the pinned distroless base plus exactly one layer: a native
-executable that carries no package metadata. There are no jars in the image, so an image scan is in
-substance a scan of the base image's OS packages -- and *the SBOM has exactly that scope too*,
-because it catalogues that same image. Neither artifact is an inventory of, or a statement about,
-the application's Java dependency tree.
+Each platform image is scanned with Trivy on its own build, and a finding at *HIGH or CRITICAL* in
+either image fails the release before that image is pushed to GHCR. A failure on either platform
+blocks the release for both: the release tags are written only once both platform images passed.
+The gate is the `Scan the tested image (gating, HIGH and CRITICAL)` step of
+link:../../.github/workflows/release.yml[`.github/workflows/release.yml`], which runs ahead of the
+registry login on each platform's build. It cannot hold back the Maven artifacts, which the release
+has already published by then -- see
+link:../development/release-process.adoc#release-not-atomic[The release is NOT atomic].
+
+*Read the scope honestly.* Each platform image is that architecture's variant of the pinned
+distroless base plus the native executable built for that architecture, which carries no package
+metadata. There are no jars in the image, so an image scan is in substance a scan of the base
+image's OS packages for that architecture -- and *each SBOM has exactly that scope too*, because it
+catalogues that same image. The two base variants are separate package sets that can carry
+different CVEs, which is why both are scanned. Neither artifact is an inventory of, or a statement
+about, the application's Java dependency tree.
 
 Do not read either one as if it were. Java dependency findings come from the project's
 per-pull-request supply-chain scan -- a Trivy filesystem scan of the repository -- and from its
@@ -238,26 +309,30 @@ Sonar and Dependabot lanes.
 [#_verify_the_signature_before_deploying]
 == Verify the signature before deploying
 
-Every published digest is signed keylessly with Cosign, using the release workflow's GitHub OIDC
-identity. The signature is stored in the registry alongside the image; there is no key to
-distribute. Signing is the `Sign the published digest (keyless)` step of
+Every release signs three digests keylessly with Cosign, using the release workflow's GitHub OIDC
+identity: the index digest the release tags name, and both platform digests the index lists. The
+platform digests are signed as well because a deployment can pin one directly and bypass the index
+(see <<_pinning_the_index_or_one_platform>>); an unsigned platform digest would verify as nothing.
+Each signature is stored in the registry alongside the digest it signs; there is no key to
+distribute. Signing is the `Sign the release index and both platform digests (keyless)` step of
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`].
+
+All three digests verify under the same two values, so the command below is the same whichever
+digest you deploy.
 
 *Verify the digest, and deploy that same digest.* The signature is made over the digest, never over
 a tag. Verifying `:<version>` makes `cosign` resolve the tag itself, so what was verified and what
 is later deployed are two independent tag resolutions -- and a tag can be repointed between them.
-Resolve the digest once, verify it, and deploy it:
+Resolve the index digest once, verify it, and deploy it:
 
 [source,bash]
 ----
 docker pull ghcr.io/cuioss/api-sheriff:<version>
 
-# Same filter-and-assert-one rule as the digest-pinning recipe above -- RepoDigests is unordered and
-# may carry entries for other repositories, so never take element 0 on faith.
-DIGEST="$(docker image inspect \
-  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
-  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
-[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
+# Same registry lookup as the digest-pinning recipe above -- the index digest comes from the
+# registry, never from element 0 of the unordered local RepoDigests list.
+DIGEST="ghcr.io/cuioss/api-sheriff@$(docker buildx imagetools inspect \
+  ghcr.io/cuioss/api-sheriff:<version> --format '{{.Manifest.Digest}}')"
 
 cosign verify \
   --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$' \
@@ -265,9 +340,24 @@ cosign verify \
   "${DIGEST}"
 ----
 
-`RepoDigests` entries are fully-qualified `ghcr.io/cuioss/api-sheriff@sha256:...` references, so the
-resolved value is passed to `cosign` and to your deployment manifest unchanged -- verify and deploy
-the same string.
+`DIGEST` is a fully-qualified `ghcr.io/cuioss/api-sheriff@sha256:...` reference, so the resolved
+value is passed to `cosign` and to your deployment manifest unchanged -- verify and deploy the same
+string.
+
+*If you pin a platform digest, verify that digest.* Resolve `PLATFORM_REF` from the verified index
+as shown under <<_pinning_the_index_or_one_platform>>, then run the same command against it:
+
+[source,bash]
+----
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "${PLATFORM_REF}"
+----
+
+Verifying the index does not stand in for this. The index signature covers the index document, and
+so the platform digests it lists, but `cosign` checks the signature of exactly the reference it is
+given -- and a deployment pinned to a platform digest pulls that digest, not the index.
 
 Both flags are mandatory, and each pins a different half of the claim:
 
@@ -328,16 +418,19 @@ check.
 Do not relax it to a wildcard. An identity pattern that accepts anything accepts a signature from any
 workflow in any repository, which turns the verification into a formality that always passes.
 
-*The release lane runs this exact command against every digest it signs, and fails the release if it
-does not verify* -- that is the `Verify the signature under the published identity` step of
-link:../../.github/workflows/release.yml[`release.yml`]. The values above are not a transcription
-of what the workflow is believed to do -- they are what it proves before calling a release
-complete.
+*The release lane runs this exact command against all three digests it signs, and fails the release
+if any of them does not verify* -- that is the `Verify all three signatures under the published
+identity` step of link:../../.github/workflows/release.yml[`release.yml`]. The values above are not a
+transcription of what the workflow is believed to do -- they are what it proves before calling a
+release complete.
 
 == See also
 
 * link:../development/release-process.adoc[Release process] -- the release-artifact policy, the
   two-tag scheme, and why the image version equals the Maven version.
+* link:../adr/0070-The_gateway_image_is_one_index_over_per-architecture_natively_built_and_tested_images.adoc[ADR-0070]
+  -- why the image is one index over two natively built platform images, and the CPU baseline of
+  each.
 * link:environment-variable-overrides.adoc[Environment-variable overrides] -- the deployment-bound
   knob set referenced above.
 * link:tls-edge.adoc[TLS Edge] -- TLS policy, passthrough SNI, mTLS, and the management interface.

@@ -27,7 +27,8 @@ withdrawn.
 
 *`workflow_dispatch` is the fallback, and past one ref test it is unconditional.* The `release`
 job's `if:` confines the dispatch path to `refs/heads/main`; a dispatch from any other ref is
-skipped silently and publishes nothing. Dispatched from `main`, Actions -> Release -> Run workflow
+skipped silently and publishes nothing, and a dispatch with `dry_run` set is refused on every ref
+(<<dry-run>>). Dispatched from `main` without `dry_run`, Actions -> Release -> Run workflow
 publishes whatever `.github/project.yml` declares there, including a re-declaration of a version
 already published -- nothing central refuses it. Reach for it when the merge path did not
 fire -- and when a merge cut no release, establish *which* of the guard's two conditions refused it
@@ -45,16 +46,23 @@ One release run produces one coherent set of artifacts, all carrying the same ve
 
 * *Maven coordinates on Maven Central* -- `de.cuioss.sheriff.gateway:api-sheriff` and its reactor
   siblings, published by the reusable release workflow.
-* *A container image on GHCR* -- `ghcr.io/cuioss/api-sheriff`, built from the released source tree.
-* *An SPDX SBOM* for that image, retained as an artifact of the release run.
-* *A Cosign signature* over that image's digest, stored in the registry next to the image.
+* *One image index on GHCR* -- `ghcr.io/cuioss/api-sheriff`, listing exactly two platform images,
+  `linux/amd64` and `linux/arm64`, each built natively from the released source tree on a runner of
+  its own architecture. Both release tags name the index.
+* *Two SPDX SBOMs*, one per platform image, retained as artifacts of the release run.
+* *Three Cosign signatures* -- over the index digest and over each of the two platform digests --
+  stored in the registry next to the digests they sign.
 
 That list is exhaustive. *No Helm chart is published*, and the Compose deployment sample is *not a
 release artifact*: it lives in the repository at `deployment/compose-sample/` and is consumed from
 the source tree rather than pulled from a registry. Both are named here so their absence from the
 artifact list reads as a known boundary rather than an oversight.
 
-image::../resources/diagrams/release-publish-flow.svg[Release publish flow -- one release run, entered by a guarded version-bump merge or a deliberate dispatch, drives the Maven release and a single image build whose output is scanned, pushed, smoked and signed, while an independent non-gating pull-request lane scans the pinned base image and the repository filesystem, align=center]
+Why the image is one index over two natively built platform images, and which CPU baseline each is
+compiled for, is recorded in
+link:../adr/0070-The_gateway_image_is_one_index_over_per-architecture_natively_built_and_tested_images.adoc[ADR-0070].
+
+image::../resources/diagrams/release-publish-flow.svg[Release publish flow -- one release run, entered by a guarded version-bump merge or a deliberate dispatch, drives the Maven release and then two per-architecture legs, linux/amd64 and linux/arm64, each of which builds, tests, scans, pushes and smokes its own image, feeding one join that assembles the index, writes the release tags and signs three digests, while an independent non-gating pull-request lane scans the pinned base image and the repository filesystem, align=center]
 
 === The image version is the Maven version
 
@@ -63,24 +71,40 @@ The image is a packaging of the same released source tree, not a separately vers
 Maven version must be able to derive the image reference without consulting a mapping table, and a
 divergence would make "which image contains fix X" unanswerable from the release notes alone.
 
-This is a checked fact rather than a convention. The publish job checks out the release tag the
-Maven release pushed, reads `current-version` from link:../../.github/project.yml[`.github/project.yml`]
-with the same pinned action the release job used, and asserts that the checked-out `project.version`
-equals it. A mismatch fails the release before the image is built or pushed to GHCR.
+This is a checked fact rather than a convention. Each of the two image legs checks out the release
+tag the Maven release pushed, reads `current-version` from
+link:../../.github/project.yml[`.github/project.yml`] with the same pinned action the release job
+used, and asserts that the checked-out `project.version` equals it. A mismatch fails that leg, and
+with it the release, before its image is built or pushed to GHCR. Both platform images therefore
+carry the same version label, and the same revision label naming the release-tag commit.
 
 [#release-not-atomic]
 === The release is NOT atomic
 
-The `publish-image` job declares `needs: [release]`, so *the Maven Central publication has already
-happened* by the time any image step runs. This is not an oversight and cannot be reordered away:
-the released version does not exist until the release job has cut it, so nothing about the image can
-be validated beforehand.
+The image lane is three jobs. `publish-image` runs as two legs, one per platform, and declares
+`needs: [release]`; `join` declares `needs: [release, publish-image]` and runs only when both legs
+succeeded. So *the Maven Central publication has already happened* by the time any image step runs.
+This is not an oversight and cannot be reordered away: the released version does not exist until the
+release job has cut it, so nothing about the image can be validated beforehand.
 
-The consequence is worth stating plainly rather than discovering during an incident. A failure in
-the integration-test suite, the SBOM step, the Trivy gate, the registry push, the smoke test or the
-Cosign signature leaves a *partial release*: the jars are on Maven Central and are irrevocable,
-while no image, or an unsigned image, exists in GHCR. Everywhere this document or the workflow says
-a step runs "before anything is pushed", read it as *before anything is pushed to GHCR*.
+The consequence is worth stating plainly rather than discovering during an incident. A failure
+anywhere in the image lane leaves a *partial release*: the jars are on Maven Central and are
+irrevocable, while GHCR holds less than a release. *What* it holds depends on where the failure
+was, and the line between the two cases is the join's first registry write:
+
+* *A failed or cancelled leg* -- the integration-test suite, the SBOM step, the Trivy gate, the
+  push, the plain-manifest check or the smoke test on either platform -- *leaves no release tag at
+  all.* Only the join writes the release tags, and a leg that did not succeed leaves the join
+  skipped. The legs run with `fail-fast`, so a red leg also cancels the other one. At most a
+  leg-local `leg-<commit>-<arch>` tag is left behind, which no consumer is pointed at. There is no
+  half release: no release tag ever names one platform while the other failed.
+* *A failure in the join after it assembled the index* -- an index assertion, a signature or its
+  verification -- leaves the two release tags on an index that is not, or not completely, signed and
+  verified. The join writes the tags in the same call that assembles the index, and proves and signs
+  it afterwards.
+
+Everywhere this document or the workflow says a step runs "before anything is pushed", read it as
+*before anything is pushed to GHCR*.
 
 ==== If the image lane fails after the Maven release
 
@@ -100,21 +124,29 @@ already-published coordinate -- the failure class this whole procedure exists to
 ====
 . *Classify the failure first -- a re-run cannot pick up a fix.* *Re-run failed jobs* creates a new
   *attempt of the same run*: it reuses the original event context and the original workflow
-  definition, and `publish-image` checks out the *release tag*, not `main`. A commit merged to `main`
+  definition, and both image jobs check out the *release tag*, not `main`. A commit merged to `main`
   after the release run started is therefore invisible to it. "Fix it on `main`, then re-run" does
   not work here and must not be attempted.
 +
 --
 Transient job or runtime failure::
-A registry timeout, a runner flake, a Maven Central propagation race. *Re-run the failed
-`publish-image` job alone* from the Actions UI. It reads its version from `.github/project.yml` at
-the triggering SHA and checks out the release tag, so it reproduces the same inputs without touching
-Maven Central.
+A registry timeout, a runner flake, a Maven Central propagation race. Re-run from the Actions UI,
+and re-run *only the image job that failed* -- never the `release` job. Each image job reads its
+version from `.github/project.yml` at the triggering SHA and checks out the release tag, so a re-run
+reproduces the same inputs without touching Maven Central.
++
+* *A leg failed* (`Build, test and push the <platform> image`): re-run that leg. If `fail-fast`
+  cancelled the other leg, re-run that one too -- the join needs both legs green, and it runs once
+  they are. The re-run leg rebuilds and retests its image and hands the join its new digest.
+* *Both legs are green and the join failed* (`Join the tested digests into the signed release
+  index`): re-run the join alone. It reads the two digests the legs recorded in this run, so no image
+  is rebuilt; it assembles the index from them again, writes the release tags, and signs and verifies
+  all three digests.
 
 Anything carried in the tree or the workflow::
-The source, the Dockerfile, the base-image pin, a `.trivyignore`, `release.yml` itself. A re-run
-reproduces the same inputs and so fails the same way, every time. Fix the cause on `main` and *cut a
-new patch version*. Do not re-run.
+The source, the Dockerfile, the base-image pin, a `.trivyignore`, `release.yml` itself, the runner
+label of a leg. A re-run reproduces the same inputs and so fails the same way, every time. Fix the
+cause on `main` and *cut a new patch version*. Do not re-run.
 --
 . If the failure was the Trivy gate on an unfixable base-image CVE, see
   <<unfixable-base-image-cve>>. Note that both remedies there -- re-pinning the base and adding a
@@ -124,53 +156,72 @@ new patch version*. Do not re-run.
   abandoned coordinates. Maven Central artifacts are never deleted, so a published coordinate can
   only be superseded, never withdrawn.
 
-=== One build, and why the step order is inverted
+=== One build per architecture, and why the step order is inverted
 
 link:../../integration-tests/pom.xml[`integration-tests/pom.xml`] binds
 `docker compose build api-sheriff` to `pre-integration-test`, so the integration-test harness always
-builds the image. The publish lane is therefore ordered *test-which-builds, then
+builds the image. Each leg of the publish lane is therefore ordered *test-which-builds, then
 push-that-digest* rather than the more obvious build, test, push: the harness build is the one and
-only image build in the lane, and the image it produced is the one that gets tagged, pushed and
-signed.
+only image build in that leg, and the image it produced is the one that gets tagged, pushed, listed
+in the index and signed.
 
-The inversion exists so that "push exactly what was tested" holds *by construction*. There is only
-one build, so there is nothing that can drift between the tested artifact and the published one.
+The inversion exists so that "push exactly what was tested" holds *by construction*. Each leg has
+only one build, so there is nothing that can drift between the artifact it tested and the one it
+published.
+
+*Two legs mean one build per architecture -- still never a second build of the same image.* GraalVM
+native-image cannot cross-compile, and an emulated native build does not fit the time budget, so
+the `linux/amd64` leg builds on an amd64 runner and the `linux/arm64` leg on an arm64 runner. The
+harness pins no platform: the Compose build and every digest-pinned base image resolve to the
+runner's own architecture, which is what lets the same step serve both legs unchanged. The join
+builds nothing. It assembles the index inside the registry from exactly the two digests the legs
+pushed, so every image a consumer can pull is an image some leg's integration-test suite ran
+against.
 
 [IMPORTANT]
 ====
-Do not "correct" this back. Adding a second `docker build` to the publish lane, or adding a
-skip-guard to `integration-tests/pom.xml` so the harness stops building, reintroduces exactly the
-drift the inversion removes -- and the drift is silent, because both builds succeed.
+Do not "correct" this back. Adding a second `docker build` to a leg, cross-building the other
+architecture from one leg, replacing the leg push or the join with `docker buildx build --push`, or
+adding a skip-guard to `integration-tests/pom.xml` so the harness stops building, reintroduces
+exactly the drift the inversion removes -- and the drift is silent, because every build succeeds.
 ====
 
 === Scan and signature guarantees
 
-* *Trivy gates the release at HIGH and CRITICAL.* The gate is the
+* *Trivy gates the release at HIGH and CRITICAL, on each platform image.* The gate is the
   `Scan the tested image (gating, HIGH and CRITICAL)` step of
-  link:../../.github/workflows/release.yml[`release.yml`]. A finding at either severity fails the
-  job, and the step runs before the registry login, so nothing has been pushed to GHCR when it fires
-  (the Maven artifacts are already out -- see <<release-not-atomic>>). The threshold is
-  deliberately stricter than a CRITICAL-only gate: API Sheriff is a security-focused gateway.
-* *A Syft SBOM is produced for the same image* the gate scanned, and retained as an artifact of the
-  release run.
-* *The image is Cosign-signed keylessly, by digest*, under the workflow's GitHub OIDC identity, in
-  the `Sign the published digest (keyless)` step. No key material and no new secret is involved. A
-  tag is a mutable pointer, so signing one would sign nothing durable. The following
-  `Verify the signature under the published identity` step then runs the operator verification
-  command from link:../user/container-image.adoc[the container image guide] against that digest and
-  fails the release if the signature does not verify under the published identity.
+  link:../../.github/workflows/release.yml[`release.yml`], and it runs in both legs. A finding at
+  either severity fails that leg, and the step runs before the leg's registry login, so nothing from
+  that leg has been pushed to GHCR when it fires and no release tag is ever written (the Maven
+  artifacts are already out -- see <<release-not-atomic>>). The threshold is deliberately stricter
+  than a CRITICAL-only gate: API Sheriff is a security-focused gateway.
+* *A Syft SBOM is produced in each leg for the same image* that leg's gate scanned, named
+  `api-sheriff-<version>-<arch>-sbom.spdx.json`, and retained as an artifact of the release run.
+* *Three digests are Cosign-signed keylessly*, under the workflow's GitHub OIDC identity, in the
+  join's `Sign the release index and both platform digests (keyless)` step: the index digest the
+  release tags name, and both platform digests, because a consumer can pull a platform digest
+  directly and bypass the index. No key material and no new secret is involved, and the legs hold no
+  signing permission at all. A tag is a mutable pointer, so signing one would sign nothing durable.
+  The following `Verify all three signatures under the published identity` step then runs the
+  operator verification command from link:../user/container-image.adoc[the container image guide]
+  against each of the three digests and fails the release if any of them does not verify under the
+  published identity.
 
-The image scan is narrower than it looks. The image is the pinned distroless base plus one native
-executable and contains no jars, so it is in substance a scan of the base image's OS packages -- and
-the SBOM, cataloguing that same image, carries exactly the same scope. Java dependency findings come
-from the pull-request supply-chain scan and from the Sonar and Dependabot lanes, not from here.
+The image scan is narrower than it looks. Each platform image is that architecture's variant of the
+pinned distroless base plus one native executable and contains no jars, so each scan is in substance
+a scan of that variant's OS packages -- and each SBOM, cataloguing that same image, carries exactly
+the same scope. The two variants are separate package sets that can carry different CVEs, so a clean
+scan of one says nothing about the other; that is why the gate runs in both legs and either one
+blocks the release. Java dependency findings come from the pull-request supply-chain scan and from
+the Sonar and Dependabot lanes, not from here.
 
 [#unfixable-base-image-cve]
 === If the scan blocks on an unfixable base-image CVE
 
 The gate runs with `ignore-unfixed: 'false'`, so it fails on HIGH and CRITICAL findings *including
 those with no upstream fix available*. Combined with a digest-pinned base image, that means a
-release can become blocked by a CVE in a layer this repository does not control and cannot patch.
+release can become blocked by a CVE in a layer this repository does not control and cannot patch --
+in either architecture's variant of the base, since each leg scans its own.
 
 That is the intended default -- an unfixable CVE in the shipped base is a fact an operator deserves
 to know about, not something to route around silently. But it must have a sanctioned escape hatch,
@@ -204,7 +255,10 @@ organisation.
 
 == Container image tags
 
-Every release publishes exactly *two* tags, both resolving to the same tested digest.
+Every release publishes exactly *two* release tags, and both name the same *image index* -- the one
+the join assembled from the two tested platform digests. The join reads both tags back from the
+registry and fails the release unless they resolve to one index digest that lists exactly
+`linux/amd64` and `linux/arm64`, each pointing at its own leg's tested digest.
 
 `ghcr.io/cuioss/api-sheriff:<version>`::
 The human-facing release reference. `<version>` is the Maven version, verbatim.
@@ -212,14 +266,23 @@ The human-facing release reference. `<version>` is the Maven version, verbatim.
 `ghcr.io/cuioss/api-sheriff:sha-<commit>`::
 *Provenance, not immutability.* `<commit>` is the *full 40-character SHA of the commit the release
 tag points at* -- the `release:prepare` commit whose poms carry the released version -- and *not* the
-`main` HEAD the release ran from. That is the commit whose source produced the image; naming the
-triggering commit would point at a tree that never built it. The tag answers "which source
-produced this?" unambiguously, but it remains an ordinary mutable registry tag and is not the image
-digest -- which is exactly why Cosign signs the digest rather than either tag.
+`main` HEAD the release ran from. That is the commit whose source produced both platform images;
+naming the triggering commit would point at a tree that never built them. The tag answers "which
+source produced this?" unambiguously, but it remains an ordinary mutable registry tag and is not the
+index digest -- which is exactly why Cosign signs digests rather than either tag.
 
-*Neither tag is a deployment pin.* Only `ghcr.io/cuioss/api-sheriff@sha256:...` is immutable; both
-tags above can be repointed at the registry. Operator guidance for resolving and deploying the
-digest is in link:../user/container-image.adoc[the container image guide].
+*The `leg-<commit>-<arch>` tags are not release tags.* Each leg pushes its platform image under
+`leg-<commit>-amd64` or `leg-<commit>-arm64` before the index exists, and never under a release tag:
+a release tag may only ever name the index over both platforms, so a leg that wrote one would
+publish a single-platform release the moment it finished. The leg tags stay on the two platform
+images after the release and accumulate, one pair per release. They are harmless -- they name images
+that are part of a signed release -- but no consumer is pointed at them, and the README's version
+badge ignores them, together with the `sha-`, `sha256-` and `dryrun-` tags.
+
+*Neither release tag is a deployment pin.* Only `ghcr.io/cuioss/api-sheriff@sha256:...` is
+immutable, whether it names the index or one platform image; both tags above can be repointed at the
+registry. Operator guidance for resolving, choosing between and deploying those digests is in
+link:../user/container-image.adoc[the container image guide].
 
 *No floating `:latest` tag is published at pre-1.0*, and that is a decision rather than an omission.
 A floating tag invites an unpinned production pull whose contents change under the operator, which
@@ -228,6 +291,100 @@ or by digest for production.
 
 link:../user/container-image.adoc[The container image guide] covers pulling, running and
 cryptographically verifying the published image.
+
+[#dry-run]
+== Proving the image lane with a dry run
+
+A dry run runs the whole image lane -- both legs with their full integration-test suites, the join,
+the three signatures and their verification -- *without a release*, and then deletes everything it
+pushed. It is how a change to the image lane, or a first run on a new runner, is proven before a
+real release depends on it. A release cannot be rehearsed any other way: the release path publishes
+to Maven Central first, irrevocably, so finding a broken leg there means a partial release.
+
+=== Dispatching it
+
+Dispatch the Release workflow with the `dry_run` input set, from the ref whose `release.yml` and
+source tree should be proven -- usually the feature branch that changes the lane:
+
+[source,bash]
+----
+gh workflow run Release --repo cuioss/API-Sheriff --ref <branch> -f dry_run=true
+----
+
+In the Actions UI this is Actions -> Release -> Run workflow, with the branch selected and *Dry run*
+ticked. A dispatch runs the workflow definition of the ref it is dispatched from, which is what lets
+a branch prove its own change to the lane before it is merged.
+
+*A dry run may be dispatched from any ref; a release may not.* The release path is confined to
+`refs/heads/main` because a release publishes what consumers pull by a release tag, under the one
+signing identity operators verify against. A dry run publishes neither, and dispatching it already
+requires write access to the repository, so allowing other refs widens nothing.
+
+=== What it does
+
+* *The `release` job is skipped, on every ref.* Its `if:` refuses a dry-run dispatch before the
+  called workflow starts, so the central guard is never consulted and no Maven publication, SCM tag
+  or GitHub release can result -- from `main` or from anywhere else.
+* *Both legs build the dispatching commit*, labelled with the version `dryrun-<run_id>` and with that
+  commit as its revision. There is no release tag to check out and no released version to claim, so
+  the version-identity assertion is replaced by a check that the tested image carries the
+  `dryrun-<run_id>` version label. That check runs after the integration-test suite, because it
+  inspects the image the suite built; the rest runs as on a release: the integration-test suite, the
+  SBOM, the Trivy gate, the push, the plain-manifest check and the smoke test by digest.
+* *The join assembles the two-platform index and runs every index assertion*, then signs the index
+  and both platform digests and verifies all three. The verification uses an identity derived from
+  the dispatching ref -- the published identity with that ref, regex-escaped, in place of
+  `refs/heads/main`. A dry run dispatched from a feature branch therefore produces signatures the
+  published operator identity refuses.
+
+=== What it never does
+
+* *It writes no `<version>`, no `sha-<commit>` and no `leg-<commit>-<arch>` tag.* Every tag it pushes
+  names the run *and its attempt*: `dryrun-<run_id>-<attempt>-amd64`,
+  `dryrun-<run_id>-<attempt>-arm64` or, on the index, `dryrun-<run_id>-<attempt>`, where `<attempt>`
+  is the workflow's run attempt -- `1`, and one more for each re-run. Each leg and the
+  join assert this against the run's own id and attempt, anchored at both ends, before their first
+  push. The version label stays `dryrun-<run_id>`: it names the run, not the attempt.
+* *It never runs beside a release.* The image jobs accept a skipped `release` job only on a dry-run
+  dispatch, so a release run cannot take the dry-run path and a dry run cannot reach the release
+  path.
+* *It publishes nothing to Maven Central.*
+
+=== Cleanup
+
+The `cleanup-dry-run` job runs at the end of every dry run, whatever the outcome of the image jobs
+-- a dry run that failed half-way or was cancelled has still pushed images. It deletes exactly the
+package versions this run created: the index, both platform images and the signature artifacts
+Cosign stored for each of those three digests. It finds them by the digests the run recorded -- each
+leg records its digest the moment it has pushed, the join records the index digest the moment the
+index exists -- and never by sweeping a tag pattern, which could delete another dry run's versions
+still in flight.
+
+After deleting, it reads the package again and *fails, naming each one*, when anything it should
+have removed is still there: a recorded digest the delete did not remove, or a version still
+carrying one of this run's tags. Those are checked by exact name for *every* attempt of the run, from
+`1` to the current attempt -- `dryrun-<run_id>-<attempt>`, `dryrun-<run_id>-<attempt>-amd64` and
+`dryrun-<run_id>-<attempt>-arm64` for each -- never by prefix or pattern. The tag check only reports;
+it deletes nothing.
+
+*The tags are attempt-scoped so that a re-run cannot hide a version.* A leg pushes before it records
+the digest, so a push followed by a failed record leaves a version only its tag still names. Were the
+tag the same on every attempt, a *Re-run failed jobs* would push under it again, move it to the new
+digest, and leave the earlier version untagged and unrecorded -- and the re-run's cleanup would go
+green over it. Under attempt-scoped tags the earlier version keeps its own attempt's tag, and the
+check names it.
+
+*Re-run a dry run with "Re-run all jobs", or dispatch a new one -- not with "Re-run failed jobs".*
+The cleanup of an attempt deletes every digest that attempt recorded, the green leg's included. A
+*Re-run failed jobs* re-runs only the failed leg and the jobs that depend on it, so its join would
+look for the green leg's digest, which the earlier attempt's cleanup has already deleted, and fail.
+
+A green cleanup therefore means the dry run left no package version behind. A red one names what to
+delete by hand in the package settings. A leftover `dryrun-<run_id>-<attempt>` tag is harmless to
+consumers -- no one is pointed at it -- and the README's version badge ignores every `dryrun-` tag.
+
+The SBOMs a dry run generates stay behind as artifacts of that workflow run, named for the
+`dryrun-<run_id>` version; they are run artifacts, not package versions, and expire with the run.
 
 == Trigger rules
 
@@ -241,8 +398,9 @@ empirical control run against that rule, and what that control does and does not
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] declares two triggers: a
 `workflow_dispatch` carrying no branch filter, and a `pull_request` narrowed by `types: [closed]`,
 `branches: [main]` and `paths: ['.github/project.yml']`. The `release` job's `if:` then narrows each
-path once more -- the dispatch path to `refs/heads/main`, the merge path to `merged == true` -- so a
-dispatch from a non-`main` ref is skipped before anything is published. On the merge path the
+path once more -- the dispatch path to `refs/heads/main` and to a dispatch without `dry_run`, the
+merge path to `merged == true` -- so a dispatch from a non-`main` ref, or any dry-run dispatch, is
+skipped before anything is published. On the merge path the
 question *"is this merge a release?"* is answered by the pinned cuioss-organization workflow's
 *version-changed guard*.
 

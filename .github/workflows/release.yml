@@ -18,8 +18,31 @@ name: Release
 #
 # The decision itself is recorded in ADR-0035 (doc/adr/), which supersedes ADR-0034 — read it there
 # rather than restating it here.
+#
+# THE DRY RUN. A dispatch with `dry_run: true` exercises the whole image lane — both per-architecture
+# legs with their full integration-test suites, the join, the three signatures and their
+# verification — WITHOUT a release. The `release` job refuses it on every ref, so no Maven
+# publication, SCM tag or GitHub release can result; each leg builds the dispatching commit, labelled
+# with the version dryrun-<run_id>; every tag the run pushes is dryrun-<run_id>-<attempt>[-<arch>],
+# scoped to the run attempt and asserted before the push; and the cleanup job deletes, by the digests
+# the run recorded, every package version the run created. It is how the two-platform lane is proven
+# before a real release depends on it.
+#
+# A dry run MAY be dispatched from a non-main ref, unlike a release, and that is deliberate. The
+# main-ref restriction on the release job exists because a release publishes what consumers pull by a
+# release tag, under the one signing identity operators verify against. A dry run publishes neither:
+# it writes no `<version>` and no `sha-*` tag, its images are labelled dryrun-<run_id> and deleted
+# again, and it signs under the identity of the ref it was dispatched from, which — from any ref but
+# main — the published refs/heads/main identity does not even accept. Proving a change to this lane
+# is exactly what a feature branch needs it for, before the change is merged. Nor does it widen who
+# can publish: a dispatch already requires write access to the repository.
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: build, test, join and sign both platform images under dryrun-<run_id>-<attempt> tags, then delete them. Cuts no release.'
+        type: boolean
+        default: false
   # PREFILTER ONLY, NEVER THE DECISION. This path matches EVERY edit to .github/project.yml, not just
   # a version bump: the file's non-release keys today include name, description, maven-build, sonar,
   # pages and github-automation, and that list is open — a key added tomorrow matches too. So a merge
@@ -53,20 +76,26 @@ permissions:
 # That obligation is ASSERTED rather than left to the comment: the "Assert the smoke-probe path
 # matches the shipped management root path" step below compares this constant against the shipped
 # declaration and fails the release, before the image is built, when the two disagree.
+#
+# DRY_RUN is the one place a step reads the run's mode from. It is 'true' only for a dispatch with
+# `dry_run: true`; a merge event carries no inputs, so it is 'false' there. A job's `if:` cannot read
+# workflow env, so the job conditions below spell the same predicate out — `github.event_name ==
+# 'workflow_dispatch' && inputs.dry_run == true` — and must be changed together with this line.
 env:
   MANAGEMENT_CONTEXT_PATH: /q
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
 
 jobs:
   release:
-    # TWO OPERANDS DOING TWO DIFFERENT JOBS. Both are ANDed with the central version-changed guard
+    # THREE OPERANDS DOING THREE DIFFERENT JOBS. All are ANDed with the central version-changed guard
     # inside the called workflow, NEVER an alternative to it.
     #
     # THE DISPATCH OPERAND — `github.event_name != 'workflow_dispatch' || github.ref ==
     # 'refs/heads/main'`. `workflow_dispatch:` above takes no branch filter (GitHub offers none), so
-    # a dispatch can be launched from any branch or tag. The signing-identity block on publish-image
+    # a dispatch can be launched from any branch or tag. The signing-identity block on the join job
     # below (§ "THE IDENTITY NAMES EXACTLY ONE REF") narrows the accepted Cosign identity to the
     # single ref refs/heads/main, resting that narrowing on the claim that both events able to reach
-    # the lane yield refs/heads/main. On the merge path `branches: [main]` above ENFORCES that claim;
+    # the release path yield refs/heads/main. On the merge path `branches: [main]` above ENFORCES that claim;
     # on the dispatch path nothing did — it was assumed. This operand is what makes it a checked
     # fact, and it sits on the release job so a non-main dispatch is refused BEFORE the Maven
     # publication rather than after it. The Cosign verify step is not the enforcement point: it
@@ -78,9 +107,16 @@ jobs:
     # it is NOT here because the central guard is blind to merged-ness; that guard checks
     # merged-ness too.
     #
-    # Both operands are written event-first so each path still runs: the event a given operand does
-    # not govern makes its first disjunct true and short-circuits the operand. This is the same shape
-    # .github/workflows/benchmark.yml already ships.
+    # THE DRY-RUN OPERAND — `github.event_name != 'workflow_dispatch' || inputs.dry_run != true`.
+    # A dry run must never cut a release, from main or from any other ref, so it is refused here,
+    # before the called workflow can reach the central guard at all — never left to that guard to
+    # decline. The dispatch operand alone would not do it: a dry run dispatched from main passes it.
+    # The image jobs below are what a dry run runs; they are reachable without this job precisely
+    # because their conditions accept a SKIPPED release on the dry-run path, and only there.
+    #
+    # All three operands are written event-first so each path still runs: the event a given operand
+    # does not govern makes its first disjunct true and short-circuits the operand. This is the same
+    # shape .github/workflows/benchmark.yml already ships.
     #
     # The main-ref test is DELIBERATELY dispatch-scoped. The merge path is already base-filtered by
     # `branches: [main]`, so extending the ref test to it would stake this project's primary release
@@ -89,6 +125,7 @@ jobs:
     if: >-
       (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
       && (github.event_name != 'pull_request' || github.event.pull_request.merged == true)
+      && (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
     permissions:
       contents: write
     uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
@@ -100,53 +137,96 @@ jobs:
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
-  # Publishes the container image at the SAME version the Maven release just cut.
+  # Builds, tests and pushes the container image at the SAME version the Maven release just cut — once
+  # per architecture, as one matrix leg per platform.
+  #
+  # ONE LEG PER ARCHITECTURE, EACH ON A RUNNER OF ITS OWN ARCHITECTURE. GraalVM native-image cannot
+  # cross-compile, and a QEMU-emulated native build does not fit the time budget, so the linux/amd64
+  # image is built on an amd64 runner and the linux/arm64 image on an arm64 runner. Each leg runs the
+  # whole integration-test suite against the image it built, scans it, pushes it under a leg-local tag
+  # and smokes the pushed digest on its own runner. A leg writes NO release tag and signs NOTHING:
+  # the release tags and the signatures belong to the join job, which is reached only when both legs
+  # are green. `fail-fast: true` cancels the surviving leg as soon as one fails, so a red leg costs one
+  # build rather than two and still leaves no release tag behind.
+  #
+  # Matrix job outputs cannot carry one value per leg — the last leg to finish would overwrite the
+  # other's — so each leg hands its tested image ID and pushed digest to the join through a
+  # per-architecture artifact, leg-digest-<arch>, uploaded as the leg's last act.
   #
   # WHY `needs.release.outputs.released-version != ''` IS THE RUN/SKIP DISCRIMINATOR.
-  # At the pinned 937fbcf (v0.18.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
+  # At the pinned 7115714 (v0.42.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
   # block, so `released-version` is genuinely readable here. It is EMPTY exactly when the central
   # guard declined to release — the declared version did not move, or a tag for it already exists —
   # so an empty string proves no release was produced, never which predicate refused. The caller
-  # consumes it and derives nothing. Without this `if:`, a guard-skipped merge would still spend 90
-  # minutes on a native build, then re-push and re-sign an already-released tag.
+  # consumes it and derives nothing. Without this `if:`, a guard-skipped merge would still spend two
+  # 90-minute native builds, after which the join would re-push and re-sign an already-released tag.
+  # The same guard therefore sits on the legs and on the join alike.
   #
   # The two obvious alternatives are both wrong. `needs.release.result` reports a non-failure for a
   # called workflow whose internal jobs all skipped, so it cannot tell a real release from a skipped
   # one. Re-deriving "the version changed" in this caller would re-implement centrally-owned logic —
   # the thing this design exists to avoid.
   #
+  # THE SECOND WAY IN — THE DRY RUN, AND ONLY IT. On a dry run the `release` job is skipped by its
+  # own `if:`, and a job whose dependency was skipped is skipped too unless its condition names a
+  # status function. So the condition below starts with `!cancelled()`, which replaces the implicit
+  # `success()`, and then states each path's requirement on `release` itself:
+  #   * the release path still requires `needs.release.result == 'success'` AND a non-empty
+  #     `released-version` — the guard above, unchanged, with the success the implicit `success()`
+  #     used to supply now written out;
+  #   * the dry-run path requires a dry-run dispatch AND `needs.release.result == 'skipped'`, so a
+  #     dry run never runs beside a release, and a failed or cancelled `release` never lets a run in
+  #     through this door. That `skipped` is the release job's OWN `if:` refusing it, which GitHub
+  #     reports as skipped — a different thing from the called workflow's internal jobs skipping,
+  #     which reports success and is why `result` alone cannot be the release-path discriminator.
+  # `!cancelled()` rather than `always()`: a cancelled run starts no leg.
+  #
   # SCOPE SPLIT — two separate questions, two separate answers. Do not merge them.
-  #   * `needs.release.outputs.released-version` decides WHETHER this job runs (run/skip).
-  #   * `steps.config.outputs.current-version` supplies THE VALUE PUBLISHED. It comes from the
-  #     sparse checkout + `read-project-config` steps below, which are DELIBERATELY RETAINED rather
-  #     than replaced by a `needs.` expression — the retention rests on keeping this lane's version
-  #     lookup independent of the release job's output plumbing, not on that output being
-  #     unavailable. It is not a leftover of the retired caveat.
+  #   * `needs.release.outputs.released-version` decides WHETHER this job runs (run/skip) on the
+  #     release path.
+  #   * `steps.config.outputs.current-version` supplies THE VALUE PUBLISHED on a release (through
+  #     `steps.target.outputs.version`, which carries dryrun-<run_id> instead on a dry run). It
+  #     comes from the sparse checkout + `read-project-config` steps below, which are DELIBERATELY
+  #     RETAINED rather than replaced by a `needs.` expression — the retention rests on keeping
+  #     this lane's version lookup independent of the release job's output plumbing, not on that
+  #     output being unavailable. It is not a leftover of the retired caveat.
   # Consuming the output for run/skip while retaining the re-read for the value is consistent, not
   # contradictory. Collapsing the two would delete this job's guard discriminator and re-open the
   # 90-minute no-op publish lane.
   #
   # The org workflow is NOT forked, and this job now runs only when the central guard let a release
-  # through.
+  # through, or on a dry run.
   #
   # LATENCY NOTE — `needs: [release]` waits for the whole called workflow, including its
   # wait-for-maven-central (30-minute timeout) and propagate-to-consumers jobs. Both are `if:`-gated
   # on a non-empty `consumers` output and .github/project.yml declares none, so both skip and add no
   # wall time. A long wait here is Maven Central, not a hang.
   publish-image:
-    name: Publish the tested image to GHCR
+    name: Build, test and push the ${{ matrix.platform }} image
     needs: [release]
-    if: needs.release.outputs.released-version != ''
-    runs-on: ubuntu-latest
-    # The native compile inside the integration-test lifecycle is the dominant term; the scan, push
-    # and smoke together are minutes.
+    if: >-
+      !cancelled()
+      && ((needs.release.result == 'success' && needs.release.outputs.released-version != '')
+      || (github.event_name == 'workflow_dispatch' && inputs.dry_run == true && needs.release.result == 'skipped'))
+    runs-on: ${{ matrix.runner }}
+    # Per leg. The native compile inside the integration-test lifecycle is the dominant term; the
+    # scan, push and smoke together are minutes.
     timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    # No `id-token: write`: a leg signs nothing, so it holds no OIDC token to sign with. Signing
+    # happens once, in the join, over the digests the legs hand over.
     permissions:
       contents: read
       packages: write
-      # Required for Cosign keyless OIDC signing. Not a novel posture for this repository —
-      # scorecards.yml, pr-agent.yml and claude.yml already declare it.
-      id-token: write
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -154,8 +234,8 @@ jobs:
         with:
           egress-policy: audit
 
-      # Checked out into a side directory so the release-tag checkout below owns the workspace root
-      # untouched. Only .github/project.yml is needed here.
+      # Checked out into a side directory so the checkout of the built commit below owns the
+      # workspace root untouched. Only .github/project.yml is needed here.
       #
       # sparse-checkout-cone-mode MUST be false. Cone mode — the action's default — matches
       # DIRECTORY entries only, so the single-file pattern below would match nothing and
@@ -176,25 +256,78 @@ jobs:
         with:
           config-path: .release-config/.github/project.yml
 
-      # The RELEASE TAG, never the dispatching ref. cui-parent-pom configures maven-release-plugin
-      # with <tagNameFormat>@{project.version}</tagNameFormat>, so the SCM tag is literally the
-      # version string with no prefix, and the reusable workflow pushes it with `tags: true` before
-      # the job ends. Checking out the dispatching ref would build a -SNAPSHOT tree and label it with
-      # the release version — every step would still succeed, which is what makes it dangerous.
-      # If a future parent bump changes tagNameFormat this checkout fails loudly on an unresolvable
-      # ref: a red release rather than a wrong image.
-      - name: Check out the release tag
+      # WHAT THIS RUN BUILDS AND UNDER WHICH VERSION, decided once and read by every later step.
+      #   * Release: the version is the released one from .github/project.yml, and the commit built
+      #     is its release tag.
+      #   * Dry run: no release exists, so there is no release tag to check out and no released
+      #     version to claim. The leg builds the dispatching commit (github.sha) and labels it
+      #     dryrun-<run_id> — a version no release can ever carry, so a dry-run image can never be
+      #     mistaken for a released one by its label.
+      - name: Resolve what this run builds
+        id: target
+        env:
+          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
+          RUN_ID: ${{ github.run_id }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = true ]; then
+            echo "version=dryrun-${RUN_ID}" >> "$GITHUB_OUTPUT"
+            echo "ref=${DISPATCH_SHA}" >> "$GITHUB_OUTPUT"
+            echo "Dry run: building ${DISPATCH_SHA} as version dryrun-${RUN_ID}."
+          else
+            echo "version=${RELEASED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "ref=${RELEASED_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Release: building the release tag ${RELEASED_VERSION}."
+          fi
+
+      # On a release, the RELEASE TAG, never the dispatching ref. cui-parent-pom configures
+      # maven-release-plugin with <tagNameFormat>@{project.version}</tagNameFormat>, so the SCM tag is
+      # literally the version string with no prefix, and the reusable workflow pushes it with
+      # `tags: true` before the job ends. Checking out the dispatching ref would build a -SNAPSHOT
+      # tree and label it with the release version — every step would still succeed, which is what
+      # makes it dangerous. If a future parent bump changes tagNameFormat this checkout fails loudly
+      # on an unresolvable ref: a red release rather than a wrong image.
+      #
+      # On a dry run, the dispatching commit — deliberately, and safe for the reason the release path
+      # refuses it: the -SNAPSHOT tree is labelled dryrun-<run_id>, never with a release version.
+      - name: Check out the commit this run builds
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ steps.config.outputs.current-version }}
+          ref: ${{ steps.target.outputs.ref }}
 
-      # The commit the `sha-` tag names: the release:prepare commit whose poms carry the released
-      # version, NOT the main HEAD the release was dispatched from.
-      - name: Resolve the release-tag commit
+      # The commit the image's revision label names. On a release it is the release:prepare commit
+      # whose poms carry the released version — the commit the `sha-` tag names — NOT the main HEAD
+      # the release was dispatched from. On a dry run it is the dispatching commit.
+      - name: Resolve the built commit
         id: commit
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # THE TAG THIS LEG PUSHES, computed once so the dry-run assertion below checks the very value
+      # the push step pushes. Release: leg-<release-tag sha>-<arch>. Dry run:
+      # dryrun-<run_id>-<attempt>-<arch>.
+      #
+      # The dry-run tag carries the run ATTEMPT because a re-run must not move a tag off an earlier
+      # attempt's version. A leg pushes before it records the digest, so a push followed by a failed
+      # record leaves a version only its tag still names; a re-run pushing under the same tag would
+      # strip it, and the cleanup's tag check would then pass over a version left behind. Under an
+      # attempt-scoped tag the earlier version stays tagged and the cleanup names it.
+      - name: Resolve the leg tag
+        id: tag
+        env:
+          TAG_SHA: ${{ steps.commit.outputs.sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = true ]; then
+            echo "value=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-${ARCH}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=ghcr.io/cuioss/api-sheriff:leg-${TAG_SHA}-${ARCH}" >> "$GITHUB_OUTPUT"
+          fi
 
       # Before the version assertion, because the assertion evaluates project.version through Maven.
       - name: Set up JDK 25
@@ -214,7 +347,13 @@ jobs:
       # § "If the image lane fails after the Maven release" for the recovery procedure. Ordering this
       # job before the release is not possible: the released version does not exist until the release
       # job has cut it.
+      #
+      # Release path only. A dry run builds a -SNAPSHOT tree under the version dryrun-<run_id>, so the
+      # two versions differ by design and this identity cannot hold. Its dry-run replacement is the
+      # "Assert the tested image carries the dry-run version label" step below, which checks the
+      # label the dry-run image is built with against the dry-run version.
       - name: Assert the checked-out project version matches the released version
+        if: env.DRY_RUN != 'true'
         env:
           RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
         run: |
@@ -276,19 +415,26 @@ jobs:
           fi
           echo "Smoke-probe path confirmed: MANAGEMENT_CONTEXT_PATH='${MANAGEMENT_CONTEXT_PATH}' matches the acting quarkus.management.root-path in ${SHIPPED_PROPERTIES}."
 
-      # THE ONE AND ONLY IMAGE BUILD IN THIS LANE.
+      # ONE IMAGE BUILD PER ARCHITECTURE, AND STILL NO SECOND BUILD.
       # integration-tests/pom.xml binds `docker compose build api-sheriff` to pre-integration-test,
-      # so the harness always builds the image. Letting that build be authoritative is what makes
-      # "push exactly what was tested" true BY CONSTRUCTION — there is only one build, so nothing can
-      # drift. Do NOT add a second `docker build` here, and do NOT add a skip-guard to
-      # integration-tests/pom.xml. APP_VERSION and APP_REVISION reach the image labels through the
-      # Compose service's build.args (see integration-tests/docker-compose.yml) — that is the only
-      # channel, because this lane performs no `docker build` of its own. APP_REVISION carries the
-      # release-tag commit resolved above, so org.opencontainers.image.revision names the very commit
-      # the `sha-` tag names.
+      # so the harness always builds the image — on this leg's runner, for this leg's architecture.
+      # Letting that build be authoritative is what makes "push exactly what was tested" true BY
+      # CONSTRUCTION: each leg builds its image exactly once and pushes that very image, so nothing
+      # can drift between what the suite ran against and what the leg publishes. Two legs means two
+      # images, one per architecture — never two builds of the same one. Do NOT add a second
+      # `docker build` here, do NOT cross-build the other architecture from this leg, and do NOT add a
+      # skip-guard to integration-tests/pom.xml. The harness pins no platform: the Compose build and
+      # every digest-pinned base image resolve to the runner's own architecture, which is what lets
+      # the same step serve both legs unchanged.
+      #
+      # APP_VERSION and APP_REVISION reach the image labels through the Compose service's build.args
+      # (see integration-tests/docker-compose.yml) — that is the only channel, because this lane
+      # performs no `docker build` of its own. APP_REVISION carries the built commit resolved above,
+      # so org.opencontainers.image.revision names the very commit the `sha-` tag names on both
+      # platform images alike. On a dry run the two are dryrun-<run_id> and the dispatching commit.
       - name: Run the integration-test suite (builds the image)
         env:
-          APP_VERSION: ${{ steps.config.outputs.current-version }}
+          APP_VERSION: ${{ steps.target.outputs.version }}
           APP_REVISION: ${{ steps.commit.outputs.sha }}
         run: |
           ./mvnw --no-transfer-progress verify -Pintegration-tests -pl integration-tests -am
@@ -308,21 +454,43 @@ jobs:
           echo "id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
           echo "Tested image ID: ${IMAGE_ID}"
 
-      # SBOM for the TESTED image, so it describes exactly what ships.
+      # THE DRY-RUN REPLACEMENT FOR THE VERSION-IDENTITY ASSERTION. A dry run has no released version
+      # for the poms to match, so what it can and does check is that the image it tested carries the
+      # dry-run version it was built with — before the image is scanned, pushed or smoked. It reads
+      # the label off the tested image ID, the same content-derived handle every later step uses.
+      - name: Assert the tested image carries the dry-run version label
+        if: env.DRY_RUN == 'true'
+        env:
+          IMAGE_ID: ${{ steps.image.outputs.id }}
+          EXPECTED_VERSION: ${{ steps.target.outputs.version }}
+        run: |
+          set -euo pipefail
+          LABELLED="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE_ID")"
+          if [ "$LABELLED" != "$EXPECTED_VERSION" ]; then
+            echo "::error::The dry-run image is labelled org.opencontainers.image.version='${LABELLED}', expected '${EXPECTED_VERSION}'. Refusing to publish it."
+            exit 1
+          fi
+          echo "Dry-run version label confirmed: ${LABELLED}"
+
+      # SBOM for the TESTED image, so it describes exactly what ships. One per leg, named by
+      # architecture: the two platform images carry different executables over different base
+      # layers, so one SBOM cannot describe both.
       - name: Generate the SPDX SBOM for the tested image
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           image: ${{ steps.image.outputs.id }}
           format: spdx-json
-          artifact-name: api-sheriff-${{ steps.config.outputs.current-version }}-sbom.spdx.json
+          artifact-name: api-sheriff-${{ steps.target.outputs.version }}-${{ matrix.arch }}-sbom.spdx.json
           upload-artifact: true
           # The job holds `contents: read`; it must not attempt to attach assets to a GitHub release.
           upload-release-assets: false
 
-      # THE GATE. A finding at HIGH **or** CRITICAL fails the job, and because this step sits ABOVE
-      # the `docker login` below, nothing has been pushed TO GHCR when it fires. (The Maven artifacts
-      # were already published by the `release` job this one depends on — see the version-assertion
-      # step above for the partial-release scope and the recovery pointer.)
+      # THE GATE. A finding at HIGH **or** CRITICAL fails the leg, and because this step sits ABOVE
+      # the `docker login` below, nothing from this leg has been pushed TO GHCR when it fires. The
+      # other leg may already have pushed its leg-local tag, but no release tag exists yet — those
+      # are written only by the join, which a failed leg never lets run. (The Maven artifacts were
+      # already published by the `release` job this one depends on — see the version-assertion step
+      # above for the partial-release scope and the recovery pointer.)
       #
       # `ignore-unfixed: 'false'` is deliberate, and it has a cost worth naming: an unfixed HIGH or
       # CRITICAL CVE in the pinned base image blocks EVERY release until the base is re-pinned to a
@@ -336,25 +504,33 @@ jobs:
       # gateway, so the stricter posture is the point. Do not relax it to CRITICAL-only without an
       # explicit, recorded decision.
       #
-      # SCOPE HONESTY — what this scan can and cannot see. The image is the pinned distroless base
-      # plus exactly TWO layers: `WORKDIR /app` (~8 kB) and the GraalVM native executable
-      # (`COPY --chmod=0755 target/*-runner /app/application`, ~95 MB). The executable is dynamically
-      # linked — no --static and no --libc=musl is configured in quarkus.native.additional-build-args
-      # — which is why the base is the glibc-bearing quarkus-distroless-image rather than scratch. The
-      # load-bearing property is not how it is linked but that NEITHER LAYER CARRIES PACKAGE METADATA
-      # OR JARS, so
-      # Trivy's Java analyzer finds nothing and this is in substance a scan of the pinned base
-      # image's OS packages. Java dependency CVEs are covered by the PR-lane filesystem scan in
-      # maven.yml and by the Sonar and Dependabot lanes — NOT here. A clean result here is not
-      # evidence of a clean dependency tree.
+      # SCOPE HONESTY — what this scan can and cannot see. It is a PER-ARCHITECTURE scan: each leg
+      # scans its own platform image, so the amd64 leg sees the amd64 variant of the pinned base and
+      # the arm64 leg the arm64 variant. The base is pinned by one digest, which resolves to the
+      # runner's own platform, and the two variants are separate package sets that can carry
+      # different CVEs — a clean amd64 scan says nothing about arm64, which is why the gate runs on
+      # BOTH legs and either one blocks the release. Each image is that architecture's base plus
+      # exactly TWO layers: `WORKDIR /app` (~8 kB) and the GraalVM native executable built for that
+      # architecture (`COPY --chmod=0755 target/*-runner /app/application`, ~95 MB). The executable is
+      # dynamically linked — no --static and no --libc=musl is configured in
+      # quarkus.native.additional-build-args — which is why the base is the glibc-bearing
+      # quarkus-distroless-image rather than scratch. The load-bearing property is not how it is
+      # linked but that NEITHER LAYER CARRIES PACKAGE METADATA OR JARS, so Trivy's Java analyzer finds
+      # nothing and this is in substance a scan of that architecture's base OS packages. Java
+      # dependency CVEs are covered by the PR-lane filesystem scan in maven.yml and by the Sonar and
+      # Dependabot lanes — NOT here. A clean result here is not evidence of a clean dependency tree.
       #
-      # ATTESTATION POSTURE, PINNED. This lane builds into the local image store (via the harness
-      # `docker compose build`) and then `docker tag` + `docker push`. It must NOT switch to
-      # `docker buildx build --push`: with buildx's default attestations a registry push produces a
-      # manifest LIST wrapping the image alongside provenance/SBOM attestations, and the top-level
-      # digest then addresses that list rather than the plain image manifest — which changes what the
-      # pull-by-digest smoke pulls and what Cosign signs. The current shape sidesteps the problem
-      # entirely rather than managing it.
+      # ATTESTATION POSTURE, PINNED. Each leg builds into the local image store (via the harness
+      # `docker compose build`) and then `docker tag` + `docker push` — so what a leg pushes is a PLAIN
+      # image manifest, which the "Assert the pushed digest is a plain image manifest" step below
+      # checks rather than assumes. The image index a consumer pulls is assembled afterwards by the
+      # join, from exactly the two leg digests and nothing else. It must NOT switch to
+      # `docker buildx build --push`, on a leg or anywhere else: with buildx's default attestations a
+      # registry push produces a manifest LIST wrapping the image alongside provenance/SBOM
+      # attestations, so the leg digest would address that list rather than the plain image manifest
+      # — which changes what the pull-by-digest smoke pulls, smuggles attestation entries into the
+      # index the join assembles, and changes what Cosign signs. The current shape sidesteps the
+      # problem entirely rather than managing it.
       - name: Scan the tested image (gating, HIGH and CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -377,19 +553,45 @@ jobs:
         run: |
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-      - name: Tag and push both release tags
+      # A DRY RUN PUSHES DRY-RUN TAGS AND NOTHING ELSE, checked before this leg's first push rather
+      # than trusted from the step that computed the tag. The pattern is anchored at both ends and
+      # bound to this run's own id, this attempt and this leg's own architecture, so a dry run can
+      # never write a `<version>`, `sha-*` or `leg-*` tag, nor a tag belonging to another run or to
+      # another attempt of this one.
+      - name: Assert the dry run pushes only its own dry-run tag
+        if: env.DRY_RUN == 'true'
+        env:
+          LEG_TAG: ${{ steps.tag.outputs.value }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$LEG_TAG" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-${ARCH}$ ]]; then
+            echo "::error::A dry run may push only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-${ARCH}, but this leg would push '${LEG_TAG}'. Refusing to push."
+            exit 1
+          fi
+          echo "Dry-run tag confirmed: ${LEG_TAG}"
+
+      # THE LEG-LOCAL TAG, AND ONLY THAT ONE. A leg pushes its image under
+      # leg-<release-tag sha>-<arch> (dryrun-<run_id>-<attempt>-<arch> on a dry run), never under
+      # `<version>` and never under `sha-*`: those two are release tags, and a release tag may only
+      # ever name the index the join assembles once BOTH legs are green. A leg that wrote one would
+      # publish a single-platform release the moment it finished, whatever the other leg did — the
+      # half release this split exists to rule out. The leg tag carries the release-tag sha so two
+      # releases never contend for one tag; the dry-run tag carries the run attempt so two attempts
+      # of one dry run never contend for one tag either.
+      - name: Tag and push the leg-local tag
         env:
           IMAGE_ID: ${{ steps.image.outputs.id }}
-          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
-          TAG_SHA: ${{ steps.commit.outputs.sha }}
+          LEG_TAG: ${{ steps.tag.outputs.value }}
         run: |
-          docker tag "$IMAGE_ID" "ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION}"
-          docker tag "$IMAGE_ID" "ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}"
-          docker push "ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION}"
-          docker push "ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}"
+          set -euo pipefail
+          docker tag "$IMAGE_ID" "$LEG_TAG"
+          docker push "$LEG_TAG"
 
-      # Resolve the pushed registry manifest digest ONCE and assert both tags report the same one.
-      # From here on the image is addressed by digest, never by tag.
+      # Resolve the pushed registry manifest digest ONCE and assert there is exactly one. From here
+      # on the leg's image is addressed by digest, never by tag.
       - name: Resolve the pushed manifest digest
         id: digest
         env:
@@ -404,10 +606,75 @@ jobs:
           echo "value=${DIGESTS[0]}" >> "$GITHUB_OUTPUT"
           echo "Published digest: ${DIGESTS[0]}"
 
-      # SMOKE THE PUBLISHED ARTIFACT, not the local one. The identity assertion (pulled ID equals the
-      # tested ID) is the LOAD-BEARING check and is independent of runtime configuration; the label
-      # and liveness legs are additive. If a leg ever proves fragile, weaken THAT leg — never the
-      # identity assertion.
+      # THE CLEANUP'S RECORD, written the moment the digest is known — not after the smoke, unlike
+      # the hand-off to the join below. The cleanup job deletes what a dry run created by digest, so
+      # a digest this leg pushed must be on record even when a later step of the leg fails; a leg
+      # that recorded only on success would leave its failed attempts behind, unnamed. The record is
+      # keyed by run attempt as well as architecture: a re-run leg pushes a new digest under its own
+      # attempt's dryrun tag, the earlier attempt's version stays a package version under the earlier
+      # tag, and both must stay on record. Should this step fail after the push, the version is
+      # unrecorded but still tagged dryrun-<run_id>-<attempt>-<arch>, and the cleanup's tag check
+      # names it.
+      - name: Record the pushed digest for the dry-run cleanup
+        if: env.DRY_RUN == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          ATTEMPT: ${{ github.run_attempt }}
+          DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/dryrun-created"
+          jq -n --arg kind platform --arg arch "$ARCH" --arg digest "$DIGEST" \
+            '{kind: $kind, arch: $arch, digest: $digest}' \
+            > "${RUNNER_TEMP}/dryrun-created/platform-${ARCH}-${ATTEMPT}.json"
+          cat "${RUNNER_TEMP}/dryrun-created/platform-${ARCH}-${ATTEMPT}.json"
+
+      - name: Hand the pushed digest to the dry-run cleanup
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dryrun-created-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dryrun-created/platform-${{ matrix.arch }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+
+      # THE ATTESTATION POSTURE, CHECKED RATHER THAN ASSUMED. The join assembles the release index
+      # from the two leg digests, so each one MUST address a plain image manifest. A runner whose
+      # Docker uses the containerd image store records build attestations next to the image, and
+      # `docker push` then pushes an index wrapping the image and those attestations — every step
+      # above would still succeed, the join would nest an index inside the index, and Cosign would
+      # sign a digest no platform pull ever resolves to. The registry's own answer is read, by digest:
+      # a plain manifest carries an image-manifest media type and no `manifests` list. The remedy for
+      # a failure here is disabling default attestations on the harness build, NOT switching to
+      # `docker buildx build --push`.
+      - name: Assert the pushed digest is a plain image manifest
+        env:
+          DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          set -euo pipefail
+          REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
+          RAW="$(docker buildx imagetools inspect --raw "$REF")"
+          MEDIA_TYPE="$(jq -r '.mediaType // ""' <<< "$RAW")"
+          case "$MEDIA_TYPE" in
+            application/vnd.oci.image.manifest.v1+json | application/vnd.docker.distribution.manifest.v2+json) ;;
+            *)
+              echo "::error::${REF} is not a plain image manifest: media type '${MEDIA_TYPE}'. A leg must push one image, never an index or manifest list."
+              exit 1
+              ;;
+          esac
+          if jq -e 'has("manifests")' <<< "$RAW" > /dev/null; then
+            echo "::error::${REF} carries a manifests list, so it is an index rather than a plain image manifest."
+            exit 1
+          fi
+          echo "Plain image manifest confirmed: ${REF} (${MEDIA_TYPE})"
+
+      # SMOKE THE PUBLISHED ARTIFACT, not the local one — on this leg's own runner, because only a
+      # host of the image's own architecture can boot it natively. The identity assertion (pulled ID
+      # equals the tested ID) is the LOAD-BEARING check and is independent of runtime configuration;
+      # the label, platform and liveness checks are additive. If one of those ever proves fragile,
+      # weaken THAT check — never the identity assertion. The platform check compares the pulled
+      # image's OS and architecture with the leg's: it is what makes a mis-wired matrix entry — an
+      # arm64 label on an amd64 runner, say — fail here instead of publishing an image under the
+      # wrong platform in the index.
       #
       # The run configuration is what the shipped artifact genuinely requires, not an idealised
       # one-liner: sheriff.config.dir is relative and resolves inside the image, so the container
@@ -429,15 +696,17 @@ jobs:
       - name: Smoke the published image by digest
         env:
           IMAGE_ID: ${{ steps.image.outputs.id }}
-          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
+          EXPECTED_VERSION: ${{ steps.target.outputs.version }}
           DIGEST: ${{ steps.digest.outputs.value }}
           TAG_SHA: ${{ steps.commit.outputs.sha }}
+          LEG_TAG: ${{ steps.tag.outputs.value }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
 
           # Drop every local reference so the pull genuinely reaches the registry.
-          docker rmi "ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION}" "ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}"
+          docker rmi "$LEG_TAG"
           docker pull "$REF"
 
           PULLED_ID="$(docker image inspect --format '{{.Id}}' "$REF")"
@@ -446,15 +715,21 @@ jobs:
             exit 1
           fi
 
+          PULLED_PLATFORM="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$REF")"
+          if [ "$PULLED_PLATFORM" != "$PLATFORM" ]; then
+            echo "::error::Published image platform is '${PULLED_PLATFORM}' but this leg publishes '${PLATFORM}'."
+            exit 1
+          fi
+
           PULLED_VERSION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$REF")"
-          if [ "$PULLED_VERSION" != "$RELEASED_VERSION" ]; then
-            echo "::error::Published image label org.opencontainers.image.version='${PULLED_VERSION}' but the released version is '${RELEASED_VERSION}'."
+          if [ "$PULLED_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Published image label org.opencontainers.image.version='${PULLED_VERSION}' but this run builds version '${EXPECTED_VERSION}'."
             exit 1
           fi
 
           PULLED_REVISION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$REF")"
           if [ "$PULLED_REVISION" != "$TAG_SHA" ]; then
-            echo "::error::Published image label org.opencontainers.image.revision='${PULLED_REVISION}' but the release-tag commit is '${TAG_SHA}'."
+            echo "::error::Published image label org.opencontainers.image.revision='${PULLED_REVISION}' but the built commit is '${TAG_SHA}'."
             exit 1
           fi
 
@@ -489,26 +764,408 @@ jobs:
           docker logs api-sheriff-smoke
           exit 1
 
+      # THE HAND-OFF TO THE JOIN, written only once this leg's digest has passed the smoke — so a
+      # digest that reaches the join is one that was tested, scanned, pushed as a plain manifest and
+      # booted from the registry on its own architecture. The record names the platform the leg
+      # proved, the digest it pushed and the image ID the suite tested; the join assembles the index
+      # from exactly these values and nothing else. `overwrite: true` lets a re-run of this leg
+      # replace its own record, so the join always reads the digest of the latest green attempt.
+      - name: Record the tested image ID and pushed digest for the join
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          IMAGE_ID: ${{ steps.image.outputs.id }}
+          DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/leg-digest"
+          jq -n \
+            --arg platform "$PLATFORM" \
+            --arg arch "$ARCH" \
+            --arg digest "$DIGEST" \
+            --arg image_id "$IMAGE_ID" \
+            '{platform: $platform, arch: $arch, digest: $digest, image_id: $image_id}' \
+            > "${RUNNER_TEMP}/leg-digest/leg-${ARCH}.json"
+          cat "${RUNNER_TEMP}/leg-digest/leg-${ARCH}.json"
+
+      - name: Hand the leg digest to the join
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: leg-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/leg-digest/leg-${{ matrix.arch }}.json
+          if-no-files-found: error
+          overwrite: true
+
+      # `|| true` is a deliberate guard, not sloppiness: this step runs on EVERY outcome, including
+      # the paths where the smoke step failed before `docker run` and there is nothing to remove.
+      # A teardown must never turn an otherwise-diagnosed failure into a second, misleading one.
+      - name: Tear down the smoke container
+        if: always()
+        run: |
+          docker rm -f api-sheriff-smoke || true
+
+  # Joins the two tested leg digests into the ONE image index a consumer pulls, writes the two release
+  # tags onto it, and signs it.
+  #
+  # THE ONLY JOB THAT WRITES A RELEASE TAG, AND THE ONLY ONE THAT SIGNS. `<version>` and
+  # `sha-<release-tag sha>` are written here and nowhere else, so they can only ever name an index
+  # over BOTH platform images. The job runs only when `needs.publish-image.result == 'success'`, and
+  # a matrix job reports success only when EVERY leg succeeded: a failed or cancelled leg — and
+  # `fail-fast: true` on the legs cancels the survivor the moment one fails — leaves this job
+  # skipped, and a skipped join publishes no release tag at all. There is no half release: either
+  # both platforms ship under the release tags, or neither does. What a failed run leaves behind is
+  # at most a leg-local `leg-*` tag, which no consumer is pointed at.
+  #
+  # That success is WRITTEN OUT rather than left to the implicit `success()`, because the condition
+  # starts with `!cancelled()` — which replaces the implicit `success()` — so that a dry run, whose
+  # `release` job is skipped, can reach this job at all. Drop the explicit leg-success operand and a
+  # red leg would let the join run over one platform; it is the no-half-release rule, not
+  # decoration.
+  #
+  # THE SAME RUN/SKIP GUARD AS THE LEGS. The release-or-dry-run disjunction sits here for the
+  # reasons recorded on publish-image above. On a guard-skipped run the legs are already skipped,
+  # and the leg-success operand skips the join with them — so here the guard is defence in depth,
+  # written out so the job that re-pushes and re-signs the release tags never rests on an inference
+  # from another job's `if:`. It is the guard on the legs and on the join alike, never on one of
+  # them only.
+  #
+  # ON A DRY RUN the join assembles the same two-platform index from the same two tested digests
+  # and runs every assertion and every signature the release path runs, but it tags the index
+  # dryrun-<run_id>-<attempt> alone — never `<version>`, never `sha-*` — asserted before the index is
+  # written. The attempt keeps a re-run join from moving the tag off an earlier attempt's index.
+  #
+  # The index is assembled from EXACTLY the two leg digests and nothing else — no attestation entry,
+  # no third platform, no tag lookup. Every value it is built from arrives in a leg-digest-<arch>
+  # record that a leg wrote only after its digest passed the scan, the push, the plain-manifest check
+  # and the pull-by-digest smoke on its own architecture.
+  join:
+    name: Join the tested digests into the signed release index
+    needs: [release, publish-image]
+    if: >-
+      !cancelled()
+      && needs.publish-image.result == 'success'
+      && ((needs.release.result == 'success' && needs.release.outputs.released-version != '')
+      || (github.event_name == 'workflow_dispatch' && inputs.dry_run == true && needs.release.result == 'skipped'))
+    runs-on: ubuntu-latest
+    # Downloads, a registry write, three signatures and their verification — minutes, never the
+    # native build, which happened on the legs.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      # Required for Cosign keyless OIDC signing, and held by this job alone: the legs sign nothing.
+      # Not a novel posture for this repository — scorecards.yml, pr-agent.yml and claude.yml
+      # already declare it.
+      id-token: write
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
+      # The same version lookup the legs perform, re-done here rather than handed over by a leg, so
+      # the value the release tags carry comes from the release configuration and never from a leg
+      # record. See the sparse-checkout note on publish-image for why cone mode must be off.
+      - name: Check out the release configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: .release-config
+          sparse-checkout: .github/project.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Read the released version
+        id: config
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
+        with:
+          config-path: .release-config/.github/project.yml
+
+      # The same decision the legs make in their step of the same name, made again here from the
+      # same inputs rather than handed over by a leg.
+      - name: Resolve what this run builds
+        id: target
+        env:
+          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = true ]; then
+            echo "ref=${DISPATCH_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${RELEASED_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # On a release, the RELEASE TAG, never the dispatching ref — for the same reason as on the
+      # legs: the `sha-` tag names the release:prepare commit whose poms carry the released version,
+      # which is also the commit both platform images carry as org.opencontainers.image.revision. On
+      # a dry run, the dispatching commit the legs built.
+      - name: Check out the commit this run builds
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ steps.target.outputs.ref }}
+
+      - name: Resolve the built commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # THE TAGS THE INDEX IS WRITTEN UNDER, computed once and read by the create call, the dry-run
+      # assertion and the read-back alike, so all three see the same list. Release: `<version>` and
+      # `sha-<release-tag sha>`. Dry run: dryrun-<run_id>-<attempt> alone, attempt-scoped for the
+      # reason given on the legs' "Resolve the leg tag" step. Space-separated: a tag carries no space.
+      - name: Resolve the index tags
+        id: tags
+        env:
+          RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
+          TAG_SHA: ${{ steps.commit.outputs.sha }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = true ]; then
+            echo "value=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION} ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download the leg digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: leg-digest-*
+          path: ${{ runner.temp }}/leg-digest
+          merge-multiple: true
+
+      # EXACTLY TWO RECORDS, ONE PER PLATFORM — read, never assumed. A missing record, a duplicated
+      # platform, a platform the matrix does not declare, or a malformed digest stops the release
+      # here, before anything is written to the registry. The index below is built from the values
+      # this step outputs and from nothing else.
+      - name: Assert exactly one tested digest per platform
+        id: legs
+        env:
+          LEG_DIR: ${{ runner.temp }}/leg-digest
+        run: |
+          set -euo pipefail
+          mapfile -t RECORDS < <(find "$LEG_DIR" -maxdepth 1 -type f -name 'leg-*.json' | sort)
+          if [ "${#RECORDS[@]}" -ne 2 ]; then
+            echo "::error::Expected exactly two leg-digest records, one per platform, found ${#RECORDS[@]}: ${RECORDS[*]}"
+            exit 1
+          fi
+          PLATFORMS="$(jq -r '.platform' "${RECORDS[@]}" | sort | paste -sd ' ' -)"
+          if [ "$PLATFORMS" != "linux/amd64 linux/arm64" ]; then
+            echo "::error::The leg records name platforms '${PLATFORMS}', expected exactly 'linux/amd64 linux/arm64'."
+            exit 1
+          fi
+          for RECORD in "${RECORDS[@]}"; do
+            PLATFORM="$(jq -r '.platform' "$RECORD")"
+            ARCH="$(jq -r '.arch' "$RECORD")"
+            DIGEST="$(jq -r '.digest' "$RECORD")"
+            IMAGE_ID="$(jq -r '.image_id' "$RECORD")"
+            if [ "$PLATFORM" != "linux/${ARCH}" ]; then
+              echo "::error::${RECORD} pairs platform '${PLATFORM}' with arch '${ARCH}'."
+              exit 1
+            fi
+            if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::${RECORD} carries a malformed digest '${DIGEST}'."
+              exit 1
+            fi
+            if ! [[ "$IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::${RECORD} carries a malformed tested image ID '${IMAGE_ID}'."
+              exit 1
+            fi
+            echo "${ARCH}-digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+            echo "${ARCH}-image-id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+            echo "Tested ${PLATFORM}: digest ${DIGEST}, image ID ${IMAGE_ID}"
+          done
+
+      # Hardcoded lowercase registry path and credentials through the environment — see the same
+      # step on publish-image for both reasons.
+      - name: Log in to GHCR
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      # THE DRY-RUN TAG CHECK, on the join's own push: the index tag list must be exactly this run
+      # attempt's dryrun-<run_id>-<attempt>, anchored at both ends — one tag, no `<version>`, no
+      # `sha-*`, no other attempt's tag — before the index is written to the registry.
+      - name: Assert the dry run writes only its own dry-run tag
+        if: env.DRY_RUN == 'true'
+        env:
+          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          read -r -a TAGS <<< "$INDEX_TAGS"
+          if [ "${#TAGS[@]}" -ne 1 ] || ! [[ "${TAGS[0]}" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}$ ]]; then
+            echo "::error::A dry run may tag its index only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}, but the join would write '${INDEX_TAGS}'. Refusing to write the index."
+            exit 1
+          fi
+          echo "Dry-run index tag confirmed: ${TAGS[0]}"
+
+      # THE RELEASE TAGS ARE WRITTEN HERE AND NOWHERE ELSE. `imagetools create` assembles the index
+      # inside the registry from exactly the two leg digests — the platform of each entry is read
+      # from that image's own config, nothing is rebuilt and nothing is re-pushed — and points every
+      # index tag at it in one call: both release tags, or the one dry-run tag. The sources are
+      # plain image manifests (each leg asserted that), so the index carries no attestation entry.
+      # Do NOT add a source here, and do NOT replace this with `docker buildx build --push`: see
+      # ATTESTATION POSTURE on publish-image.
+      - name: Assemble the index and write its tags
+        id: assemble
+        env:
+          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
+          ARM64_DIGEST: ${{ steps.legs.outputs.arm64-digest }}
+        run: |
+          set -euo pipefail
+          read -r -a TAGS <<< "$INDEX_TAGS"
+          TAG_ARGS=()
+          for TAG in "${TAGS[@]}"; do
+            TAG_ARGS+=(--tag "$TAG")
+          done
+          docker buildx imagetools create \
+            "${TAG_ARGS[@]}" \
+            "ghcr.io/cuioss/api-sheriff@${AMD64_DIGEST}" \
+            "ghcr.io/cuioss/api-sheriff@${ARM64_DIGEST}"
+
+      # THE CLEANUP'S RECORD OF THE INDEX, written as soon as the index exists and whatever the
+      # assertions below then decide — an index that fails them is still a package version this
+      # dry run created. The digest is read off the one tag this attempt itself just wrote.
+      - name: Record the index digest for the dry-run cleanup
+        if: always() && env.DRY_RUN == 'true' && steps.assemble.outcome == 'success'
+        env:
+          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          read -r -a TAGS <<< "$INDEX_TAGS"
+          DIGEST="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${TAGS[0]}")"
+          mkdir -p "${RUNNER_TEMP}/dryrun-created"
+          jq -n --arg kind index --arg digest "$DIGEST" '{kind: $kind, digest: $digest}' \
+            > "${RUNNER_TEMP}/dryrun-created/index-${ATTEMPT}.json"
+          cat "${RUNNER_TEMP}/dryrun-created/index-${ATTEMPT}.json"
+
+      - name: Hand the index digest to the dry-run cleanup
+        if: always() && env.DRY_RUN == 'true' && steps.assemble.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dryrun-created-index-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dryrun-created/index-${{ github.run_attempt }}.json
+          if-no-files-found: error
+
+      # PROVE WHAT THE INDEX TAGS NOW NAME, read back from the registry rather than trusted from the
+      # create call. Every tag written must resolve to ONE index digest — on a release, `<version>`
+      # and `sha-*` must agree; that digest must address an index (not a single image); and the
+      # index must list exactly linux/amd64 and linux/arm64, each pointing at its own leg's tested
+      # digest, with no third entry. A stray attestation entry, a platform pointing at the other
+      # leg's image, or a tag left on an older index all fail here.
+      #
+      # An entry's platform is compared as os/architecture. A `variant` an arm64 image config may
+      # carry (v8) is not part of the comparison — the legs' own platform check compares the same
+      # os/architecture pair — while the entry count still refuses any third entry.
+      - name: Assert every index tag names one two-platform index
+        id: index
+        env:
+          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
+          ARM64_DIGEST: ${{ steps.legs.outputs.arm64-digest }}
+        run: |
+          set -euo pipefail
+          read -r -a TAGS <<< "$INDEX_TAGS"
+          INDEX_DIGEST=""
+          for TAG in "${TAGS[@]}"; do
+            TAG_DIGEST="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$TAG")"
+            if [ -z "$TAG_DIGEST" ]; then
+              echo "::error::${TAG} resolves to no digest."
+              exit 1
+            fi
+            if [ -z "$INDEX_DIGEST" ]; then
+              INDEX_DIGEST="$TAG_DIGEST"
+            elif [ "$TAG_DIGEST" != "$INDEX_DIGEST" ]; then
+              echo "::error::The index tags disagree: ${TAGS[0]} -> '${INDEX_DIGEST}', ${TAG} -> '${TAG_DIGEST}'."
+              exit 1
+            fi
+          done
+          INDEX_REF="ghcr.io/cuioss/api-sheriff@${INDEX_DIGEST}"
+
+          RAW="$(docker buildx imagetools inspect --raw "$INDEX_REF")"
+          MEDIA_TYPE="$(jq -r '.mediaType // ""' <<< "$RAW")"
+          case "$MEDIA_TYPE" in
+            application/vnd.oci.image.index.v1+json | application/vnd.docker.distribution.manifest.list.v2+json) ;;
+            *)
+              echo "::error::${INDEX_REF} is not an image index: media type '${MEDIA_TYPE}'."
+              exit 1
+              ;;
+          esac
+          ENTRY_COUNT="$(jq '.manifests | length' <<< "$RAW")"
+          if [ "$ENTRY_COUNT" -ne 2 ]; then
+            echo "::error::${INDEX_REF} lists ${ENTRY_COUNT} entries, expected exactly two (linux/amd64 and linux/arm64)."
+            jq '.manifests' <<< "$RAW"
+            exit 1
+          fi
+          ENTRIES="$(jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)=\(.digest)"' <<< "$RAW" | sort)"
+          EXPECTED="$(printf '%s\n' "linux/amd64=${AMD64_DIGEST}" "linux/arm64=${ARM64_DIGEST}" | sort)"
+          if [ "$ENTRIES" != "$EXPECTED" ]; then
+            echo "::error::${INDEX_REF} does not point each platform at its own leg's tested digest."
+            echo "Found:"
+            echo "$ENTRIES"
+            echo "Expected:"
+            echo "$EXPECTED"
+            exit 1
+          fi
+          echo "digest=${INDEX_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Index ${INDEX_DIGEST} (${MEDIA_TYPE}), tagged ${INDEX_TAGS}, lists exactly:"
+          echo "$ENTRIES"
+
+      # WHAT A CONSUMER ACTUALLY GETS, pulled the way a consumer pulls it: through the index, by
+      # platform. This runner holds no local image, so the pull genuinely reaches the registry, and
+      # the image it resolves to must be the very image the amd64 leg tested — the same load-bearing
+      # identity check the legs make on their own digests, now made across the index. The arm64
+      # entry cannot be booted on this runner; its digest-level identity is the entry comparison
+      # above, and its boot was proved by the arm64 leg's own smoke.
+      - name: Assert the index resolves linux/amd64 to the tested amd64 image
+        env:
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+          AMD64_IMAGE_ID: ${{ steps.legs.outputs.amd64-image-id }}
+        run: |
+          set -euo pipefail
+          REF="ghcr.io/cuioss/api-sheriff@${INDEX_DIGEST}"
+          docker pull --platform linux/amd64 "$REF"
+          PULLED_ID="$(docker image inspect --format '{{.Id}}' "$REF")"
+          if [ "$PULLED_ID" != "$AMD64_IMAGE_ID" ]; then
+            echo "::error::The index resolves linux/amd64 to ${PULLED_ID}, but the amd64 leg tested ${AMD64_IMAGE_ID}."
+            exit 1
+          fi
+          echo "linux/amd64 through the index is the tested amd64 image: ${PULLED_ID}"
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      # KEYLESS OIDC SIGNING, BY DIGEST — the last act of the lane, after the push and after the
-      # smoke, so the signed artifact is provably the tested and published one. Never sign a tag: a
-      # tag is a mutable pointer, so signing one signs nothing durable. The signature is stored in
-      # the registry alongside the image (the Sigstore sha256-<digest>.sig convention); there is no
-      # key store, no COSIGN_PRIVATE_KEY and no new secret. `id-token: write` is declared on this job.
+      # KEYLESS OIDC SIGNING, BY DIGEST — THREE DIGESTS PER RELEASE, after the index has been
+      # assembled and proved, so every signed artifact is provably the tested and published one. The
+      # three are the index digest the release tags name, plus BOTH platform digests: a client can
+      # pull by platform digest, bypassing the index entirely, and an unsigned platform digest would
+      # then verify as nothing. Never sign a tag: a tag is a mutable pointer, so signing one signs
+      # nothing durable. Each signature is stored in the registry alongside the digest it signs (the
+      # Sigstore sha256-<digest>.sig convention); there is no key store, no COSIGN_PRIVATE_KEY and no
+      # new secret. `id-token: write` is declared on this job, and on this job only.
       #
-      # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES:
+      # A CONSUMER VERIFIES WITH EXACTLY THESE TWO VALUES, and they are the same two for all three
+      # digests — the index and each platform image:
       #
       #   --certificate-oidc-issuer      https://token.actions.githubusercontent.com
       #   --certificate-identity-regexp  ^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$
       #
       # THE IDENTITY NAMES EXACTLY ONE REF. Fulcio puts the OIDC `job_workflow_ref` claim in the
-      # certificate SAN. publish-image is a CALLER-LOCAL job — it does not `uses:` a reusable
-      # workflow — so that claim names release.yml ITSELF (never the org reusable workflow) at the ref
-      # the run was triggered on, i.e. GITHUB_REF. Only two events can reach this job, and BOTH of
-      # them yield refs/heads/main — each one because the release job's `if:` or the trigger's own
-      # filter refuses the alternative, never because the alternative is merely unlikely:
+      # certificate SAN. The join is a CALLER-LOCAL job — it does not `uses:` a reusable workflow — so
+      # that claim names release.yml ITSELF (never the org reusable workflow) at the ref the run was
+      # triggered on, i.e. GITHUB_REF. Only two events can reach this job on the RELEASE path, and
+      # BOTH of them yield refs/heads/main — each one because the release job's `if:` or the
+      # trigger's own filter refuses the alternative, never because the alternative is merely
+      # unlikely:
       #
       #   * workflow_dispatch -> GITHUB_REF = refs/heads/main. `workflow_dispatch:` carries no branch
       #     filter, so this is not a property of the trigger; the `github.ref == 'refs/heads/main'`
@@ -529,7 +1186,9 @@ jobs:
       #
       # 0.1.1 is the decisive one: a MERGE-triggered run that signed at refs/heads/main. No release
       # this project has cut has ever carried a merge-ref identity, so an accepted set widened to
-      # admit one was widened for a ref that has never been used. GitHub's
+      # admit one was widened for a ref that has never been used. Moving the signing from
+      # publish-image to this job changes nothing in that claim: both are caller-local jobs of the
+      # same workflow file, triggered by the same two events. GitHub's
       # events-that-trigger-workflows reference agrees — on a close-by-merge GITHUB_REF is the base
       # branch — but it is corroboration here, not the premise the identity rests on.
       #
@@ -538,57 +1197,273 @@ jobs:
       # relax it to a `.*` — a loose identity would accept a signature from any workflow in any
       # repository and the check would prove nothing.
       #
+      # A DRY RUN SIGNS TOO, AND UNDER ITS OWN REF. It signs the same three digests the same way, so
+      # the sign-and-verify path a release depends on is exercised before a release depends on it.
+      # Its certificate names the ref it was dispatched from, so the verify step checks it against
+      # an identity derived from that ref — the published regexp with the dispatching ref, regex-
+      # escaped, in place of refs/heads/main, and anchored at both ends exactly like it. The release
+      # path's regexp is the literal below and is never derived. A dry run dispatched from a feature
+      # branch therefore produces signatures the published operator identity REFUSES; one dispatched
+      # from main produces signatures it accepts, over images labelled dryrun-<run_id> and tagged
+      # only dryrun-<run_id>-<attempt>[-<arch>], which the cleanup job deletes together with their
+      # signatures.
+      #
       # doc/user/container-image.adoc publishes the same two strings to operators, and the verify step
-      # below RUNS them — the lane proves its own signing identity rather than asserting it in prose.
+      # below RUNS them against all three digests — the lane proves its own signing identity rather
+      # than asserting it in prose.
       #
       # SLSA provenance and any further attestation are deliberately out of scope.
-      - name: Sign the published digest (keyless)
+      - name: Sign the release index and both platform digests (keyless)
         env:
-          DIGEST: ${{ steps.digest.outputs.value }}
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+          AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
+          ARM64_DIGEST: ${{ steps.legs.outputs.arm64-digest }}
         run: |
-          cosign sign --yes "ghcr.io/cuioss/api-sheriff@${DIGEST}"
+          set -euo pipefail
+          for DIGEST in "$INDEX_DIGEST" "$AMD64_DIGEST" "$ARM64_DIGEST"; do
+            cosign sign --yes "ghcr.io/cuioss/api-sheriff@${DIGEST}"
+          done
 
-      # PROVE WHAT WAS JUST SIGNED. This is the step whose absence let the identity drift ship: the
+      # PROVE WHAT WAS JUST SIGNED. This is the step whose absence once let an identity drift ship: the
       # lane signed, went green, and NOTHING ever asserted that the signature it had just produced was
       # acceptable to the verification command this project publishes. A release that signs under an
       # identity no operator command accepts is a supply-chain break that stays invisible until a
       # consumer hits it.
       #
       # So this step runs EXACTLY the two values doc/user/container-image.adoc gives operators,
-      # against the digest just signed. If an operator's verification would fail, this job fails
-      # first — before the release is called done.
+      # against each of the three digests just signed. If an operator's verification of any of them
+      # would fail, this job fails first — before the release is called done.
       #
-      # The bounded retry covers Rekor/Fulcio propagation ONLY. A wrong identity fails identically on
-      # every attempt, so the retry cannot launder one into a pass; it just delays the loud failure by
-      # under a minute.
-      - name: Verify the signature under the published identity
+      # The bounded retry covers Rekor/Fulcio propagation ONLY, per digest. A wrong identity fails
+      # identically on every attempt, so the retry cannot launder one into a pass; it just delays the
+      # loud failure by under a minute per digest.
+      #
+      # On a dry run the identity is derived from the dispatching ref (see A DRY RUN SIGNS TOO
+      # above). The escape covers every metacharacter of Go's RE2 syntax, which is what Cosign
+      # matches with, so a ref is matched as the literal it is — a `.` in a branch name matches a
+      # dot, never any character.
+      - name: Verify all three signatures under the published identity
         env:
-          DIGEST: ${{ steps.digest.outputs.value }}
-          IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$'
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+          AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
+          ARM64_DIGEST: ${{ steps.legs.outputs.arm64-digest }}
+          RELEASE_IDENTITY_REGEXP: '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$'
+          DISPATCH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
+          if [ "$DRY_RUN" = true ]; then
+            ESCAPED_REF="$(printf '%s' "$DISPATCH_REF" | sed 's/[][\\.*+?(){}|^$]/\\&/g')"
+            IDENTITY_REGEXP="^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@${ESCAPED_REF}\$"
+          else
+            IDENTITY_REGEXP="$RELEASE_IDENTITY_REGEXP"
+          fi
+          echo "Verifying under --certificate-identity-regexp ${IDENTITY_REGEXP}"
           ATTEMPTS=5
-          for attempt in $(seq 1 "$ATTEMPTS"); do
-            if cosign verify \
-              --certificate-identity-regexp "$IDENTITY_REGEXP" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              "$REF"; then
-              echo "Signature verified under the published operator identity."
-              exit 0
+          for DIGEST in "$INDEX_DIGEST" "$AMD64_DIGEST" "$ARM64_DIGEST"; do
+            REF="ghcr.io/cuioss/api-sheriff@${DIGEST}"
+            VERIFIED=false
+            for attempt in $(seq 1 "$ATTEMPTS"); do
+              if cosign verify \
+                --certificate-identity-regexp "$IDENTITY_REGEXP" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                "$REF"; then
+                VERIFIED=true
+                break
+              fi
+              if [ "$attempt" -lt "$ATTEMPTS" ]; then
+                echo "Verification attempt ${attempt} for ${REF} failed; retrying in 10s (signature propagation)."
+                sleep 10
+              fi
+            done
+            if [ "$VERIFIED" != true ]; then
+              if [ "$DRY_RUN" = true ]; then
+                echo "::error::cosign verify failed for ${REF} under the dry run's derived identity ${IDENTITY_REGEXP}. The sign-and-verify path a release depends on is broken — treat this as a supply-chain failure, not a flake."
+              else
+                echo "::error::cosign verify failed for ${REF} using the identity published in doc/user/container-image.adoc. The lane signed under an identity operators cannot verify — treat this as a supply-chain failure, not a flake."
+              fi
+              exit 1
             fi
-            if [ "$attempt" -lt "$ATTEMPTS" ]; then
-              echo "Verification attempt ${attempt} failed; retrying in 10s (signature propagation)."
-              sleep 10
+            echo "Signature verified under ${IDENTITY_REGEXP}: ${REF}"
+          done
+
+  # Deletes the package versions a dry run created, so a dry run leaves nothing in the package.
+  #
+  # WHAT IS DELETED, AND HOW IT IS FOUND. Exactly the versions this run created: the index, both
+  # platform manifests and the signature artifacts Cosign stored for each of those three digests.
+  # They are found BY THE DIGESTS THE RUN RECORDED — each leg records its pushed digest the moment
+  # it knows it, the join records the index digest the moment the index exists — and never by a
+  # sweep over a tag pattern. A pattern sweep would delete whatever happens to match, including the
+  # versions of another dry run still in flight; a recorded digest names this run's version and
+  # nothing else. A signature artifact is found from its subject's digest by Sigstore's own naming:
+  # the sha256-<hex>.sig tag of the legacy layout, and the sha256-<hex> tag of the OCI referrers
+  # fallback, whose index lists the signature manifests themselves.
+  #
+  # WHAT IT REPORTS, AND THAT IT NEVER PASSES SILENTLY. After deleting, it reads the package again
+  # and fails, naming each one, when any version it should have removed is still there: a recorded
+  # digest the delete did not remove, or a version still carrying one of this run's exact tags —
+  # for EVERY attempt a of this run, 1 through the current run attempt: dryrun-<run_id>-<a>,
+  # dryrun-<run_id>-<a>-amd64 and dryrun-<run_id>-<a>-arm64. The tag check only reports; it deletes
+  # nothing, so it is a completeness check over what the digests found, not a second way to find
+  # what to delete. It is how a version the run pushed but could not record still surfaces — and it
+  # holds across re-runs because the tags are attempt-scoped: a re-run pushes under its own
+  # attempt's tags and never moves a tag off an earlier attempt's version, so an unrecorded version
+  # stays tagged, and the check matches each tag exactly, never by prefix or pattern.
+  #
+  # WHY `always()`. A dry run that failed half-way has still created versions — a leg that pushed
+  # before a later step failed, an index that failed its assertions — and cancelling a run must not
+  # leave them behind either. So this job runs on every outcome of the image jobs, and only on a
+  # dry run: a release has nothing to clean up, and its package versions are the release.
+  #
+  # It deletes through the GitHub Packages REST API with GITHUB_TOKEN and `packages: write`. Should
+  # the token not be allowed to delete, the job fails naming every version left behind, and the
+  # README badge's `ignore=` list keeps a leftover dryrun-* tag from ever rendering as the release
+  # version.
+  cleanup-dry-run:
+    name: Delete the package versions this dry run created
+    needs: [publish-image, join]
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
+      # `continue-on-error` so that records that could not be read are REPORTED by the next step —
+      # which then fails the job — rather than ending the cleanup before it has deleted what it can
+      # and listed what is left.
+      - name: Download the digests this dry run recorded
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dryrun-created-*
+          path: ${{ runner.temp }}/dryrun-created
+          merge-multiple: true
+
+      - name: Delete the recorded versions and report any left behind
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          RECORD_DIR: ${{ runner.temp }}/dryrun-created
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+        run: |
+          set -euo pipefail
+          VERSIONS_API="/orgs/cuioss/packages/container/api-sheriff/versions"
+          REGISTRY="ghcr.io/cuioss/api-sheriff"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+          list_versions() {
+            gh api --paginate "$VERSIONS_API" \
+              --jq '.[] | {id: .id, name: .name, tags: (.metadata.container.tags // [])}' | jq -s '.'
+          }
+
+          # 1. The subject digests this run recorded: the index and the platform manifests.
+          mkdir -p "$RECORD_DIR"
+          mapfile -t RECORDS < <(find "$RECORD_DIR" -maxdepth 1 -type f -name '*.json' | sort)
+          INDEXES=()
+          PLATFORMS=()
+          PROBLEMS=()
+          for RECORD in "${RECORDS[@]}"; do
+            KIND="$(jq -r '.kind' "$RECORD")"
+            DIGEST="$(jq -r '.digest' "$RECORD")"
+            if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              PROBLEMS+=("${RECORD} carries a malformed digest '${DIGEST}', so the version it names was not deleted")
+              continue
+            fi
+            case "$KIND" in
+              index) INDEXES+=("$DIGEST") ;;
+              platform) PLATFORMS+=("$DIGEST") ;;
+              *) PROBLEMS+=("${RECORD} carries an unknown kind '${KIND}', so ${DIGEST} was not deleted") ;;
+            esac
+          done
+          echo "Recorded: ${#INDEXES[@]} index digest(s), ${#PLATFORMS[@]} platform digest(s)."
+          if [ "$DOWNLOAD_OUTCOME" != success ]; then
+            PROBLEMS+=("the digest records could not be downloaded (outcome '${DOWNLOAD_OUTCOME}'), so a version this run created and left untagged may remain unnamed")
+          fi
+
+          # 2. The signature artifacts of each recorded subject, by Sigstore's naming of its digest.
+          VERSIONS="$(list_versions)"
+          SIGNATURES=()
+          for SUBJECT in "${INDEXES[@]}" "${PLATFORMS[@]}"; do
+            HEX="${SUBJECT#sha256:}"
+            for SIG_TAG in "sha256-${HEX}.sig" "sha256-${HEX}"; do
+              SIG_DIGEST="$(jq -r --arg tag "$SIG_TAG" '.[] | select(any(.tags[]; . == $tag)) | .name' <<< "$VERSIONS")"
+              if [ -z "$SIG_DIGEST" ]; then
+                continue
+              fi
+              SIGNATURES+=("$SIG_DIGEST")
+              # A referrers fallback tag names an index whose entries are the signature manifests.
+              RAW="$(docker buildx imagetools inspect --raw "${REGISTRY}@${SIG_DIGEST}")"
+              mapfile -t LISTED < <(jq -r '.manifests[]?.digest' <<< "$RAW")
+              SIGNATURES+=("${LISTED[@]}")
+            done
+          done
+          if [ "${#SIGNATURES[@]}" -gt 0 ]; then
+            mapfile -t SIGNATURES < <(printf '%s\n' "${SIGNATURES[@]}" | sort -u)
+          fi
+
+          # 3. Delete: signatures first, then the index, then the platform manifests it lists.
+          delete_version() {
+            local WHAT="$1" DIGEST="$2" ID
+            ID="$(jq -r --arg name "$DIGEST" '.[] | select(.name == $name) | .id' <<< "$VERSIONS")"
+            if [ -z "$ID" ]; then
+              echo "${WHAT} ${DIGEST} is not a version of the package; nothing to delete."
+              return 0
+            fi
+            if gh api --method DELETE "${VERSIONS_API}/${ID}" > /dev/null; then
+              echo "Deleted ${WHAT} ${DIGEST} (package version ${ID})."
+            else
+              echo "::warning::Could not delete ${WHAT} ${DIGEST} (package version ${ID})."
+            fi
+          }
+          TARGETS=()
+          for DIGEST in "${SIGNATURES[@]}"; do
+            delete_version "signature artifact" "$DIGEST"
+            TARGETS+=("$DIGEST")
+          done
+          for DIGEST in "${INDEXES[@]}"; do
+            delete_version "index" "$DIGEST"
+            TARGETS+=("$DIGEST")
+          done
+          for DIGEST in "${PLATFORMS[@]}"; do
+            delete_version "platform manifest" "$DIGEST"
+            TARGETS+=("$DIGEST")
+          done
+
+          # 4. Read the package again and name every version this run left behind. The architectures
+          #    are the publish-image matrix's; a leg added there must be added here. The exact tags of
+          #    EVERY attempt are checked, not only the current one: a version an earlier attempt
+          #    pushed but could not record is still tagged with that attempt's number.
+          REMAINING="$(list_versions)"
+          for DIGEST in "${TARGETS[@]}"; do
+            if jq -e --arg name "$DIGEST" 'any(.[]; .name == $name)' <<< "$REMAINING" > /dev/null; then
+              PROBLEMS+=("package version ${DIGEST} is still present after its delete")
             fi
           done
-          echo "::error::cosign verify failed for ${REF} using the identity published in doc/user/container-image.adoc. The lane signed under an identity operators cannot verify — treat this as a supply-chain failure, not a flake."
-          exit 1
+          if ! [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            PROBLEMS+=("the run attempt '${RUN_ATTEMPT}' is not a positive integer, so no attempt's dry-run tags were checked")
+            RUN_ATTEMPT=0
+          fi
+          for ((A = 1; A <= RUN_ATTEMPT; A++)); do
+            for TAG in "dryrun-${RUN_ID}-${A}" "dryrun-${RUN_ID}-${A}-amd64" "dryrun-${RUN_ID}-${A}-arm64"; do
+              mapfile -t TAGGED < <(jq -r --arg tag "$TAG" '.[] | select(any(.tags[]; . == $tag)) | .name' <<< "$REMAINING")
+              for DIGEST in "${TAGGED[@]}"; do
+                PROBLEMS+=("package version ${DIGEST} still carries this run's tag ${TAG}")
+              done
+            done
+          done
 
-      # `|| true` is a deliberate guard, not sloppiness: this step runs on EVERY outcome, including
-      # the paths where the smoke step failed before `docker run` and there is nothing to remove.
-      # A teardown must never turn an otherwise-diagnosed failure into a second, misleading one.
-      - name: Tear down the smoke container
-        if: always()
-        run: |
-          docker rm -f api-sheriff-smoke || true
+          if [ "${#PROBLEMS[@]}" -gt 0 ]; then
+            for PROBLEM in "${PROBLEMS[@]}"; do
+              echo "::error::Dry-run cleanup incomplete: ${PROBLEM}."
+            done
+            exit 1
+          fi
+          echo "This dry run left no package version behind: ${#TARGETS[@]} version(s) deleted."
