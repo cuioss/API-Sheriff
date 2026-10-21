@@ -824,8 +824,9 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
 
 The *transport bounds* — the framing limits, the HTTP/2 connection window, the request-body idle
-timeout and the drain window — are fixed secure defaults applied in code (`EdgeHardeningOptions`) and
-are not operator-configurable. The framing limits fail fast on abusive framing before a request is
+timeout and deadline, the gRPC stream-idle timeout and the drain window — are fixed secure defaults
+applied in code (`EdgeHardeningOptions`, and the gRPC relay for the stream-idle timeout) and are not
+operator-configurable. The framing limits fail fast on abusive framing before a request is
 admitted to the pipeline. These values are recorded here doc-first: they are the
 contract the edge-hardening code implements, and any change to a constant must be reflected in this
 table.
@@ -884,8 +885,28 @@ deployment that never writes it keeps the behaviour shown here.
 | A proxied request whose body makes no progress for this long while the gateway reads it is
   answered `408` and its upstream connection is released. Not applied to bodyless requests or
   `protocol: grpc` routes; not configurable. Shorter than the upstream guard's 30 s timeout, which
-  still bounds the whole dispatch. See
+  bounds the dispatch until the upstream's response head. See
   link:../architecture.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout].
+
+| Request-body deadline
+| 25 s +
+  (from the start of the upstream attempt)
+| A proxied request whose body has not ended this long after its upstream attempt started is ended,
+  however steadily the body arrives: answered `408` when the upstream has not answered yet, and
+  otherwise its relayed response is ended -- on HTTP/2 the stream is then reset, on HTTP/1.x the
+  connection is closed. The time spent waiting for a pooled upstream connection counts towards the
+  25 s, but the deadline is not armed during that wait, and it does not fire while the upstream is not
+  taking data. Not applied to bodyless requests or `protocol: grpc` routes; not configurable. See
+  link:../architecture.adoc#_request_body_deadline[Architecture -- request-body deadline].
+
+| gRPC stream-idle timeout
+| 5 min
+| A `protocol: grpc` call whose upstream has sent its response headers and that then carries no frame
+  in either direction for this long is ended with `grpc-status: 4` (`DEADLINE_EXCEEDED`) and
+  `grpc-message: stream-idle-timeout`. A frame in either direction keeps the call open; HTTP/2 `PING`
+  frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
+  upstream guard's 30 s timeout bounds the call instead. Not configurable. See
+  link:../architecture.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 | Admission cap (in-flight requests) +
   [`edge_hardening.admission_cap`]
