@@ -50,10 +50,20 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * <p>
  * The validator is the orchestration of ONE ordered rule list, {@code DEFAULT_RULES}: one entry per
  * rule, in the order the violations are reported. That list is the only place that decides the
- * order. A rule body lives in the concern class of the {@code rule} package that owns its
- * configuration block ({@link PortalRules} for the application portal, for example) or — for a
- * concern not yet extracted — as a private method of this class, registered at its position all the
- * same. The helpers every rule shares (the reporting file, pointer and anchors pointer, the
+ * order, and this class holds no rule body of its own. Every rule body lives in the concern class of
+ * the {@code rule} package that owns its configuration block: {@link TopologyRules} (the
+ * configuration version, endpoint and route id uniqueness, base-URL resolvability),
+ * {@link RouteMatchingRules} (route disjointness, header matchers, effective-method membership),
+ * {@link AnchorRules} (the anchors), {@link AuthRules} (the {@code auth} blocks and endpoint scopes),
+ * {@link LimitRules} (the security-filter profile and the edge limits), {@link TerminalActionRules}
+ * (upstream, asset or redirect), {@link EdgeRules} (forwarded trust and TLS passthrough),
+ * {@link HeaderRules} (CORS, Content-Security-Policy and the security-header modes),
+ * {@link OidcSessionRules} (the BFF session), {@link OidcClientRules} (the OIDC client),
+ * {@link ReservedPathRules} (the reserved OIDC endpoint paths), {@link ProtocolRules} (WebSocket and
+ * {@code Location} rewriting), {@link AssetDefaultsRules} (the asset content types),
+ * {@link ForwardingRules} (the {@code forward} blocks), {@link TokenValidationRules} (JWKS egress and
+ * refresh) and {@link PortalRules} (the application portal). The helpers every rule shares (the
+ * reporting file, pointer and anchors pointer, the
  * CWE-117-safe echo of a configured value, anchor resolution, which protocol a route rides, which
  * {@code auth.require} a route resolves, the wildcard-origin token, the RFC 9110 media-type token,
  * anchor-namespace containment and whether the gateway lacks a configured token issuer) live once, in

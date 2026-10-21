@@ -41,14 +41,15 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests for {@link ConfigValidator}: a well-formed configuration that passes every rule, the
- * structural {@code TRACE}/{@code CONNECT} rejection, and the single-pass aggregation contract that
- * reports every violation together rather than stopping at the first. The rules themselves are tested
- * per concern, beside their concern classes: the anchor rules, namespace coverage among them, in
- * {@code AnchorRulesTest}, the auth and OIDC rules in {@code AuthRulesTest}, {@code OidcClientRulesTest}
- * and {@code OidcSessionRulesTest}, the topology rules in {@code TopologyRulesTest}, the
- * {@code security_headers} rules in {@code HeaderRulesTest}, and the reserved OIDC path rules in
- * {@code ReservedPathRulesTest}.
+ * Tests the orchestration of {@link ConfigValidator}, and only that: a well-formed configuration
+ * passes every rule, the structural {@code TRACE}/{@code CONNECT} rejection holds, and the single pass
+ * aggregates the violations of several rules rather than stopping at the first.
+ * <p>
+ * No rule's own cases live here. Each rule is tested beside the concern class that owns it, in that
+ * class's {@code {Concern}RulesTest} in the {@code rule} test package, and those tests drive the full
+ * default validator so a rule dropped from {@code DEFAULT_RULES} fails them. Which concern class owns
+ * which rule is recorded in the concern map of {@code doc/development/boot-validation-rules.adoc},
+ * and {@link BootValidationConcernMapContractTest} binds that map to {@code DEFAULT_RULES}.
  */
 @EnableGeneratorController
 class ConfigValidatorTest {
