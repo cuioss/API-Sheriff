@@ -339,9 +339,12 @@ requires write access to the repository, so allowing other refs widens nothing.
 
 === What it never does
 
-* *It writes no `<version>`, no `sha-<commit>` and no `leg-<commit>-<arch>` tag.* Every tag it pushes is
-  `dryrun-<run_id>-amd64`, `dryrun-<run_id>-arm64` or, on the index, `dryrun-<run_id>`. Each leg and
-  the join assert this against the run's own id, anchored at both ends, before their first push.
+* *It writes no `<version>`, no `sha-<commit>` and no `leg-<commit>-<arch>` tag.* Every tag it pushes
+  names the run *and its attempt*: `dryrun-<run_id>-<attempt>-amd64`,
+  `dryrun-<run_id>-<attempt>-arm64` or, on the index, `dryrun-<run_id>-<attempt>`, where `<attempt>`
+  is the workflow's run attempt -- `1`, and one more for each *Re-run failed jobs*. Each leg and the
+  join assert this against the run's own id and attempt, anchored at both ends, before their first
+  push. The version label stays `dryrun-<run_id>`: it names the run, not the attempt.
 * *It never runs beside a release.* The image jobs accept a skipped `release` job only on a dry-run
   dispatch, so a release run cannot take the dry-run path and a dry run cannot reach the release
   path.
@@ -359,10 +362,21 @@ still in flight.
 
 After deleting, it reads the package again and *fails, naming each one*, when anything it should
 have removed is still there: a recorded digest the delete did not remove, or a version still
-carrying one of this run's three tags. A green cleanup therefore means the dry run left no package
-version behind. A red one names what to delete by hand in the package settings. A leftover
-`dryrun-<run_id>` tag is harmless to consumers -- no one is pointed at it -- and the README's version
-badge ignores it.
+carrying one of this run's tags. Those are checked by exact name for *every* attempt of the run, from
+`1` to the current attempt -- `dryrun-<run_id>-<attempt>`, `dryrun-<run_id>-<attempt>-amd64` and
+`dryrun-<run_id>-<attempt>-arm64` for each -- never by prefix or pattern. The tag check only reports;
+it deletes nothing.
+
+*The tags are attempt-scoped so that a re-run cannot hide a version.* A leg pushes before it records
+the digest, so a push followed by a failed record leaves a version only its tag still names. Were the
+tag the same on every attempt, a *Re-run failed jobs* would push under it again, move it to the new
+digest, and leave the earlier version untagged and unrecorded -- and the re-run's cleanup would go
+green over it. Under attempt-scoped tags the earlier version keeps its own attempt's tag, and the
+check names it.
+
+A green cleanup therefore means the dry run left no package version behind. A red one names what to
+delete by hand in the package settings. A leftover `dryrun-<run_id>-<attempt>` tag is harmless to
+consumers -- no one is pointed at it -- and the README's version badge ignores every `dryrun-` tag.
 
 The SBOMs a dry run generates stay behind as artifacts of that workflow run, named for the
 `dryrun-<run_id>` version; they are run artifacts, not package versions, and expire with the run.

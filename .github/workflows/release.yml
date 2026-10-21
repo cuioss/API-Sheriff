@@ -23,10 +23,10 @@ name: Release
 # legs with their full integration-test suites, the join, the three signatures and their
 # verification — WITHOUT a release. The `release` job refuses it on every ref, so no Maven
 # publication, SCM tag or GitHub release can result; each leg builds the dispatching commit, labelled
-# with the version dryrun-<run_id>; every tag the run pushes is dryrun-<run_id>[-<arch>], asserted
-# before the push; and the cleanup job deletes, by the digests the run recorded, every package
-# version the run created. It is how the two-platform lane is proven before a real release depends on
-# it.
+# with the version dryrun-<run_id>; every tag the run pushes is dryrun-<run_id>-<attempt>[-<arch>],
+# scoped to the run attempt and asserted before the push; and the cleanup job deletes, by the digests
+# the run recorded, every package version the run created. It is how the two-platform lane is proven
+# before a real release depends on it.
 #
 # A dry run MAY be dispatched from a non-main ref, unlike a release, and that is deliberate. The
 # main-ref restriction on the release job exists because a release publishes what consumers pull by a
@@ -40,7 +40,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Dry run: build, test, join and sign both platform images under dryrun-<run_id> tags, then delete them. Cuts no release.'
+        description: 'Dry run: build, test, join and sign both platform images under dryrun-<run_id>-<attempt> tags, then delete them. Cuts no release.'
         type: boolean
         default: false
   # PREFILTER ONLY, NEVER THE DECISION. This path matches EVERY edit to .github/project.yml, not just
@@ -306,17 +306,25 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # THE TAG THIS LEG PUSHES, computed once so the dry-run assertion below checks the very value
-      # the push step pushes. Release: leg-<release-tag sha>-<arch>. Dry run: dryrun-<run_id>-<arch>.
+      # the push step pushes. Release: leg-<release-tag sha>-<arch>. Dry run:
+      # dryrun-<run_id>-<attempt>-<arch>.
+      #
+      # The dry-run tag carries the run ATTEMPT because a re-run must not move a tag off an earlier
+      # attempt's version. A leg pushes before it records the digest, so a push followed by a failed
+      # record leaves a version only its tag still names; a re-run pushing under the same tag would
+      # strip it, and the cleanup's tag check would then pass over a version left behind. Under an
+      # attempt-scoped tag the earlier version stays tagged and the cleanup names it.
       - name: Resolve the leg tag
         id: tag
         env:
           TAG_SHA: ${{ steps.commit.outputs.sha }}
           RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           if [ "$DRY_RUN" = true ]; then
-            echo "value=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ARCH}" >> "$GITHUB_OUTPUT"
+            echo "value=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-${ARCH}" >> "$GITHUB_OUTPUT"
           else
             echo "value=ghcr.io/cuioss/api-sheriff:leg-${TAG_SHA}-${ARCH}" >> "$GITHUB_OUTPUT"
           fi
@@ -547,29 +555,32 @@ jobs:
 
       # A DRY RUN PUSHES DRY-RUN TAGS AND NOTHING ELSE, checked before this leg's first push rather
       # than trusted from the step that computed the tag. The pattern is anchored at both ends and
-      # bound to this run's own id and this leg's own architecture, so a dry run can never write a
-      # `<version>`, `sha-*` or `leg-*` tag, nor a tag belonging to another run.
+      # bound to this run's own id, this attempt and this leg's own architecture, so a dry run can
+      # never write a `<version>`, `sha-*` or `leg-*` tag, nor a tag belonging to another run or to
+      # another attempt of this one.
       - name: Assert the dry run pushes only its own dry-run tag
         if: env.DRY_RUN == 'true'
         env:
           LEG_TAG: ${{ steps.tag.outputs.value }}
           RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          if ! [[ "$LEG_TAG" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ARCH}$ ]]; then
-            echo "::error::A dry run may push only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ARCH}, but this leg would push '${LEG_TAG}'. Refusing to push."
+          if ! [[ "$LEG_TAG" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-${ARCH}$ ]]; then
+            echo "::error::A dry run may push only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-${ARCH}, but this leg would push '${LEG_TAG}'. Refusing to push."
             exit 1
           fi
           echo "Dry-run tag confirmed: ${LEG_TAG}"
 
       # THE LEG-LOCAL TAG, AND ONLY THAT ONE. A leg pushes its image under
-      # leg-<release-tag sha>-<arch> (dryrun-<run_id>-<arch> on a dry run), never under `<version>`
-      # and never under `sha-*`: those two are release tags, and a release tag may only ever name the
-      # index the join assembles once BOTH legs are green. A leg that wrote one would publish a
-      # single-platform release the moment it finished, whatever the other leg did — the half release
-      # this split exists to rule out. The leg tag carries the release-tag sha so two releases never
-      # contend for one tag.
+      # leg-<release-tag sha>-<arch> (dryrun-<run_id>-<attempt>-<arch> on a dry run), never under
+      # `<version>` and never under `sha-*`: those two are release tags, and a release tag may only
+      # ever name the index the join assembles once BOTH legs are green. A leg that wrote one would
+      # publish a single-platform release the moment it finished, whatever the other leg did — the
+      # half release this split exists to rule out. The leg tag carries the release-tag sha so two
+      # releases never contend for one tag; the dry-run tag carries the run attempt so two attempts
+      # of one dry run never contend for one tag either.
       - name: Tag and push the leg-local tag
         env:
           IMAGE_ID: ${{ steps.image.outputs.id }}
@@ -599,9 +610,11 @@ jobs:
       # the hand-off to the join below. The cleanup job deletes what a dry run created by digest, so
       # a digest this leg pushed must be on record even when a later step of the leg fails; a leg
       # that recorded only on success would leave its failed attempts behind, unnamed. The record is
-      # keyed by run attempt as well as architecture: a re-run leg pushes a new digest under the same
-      # dryrun tag, leaving the earlier one untagged but still a package version, and both must stay
-      # on record.
+      # keyed by run attempt as well as architecture: a re-run leg pushes a new digest under its own
+      # attempt's dryrun tag, the earlier attempt's version stays a package version under the earlier
+      # tag, and both must stay on record. Should this step fail after the push, the version is
+      # unrecorded but still tagged dryrun-<run_id>-<attempt>-<arch>, and the cleanup's tag check
+      # names it.
       - name: Record the pushed digest for the dry-run cleanup
         if: env.DRY_RUN == 'true'
         env:
@@ -818,7 +831,8 @@ jobs:
   #
   # ON A DRY RUN the join assembles the same two-platform index from the same two tested digests
   # and runs every assertion and every signature the release path runs, but it tags the index
-  # dryrun-<run_id> alone — never `<version>`, never `sha-*` — asserted before the index is written.
+  # dryrun-<run_id>-<attempt> alone — never `<version>`, never `sha-*` — asserted before the index is
+  # written. The attempt keeps a re-run join from moving the tag off an earlier attempt's index.
   #
   # The index is assembled from EXACTLY the two leg digests and nothing else — no attestation entry,
   # no third platform, no tag lookup. Every value it is built from arrives in a leg-digest-<arch>
@@ -899,18 +913,19 @@ jobs:
 
       # THE TAGS THE INDEX IS WRITTEN UNDER, computed once and read by the create call, the dry-run
       # assertion and the read-back alike, so all three see the same list. Release: `<version>` and
-      # `sha-<release-tag sha>`. Dry run: dryrun-<run_id> alone. Space-separated: a tag carries no
-      # space.
+      # `sha-<release-tag sha>`. Dry run: dryrun-<run_id>-<attempt> alone, attempt-scoped for the
+      # reason given on the legs' "Resolve the leg tag" step. Space-separated: a tag carries no space.
       - name: Resolve the index tags
         id: tags
         env:
           RELEASED_VERSION: ${{ steps.config.outputs.current-version }}
           TAG_SHA: ${{ steps.commit.outputs.sha }}
           RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           if [ "$DRY_RUN" = true ]; then
-            echo "value=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}" >> "$GITHUB_OUTPUT"
+            echo "value=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}" >> "$GITHUB_OUTPUT"
           else
             echo "value=ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION} ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}" >> "$GITHUB_OUTPUT"
           fi
@@ -973,19 +988,20 @@ jobs:
         run: |
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-      # THE DRY-RUN TAG CHECK, on the join's own push: the index tag list must be exactly this run's
-      # dryrun-<run_id>, anchored at both ends — one tag, no `<version>`, no `sha-*` — before the
-      # index is written to the registry.
+      # THE DRY-RUN TAG CHECK, on the join's own push: the index tag list must be exactly this run
+      # attempt's dryrun-<run_id>-<attempt>, anchored at both ends — one tag, no `<version>`, no
+      # `sha-*`, no other attempt's tag — before the index is written to the registry.
       - name: Assert the dry run writes only its own dry-run tag
         if: env.DRY_RUN == 'true'
         env:
           INDEX_TAGS: ${{ steps.tags.outputs.value }}
           RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           read -r -a TAGS <<< "$INDEX_TAGS"
-          if [ "${#TAGS[@]}" -ne 1 ] || ! [[ "${TAGS[0]}" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}$ ]]; then
-            echo "::error::A dry run may tag its index only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}, but the join would write '${INDEX_TAGS}'. Refusing to write the index."
+          if [ "${#TAGS[@]}" -ne 1 ] || ! [[ "${TAGS[0]}" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}$ ]]; then
+            echo "::error::A dry run may tag its index only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}, but the join would write '${INDEX_TAGS}'. Refusing to write the index."
             exit 1
           fi
           echo "Dry-run index tag confirmed: ${TAGS[0]}"
@@ -1017,7 +1033,7 @@ jobs:
 
       # THE CLEANUP'S RECORD OF THE INDEX, written as soon as the index exists and whatever the
       # assertions below then decide — an index that fails them is still a package version this
-      # dry run created. The digest is read off the one tag this run itself just wrote.
+      # dry run created. The digest is read off the one tag this attempt itself just wrote.
       - name: Record the index digest for the dry-run cleanup
         if: always() && env.DRY_RUN == 'true' && steps.assemble.outcome == 'success'
         env:
@@ -1189,7 +1205,8 @@ jobs:
       # path's regexp is the literal below and is never derived. A dry run dispatched from a feature
       # branch therefore produces signatures the published operator identity REFUSES; one dispatched
       # from main produces signatures it accepts, over images labelled dryrun-<run_id> and tagged
-      # only dryrun-<run_id>[-<arch>], which the cleanup job deletes together with their signatures.
+      # only dryrun-<run_id>-<attempt>[-<arch>], which the cleanup job deletes together with their
+      # signatures.
       #
       # doc/user/container-image.adoc publishes the same two strings to operators, and the verify step
       # below RUNS them against all three digests — the lane proves its own signing identity rather
@@ -1284,9 +1301,13 @@ jobs:
   # WHAT IT REPORTS, AND THAT IT NEVER PASSES SILENTLY. After deleting, it reads the package again
   # and fails, naming each one, when any version it should have removed is still there: a recorded
   # digest the delete did not remove, or a version still carrying one of this run's exact tags —
-  # dryrun-<run_id>, dryrun-<run_id>-amd64, dryrun-<run_id>-arm64. The tag check only reports; it
-  # deletes nothing, so it is a completeness check over what the digests found, not a second way
-  # to find what to delete. It is how a version the run pushed but could not record still surfaces.
+  # for EVERY attempt a of this run, 1 through the current run attempt: dryrun-<run_id>-<a>,
+  # dryrun-<run_id>-<a>-amd64 and dryrun-<run_id>-<a>-arm64. The tag check only reports; it deletes
+  # nothing, so it is a completeness check over what the digests found, not a second way to find
+  # what to delete. It is how a version the run pushed but could not record still surfaces — and it
+  # holds across re-runs because the tags are attempt-scoped: a re-run pushes under its own
+  # attempt's tags and never moves a tag off an earlier attempt's version, so an unrecorded version
+  # stays tagged, and the check matches each tag exactly, never by prefix or pattern.
   #
   # WHY `always()`. A dry run that failed half-way has still created versions — a leg that pushed
   # before a later step failed, an index that failed its assertions — and cancelling a run must not
@@ -1330,6 +1351,7 @@ jobs:
           GHCR_USER: ${{ github.actor }}
           RECORD_DIR: ${{ runner.temp }}/dryrun-created
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
           DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
         run: |
           set -euo pipefail
@@ -1416,17 +1438,25 @@ jobs:
           done
 
           # 4. Read the package again and name every version this run left behind. The architectures
-          #    are the publish-image matrix's; a leg added there must be added here.
+          #    are the publish-image matrix's; a leg added there must be added here. The exact tags of
+          #    EVERY attempt are checked, not only the current one: a version an earlier attempt
+          #    pushed but could not record is still tagged with that attempt's number.
           REMAINING="$(list_versions)"
           for DIGEST in "${TARGETS[@]}"; do
             if jq -e --arg name "$DIGEST" 'any(.[]; .name == $name)' <<< "$REMAINING" > /dev/null; then
               PROBLEMS+=("package version ${DIGEST} is still present after its delete")
             fi
           done
-          for TAG in "dryrun-${RUN_ID}" "dryrun-${RUN_ID}-amd64" "dryrun-${RUN_ID}-arm64"; do
-            mapfile -t TAGGED < <(jq -r --arg tag "$TAG" '.[] | select(any(.tags[]; . == $tag)) | .name' <<< "$REMAINING")
-            for DIGEST in "${TAGGED[@]}"; do
-              PROBLEMS+=("package version ${DIGEST} still carries this run's tag ${TAG}")
+          if ! [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            PROBLEMS+=("the run attempt '${RUN_ATTEMPT}' is not a positive integer, so no attempt's dry-run tags were checked")
+            RUN_ATTEMPT=0
+          fi
+          for ((A = 1; A <= RUN_ATTEMPT; A++)); do
+            for TAG in "dryrun-${RUN_ID}-${A}" "dryrun-${RUN_ID}-${A}-amd64" "dryrun-${RUN_ID}-${A}-arm64"; do
+              mapfile -t TAGGED < <(jq -r --arg tag "$TAG" '.[] | select(any(.tags[]; . == $tag)) | .name' <<< "$REMAINING")
+              for DIGEST in "${TAGGED[@]}"; do
+                PROBLEMS+=("package version ${DIGEST} still carries this run's tag ${TAG}")
+              done
             done
           done
 

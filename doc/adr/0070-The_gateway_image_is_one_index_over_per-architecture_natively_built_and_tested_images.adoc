@@ -158,10 +158,15 @@ claimed in either direction.
 
 A `workflow_dispatch` input, `dry_run`, runs both legs, the join and the three signatures without
 a release: the release job refuses it on every ref, so no Maven publication, SCM tag or GitHub
-release can result. Every tag a dry run pushes is `dryrun-<run_id>[-<arch>]`, asserted before the
-push; the images carry the version label `dryrun-<run_id>`; signatures are verified under an
+release can result. Every tag a dry run pushes is `dryrun-<run_id>-<attempt>[-<arch>]`, scoped to
+the run attempt and asserted before the push; the images carry the version label
+`dryrun-<run_id>`, which names the run rather than the attempt; signatures are verified under an
 identity derived from the dispatching ref; and a cleanup job deletes, by the digests the run
-recorded, every package version the run created. A dry run may be dispatched from a non-`main`
+recorded, every package version the run created. It then fails, naming each one, on any version
+still carrying an exact tag of any attempt of the run. The tags are attempt-scoped because a leg
+pushes before it records its digest: a re-run pushing under an unchanged tag would move it off an
+earlier attempt's unrecorded version and leave that version unnamed, while an attempt-scoped tag
+stays on it. A dry run may be dispatched from a non-`main`
 ref, because it publishes nothing a consumer pulls by a release tag and its signatures do not
 satisfy the published identity unless it was dispatched from `main`.
 
