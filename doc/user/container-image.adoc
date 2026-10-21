@@ -57,19 +57,18 @@ digest once and deploy that:
 ----
 docker pull ghcr.io/cuioss/api-sheriff:<version>
 
-# Filter for THIS repository and require exactly one match. `docker image inspect` reports
-# RepoDigests as a list whose order is not defined, and an image pulled from, or pushed to, more
-# than one repository has more than one entry -- so `{{index .RepoDigests 0}}` can silently hand you
-# a digest belonging to a different repository. The release workflow applies the same filter-and-
-# assert-one rule when it resolves each platform digest it pushes.
-DIGEST="$(docker image inspect \
-  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
-  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
-[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
+# Ask the registry for the digest of the index the tag names. The local image store is the wrong
+# place to read it: `docker image inspect` lists RepoDigests in no defined order, and a host that
+# also pulled a platform digest of this repository, or the same image from another repository, holds
+# several entries -- so `{{index .RepoDigests 0}}` can hand you a platform digest or another
+# repository's digest instead of the index.
+DIGEST="ghcr.io/cuioss/api-sheriff@$(docker buildx imagetools inspect \
+  ghcr.io/cuioss/api-sheriff:<version> --format '{{.Manifest.Digest}}')"
+echo "${DIGEST}"
 ----
 
-The digest a pull by tag records is the digest of the index the tag names. Deploy `"${DIGEST}"`
-verbatim.
+The digest the registry reports for the tag is the digest of the index the tag names. Deploy
+`"${DIGEST}"` verbatim.
 ====
 
 [NOTE]
@@ -319,12 +318,10 @@ Resolve the index digest once, verify it, and deploy it:
 ----
 docker pull ghcr.io/cuioss/api-sheriff:<version>
 
-# Same filter-and-assert-one rule as the digest-pinning recipe above -- RepoDigests is unordered and
-# may carry entries for other repositories, so never take element 0 on faith.
-DIGEST="$(docker image inspect \
-  --format '{{range .RepoDigests}}{{println .}}{{end}}' ghcr.io/cuioss/api-sheriff:<version> \
-  | grep '^ghcr\.io/cuioss/api-sheriff@' | sort -u)"
-[ "$(printf '%s\n' "$DIGEST" | grep -c .)" -eq 1 ] || { echo "expected exactly one digest, got: $DIGEST"; exit 1; }
+# Same registry lookup as the digest-pinning recipe above -- the index digest comes from the
+# registry, never from element 0 of the unordered local RepoDigests list.
+DIGEST="ghcr.io/cuioss/api-sheriff@$(docker buildx imagetools inspect \
+  ghcr.io/cuioss/api-sheriff:<version> --format '{{.Manifest.Digest}}')"
 
 cosign verify \
   --certificate-identity-regexp '^https://github\.com/cuioss/API-Sheriff/\.github/workflows/release\.yml@refs/heads/main$' \
@@ -332,9 +329,9 @@ cosign verify \
   "${DIGEST}"
 ----
 
-`RepoDigests` entries are fully-qualified `ghcr.io/cuioss/api-sheriff@sha256:...` references, so the
-resolved value is passed to `cosign` and to your deployment manifest unchanged -- verify and deploy
-the same string.
+`DIGEST` is a fully-qualified `ghcr.io/cuioss/api-sheriff@sha256:...` reference, so the resolved
+value is passed to `cosign` and to your deployment manifest unchanged -- verify and deploy the same
+string.
 
 *If you pin a platform digest, verify that digest.* Resolve `PLATFORM_REF` from the verified index
 as shown under <<_pinning_the_index_or_one_platform>>, then run the same command against it:
