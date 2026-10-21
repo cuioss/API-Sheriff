@@ -20,12 +20,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -121,6 +125,11 @@ public final class TerminalDispatch {
     private final ResponseStage responseStage;
     private final OriginValidationStage originValidationStage;
     private final WebSocketRelayStage webSocketRelayStage;
+    /**
+     * The route ids a gRPC call ended by its stream-idle bound has already been reported for at
+     * {@code INFO} (see {@link #logGrpcStreamIdleTimeout}). Bounded by the number of configured routes.
+     */
+    private final Set<String> grpcStreamIdleReported = ConcurrentHashMap.newKeySet();
 
     /**
      * Wires the terminal actions to the boot-built collaborators of the edge.
@@ -318,6 +327,16 @@ public final class TerminalDispatch {
      * {@code grpc-status} / {@code grpc-message} trailers — with {@link ResponseStage#relayWithTrailers}.
      * A dispatch failure (including an h2-negotiation failure) surfaces as a {@link GatewayException}
      * that {@link ErrorResponseWriter} renders as a trailers-only gRPC status rather than problem+json.
+     * <p>
+     * <strong>What bounds the call.</strong> The dispatch arms neither the request-body idle timeout nor
+     * the request-body deadline, so a client-streaming or bidirectional call may pause between its
+     * messages. Until the upstream sends its response headers the guard's whole-dispatch timeout bounds
+     * the call. From then on the call's {@linkplain ResponseStage.GrpcStreamIdleBound stream-idle bound}
+     * does: every request frame the dispatch reads and every upstream frame the relay writes restarts it,
+     * and a call that carried no frame in either direction for its fixed five minutes is ended by the
+     * relay — the upstream request is reset, and the client response ends through the one end rule with
+     * {@code grpc-status: 4} ({@code DEADLINE_EXCEEDED}) in its trailers. Such an end is logged as
+     * {@code ApiSheriff-25}, latched per route.
      *
      * @param ctx     the request
      * @param request the pipeline request, through stage 5
@@ -337,18 +356,42 @@ public final class TerminalDispatch {
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
         GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(upstreamClients, cap, upstreamFailureMapper);
+        // Every request frame the dispatch reads, and every upstream frame the relay writes, keeps the
+        // call's stream-idle bound from expiring.
+        ResponseStage.GrpcStreamIdleBound idleBound = ResponseStage.GrpcStreamIdleBound.on(ctx.vertx());
         long upstreamStartNanos = System.nanoTime();
         HttpClientResponse upstream = dispatchMarkingUnreadBody(ctx, () -> grpcDispatchStage.dispatch(route,
-                request.method(), uri, forward.headers(), inboundBody(ctx), request.declaredContentLength()));
+                request.method(), uri, forward.headers(), idleBound.watch(inboundBody(ctx)),
+                request.declaredContentLength()));
         sheriffMetrics.recordUpstreamDuration(route.id(), Duration.ofNanos(System.nanoTime() - upstreamStartNanos));
         gatewayEventCounter.increment(EventType.REQUEST_FORWARDED);
+        idleBound.expiry().onSuccess(expired -> logGrpcStreamIdleTimeout(route.id()));
         // The trailer relay mutates the event-loop-bound response; hop back onto the event loop, exactly
         // like the HTTP relay path.
         List<String> stageSetCookies = request.responseSetCookies();
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         relayOnEventLoop(ctx, stageSetCookies, upstream, end -> responseStage.relayWithTrailers(upstream,
-                ctx.response(), route.notModifiedEnabled(), setHeaders, defaultHeaders, end));
+                ctx.response(), route.notModifiedEnabled(), setHeaders, defaultHeaders, end, idleBound));
+    }
+
+    /**
+     * Records one gRPC call its stream-idle bound ended (see {@link ResponseStage.GrpcStreamIdleBound}).
+     * <p>
+     * <strong>Latched per route, to bound the log volume</strong>, like the request-body idle timeout's
+     * record: the first occurrence on a route is recorded at {@code INFO}; every repeat on that route is a
+     * {@code DEBUG} diagnostic. The latch is keyed by the route id, so it holds at most one entry per
+     * configured route. The record carries the route id and the fixed timeout in seconds only.
+     */
+    private void logGrpcStreamIdleTimeout(String route) {
+        long timeoutSeconds = TimeUnit.MILLISECONDS.toSeconds(
+                ResponseStage.GrpcStreamIdleBound.STREAM_IDLE_TIMEOUT_MILLIS);
+        if (grpcStreamIdleReported.add(route)) {
+            LOGGER.info(ApiSheriffLogMessages.INFO.GRPC_STREAM_IDLE_TIMEOUT, route, timeoutSeconds);
+            return;
+        }
+        LOGGER.debug("gRPC call on route '%s' carried no frame for %s seconds again — already reported once for "
+                + "this route, stays at DEBUG for the rest of the process", route, timeoutSeconds);
     }
 
     /**

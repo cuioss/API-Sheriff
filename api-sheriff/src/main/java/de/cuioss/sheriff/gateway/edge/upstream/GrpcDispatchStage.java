@@ -46,12 +46,19 @@ import io.vertx.core.streams.ReadStream;
  * ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions}) rather than per-protocol, so legitimate
  * multi-stream gRPC traffic is never misfired.
  * <p>
- * <strong>No request-body idle timeout.</strong> The dispatch is built with
- * {@link DispatchStage#NO_BODY_IDLE_TIMEOUT}, so a gRPC request body is never ended for making no
- * progress. Client-streaming and bidirectional RPCs legitimately pause between messages, and a
- * forced-HTTP/2 upstream multiplexes the call on a shared connection instead of holding a pooled
- * connection of its own, so there is no connection for such a bound to release. The guard's
- * whole-dispatch timeout still applies.
+ * <strong>No request-body idle timeout and no request-body deadline.</strong> The dispatch is built
+ * with {@link DispatchStage#NO_BODY_IDLE_TIMEOUT} and without a request-body deadline, so a gRPC request
+ * body is never ended for making no progress, nor for not having ended in time. Client-streaming and
+ * bidirectional RPCs legitimately pause between messages, and a forced-HTTP/2 upstream multiplexes the
+ * call on a shared connection instead of holding a pooled connection of its own, so there is no
+ * connection for such a bound to release.
+ * <p>
+ * <strong>The exemption is bounded.</strong> Until the upstream sends its response headers the guard's
+ * whole-dispatch timeout bounds the call. Once they have arrived the guarded call has returned, and the
+ * call's stream-idle bound takes over: the edge hands this stage the request body
+ * {@linkplain de.cuioss.sheriff.gateway.edge.relay.ResponseStage.GrpcStreamIdleBound#watch watched} by
+ * that bound, so every request frame counts as activity, and the trailer relay ends a call that carried
+ * no frame in either direction for the bound's fixed five minutes with a gRPC status.
  *
  * @author API Sheriff Team
  * @since 1.0
