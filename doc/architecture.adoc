@@ -539,6 +539,42 @@ hold back the streams it is forwarding. With a connection window of one stream w
 waiting for an upstream connection could use it up, and every upload on that connection already
 holding an upstream connection would then be unable to send another byte.
 
+[[_http2_connection_window_measurement]]
+*The derived window was measured against a fixed 2 MiB window, and it stays derived.* A fixed
+connection window of 2 MiB (2,097,152 bytes) would lower the most a connection can hold buffered from
+6,553,500 bytes to 2,097,152 bytes, 3.1 times less. Before any change, the two were measured against
+each other with the k6 upload aspects `upload-1MB` (`upload_small.js`, 50 virtual users) and
+`upload-50MB` (`upload_large.js`, 5 virtual users), 60 s per run and two runs per side. Each side ran
+the native image in the distroless container, built from the same tree with only the connection
+window changed, in the benchmark-mode integration stack with the static nginx backend. A one-iteration
+probe of the upload against that stack negotiated HTTP/2, so the uploads did exercise the connection
+window. No request failed in any of the eight runs.
+
+[cols="1,2,2,2", options="header"]
+|===
+| Aspect | Connection window | `throughput_mbps` (run 1 / run 2 / mean) | p95 latency, ms (run 1 / run 2 / mean)
+
+| `upload-1MB` | derived, 6,553,500 | 41.20 / 46.42 / *43.81* | 1,986 / 1,274 / *1,630*
+| `upload-1MB` | fixed, 2,097,152 | 35.36 / 41.58 / *38.47* | 1,869 / 1,454 / *1,661*
+| `upload-50MB` | derived, 6,553,500 | 48.80 / 52.50 / *50.65* | 6,455 / 5,628 / *6,041*
+| `upload-50MB` | fixed, 2,097,152 | 29.12 / 40.66 / *34.89* | 8,989 / 8,703 / *8,846*
+|===
+
+`Http2EarlyResponseResetIT` passed on both trees. The fixed window would have been kept only if
+neither aspect lost more than 10% throughput or gained more than 10% p95 latency, the integration test
+stayed green and the worst case shrank. The last two held and the first did not: `upload-1MB` lost
+12.2% throughput (p95 +1.9%), and `upload-50MB` lost 31.1% throughput with p95 46.4% higher. The fixed
+window was therefore reverted.
+
+The measurement has limits, and they are part of the result. It ran on a shared machine whose
+one-minute load average at the end of a run was about 11.7 to 13.9 during the fixed-window runs and
+about 7.2 to 10.1 during the derived-window runs. Each side had two runs only. The `upload-1MB`
+difference lies inside the spread between the derived window's own two runs (41.2 and 46.4 Mbps), so
+that aspect alone would not have decided it. The `upload-50MB` runs do not overlap between the sides
+(48.8 and 52.5 against 29.1 and 40.7 Mbps), so that aspect carries the decision. The fixed window
+would also have accepted a trade-off: 2 MiB holds 32 stream windows, so more than 32 paused streams
+could use up the whole connection window -- the case the derivation exists to prevent.
+
 The late refusal of a body on a bodyless method (below) stays a `CANCEL` reset taken before the
 response ends, and neither the WebSocket upgrade nor the L4 passthrough relay is affected.
 
