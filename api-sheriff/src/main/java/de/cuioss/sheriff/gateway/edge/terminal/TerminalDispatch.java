@@ -635,9 +635,6 @@ public final class TerminalDispatch {
      * <p>
      * The mark is recorded at once, on the thread the callback runs on, so it is in place before the
      * upstream request is reset and the relay fails.
-     *
-     * @param ctx           the request whose body outlived the deadline
-     * @param clientContext the client connection's own context, the one its response is ended on
      */
     private void retireAfterLateBodyTimeout(RoutingContext ctx, Context clientContext) {
         connectionRetirement.markFramingRejection(ctx);
@@ -652,9 +649,6 @@ public final class TerminalDispatch {
      * response is ended on the client connection's, so whether it has ended is read there: a response
      * the relay ends normally just before this decision is seen as ended and its connection is closed. A
      * response not yet ended is left to the relay's end, which closes the marked connection.
-     *
-     * @param clientContext the client connection's own context
-     * @param request       the request whose body outlived the request-body deadline after the hand-over
      */
     static void closeIfEndedOn(Context clientContext, HttpServerRequest request) {
         clientContext.runOnContext(v -> {
