@@ -69,11 +69,13 @@ upstream is never called.
 | Forwarding
 | A filter *inside* an already-authorised route, not an admission gate, declared on the route or
   as a default on its endpoint: each of headers and query parameters independently resolves a
-  positive-list, a negative-list, or -- when the resolved block declares neither -- forward-all. Whatever the mode, the gateway-owned never-forward set still
-  withholds `Cookie` -- absolute against client input, re-admitted by no mode and no list -- along
-  with the hop-by-hop and provenance names. An inbound `Authorization` is the set's *single*
-  re-admittable member, and only where the route declares a positive-list naming it; under a
-  negative-list or forward-all it is withheld. The HTTP mechanics the gateway understands cross
+  positive-list, a negative-list, or -- when the resolved block declares neither -- forward-all. Whatever the mode, the gateway-owned
+  link:../configuration.adoc#_never_forward_set[never-forward set] still withholds the hop-by-hop,
+  framing and provenance names. An inbound `Authorization` is the set's *single* re-admittable
+  member, and only where the route declares a positive-list naming it; under a negative-list or
+  forward-all it is withheld. The browser `Cookie` is no forward mode's to copy: it reaches the
+  upstream only as the route's link:../configuration.adoc#_cookies[`cookies`] block admits it --
+  under the default `allow: none` not at all. The HTTP mechanics the gateway understands cross
   without an entry, unless the route denies one by name. Inbound `Forwarded` /
   `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s forwarded resolver,
   and the gateway emits regenerated canonical output (`X-Forwarded-*` by default). See

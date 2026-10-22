@@ -182,16 +182,30 @@ client input it previously withheld.
 *The bound matters as much as the change.* This alters what crosses *within* routes the operator
 had already exposed; it never alters *which* routes are reachable. Route matching is unchanged and
 remains deny-by-default -- a request matching no route still reaches no upstream. Nor does it leak
-credentials: `Cookie` never crosses under any mode (`ConnectionHeaders.REQUEST_STRIP`), an inbound
-`Authorization` is re-admitted only
-where a route declares a positive-list naming it, and the hop-by-hop, framing and provenance
-headers the gateway owns are withheld regardless. Note also that a *declared-empty* list is not the
+credentials: no forward mode copies the browser `Cookie` -- it crosses only as the route's `cookies`
+block admits it, and the gateway's own cookies never do -- an inbound `Authorization` is re-admitted
+only where a route declares a positive-list naming it, and the hop-by-hop, framing and provenance
+headers the gateway owns are withheld regardless (see
+link:doc/configuration.adoc#_never_forward_set[the never-forward set]). Note also that a *declared-empty* list is not the
 absent state: `headers_allow: []` is a positive-list naming nothing, and keeps forwarding nothing.
 +
 *Mitigation, one line:* declare a positive-list (`headers_allow` / `query_allow`) on any route
 whose previous no-block posture you were relying on. See
 link:doc/architecture.adoc#_forward_policy[Architecture -- Forward Policy] and
 link:doc/adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036].
+
+No cookie crosses a route by default (behaviour change on upgrade)::
+The browser `Cookie` used to be withheld from every upstream, while every upstream `Set-Cookie` line
+was relayed to the browser. Both directions are now decided per route by the `cookies` block, and a
+route that resolves no block runs `allow: none`: its upstream receives no browser cookie, and *no
+upstream `Set-Cookie` reaches the browser*. An upstream that sets cookies today stops having them
+delivered until its route, endpoint or anchor names them. The gateway's own cookies cross under no
+block in either direction.
++
+*Mitigation, one line:* declare `cookies: { allow: [<the names>] }` on every route whose upstream
+relies on its own cookies. See
+link:doc/configuration.adoc#_cookies[Configuration -- `cookies`] and
+link:doc/adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037].
 
 Upstream response headers are relayed except for gateway-owned names::
 Both directions carry a *gateway-owned never-relay set* -- the connection-specific and framing
@@ -200,7 +214,7 @@ those sets the two directions differ: a route can *narrow* what crosses on the r
 (`headers_deny` / `headers_allow`), while on the response side the gateway does not strip
 identifying headers an upstream emits -- `ConnectionHeaders.RESPONSE_STRIP` holds only
 connection-specific and framing names, so `Server`, `X-Powered-By` and their kin reach the client
-unchanged. There is no response-header allowlist and no configuration knob suppresses them.
+unchanged. `Set-Cookie` is the one response header a route's policy decides (see above). There is no response-header allowlist and no configuration knob suppresses them.
 Terminate such fingerprinting at the upstream, or in front of the gateway, if it matters to you.
 
 The server-mode session store is single-node and in-memory::

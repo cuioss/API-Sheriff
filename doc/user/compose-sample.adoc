@@ -586,14 +586,18 @@ directory gives you a working starting point. From there the usual first three c
   down.
 . Switch `docker/sheriff-config/endpoints/demo-api.yaml` to `auth: require: bearer`. You will
   usually need no `forward` block at all: with none declared, every client header and query
-  parameter crosses except the gateway-owned never-forward set (`Cookie` absolutely, an inbound
-  `Authorization` on any route declaring no positive-list naming it, and the hop-by-hop and
-  framing names), and the HTTP mechanics -- `Accept`, `Accept-Encoding`, `Accept-Language`,
+  parameter crosses except the gateway-owned
+  link:../configuration.adoc#_never_forward_set[never-forward set] (an inbound `Authorization` on
+  any route declaring no positive-list naming it, and the hop-by-hop and framing names), and the
+  HTTP mechanics -- `Accept`, `Accept-Encoding`, `Accept-Language`,
   `Content-Type` and `Range` -- cross without being listed, joined by the five conditional
   validators when the route's `not_modified` toggle is enabled. Add a `forward` block only to
   *narrow* that: `headers_deny` / `query_deny` to withhold specific names, or
   `headers_allow` / `query_allow` for a strict positive-list. See
-  link:../configuration.adoc#_forward[the `forward` reference].
+  link:../configuration.adoc#_forward[the `forward` reference]. The browser `Cookie` is not
+  decided there: no cookie crosses unless the route's
+  link:../configuration.adoc#_cookies[`cookies` block] admits it, and the gateway's own cookies
+  never do.
 +
 [IMPORTANT]
 ====
@@ -604,8 +608,9 @@ starts forwarding client input it previously withheld.
 
 The bound is worth stating precisely: this changes what crosses *within* routes you had already
 exposed, never *which* routes are reachable (route matching is unchanged and still
-deny-by-default), and it leaks no credentials -- `Cookie` crosses under no mode at all, and an
-inbound `Authorization` only where a route declares a positive-list naming it. *Mitigation is one
+deny-by-default), and it leaks no credentials -- no forward mode copies `Cookie` (it crosses only
+as a route's `cookies` block admits it, and the gateway's own cookies never), and an inbound
+`Authorization` crosses only where a route declares a positive-list naming it. *Mitigation is one
 line:* declare a positive-list on any route whose previous no-block posture you relied on.
 
 This sample is unaffected: `demo-api.yaml` declares `headers_allow: []` / `query_allow: []`, and a

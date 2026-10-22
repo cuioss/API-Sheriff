@@ -110,6 +110,41 @@ link:../adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared
 The route table and the boot validator resolve every block through the same code, so the posture
 the boot validator judges is the posture the route runs.
 
+*An example: `cookies` declared at three scopes.* The `cookies` block is the one block declarable at
+all four scopes, so it shows the whole chain:
+
+[source,yaml]
+----
+# gateway.yaml
+cookies: { allow: none }                     # gateway scope
+anchors:
+  app:
+    path_prefix: /app
+    type: proxy
+    access: public
+    cookies: { allow: [SESSIONID, theme] }   # anchor scope
+
+# endpoints/legacy.yaml
+endpoint:
+  id: legacy
+  base_url: LEGACY
+  anchor: app
+  auth: { require: none }
+  routes:
+    - id: legacy-admin
+      match: { path_prefix: /app/admin }
+      cookies: { allow: [ADMINSESSION] }     # route scope
+    - id: legacy-app
+      match: { path_prefix: /app }
+----
+
+`legacy-admin` forwards `ADMINSESSION` alone: its block replaces the anchor's list rather than adding
+to it, and the replacement is announced by `ApiSheriff-101`. `legacy-app` declares no block and its
+endpoint declares none either, so the anchor's `[SESSIONID, theme]` applies. A route outside every
+anchor whose endpoint declares no block resolves the gateway's `allow: none`, which is also what a
+route resolves when no scope declares the block at all. What each mode forwards and relays is in
+link:../configuration.adoc#_cookies[the `cookies` reference].
+
 [[_policy_block_scopes]]
 .Where each policy block is declarable
 [cols="2,3,4,3,6", options="header"]
@@ -157,7 +192,8 @@ the boot validator judges is the posture the route runs.
 
 | `forward`
 | endpoint, route
-| Forward-all on both dimensions, bounded by the gateway-owned sets no configuration re-admits.
+| Forward-all on both dimensions, bounded by the gateway-owned sets no configuration re-admits (see
+  link:../configuration.adoc#_never_forward_set[the never-forward set]).
 | No
 | No anchor or gateway scope: forward filtering is upstream-specific
   (link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).

@@ -270,8 +270,8 @@ Every policy block resolves by one rule: the nearest declared scope of
 (link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution],
 link:adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]).
 A nearer declaration can therefore relax a broader one, and the operator who owns the broader scope
-does not have to be the one who writes the nearer block. Two blocks carry that surface at the
-endpoint scope.
+does not have to be the one who writes the nearer block. Three blocks carry that surface below the
+anchor scope.
 
 *An endpoint-level `security_filter` replacing the anchor's block.* An endpoint file can relax the
 inbound-filter posture an anchor sets for its namespace -- a looser profile, raised limits, a wider
@@ -295,6 +295,14 @@ endpoint scope exactly as on a route: both lists of one dimension together are r
 declared it (ADR-0037). The residual is the wholesale replacement itself, accepted because a merge
 would make a route unable to relax an endpoint list and would reintroduce the merge-order ambiguity
 ADR-0007 forbids.
+
+*An endpoint- or route-level `cookies` block replacing the anchor's.* An endpoint file can widen
+which browser cookies cross for its routes -- a longer list, or `allow: all` -- and can switch the
+same-origin check off, against what the anchor declares for its namespace. The controls: the
+replacement is announced by the `ApiSheriff-101` boot WARN, which names the route, the anchor and the
+block; a route that runs with `same_origin_check: false` is announced by `ApiSheriff-123`; and the
+gateway's own cookies cross under no block whatever scope declared it (<<gw-15>>). The residual is
+the widening that stays legal, which the WARNs make visible but do not refuse.
 
 *Assertion.* An endpoint-level block governs a route without its own block and is replaced wholesale
 by a route block (`RouteTableBuilderTest`); an endpoint `security_filter` replacing an anchor block is
@@ -336,7 +344,9 @@ The threat categories that actually bite each boundary (empty cells omitted for 
 | *Spoofing* the client to the upstream -> <<gw-04>>. *Elevation* via SSRF / upstream
   redirect -> <<gw-05>>. *Tampering* via response injection on the return leg -> <<gw-03>>;
   an upstream weakening a gateway-owned response security header, or an anchor block dropping one
-  -> <<gw-14>>.
+  -> <<gw-14>>; an upstream setting a cookie another upstream or the gateway then receives (cookie
+  tossing) -> <<gw-15>>. *Info disclosure* of one upstream's cookies to another, or of the gateway's
+  session cookie to any upstream -> <<gw-15>>.
 
 | B4 gateway<->IdP
 | *Spoofing* tokens (alg confusion, `alg:none`, key confusion) -> <<bff-06>>. *Spoofing* the IdP
@@ -347,7 +357,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
   *Elevation* through a token the identity provider did not bind to the proof key -> <<bff-14>>.
 
 | B5 browser<->BFF
-| *Spoofing* via CSRF on the cookie-authed API -> <<bff-11>>. *Elevation* by steering a request
+| *Spoofing* via CSRF on the cookie-authed API -> <<bff-11>>, and on a route that forwards the
+  browser's own cookies to its upstream -> <<gw-15>>. *Elevation* by steering a request
   onto the session branch of a dual-posture route -> <<bff-16>>; by reaching a route with a session
   that lacks its scopes -> <<bff-15>>; by steering the widening of a live session -> <<bff-17>>.
   *Tampering*/theft of the
@@ -717,7 +728,8 @@ reads one. The response direction carries no equivalent re-validation, and sayin
 honest statement of the control's reach -- the gateway does not re-run `CharacterValidationStage`
 over upstream response headers. Both response paths (`edge.relay.ResponseStage` for the streamed proxy
 relay, `asset.AssetResponseEnvelope` for the buffered asset envelope) copy the source's remaining
-headers through once the gateway-owned never-relay set below has been applied. That direction is
+headers through once the gateway-owned never-relay set below has been applied -- and on the proxy
+relay once the route's `cookies` policy has judged each `Set-Cookie` (<<gw-15>>). That direction is
 bounded by *which names* cross rather than by re-checking their characters, so the residual is
 scoped to a configured upstream that is already inside the gateway's trust boundary rather than
 to client-supplied input. Never let a client `Connection:` header steer stripping of framing or
@@ -741,11 +753,15 @@ never derived from a sibling list and never taken from what a client names
 Two properties carry this control:
 
 * *The request-direction never-forward set applies under every forward mode* -- including the
-  permissive forward-all baseline. `Authorization` is its single re-admittable member (only on a
-  route declaring a positive-list naming it); `Cookie` is absolute against client input. No route
-  configuration re-admits the hop-by-hop, framing or gateway-owned names from the request. The one
-  path around the set is an operator's *static* `set_headers` value, which is merged after the
-  strip and carries no caller-supplied material.
+  permissive forward-all baseline. Its members are listed once, in
+  link:configuration.adoc#_never_forward_set[the never-forward section of the configuration
+  reference]. `Authorization` is its single re-admittable member (only on a route declaring a
+  positive-list naming it). No route configuration re-admits the hop-by-hop, framing or
+  gateway-owned names from the request. The one path around the set is an operator's *static*
+  `set_headers` value, which is merged after the strip and carries no caller-supplied material.
+  The browser `Cookie` is not a member: no forward mode copies it, and it crosses only as the
+  route's `cookies` policy admits it, with the gateway's own cookies dropped under every policy
+  (<<gw-15>>).
 * *The forwarded header set is built by regeneration, never by editing the client's map.* The
   client's `X-Forwarded-*` / `Forwarded` copies are skipped on *every* mode, forward-all
   included, so a permissive route is not a way to smuggle a spoofed chain upstream (GW-04).
@@ -780,8 +796,9 @@ rejected on a `strict` route and never forwarded, while a `lenient` route still 
 matched control, pinned by `GatewayEdgeQueryHandoffTest` and `SecurityProfileTest`); a client
 `Connection: X-Forwarded-For` (or
 `Content-Length`) is rejected `400` and never causes the gateway to drop the regenerated
-forwarding header or the framing header; a client-sent `X-Forwarded-For`, `Cookie` or `Authorization` never reaches the
-upstream on a forward-all route; response headers are validated before write.
+forwarding header or the framing header; a client-sent `X-Forwarded-For` or `Authorization` never
+reaches the upstream on a forward-all route, and a client-sent `Cookie` reaches it only as the
+route's `cookies` policy admits it (<<gw-15>>); response headers are validated before write.
 
 [#gw-04]
 === GW-04 -- X-Forwarded / trusted-proxy spoofing
@@ -1946,6 +1963,115 @@ value is overwritten, under `default` it is kept and the configured value fills 
 gateway-authored response carries the configured value under either mode; an orphan mode and a
 control-character CSP fail the boot.
 
+[#gw-15]
+=== GW-15 -- Browser cookies forwarded to upstreams (cross-upstream exposure, cookie tossing, cross-site requests)
+
+Once the gateway fronts an upstream that keeps its own state in a cookie, the browser's `Cookie`
+header and the upstream's `Set-Cookie` cross the gateway, and every upstream behind one host shares
+the browser's cookie jar for that host. Three threats follow from that sharing, and a fourth --
+the gateway's own session cookie reaching an upstream -- is the one the rest of this document
+already rests on.
+
+*Evidence.* Duende BFF GHSA-vvg7-p7jw-8qr3 *(unverified)*: the session cookie forwarded to the
+proxied API, the failure a hand-maintained list of "cookies to drop" produces when one side learns a
+new name. Cookie tossing -- a sibling origin setting a cookie with a wider `Domain` or a narrower
+`Path` that the browser then sends to its neighbour -- is a documented class (CWE-565), and
+`draft-ietf-httpbis-rfc6265bis` adds the `+__Host-+` prefix precisely to stop it. Cross-site request
+forgery on a cookie-authenticated endpoint is CWE-352. No gateway-product CVE is cited for the
+per-route policy itself: the surface is new in API Sheriff, and the entry is recorded from the
+mechanism.
+
+[cols="2,3,3", options="header"]
+|===
+| Threat | What the attacker gains | Control
+
+| *Cross-upstream cookie exposure under `allow: all`*
+| A route that forwards every cookie hands its upstream every application cookie the browser holds
+  for the host -- including cookies another upstream set, which a compromised or curious upstream
+  can read and replay against its neighbour.
+| `allow: all` is refused at the gateway scope, so it can only name the anchor, endpoint or route
+  whose upstreams it reaches; a list names exactly what one upstream needs; the gateway's own cookies
+  are dropped under `all` as under every mode. The exposure a deliberate `all` creates is accepted
+  (below).
+
+| *Cookie tossing between upstreams on one host*
+| An upstream sets a cookie -- with a `Domain` of its choosing, or under a gateway cookie's name --
+  that the browser then presents to another upstream, or to the gateway as its own session or
+  binding cookie.
+| The response predicate relays an upstream `Set-Cookie` only when the route's policy admits the
+  cookie it names, never one naming a gateway cookie, and removes the `Domain` attribute from every
+  line it relays, on the HTTP relay, the gRPC leading headers and the gRPC trailers. Under the
+  default `allow: none` no upstream line is relayed at all; a WebSocket upgrade relays no upstream
+  header. Closed for a widened `Domain` and for a gateway cookie name; a `Path`-scoped cookie is an
+  accepted residual (below).
+
+| *Cross-site requests carrying a forwarded cookie*
+| A page on another site makes the browser send a state-changing request to a cookie-forwarding
+  route; the browser attaches the forwarded cookie, and the upstream acts on an ambient credential the
+  user never meant to use there.
+| Every non-WebSocket route whose block forwards a cookie carries a same-origin check, built at
+  route-table assembly: an unsafe request that carries a cookie the route would forward must present
+  an `Origin` equal to the origin the gateway was reached on or to one of `additional_origins`, or
+  `Sec-Fetch-Site: same-origin`, or it is refused `403` before authentication and before the
+  upstream. A cookie-forwarding WebSocket route must declare a non-empty `websocket.allowed_origins`,
+  which <<gw-09>> enforces on the upgrade. Closed, with the scope stated below.
+|===
+
+*Control -- one definition of the gateway's own cookies.* `GatewayCookies` holds every name under the
+reserved `+__Host-sheriff-+` prefix, the configured session cookie and, in cookie mode, its activity
+cookie. The boot rules, the request rebuild and the response predicate all read it, so no list can
+learn a name the others miss -- the failure the cited advisory is an instance of. Under every policy
+and every mode the request rebuild drops those pairs from the `Cookie` header and the response
+predicate drops a `Set-Cookie` naming one. A `cookies.allow` list naming one is refused at boot, and
+a `forward.headers_allow`, `forward.headers_deny` or `forward.set_headers` entry naming `Cookie` is
+refused as well, so no second configuration path decides about the header.
+
+*Control -- the scope of the same-origin check is the threat's scope.* The check runs only on an
+unsafe request that carries at least one cookie the route would forward, read through the same
+`ForwardPolicyStage.admittedCookiePairs` stage 5 rebuilds the header from. A request that carries no
+forwardable cookie -- none at all, only gateway cookies, or only names the route's list does not admit
+-- hands the upstream no ambient browser credential, so there is nothing for a cross-site page to
+forge, and it passes unchecked. That is what lets a non-browser gRPC or server-to-server client that
+sends no `Origin` keep working on a cookie-forwarding route; refusing every `Origin`-less unsafe
+request was considered and rejected as the stricter variant (ADR-0037). Safe methods are never
+checked.
+
+*Status:* COVERED. `GatewayCookiesTest` pins the definition; `CookieRulesTest` and
+`ForwardingRulesTest` pin the boot refusals; `ForwardPolicyStageTest` pins the rebuild under each
+mode and that `admittedCookiePairs` returns exactly what is forwarded; `UpstreamSetCookieFilterTest`
+and `ResponseStageTest` pin the response predicate, the `Domain` removal and the trailer filter;
+`CsrfDefenceTest` and `RouteTableBuilderTest` pin the check, its trusted origins and the
+`ApiSheriff-123` WARN; `GatewayEdgeCookiePolicyTest` drives all of it over a live edge on the HTTP,
+gRPC and WebSocket paths; `WebSocketRelayStageTest` pins that no upstream `Set-Cookie` crosses an
+upgrade.
+
+*Residual risk (accepted) -- `allow: all` below the gateway scope.* An operator who declares `all` on
+an anchor, an endpoint or a route accepts that every upstream it reaches receives every application
+cookie of the host. It is bounded by the scope refusal and by the gateway cookies never crossing.
+
+*Residual risk (accepted) -- `Path` is relayed as sent.* The predicate removes `Domain` but keeps
+`Path`, so an upstream can still set a cookie scoped to a path another upstream serves. The browser
+sends such a cookie to that path, and the neighbour receives it only when its own route's policy
+admits the name. A list naming exactly what one upstream needs is the mitigation.
+
+*Residual risk (accepted) -- an upstream that opts out of the check.* `same_origin_check: false`
+removes the check from a route and logs `WARN ApiSheriff-123` naming it at assembly; defending that
+upstream against cross-site request forgery is then the upstream's own job.
+
+*Residual risk (accepted) -- the received origin behind a TLS-offloading hop.* The check trusts the
+scheme the gateway was reached on. Behind a hop that terminates TLS, that scheme is `http` while the
+browser sends an `https` `Origin`, so legitimate unsafe requests carrying a forwarded cookie are
+refused until the public origin is listed in `additional_origins`. The failure is closed, never open.
+
+*Assertion.* Under the default `none` the upstream receives no `Cookie` and the client no upstream
+`Set-Cookie`; a list forwards and relays exactly the listed names; `all` forwards and relays every
+name but the gateway's own; no relayed line carries `Domain`; a gateway cookie crosses in neither
+direction under any policy; a cross-site unsafe request carrying a forwarded cookie is refused `403`
+and reaches no upstream, while the same request without one is forwarded, a same-origin or
+`additional_origins` request passes and `same_origin_check: false` admits it; a cookie-forwarding
+WebSocket route without `allowed_origins`, a gateway-scope `allow: all` and a list naming a gateway
+cookie each fail the boot.
+
 == OAuth / OIDC / BFF failure catalogue
 
 These bite the BFF variants (Variants 2 and 3). The confidential-client *engine*
@@ -2464,7 +2590,8 @@ real BFF bug.*
 *Control.* Fixed CSRF defence on unsafe methods: `Origin` exact-match against
 `session.csrf.trusted_origins`; `Sec-Fetch-Site: same-origin` accepted when `Origin` absent;
 else `403` + `CSRF_REJECTED`. Lock CORS to the SPA origin. This composes with the WebSocket
-Origin check (GW-09).
+Origin check (GW-09). A route that forwards the browser's own application cookies to its upstream
+carries a second instance of the same proof, scoped to that route (<<gw-15>>).
 
 *Status:* COVERED (fixed behaviour, no knob).
 
@@ -2747,9 +2874,10 @@ the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
   resolver (`AuthBranch.resolve`) serves both the CSRF gate and the authentication stage, so the two
   cannot disagree about which branch a request is on.
 * *No session on the bearer branch.* The BEARER branch looks up no session and writes no
-  `Set-Cookie`, and the browser `Cookie` is withheld upstream by the gateway-owned never-forward set,
-  as on every route. The upstream receives exactly the validated client token through the
-  mediated-bearer seam, not a re-admitted inbound header (ADR-0037).
+  `Set-Cookie`, and the session cookie is withheld upstream as one of the gateway's own cookies,
+  under every `cookies` policy, as on every route (<<gw-15>>). The upstream receives exactly the
+  validated client token through the mediated-bearer seam, not a re-admitted inbound header
+  (ADR-0037).
 * *Both branches enforce the same scope set.* The BEARER branch is exactly a `require: bearer` route,
   including the `403 insufficient_scope` check over `neededScopes` (<<bff-15>>, ADR-0049). The
   SESSION branch is exactly a `require: session` route, including its comparison of the session's
@@ -3256,9 +3384,12 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   logout-state cookie -- carries `Path=/` and `Secure` and no `Domain`, the conditions a browser
   demands before it accepts any write to a `+__Host-+` cookie. A logout and a session ended by a
   refresh clear every cookie the active binding sets.
-* *The gateway's cookies do not reach an upstream.* `Cookie` is a member of the request-direction
-  never-forward set and no route configuration re-admits it (<<gw-03>>). This holds for the HTTP,
-  the gRPC and the WebSocket dispatch.
+* *The gateway's cookies do not reach an upstream.* Stage 5 rebuilds the `Cookie` header from the
+  route's `cookies` policy and drops every gateway cookie first, under every policy and every mode:
+  the reserved `+__Host-sheriff-+` prefix, the configured session cookie and, in cookie mode, its
+  activity cookie, all read from one definition (`GatewayCookies`). No `cookies.allow` list can name
+  one -- the boot refuses it -- and no `forward` list can name `Cookie` at all (<<gw-15>>). This holds
+  for the HTTP, the gRPC and the WebSocket dispatch.
 * *Reading a cookie costs bounded work before anything is authenticated.* The `Cookie` header is
   capped before any session code runs. A value that is not a sealed cookie costs one base64 decode
   and at most one authenticated decryption; a payload is inflated only after its tag verified, up
@@ -3283,12 +3414,14 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   upstream response in place of whatever `Cache-Control` the upstream sent. Every answer of a
   reserved path that sets a cookie, and a gateway-rendered page that sets one, carry the same. A
   response the gateway adds no cookie to keeps the upstream's cache policy.
-* *An upstream cannot set a gateway cookie.* On the HTTP and the gRPC relay an upstream `Set-Cookie`
-  line naming a cookie the gateway owns -- the session cookie, the activity cookie, the binding
-  cookie, the logout-state cookie -- is dropped; every other line is relayed unchanged. The name is
-  compared exactly, the `+__Host-+` and `+__Secure-+` prefixes without case, and a nameless line
-  whose value starts with an owned name is dropped as well. A WebSocket upgrade and an asset answer
-  relay no upstream `Set-Cookie` at all.
+* *An upstream cannot set a gateway cookie.* On the HTTP relay and on the gRPC leading headers and
+  trailers an upstream `Set-Cookie` line naming a cookie the gateway owns -- any name under the
+  reserved prefix, the session cookie, the activity cookie -- is dropped under every `cookies`
+  policy, with or without a BFF. Every other line is relayed only as the route's policy admits the
+  cookie it names, with its `Domain` attribute removed (<<gw-15>>). The name is compared exactly,
+  the `+__Host-+` and `+__Secure-+` prefixes without case, and a nameless line whose value starts
+  with an owned name is dropped as well. A WebSocket upgrade and an asset answer relay no upstream
+  `Set-Cookie` at all.
 * *A WebSocket relay ends with its session.* A relay opened for a request a session was let through
   with is closed on both legs, with close code `1008` and the reason `session ended`, at the
   session's absolute expiry. In server mode it is also closed when the session is destroyed or
@@ -3300,8 +3433,8 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   gateway holds no session whose end it could observe, so there a relay is closed at the absolute
   expiry and not by a logout (<<bff-09>>).
 
-*Status:* COVERED, with two statements of the controls above that no test asserts; the end of the
-assertion names them. The limits of the
+*Status:* COVERED, with one statement of the controls above that no test asserts; the end of the
+assertion names it. The limits of the
 stateless variant are recorded where they arise and are not repeated here: a sealed cookie cannot be
 withdrawn before its deadlines (<<bff-09>>), and its replay after a refresh is the identity
 provider's to refuse (<<bff-08>>).
@@ -3373,14 +3506,13 @@ sets none keeps its own headers (`GatewayEdgeGatewayCookieTest`; `GatewayEdgeRou
 `QueryCallbackDispatch.shouldMarkCompletedLoginUncacheable`). For the other answers the gateway
 authors, the rule is asserted on the header map their writers apply (`PipelineRequestTest`). An
 upstream `Set-Cookie` naming a gateway cookie does not reach the client, on a session route, on a
-route without a session and on a gRPC route, in both session modes, while the gateway's own line on
-the same response and every other upstream line do; a gateway without sessions relays every line
-(`UpstreamSetCookieFilterTest`; `ResponseStageTest`, `UpstreamSetCookie`;
-`GatewayEdgeGatewayCookieTest`; `BffRuntimeProducerTest`, `GatewayCookieNames`). The trailer section
-of a gRPC response is relayed as the upstream sent it, a `Set-Cookie` trailer included: only the
-leading headers are filtered, and a browser processes no `Set-Cookie` in a trailer
-(`ResponseStageTest`, `UpstreamSetCookie.trailingRelayCopiesTheTrailerSectionAsSent`). The session
-cookie is found when an HTTP/2 client sends its cookies as two `Cookie` header fields
+route without a session and on a gRPC route, in both session modes and under `allow: all`, while
+the gateway's own line on the same response does; a gateway without a session runtime still drops
+a line under the reserved prefix or the default session cookie name (`UpstreamSetCookieFilterTest`;
+`ResponseStageTest`, `UpstreamSetCookie`; `GatewayEdgeGatewayCookieTest`;
+`BffRuntimeProducerTest`, `GatewayCookieNames`; `GatewayCookiesTest`). The gRPC trailers pass the
+same predicate as the leading headers (`ResponseStageTest`, `GatewayEdgeCookiePolicyTest`). The
+session cookie is found when an HTTP/2 client sends its cookies as two `Cookie` header fields
 (`GatewayEdgeGatewayCookieTest`, `SplitCookieHeaderFields`).
 
 A WebSocket relay is closed on both legs with `1008` at its session's absolute expiry in both modes
@@ -3395,9 +3527,11 @@ those store operations is asserted with the receiver and the callback
 (`BackchannelLogoutReceiverTest`; `CallbackEndpointTest`, `LoginEndsPresentedSession`), not with a
 relay held open across them.
 
+An upstream that sends `Set-Cookie` on its `101` and on a refused upgrade reaches the client with no
+upstream `Set-Cookie` (`WebSocketRelayStageTest`).
+
 Not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie -- no page the
-gateway renders sets one today, and every HTML error page is `no-store` by its own envelope -- and
-that a WebSocket upgrade relays no upstream `Set-Cookie`.
+gateway renders sets one today, and every HTML error page is `no-store` by its own envelope.
 
 [[_html_surface_failure_catalogue]]
 == HTML surface failure catalogue
@@ -3623,6 +3757,7 @@ outstanding hardening work (next section).
 | <<gw-12>> | problem+json category-only; no secret in logs | cui-http + token-sheriff mappers + gateway error contract | PARTIAL
 | <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
 | <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
+| <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED
@@ -3643,7 +3778,7 @@ outstanding hardening work (next section).
 | <<bff-18>> | `private_key_jwt` by default, algorithm derived from the key; key files read by the gateway and refused at boot on any defect, generated keys in process memory only; `oidc.client_secret` an operator choice announced at every boot and refused together with a client-authentication key file | Engine `PrivateKeyJwtAuth` + gateway `ClientSigningKey` / `BffRuntimeProducer` + configuration validator -- ADR-0058 | COVERED (key mode) / accepted residual (client-secret mode: the profile's client-authentication requirement is not met)
 | <<bff-19>> | Client key set published without a credential on every host: one public key, no input read, `GET` only; `404` and still reserved in client-secret mode; a colliding `jwks_path` refused at boot | Gateway (`ClientJwksEndpoint`, `ReservedPathRegistry`) + configuration validator -- ADR-0058 | COVERED (TLS on the path, the registered URL and a generated key behind several replicas are deployment residuals, accepted)
 | <<bff-20>> | Every authorization request pushed -- login, session widening and RFC 9470 step-up re-drive; redirect carries `client_id` and `request_uri` only; no front-channel fallback; a failed push refuses the login or the widening `502` before any state is stored, recorded once per reason | Engine `ParClient` + gateway `PushedAuthorizationRequests` -- ADR-0058 | PARTIAL (anonymous login initiation drives an outbound request bounded only by the admission cap, accepted)
-| <<bff-21>> | Cookie value is a random handle, never the session id; a login adopts no presented value; server-mode handle re-issued on a widening; absolute and idle deadline enforced at resolution in both modes, extended only by a request let through to a session route; cookie-mode last access in a separately keyed authenticated cookie bound to its session; expired sessions swept; cookies cleared with the attributes they were set with; no gateway cookie reaches an upstream; bounded work per presented cookie; a login ends the presented session; a bound of sessions per subject; `no-store` on every response the gateway sets a cookie on; no upstream `Set-Cookie` for a gateway cookie; a WebSocket relay closed with its session | Gateway (`ServerSessionBinding`, `InMemorySessionStore`, `SessionCookieCodec`, `CookieSessionBinding`, `SessionActivityCookieCodec`, `CookieKeyMaterial`, `SessionAuthenticationStage`, `CallbackEndpoint`, `LogoutEndpoint`, `BffRuntimeProducer`, `ConnectionHeaders`, `PipelineRequest`, `UpstreamSetCookieFilter`, `ResponseStage`, `SessionRelayRegistry`, `WebSocketRelayStage`) + configuration validator -- ADR-0018 | COVERED (not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie, which no page does today, and that a WebSocket upgrade relays no upstream `Set-Cookie`; cookie mode: a cookie sealed before a step-up or a widening stays usable at its earlier level, accepted)
+| <<bff-21>> | Cookie value is a random handle, never the session id; a login adopts no presented value; server-mode handle re-issued on a widening; absolute and idle deadline enforced at resolution in both modes, extended only by a request let through to a session route; cookie-mode last access in a separately keyed authenticated cookie bound to its session; expired sessions swept; cookies cleared with the attributes they were set with; no gateway cookie reaches an upstream; bounded work per presented cookie; a login ends the presented session; a bound of sessions per subject; `no-store` on every response the gateway sets a cookie on; no upstream `Set-Cookie` for a gateway cookie; a WebSocket relay closed with its session | Gateway (`ServerSessionBinding`, `InMemorySessionStore`, `SessionCookieCodec`, `CookieSessionBinding`, `SessionActivityCookieCodec`, `CookieKeyMaterial`, `SessionAuthenticationStage`, `CallbackEndpoint`, `LogoutEndpoint`, `BffRuntimeProducer`, `ConnectionHeaders`, `PipelineRequest`, `UpstreamSetCookieFilter`, `ResponseStage`, `SessionRelayRegistry`, `WebSocketRelayStage`) + configuration validator -- ADR-0018 | COVERED (not asserted by a test: `no-store` on a gateway-rendered page that sets a cookie, which no page does today; cookie mode: a cookie sealed before a step-up or a widening stays usable at its earlier level, accepted)
 | <<html-01>> | Structural HTML escaping of every rendered value; `notice` a closed vocabulary, never echoed; username from validated claims only; portal CSP without `'unsafe-inline'` | `PortalRenderer` (standalone engine) + `PortalNotice` + `SecurityHeadersStage.applyPortalHeaders` -- ADR-0053 | COVERED
 | <<html-02>> | Standalone engine without namespaces, locator or reflection; `if`/`for`/`let`/`when` only; `raw`/`safe`/namespaced expressions refused at boot (`ApiSheriff-202`) | `PortalRenderer` + `PortalProducer` -- ADR-0053 | COVERED (operator markup trusted, accepted)
 | <<html-03>> | Session-bearing page and error pages `no-store`; session-free page `max-age` + `Vary: Cookie` under BFF; no `Set-Cookie` | `PortalResponseEnvelope` + `PortalEndpoint` | COVERED

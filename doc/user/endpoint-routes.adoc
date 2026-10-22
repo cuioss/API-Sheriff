@@ -737,6 +737,58 @@ auth:
 The `auth` block carries no scope list of its own; the schema refuses one, so endpoint scopes are
 declared here or not at all.
 
+[[_cookie_dependent_upstream]]
+=== Fronting a cookie-dependent upstream (`cookies`)
+
+By default no browser cookie reaches an upstream and no upstream `Set-Cookie` reaches the browser.
+An upstream that keeps its own state in a cookie -- a legacy application's `SESSIONID`, a framework's
+CSRF token cookie, a preference -- therefore needs its route to name those cookies in a `cookies`
+block:
+
+[source,yaml]
+----
+# endpoints/legacy.yaml
+endpoint:
+  id: legacy
+  base_url: LEGACY
+  auth: { require: none }
+  routes:
+    - id: legacy-app
+      match: { path_prefix: /legacy }
+      cookies:
+        allow: [SESSIONID]           # only this cookie crosses, in both directions
+----
+
+What the route then does with cookies:
+
+* *Request.* The upstream receives a `Cookie` header holding the browser's `SESSIONID` pair and
+  nothing else. Every other browser cookie is dropped, and so are the gateway's own cookies -- the
+  BFF session cookie among them -- which no `cookies` block can admit.
+* *Response.* An upstream `Set-Cookie: SESSIONID=...` line reaches the browser with its `Domain`
+  attribute removed, so the cookie stays bound to the host the browser addressed. A `Set-Cookie`
+  naming any other cookie is not relayed.
+* *Cross-site requests.* Because the route forwards a cookie, the gateway checks the origin of every
+  unsafe request (`POST`, `PUT`, `PATCH`, `DELETE`, ...) that carries `SESSIONID`. A request sent by
+  a page on another site -- its `Origin` is neither the origin the gateway was reached on nor one the
+  block lists in `additional_origins` -- is refused `403` before the upstream sees it. The same
+  cross-site request *without* a `SESSIONID` cookie carries no credential to forge and is
+  forwarded, so a server-to-server client that sends no cookie and no `Origin` keeps working. A `GET`
+  is never checked.
+
+If the application is served to browsers from a second origin, list that origin in
+`additional_origins`. Behind a TLS-offloading proxy the gateway is reached over `http` while the
+browser sends an `https` `Origin`; list the public `https` origin there as well. `allow: all`
+forwards every cookie except the gateway's own and is refused at the gateway scope; prefer a list
+naming exactly what one upstream needs.
+
+*Upgrading from a gateway without the `cookies` block is a breaking change.* Such a gateway relayed
+every upstream `Set-Cookie` line; under the default `allow: none` none is relayed, so an upstream
+that sets cookies stops having them reach the browser until its route, endpoint or anchor names them.
+The full contract -- the three modes, the four scopes, the same-origin check, the WebSocket rule and
+every boot refusal -- is the link:../configuration.adoc#_cookies[`cookies` reference]; which headers
+the gateway withholds in either direction is the
+link:../configuration.adoc#_never_forward_set[never-forward set].
+
 [[_defaults_for_omitted_blocks]]
 === Defaults for omitted blocks
 
@@ -801,10 +853,10 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | `forward`
 | The endpoint's `forward` block when the endpoint declares one, taken whole. With none at either
   scope: *forward-all* on both dimensions: every client request header and query parameter crosses,
-  minus the gateway-owned request-direction never-forward set (`Authorization`, `Cookie`, the
-  hop-by-hop and connection-specific names, `Content-Length`, `Host`, `Origin`, `Referer`,
-  `Date`), which no configuration can re-admit apart from the single `Authorization` carve-out.
-  The *automatic* injections apply as always. The regenerated forwarding-header set is always
+  minus the gateway-owned link:../configuration.adoc#_never_forward_set[never-forward set], which
+  no configuration can re-admit apart from the single `Authorization` carve-out. The `Cookie`
+  header is not decided here at all: it crosses only as the route's `cookies` block admits it (see
+  the `cookies` row below). The *automatic* injections apply as always. The regenerated forwarding-header set is always
   injected. The mediated `Authorization: Bearer` is injected on a session route and on the
   session branch of a `session_fallback` route only when the effective `token_relay` is `true`,
   and on the bearer branch of a `session_fallback` route always (the validated client token,
@@ -813,6 +865,12 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
   omitted-block default that
   is *permissive*: it filters within a route the request is already authorised for, so the
   deny-by-default guarantee is unaffected (it lives at route matching).
+
+| `cookies`
+| The nearest declared block -- the route's, else its endpoint's, else its anchor's, else the
+  gateway's -- taken whole. With none declared: `allow: none`, fail-closed -- no browser cookie
+  reaches the upstream and no upstream `Set-Cookie` reaches the browser. An asset or redirect route
+  resolves `allow: none` whatever is declared. See <<_cookie_dependent_upstream>>.
 
 | `rate_limit`
 | No rate limiting (the feature is out of scope regardless; the field is reserved).
