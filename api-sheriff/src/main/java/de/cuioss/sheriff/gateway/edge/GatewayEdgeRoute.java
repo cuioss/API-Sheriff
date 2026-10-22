@@ -164,7 +164,9 @@ import jakarta.inject.Inject;
  *       fixed CSRF defence; the bearer branch does not. A {@code session_fallback} route counts the
  *       selected branch against {@link SheriffMetrics#AUTH_BRANCH_TOTAL};</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
- *       {@link Route#effectiveForward() effectiveForward} and the global forwarded block;</li>
+ *       {@link Route#effectiveForward() effectiveForward}, its resolved
+ *       {@link Route#effectiveCookies() effectiveCookies} (which rebuilds the outbound {@code Cookie}
+ *       header) and the global forwarded block;</li>
  *   <li>stage 6 / 7 — the route's terminal action ({@link TerminalDispatch}): streamed upstream
  *       dispatch (byte-capped) and the streamed response relay for a proxy route, the buffered
  *       governed asset response for an asset route, or — for a redirect route — the
@@ -396,11 +398,12 @@ public class GatewayEdgeRoute {
         this.authenticationStage = bffRuntime.isActive()
                 ? new AuthenticationStage(tokenValidator, bffRuntime.sessionStage())
                 : new AuthenticationStage(tokenValidator);
-        this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
         // The gateway's own cookies, derived once from the configuration — the reserved prefix with or
-        // without a BFF, plus the configured session cookie and its activity sibling. An upstream
-        // Set-Cookie line naming one of them is not relayed.
+        // without a BFF, plus the configured session cookie and its activity sibling. One instance
+        // serves both directions: stage 5 withholds them from every upstream request's Cookie header,
+        // and an upstream Set-Cookie line naming one of them is not relayed.
         GatewayCookies gatewayCookies = GatewayCookies.of(gatewayConfig);
+        this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode, gatewayCookies);
         ResponseStage responseStage = new ResponseStage(gatewayCookies);
         this.redirectStage = new RedirectStage();
         OriginValidationStage originValidationStage = new OriginValidationStage();
@@ -611,8 +614,10 @@ public class GatewayEdgeRoute {
                         route.matcher().matchHeaderNames()));
                 return;
             }
+            // The route's cookie policy is applied here, once, so every dispatch path below — the HTTP
+            // proxy, gRPC and the WebSocket upgrade — receives the same rebuilt Cookie header.
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
-                    route.effectiveForward(), route.notModifiedEnabled());
+                    route.effectiveForward(), route.effectiveCookies(), route.notModifiedEnabled());
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
             // and relays response trailers; HTTP and GraphQL take the HTTP dispatch path. The split is

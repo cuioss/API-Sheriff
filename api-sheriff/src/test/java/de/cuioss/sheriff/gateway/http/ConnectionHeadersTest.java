@@ -92,12 +92,14 @@ class ConnectionHeadersTest {
     }
 
     @Test
-    @DisplayName("Should carry exactly the 25 request-direction never-forward names")
+    @DisplayName("Should carry exactly the 24 request-direction never-forward names")
     void shouldCarryTheExactRequestSet() {
         assertEquals(
                 ConnectionHeaders.REQUEST_STRIP, Set.of(
-                        // Credentials the gateway terminates or mediates.
-                        "authorization", "cookie",
+                        // Credentials the gateway terminates or mediates. Cookie is not one: the
+                        // route's cookies policy rebuilds it in stage 5, withholding the gateway's
+                        // own cookies under every mode.
+                        "authorization",
                         // Hop-by-hop / connection-specific: the hop the gateway terminates.
                         "connection", "keep-alive", "proxy-connection", "te", "trailer",
                         "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization",
@@ -122,7 +124,7 @@ class ConnectionHeadersTest {
                 "the response set stays at its 10 names; the provenance-variant widening is"
                         + " request-direction only and must not propagate here — a response"
                         + " carrying X-Real-IP is the source's business, not the gateway's");
-        assertEquals(25, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 25 names");
+        assertEquals(24, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 24 names");
         assertTrue(ConnectionHeaders.REQUEST_STRIP.containsAll(ConnectionHeaders.RESPONSE_STRIP),
                 "the request set currently contains every response name — asserted as the OBSERVATION"
                         + " it is, with both sets pinned exhaustively above, so a name added to one"
@@ -131,12 +133,23 @@ class ConnectionHeadersTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"Cookie", "COOKIE", "cookie", "Authorization", "Host", "TE", "Proxy-Authenticate"})
+    @ValueSource(strings = {"AUTHORIZATION", "authorization", "Authorization", "Host", "TE", "Proxy-Authenticate"})
     @DisplayName("Should withhold a request-direction name whatever case the client sent it in")
     void shouldMatchRequestNamesCaseInsensitively(String name) {
         assertTrue(ConnectionHeaders.isRequestStripped(name),
                 () -> name + " must be recognised — a client sends header names in its own casing, and"
                         + " a case-sensitive check would be bypassable by changing one letter");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Cookie", "COOKIE", "cookie"})
+    @DisplayName("Should leave Cookie out of the never-forward set — the route's cookie policy governs it")
+    void shouldNotWithholdCookieWholesale(String name) {
+        assertFalse(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " is rebuilt per route by stage 5: the gateway's own cookies are withheld"
+                        + " under every mode and the browser's others cross as far as the route's"
+                        + " cookies block admits them, so a blanket strip here would make every"
+                        + " cookies mode but none unreachable");
     }
 
     @ParameterizedTest
