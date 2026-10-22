@@ -799,7 +799,7 @@ replacing the reading:
 |---|---|---|
 | No `Release` run at all | The trigger did not match: the merge touched no `.github/project.yml` path, or the PR's base was not `main`. The `paths:`/`branches:` prefilter, not the guard | nothing |
 | Run exists, `release` job **skipped** | The caller-side `merged == true` gate — the PR was closed **without** merging | nothing |
-| Run exists, `release` ran, `publish-image` and `join` **skipped** on `released-version != ''` | **The central guard refused**: `release.current-version` did not change between the merge commit and its first parent, **or** a tag for it already exists. Both are correct refusals. The `release / guard` log line `Release guard: SKIP — …` names which condition refused | nothing |
+| Run exists, `release` ran, `publish-image` and `join` **skipped** on `released-version == ''` | **The central guard refused**: `release.current-version` did not change between the merge commit and its first parent, **or** a tag for it already exists. Both are correct refusals. The `release / guard` log line `Release guard: SKIP — …` names which condition refused | nothing |
 | `release` succeeded and the two `publish-image` legs are running | The guard proceeded — **the release is being cut** | jars are, or shortly will be, irrevocable — go to Step 6 |
 
 **Tell a correct refusal apart from a broken guard BEFORE reaching for a dispatch.** A dispatch on

@@ -34,6 +34,13 @@ test.describe('gateway rejection panel', () => {
     // upstream is reached, so every answer is the gateway's own.
     await expect(demoPage.getByTestId('auth-state')).toHaveText('anonymous');
 
+    // The panel's rows are the probe set, and every row carries exactly one status cell. The loop
+    // below finds each expected row, so an equal count makes the two id sets equal: a probe row
+    // added to the page without an expectation here fails instead of passing unchecked.
+    await expect(demoPage.getByTestId('probes').locator('[data-testid$="-status"]')).toHaveCount(
+      EXPECTATIONS.length
+    );
+
     await demoPage.getByTestId('fire-probes').click();
 
     for (const expected of EXPECTATIONS) {

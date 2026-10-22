@@ -204,10 +204,10 @@ oidc:
 # template_dir, so the built-in template renders, and no cache_seconds, a limit-shaped key.
 # Placed after every cited key, so no line declared-limit-assertion-coverage.adoc cites moves.
 #
-# NOTE for api-sheriff-cookie-2: that peer mounts this overlay VERBATIM and therefore gains the
-# portal too. That is harmless: an HTML page is only offered to a request whose Accept lists
-# text/html explicitly, on a gateway-originated exit, and that peer only replays an already-sealed
-# cookie on a steady-state REST-client GET.
+# NOTE for api-sheriff-cookie-2: that peer mounts this overlay VERBATIM and therefore serves the
+# portal too -- the /portal overview page as well as the negotiated error pages. No suite drives
+# either against that peer; its one exercised request replays an already-sealed cookie on a
+# steady-state REST-client GET.
 portal:
   path: /portal
   title: API Sheriff Cookie Demo Portal

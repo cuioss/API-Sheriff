@@ -538,8 +538,9 @@ one-predicate reading <<guard-refusal-predicates>> warns against.
 finding about the guard, not a run id to file. It goes in-tree, in a follow-up PR, and the
 artifact's claim is withdrawn until it does.
 
-The observed run id and the rendered conclusions were posted as a comment on the merged pull request
--- public, permanent, and reachable from the merge commit. Now that the run has happened,
+The observed run id and the rendered conclusions were posted as a comment on the merged pull request.
+That comment is associated with the pull request, not with any commit, and like any pull-request
+comment it can be edited or deleted -- so it is not the record. Now that the run has happened,
 <<guard-negative-control-limits>> cites it by id as the evidence.
 
 [#guard-negative-control-limits]

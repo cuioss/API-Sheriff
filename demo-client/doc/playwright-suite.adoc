@@ -245,8 +245,10 @@ top-level directory needing its own ignore rule.
 The two base URLs and `PW_TEST_HTML_REPORT_OPEN=never` are passed to the test
 execution as environment, sourced from POM properties. A standalone run gets the two base URLs
 from the suite command the start script prints, built from the same Compose-derived rows as its
-entry-point banner, so no one hand-exports them. *No port number is restated inside JavaScript* --
-when a published port changes, it changes in one place.
+entry-point banner, so no one hand-exports them. *No port number is restated inside JavaScript.*
+The Maven run is the exception to the derivation: its two base URLs are the fixed
+`demo.baseUrl.server` and `demo.baseUrl.cookie` properties in `demo-client/pom.xml`. A published-port
+change in `integration-tests/docker-compose.yml` therefore has to be repeated in those two properties.
 
 [#_running_the_suite_locally]
 == Running the Suite Locally
