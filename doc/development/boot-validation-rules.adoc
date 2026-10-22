@@ -147,8 +147,10 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 
 | `CookieRules`
 | `validateGatewayAllowAll`, `validateCookieNames`, `validateGatewayCookieNotListed`,
-  `validateNoInertKeysOnNone`, `validateAdditionalOrigins`, `validateNoCookiesOnTerminalRoute`
-| `cookies.*` at gateway, anchor, endpoint and route scope
+  `validateNoInertKeysOnNone`, `validateAdditionalOrigins`, `validateNoCookiesOnTerminalRoute`,
+  `validateWebSocketCookieOrigins`
+| `cookies.*` at gateway, anchor, endpoint and route scope, against a WebSocket route's
+  `websocket.allowed_origins`
 | extracted
 
 | `TokenValidationRules`

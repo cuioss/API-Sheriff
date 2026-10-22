@@ -29,13 +29,16 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
+import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import lombok.experimental.UtilityClass;
 
@@ -44,7 +47,7 @@ import lombok.experimental.UtilityClass;
  * route forwards, which upstream {@code Set-Cookie} lines it relays, and the same-origin guard of a
  * cookie-forwarding route.
  * <p>
- * Six rules, one per refusal:
+ * Seven rules, one per refusal:
  * <ul>
  *   <li>{@link #validateGatewayAllowAll} — {@code allow: all} is refused at the gateway scope;</li>
  *   <li>{@link #validateCookieNames} — a listed name must be an RFC 6265 cookie name;</li>
@@ -55,7 +58,9 @@ import lombok.experimental.UtilityClass;
  *   <li>{@link #validateAdditionalOrigins} — every {@code additional_origins} entry must be a serialized
  *       origin;</li>
  *   <li>{@link #validateNoCookiesOnTerminalRoute} — a route-scope block is refused on an asset or a
- *       redirect route.</li>
+ *       redirect route;</li>
+ *   <li>{@link #validateWebSocketCookieOrigins} — a {@code protocol: websocket} route whose effective
+ *       block forwards any cookie must declare a non-empty {@code websocket.allowed_origins}.</li>
  * </ul>
  * A declared {@code allow: []} is refused by the bundled schema ({@code minItems: 1}), not here. Every
  * rule that judges the content of a block checks it at every scope {@link PolicyBlock#COOKIES}
@@ -274,6 +279,44 @@ public class CookieRules {
                     errors.add(new ConfigError(endpointFile(endpoint), routePointer(index),
                             ("route '%s' declares a cookies block but serves an asset or a redirect, which has "
                                     + "no upstream to forward a cookie to — remove the block")
+                                    .formatted(route.id())));
+                }
+            }
+        }
+    }
+
+    /**
+     * Rule: a {@code protocol: websocket} route whose effective {@code cookies} block forwards any
+     * cookie must declare a non-empty {@code websocket.allowed_origins}.
+     * <p>
+     * A WebSocket route carries no per-route same-origin check of its own: the upgrade is gated by the
+     * exact-match {@code allowed_origins} allowlist instead, which is stricter (an absent
+     * {@code Origin} is always refused). That gate enforces nothing while the list is empty, which only
+     * a {@code require: none} route may boot with, so without this rule a cross-site page could open a
+     * socket carrying the browser's forwarded cookies to the upstream. {@code same_origin_check} and
+     * {@code additional_origins} do not act on a WebSocket route.
+     *
+     * @param gateway   the bound gateway document
+     * @param endpoints the enabled endpoints
+     * @param errors    the shared list every violation is appended to
+     */
+    public static void validateWebSocketCookieOrigins(GatewayConfig gateway, List<EndpointConfig> endpoints,
+            List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            List<RouteConfig> routes = endpoint.routes();
+            for (int index = 0; index < routes.size(); index++) {
+                RouteConfig route = routes.get(index);
+                if (route.protocol() != Protocol.WEBSOCKET || !route.isProxyRoute()
+                        || !PolicyBlock.COOKIES.resolve(ScopeChain.of(gateway, endpoint, route)).forwardsAny()) {
+                    continue;
+                }
+                WebSocketConfig websocket = route.websocket();
+                if (websocket == null || websocket.allowedOrigins().isEmpty()) {
+                    errors.add(new ConfigError(endpointFile(endpoint),
+                            ENDPOINT_ROUTES_POINTER + "/" + index + "/websocket",
+                            ("websocket route '%s' forwards browser cookies to its upstream but declares no "
+                                    + "websocket.allowed_origins; a cookie-forwarding upgrade is gated by that "
+                                    + "allowlist alone, so declare the origins allowed to open the socket")
                                     .formatted(route.id())));
                 }
             }

@@ -18,10 +18,12 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.annotation.Annotation;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -32,6 +34,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
@@ -44,6 +47,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
@@ -102,6 +106,10 @@ import org.junit.jupiter.params.provider.EnumSource;
  * gateway cookie — and a gRPC call additionally with three {@code Set-Cookie} trailers. On the HTTP
  * relay, the gRPC leading headers and the gRPC trailers alike the client receives only the lines the
  * policy admits, the gateway's never, and none of them with a {@code Domain} attribute.
+ * <p>
+ * A route that forwards cookies also carries the gateway-side same-origin check, attached here exactly
+ * as route-table assembly attaches it: an unsafe request carrying a cookie the route would forward is
+ * refused unless it comes from the edge's own origin or an additional origin.
  */
 @DisplayName("GatewayEdgeRoute — the upstream Cookie header follows the route's cookies policy on every dispatch path")
 @Tag("isolated-fork")
@@ -133,6 +141,11 @@ class GatewayEdgeCookiePolicyTest {
     private static final String OTHER_TRAILER = "other=trailer";
     private static final String GATEWAY_TRAILER = GatewayCookies.RESERVED_PREFIX + "binding=forged";
     private static final String THEME_TRAILER_RELAYED = "theme=trailer";
+    private static final String GRPC_STATUS = "grpc-status";
+    /** A foreign page's origin, as a browser stamps it on a cross-site request. */
+    private static final String CROSS_SITE_ORIGIN = "https://evil.example.com";
+    /** The {@code additional_origins} entry of the same-origin-check route. */
+    private static final String PARTNER_ORIGIN = "https://partner.example.com";
 
     /**
      * The three {@code cookies.allow} modes, each with the {@code Cookie} header fields the upstream
@@ -406,29 +419,186 @@ class GatewayEdgeCookiePolicyTest {
         }
     }
 
-    /** One HTTP, one gRPC and one WebSocket route per {@link Mode}, all on the stub upstream. */
+    /**
+     * The gateway-side same-origin check of a route that forwards browser cookies: an unsafe request
+     * carrying a cookie the route would forward must come from the origin the edge was reached on or
+     * from one of the route's {@code additional_origins}, or it is refused {@code 403} before it reaches
+     * the upstream. A request carrying no forwardable cookie and a safe method are never checked.
+     */
+    @Nested
+    @DisplayName("the same-origin check of a cookie-forwarding route")
+    class SameOriginCheck {
+
+        private static final String CHECKED_PATH = "/csrf-list/orders";
+        private static final String UNCHECKED_PATH = "/csrf-off/orders";
+        private static final String FORWARDED_PAIRS = THEME + "; " + APP;
+
+        private int post(String path, Map<String, String> headers) throws Exception {
+            return send(client, io.vertx.core.http.HttpMethod.POST, path, headers, null);
+        }
+
+        @Test
+        @DisplayName("a cross-site POST carrying a forwarded cookie is refused 403 and never reaches the upstream")
+        void crossSitePostWithForwardedCookieRefused() throws Exception {
+            int status = post(CHECKED_PATH, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES));
+
+            assertAll("the forged request is stopped at the edge",
+                    () -> assertEquals(403, status),
+                    () -> assertTrue(upstreamCookieFields.isEmpty(), "the upstream must record no request"));
+        }
+
+        @Test
+        @DisplayName("the same cross-site POST with no Cookie is forwarded")
+        void crossSitePostWithoutCookieForwarded() throws Exception {
+            int status = post(CHECKED_PATH, Map.of("Origin", CROSS_SITE_ORIGIN));
+
+            assertAll("a request carrying no ambient credential has nothing to forge",
+                    () -> assertEquals(200, status),
+                    () -> assertEquals(List.of(List.of()), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("a cross-site POST carrying only a gateway cookie is forwarded, the cookie stripped")
+        void crossSitePostWithOnlyGatewayCookieForwarded() throws Exception {
+            int status = post(CHECKED_PATH, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, GATEWAY_SESSION));
+
+            assertAll("the gateway's own cookie never crosses, so it is not a forwarded credential",
+                    () -> assertEquals(200, status),
+                    () -> assertEquals(List.of(List.of()), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("a cross-site POST carrying only a name the route's list does not admit is forwarded")
+        void crossSitePostWithOnlyUnadmittedCookieForwarded() throws Exception {
+            int status = post(CHECKED_PATH, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, OTHER));
+
+            assertAll("a cookie the route would not forward is no credential for the upstream",
+                    () -> assertEquals(200, status),
+                    () -> assertEquals(List.of(List.of()), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("an Origin-less, Sec-Fetch-Site-less POST is forwarded without a cookie and refused with one")
+        void originlessPost() throws Exception {
+            int withoutCookie = post(CHECKED_PATH, Map.of());
+            int withCookie = post(CHECKED_PATH, Map.of(COOKIE, BROWSER_COOKIES));
+
+            assertAll("a non-browser client passes until it carries a forwarded cookie without a proof",
+                    () -> assertEquals(200, withoutCookie, "no cookie, no check"),
+                    () -> assertEquals(403, withCookie, "a forwarded cookie with no origin proof is refused"),
+                    () -> assertEquals(List.of(List.of()), List.copyOf(upstreamCookieFields),
+                            "only the cookieless request reached the upstream"));
+        }
+
+        @Test
+        @DisplayName("a same-origin POST carrying a forwarded cookie passes and forwards the listed pairs")
+        void sameOriginPostPasses() throws Exception {
+            int status = post(CHECKED_PATH, Map.of("Origin", frontOrigin(), COOKIE, BROWSER_COOKIES));
+
+            assertAll("the origin the edge was reached on is trusted",
+                    () -> assertEquals(200, status),
+                    () -> assertEquals(List.of(List.of(FORWARDED_PAIRS)), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("a POST from an additional origin carrying a forwarded cookie passes")
+        void additionalOriginPasses() throws Exception {
+            int status = post(CHECKED_PATH, Map.of("Origin", PARTNER_ORIGIN, COOKIE, BROWSER_COOKIES));
+
+            assertAll("the route's additional_origins entry is trusted beside the received origin",
+                    () -> assertEquals(200, status),
+                    () -> assertEquals(List.of(List.of(FORWARDED_PAIRS)), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("same_origin_check: false admits a cross-site POST carrying a forwarded cookie")
+        void checkOffAdmitsCrossSitePost() throws Exception {
+            int status = post(UNCHECKED_PATH, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES));
+
+            assertAll("with the check off the upstream defends itself",
+                    () -> assertEquals(200, status),
+                    () -> assertEquals(List.of(List.of(FORWARDED_PAIRS)), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("a cross-site GET carrying a forwarded cookie is never checked")
+        void safeMethodNeverChecked() throws Exception {
+            int status = send(client, io.vertx.core.http.HttpMethod.GET, CHECKED_PATH,
+                    Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES), null);
+
+            assertAll("a safe method carries no state-changing intent",
+                    () -> assertEquals(200, status),
+                    () -> assertEquals(List.of(List.of(FORWARDED_PAIRS)), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("on a gRPC route under all a cookieless Origin-less call passes")
+        void grpcCookielessOriginlessCallPasses() throws Exception {
+            Answer answer = grpcCallWith(Mode.ALL, Map.of());
+
+            assertAll("a gRPC client carrying no cookie is not asked for an origin",
+                    () -> assertEquals(200, answer.status()),
+                    () -> assertEquals("0", answer.grpcStatus(), "the call completed at the upstream"),
+                    () -> assertEquals(List.of(List.of()), List.copyOf(upstreamCookieFields)));
+        }
+
+        @Test
+        @DisplayName("on a gRPC route under all a cross-site call carrying a forwarded cookie is refused")
+        void grpcCrossSiteCallWithForwardedCookieRefused() throws Exception {
+            Answer answer = grpcCallWith(Mode.ALL, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES));
+
+            assertAll("the refusal is a trailers-only PERMISSION_DENIED",
+                    () -> assertEquals(200, answer.status(), "a gRPC rejection is carried in grpc-status"),
+                    () -> assertEquals(Integer.toString(GrpcStatusMapper.PERMISSION_DENIED), answer.headerGrpcStatus()),
+                    () -> assertTrue(upstreamCookieFields.isEmpty(), "the upstream must record no request"));
+        }
+    }
+
+    /**
+     * One HTTP, one gRPC and one WebSocket route per {@link Mode}, all on the stub upstream, plus two
+     * HTTP routes for the same-origin check: one with it on and one additional origin, one with it off.
+     */
     private List<Route> routes() {
         List<Route> routes = new ArrayList<>();
         for (Mode mode : Mode.values()) {
-            routes.add(route("http-" + mode.segment(), Protocol.HTTP, "/http-" + mode.segment(), HttpMethod.GET,
+            routes.add(route("http-" + mode.segment(), Protocol.HTTP, "/http-" + mode.segment(), Set.of(HttpMethod.GET),
                     mode.cookies));
-            routes.add(route("grpc-" + mode.segment(), Protocol.GRPC, mode.grpcService(), HttpMethod.POST,
+            routes.add(route("grpc-" + mode.segment(), Protocol.GRPC, mode.grpcService(), Set.of(HttpMethod.POST),
                     mode.cookies));
-            routes.add(route("ws-" + mode.segment(), Protocol.WEBSOCKET, "/ws-" + mode.segment(), HttpMethod.GET,
-                    mode.cookies));
+            routes.add(route("ws-" + mode.segment(), Protocol.WEBSOCKET, "/ws-" + mode.segment(),
+                    Set.of(HttpMethod.GET), mode.cookies));
         }
+        CookieAllow listed = new CookieAllow.Named(List.of("theme", "app"));
+        routes.add(route("csrf-list", Protocol.HTTP, "/csrf-list", Set.of(HttpMethod.GET, HttpMethod.POST),
+                CookiesConfig.builder().allow(listed).additionalOrigins(List.of(PARTNER_ORIGIN)).build()));
+        routes.add(route("csrf-off", Protocol.HTTP, "/csrf-off", Set.of(HttpMethod.POST),
+                CookiesConfig.builder().allow(listed).sameOriginCheck(false).build()));
         return routes;
     }
 
-    private Route route(String id, Protocol protocol, String pathPrefix, HttpMethod method, CookiesConfig cookies) {
+    /**
+     * The same-origin check route-table assembly attaches to a route: present for a non-WebSocket route
+     * whose block forwards a cookie with the check on, trusting the block's additional origins.
+     */
+    private static @Nullable CsrfDefence cookieOriginDefence(Protocol protocol, CookiesConfig cookies) {
+        if (protocol == Protocol.WEBSOCKET || !cookies.forwardsAny() || !cookies.effectiveSameOriginCheck()) {
+            return null;
+        }
+        List<String> additionalOrigins = cookies.additionalOrigins();
+        return CsrfDefence.forCookieForwardingRoute(additionalOrigins == null ? List.of() : additionalOrigins);
+    }
+
+    private Route route(String id, Protocol protocol, String pathPrefix, Set<HttpMethod> methods,
+            CookiesConfig cookies) {
         Route.RouteBuilder builder = Route.builder()
                 .id(id)
                 .protocol(protocol)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(method))
+                .effectiveAllowedMethods(methods)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
-                .effectiveCookies(cookies);
+                .effectiveCookies(cookies)
+                .cookieOriginDefence(cookieOriginDefence(protocol, cookies));
         if (protocol == Protocol.WEBSOCKET) {
             // A positive-list naming nothing, so the client's own handshake headers are not copied onto
             // the upgrade the relay dials; the Cookie header is governed by the cookies block alone.
@@ -483,15 +653,22 @@ class GatewayEdgeCookiePolicyTest {
                         .compose(response -> response.body().map(ignored -> new Answer(response.statusCode(),
                                 List.copyOf(response.headers().getAll(SET_COOKIE)),
                                 List.copyOf(response.trailers().getAll(SET_COOKIE)),
-                                response.trailers().get("grpc-status")))),
+                                response.trailers().get(GRPC_STATUS),
+                                response.headers().get(GRPC_STATUS)))),
                 "the edge response to " + method + " " + uri);
     }
 
+    /** A same-origin gRPC call carrying the browser cookies, which the route's check admits. */
     private Answer grpcCall(Mode mode) throws Exception {
+        return grpcCallWith(mode, Map.of(COOKIE, BROWSER_COOKIES, "Origin", frontOrigin()));
+    }
+
+    private Answer grpcCallWith(Mode mode, Map<String, String> extraHeaders) throws Exception {
+        Map<String, String> headers = new HashMap<>(extraHeaders);
+        headers.put("Content-Type", GRPC_CONTENT_TYPE);
+        headers.put("TE", "trailers");
         return exchangeAnswer(http2Client, io.vertx.core.http.HttpMethod.POST, mode.grpcService() + "/Call",
-                Map.of(COOKIE, BROWSER_COOKIES, "Origin", frontOrigin(), "Content-Type", GRPC_CONTENT_TYPE,
-                        "TE", "trailers"),
-                Buffer.buffer(new byte[5]));
+                headers, Buffer.buffer(new byte[5]));
     }
 
     /** Whether a relayed {@code Set-Cookie} line still carries a {@code Domain} attribute. */
@@ -506,9 +683,11 @@ class GatewayEdgeCookiePolicyTest {
      * @param setCookies        the {@code Set-Cookie} lines of the leading headers
      * @param trailerSetCookies the {@code Set-Cookie} trailers
      * @param grpcStatus        the {@code grpc-status} trailer, {@code null} when none was sent
+     * @param headerGrpcStatus  the {@code grpc-status} leading header of a trailers-only answer,
+     *                          {@code null} when none was sent
      */
     private record Answer(int status, List<String> setCookies, List<String> trailerSetCookies,
-    @Nullable String grpcStatus) {
+    @Nullable String grpcStatus, @Nullable String headerGrpcStatus) {
     }
 
     /** Minimal {@link Instance} double resolving to one bean; the routes here never read it. */

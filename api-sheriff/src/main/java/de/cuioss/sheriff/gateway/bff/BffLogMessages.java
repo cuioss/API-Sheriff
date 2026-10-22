@@ -156,14 +156,16 @@ public final class BffLogMessages {
     public static final class WARN {
 
         /**
-         * The fixed CSRF defence rejected an unsafe-method session request. Records the non-sensitive
+         * The same-origin proof rejected an unsafe-method request — either the fixed CSRF defence of
+         * a {@code require: session} route, or the same-origin check of a cookie-forwarding route on
+         * an unsafe request carrying a cookie the route would forward. Records the non-sensitive
          * rejection disposition ({@code untrusted-origin} / {@code no-origin-proof}) only — never the
          * raw offending {@code Origin} value.
          */
         public static final LogRecord CSRF_REJECTED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(110)
-                .template("CSRF defence rejected an unsafe-method session request: %s")
+                .template("CSRF defence rejected an unsafe-method request: %s")
                 .build();
 
         /**

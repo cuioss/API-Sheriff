@@ -32,6 +32,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
@@ -46,6 +47,7 @@ import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig.HeaderMatcher;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
@@ -58,6 +60,9 @@ import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.UpstreamConfig;
 import de.cuioss.sheriff.gateway.config.model.UpstreamDefaultsConfig;
+import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
+import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -1449,6 +1454,118 @@ class RouteTableBuilderTest {
             assertAll("no upstream, no cookie",
                     () -> assertEquals(CookiesConfig.NONE, find(table, "r").effectiveCookies()),
                     () -> assertEquals(CookiesConfig.NONE, find(table, "a").effectiveCookies()));
+        }
+    }
+
+    /**
+     * A route that forwards browser cookies gets one same-origin check at assembly, trusting the
+     * request's received origin plus its block's {@code additional_origins}. A route forwarding no
+     * cookie gets none, a WebSocket route gets none (its upgrade is gated by
+     * {@code websocket.allowed_origins}), and a forwarding route whose block turns the check off gets
+     * none and is named by a WARN.
+     */
+    @Nested
+    @DisplayName("Cookie same-origin check assembly")
+    class CookieOriginDefenceAssembly {
+
+        /** The identifier of the check-disabled WARN; absent from the log when none was emitted. */
+        private static final String CHECK_DISABLED_WARN_ID = "ApiSheriff-123";
+        private static final String CHECK_DISABLED_TEXT =
+                "Route 'r' forwards browser cookies with cookies.same_origin_check: false";
+        private static final String ADDITIONAL_ORIGIN = "https://partner.example.com";
+        private static final String FOREIGN_ORIGIN = "https://evil.example.com";
+
+        private Route resolve(RouteConfig route) {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
+            return find(builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")), route.id());
+        }
+
+        private static RouteConfig.RouteConfigBuilder cookieRoute(CookiesConfig cookies) {
+            return RouteConfig.builder().id("r").match(match("/orders", HttpMethod.POST)).cookies(cookies);
+        }
+
+        private static PipelineRequest postFrom(String origin) {
+            return PipelineRequest.builder().method(HttpMethod.POST).requestPath("/orders")
+                    .headers(Map.of("Origin", List.of(origin))).build();
+        }
+
+        @Test
+        @DisplayName("Should build a check for a list route, trusting the block's additional origins")
+        void shouldBuildCheckForListRoute() {
+            Route resolved = resolve(cookieRoute(new CookiesConfig(new CookieAllow.Named(List.of("theme")), null,
+                    List.of(ADDITIONAL_ORIGIN))).build());
+
+            CsrfDefence defence = resolved.cookieOriginDefence();
+            assertNotNull(defence, "a route forwarding a listed cookie carries the check");
+            assertAll("the check trusts exactly what the block declares",
+                    () -> assertDoesNotThrow(() -> defence.enforce(postFrom(ADDITIONAL_ORIGIN)),
+                            "the block's additional origin is trusted"),
+                    () -> assertThrows(GatewayException.class, () -> defence.enforce(postFrom(FOREIGN_ORIGIN)),
+                            "an origin the block does not declare is refused"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
+        }
+
+        @Test
+        @DisplayName("Should build a check for an all route, the check defaulting to on")
+        void shouldBuildCheckForAllRoute() {
+            Route resolved = resolve(cookieRoute(new CookiesConfig(CookieAllow.ALL, null, null)).build());
+
+            CsrfDefence defence = resolved.cookieOriginDefence();
+            assertNotNull(defence, "a route forwarding every cookie carries the check");
+            assertThrows(GatewayException.class, () -> defence.enforce(postFrom(ADDITIONAL_ORIGIN)),
+                    "a route declaring no additional origin trusts none");
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
+        }
+
+        @Test
+        @DisplayName("Should build no check for a route forwarding no cookie")
+        void shouldBuildNoCheckForNoneRoute() {
+            Route declared = resolve(cookieRoute(CookiesConfig.NONE).build());
+            Route defaulted = resolve(route("r", HttpMethod.POST));
+
+            assertAll("nothing forwarded, nothing to guard",
+                    () -> assertNull(declared.cookieOriginDefence(), "a declared allow: none carries no check"),
+                    () -> assertNull(defaulted.cookieOriginDefence(), "the default allow: none carries no check"));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
+        }
+
+        @Test
+        @DisplayName("Should build no check for a WebSocket route, whose upgrade allowed_origins gates instead")
+        void shouldBuildNoCheckForWebSocketRoute() {
+            WebSocketConfig websocket = WebSocketConfig.builder().allowedOrigins(List.of(ADDITIONAL_ORIGIN)).build();
+            Route checkOn = resolve(cookieRoute(new CookiesConfig(CookieAllow.ALL, null, null))
+                    .match(match("/ws", HttpMethod.GET)).protocol(Protocol.WEBSOCKET).websocket(websocket).build());
+            Route checkOff = resolve(cookieRoute(new CookiesConfig(CookieAllow.ALL, false, null)).id("ws-off")
+                    .match(match("/ws", HttpMethod.GET)).protocol(Protocol.WEBSOCKET).websocket(websocket).build());
+
+            assertAll("a WebSocket route carries no per-route same-origin check",
+                    () -> assertNull(checkOn.cookieOriginDefence()),
+                    () -> assertNull(checkOff.cookieOriginDefence()));
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
+        }
+
+        @Test
+        @DisplayName("Should build no check and WARN with the route id when a forwarding route turns the check off")
+        void shouldWarnWhenCheckIsOff() {
+            Route resolved = resolve(cookieRoute(new CookiesConfig(CookieAllow.ALL, false, null)).build());
+
+            assertNull(resolved.cookieOriginDefence(), "same_origin_check: false removes the check");
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, CHECK_DISABLED_TEXT);
+        }
+
+        @Test
+        @DisplayName("Should not WARN for an asset route under a broader block that turns the check off")
+        void shouldNotWarnForTerminalRoute() {
+            RouteConfig asset = RouteConfig.builder().id("a").match(match("/static", HttpMethod.GET))
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv/www", null, null, null)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .cookies(new CookiesConfig(CookieAllow.ALL, false, null)).routes(List.of(asset)).build();
+
+            RouteTable table = builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            assertNull(find(table, "a").cookieOriginDefence(), "an asset route forwards no cookie");
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
         }
     }
 

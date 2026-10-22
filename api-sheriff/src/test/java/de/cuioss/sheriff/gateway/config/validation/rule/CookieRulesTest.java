@@ -35,15 +35,18 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
+import de.cuioss.sheriff.gateway.config.model.WebSocketConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -349,6 +352,71 @@ class CookieRulesTest {
 
             assertBootsClean(validate(gateway(anchor().cookies(all()).build()).build(),
                     endpoint(redirect).cookies(named(cookieName())).build()));
+        }
+    }
+
+    /**
+     * A WebSocket route carries no per-route same-origin check; its upgrade is gated by
+     * {@code websocket.allowed_origins} instead, which enforces nothing while empty.
+     */
+    @Nested
+    @DisplayName("(g) a cookie-forwarding WebSocket route must declare websocket.allowed_origins")
+    class WebSocketCookieOrigins {
+
+        private static final String WEBSOCKET_POINTER = "/endpoint/routes/0/websocket";
+
+        private static RouteConfig.RouteConfigBuilder websocketRoute(@Nullable WebSocketConfig websocket) {
+            return route().protocol(Protocol.WEBSOCKET).websocket(websocket);
+        }
+
+        private static WebSocketConfig allowedOrigins(String... origins) {
+            return WebSocketConfig.builder().allowedOrigins(List.of(origins)).build();
+        }
+
+        @Test
+        @DisplayName("Should refuse a cookie-forwarding WebSocket route without a websocket block")
+        void shouldRefuseWithoutWebSocketBlock() {
+            List<ConfigError> errors = validate(gateway(anchor().build()).build(),
+                    endpoint(websocketRoute(null).cookies(all()).build()).build());
+
+            ConfigError refusal = singleRefusalAt(errors, ENDPOINT_FILE, WEBSOCKET_POINTER);
+            assertAll("the refusal names the route and the missing allowlist",
+                    () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
+                    () -> assertTrue(refusal.message().contains("websocket route '" + ROUTE_ID + "'"),
+                            refusal::message),
+                    () -> assertTrue(refusal.message().contains("websocket.allowed_origins"), refusal::message));
+        }
+
+        @Test
+        @DisplayName("Should refuse a cookie-forwarding WebSocket route with an empty allowed_origins list")
+        void shouldRefuseWithEmptyAllowedOrigins() {
+            List<ConfigError> errors = validate(gateway(anchor().build()).build(),
+                    endpoint(websocketRoute(allowedOrigins()).cookies(named(cookieName())).build()).build());
+
+            singleRefusalAt(errors, ENDPOINT_FILE, WEBSOCKET_POINTER);
+        }
+
+        @Test
+        @DisplayName("Should judge the effective block, so a block inherited from the endpoint is refused too")
+        void shouldJudgeTheInheritedBlock() {
+            List<ConfigError> errors = validate(gateway(anchor().build()).build(),
+                    endpoint(websocketRoute(null).build()).cookies(all()).build());
+
+            singleRefusalAt(errors, ENDPOINT_FILE, WEBSOCKET_POINTER);
+        }
+
+        @Test
+        @DisplayName("Should accept a cookie-forwarding WebSocket route declaring its allowed origins (matched control)")
+        void shouldAcceptWithAllowedOrigins() {
+            assertBootsClean(validate(gateway(anchor().build()).build(),
+                    endpoint(websocketRoute(allowedOrigins("https://app.example.com")).cookies(all()).build())
+                            .build()));
+        }
+
+        @Test
+        @DisplayName("Should accept a WebSocket route forwarding no cookie without allowed origins (matched control)")
+        void shouldAcceptWithoutCookies() {
+            assertBootsClean(validate(gateway(anchor().build()).build(), endpoint(websocketRoute(null).build()).build()));
         }
     }
 }

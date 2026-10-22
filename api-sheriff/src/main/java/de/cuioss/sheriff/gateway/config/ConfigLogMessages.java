@@ -563,6 +563,19 @@ public final class ConfigLogMessages {
                 .identifier(137)
                 .template("JWKS key set refresh for issuer '%s' ended unexpectedly — the key set already in service stays in service, and the next unknown key id after the current window may schedule another refresh")
                 .build();
+
+        /**
+         * A route forwards browser cookies to its upstream with its effective {@code cookies} block
+         * declaring {@code same_origin_check: false}, so the gateway does not refuse a cross-site
+         * unsafe request carrying a forwarded cookie on it — protecting the upstream against
+         * cross-site request forgery is then the upstream's own job. Emitted once per such route at
+         * route-table assembly. The template carries the route id only.
+         */
+        public static final LogRecord COOKIE_SAME_ORIGIN_CHECK_DISABLED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(123)
+                .template("Route '%s' forwards browser cookies with cookies.same_origin_check: false — the gateway does not refuse cross-site unsafe requests carrying a forwarded cookie on it, so the upstream must defend itself against cross-site request forgery")
+                .build();
     }
 
     /**

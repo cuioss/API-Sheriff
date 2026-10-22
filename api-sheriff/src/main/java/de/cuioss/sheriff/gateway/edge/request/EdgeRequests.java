@@ -50,8 +50,8 @@ public final class EdgeRequests {
 
     /**
      * Builds the pipeline request from the Vert.x request: the raw path, the raw query pairs in wire
-     * order (see {@link #rawQueryPairs}), every header, the authority host, the peer address, the
-     * declared body length and whether a body is present at all.
+     * order (see {@link #rawQueryPairs}), every header, the scheme, the authority host and port, the
+     * peer address, the declared body length and whether a body is present at all.
      *
      * @param raw    the Vert.x request
      * @param method the parsed request method
@@ -63,12 +63,15 @@ public final class EdgeRequests {
         String rawPath = queryStart < 0 ? rawUri : rawUri.substring(0, queryStart);
         long contentLength = parseContentLength(raw);
         boolean bodyPresent = contentLength > 0 || raw.headers().contains("Transfer-Encoding");
+        var authority = raw.authority();
         return PipelineRequest.builder()
                 .method(method)
                 .requestPath(rawPath)
                 .queryParameters(rawQueryPairs(raw.query()))
                 .headers(toListMap(raw.headers()))
+                .scheme(raw.scheme())
                 .host(authorityHost(raw))
+                .authorityPort(authority == null ? -1 : authority.port())
                 .peerAddress(raw.remoteAddress() != null ? raw.remoteAddress().hostAddress() : null)
                 .declaredContentLength(contentLength)
                 .bodyPresent(bodyPresent)

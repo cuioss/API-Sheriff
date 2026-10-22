@@ -23,6 +23,7 @@ import java.util.Set;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
@@ -63,7 +64,8 @@ import org.jspecify.annotations.Nullable;
  *       on the offline {@code --validate-config} path, sets every resolved value ({@code id},
  *       {@code protocol}, {@code anchor}, {@code match}, {@code effectiveAuth},
  *       {@code effectiveAllowedMethods}, {@code neededScopes}, {@code effectiveSecurityFilter},
- *       {@code securityHeaders}, {@code effectiveForward}, {@code effectiveCookies}, {@code retryEnabled},
+ *       {@code securityHeaders}, {@code effectiveForward}, {@code effectiveCookies},
+ *       {@code cookieOriginDefence}, {@code retryEnabled},
  *       {@code notModifiedEnabled}, the one terminal action {@code upstream} / {@code asset} /
  *       {@code redirect}, {@code effectiveAllowedOrigins} and
  *       {@code effectiveWebSocketIdleTimeoutSeconds}) plus the pure derivation
@@ -140,7 +142,15 @@ import org.jspecify.annotations.Nullable;
  *                               nothing-crosses posture; an asset or redirect route always resolves
  *                               it, having no upstream. The gateway's own cookies never cross under
  *                               any block
- * @param retryEnabled          the materialized upstream-retry toggle (meaningful only for a
+ * @param cookieOriginDefence    the route's same-origin check — present exactly for a
+ *                               non-WebSocket route whose {@code effectiveCookies} forwards a cookie
+ *                               ({@code allow} other than {@code none}) with
+ *                               {@code same_origin_check} on, trusting the request's received origin
+ *                               plus the block's {@code additional_origins}; {@code null} otherwise.
+ *                               The edge asks for it only on an unsafe request that carries a cookie
+ *                               the route would forward. A WebSocket route is gated by
+ *                               {@code effectiveAllowedOrigins} instead
+ * @param retryEnabled         the materialized upstream-retry toggle (meaningful only for a
  *                               proxy route)
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle (meaningful only for
  *                               a proxy route)
@@ -197,6 +207,7 @@ Set<String> neededScopes,
 @Nullable SecurityHeadersConfig securityHeaders,
 ForwardConfig effectiveForward,
 CookiesConfig effectiveCookies,
+@Nullable CsrfDefence cookieOriginDefence,
 boolean retryEnabled,
 boolean notModifiedEnabled,
 @Nullable ResolvedUpstream upstream,

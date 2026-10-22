@@ -14,16 +14,25 @@
  * limitations under the License.
  */
 /**
- * The fixed CSRF defence for {@code require: session} routes (D7).
+ * The gateway's one same-origin proof for unsafe-method browser requests,
+ * {@link de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence}, used in two places:
+ * <ul>
+ *   <li>as the <strong>fixed CSRF defence of {@code require: session} routes</strong> (D7), with no
+ *       disable knob, trusting {@code session.csrf.trusted_origins} (defaulting to the
+ *       {@code redirect_uri} origin); and</li>
+ *   <li>as the <strong>per-route same-origin check of a cookie-forwarding route</strong>, trusting the
+ *       origin the request was received on plus the route's {@code cookies.additional_origins}, asked
+ *       for only on an unsafe request that carries a cookie the route would forward.</li>
+ * </ul>
  * <p>
- * {@link de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence} is fixed behaviour with no disable knob:
- * on unsafe methods (everything except {@code GET} / {@code HEAD} / {@code OPTIONS}) it accepts only
- * an {@code Origin} whose exact full origin (scheme + host + port) is in the trusted-origin set
- * ({@code session.csrf.trusted_origins}, defaulting to the {@code redirect_uri} origin) or, when
- * {@code Origin} is absent, a {@code Sec-Fetch-Site: same-origin} header; everything else is rejected
- * {@code 403} with a {@link de.cuioss.sheriff.gateway.events.EventType#CSRF_REJECTED} event.
+ * On unsafe methods (everything except {@code GET} / {@code HEAD} / {@code OPTIONS}) both uses accept
+ * only an {@code Origin} whose full origin (scheme + host + port) is trusted or, when {@code Origin} is
+ * absent, a {@code Sec-Fetch-Site: same-origin} header; everything else is rejected {@code 403} with a
+ * {@link de.cuioss.sheriff.gateway.events.EventType#CSRF_REJECTED} event.
  * <p>
- * The class is framework-agnostic and immutable; the session runtime wires it into the request edge.
+ * The class is framework-agnostic and immutable; the session runtime wires the session instance into
+ * the request edge, and route-table assembly builds one cookie-forwarding instance per qualifying
+ * route.
  *
  * @author API Sheriff Team
  * @since 1.0
