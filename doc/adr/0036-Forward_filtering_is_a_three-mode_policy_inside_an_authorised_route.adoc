@@ -72,8 +72,10 @@ Each mode selects among the *client-controlled* entries only. Every mode is
 additionally bounded by the gateway-owned sets described below — which no list
 re-admits — and the gateway-understood protocol headers cross without being
 named. So "everything" and "every client entry" above mean everything the
-gateway does not itself own; a deny-list does not forward a `Cookie` merely by
-omitting it, and forward-all is not a way to reach an upstream with a spoofed
+gateway does not itself own; no mode decides about `Cookie`, which crosses only
+as the route's `cookies` block admits it
+(link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]),
+and forward-all is not a way to reach an upstream with a spoofed
 `X-Forwarded-For`.
 
 The dimensions do not have to agree. A route may run a positive-list on headers
