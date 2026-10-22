@@ -69,19 +69,19 @@ class CookieAllowTest {
 
         @Test
         @DisplayName("Should bind the scalar none to the none mode")
-        void shouldBindNone() throws JsonProcessingException {
+        void shouldBindNone() throws Exception {
             assertSame(CookieAllow.NONE, bind("none"));
         }
 
         @Test
         @DisplayName("Should bind the scalar all to the all mode")
-        void shouldBindAll() throws JsonProcessingException {
+        void shouldBindAll() throws Exception {
             assertSame(CookieAllow.ALL, bind("all"));
         }
 
         @Test
         @DisplayName("Should bind a sequence to the listed names, in order")
-        void shouldBindSequenceInOrder() throws JsonProcessingException {
+        void shouldBindSequenceInOrder() throws Exception {
             String first = cookieName();
             String second = cookieName() + "_2";
 
@@ -92,7 +92,7 @@ class CookieAllowTest {
 
         @Test
         @DisplayName("Should bind [all] and [none] to the cookies named all and none, not to the modes")
-        void shouldBindKeywordListsAsNames() throws JsonProcessingException {
+        void shouldBindKeywordListsAsNames() throws Exception {
             assertAll("a sequence is always names",
                     () -> assertEquals(new CookieAllow.Named(List.of("all")), bind("[all]")),
                     () -> assertEquals(new CookieAllow.Named(List.of("none")), bind("[none]")));
@@ -100,7 +100,7 @@ class CookieAllowTest {
 
         @Test
         @DisplayName("Should bind the full block with its snake-case keys")
-        void shouldBindTheFullBlock() throws JsonProcessingException {
+        void shouldBindTheFullBlock() throws Exception {
             CookiesConfig cookies = MAPPER.readValue("""
                     allow: [theme]
                     same_origin_check: false

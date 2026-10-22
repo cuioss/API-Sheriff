@@ -175,7 +175,7 @@ class PolicyBlockTest {
             assertAll("nothing-declared cookies fallback",
                     () -> assertSame(CookiesConfig.NONE, resolved),
                     () -> assertNull(PolicyBlock.COOKIES.declared(
-                            ScopeChain.of(gateway().build(), endpoint().build(), route().build())),
+                                    ScopeChain.of(gateway().build(), endpoint().build(), route().build())),
                             "the fallback is not a declaration"),
                     () -> assertTrue(PolicyBlock.ALL.contains(PolicyBlock.COOKIES)));
         }

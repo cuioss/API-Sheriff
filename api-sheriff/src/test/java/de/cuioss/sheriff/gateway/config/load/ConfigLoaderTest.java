@@ -263,7 +263,7 @@ class ConfigLoaderTest {
                     () -> assertEquals(new CookieAllow.Named(List.of("theme", "app_session")),
                             endpoint.cookies().allow()),
                     () -> assertEquals(new CookiesConfig(new CookieAllow.Named(List.of("all")), null,
-                            List.of("https://app.example.com")), endpoint.routes().getFirst().cookies(),
+                                    List.of("https://app.example.com")), endpoint.routes().getFirst().cookies(),
                             "[all] is the cookie named all, and the origin is lower-cased once"));
         }
 
