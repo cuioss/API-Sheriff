@@ -42,6 +42,8 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -212,6 +214,91 @@ class ConfigLoaderTest {
         assertTrue(exception.errors().stream()
                         .anyMatch(error -> error.pointer().contains("max_sessions_per_subject")),
                 () -> "expected an error pointing at the key, got: " + exception.errors());
+    }
+
+    /**
+     * The {@code cookies} block through the schema-validating loader: the scalar and the list form of
+     * {@code allow} at every scope, a {@code ${VAR}} supplying the scalar, and the refusal of a
+     * declared {@code allow: []}.
+     */
+    @Nested
+    class CookiesBlock {
+
+        private static String endpointWithCookies(String endpointCookies, String routeCookies) {
+            return """
+                    endpoint:
+                      id: app
+                      base_url: APP
+                      auth: { require: none }
+                      cookies: %s
+                      routes:
+                        - id: proxied
+                          match: { path_prefix: /app }
+                          cookies: %s
+                    """.formatted(endpointCookies, routeCookies);
+        }
+
+        @Test
+        void bindsTheScalarAndTheListFormAtEveryScope() throws Exception {
+            writeConfig("gateway.yaml", """
+                    version: 1
+                    cookies: { allow: none }
+                    anchors:
+                      api:
+                        path_prefix: /api
+                        type: proxy
+                        access: public
+                        cookies: { allow: all, same_origin_check: false }
+                    """);
+            writeConfig("endpoints/app.yaml", endpointWithCookies("{ allow: [theme, app_session] }",
+                    "{ allow: [all], additional_origins: [\"https://App.example.com\"] }"));
+
+            ConfigLoader.LoadedConfig loaded = loader(Map.of()).load(IGNORE_DEFAULTED);
+
+            EndpointConfig endpoint = loaded.endpoints().getFirst();
+            assertAll("each scope binds its own block",
+                    () -> assertEquals(CookiesConfig.NONE, loaded.gateway().cookies()),
+                    () -> assertEquals(new CookiesConfig(CookieAllow.ALL, false, null),
+                            loaded.gateway().anchors().get("api").cookies()),
+                    () -> assertEquals(new CookieAllow.Named(List.of("theme", "app_session")),
+                            endpoint.cookies().allow()),
+                    () -> assertEquals(new CookiesConfig(new CookieAllow.Named(List.of("all")), null,
+                            List.of("https://app.example.com")), endpoint.routes().getFirst().cookies(),
+                            "[all] is the cookie named all, and the origin is lower-cased once"));
+        }
+
+        @Test
+        void bindsAScalarSuppliedByAPlaceholder() throws Exception {
+            writeConfig("gateway.yaml", "version: 1\ncookies: { allow: \"${GATEWAY_COOKIES}\" }\n");
+
+            GatewayConfig gateway = loader(Map.of("GATEWAY_COOKIES", "none")).load(IGNORE_DEFAULTED).gateway();
+
+            assertEquals(CookiesConfig.NONE, gateway.cookies(), "a resolved scalar binds to its mode");
+        }
+
+        @Test
+        void refusesADeclaredEmptyAllowList() throws Exception {
+            writeConfig("gateway.yaml", "version: 1\n");
+            writeConfig("endpoints/app.yaml", endpointWithCookies("{ allow: [] }", "{ allow: none }"));
+
+            ConfigLoader loader = loader(Map.of());
+            ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+            assertTrue(exception.errors().stream().anyMatch(error -> "endpoints/app.yaml".equals(error.file())
+                            && error.pointer().contains("/endpoint/cookies/allow")),
+                    () -> "an empty list names no cookie and is refused at load, got: " + exception.errors());
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"{ allow: some }", "{ same_origin_check: true }", "{ allow: none, extra: 1 }",
+                "{ allow: [1] }"})
+        void refusesAMalformedBlockAtLoad(String cookies) throws Exception {
+            writeConfig("gateway.yaml", "version: 1\ncookies: " + cookies + "\n");
+
+            ConfigLoader loader = loader(Map.of());
+
+            assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+        }
     }
 
     /** One {@code http} issuer whose {@code jwks} block ends with {@code jwksMembers}. */

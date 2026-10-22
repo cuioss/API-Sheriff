@@ -29,6 +29,7 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -77,7 +78,9 @@ import org.jspecify.annotations.Nullable;
  * effective {@code security_filter} / {@code security_headers}, effective retry
  * / not-modified toggles, the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
- * wholesale, deny lists included), the effective upstream base path (the route-level
+ * wholesale, deny lists included), the effective {@code cookies} block (the nothing-crosses
+ * {@code allow: none} for an asset or redirect route, which has no upstream), the effective upstream
+ * base path (the route-level
  * {@code upstream.path} appended to the alias-derived base path when declared), and the
  * needed scope set ({@code oidc.scopes} united with the owning endpoint's {@code scopes})
  * into a {@link Route}. The route derives the compiled {@link RouteMatcher} and the effective
@@ -254,6 +257,10 @@ public final class RouteTableBuilder {
         // per-list resolution. When no scope declares it, the descriptor's fallback is the all-absent
         // block, which is FORWARD-ALL on both dimensions — not a nothing-crosses allowlist.
         ForwardConfig effectiveForward = PolicyBlock.FORWARD.resolve(chain);
+        // An asset or redirect route has no upstream to hand a cookie to or relay one from, so it
+        // resolves the nothing-crosses block whatever a broader scope declares.
+        CookiesConfig effectiveCookies = route.isProxyRoute() ? PolicyBlock.COOKIES.resolve(chain)
+                : CookiesConfig.NONE;
         // Written as an explicit null check rather than Objects.requireNonNullElse: Sonar's dataflow
         // does not model requireNonNullElse as null-eliminating, so it carried route.protocol()'s
         // @Nullable onto the result and raised java:S4449 at the first use of the local (PR #146).
@@ -275,6 +282,7 @@ public final class RouteTableBuilder {
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
                 .effectiveForward(effectiveForward)
+                .effectiveCookies(effectiveCookies)
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeout)
                 .neededScopes(neededScopes(gateway, endpoint));

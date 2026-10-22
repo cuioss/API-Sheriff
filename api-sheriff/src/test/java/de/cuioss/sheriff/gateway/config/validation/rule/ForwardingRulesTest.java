@@ -53,8 +53,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Tests for the {@code forward}-block rules the {@link ConfigValidator} runs through
  * {@link ForwardingRules}: the forward-mode exclusivity refusal of a dimension declaring both its
  * positive-list and its negative-list, and the refusal of a {@code token_relay: false} route whose
- * effective {@code headers_allow} re-admits {@code Authorization} — each at the route scope and at
- * the endpoint scope the {@code forward} block is declarable at.
+ * effective {@code headers_allow} re-admits {@code Authorization}, and the refusal of a
+ * {@code forward} key naming {@code Cookie} — each at the route scope and at the endpoint scope the
+ * {@code forward} block is declarable at.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed.
@@ -148,7 +149,7 @@ class ForwardingRulesTest {
         @DisplayName("Should refuse a route declaring both headers_allow and headers_deny")
         void shouldRefuseBothHeaderLists() {
             List<ConfigError> errors = validateForward(ForwardConfig.builder()
-                    .headersAllow(List.of("Accept")).headersDeny(List.of("Cookie")).setHeaders(Map.of()).build());
+                    .headersAllow(List.of("Accept")).headersDeny(List.of("X-Internal")).setHeaders(Map.of()).build());
 
             assertAll("the refusal names the route and the dimension",
                     () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
@@ -174,7 +175,7 @@ class ForwardingRulesTest {
         @DisplayName("Should report both dimensions in one pass rather than stopping at the first")
         void shouldReportBothDimensionsInOnePass() {
             List<ConfigError> errors = validateForward(ForwardConfig.builder()
-                    .headersAllow(List.of("Accept")).headersDeny(List.of("Cookie"))
+                    .headersAllow(List.of("Accept")).headersDeny(List.of("X-Internal"))
                     .queryAllow(List.of("page")).queryDeny(List.of("debug")).setHeaders(Map.of()).build());
 
             assertAll("ADR-0009 single-pass aggregation: the operator sees the whole list at once",
@@ -192,7 +193,7 @@ class ForwardingRulesTest {
         @DisplayName("Should refuse a declared-EMPTY list paired with the opposite list")
         void shouldRefuseDeclaredEmptyPairedWithOppositeList() {
             List<ConfigError> errors = validateForward(ForwardConfig.builder()
-                    .headersAllow(List.of()).headersDeny(List.of("Cookie")).setHeaders(Map.of()).build());
+                    .headersAllow(List.of()).headersDeny(List.of("X-Internal")).setHeaders(Map.of()).build());
 
             assertEquals(1, errors.size(),
                     () -> "a declared-empty positive-list is still declared, so pairing it with a deny"
@@ -215,11 +216,11 @@ class ForwardingRulesTest {
                     Arguments.of("positive-list on both dimensions", ForwardConfig.builder()
                             .headersAllow(List.of("Accept")).queryAllow(List.of("page")).setHeaders(Map.of()).build()),
                     Arguments.of("negative-list on both dimensions", ForwardConfig.builder()
-                            .headersDeny(List.of("Cookie")).queryDeny(List.of("debug")).setHeaders(Map.of()).build()),
+                            .headersDeny(List.of("X-Internal")).queryDeny(List.of("debug")).setHeaders(Map.of()).build()),
                     Arguments.of("positive-list headers, negative-list query", ForwardConfig.builder()
                             .headersAllow(List.of("Accept")).queryDeny(List.of("debug")).setHeaders(Map.of()).build()),
                     Arguments.of("negative-list headers, positive-list query", ForwardConfig.builder()
-                            .headersDeny(List.of("Cookie")).queryAllow(List.of("page")).setHeaders(Map.of()).build()),
+                            .headersDeny(List.of("X-Internal")).queryAllow(List.of("page")).setHeaders(Map.of()).build()),
                     Arguments.of("forward-all on both dimensions",
                             ForwardConfig.builder().setHeaders(Map.of()).build()),
                     Arguments.of("declared-empty positive-lists, no deny lists",
@@ -241,7 +242,7 @@ class ForwardingRulesTest {
         @DisplayName("The refusal message tells the operator which lists collided")
         void refusalMessageNamesTheCollidingKeys() {
             List<ConfigError> errors = validateForward(ForwardConfig.builder()
-                    .headersAllow(List.of("Accept")).headersDeny(List.of("Cookie")).setHeaders(Map.of()).build());
+                    .headersAllow(List.of("Accept")).headersDeny(List.of("X-Internal")).setHeaders(Map.of()).build());
 
             assertTrue(errors.getFirst().message().contains("declares both"),
                     () -> "the message must state that both lists were declared, got: "
@@ -396,6 +397,106 @@ class ForwardingRulesTest {
 
             assertFalse(anyMessageContains(errors, AUTHORIZATION_REFUSAL),
                     () -> "the route-level block replaces the endpoint block wholesale, got: " + errors);
+        }
+    }
+
+    /**
+     * Only the {@code cookies} block decides which cookies cross, so a {@code forward} list or
+     * {@code set_headers} naming {@code Cookie} is refused at both scopes the {@code forward} block is
+     * declarable at, in any letter case. Every refusal has a matched control naming another header.
+     */
+    @Nested
+    @DisplayName("Cookie is governed by the cookies block, never by a forward key")
+    class CookieOutsideCookiesBlock {
+
+        private static final String ENDPOINT_ID = "orders";
+        private static final String ALIAS = "ORDERS";
+        private static final String REFUSAL = "which cookies reach the upstream is decided by the cookies block";
+
+        private List<ConfigError> validateEndpointForward(ForwardConfig forward) {
+            EndpointConfig endpoint = EndpointConfig.builder().id(ENDPOINT_ID).enabled(true).baseUrl(ALIAS)
+                    .auth(auth(Require.NONE)).forward(forward).routes(List.of(route("r", HttpMethod.GET))).build();
+            return validator.validate(validGateway().build(), List.of(endpoint), topologyWith(ALIAS));
+        }
+
+        private List<ConfigError> validateRouteForward(ForwardConfig forward) {
+            RouteConfig routed = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET)).forward(forward)
+                    .build();
+            return validator.validate(validGateway().build(),
+                    List.of(endpoint(ENDPOINT_ID, ALIAS, List.of(HttpMethod.GET), routed)), topologyWith(ALIAS));
+        }
+
+        static Stream<Arguments> forwardsNamingCookie() {
+            return Stream.of(
+                    Arguments.of("headers_allow", ForwardConfig.builder().headersAllow(List.of("Accept", "Cookie"))
+                            .build()),
+                    Arguments.of("headers_deny", ForwardConfig.builder().headersDeny(List.of("cookie")).build()),
+                    Arguments.of("set_headers", ForwardConfig.builder().setHeaders(Map.of("COOKIE", "a=1")).build()));
+        }
+
+        static Stream<Arguments> forwardsNamingAnotherHeader() {
+            return Stream.of(
+                    Arguments.of("headers_allow", ForwardConfig.builder().headersAllow(List.of("Accept")).build()),
+                    Arguments.of("headers_deny", ForwardConfig.builder().headersDeny(List.of("X-Internal")).build()),
+                    Arguments.of("set_headers", ForwardConfig.builder().setHeaders(Map.of("X-Gateway", "s")).build()));
+        }
+
+        @ParameterizedTest(name = "endpoint forward.{0}")
+        @MethodSource("forwardsNamingCookie")
+        @DisplayName("Should refuse Cookie in an endpoint-level forward key")
+        void shouldRefuseCookieAtEndpointScope(String key, ForwardConfig forward) {
+            List<ConfigError> errors = validateEndpointForward(forward);
+
+            ConfigError refusal = singleRefusalAt(errors, "/endpoint/forward/" + key);
+            assertAll("the refusal names the scope and the key and points at the cookies block",
+                    () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
+                    () -> assertTrue(refusal.message().contains("endpoint '" + ENDPOINT_ID + "' names Cookie in forward."
+                            + key), refusal::message),
+                    () -> assertTrue(refusal.message().contains(REFUSAL), refusal::message),
+                    () -> assertEquals("endpoints/" + ENDPOINT_ID + ".yaml", refusal.file()));
+        }
+
+        @ParameterizedTest(name = "route forward.{0}")
+        @MethodSource("forwardsNamingCookie")
+        @DisplayName("Should refuse Cookie in a route-level forward key")
+        void shouldRefuseCookieAtRouteScope(String key, ForwardConfig forward) {
+            List<ConfigError> errors = validateRouteForward(forward);
+
+            ConfigError refusal = singleRefusalAt(errors, "/endpoint/routes/0/forward/" + key);
+            assertAll("the refusal names the route and the key",
+                    () -> assertEquals(1, errors.size(), () -> "exactly one violation, got: " + errors),
+                    () -> assertTrue(refusal.message().contains("route 'r' names Cookie in forward." + key),
+                            refusal::message));
+        }
+
+        @ParameterizedTest(name = "endpoint forward.{0}")
+        @MethodSource("forwardsNamingAnotherHeader")
+        @DisplayName("Should accept another header in an endpoint-level forward key (matched control)")
+        void shouldAcceptAnotherHeaderAtEndpointScope(String key, ForwardConfig forward) {
+            List<ConfigError> errors = validateEndpointForward(forward);
+
+            assertTrue(errors.isEmpty(), () -> "forward." + key + " naming another header boots clean, got: " + errors);
+        }
+
+        @ParameterizedTest(name = "route forward.{0}")
+        @MethodSource("forwardsNamingAnotherHeader")
+        @DisplayName("Should accept another header in a route-level forward key (matched control)")
+        void shouldAcceptAnotherHeaderAtRouteScope(String key, ForwardConfig forward) {
+            List<ConfigError> errors = validateRouteForward(forward);
+
+            assertTrue(errors.isEmpty(), () -> "forward." + key + " naming another header boots clean, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should report every forward key naming Cookie in one pass")
+        void shouldReportEveryOffendingKey() {
+            List<ConfigError> errors = validateRouteForward(ForwardConfig.builder().headersAllow(List.of("Cookie"))
+                    .setHeaders(Map.of("Cookie", "a=1")).build());
+
+            assertAll("one refusal per offending key",
+                    () -> assertEquals(2, errors.size(), () -> "two violations, got: " + errors),
+                    () -> singleRefusalAt(errors, "/endpoint/routes/0/forward/headers_allow"),
+                    () -> singleRefusalAt(errors, "/endpoint/routes/0/forward/set_headers"));
         }
     }
 }

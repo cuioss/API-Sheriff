@@ -44,7 +44,12 @@ import org.jspecify.annotations.Nullable;
  *                       none and the endpoint's block applies; with neither declared the
  *                       posture is forward-all on both dimensions, not a nothing-crosses one
  *                       ({@code PolicyBlock#FORWARD})
- * @param upstream       the upstream target settings, {@code null} when omitted
+ * @param cookies        the route-level {@code cookies} block — a block of its own, not a key inside
+ *                       {@code forward} — {@code null} when the route declares none and the nearest
+ *                       of the endpoint's, the anchor's and the gateway's block applies; with none
+ *                       declared no cookie crosses ({@code PolicyBlock#COOKIES}). Refused on an asset
+ *                       or redirect route, which has no upstream to forward a cookie to
+ * @param upstream      the upstream target settings, {@code null} when omitted
  * @param asset          the asset terminal-action settings, {@code null} when omitted
  * @param redirect       the redirect terminal-action settings, {@code null} when omitted;
  *                       a route carries at most one terminal action, so
@@ -66,6 +71,7 @@ MatchConfig match,
 @Nullable AuthConfig auth,
 @Nullable SecurityFilterConfig securityFilter,
 @Nullable ForwardConfig forward,
+@Nullable CookiesConfig cookies,
 @Nullable UpstreamConfig upstream,
 @Nullable AssetConfig asset,
 @Nullable RedirectConfig redirect,

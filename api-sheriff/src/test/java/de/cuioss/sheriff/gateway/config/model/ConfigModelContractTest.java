@@ -88,6 +88,7 @@ class ConfigModelContractTest {
                 .securityFilter(securityFilterConfig())
                 .securityHeaders(securityHeadersConfig())
                 .allowedMethods(List.of(HttpMethod.GET, HttpMethod.POST))
+                .cookies(cookiesConfig())
                 .build();
     }
 
@@ -248,6 +249,11 @@ class ConfigModelContractTest {
                 .queryAllow(List.of("page"))
                 .setHeaders(Map.of("X-Gateway", "api-sheriff"))
                 .build();
+    }
+
+    private static CookiesConfig cookiesConfig() {
+        return new CookiesConfig(new CookieAllow.Named(List.of("app_session", "theme")), true,
+                List.of("https://app.example.com"));
     }
 
     private static WebSocketConfig webSocketConfig() {
@@ -552,11 +558,21 @@ class ConfigModelContractTest {
                             ForwardConfig.builder().headersAllow(List.of()).queryAllow(List.of())
                                     .setHeaders(Map.of()).build()),
                     voCase("ForwardConfig (negative-list mode)",
-                            ForwardConfig.builder().headersDeny(List.of("Cookie")).queryDeny(List.of("debug"))
+                            ForwardConfig.builder().headersDeny(List.of("X-Internal")).queryDeny(List.of("debug"))
                                     .setHeaders(Map.of()).build(),
-                            ForwardConfig.builder().headersDeny(List.of("Cookie")).queryDeny(List.of("debug"))
+                            ForwardConfig.builder().headersDeny(List.of("X-Internal")).queryDeny(List.of("debug"))
                                     .setHeaders(Map.of()).build(),
-                            ForwardConfig.builder().headersDeny(List.of("Cookie")).setHeaders(Map.of()).build()),
+                            ForwardConfig.builder().headersDeny(List.of("X-Internal")).setHeaders(Map.of()).build()),
+                    // One case per cookies component: each unequal instance varies exactly one of the
+                    // three, so a component dropped from equals() fails its own case alone.
+                    voCase("CookiesConfig (allow)", cookiesConfig(), cookiesConfig(),
+                            new CookiesConfig(CookieAllow.ALL, true, List.of("https://app.example.com"))),
+                    voCase("CookiesConfig (same_origin_check)", cookiesConfig(), cookiesConfig(),
+                            new CookiesConfig(cookiesConfig().allow(), false, List.of("https://app.example.com"))),
+                    voCase("CookiesConfig (additional_origins)", cookiesConfig(), cookiesConfig(),
+                            new CookiesConfig(cookiesConfig().allow(), true, List.of("https://other.example.com"))),
+                    voCase("CookieAllow.Named", new CookieAllow.Named(List.of("theme")),
+                            new CookieAllow.Named(List.of("theme")), new CookieAllow.Named(List.of("Theme"))),
                     voCase("WebSocketConfig",
                             WebSocketConfig.builder().allowedOrigins(List.of("https://app.example.com"))
                                     .idleTimeoutSeconds(300).build(),
@@ -626,10 +642,10 @@ class ConfigModelContractTest {
         void anchorConfigBuilderMatchesConstructor() {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             AnchorConfig viaCtor = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED,
-                    auth(), null, null, List.of(HttpMethod.GET));
+                    auth(), null, null, List.of(HttpMethod.GET), CookiesConfig.NONE);
             AnchorConfig viaBuilder = AnchorConfig.builder().name("api").pathPrefix("/api").type(AnchorType.PROXY)
                     .access(AccessLevel.AUTHENTICATED).auth(auth())
-                    .allowedMethods(List.of(HttpMethod.GET)).build();
+                    .allowedMethods(List.of(HttpMethod.GET)).cookies(CookiesConfig.NONE).build();
             assertEquals(viaCtor, viaBuilder);
         }
 
@@ -637,10 +653,11 @@ class ConfigModelContractTest {
         void gatewayConfigBuilderMatchesConstructor() {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
-                    List.of(HttpMethod.GET), Map.of("api", anchorConfig()), null, null, null, null, null, null,
-                    null, portalConfig());
+                    List.of(HttpMethod.GET), CookiesConfig.NONE, Map.of("api", anchorConfig()), null, null, null,
+                    null, null, null, null, portalConfig());
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
-                    .anchors(Map.of("api", anchorConfig())).portal(portalConfig()).build();
+                    .cookies(CookiesConfig.NONE).anchors(Map.of("api", anchorConfig())).portal(portalConfig())
+                    .build();
             assertEquals(viaCtor, viaBuilder);
             assertEquals(portalConfig(), viaCtor.portal());
         }
@@ -649,11 +666,11 @@ class ConfigModelContractTest {
         void endpointConfigBuilderMatchesConstructor() {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             EndpointConfig viaCtor = new EndpointConfig("orders", true, "orders-service", "api",
-                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, null, null, List.of(),
-                    catalogConfig());
+                    auth(), List.of("orders.read"), List.of(HttpMethod.GET), null, null, null, CookiesConfig.NONE,
+                    List.of(), catalogConfig());
             EndpointConfig viaBuilder = EndpointConfig.builder().id("orders").enabled(true).baseUrl("orders-service")
                     .anchor("api").auth(auth()).scopes(List.of("orders.read")).allowedMethods(List.of(HttpMethod.GET))
-                    .catalog(catalogConfig()).build();
+                    .cookies(CookiesConfig.NONE).catalog(catalogConfig()).build();
             assertEquals(viaCtor, viaBuilder);
             assertEquals(catalogConfig(), viaCtor.catalog());
         }
@@ -760,13 +777,14 @@ class ConfigModelContractTest {
         void gatewayConfigNormalizesAllAbsentComponents() {
             // Positional on purpose: the canonical constructor's null normalization is the subject.
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null);
+                    null, null, null, null, null);
             assertNull(cfg.metadata());
             assertNull(cfg.tls());
             assertNull(cfg.management());
             assertNull(cfg.securityHeaders());
             assertNull(cfg.securityDefaults());
             assertTrue(cfg.allowedMethods().isEmpty());
+            assertNull(cfg.cookies(), "an omitted gateway cookies block declares none");
             assertTrue(cfg.anchors().isEmpty());
             assertNull(cfg.upstreamDefaults());
             assertNull(cfg.assetDefaults());
@@ -874,11 +892,12 @@ class ConfigModelContractTest {
         void endpointConfigNormalizesAbsentCollectionsAndNullables() {
             // Positional on purpose: the canonical constructor's null normalization is the subject.
             EndpointConfig cfg = new EndpointConfig("id", true, "url", null, null, null, null, null, null, null, null,
-                    null);
+                    null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
             assertNull(cfg.securityFilter(), "an endpoint without a security_filter block declares none");
             assertNull(cfg.forward(), "an endpoint without a forward block declares none");
+            assertNull(cfg.cookies(), "an endpoint without a cookies block declares none");
             assertNull(cfg.catalog(), "an endpoint without a catalog block is not listed on the portal");
             assertTrue(cfg.scopes().isEmpty(), "an absent endpoint scopes list normalizes to empty");
             assertTrue(cfg.allowedMethods().isEmpty());
@@ -890,10 +909,11 @@ class ConfigModelContractTest {
         void routeConfigNormalizesAbsentAnchor() {
             // Positional on purpose: the canonical constructor's null round-trip is the subject.
             RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null,
-                    null, null);
+                    null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
             assertNull(cfg.securityFilter());
+            assertNull(cfg.cookies(), "a route without a cookies block declares none");
             assertNull(cfg.asset());
             assertNull(cfg.redirect());
             assertNull(cfg.websocket());
@@ -902,11 +922,13 @@ class ConfigModelContractTest {
         @Test
         void anchorConfigNormalizesAbsentComponents() {
             // Positional on purpose: the canonical constructor's null normalization is the subject.
-            AnchorConfig cfg = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null, null);
+            AnchorConfig cfg = new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null,
+                    null, null, null);
             assertNull(cfg.auth());
             assertNull(cfg.securityFilter());
             assertNull(cfg.securityHeaders());
             assertTrue(cfg.allowedMethods().isEmpty());
+            assertNull(cfg.cookies(), "an anchor without a cookies block declares none");
         }
 
         @Test
@@ -923,7 +945,8 @@ class ConfigModelContractTest {
             assertTrue(new SecurityFilterConfig(null, null, null, null, null, null, null, null, null, null)
                     .allowedPaths().isEmpty());
             assertTrue(new OidcConfig.Csrf(null).trustedOrigins().isEmpty());
-            assertTrue(new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null, null).allowedMethods().isEmpty());
+            assertTrue(new AnchorConfig("api", "/api", AnchorType.PROXY, AccessLevel.AUTHENTICATED, null, null, null,
+                    null, null).allowedMethods().isEmpty());
             assertTrue(new WebSocketConfig(null, null).allowedOrigins().isEmpty());
         }
 
@@ -1070,14 +1093,14 @@ class ConfigModelContractTest {
         private EndpointConfig endpointConfigWith(String id, String baseUrl) {
             // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
             return new EndpointConfig(id, true, baseUrl, null, auth(), List.of(), List.of(), null, null, null,
-                    List.of(), null);
+                    null, List.of(), null);
         }
 
         @Test
         void endpointConfigAcceptsAnAbsentAuthBlock() {
             // Positional on purpose: the canonical constructor admitting an absent auth is the subject.
             EndpointConfig cfg = new EndpointConfig("id", true, "url", "api", null, List.of(), List.of(), null, null,
-                    null, List.of(), null);
+                    null, null, List.of(), null);
             assertNull(cfg.auth(), "an anchored endpoint may omit its auth block");
         }
 
@@ -1112,19 +1135,19 @@ class ConfigModelContractTest {
             // Positional on purpose: the canonical constructor's mandatory-field checks are the subject.
             NullPointerException noName = assertThrows(NullPointerException.class,
                     () -> new AnchorConfig(null, "/api", AnchorType.PROXY, AccessLevel.PUBLIC, null,
-                            null, null, List.of()));
+                            null, null, List.of(), null));
             assertEquals("name", noName.getMessage());
             NullPointerException noPrefix = assertThrows(NullPointerException.class,
                     () -> new AnchorConfig("api", null, AnchorType.PROXY, AccessLevel.PUBLIC, null,
-                            null, null, List.of()));
+                            null, null, List.of(), null));
             assertEquals("pathPrefix", noPrefix.getMessage());
             NullPointerException noType = assertThrows(NullPointerException.class,
                     () -> new AnchorConfig("api", "/api", null, AccessLevel.PUBLIC, null,
-                            null, null, List.of()));
+                            null, null, List.of(), null));
             assertEquals("type", noType.getMessage());
             NullPointerException noAccess = assertThrows(NullPointerException.class,
                     () -> new AnchorConfig("api", "/api", AnchorType.PROXY, null, null,
-                            null, null, List.of()));
+                            null, null, List.of(), null));
             assertEquals("access", noAccess.getMessage());
         }
 
@@ -1201,7 +1224,7 @@ class ConfigModelContractTest {
          */
         private RouteConfig routeConfigWith(String id, MatchConfig match) {
             // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
-            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null);
+            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null, null);
         }
 
     }
@@ -1269,6 +1292,40 @@ class ConfigModelContractTest {
             assertNotNull(cfg.securityFilter());
             assertNotNull(cfg.securityHeaders());
             assertEquals(List.of(HttpMethod.GET, HttpMethod.POST), cfg.allowedMethods());
+            assertEquals(cookiesConfig(), cfg.cookies());
+        }
+
+        @Test
+        void cookiesConfigLowerCasesAdditionalOriginsAndKeepsAnAbsentListAbsent() {
+            CookiesConfig declared = new CookiesConfig(CookieAllow.ALL, null, List.of("HTTPS://App.Example.COM"));
+            CookiesConfig omitted = new CookiesConfig(CookieAllow.ALL, null, null);
+
+            assertAll("additional_origins is lower-cased once and an omitted list stays distinguishable",
+                    () -> assertEquals(List.of("https://app.example.com"), declared.additionalOrigins()),
+                    () -> assertNull(omitted.additionalOrigins(), "an omitted list is not an empty one"),
+                    () -> assertEquals(List.of(), new CookiesConfig(CookieAllow.ALL, null, List.of())
+                            .additionalOrigins(), "a declared empty list stays declared"));
+        }
+
+        @Test
+        void cookiesConfigResolvesTheSameOriginCheckAndWhetherAnyCookieCrosses() {
+            assertAll("same_origin_check defaults to true; only none forwards nothing",
+                    () -> assertTrue(new CookiesConfig(CookieAllow.ALL, null, null).effectiveSameOriginCheck()),
+                    () -> assertTrue(new CookiesConfig(CookieAllow.ALL, true, null).effectiveSameOriginCheck()),
+                    () -> assertFalse(new CookiesConfig(CookieAllow.ALL, false, null).effectiveSameOriginCheck()),
+                    () -> assertFalse(CookiesConfig.NONE.forwardsAny()),
+                    () -> assertTrue(new CookiesConfig(CookieAllow.ALL, null, null).forwardsAny()),
+                    () -> assertTrue(cookiesConfig().forwardsAny()),
+                    () -> assertEquals(CookieAllow.NONE, CookiesConfig.NONE.allow()),
+                    () -> assertNull(CookiesConfig.NONE.sameOriginCheck()),
+                    () -> assertNull(CookiesConfig.NONE.additionalOrigins()));
+        }
+
+        @Test
+        void cookiesConfigRequiresAllow() {
+            NullPointerException ex = assertThrows(NullPointerException.class,
+                    () -> new CookiesConfig(null, null, null));
+            assertEquals("allow", ex.getMessage());
         }
 
         @Test

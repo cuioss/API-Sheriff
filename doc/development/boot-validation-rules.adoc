@@ -140,8 +140,15 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 | extracted
 
 | `ForwardingRules`
-| `validateForwardModeExclusivity`, `validateTokenRelayForwardConflict`
-| route `forward` block against `auth.token_relay`
+| `validateForwardModeExclusivity`, `validateTokenRelayForwardConflict`,
+  `validateCookieOutsideCookiesBlock`
+| endpoint and route `forward` blocks, against `auth.token_relay` and the `cookies` block
+| extracted
+
+| `CookieRules`
+| `validateGatewayAllowAll`, `validateCookieNames`, `validateGatewayCookieNotListed`,
+  `validateNoInertKeysOnNone`, `validateAdditionalOrigins`, `validateNoCookiesOnTerminalRoute`
+| `cookies.*` at gateway, anchor, endpoint and route scope
 | extracted
 
 | `TokenValidationRules`

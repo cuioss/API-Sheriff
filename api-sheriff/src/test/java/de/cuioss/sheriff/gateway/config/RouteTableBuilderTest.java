@@ -37,6 +37,8 @@ import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -181,6 +183,12 @@ class RouteTableBuilderTest {
                 .securityHeaders(headers)
                 .allowedMethods(methods == null ? List.of() : methods)
                 .build();
+    }
+
+    /** The {@code api} anchor at {@code /api} with a bearer floor and the given {@code cookies} block. */
+    private static AnchorConfig cookieAnchor(CookiesConfig cookies) {
+        return AnchorConfig.builder().name("api").pathPrefix("/api").type(AnchorType.PROXY)
+                .access(AccessLevel.AUTHENTICATED).auth(auth(Require.BEARER)).cookies(cookies).build();
     }
 
     private static SecurityFilterConfig filter(String profile) {
@@ -1303,6 +1311,145 @@ class RouteTableBuilderTest {
 
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, OVERRIDE_WARN_ID);
         }
+
+        private GatewayConfig gatewayWithAnchorCookies(CookiesConfig cookies) {
+            return gateway().anchors(Map.of("api", cookieAnchor(cookies))).build();
+        }
+
+        @Test
+        @DisplayName("Should WARN at route scope when a route cookies block replaces the anchor's, even all under none")
+        void shouldWarnOnRouteCookiesOverride() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(apiRoute().cookies(new CookiesConfig(CookieAllow.ALL, null, null)).build()))
+                    .build();
+
+            build(gatewayWithAnchorCookies(CookiesConfig.NONE), endpoint);
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("cookies", "route"));
+        }
+
+        @Test
+        @DisplayName("Should WARN at endpoint scope when an endpoint cookies block replaces the anchor's")
+        void shouldWarnOnEndpointCookiesOverride() {
+            EndpointConfig endpoint = anchoredEndpoint("orders", "ORDERS", "api")
+                    .cookies(new CookiesConfig(new CookieAllow.Named(List.of("theme")), null, null))
+                    .routes(List.of(apiRoute().build())).build();
+
+            build(gatewayWithAnchorCookies(new CookiesConfig(new CookieAllow.Named(List.of("app")), null, null)),
+                    endpoint);
+
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, overrideOf("cookies", "endpoint"));
+        }
+
+        @Test
+        @DisplayName("Should not WARN for a cookies block on an unanchored route")
+        void shouldNotWarnForUnanchoredCookies() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS")
+                    .cookies(new CookiesConfig(CookieAllow.ALL, null, null))
+                    .routes(List.of(RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
+                            .cookies(new CookiesConfig(new CookieAllow.Named(List.of("theme")), null, null)).build()))
+                    .build();
+
+            builder.build(gateway().cookies(new CookiesConfig(new CookieAllow.Named(List.of("app")), null, null))
+                    .build(), List.of(endpoint), topologyWith("ORDERS"));
+
+            LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, OVERRIDE_WARN_ID);
+        }
+    }
+
+    /**
+     * The {@code cookies} block resolves through {@link PolicyBlock#COOKIES}: route, else endpoint,
+     * else anchor, else gateway, else {@code allow: none} — the nearest block whole, never merged —
+     * and an asset or redirect route always resolves {@code allow: none}.
+     */
+    @Nested
+    @DisplayName("Effective cookies resolution")
+    class EffectiveCookies {
+
+        private final CookiesConfig gatewayCookies = named("gw");
+        private final CookiesConfig anchorCookies = named("anchor");
+        private final CookiesConfig endpointCookies = named("endpoint");
+        private final CookiesConfig routeCookies = new CookiesConfig(CookieAllow.ALL, false, null);
+
+        private static CookiesConfig named(String cookieName) {
+            return new CookiesConfig(new CookieAllow.Named(List.of(cookieName)), null,
+                    List.of("https://" + cookieName + ".example.com"));
+        }
+
+        private GatewayConfig gatewayWithCookies() {
+            return gateway().cookies(gatewayCookies).anchors(Map.of("api", cookieAnchor(anchorCookies))).build();
+        }
+
+        private Route resolve(GatewayConfig gateway, EndpointConfig endpoint) {
+            return find(builder.build(gateway, List.of(endpoint), topologyWith("ORDERS")), "r");
+        }
+
+        private static RouteConfig.RouteConfigBuilder apiRoute() {
+            return RouteConfig.builder().id("r").match(match("/api/orders", HttpMethod.GET));
+        }
+
+        @Test
+        @DisplayName("Should resolve allow: none when no scope declares a cookies block")
+        void shouldDefaultToNone() {
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route("r", HttpMethod.GET))).build();
+
+            assertEquals(CookiesConfig.NONE, resolve(gateway().build(), endpoint).effectiveCookies());
+        }
+
+        @Test
+        @DisplayName("Should resolve each scope as the nearest declaration, route over endpoint over anchor over gateway")
+        void shouldResolveNearestScope() {
+            GatewayConfig gateway = gatewayWithCookies();
+
+            Route routeWins = resolve(gateway, anchoredEndpoint("orders", "ORDERS", "api").cookies(endpointCookies)
+                    .routes(List.of(apiRoute().cookies(routeCookies).build())).build());
+            Route endpointWins = resolve(gateway, anchoredEndpoint("orders", "ORDERS", "api").cookies(endpointCookies)
+                    .routes(List.of(apiRoute().build())).build());
+            Route anchorWins = resolve(gateway, anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(apiRoute().build())).build());
+            Route gatewayWins = resolve(gateway, endpoint("orders", "ORDERS")
+                    .routes(List.of(route("r", HttpMethod.GET))).build());
+
+            assertAll("nearest declared scope wins",
+                    () -> assertEquals(routeCookies, routeWins.effectiveCookies()),
+                    () -> assertEquals(endpointCookies, endpointWins.effectiveCookies()),
+                    () -> assertEquals(anchorCookies, anchorWins.effectiveCookies()),
+                    () -> assertEquals(gatewayCookies, gatewayWins.effectiveCookies()));
+        }
+
+        @Test
+        @DisplayName("Should replace a broader cookies list whole rather than extend it")
+        void shouldReplaceWholeBlock() {
+            CookiesConfig routeList = new CookiesConfig(new CookieAllow.Named(List.of("theme")), null, null);
+
+            Route resolved = resolve(gatewayWithCookies(), anchoredEndpoint("orders", "ORDERS", "api")
+                    .routes(List.of(apiRoute().cookies(routeList).build())).build());
+
+            assertAll("the route list replaces the anchor list, no name and no key is merged",
+                    () -> assertEquals(routeList, resolved.effectiveCookies()),
+                    () -> assertFalse(resolved.effectiveCookies().allow().admits("anchor"),
+                            "the anchor's listed cookie does not survive the route list"),
+                    () -> assertNull(resolved.effectiveCookies().additionalOrigins(),
+                            "the anchor's additional_origins do not survive the route block"));
+        }
+
+        @Test
+        @DisplayName("Should resolve allow: none on an asset or redirect route whatever a broader scope declares")
+        void shouldForceNoneOnTerminalRoutes() {
+            RouteConfig redirect = RouteConfig.builder().id("r").match(match("/moved", HttpMethod.GET))
+                    .redirect(RedirectConfig.builder().location("/home").status(302).build()).build();
+            RouteConfig asset = RouteConfig.builder().id("a").match(match("/static", HttpMethod.GET))
+                    .asset(new AssetConfig(AssetConfig.Source.DIRECTORY, "/srv/www", null, null, null)).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").cookies(new CookiesConfig(CookieAllow.ALL, null,
+                    null)).routes(List.of(redirect, asset)).build();
+
+            RouteTable table = builder.build(gateway().cookies(gatewayCookies).build(), List.of(endpoint),
+                    topologyWith("ORDERS"));
+
+            assertAll("no upstream, no cookie",
+                    () -> assertEquals(CookiesConfig.NONE, find(table, "r").effectiveCookies()),
+                    () -> assertEquals(CookiesConfig.NONE, find(table, "a").effectiveCookies()));
+        }
     }
 
     @Nested
@@ -1415,7 +1562,7 @@ class RouteTableBuilderTest {
         @Test
         @DisplayName("Should carry a route-level negative-list forward block through unchanged")
         void shouldCarryRouteDenyLists() {
-            ForwardConfig forward = ForwardConfig.builder().headersDeny(List.of("Cookie"))
+            ForwardConfig forward = ForwardConfig.builder().headersDeny(List.of("X-Internal"))
                     .queryDeny(List.of("debug")).setHeaders(Map.of()).build();
             RouteConfig route = RouteConfig.builder().id("r").match(match("/r", HttpMethod.GET))
                     .forward(forward).build();
@@ -1426,7 +1573,7 @@ class RouteTableBuilderTest {
             Route resolved = find(table, "r");
             assertAll("the deny lists ride the same wholesale carry-through as the allow lists",
                     () -> assertEquals(forward, resolved.effectiveForward()),
-                    () -> assertEquals(List.of("Cookie"), resolved.effectiveForward().headersDeny()),
+                    () -> assertEquals(List.of("X-Internal"), resolved.effectiveForward().headersDeny()),
                     () -> assertEquals(List.of("debug"), resolved.effectiveForward().queryDeny()));
         }
 

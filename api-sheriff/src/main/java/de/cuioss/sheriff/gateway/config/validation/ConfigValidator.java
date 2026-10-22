@@ -27,6 +27,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.validation.rule.AnchorRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.AssetDefaultsRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.AuthRules;
+import de.cuioss.sheriff.gateway.config.validation.rule.CookieRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.EdgeRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.ForwardingRules;
 import de.cuioss.sheriff.gateway.config.validation.rule.HeaderRules;
@@ -61,7 +62,8 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * {@link OidcSessionRules} (the BFF session), {@link OidcClientRules} (the OIDC client),
  * {@link ReservedPathRules} (the reserved OIDC endpoint paths), {@link ProtocolRules} (WebSocket and
  * {@code Location} rewriting), {@link AssetDefaultsRules} (the asset content types),
- * {@link ForwardingRules} (the {@code forward} blocks), {@link TokenValidationRules} (JWKS egress and
+ * {@link ForwardingRules} (the {@code forward} blocks), {@link CookieRules} (the {@code cookies}
+ * blocks), {@link TokenValidationRules} (JWKS egress and
  * refresh) and {@link PortalRules} (the application portal). The helpers every rule shares (the
  * reporting file, pointer and anchors pointer, the
  * CWE-117-safe echo of a configured value, anchor resolution, which protocol a route rides, which
@@ -113,7 +115,18 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * endpoint nor a route may declare both {@code *_allow} and {@code *_deny} for the same {@code forward}
  * dimension, because each dimension resolves exactly one of the three modes (positive-list,
  * negative-list, forward-all). The schema bounds the {@code forward} key <em>set</em>; a mutual
- * exclusion between two of its keys is cross-cutting and lives with the post-binding rules.
+ * exclusion between two of its keys is cross-cutting and lives with the post-binding rules. The
+ * cookie-header refusal (owned by {@link ForwardingRules} as well) adds one more: a
+ * {@code forward.headers_allow}, {@code forward.headers_deny} or {@code forward.set_headers} naming
+ * {@code Cookie} is refused, because only the {@code cookies} block decides which cookies cross.
+ * <p>
+ * The cookie-policy rules (owned by {@link CookieRules}) add six more, each checked at every scope the
+ * {@code cookies} block is declarable at: a gateway-scope {@code allow: all} is refused; a listed name
+ * must be an RFC 6265 cookie name and must not be one of the gateway's own cookies;
+ * {@code same_origin_check} and {@code additional_origins} are refused on a block whose {@code allow}
+ * is {@code none}; every {@code additional_origins} entry must be a serialized origin; and a
+ * route-scope block is refused on an asset or a redirect route. A declared {@code allow: []} is
+ * refused by the schema, not here.
  * <p>
  * The session-cookie name refusal (owned by {@link OidcSessionRules}) adds one more: a declared
  * {@code oidc.session.cookie_name} must keep the {@code __Host-} guarantee the gateway-owned cookies
@@ -241,6 +254,18 @@ public final class ConfigValidator {
                     errors),
             (gateway, endpoints, topology, errors) -> ForwardingRules.validateTokenRelayForwardConflict(gateway,
                     endpoints, errors),
+            (gateway, endpoints, topology, errors) -> ForwardingRules.validateCookieOutsideCookiesBlock(endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> CookieRules.validateGatewayAllowAll(gateway, errors),
+            (gateway, endpoints, topology, errors) -> CookieRules.validateCookieNames(gateway, endpoints, errors),
+            (gateway, endpoints, topology, errors) -> CookieRules.validateGatewayCookieNotListed(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> CookieRules.validateNoInertKeysOnNone(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> CookieRules.validateAdditionalOrigins(gateway, endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> CookieRules.validateNoCookiesOnTerminalRoute(endpoints,
+                    errors),
             (gateway, endpoints, topology, errors) -> AuthRules.validateEndpointScopesNeedAuthentication(gateway,
                     endpoints, errors),
             (gateway, endpoints, topology, errors) -> OidcClientRules.validateDefaultReturnUrl(gateway, errors),

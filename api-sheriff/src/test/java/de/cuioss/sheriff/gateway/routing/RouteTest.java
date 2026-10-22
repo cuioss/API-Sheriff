@@ -39,6 +39,8 @@ import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.asset.DirectoryAssetSource;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -187,6 +189,38 @@ class RouteTest {
 
             assertEquals(ForwardConfig.builder().build(), route.effectiveForward(),
                     "An absent forward block resolves to the all-absent forward-all posture");
+        }
+
+        @Test
+        @DisplayName("Should default an absent effectiveCookies to allow: none, also across toBuilder()")
+        void shouldDefaultCookiesToNone() {
+            Route omitted = proxyRoute().build();
+            Route explicitNull = proxyRoute().effectiveCookies(null).build();
+
+            Route copy = omitted.toBuilder().id(omitted.id() + "-copy").build();
+
+            assertAll("nothing-crosses cookie default",
+                    () -> assertEquals(CookiesConfig.NONE, omitted.effectiveCookies(),
+                            "An omitted cookies block resolves to allow: none"),
+                    () -> assertEquals(CookiesConfig.NONE, explicitNull.effectiveCookies(),
+                            "An explicitly absent cookies block resolves to allow: none"),
+                    () -> assertEquals(CookiesConfig.NONE, copy.effectiveCookies(),
+                            "The default survives a toBuilder() copy"));
+        }
+
+        @Test
+        @DisplayName("Should carry a resolved effectiveCookies block through toBuilder() unchanged")
+        void shouldCarryResolvedCookiesThroughCopy() {
+            CookiesConfig cookies = new CookiesConfig(
+                    new CookieAllow.Named(List.of(Generators.letterStrings(3, 12).next())), null, null);
+            Route original = proxyRoute().effectiveCookies(cookies).build();
+
+            Route copy = original.toBuilder().securityProfile(SecurityProfile.LENIENT).build();
+
+            assertAll("resolved cookies block",
+                    () -> assertEquals(cookies, original.effectiveCookies(), "A resolved block is held as given"),
+                    () -> assertEquals(cookies, copy.effectiveCookies(),
+                            "A toBuilder() copy keeps the resolved block"));
         }
 
         @Test

@@ -54,7 +54,9 @@ import org.jspecify.annotations.Nullable;
  * block is merged into a nearer one. An endpoint-level {@code forward} block applies to every
  * route of this endpoint that declares none of its own; a route-level {@code forward} block
  * replaces it wholesale (an endpoint {@code query_deny} does not survive a route
- * {@code headers_allow} block).
+ * {@code headers_allow} block). {@code cookies} is the endpoint-level declaration of the
+ * {@code cookies} block and follows the same rule: it replaces the anchor's and the gateway's block
+ * for every route of this endpoint that declares none of its own.
  * {@code scopes} names the OIDC scopes this endpoint needs <em>in addition to</em> the
  * gateway's {@code oidc.scopes}. It is additive only — an endpoint can add scopes but never
  * remove one — and it lives on the endpoint, outside {@code auth}, so a route- or anchor-level
@@ -80,7 +82,10 @@ import org.jspecify.annotations.Nullable;
  * @param forward          the endpoint-level forward-filtering block, {@code null} when the
  *                         endpoint declares none (routes declaring none of their own then forward
  *                         everything)
- * @param routes          the routes declared by this endpoint, empty when none
+ * @param cookies          the endpoint-level {@code cookies} block, {@code null} when the endpoint
+ *                         declares none (the anchor's or the gateway's block, if any, then applies to
+ *                         routes declaring none of their own)
+ * @param routes         the routes declared by this endpoint, empty when none
  * @param catalog          the portal overview entry, {@code null} when the endpoint is not listed.
  *                         A catalog block makes the endpoint an overview entry, active exactly when
  *                         the endpoint is enabled after placeholder resolution
@@ -100,6 +105,7 @@ List<HttpMethod> allowedMethods,
 @Nullable UpstreamDefaultsConfig upstreamDefaults,
 @Nullable SecurityFilterConfig securityFilter,
 @Nullable ForwardConfig forward,
+@Nullable CookiesConfig cookies,
 List<RouteConfig> routes,
 @Nullable CatalogConfig catalog) {
 

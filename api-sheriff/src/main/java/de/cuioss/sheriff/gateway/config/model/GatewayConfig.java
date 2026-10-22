@@ -44,7 +44,11 @@ import org.jspecify.annotations.Nullable;
  *                         omitted
  * @param securityDefaults the global security-filter baseline, {@code null} when omitted
  * @param allowedMethods   the global verb allowlist, empty meaning the standard set
- * @param anchors          the named policy anchors keyed by name, empty when none
+ * @param cookies          the gateway-wide {@code cookies} block, {@code null} when omitted; the
+ *                         nearest declared block of a route's anchor, endpoint or the route itself
+ *                         replaces it wholesale, and with none declared anywhere the route resolves
+ *                         {@link CookiesConfig#NONE}. {@code allow: all} is refused at this scope
+ * @param anchors       the named policy anchors keyed by name, empty when none
  *                         are configured
  * @param upstreamDefaults the global retry/not-modified defaults, {@code null} when omitted
  * @param assetDefaults    the add-only asset content-type additions, {@code null} when omitted —
@@ -73,6 +77,7 @@ int version,
 @Nullable SecurityHeadersConfig securityHeaders,
 @Nullable SecurityDefaultsConfig securityDefaults,
 List<HttpMethod> allowedMethods,
+@Nullable CookiesConfig cookies,
 Map<String, AnchorConfig> anchors,
 @Nullable UpstreamDefaultsConfig upstreamDefaults,
 @Nullable AssetDefaultsConfig assetDefaults,

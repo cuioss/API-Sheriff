@@ -62,6 +62,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
@@ -139,7 +140,11 @@ import org.junit.jupiter.params.provider.MethodSource;
  * annotation, because such a branch asserts <em>which</em> keys a document declares and can declare
  * none of its own, and it is refused as before the moment a branch carries anything that could. That
  * is the shape the endpoint schema uses to make {@code match.path_prefix} and {@code match.path}
- * mutually exclusive. One negative control per refusal injects the unmodelled shape into a copy of the
+ * mutually exclusive. One more {@code oneOf} shape is modelled rather than refused: exactly a string
+ * {@code enum} branch beside an array-of-strings branch, carrying nothing else, which the
+ * {@code cookies.allow} key uses for its scalar-or-list form and which is counted as a string-item
+ * array key — its list branch is the array. The same {@code oneOf} with any further keyword in a
+ * branch is refused again, and a positive and a negative control pin both sides. One negative control per refusal injects the unmodelled shape into a copy of the
  * gateway schema and asserts the derivation refuses it naming that shape — including a {@code oneOf}
  * whose branch declares a key — and two further controls inject the exemptions and the keyless
  * {@code oneOf} and assert the derived inventory is unchanged, so neither the fail-closed walk can
@@ -464,6 +469,22 @@ class DocumentedSetsContractTest {
      */
     private static final Set<String> KEYLESS_BRANCH_KEYWORDS = Set.of(SCHEMA_REQUIRED, "description", "title",
             "$comment", ERROR_MESSAGE_KEYWORD);
+
+    /** The annotation keywords a branch of the scalar-or-list {@code oneOf} may carry besides its schema. */
+    private static final Set<String> BRANCH_ANNOTATIONS = Set.of("description", "title", "$comment");
+
+    /** The {@code minItems} keyword the list branch of the scalar-or-list {@code oneOf} may carry. */
+    private static final String SCHEMA_MIN_ITEMS = "minItems";
+
+    /**
+     * Where the shipped schemas declare the scalar-or-list {@code oneOf} the second carve-out exists for:
+     * the {@code allow} key of the shared {@code cookies} definition, which the gateway schema reaches
+     * from its root and from an anchor.
+     */
+    private static final String SCALAR_OR_LIST_POINTER = "/$defs/cookies/properties/allow";
+
+    /** The name the derivation gives the shipped scalar-or-list key. */
+    private static final String SCALAR_OR_LIST_KEY = "cookies.allow";
 
     /**
      * The keywords allowed to sit beside a {@code $ref}. Draft 2020-12 <em>applies</em> a {@code $ref}'s
@@ -1104,6 +1125,55 @@ class DocumentedSetsContractTest {
     }
 
     @Test
+    @DisplayName("the walk counts a oneOf of a string enum and a string list as a string-item array key")
+    void scalarOrStringListOneOfIsCountedAsAnArrayKey() throws Exception {
+        // Arrange — the carve-out earns its place only while a shipped schema still writes that shape
+        JsonNode shipped = schemaTree(GATEWAY_SCHEMA_RESOURCE);
+        assertTrue(isScalarOrStringList(shipped.at(SCALAR_OR_LIST_POINTER).path(APPLICATOR_ONE_OF)),
+                GATEWAY_SCHEMA_RESOURCE + " no longer declares the scalar-or-list '" + APPLICATOR_ONE_OF + "' at "
+                        + SCALAR_OR_LIST_POINTER + ", so the carve-out is no longer exercised by a shipped schema");
+        JsonNode injected = shipped.deepCopy();
+        ObjectNode properties = mutableAt(injected, INJECTED_ARRAY_PARENT_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        properties.set(INJECTED_ARRAY_KEY, scalarOrStringList(properties));
+
+        // Act
+        Map<String, ItemKind> shippedKeys = deriveArrayKeys(shipped, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE);
+        Map<String, ItemKind> derived = deriveArrayKeys(injected, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE
+                + " with a scalar-or-list '" + APPLICATOR_ONE_OF + "' injected at " + INJECTED_ARRAY_PARENT_POINTER);
+
+        // Assert
+        Map<String, ItemKind> expected = new TreeMap<>(shippedKeys);
+        expected.put(INJECTED_ARRAY_NAME, ItemKind.STRING);
+        assertAll("the list branch is a string-item array key",
+                () -> assertEquals(ItemKind.STRING, shippedKeys.get(SCALAR_OR_LIST_KEY),
+                        "the shipped " + SCALAR_OR_LIST_KEY + " is derived as a string-item array key"),
+                () -> assertEquals(expected, derived, "injecting the shape adds exactly its own key, as a"
+                        + " string-item array key, and nothing else"));
+    }
+
+    @ParameterizedTest(name = "a further ''{1}'' in the {0}")
+    @CsvSource({"string branch,pattern", "list branch,maxItems", "list items,pattern"})
+    @DisplayName("the walk still refuses the scalar-or-list oneOf once any branch carries a further keyword")
+    void scalarOrStringListOneOfWithAFurtherKeywordIsRefused(String where, String keyword) throws Exception {
+        // Arrange
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode properties = mutableAt(injected, INJECTED_ARRAY_PARENT_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        ObjectNode key = scalarOrStringList(properties);
+        ArrayNode branches = (ArrayNode) key.get(APPLICATOR_ONE_OF);
+        ObjectNode target = switch (where) {
+            case "string branch" -> (ObjectNode) branches.get(0);
+            case "list branch" -> (ObjectNode) branches.get(1);
+            default -> (ObjectNode) branches.get(1).get(SCHEMA_ITEMS);
+        };
+        target.put(keyword, "x");
+        properties.set(INJECTED_ARRAY_KEY, key);
+
+        // Act + Assert
+        assertDerivationRefuses(injected, GATEWAY_SCHEMA_RESOURCE + " with a scalar-or-list '" + APPLICATOR_ONE_OF
+                + "' carrying a further '" + keyword + "' in its " + where, "uses " + APPLICATOR_ONE_OF);
+    }
+
+    @Test
     @DisplayName("doc/configuration.adoc's boot-validation list names exactly the JWKS refresh keys and their ranges")
     void configurationAdocStatesTheJwksRefreshKeyRanges() throws Exception {
         // Arrange
@@ -1305,6 +1375,23 @@ class DocumentedSetsContractTest {
             branches.add(branch);
         }
         return branches;
+    }
+
+    /**
+     * A key node whose {@code oneOf} is the scalar-or-list shape: a string {@code enum} branch and a
+     * non-empty array-of-strings branch — the shape the shipped {@code cookies.allow} is written in.
+     *
+     * @param factory any node of the tree being mutated, used only as a node factory
+     * @return the key node
+     */
+    private static ObjectNode scalarOrStringList(ObjectNode factory) {
+        ObjectNode scalar = factory.objectNode().put(SCHEMA_TYPE, TYPE_STRING);
+        scalar.set(SCHEMA_ENUM, factory.arrayNode().add("none").add("all"));
+        ObjectNode list = factory.objectNode().put(SCHEMA_TYPE, TYPE_ARRAY).put(SCHEMA_MIN_ITEMS, 1);
+        list.set(SCHEMA_ITEMS, factory.objectNode().put(SCHEMA_TYPE, TYPE_STRING));
+        ObjectNode key = factory.objectNode().put("description", "scalar or list");
+        key.set(APPLICATOR_ONE_OF, factory.arrayNode().add(scalar).add(list));
+        return key;
     }
 
     /**
@@ -1943,6 +2030,14 @@ class DocumentedSetsContractTest {
     private static void walkNode(JsonNode schema, JsonNode node, String name, Map<String, ItemKind> keys,
             Map<String, String> followed, String label) {
         assertModelledShape(node, name, label);
+        if (isScalarOrStringList(node.path(APPLICATOR_ONE_OF))) {
+            // A string scalar or a list of strings: the list branch is a string-item array key.
+            if (keys.put(name, ItemKind.STRING) != null) {
+                fail(label + ": two array-typed nodes derive the same key name '" + name + "' without sharing a"
+                        + " definition, so the document could not tell them apart");
+            }
+            return;
+        }
         if (!TYPE_ARRAY.equals(node.path(SCHEMA_TYPE).asText())) {
             walkChildren(schema, node, name, keys, followed, label);
             return;
@@ -1977,7 +2072,8 @@ class DocumentedSetsContractTest {
      */
     private static void assertModelledShape(JsonNode node, String name, String label) {
         for (String applicator : UNMODELLED_APPLICATORS) {
-            if (node.has(applicator) && !declaresNoKey(applicator, node.get(applicator))) {
+            if (node.has(applicator) && !declaresNoKey(applicator, node.get(applicator))
+                    && !(APPLICATOR_ONE_OF.equals(applicator) && isScalarOrStringList(node.get(applicator)))) {
                 fail(label + ": '" + qualified(name, applicator) + "' uses " + applicator + ", which the array-key"
                         + " derivation does not model; extend DocumentedSetsContractTest before relying on it, or"
                         + " the inventory would silently miss any array key declared inside it");
@@ -2021,6 +2117,53 @@ class DocumentedSetsContractTest {
                 if (!KEYLESS_BRANCH_KEYWORDS.contains(keyword.getKey())) {
                     return false;
                 }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a {@code oneOf} is exactly the scalar-or-list shape: two branches, one a string
+     * {@code enum} and one an array of strings, so the key it sits on is either one of the enumerated
+     * words or a list of strings — and counts as a string-item array key.
+     * <p>
+     * The test is an allow-list on every level, so it fails closed: the string branch may carry only
+     * {@code type: string} and its {@code enum}, the list branch only {@code type: array}, an
+     * {@code items} of {@code type: string} alone and an optional {@code minItems}, and each branch
+     * nothing else but annotation. Any further keyword is one that could constrain or declare something
+     * the walk does not read, so the {@code oneOf} is then refused as before.
+     *
+     * @param value the {@code oneOf} keyword's value, missing when the node declares none
+     * @return {@code true} only for the scalar-or-list shape
+     */
+    private static boolean isScalarOrStringList(JsonNode value) {
+        if (!value.isArray() || value.size() != 2) {
+            return false;
+        }
+        JsonNode first = value.get(0);
+        JsonNode second = value.get(1);
+        return isStringEnumBranch(first) && isStringListBranch(second)
+                || isStringListBranch(first) && isStringEnumBranch(second);
+    }
+
+    private static boolean isStringEnumBranch(JsonNode branch) {
+        return branch.isObject() && TYPE_STRING.equals(branch.path(SCHEMA_TYPE).asText())
+                && branch.path(SCHEMA_ENUM).isArray() && !branch.path(SCHEMA_ENUM).isEmpty()
+                && carriesOnly(branch, Set.of(SCHEMA_TYPE, SCHEMA_ENUM));
+    }
+
+    private static boolean isStringListBranch(JsonNode branch) {
+        JsonNode items = branch.path(SCHEMA_ITEMS);
+        return branch.isObject() && TYPE_ARRAY.equals(branch.path(SCHEMA_TYPE).asText())
+                && carriesOnly(branch, Set.of(SCHEMA_TYPE, SCHEMA_ITEMS, SCHEMA_MIN_ITEMS))
+                && items.isObject() && TYPE_STRING.equals(items.path(SCHEMA_TYPE).asText())
+                && carriesOnly(items, Set.of(SCHEMA_TYPE));
+    }
+
+    private static boolean carriesOnly(JsonNode node, Set<String> schemaKeywords) {
+        for (Map.Entry<String, JsonNode> keyword : node.properties()) {
+            if (!schemaKeywords.contains(keyword.getKey()) && !BRANCH_ANNOTATIONS.contains(keyword.getKey())) {
+                return false;
             }
         }
         return true;

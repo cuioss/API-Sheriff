@@ -24,6 +24,7 @@ import java.util.Set;
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.asset.AssetSource;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -47,8 +48,10 @@ import org.jspecify.annotations.Nullable;
  * wholesale, else the endpoint default, else the anchor floor), effective {@code allowed_methods}
  * (endpoint list if declared, else the anchor list, else the global list, else the standard set),
  * effective {@code security_filter} (route block, else the endpoint block, else the anchor block),
- * effective {@code forward} (route block, else the endpoint block), effective
- * {@code security_headers} (anchor block, else the gateway block), and the effective retry /
+ * effective {@code forward} (route block, else the endpoint block), effective {@code cookies} (route
+ * block, else the endpoint block, else the anchor block, else the gateway block, else
+ * {@code allow: none}), effective {@code security_headers} (anchor block, else the gateway block),
+ * and the effective retry /
  * not-modified toggles (global {@code upstream_defaults}, wholesale-replaced by an endpoint block,
  * overridden per route). Anchors (ADR-0007) vanish here: only the resolving anchor's name is
  * retained, for the boot-log posture line.
@@ -60,7 +63,7 @@ import org.jspecify.annotations.Nullable;
  *       on the offline {@code --validate-config} path, sets every resolved value ({@code id},
  *       {@code protocol}, {@code anchor}, {@code match}, {@code effectiveAuth},
  *       {@code effectiveAllowedMethods}, {@code neededScopes}, {@code effectiveSecurityFilter},
- *       {@code securityHeaders}, {@code effectiveForward}, {@code retryEnabled},
+ *       {@code securityHeaders}, {@code effectiveForward}, {@code effectiveCookies}, {@code retryEnabled},
  *       {@code notModifiedEnabled}, the one terminal action {@code upstream} / {@code asset} /
  *       {@code redirect}, {@code effectiveAllowedOrigins} and
  *       {@code effectiveWebSocketIdleTimeoutSeconds}) plus the pure derivation
@@ -131,7 +134,13 @@ import org.jspecify.annotations.Nullable;
  *                               the <em>forward-all</em> posture on both dimensions: a permissive
  *                               default because deny-by-default lives at the URL layer, and what
  *                               does cross stays bounded by the gateway-owned never-forward set
- * @param retryEnabled           the materialized upstream-retry toggle (meaningful only for a
+ * @param effectiveCookies       the effective {@code cookies} block — which browser cookies cross
+ *                               to the upstream and which upstream {@code Set-Cookie} lines are
+ *                               relayed back. An absent value becomes {@link CookiesConfig#NONE}, the
+ *                               nothing-crosses posture; an asset or redirect route always resolves
+ *                               it, having no upstream. The gateway's own cookies never cross under
+ *                               any block
+ * @param retryEnabled          the materialized upstream-retry toggle (meaningful only for a
  *                               proxy route)
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle (meaningful only for
  *                               a proxy route)
@@ -187,6 +196,7 @@ Set<String> neededScopes,
 @Nullable SecurityFilterConfig effectiveSecurityFilter,
 @Nullable SecurityHeadersConfig securityHeaders,
 ForwardConfig effectiveForward,
+CookiesConfig effectiveCookies,
 boolean retryEnabled,
 boolean notModifiedEnabled,
 @Nullable ResolvedUpstream upstream,
@@ -207,7 +217,8 @@ SecurityProfile securityProfile,
      * defaults: an absent {@code protocol} becomes {@link Protocol#HTTP}, a {@code matcher} that is
      * absent or was not compiled from {@code match} is compiled from {@code match}, an absent
      * {@code effectiveForward} becomes the all-absent
-     * forward-all {@link ForwardConfig}, an absent {@code securityProfile} becomes the fail-closed
+     * forward-all {@link ForwardConfig}, an absent {@code effectiveCookies} becomes the nothing-crosses
+     * {@link CookiesConfig#NONE}, an absent {@code securityProfile} becomes the fail-closed
      * {@link SecurityProfile#STRICT}, and every collection is defensively copied into an
      * unmodifiable form, an absent one becoming empty.
      *
@@ -232,6 +243,7 @@ SecurityProfile securityProfile,
         effectiveAllowedMethods = toMethodSet(effectiveAllowedMethods);
         neededScopes = neededScopes == null ? Set.of() : Set.copyOf(neededScopes);
         effectiveForward = effectiveForward == null ? ForwardConfig.builder().build() : effectiveForward;
+        effectiveCookies = effectiveCookies == null ? CookiesConfig.NONE : effectiveCookies;
         effectiveAllowedOrigins = effectiveAllowedOrigins == null ? Set.of() : Set.copyOf(effectiveAllowedOrigins);
         securityProfile = securityProfile == null ? SecurityProfile.STRICT : securityProfile;
     }

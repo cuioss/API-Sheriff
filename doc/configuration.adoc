@@ -4659,22 +4659,22 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   *mechanically verified* against those files: `DocumentedSetsContractTest` derives both sets from
   the schemas and fails the build when a listed key, a stated count or the object-item set drifts
   from them. A key defined once and referenced from several places -- `allowed_methods` at the
-  global and anchor level, the `security_filter`, `security_headers` and `forward` blocks -- is one
-  key, named by the block it is declared under; an endpoint document's keys are named relative to
-  its `endpoint` block.
+  global and anchor level, the `security_filter`, `security_headers`, `forward` and `cookies`
+  blocks -- is one key, named by the block it is declared under; an endpoint document's keys are
+  named relative to its `endpoint` block.
 +
 --
-In `gateway.yaml` the schema declares 17 such keys, of which 16 declare string items and are the
+In `gateway.yaml` the schema declares 19 such keys, of which 18 declare string items and are the
 usable set: `allowed_methods` (global and anchor), `security_filter.allowed_paths`, `security_filter.allowed_header_names`,
 `security_filter.blocked_header_names`, `security_filter.allowed_content_types`,
 `security_headers.cors.allowed_origins`, `security_headers.cors.allowed_methods`,
 `security_headers.cors.allowed_headers`, `tls.cipher_suites`, `tls.alpn`,
 `forwarded.trusted_proxies`, `token_validation.issuers[].jwks.allowed_egress_hosts`, `oidc.scopes`,
-`oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims` and
-`oidc.user_info.default_view`.
+`oidc.session.csrf.trusted_origins`, `oidc.user_info.allowed_claims`,
+`oidc.user_info.default_view`, `cookies.allow` (global and anchor) and `cookies.additional_origins`.
 
-An `endpoints/*.yaml` document declares the same-named `allowed_methods` and four
-`security_filter` lists (at the endpoint and on a route), and adds 7 further string-item keys of its
+An `endpoints/*.yaml` document declares the same-named `allowed_methods`, four
+`security_filter` lists and the two `cookies` lists (at the endpoint and on a route), and adds 7 further string-item keys of its
 own: `scopes`, `routes[].match.methods`, `forward.headers_allow`, `forward.headers_deny`,
 `forward.query_allow`, `forward.query_deny` (the forward block, at the endpoint and on a route) and
 `routes[].websocket.allowed_origins`.
