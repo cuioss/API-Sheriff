@@ -12,7 +12,8 @@
 #     its own quotes; rendered together, with <version> for each placeholder, each line must occur in
 #     that section verbatim, as the whole of a backtick-quoted span;
 #   * the refusal set — every refusal decide() can return must be one of those two, or one the
-#     `release` job's `if:` keeps out (named in UNREACHED_REFUSALS with the operand that does so).
+#     `release` job's own `if:` keeps out (named in UNREACHED_REFUSALS with the top-level clause of
+#     that condition that does so).
 # Both refs must be full commit SHAs, ending at the line end or a comment.
 # The fourth value, the reusable-workflow pin itself, is checked offline by
 # ReleaseGuardPinDocsContractTest in api-sheriff, which runs in every Maven build.
@@ -96,14 +97,19 @@ jobs:
           )
           PLACEHOLDER = re.compile(r"\{[^{}]+\}")
           # Every refusal decide() can return, as its string literal. Each one must either be checked
-          # above, or be one the release job never reaches -- named here with the operand of the job's
-          # `if:` that keeps it out, which must still be present in release.yml. A refusal the guard adds
-          # later is therefore reported, not passed over.
+          # above, or be one the release job never reaches -- named here with the clause of the job's
+          # own `if:` that keeps it out, which must still be one of that condition's top-level `&&`
+          # clauses in release.yml. A refusal the guard adds later is therefore reported, not passed over.
           DECIDE = re.compile(r"(?ms)^def decide\(.*?(?=^def |\Z)")
           REFUSAL = re.compile(r'\bFalse,\s*(f?"[^"\n]*")')
           UNREACHED_REFUSALS = {
-              '"pull request was closed without being merged"': "github.event.pull_request.merged == true",
+              '"pull request was closed without being merged"':
+                  "(github.event_name != 'pull_request' || github.event.pull_request.merged == true)",
           }
+          # The `release` job's own `if:` -- the key directly under the job, inline or as a block scalar
+          # whose lines are indented deeper -- so a step condition, an env value or a comment holding the
+          # same text does not count.
+          JOB_IF = re.compile(r"(?m)^    if:[ \t]*(?:[>|][-+]?[ \t]*\n((?:      .*(?:\n|$))+)|(\S.*)$)")
           # The section the quoted lines and the action pin must appear in -- from its anchor up to the
           # next heading (with that heading's own anchor, if it has one).
           SECTION_ANCHOR = "[#guard-refusal-predicates]"
@@ -158,6 +164,19 @@ jobs:
           doc = DOC.read_text(encoding="utf-8")
           release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
           release_job = job_block(release_workflow, "release")
+
+
+          def job_if_clauses(block):
+              conditions = JOB_IF.findall(block or "")
+              if len(conditions) != 1:
+                  finding(f"{RELEASE_WORKFLOW}: expected exactly one `if:` on the `release` job, found {len(conditions)}")
+                  return set()
+              folded, inline = conditions[0]
+              condition = " ".join(folded.split()) if folded else re.sub(r"\s+#.*$", "", inline).strip()
+              return {" ".join(clause.split()) for clause in condition.split("&&")}
+
+
+          release_if_clauses = job_if_clauses(release_job)
 
           section = ""
           anchor_at = doc.find(SECTION_ANCHOR)
@@ -234,7 +253,7 @@ jobs:
                       if refusal in checked_refusals:
                           continue
                       gate = UNREACHED_REFUSALS.get(refusal)
-                      if gate is not None and gate in (release_job or ""):
+                      if gate is not None and gate in release_if_clauses:
                           continue
                       finding(
                           f"release-guard.py@{action_sha} can refuse with {refusal}, which this check neither verifies"
