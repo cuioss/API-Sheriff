@@ -421,6 +421,23 @@ doc-only or build-light plan for the second and third slots.
   `read_timeout_ms` wired by PLAN-29 has to state how it relates to them. PLAN-29 is
   held behind this epic's refactor chain (kidicap's ruling).
 
+- **FIRST REAL RELEASE AFTER #509, NOT YET HAPPENED** (added 2026-10-22, inbox
+  `release-lane-hardening-001`). #509 (`00293178`) reordered the image join in
+  `.github/workflows/release.yml`: the index is pushed under a candidate tag `leg-<sha>-index`, asserted,
+  signed and verified there, and only then promoted to `<version>` and `sha-<sha>` and read back. Dry runs
+  39732222258, 39751125940 and 39759377284 passed, but they promote to `dryrun-*-promoted`; no release
+  run has used the real tags yet (latest tag still `0.2.4`, linux/amd64 only). The next release is also
+  the first two-platform index (`PLAN-V02-47`). Check on that run: (1) candidate, sign and verify steps
+  all succeed before `Promote the verified index to its final tags` and its assert step; (2) `<version>`
+  and `sha-<sha>` resolve to the same digest, an index of exactly linux/amd64 and linux/arm64, the
+  digest that was signed (`docker buildx imagetools inspect ghcr.io/cuioss/api-sheriff:<version>`);
+  (3) the verification command in `doc/user/container-image.adoc` verifies the index and both platform
+  digests; (4) `leg-<commit>-index` sits next to the two `leg-<commit>-<arch>` tags and is not counted
+  by the release skill's "exactly one of each" check; (5) `cleanup-dry-run` is skipped. A failure
+  before promotion leaves no release tag (re-run the join alone); a promote or read-back failure can
+  leave one; a promoted digest that differs from the signed one is a real defect, so the release is
+  treated as partial. Close this watch once one real release passes the checklist.
+
 - **`PLAN-V02-21` DOCUMENTATION LEFTOVERS, NONE STAGED** (added 2026-10-13, from the landing).
   ADR-0031 line 115 still says the integration stack runs "seven gateway instances"; there are twelve.
   `demo-client/scripts/start-dev-environment.sh` keeps a literal `120` for its Keycloak wait (lines
