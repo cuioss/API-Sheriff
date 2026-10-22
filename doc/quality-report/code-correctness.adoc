@@ -405,13 +405,16 @@ decision 12).
 |Location |`bff/BffLogMessages.java`; `bff/csrf/CsrfDefence.java:128`
 |===
 
-Only 6 of the catalogue's records are emitted. `INFO.SESSION_CREATED` (10),
-`INFO.SESSION_DESTROYED` (11), `INFO.RP_LOGOUT_COMPLETED` (14) and `WARN.CSRF_REJECTED` (110)
-still have no production emission site. `CsrfDefence.rejected` logs at DEBUG; session
-create/destroy/logout-complete are never logged at all. For a security gateway, session
-establishment/destruction and CSRF rejections produce no structured WARN/INFO audit line — a
-SIEM keying on the documented `ApiSheriff-xxx` records never fires. (The `CSRF_REJECTED`
-*metric* counter does fire via the edge `GatewayException`; only the log record is dead.)
+`INFO.SESSION_CREATED` (10), `INFO.SESSION_DESTROYED` (11) and `INFO.RP_LOGOUT_COMPLETED` (14)
+still have no production emission site: session create/destroy/logout-complete are never logged
+at all. For a security gateway, session establishment and destruction produce no structured INFO
+audit line — a SIEM keying on the documented `ApiSheriff-xxx` records never fires.
+
+*The dead CSRF record is removed.* `WARN.CSRF_REJECTED` (110) never had a production emission
+site and has been deleted from the catalogue rather than wired up; its identifier is not reused. A
+CSRF or same-origin rejection is recorded by the `CSRF_REJECTED` event counter, which fires via the
+edge `GatewayException`, and by a DEBUG diagnostic in `CsrfDefence.rejected` only — no
+`ApiSheriff-xxx` record is written for it.
 
 *The two back-channel records are now emitted.* `INFO.BACKCHANNEL_LOGOUT` (13) fires on every
 accepted logout token carrying the destroyed-session count, and `WARN.LOGOUT_TOKEN_REJECTED`

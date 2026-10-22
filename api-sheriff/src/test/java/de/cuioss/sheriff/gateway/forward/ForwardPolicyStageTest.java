@@ -1128,6 +1128,31 @@ class ForwardPolicyStageTest {
         }
 
         @Test
+        @DisplayName("a positive-list naming Cookie never copies the client's Cookie; only the policy decides")
+        void positiveListNamingCookieNeverCopiesIt() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            ForwardConfig namingCookie = allow(List.of("Cookie", "cookie", "X-Api-Version"));
+
+            ForwardPolicyStage.Result underNone = stage.process(cookieRequest(MIXED_HEADER), namingCookie,
+                    CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result gatewayOnlyUnderAll = stage.process(
+                    cookieRequest(SESSION_COOKIE + "=s; __Host-sheriff-binding=b"), namingCookie,
+                    cookies(CookieAllow.ALL), false);
+            ForwardPolicyStage.Result underList = stage.process(cookieRequest(MIXED_HEADER), namingCookie,
+                    cookies(named("theme")), false);
+
+            assertAll("the mode copy skips Cookie in every spelling the list names",
+                    () -> assertEquals(List.of(), valuesNamed(underNone.headers(), COOKIE),
+                            "under none no Cookie crosses, although the positive-list names it"),
+                    () -> assertEquals(List.of(), valuesNamed(gatewayOnlyUnderAll.headers(), COOKIE),
+                            "a header holding only gateway cookies is never copied verbatim"),
+                    () -> assertEquals(List.of("theme=dark"), valuesNamed(underList.headers(), COOKIE),
+                            "under a list exactly the policy's rebuilt header crosses"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(underNone.headers(), "X-Api-Version"),
+                            "control: the positive-list copy ran for the other name it lists"));
+        }
+
+        @Test
         @DisplayName("pairs are trimmed of spaces and tabs, and empty pairs are discarded")
         void pairsAreTrimmedAndEmptyPairsDiscarded() {
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());

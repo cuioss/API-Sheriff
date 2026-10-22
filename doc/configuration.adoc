@@ -3868,8 +3868,10 @@ exception, settled below.
 * *The proof.* An unsafe request (any method but `GET`, `HEAD` and `OPTIONS`) passes when its
   `Origin` is a trusted origin, or, with no `Origin`, when it carries `Sec-Fetch-Site:
   same-origin`. Anything else is refused `403` as a `CSRF_REJECTED` event before authentication
-  and before the upstream; the rejection names its disposition and never the `Origin` value. A
-  gRPC route answers the refusal as a trailers-only `PERMISSION_DENIED`.
+  and before the upstream. The refusal is recorded by the `CSRF_REJECTED` event counter and a
+  DEBUG diagnostic naming its disposition only -- no `ApiSheriff-xxx` log record is written, and the
+  `Origin` value is never logged. A gRPC route answers the refusal as a trailers-only
+  `PERMISSION_DENIED`.
 * *When it runs.* The check applies *only to an unsafe request that carries at least one cookie the
   route would forward* -- read after the gateway's own cookies are dropped and the policy filter has
   run, through the same reading stage 5 rebuilds the header from, so the check and the rebuild

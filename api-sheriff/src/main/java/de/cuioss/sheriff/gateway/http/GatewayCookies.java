@@ -142,18 +142,39 @@ public final class GatewayCookies {
      */
     public boolean namesGatewayCookie(String setCookieLine) {
         Objects.requireNonNull(setCookieLine, "setCookieLine");
-        int attributes = setCookieLine.indexOf(';');
-        String pair = attributes < 0 ? setCookieLine : setCookieLine.substring(0, attributes);
+        String pair = setCookiePair(setCookieLine);
         int separator = pair.indexOf('=');
-        String name = separator < 0 ? "" : trimBlanks(pair.substring(0, separator));
         String value = trimBlanks(separator < 0 ? pair : pair.substring(separator + 1));
-        return matchesPair(name, value);
+        return matchesPair(setCookieName(setCookieLine), value);
+    }
+
+    /**
+     * Reads the cookie name of a {@code Set-Cookie} line the way a user agent reads it — the text
+     * before the first {@code =} of the name-value pair, the pair being the text up to the first
+     * {@code ;}, with surrounding spaces and tabs removed. Shared with the response-direction
+     * {@code Set-Cookie} filter so the gateway-cookie test and the {@code allow} test read one name.
+     *
+     * @param setCookieLine the value of one {@code Set-Cookie} header line
+     * @return the cookie name, or the empty string for a nameless line — one whose pair holds no
+     *         {@code =}
+     */
+    public static String setCookieName(String setCookieLine) {
+        Objects.requireNonNull(setCookieLine, "setCookieLine");
+        String pair = setCookiePair(setCookieLine);
+        int separator = pair.indexOf('=');
+        return separator < 0 ? "" : trimBlanks(pair.substring(0, separator));
+    }
+
+    private static String setCookiePair(String setCookieLine) {
+        int attributes = setCookieLine.indexOf(';');
+        return attributes < 0 ? setCookieLine : setCookieLine.substring(0, attributes);
     }
 
     /**
      * Removes the spaces and horizontal tabs a user agent ignores around a cookie pair, name or value,
      * the trimming this class reads a pair with — shared with the request-direction rebuild of the
-     * {@code Cookie} header so both read a pair alike.
+     * {@code Cookie} header and the response-direction {@code Set-Cookie} filter so all three read a
+     * pair alike.
      *
      * @param text the text to trim
      * @return {@code text} without its leading and trailing spaces and horizontal tabs

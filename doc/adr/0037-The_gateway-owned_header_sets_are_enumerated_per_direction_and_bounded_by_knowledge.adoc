@@ -256,7 +256,9 @@ both sides of the comparison — plus exactly the block's `additional_origins`. 
 unsafe request passes when its `Origin` is trusted or, with no `Origin`, when it
 carries `Sec-Fetch-Site: same-origin`; anything else is refused `403` before
 authentication and before the upstream, and a gRPC route answers the refusal as a
-trailers-only `PERMISSION_DENIED`.
+trailers-only `PERMISSION_DENIED`. The refusal is recorded by the `CSRF_REJECTED`
+event counter and a DEBUG diagnostic only; no `ApiSheriff-xxx` log record is written
+for it.
 
 **The check applies only to an unsafe request that carries at least one cookie
 the route would forward** — read after the gateway-cookie removal and the policy

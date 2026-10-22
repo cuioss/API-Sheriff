@@ -120,15 +120,19 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * {@code forward.headers_allow}, {@code forward.headers_deny} or {@code forward.set_headers} naming
  * {@code Cookie} is refused, because only the {@code cookies} block decides which cookies cross.
  * <p>
- * The cookie-policy rules (owned by {@link CookieRules}) add seven more. Six are checked at every scope
- * the {@code cookies} block is declarable at: a gateway-scope {@code allow: all} is refused; a listed
- * name must be an RFC 6265 cookie name and must not be one of the gateway's own cookies;
- * {@code same_origin_check} and {@code additional_origins} are refused on a block whose {@code allow}
- * is {@code none}; every {@code additional_origins} entry must be a serialized origin; and a
- * route-scope block is refused on an asset or a redirect route. The seventh judges the resolved
- * block per route: a {@code protocol: websocket} route whose effective block forwards any cookie must
- * declare a non-empty {@code websocket.allowed_origins}, the allowlist that gates its upgrade in place
- * of a same-origin check. A declared {@code allow: []} is refused by the schema, not here.
+ * The cookie-policy rules (owned by {@link CookieRules}) add seven more. Four are checked at every
+ * scope the {@code cookies} block is declarable at — the gateway, each anchor, each enabled endpoint
+ * and each of its routes: a listed name must be an RFC 6265 cookie name; a listed name must not be
+ * one of the gateway's own cookies; {@code same_origin_check} and {@code additional_origins} are
+ * refused on a block whose {@code allow} is {@code none}; and every {@code additional_origins} entry
+ * must be a serialized origin. The other three do not run at every scope. The {@code allow: all}
+ * refusal reads the gateway-scope block only, since that mode is accepted on an anchor, an endpoint
+ * and a route. The terminal-route refusal reads route-level blocks only: a route-scope block is
+ * refused on an asset or a redirect route, while a broader block stays accepted. The seventh judges
+ * the resolved block per route: a {@code protocol: websocket} route whose effective block forwards
+ * any cookie must declare a non-empty {@code websocket.allowed_origins}, the allowlist that gates its
+ * upgrade in place of a same-origin check. A declared {@code allow: []} is refused by the schema, not
+ * here.
  * <p>
  * The session-cookie name refusal (owned by {@link OidcSessionRules}) adds one more: a declared
  * {@code oidc.session.cookie_name} must keep the {@code __Host-} guarantee the gateway-owned cookies

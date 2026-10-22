@@ -65,9 +65,11 @@ import de.cuioss.tools.logging.CuiLogger;
  * <p>
  * The defence is framework-agnostic — it consumes the {@link PipelineRequest} carrier and carries no
  * Vert.x / Quarkus types — and immutable, so a single instance is safely shared across threads.
- * Security-relevant rejections are logged with the rejection disposition only, never the raw offending
- * {@code Origin} value; the {@link EventType#CSRF_REJECTED} counter is the authoritative observability
- * signal for a rejection.
+ * A rejection is recorded by the {@link EventType#CSRF_REJECTED} event counter and a {@code DEBUG}
+ * diagnostic only — no {@code INFO} / {@code WARN} log record is written. The diagnostic carries the
+ * rejection disposition ({@code untrusted-origin} / {@code no-origin-proof}) only, never the raw
+ * offending {@code Origin} value; the counter is the authoritative observability signal for a
+ * rejection.
  *
  * @author API Sheriff Team
  * @since 1.0

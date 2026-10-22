@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.http;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -213,6 +214,19 @@ class GatewayCookiesTest {
         @DisplayName("Should not name a gateway cookie that appears only in a value or an attribute")
         void shouldNotNameGatewayCookieOutsideTheNamePosition(String line) {
             assertFalse(WITHOUT_OIDC.namesGatewayCookie(line));
+        }
+
+        @Test
+        @DisplayName("Should read the cookie name of a Set-Cookie line from its pair only, trimmed, empty when nameless")
+        void shouldReadSetCookieName() {
+            assertAll("the name a user agent reads",
+                    () -> assertEquals("theme", GatewayCookies.setCookieName("theme=dark; Path=/; Secure")),
+                    () -> assertEquals("theme", GatewayCookies.setCookieName(" \ttheme\t =dark")),
+                    () -> assertEquals("a", GatewayCookies.setCookieName("a=b=c")),
+                    () -> assertEquals("", GatewayCookies.setCookieName("=theme=dark; Path=/")),
+                    () -> assertEquals("", GatewayCookies.setCookieName("bare; Domain=x=y"),
+                            "a pair without = is nameless, whatever an attribute holds"),
+                    () -> assertEquals("", GatewayCookies.setCookieName("")));
         }
 
         @Test

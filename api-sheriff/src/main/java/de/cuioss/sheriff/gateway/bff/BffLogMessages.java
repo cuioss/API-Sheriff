@@ -21,8 +21,9 @@ import lombok.experimental.UtilityClass;
 
 /**
  * DSL-style {@link LogRecord} catalogue for the Backend-for-Frontend {@code require: session}
- * surface — the session lifecycle, transparent token refresh, CSRF defence, logout events, and the
- * confidential client's own key material.
+ * surface — the session lifecycle, transparent token refresh, logout events, and the confidential
+ * client's own key material. A CSRF / same-origin rejection has no record here: it is recorded by
+ * the {@code CSRF_REJECTED} event counter and a {@code DEBUG} diagnostic only.
  * <p>
  * Structured {@code INFO} (1-99) and {@code WARN} (100-199) messages carry the shared
  * {@code ApiSheriff} prefix and a stable numeric identifier, so they are greppable and assertable.
@@ -32,7 +33,7 @@ import lombok.experimental.UtilityClass;
  * <p>
  * <strong>No sensitive data is logged.</strong> Session subjects ({@code sub}), IdP session ids
  * ({@code sid}), token material, and raw offending values never appear in a template: a rejection
- * records only its non-sensitive <em>disposition</em> ({@code untrusted-origin} / {@code signature}
+ * records only its non-sensitive <em>disposition</em> ({@code signature-rejected} / {@code malformed}
  * / …). Exception-bearing
  * {@code WARN}s pass the throwable first, per the CUI logging contract; callers must not attach a
  * raw, unsanitized IdP exception whose message could re-inject untrusted content. {@code DEBUG} /
@@ -150,23 +151,10 @@ public final class BffLogMessages {
     }
 
     /**
-     * Warn-level messages (WARN range 100-199; this catalogue owns 110-114, 127, 130-132, 134 and 135).
+     * Warn-level messages (WARN range 100-199; this catalogue owns 111-114, 127, 130-132, 134 and 135).
      */
     @UtilityClass
     public static final class WARN {
-
-        /**
-         * The same-origin proof rejected an unsafe-method request — either the fixed CSRF defence of
-         * a {@code require: session} route, or the same-origin check of a cookie-forwarding route on
-         * an unsafe request carrying a cookie the route would forward. Records the non-sensitive
-         * rejection disposition ({@code untrusted-origin} / {@code no-origin-proof}) only — never the
-         * raw offending {@code Origin} value.
-         */
-        public static final LogRecord CSRF_REJECTED = LogRecordModel.builder()
-                .prefix(PREFIX)
-                .identifier(110)
-                .template("CSRF defence rejected an unsafe-method request: %s")
-                .build();
 
         /**
          * A transparent token refresh ended with its session destroyed; the caller

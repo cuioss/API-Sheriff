@@ -1363,7 +1363,8 @@ logged as `WARN ApiSheriff-139`. The instance trusts the origin the request was 
 `PipelineRequest.scheme()`, `host()` and `authorityPort()`, rendered `scheme://host[:port]` with a
 default port dropped on both sides -- plus the block's exact `additional_origins`. Its proof is the
 session-route defence's: a trusted `Origin`, or with no `Origin` a `Sec-Fetch-Site: same-origin`;
-anything else is `CSRF_REJECTED` (`403`, a trailers-only `PERMISSION_DENIED` on gRPC). The edge asks
+anything else is `CSRF_REJECTED` (`403`, a trailers-only `PERMISSION_DENIED` on gRPC), recorded by
+that event counter and a DEBUG diagnostic only -- no `ApiSheriff-xxx` log record. The edge asks
 for the proof right after the session CSRF gate and before authentication, and only when the method
 is unsafe *and* `admittedCookiePairs` -- the reading stage 5 rebuilds the header from -- is non-empty
 for the request. A request that carries no forwardable cookie hands the upstream no ambient browser

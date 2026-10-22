@@ -96,7 +96,7 @@ final class UpstreamSetCookieFilter {
         if (!policy.forwardsAny() || gatewayCookies.namesGatewayCookie(headerValue)) {
             return null;
         }
-        if (!admits(policy.allow(), cookieName(headerValue))) {
+        if (!admits(policy.allow(), GatewayCookies.setCookieName(headerValue))) {
             return null;
         }
         return withoutDomain(headerValue);
@@ -111,17 +111,6 @@ final class UpstreamSetCookieFilter {
             return allow instanceof CookieAllow.All;
         }
         return allow.admits(cookieName);
-    }
-
-    /**
-     * The cookie name of a {@code Set-Cookie} line: the text before the first {@code =} of its pair,
-     * spaces and tabs around it removed; empty for a nameless line.
-     */
-    private static String cookieName(String setCookieLine) {
-        int attributes = setCookieLine.indexOf(ATTRIBUTE_SEPARATOR);
-        String pair = attributes < 0 ? setCookieLine : setCookieLine.substring(0, attributes);
-        int separator = pair.indexOf(NAME_VALUE_SEPARATOR);
-        return separator < 0 ? "" : trimBlanks(pair.substring(0, separator));
     }
 
     /**
@@ -154,23 +143,6 @@ final class UpstreamSetCookieFilter {
     private static boolean isDomain(String attribute) {
         int separator = attribute.indexOf(NAME_VALUE_SEPARATOR);
         String name = separator < 0 ? attribute : attribute.substring(0, separator);
-        return DOMAIN_ATTRIBUTE.equalsIgnoreCase(trimBlanks(name));
-    }
-
-    /** Removes the spaces and horizontal tabs a user agent ignores around a cookie name or attribute name. */
-    private static String trimBlanks(String text) {
-        int start = 0;
-        int end = text.length();
-        while (start < end && isBlank(text.charAt(start))) {
-            start++;
-        }
-        while (end > start && isBlank(text.charAt(end - 1))) {
-            end--;
-        }
-        return text.substring(start, end);
-    }
-
-    private static boolean isBlank(char character) {
-        return character == ' ' || character == '\t';
+        return DOMAIN_ATTRIBUTE.equalsIgnoreCase(GatewayCookies.trimBlanks(name));
     }
 }

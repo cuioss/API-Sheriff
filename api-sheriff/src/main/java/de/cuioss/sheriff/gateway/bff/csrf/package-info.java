@@ -28,7 +28,9 @@
  * On unsafe methods (everything except {@code GET} / {@code HEAD} / {@code OPTIONS}) both uses accept
  * only an {@code Origin} whose full origin (scheme + host + port) is trusted or, when {@code Origin} is
  * absent, a {@code Sec-Fetch-Site: same-origin} header; everything else is rejected {@code 403} with a
- * {@link de.cuioss.sheriff.gateway.events.EventType#CSRF_REJECTED} event.
+ * {@link de.cuioss.sheriff.gateway.events.EventType#CSRF_REJECTED} event. A rejection is recorded by
+ * that event counter and a {@code DEBUG} diagnostic only; no {@code INFO} / {@code WARN} log record
+ * is written for it.
  * <p>
  * The class is framework-agnostic and immutable; the session runtime wires the session instance into
  * the request edge, and route-table assembly builds one cookie-forwarding instance per qualifying
