@@ -2,8 +2,8 @@
   "id": "PLAN-V02-46",
   "slug": "upstream-close-after-early-answer",
   "workstream": "WS-03",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "plan-v02-46-upstream-close-after-early-answer",
   "pr": "",
   "landing": "",
   "seq": 46

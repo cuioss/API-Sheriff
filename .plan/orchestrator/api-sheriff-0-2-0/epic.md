@@ -427,7 +427,9 @@ doc-only or build-light plan for the second and third slots.
   already carries the wire-or-remove decision for both keys, so no spec here, per the one-owner rule. The
   finding's comparison (connect defaults 3 s Caddy, 5 s Envoy, 30 s Traefik and Spring Cloud Gateway,
   60 s NGINX and Kong; HAProxy warns at boot for missing timeouts) is in the archived message for
-  PLAN-29's outline. `PLAN-V02-45` D3 (the total-body bound) coordinates with that decision. PLAN-29 is
+  PLAN-29's outline. `PLAN-V02-45` (#506) shipped a fixed 25 s request-body deadline and a fixed
+  five-minute gRPC stream-idle bound (ADR-0060 Amendment A2), neither configurable; a per-route
+  `read_timeout_ms` wired by PLAN-29 has to state how it relates to them. PLAN-29 is
   held behind this epic's refactor chain (kidicap's ruling).
 
 - **`PLAN-V02-21` DOCUMENTATION LEFTOVERS, NONE STAGED** (added 2026-10-13, from the landing).
