@@ -170,10 +170,12 @@ endpoint:
     # MODE: forward-all on both dimensions — no forward block at all. This is the
     # baseline an ordinary backend behind an authorised route gets, and the route exists
     # to prove what still does NOT cross under it: the gateway-owned never-forward set
-    # (Cookie absolutely, Authorization absent any positive-list) and the regenerated
-    # forwarding names together with their underscore/alias spellings. A route with no
-    # forward block is the shape most deployments will actually ship, so it is asserted
-    # rather than assumed.
+    # (Authorization absent any positive-list) and the regenerated forwarding names together
+    # with their underscore/alias spellings. Cookie is not a forward-mode decision at all: it
+    # crosses only as a route's cookies policy admits it, and this route declares no cookies
+    # block, so it resolves the default allow: none and forwards no browser cookie. A route
+    # with no forward block is the shape most deployments will actually ship, so it is
+    # asserted rather than assumed.
     - id: httpbin-forward-all
       match:
         path_prefix: /proxy/forward-all

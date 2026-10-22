@@ -2043,7 +2043,10 @@ and `ResponseStageTest` pin the response predicate, the `Domain` removal and the
 `CsrfDefenceTest` and `RouteTableBuilderTest` pin the check, its trusted origins and the
 `ApiSheriff-123` WARN; `GatewayEdgeCookiePolicyTest` drives all of it over a live edge on the HTTP,
 gRPC and WebSocket paths; `WebSocketRelayStageTest` pins that no upstream `Set-Cookie` crosses an
-upgrade.
+upgrade. `CookieForwardingPolicyIT` proves the HTTP path on the native image against a real upstream:
+each mode in both directions, the session cookie withheld under `all`, the `Domain` removal, and the
+same-origin check refusing a cross-site request that carries a forwarded cookie while forwarding the
+same request without one.
 
 *Residual risk (accepted) -- `allow: all` below the gateway scope.* An operator who declares `all` on
 an anchor, an endpoint or a route accepts that every upstream it reaches receives every application

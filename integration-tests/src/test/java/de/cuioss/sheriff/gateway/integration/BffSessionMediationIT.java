@@ -38,7 +38,9 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The mediated route proxies to the go-httpbin echo backend, so the forwarded request is fully
  * observable: {@code headers.Authorization} carries the injected bearer (Authorization is allow-listed
- * on the route) and {@code headers.Cookie} is absent (Cookie is deny-by-default and never forwarded).
+ * on the route) and {@code headers.Cookie} is absent: the session cookie is a gateway cookie, which
+ * crosses under no cookies policy, and the route declares no cookies block, so it resolves the default
+ * {@code cookies.allow: none} and forwards no browser cookie. No forward mode re-admits {@code Cookie}.
  * <p>
  * The sibling {@code /app/norelay} route resolves {@code auth.token_relay: false}: the same
  * session is required, but no {@code Authorization} header reaches the origin — neither the mediated

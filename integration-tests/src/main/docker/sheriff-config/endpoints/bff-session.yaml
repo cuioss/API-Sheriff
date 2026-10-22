@@ -18,11 +18,13 @@
 # echo it back with this entry absent. The entry is kept because it exercises the single
 # re-admittable member of the never-forward set (ADR-0037) and pins that the mediated bearer
 # still wins over a re-admitted client value. Cookie
-# is NOT listed — but note that its absence from this list is not what withholds it. Cookie is
-# an absolute member of the gateway-owned never-forward set (ADR-0037): no mode and no list
-# re-admits it, so the browser session cookie would be stripped even on a route that named it
-# or on one with no forward block at all. The two halves of the mediation proof therefore rest
-# on the gateway's own set rather than on this route's diligence, which is the stronger claim.
+# is NOT listed — but note that its absence from this list is not what withholds it. No forward
+# list decides Cookie (one naming it is refused at boot); the route's cookies policy does, and the
+# browser session cookie is a gateway cookie, withheld under every policy (ADR-0037) — it would
+# stay at the gateway even on a route declaring cookies.allow: all. This route declares no cookies
+# block, so it resolves the default allow: none and forwards no browser cookie at all. The two
+# halves of the mediation proof therefore rest on the gateway's own rules rather than on this
+# route's diligence, which is the stronger claim.
 endpoint:
   id: bff-session
   enabled: true
