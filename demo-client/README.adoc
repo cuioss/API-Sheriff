@@ -7,7 +7,7 @@ A dependency-free demo single-page application for the API Sheriff BFF, plus a P
 drives it in a real browser against the running `integration-tests` stack.
 
 The SPA is served *by the gateway itself* as a public asset, so it is same-origin with the reserved
-`/auth` paths and exercises the genuine browser-facing contract. The suite runs the same specs
+`/bff/*` paths and exercises the genuine browser-facing contract. The suite runs the same specs
 against *both* session modes, which turns "the two variants are browser-observably identical" into an
 executable assertion rather than a claim -- see
 link:doc/playwright-suite.adoc#_why_the_demo_exists[Why the Demo Exists].
@@ -41,21 +41,21 @@ plain `clean` does not run it. See
 link:doc/playwright-suite.adoc#_running_the_suite_locally[Running the Suite Locally].
 
 When iterating on specs, hold the stack up and re-run only the tests. `playwright.config.js` takes
-its two base URLs from the environment and fails loudly when either is unset; the `e2e-demo` profile
-supplies them from `demo-client/pom.xml`, so a standalone run has to export them itself:
+its two base URLs from the environment and fails loudly when either is unset. The `e2e-demo` profile
+supplies them from `demo-client/pom.xml`; for a standalone run, the start script prints the suite
+command with both set, derived from the ports the Compose model publishes. From the repository root:
 
 [source,bash]
 ----
 demo-client/scripts/start-dev-environment.sh
 
-# Mirrors the demo.baseUrl.server and demo.baseUrl.cookie properties in demo-client/pom.xml,
-# which remain the single source of these addresses.
-export PLAYWRIGHT_BASE_URL_SERVER=https://localhost:10443
-export PLAYWRIGHT_BASE_URL_COOKIE=https://localhost:10445
+# Run the "Run the suite" line the script prints. Its shape:
+(cd demo-client && PLAYWRIGHT_BASE_URL_SERVER=https://localhost:<server-port> PLAYWRIGHT_BASE_URL_COOKIE=https://localhost:<cookie-port> npm run test)
 
-cd demo-client && npm run test
 demo-client/scripts/stop-dev-environment.sh
 ----
+
+The subshell leaves you at the repository root, so the stop script runs from there as written.
 
 `npm run test`, never `npx` -- and no Maven npm execution runs outside `-Pe2e-demo`: a default
 reactor build downloads no Node, runs no npm command, starts no container and produces no artifact.
