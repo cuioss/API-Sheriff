@@ -96,9 +96,14 @@ class ReleaseGuardPinDocsContractTest {
     private static final Pattern DOCUMENTED_PIN = Pattern.compile(
             "cuioss/cuioss-organization/(\\.github/workflows/[A-Za-z0-9._-]+\\.yml)@([0-9a-f]{7,40})\\b");
 
-    /** The {@code uses:} line of a job calling a cuioss-organization reusable workflow at a full SHA. */
+    /**
+     * The {@code uses:} line of a job calling a cuioss-organization reusable workflow at a full SHA. The ref
+     * must end there — at the line end or a comment — so a ref that merely starts with 40 hex characters, such
+     * as {@code <sha>-preview}, is not read as a commit pin.
+     */
     private static final Pattern PINNED_USES = Pattern.compile(
-            "(?m)^\\s+uses:\\s*cuioss/cuioss-organization/(\\.github/workflows/[A-Za-z0-9._-]+\\.yml)@([0-9a-f]{40})\\b");
+            "(?m)^\\s+uses:\\s*cuioss/cuioss-organization/(\\.github/workflows/[A-Za-z0-9._-]+\\.yml)@([0-9a-f]{40})"
+                    + "(?=[ \\t]*(?:#|$))");
 
     private static final String CONTROL_FULL_SHA = "0123456789abcdef0123456789abcdef01234567";
 
@@ -133,6 +138,13 @@ class ReleaseGuardPinDocsContractTest {
                 uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@%s # v1.0.0
                 uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@%s # v1.0.0
             """.formatted(CONTROL_FULL_SHA, CONTROL_OTHER_SHA);
+
+    /** A {@code release} job whose ref starts with a full SHA but names a branch or tag, not a commit. */
+    private static final String CONTROL_SUFFIXED_REF = """
+            jobs:
+              release:
+                uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@%s-preview # v1.0.0
+            """.formatted(CONTROL_FULL_SHA);
 
     private static final String CONTROL_MATCHING_DOC =
             "The release job pins `cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@0123456`.";
@@ -195,22 +207,28 @@ class ReleaseGuardPinDocsContractTest {
     }
 
     /**
-     * Matched control over the workflow reader's two refusals: a workflow without a {@code release} job, and
-     * a {@code release} job that does not carry exactly one pin, each fail rather than yield a pin to compare.
+     * Matched control over the workflow reader's refusals: a workflow without a {@code release} job, a
+     * {@code release} job that does not carry exactly one pin, and a ref that only starts with a full SHA each
+     * fail rather than yield a pin to compare.
      */
     @Test
-    @DisplayName("The workflow reader refuses a workflow without a release job and a release job without exactly one pin")
-    void workflowReaderRefusesAMissingReleaseJobAndAnAmbiguousPin() {
+    @DisplayName("The workflow reader refuses a missing release job, an ambiguous pin and a ref that is not a commit SHA")
+    void workflowReaderRefusesAMissingReleaseJobAnAmbiguousPinAndANonCommitRef() {
         AssertionFailedError noReleaseJob = assertThrows(AssertionFailedError.class,
                 () -> releaseJobPin(CONTROL_NO_RELEASE_JOB, "the job-less control"));
         AssertionFailedError twoPins = assertThrows(AssertionFailedError.class,
                 () -> releaseJobPin(CONTROL_TWO_PINS, "the two-pin control"));
+        AssertionFailedError suffixedRef = assertThrows(AssertionFailedError.class,
+                () -> releaseJobPin(CONTROL_SUFFIXED_REF, "the suffixed-ref control"));
 
         assertAll("workflow reader refusals",
                 () -> assertTrue(noReleaseJob.getMessage().contains("no `release:` job"),
                         "a workflow without a release job must be refused as such: " + noReleaseJob.getMessage()),
                 () -> assertTrue(twoPins.getMessage().contains("expected exactly one"),
-                        "a release job with two pins must be refused as ambiguous: " + twoPins.getMessage()));
+                        "a release job with two pins must be refused as ambiguous: " + twoPins.getMessage()),
+                () -> assertTrue(suffixedRef.getMessage().contains("carries 0"),
+                        "a ref that only starts with a full SHA must not be read as a commit pin: "
+                                + suffixedRef.getMessage()));
     }
 
     // --- extraction helpers ----------------------------------------------------------------------
