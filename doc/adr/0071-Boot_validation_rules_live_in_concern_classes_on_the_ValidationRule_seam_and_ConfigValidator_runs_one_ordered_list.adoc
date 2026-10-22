@@ -127,9 +127,11 @@ link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_sh
   list, visible in one diff.
 * A rule written but not run fails its own tests, because the tests run the list rather than the
   method.
-* An entry that carries a rule body of its own, a rule registered without its row in the concern map,
-  and a row naming a rule not registered through its class all fail the build, so the map names
-  exactly the rules the list registers, each under the class it is called through.
+* An entry that registers no concern-class rule or more than one, a rule registered without its row
+  in the concern map, and a row naming a rule not registered through its class all fail the build, so
+  the map names exactly the rules the list registers, each under the class it is called through. The
+  guard counts the concern-class calls in an entry and reads nothing else in it, so a rule body written
+  in place of that call fails it, while statements written beside the one call do not.
 * The validator stays framework-free: the list is plain Java, assembled at class initialisation, and
   the validator can be constructed with a custom rule list for the offline check and for tests.
 
