@@ -102,9 +102,11 @@ public final class ApiSheriffLogMessages {
 
         /**
          * A proxied request's body made no progress for the request-body idle timeout while its
-         * dispatch held an upstream connection; the upstream request was reset, releasing the
-         * connection, and the client was answered {@code 408}. Records the route id and the fixed
-         * timeout in seconds only — never body content or headers.
+         * dispatch held an upstream connection; the upstream request was reset, ending the request's
+         * hold on that connection, and the client was answered {@code 408}. On HTTP/1.1 the connection
+         * returns to the pool only when no body chunk had been forwarded; a partly sent request closes
+         * it. Records the route id and the fixed timeout in seconds only — never body content or
+         * headers.
          * <p>
          * Latched per route to bound the log volume: the first occurrence on a route is recorded and
          * every repeat on that route is a {@code DEBUG} diagnostic, so the log holds one record per

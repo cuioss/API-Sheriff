@@ -92,8 +92,9 @@ import org.junit.jupiter.api.Test;
 /**
  * The request-body bounds of the edge, driven over a live Vert.x edge against a loopback stub upstream:
  * an upload whose body stops arriving while its dispatch holds an upstream connection is answered
- * {@code 408} with the input-validation problem document, and the upstream connection it held is
- * released at once; an upload whose body keeps arriving too slowly to end within the request-body
+ * {@code 408} with the input-validation problem document, and a body that never arrived sent no head,
+ * so the reset leaves the upstream connection it held reusable at once; an upload whose body keeps
+ * arriving too slowly to end within the request-body
  * deadline is ended there, whatever the upstream does with it; and the time an upload waits for a pooled
  * upstream connection is not counted against its idle timeout, but is counted against its deadline, so an
  * upload that obtains its connection only after its deadline passed is ended as soon as its body is read.
