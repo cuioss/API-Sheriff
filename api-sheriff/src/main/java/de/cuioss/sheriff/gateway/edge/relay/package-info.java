@@ -17,6 +17,14 @@
  * Streaming an upstream answer back to the client: the response relay, the filtering of the
  * upstream's {@code Set-Cookie} lines, the gRPC status mapping, and the opaque WebSocket relay.
  * <p>
+ * <strong>The {@code Set-Cookie} filter is driven by the route's {@code cookies} policy.</strong> A
+ * line naming one of the gateway's own cookies is dropped under every mode; {@code allow: none}, the
+ * default, drops every line; a list relays only the lines setting a listed cookie; {@code allow: all}
+ * relays the rest. A relayed line loses its {@code Domain} attribute and keeps everything else as
+ * sent. One shared predicate of the response relay applies the filter to the HTTP relay's headers and
+ * to the gRPC relay's leading headers and trailers alike; the WebSocket relay relays no upstream
+ * {@code Set-Cookie} line, on an accepted or a refused upgrade.
+ * <p>
  * <strong>Contents.</strong> {@link de.cuioss.sheriff.gateway.edge.relay.ResponseStage} with its
  * package-private {@code UpstreamSetCookieFilter},
  * {@link de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper} and

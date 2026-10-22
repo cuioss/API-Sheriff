@@ -64,6 +64,7 @@ import de.cuioss.sheriff.gateway.asset.PathConfinement;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -2716,8 +2717,8 @@ class DispatchStageTest {
             }
             clientContext.runOnContext(_ -> {
                 try {
-                    responseStage.relay(response, request.response(), false, null, Map.of(), Map.of(),
-                            Supplier::get)
+                    responseStage.relay(response, request.response(), false, null, CookiesConfig.NONE, Map.of(),
+                            Map.of(), Supplier::get)
                             .onFailure(failure -> abandon(request, failure));
                 } catch (IllegalStateException relayStartFailure) {
                     abandon(request, relayStartFailure);

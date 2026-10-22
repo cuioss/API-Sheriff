@@ -44,6 +44,8 @@ import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
 import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -93,8 +95,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <ul>
  *   <li>a response the gateway adds a cookie to is {@code Cache-Control: no-store}, whatever the
  *       upstream declared, and a response it adds none to keeps the upstream's cache policy;</li>
- *   <li>an upstream response cannot set a cookie the gateway owns, while every other
- *       {@code Set-Cookie} line of the upstream is relayed.</li>
+ *   <li>an upstream response cannot set a cookie the gateway owns under any {@code cookies} policy;
+ *       every other {@code Set-Cookie} line of the upstream is relayed by the route's policy. The
+ *       relaying routes here declare {@code cookies.allow: all}, so each of their other lines
+ *       arrives; a route declaring no block resolves the default {@code allow: none} and relays no
+ *       upstream line at all.</li>
  * </ul>
  * The stub upstream answers every request with a cacheable policy and with whatever
  * {@code Set-Cookie} lines the case configures, so each rule is observed next to its control.
@@ -132,6 +137,8 @@ class GatewayEdgeGatewayCookieTest {
     /** A login this long ago makes the activity cookie due; the gateway issues one at most every 60 s. */
     private static final long ACTIVITY_COOKIE_DUE = 120;
     private static final long INSIDE_THE_ACTIVITY_INTERVAL = 5;
+    /** The {@code cookies} block of every relaying route: every cookie but the gateway's crosses. */
+    private static final CookiesConfig ALLOW_ALL = new CookiesConfig(CookieAllow.ALL, null, null);
 
     /** The {@code Set-Cookie} lines the stub upstream adds to its next responses. */
     private final List<String> upstreamSetCookies = new CopyOnWriteArrayList<>();
@@ -431,20 +438,24 @@ class GatewayEdgeGatewayCookieTest {
     }
 
     @Nested
-    @DisplayName("a gateway without a session runtime still owns its reserved cookies and relays every other upstream Set-Cookie line")
+    @DisplayName("a gateway without a session runtime still owns its reserved cookies; the route's policy decides the rest")
     class BearerOnly {
 
-        @Test
-        @DisplayName("the session, login-binding and logout-state cookies are dropped; the upstream's own arrive on their own lines and in order")
-        void dropsReservedCookiesAndRelaysTheRest() throws Exception {
-            startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
-                    List.of(httpRoute("open", OPEN_ROUTE, Require.NONE)));
+        private void upstreamSetsReservedCookiesAndItsOwn() {
             upstreamSetCookies.addAll(List.of(
                     APP_COOKIE,
                     SESSION_COOKIE_NAME + "=from-upstream; Path=/",
                     BINDING_COOKIE_NAME + "=from-upstream; Path=/",
                     LOGOUT_STATE_COOKIE_NAME + "=from-upstream; Path=/",
                     THEME_COOKIE));
+        }
+
+        @Test
+        @DisplayName("allow: all — the session, login-binding and logout-state cookies are dropped; the upstream's own arrive on their own lines and in order")
+        void dropsReservedCookiesAndRelaysTheRest() throws Exception {
+            startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
+                    List.of(httpRoute("open", OPEN_ROUTE, Require.NONE, ALLOW_ALL)));
+            upstreamSetsReservedCookiesAndItsOwn();
 
             Answer answer = get(OPEN_ROUTE + "/page", null);
 
@@ -453,6 +464,22 @@ class GatewayEdgeGatewayCookieTest {
                     () -> assertEquals(List.of(APP_COOKIE, THEME_COOKIE), answer.setCookies()),
                     () -> assertEquals(List.of(UPSTREAM_CACHE_POLICY), answer.cacheControl(),
                             "the gateway added no cookie, so the upstream's cache policy is kept"));
+        }
+
+        @Test
+        @DisplayName("default none — a route declaring no cookies block relays no upstream Set-Cookie line at all")
+        void defaultNoneDropsEveryLine() throws Exception {
+            startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
+                    List.of(httpRoute("open", OPEN_ROUTE, Require.NONE, null)));
+            upstreamSetsReservedCookiesAndItsOwn();
+
+            Answer answer = get(OPEN_ROUTE + "/page", null);
+
+            assertAll("under the default none app=1 and theme=dark are dropped beside the reserved names",
+                    () -> assertEquals(200, answer.status(), "the request is still proxied"),
+                    () -> assertEquals(List.of(), answer.setCookies()),
+                    () -> assertEquals(List.of(UPSTREAM_CACHE_POLICY), answer.cacheControl(),
+                            "the upstream's cache policy is kept"));
         }
     }
 
@@ -714,27 +741,34 @@ class GatewayEdgeGatewayCookieTest {
         return SESSION_COOKIE_NAME + "=" + handle;
     }
 
+    /** Every route relaying the upstream's cookies: each carries {@code cookies.allow: all}. */
     private List<Route> allRoutes() {
         return List.of(
-                httpRoute("session", SESSION_ROUTE, Require.SESSION),
-                httpRoute("open", OPEN_ROUTE, Require.NONE),
+                httpRoute("session", SESSION_ROUTE, Require.SESSION, ALLOW_ALL),
+                httpRoute("open", OPEN_ROUTE, Require.NONE, ALLOW_ALL),
                 Route.builder()
                         .id("session-grpc")
                         .protocol(Protocol.GRPC)
                         .match(MatchConfig.builder().pathPrefix(GRPC_ROUTE).build())
                         .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                         .effectiveAllowedMethods(Set.of(HttpMethod.POST))
+                        .effectiveCookies(ALLOW_ALL)
                         .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                         .build());
     }
 
-    private Route httpRoute(String id, String pathPrefix, Require require) {
+    /**
+     * @param cookies the route's {@code cookies} block, or {@code null} for a route declaring none,
+     *                which resolves the default {@code allow: none}
+     */
+    private Route httpRoute(String id, String pathPrefix, Require require, @Nullable CookiesConfig cookies) {
         return Route.builder()
                 .id(id)
                 .protocol(Protocol.HTTP)
                 .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                .effectiveCookies(cookies)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                 .build();
     }

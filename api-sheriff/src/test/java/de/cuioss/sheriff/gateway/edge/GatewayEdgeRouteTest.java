@@ -66,6 +66,7 @@ import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -495,7 +496,7 @@ class GatewayEdgeRouteTest {
                     .compose(response -> response.end().map(response))
                     .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(
                             GatewayCookies.of(GatewayConfig.builder().version(1).build()))
-                            .relay(ended, ctx.response(), false, null, Map.of(), Map.of(), end))));
+                            .relay(ended, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(), end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the relaying front server to start listening");
@@ -624,7 +625,8 @@ class GatewayEdgeRouteTest {
                     }))
                     .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
                             end -> new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()))
-                                    .relay(received, ctx.response(), false, null, Map.of(), Map.of(), end)
+                                    .relay(received, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(),
+                                            end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),

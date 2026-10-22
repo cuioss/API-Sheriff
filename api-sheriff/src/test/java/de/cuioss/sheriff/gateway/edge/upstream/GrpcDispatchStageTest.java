@@ -45,6 +45,7 @@ import java.util.function.Supplier;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -322,7 +323,7 @@ class GrpcDispatchStageTest {
                             "/svc.Service/Method")
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
-                            .relayWithTrailers(upResp, clientReq.response(), false, Map.of(),
+                            .relayWithTrailers(upResp, clientReq.response(), false, CookiesConfig.NONE, Map.of(),
                                     Map.of(FRAME_OPTIONS, "DENY", CSP, GATEWAY_POLICY), Supplier::get,
                                     ResponseStage.GrpcStreamIdleBound.on(vertx))
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
@@ -590,7 +591,8 @@ class GrpcDispatchStageTest {
                 HttpClientResponse upstream = stage.dispatch(route, HttpMethod.POST, path, Map.of(),
                         idleBound.watch(inbound), -1L);
                 TerminalDispatch.relayOnEventLoop(ctx, List.of(), upstream, end -> responseStage
-                        .relayWithTrailers(upstream, ctx.response(), false, Map.of(), Map.of(), end, idleBound));
+                        .relayWithTrailers(upstream, ctx.response(), false, route.effectiveCookies(), Map.of(),
+                                Map.of(), end, idleBound));
             });
         }
 

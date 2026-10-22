@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import java.lang.annotation.Annotation;
 import java.nio.charset.StandardCharsets;
@@ -59,6 +60,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.http.WebSocket;
@@ -94,6 +96,12 @@ import org.junit.jupiter.params.provider.EnumSource;
  * The HTTP/2 case pins the transport behaviour the rebuild rests on: a client may send its cookies as
  * several {@code cookie} fields, and the HTTP server joins them into one value before stage 5 reads it,
  * so every allowed cookie is forwarded whichever field it travelled in.
+ * <p>
+ * The response direction follows the same block. The stub upstream answers every request with four
+ * {@code Set-Cookie} lines — two listed cookies carrying a {@code Domain}, one unlisted cookie and one
+ * gateway cookie — and a gRPC call additionally with three {@code Set-Cookie} trailers. On the HTTP
+ * relay, the gRPC leading headers and the gRPC trailers alike the client receives only the lines the
+ * policy admits, the gateway's never, and none of them with a {@code Domain} attribute.
  */
 @DisplayName("GatewayEdgeRoute — the upstream Cookie header follows the route's cookies policy on every dispatch path")
 @Tag("isolated-fork")
@@ -110,23 +118,45 @@ class GatewayEdgeCookiePolicyTest {
     private static final String BROWSER_COOKIES = String.join("; ", THEME, GATEWAY_SESSION, APP, OTHER, GATEWAY_BINDING);
     /** The origin every WebSocket route admits on its handshake. */
     private static final String WS_ORIGIN = "https://gw.example.com";
+    private static final String SET_COOKIE = "Set-Cookie";
+    private static final String GRPC_CONTENT_TYPE = "application/grpc";
+    /** The upstream's leading {@code Set-Cookie} lines, each listed cookie carrying a {@code Domain}. */
+    private static final String THEME_SET = "theme=dark; Domain=example.com; Path=/";
+    private static final String APP_SET = "app=1; domain = .example.com";
+    private static final String OTHER_SET = "other=x";
+    private static final String GATEWAY_SET = GatewayCookies.RESERVED_PREFIX + "session=forged; Path=/";
+    /** The same lines as the client receives them: every {@code Domain} attribute removed. */
+    private static final String THEME_RELAYED = "theme=dark; Path=/";
+    private static final String APP_RELAYED = "app=1";
+    /** The upstream's {@code Set-Cookie} trailers on a gRPC response. */
+    private static final String THEME_TRAILER = "theme=trailer; Domain=example.com";
+    private static final String OTHER_TRAILER = "other=trailer";
+    private static final String GATEWAY_TRAILER = GatewayCookies.RESERVED_PREFIX + "binding=forged";
+    private static final String THEME_TRAILER_RELAYED = "theme=trailer";
 
     /**
      * The three {@code cookies.allow} modes, each with the {@code Cookie} header fields the upstream
-     * must receive for {@link #BROWSER_COOKIES}.
+     * must receive for {@link #BROWSER_COOKIES}, and the upstream {@code Set-Cookie} lines and trailers
+     * the client must receive back.
      */
     enum Mode {
-        NONE(CookiesConfig.NONE, List.of()),
+        NONE(CookiesConfig.NONE, List.of(), List.of(), List.of()),
         LIST(CookiesConfig.builder().allow(new CookieAllow.Named(List.of("theme", "app"))).build(),
-                List.of(THEME + "; " + APP)),
-        ALL(CookiesConfig.builder().allow(CookieAllow.ALL).build(), List.of(THEME + "; " + APP + "; " + OTHER));
+                List.of(THEME + "; " + APP), List.of(THEME_RELAYED, APP_RELAYED), List.of(THEME_TRAILER_RELAYED)),
+        ALL(CookiesConfig.builder().allow(CookieAllow.ALL).build(), List.of(THEME + "; " + APP + "; " + OTHER),
+                List.of(THEME_RELAYED, APP_RELAYED, OTHER_SET), List.of(THEME_TRAILER_RELAYED, OTHER_TRAILER));
 
         private final CookiesConfig cookies;
         private final List<String> expectedFields;
+        private final List<String> expectedSetCookies;
+        private final List<String> expectedTrailerSetCookies;
 
-        Mode(CookiesConfig cookies, List<String> expectedFields) {
+        Mode(CookiesConfig cookies, List<String> expectedFields, List<String> expectedSetCookies,
+                List<String> expectedTrailerSetCookies) {
             this.cookies = cookies;
             this.expectedFields = expectedFields;
+            this.expectedSetCookies = expectedSetCookies;
+            this.expectedTrailerSetCookies = expectedTrailerSetCookies;
         }
 
         String segment() {
@@ -158,7 +188,14 @@ class GatewayEdgeCookiePolicyTest {
                 .webSocketHandler(ws -> upstreamCookieFields.add(List.copyOf(ws.headers().getAll(COOKIE))))
                 .requestHandler(request -> request.body().onComplete(ignored -> {
                     upstreamCookieFields.add(List.copyOf(request.headers().getAll(COOKIE)));
-                    request.response().end(UPSTREAM_BODY);
+                    HttpServerResponse response = request.response();
+                    response.headers().add(SET_COOKIE, THEME_SET).add(SET_COOKIE, GATEWAY_SET)
+                            .add(SET_COOKIE, APP_SET).add(SET_COOKIE, OTHER_SET);
+                    if (GRPC_CONTENT_TYPE.equals(request.getHeader("Content-Type"))) {
+                        response.trailers().add(SET_COOKIE, THEME_TRAILER).add(SET_COOKIE, GATEWAY_TRAILER)
+                                .add(SET_COOKIE, OTHER_TRAILER).add("grpc-status", "0");
+                    }
+                    response.end(UPSTREAM_BODY);
                 })).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
         client = vertx.createHttpClient();
         http2Client = vertx.createHttpClient(new HttpClientOptions()
@@ -196,11 +233,7 @@ class GatewayEdgeCookiePolicyTest {
     @EnumSource(Mode.class)
     @DisplayName("gRPC forwards exactly the Cookie the route's policy admits")
     void grpcForwardsThePolicyCookie(Mode mode) throws Exception {
-        int status = send(http2Client, io.vertx.core.http.HttpMethod.POST,
-                mode.grpcService() + "/Call",
-                Map.of(COOKIE, BROWSER_COOKIES, "Origin", frontOrigin(), "Content-Type", "application/grpc",
-                        "TE", "trailers"),
-                Buffer.buffer(new byte[5]));
+        int status = grpcCall(mode).status();
 
         assertAll("the gRPC dispatch under " + mode,
                 () -> assertEquals(200, status, "precondition: the call is proxied"),
@@ -224,6 +257,49 @@ class GatewayEdgeCookiePolicyTest {
 
         assertEquals(List.of(mode.expectedFields), List.copyOf(upstreamCookieFields),
                 "the upstream's upgrade request under " + mode);
+    }
+
+    @ParameterizedTest(name = "allow: {0}")
+    @EnumSource(Mode.class)
+    @DisplayName("the HTTP relay returns exactly the upstream Set-Cookie lines the route's policy admits, without Domain")
+    void httpRelayReturnsThePolicySetCookies(Mode mode) throws Exception {
+        Answer answer = exchangeAnswer(client, io.vertx.core.http.HttpMethod.GET, "/http-" + mode.segment() + "/page",
+                Map.of(COOKIE, BROWSER_COOKIES), null);
+
+        assertAll("the HTTP relay under " + mode,
+                () -> assertEquals(200, answer.status(), "precondition: the request is proxied"),
+                () -> assertEquals(mode.expectedSetCookies, answer.setCookies(),
+                        "the gateway cookie is dropped and every other line follows the policy, in order"),
+                () -> assertFalse(answer.setCookies().stream().anyMatch(GatewayEdgeCookiePolicyTest::carriesDomain),
+                        "no relayed line carries a Domain attribute"));
+    }
+
+    @ParameterizedTest(name = "allow: {0}")
+    @EnumSource(Mode.class)
+    @DisplayName("the gRPC relay returns exactly the leading Set-Cookie lines the route's policy admits, without Domain")
+    void grpcLeadingHeadersReturnThePolicySetCookies(Mode mode) throws Exception {
+        Answer answer = grpcCall(mode);
+
+        assertAll("the gRPC leading headers under " + mode,
+                () -> assertEquals(200, answer.status(), "precondition: the call is proxied"),
+                () -> assertEquals(mode.expectedSetCookies, answer.setCookies()),
+                () -> assertFalse(answer.setCookies().stream().anyMatch(GatewayEdgeCookiePolicyTest::carriesDomain),
+                        "no relayed line carries a Domain attribute"));
+    }
+
+    @ParameterizedTest(name = "allow: {0}")
+    @EnumSource(Mode.class)
+    @DisplayName("the gRPC relay returns exactly the Set-Cookie trailers the route's policy admits, without Domain")
+    void grpcTrailersReturnThePolicySetCookies(Mode mode) throws Exception {
+        Answer answer = grpcCall(mode);
+
+        assertAll("the gRPC trailers under " + mode,
+                () -> assertEquals("0", answer.grpcStatus(), "the grpc-status trailer crosses under every mode"),
+                () -> assertEquals(mode.expectedTrailerSetCookies, answer.trailerSetCookies(),
+                        "a trailer passes the same filter as a leading header"),
+                () -> assertFalse(answer.trailerSetCookies().stream()
+                        .anyMatch(GatewayEdgeCookiePolicyTest::carriesDomain),
+                        "no relayed trailer carries a Domain attribute"));
     }
 
     /**
@@ -390,6 +466,11 @@ class GatewayEdgeCookiePolicyTest {
 
     private int send(HttpClient via, io.vertx.core.http.HttpMethod method, String uri, Map<String, String> headers,
             @Nullable Buffer body) throws Exception {
+        return exchangeAnswer(via, method, uri, headers, body).status();
+    }
+
+    private Answer exchangeAnswer(HttpClient via, io.vertx.core.http.HttpMethod method, String uri,
+            Map<String, String> headers, @Nullable Buffer body) throws Exception {
         RequestOptions options = new RequestOptions()
                 .setServer(SocketAddress.inetSocketAddress(requireFront().actualPort(), LoopbackHost.ADDRESS))
                 .setHost(LoopbackHost.ADDRESS).setPort(requireFront().actualPort())
@@ -399,8 +480,35 @@ class GatewayEdgeCookiePolicyTest {
                             headers.forEach(request::putHeader);
                             return body == null ? request.send() : request.send(body);
                         })
-                        .compose(response -> response.body().map(ignored -> response.statusCode())),
+                        .compose(response -> response.body().map(ignored -> new Answer(response.statusCode(),
+                                List.copyOf(response.headers().getAll(SET_COOKIE)),
+                                List.copyOf(response.trailers().getAll(SET_COOKIE)),
+                                response.trailers().get("grpc-status")))),
                 "the edge response to " + method + " " + uri);
+    }
+
+    private Answer grpcCall(Mode mode) throws Exception {
+        return exchangeAnswer(http2Client, io.vertx.core.http.HttpMethod.POST, mode.grpcService() + "/Call",
+                Map.of(COOKIE, BROWSER_COOKIES, "Origin", frontOrigin(), "Content-Type", GRPC_CONTENT_TYPE,
+                        "TE", "trailers"),
+                Buffer.buffer(new byte[5]));
+    }
+
+    /** Whether a relayed {@code Set-Cookie} line still carries a {@code Domain} attribute. */
+    private static boolean carriesDomain(String setCookieLine) {
+        return setCookieLine.toLowerCase(Locale.ROOT).contains("domain");
+    }
+
+    /**
+     * What the client saw of one edge response.
+     *
+     * @param status            the response status
+     * @param setCookies        the {@code Set-Cookie} lines of the leading headers
+     * @param trailerSetCookies the {@code Set-Cookie} trailers
+     * @param grpcStatus        the {@code grpc-status} trailer, {@code null} when none was sent
+     */
+    private record Answer(int status, List<String> setCookies, List<String> trailerSetCookies,
+            @Nullable String grpcStatus) {
     }
 
     /** Minimal {@link Instance} double resolving to one bean; the routes here never read it. */
