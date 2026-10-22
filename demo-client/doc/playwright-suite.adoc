@@ -229,7 +229,7 @@ registry fallback, so a missing binary is a hard failure. `npx` with its auto-co
 suppresses the prompt guarding its fallback path, which would let an unpinned `playwright` package
 be fetched and executed from the registry -- outside the integrity-pinned lock the previous step
 just enforced. The suite command `start-dev-environment.sh` prints for a standalone run keeps the
-same `npm run test`; it only sets the two base URLs inline, derived from the Compose model.
+same `npm run test`; it only sets the two base URLs inline.
 
 Lint at `process-resources`, not `verify`:: `verify` runs *after* `integration-test`, so a lint
 failure used to surface only once a native image had been rebuilt, three containers were up and a
