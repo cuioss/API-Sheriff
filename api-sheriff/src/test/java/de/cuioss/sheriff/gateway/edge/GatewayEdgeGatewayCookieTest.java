@@ -431,28 +431,28 @@ class GatewayEdgeGatewayCookieTest {
     }
 
     @Nested
-    @DisplayName("a gateway without a session runtime owns no cookie and relays every upstream Set-Cookie line")
+    @DisplayName("a gateway without a session runtime still owns its reserved cookies and relays every other upstream Set-Cookie line")
     class BearerOnly {
 
         @Test
-        @DisplayName("control: cookies named like the session runtime's are relayed, each on its own line and in order")
-        void relaysEveryUpstreamCookie() throws Exception {
+        @DisplayName("the session, login-binding and logout-state cookies are dropped; the upstream's own arrive on their own lines and in order")
+        void dropsReservedCookiesAndRelaysTheRest() throws Exception {
             startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
                     List.of(httpRoute("open", OPEN_ROUTE, Require.NONE)));
-            List<String> lines = List.of(
+            upstreamSetCookies.addAll(List.of(
                     APP_COOKIE,
                     SESSION_COOKIE_NAME + "=from-upstream; Path=/",
                     BINDING_COOKIE_NAME + "=from-upstream; Path=/",
                     LOGOUT_STATE_COOKIE_NAME + "=from-upstream; Path=/",
-                    THEME_COOKIE);
-            upstreamSetCookies.addAll(lines);
+                    THEME_COOKIE));
 
             Answer answer = get(OPEN_ROUTE + "/page", null);
 
-            assertAll("nothing is owned, so nothing is dropped",
+            assertAll("a gateway without a session runtime still owns its reserved names",
                     () -> assertEquals(200, answer.status()),
-                    () -> assertEquals(lines, answer.setCookies()),
-                    () -> assertEquals(List.of(UPSTREAM_CACHE_POLICY), answer.cacheControl()));
+                    () -> assertEquals(List.of(APP_COOKIE, THEME_COOKIE), answer.setCookies()),
+                    () -> assertEquals(List.of(UPSTREAM_CACHE_POLICY), answer.cacheControl(),
+                            "the gateway added no cookie, so the upstream's cache policy is kept"));
         }
     }
 

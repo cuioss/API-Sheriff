@@ -45,6 +45,7 @@ import java.util.function.Supplier;
 
 import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -68,6 +69,7 @@ import de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -314,7 +316,7 @@ class GrpcDispatchStageTest {
             // Front server: relays the upstream response WITH its trailers exactly as the gRPC dispatch
             // path does (ResponseStage#relayWithTrailers), with X-Frame-Options and
             // Content-Security-Policy both in default mode.
-            ResponseStage responseStage = new ResponseStage(Set.of());
+            ResponseStage responseStage = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()));
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
                     .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, LoopbackHost.ADDRESS,
                             "/svc.Service/Method")
@@ -503,7 +505,8 @@ class GrpcDispatchStageTest {
         private static final String GRPC_OK = "0";
 
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
-        private final ResponseStage responseStage = new ResponseStage(Set.of());
+        private final ResponseStage responseStage =
+                new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()));
         private final List<String> upstreamFrames = new CopyOnWriteArrayList<>();
         private final CompletableFuture<Void> upstreamEnded = new CompletableFuture<>();
         private final CompletableFuture<Throwable> upstreamFailed = new CompletableFuture<>();

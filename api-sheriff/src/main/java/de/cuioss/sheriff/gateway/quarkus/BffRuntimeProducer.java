@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.quarkus;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -709,33 +708,7 @@ public class BffRuntimeProducer {
                 gatewayOrigin, issuer);
         return new BffRuntime(sessionStage, csrfDefence, stepUpCoordinator, callbackEndpoint, logoutEndpoint,
                 backchannelLogoutEndpoint, userInfoEndpoint, loginInitiationEndpoint, stepUpEndpoint,
-                clientCredential.jwksEndpoint(), gatewayJson, gatewayCookieNames(sessionBinding), sessionRelays,
-                sessionHeld);
-    }
-
-    /**
-     * Names every cookie the assembled runtime sets, for the edge to keep an upstream response from
-     * setting one of them. The binding's own cookies are read off its clearing values — one per
-     * cookie it sets, by its contract — so the set follows the session mode without this producer
-     * knowing which cookies a mode uses.
-     *
-     * @param sessionBinding the assembled session binding
-     * @return the session binding's cookie names, the login-binding cookie name and the logout-state
-     *         cookie name
-     * @throws IllegalStateException when a clearing value of the binding names no cookie
-     */
-    static Set<String> gatewayCookieNames(SessionBinding sessionBinding) {
-        Set<String> names = new LinkedHashSet<>();
-        for (String clearing : sessionBinding.clearingSetCookieHeaders()) {
-            int separator = clearing.indexOf('=');
-            if (separator <= 0) {
-                throw new IllegalStateException("session binding returned a clearing cookie without a name");
-            }
-            names.add(clearing.substring(0, separator));
-        }
-        names.add(BindingCookieCodec.COOKIE_NAME);
-        names.add(RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME);
-        return Set.copyOf(names);
+                clientCredential.jwksEndpoint(), gatewayJson, sessionRelays, sessionHeld);
     }
 
     /**

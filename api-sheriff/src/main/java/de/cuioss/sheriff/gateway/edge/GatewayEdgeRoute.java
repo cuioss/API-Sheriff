@@ -73,6 +73,7 @@ import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.forward.ForwardPolicyStage;
 import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.BasicChecksStage;
 import de.cuioss.sheriff.gateway.pipeline.CanonicalPathGuard;
 import de.cuioss.sheriff.gateway.pipeline.FramingGate;
@@ -396,9 +397,11 @@ public class GatewayEdgeRoute {
                 ? new AuthenticationStage(tokenValidator, bffRuntime.sessionStage())
                 : new AuthenticationStage(tokenValidator);
         this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
-        // The names of the cookies the session runtime sets; empty for a bearer-only gateway. An
-        // upstream Set-Cookie line naming one of them is not relayed.
-        ResponseStage responseStage = new ResponseStage(bffRuntime.gatewayCookieNames());
+        // The gateway's own cookies, derived once from the configuration — the reserved prefix with or
+        // without a BFF, plus the configured session cookie and its activity sibling. An upstream
+        // Set-Cookie line naming one of them is not relayed.
+        GatewayCookies gatewayCookies = GatewayCookies.of(gatewayConfig);
+        ResponseStage responseStage = new ResponseStage(gatewayCookies);
         this.redirectStage = new RedirectStage();
         OriginValidationStage originValidationStage = new OriginValidationStage();
         // One WebSocketClient for the whole edge, carrying the gateway-global egress-TLS values (see

@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
@@ -52,8 +53,9 @@ import org.jspecify.annotations.Nullable;
  *       stripped so no validator ever reaches the client. A {@code 304} on an enabled route relays
  *       untouched.</li>
  *   <li><strong>{@code Set-Cookie}</strong> lines of an upstream are relayed, each as its own line,
- *       except a line naming a cookie only the gateway may set — the session cookie, its activity
- *       cookie, the login-binding cookie and the logout-state cookie — which is dropped on both
+ *       except a line naming one of the gateway's own cookies — every cookie under the reserved
+ *       {@value GatewayCookies#RESERVED_PREFIX} prefix, the configured session cookie and, in cookie
+ *       mode, its activity cookie, as {@link GatewayCookies} defines them — which is dropped on both
  *       relays (see {@link UpstreamSetCookieFilter}).</li>
  *   <li><strong>{@code Location}</strong> is relayed unchanged unless the route opts into
  *       {@code upstream.rewrite_location}: {@link #relay} then maps a value pointing inside the route
@@ -89,18 +91,17 @@ public final class ResponseStage {
     private final UpstreamSetCookieFilter upstreamSetCookies;
 
     /**
-     * @param gatewayCookieNames the names of the cookies only the gateway may set — an upstream
-     *                           {@code Set-Cookie} line naming one of them is not relayed; empty on a
-     *                           gateway that sets no cookie, which then relays every line
+     * @param gatewayCookies the gateway's own cookies — an upstream {@code Set-Cookie} line naming one
+     *                       of them is not relayed
      */
-    public ResponseStage(Set<String> gatewayCookieNames) {
-        this.upstreamSetCookies = new UpstreamSetCookieFilter(gatewayCookieNames);
+    public ResponseStage(GatewayCookies gatewayCookies) {
+        this.upstreamSetCookies = new UpstreamSetCookieFilter(gatewayCookies);
     }
 
     /**
      * Whether an upstream response header crosses back to the client on this stage's relays: it must
      * be {@linkplain #isForwardableResponseHeader forwardable}, and a {@code Set-Cookie} line must not
-     * name a cookie only the gateway may set.
+     * name one of the gateway's own cookies.
      */
     private boolean relaysUpstreamHeader(String name, String value, boolean notModifiedEnabled) {
         return isForwardableResponseHeader(name, notModifiedEnabled) && upstreamSetCookies.relays(name, value);

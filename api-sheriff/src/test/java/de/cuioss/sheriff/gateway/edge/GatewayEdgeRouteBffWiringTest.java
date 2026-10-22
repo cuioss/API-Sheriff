@@ -187,18 +187,6 @@ public class GatewayEdgeRouteBffWiringTest {
         });
     }
 
-    /**
-     * The cookie names an active runtime over {@code binding} owns, derived as the session runtime
-     * derives them: every cookie the binding clears, the login-binding cookie and the logout-state
-     * cookie.
-     */
-    static Set<String> gatewayCookieNames(SessionBinding binding) {
-        List<String> names = new ArrayList<>(
-                List.of(BindingCookieCodec.COOKIE_NAME, RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME));
-        binding.clearingSetCookieHeaders().forEach(header -> names.add(header.substring(0, header.indexOf('='))));
-        return Set.copyOf(names);
-    }
-
     /** A cookie handle for a session a fixture stores directly — an opaque value, never the session id. */
     private static String newCookieHandle() {
         return "handle-" + SessionRecord.newSessionId();
@@ -927,8 +915,7 @@ public class GatewayEdgeRouteBffWiringTest {
             return new BffRuntime(sessionStage, new CsrfDefence(Set.of(ORIGIN)), stepUp, callback,
                     () -> logoutEndpoint(sessionBinding), backchannel, userInfo, login,
                     engineFreeStepUpEndpoint(widening, sessionBinding), ClientJwksEndpoint.withheld(),
-                    gatewayJson(), gatewayCookieNames(sessionBinding),
-                    new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true);
+                    gatewayJson(), new SessionRelayRegistry(16, Clock.systemUTC()), sessionId -> true);
         }
     }
 
@@ -2025,7 +2012,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         return new BffRuntime(sessionStage, csrf, stepUp, callback, () -> logoutEndpoint(binding), backchannel,
                 userInfo, login, engineFreeStepUpEndpoint(widening, binding), clientJwksEndpoint, gatewayJson(),
-                gatewayCookieNames(binding), sessionRelays, sessionHeld);
+                sessionRelays, sessionHeld);
     }
 
     /**

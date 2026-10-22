@@ -18,7 +18,7 @@
  * <p>
  * The package sits <em>below</em> the paths that produce a response, and depends on none of them, so
  * a rule about the HTTP protocol itself is declared once and read by every caller rather than
- * mirrored into each. Two such rules live here:
+ * mirrored into each. Three such rules live here:
  * <ul>
  *   <li>{@link de.cuioss.sheriff.gateway.http.ConnectionHeaders} — the connection-specific header
  *       names neither response path may relay, read by the proxy data plane's streamed relay in
@@ -27,16 +27,20 @@
  *       gateway path about to be written into a {@code Location} header, read by the boot review of
  *       a <em>configured</em> redirect target in {@code config.validation} and by the per-request
  *       mapping of an <em>upstream</em> {@code Location} in {@code routing}.</li>
+ *   <li>{@link de.cuioss.sheriff.gateway.http.GatewayCookies} — the gateway's own cookies, which an
+ *       upstream may neither set nor receive, read by the response relay in {@code edge}.</li>
  * </ul>
- * Both exist for the same reason: a mirrored copy is what lets two paths quietly disagree about one
- * protocol rule (issue #172 was exactly that, for a response header the proxy path stripped and the
- * asset path did not).
+ * All three exist for the same reason: a mirrored copy is what lets two paths quietly disagree about
+ * one protocol rule (issue #172 was exactly that, for a response header the proxy path stripped and
+ * the asset path did not).
  * <p>
  * <strong>Framework-agnostic.</strong> The package carries no {@code io.vertx..} /
- * {@code io.quarkus..} / {@code jakarta..} imports and depends on no other gateway package, which
- * is what lets the framework-coupled {@code edge} and the agnostic {@code asset} both read it
- * without either acquiring a dependency on the other. Its only library dependency is the
- * {@code de.cuioss.http.security} inbound-validation surface the location review delegates to.
+ * {@code io.quarkus..} / {@code jakarta..} imports, which is what lets the framework-coupled
+ * {@code edge} and the agnostic {@code asset} both read it without either acquiring a dependency on
+ * the other. Its only gateway dependencies are the ones {@code GatewayCookies} derives its names
+ * from: the bound {@code config.model} and the cookie-name constants of the framework-free BFF cookie
+ * codecs. Its only library dependency is the {@code de.cuioss.http.security} inbound-validation
+ * surface the location review delegates to.
  *
  * @author API Sheriff Team
  * @since 1.0

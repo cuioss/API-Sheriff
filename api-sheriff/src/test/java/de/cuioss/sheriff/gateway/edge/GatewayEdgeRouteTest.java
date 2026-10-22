@@ -90,6 +90,7 @@ import de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.portal.PortalRenderer;
@@ -492,7 +493,8 @@ class GatewayEdgeRouteTest {
                     .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
-                    .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(Set.of())
+                    .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(
+                            GatewayCookies.of(GatewayConfig.builder().version(1).build()))
                             .relay(ended, ctx.response(), false, null, Map.of(), Map.of(), end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -621,7 +623,7 @@ class GatewayEdgeRouteTest {
                         return received;
                     }))
                     .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
-                            end -> new ResponseStage(Set.of())
+                            end -> new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()))
                                     .relay(received, ctx.response(), false, null, Map.of(), Map.of(), end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
             HttpServer front = Awaits.connect(

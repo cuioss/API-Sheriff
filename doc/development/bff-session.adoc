@@ -331,8 +331,10 @@ Two test-support types matter for this code:
   reserved answer that carries a `Set-Cookie` with `Cache-Control: no-store`.
 * *A new session-runtime capability* -- write it against `SessionBinding`, so both session modes get
   it; drive any OAuth interaction through an engine seam per the boundary rule above.
-* *A new gateway cookie* -- add its name to the set `BffRuntimeProducer.gatewayCookieNames` computes,
-  so an upstream `Set-Cookie` of that name is not relayed.
+* *A new gateway cookie* -- name it under the reserved `__Host-sheriff-` prefix. `http.GatewayCookies`
+  covers every name under that prefix by construction, so an upstream `Set-Cookie` of that name is
+  not relayed without any further change. A cookie whose name may lie outside the prefix -- as the
+  configured session cookie does -- must be added to `GatewayCookies.of(...)` instead.
 
 == See also
 

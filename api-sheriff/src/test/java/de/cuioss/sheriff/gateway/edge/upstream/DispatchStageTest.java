@@ -64,6 +64,7 @@ import de.cuioss.sheriff.gateway.asset.PathConfinement;
 import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -80,6 +81,7 @@ import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -2658,7 +2660,7 @@ class DispatchStageTest {
                             .whenException(DispatchStage::allowsRetryAfter).done()
                             .build(),
                     DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
-            ResponseStage responseStage = new ResponseStage(Set.of());
+            ResponseStage responseStage = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()));
             front = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
                 // As GatewayEdgeRoute does: pause the inbound request on its event loop, capture that
                 // loop's context, and run the dispatch on a virtual thread.

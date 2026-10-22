@@ -23,12 +23,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -54,6 +56,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("ResponseStage — stage 7 streamed response header policy")
 @Tag("isolated-fork")
 class ResponseStageTest {
+
+    /** The gateway cookies of a gateway without an {@code oidc} block: the reserved prefix alone. */
+    private static final GatewayCookies RESERVED_ONLY = GatewayCookies.of(GatewayConfig.builder().version(1).build());
 
     @ParameterizedTest
     @ValueSource(longs = {0L, -1L})
@@ -234,7 +239,7 @@ class ResponseStageTest {
 
             // Front server: relays exactly as the proxy dispatch path does, with X-Frame-Options in
             // set mode and Content-Security-Policy in default mode.
-            ResponseStage responseStage = new ResponseStage(Set.of());
+            ResponseStage responseStage = new ResponseStage(RESERVED_ONLY);
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
                     .request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, clientReq.path())
                     .compose(HttpClientRequest::send)
@@ -291,9 +296,10 @@ class ResponseStageTest {
     }
 
     /**
-     * Both relays over a live origin that sends three {@code Set-Cookie} lines, the middle one naming a
-     * cookie the gateway owns. The same origin is relayed through a stage that owns that name and
-     * through one that owns none, so the missing line is the owning stage's doing.
+     * Both relays over a live origin that sends three {@code Set-Cookie} lines, the middle one naming the
+     * configured session cookie. The same origin is relayed through a stage whose configuration names
+     * that cookie and through one whose configuration does not, so the missing line is the owning
+     * stage's doing.
      * <p>
      * The origin also sends a trailer section. The trailing-header relay copies it as sent: a
      * {@code Set-Cookie} in a trailer is not looked at, because a browser does not process one there.
@@ -303,7 +309,8 @@ class ResponseStageTest {
     class UpstreamSetCookie {
 
         private static final String SET_COOKIE = "Set-Cookie";
-        private static final String OWNED_NAME = "__Host-sheriff-session";
+        /** A configured session cookie name, outside the reserved prefix every stage owns. */
+        private static final String OWNED_NAME = "__Host-shop-session";
         private static final String FIRST_LINE = "app=1; Path=/app";
         private static final String OWNED_LINE = OWNED_NAME + "=from-upstream; Path=/";
         private static final String LAST_LINE = "theme=dark";
@@ -336,8 +343,13 @@ class ResponseStageTest {
             }).listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
             int upstreamPort = upstream.actualPort();
 
-            ResponseStage owning = new ResponseStage(Set.of(OWNED_NAME));
-            ResponseStage owningNothing = new ResponseStage(Set.of());
+            ResponseStage owning = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1)
+                    .oidc(OidcConfig.builder().redirectUri("https://gw.example.com/auth/callback")
+                            .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER)
+                                    .cookieName(OWNED_NAME).build())
+                            .build())
+                    .build()));
+            ResponseStage owningNothing = new ResponseStage(RESERVED_ONLY);
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> {
                 ResponseStage stage = clientReq.path().startsWith(OWNING_NOTHING) ? owningNothing : owning;
                 boolean withTrailers = clientReq.path().endsWith(WITH_TRAILERS);
@@ -398,7 +410,7 @@ class ResponseStageTest {
 
         @ParameterizedTest
         @ValueSource(strings = {RELAY, WITH_TRAILERS})
-        @DisplayName("control: a stage that owns no cookie relays all three lines on both relays")
+        @DisplayName("control: a stage whose configuration does not name the cookie relays all three lines on both relays")
         void stageOwningNothingRelaysEveryLine(String relay) throws Exception {
             Relayed answer = relayed(OWNING_NOTHING + relay);
 
@@ -448,7 +460,7 @@ class ResponseStageTest {
                     .listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
             int upstreamPort = upstream.actualPort();
 
-            ResponseStage stage = new ResponseStage(Set.of());
+            ResponseStage stage = new ResponseStage(RESERVED_ONLY);
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> {
                 HttpServerResponse response = clientReq.response();
                 AtomicInteger endsRequested = new AtomicInteger();
