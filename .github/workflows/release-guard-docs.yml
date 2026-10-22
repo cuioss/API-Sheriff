@@ -10,7 +10,7 @@
 #   * the two reason lines the doc quotes — read out of release-guard.py AT the action SHA: its print
 #     f-string, the verdict a refusal assigns and one reason f-string per refusal, each bounded by
 #     its own quotes; rendered together, with <version> for each placeholder, each line must occur in
-#     the doc verbatim.
+#     the doc verbatim, as the whole of a backtick-quoted span.
 # The fourth value, the reusable-workflow pin itself, is checked offline by
 # ReleaseGuardPinDocsContractTest in api-sheriff, which runs in every Maven build.
 #
@@ -188,7 +188,8 @@ jobs:
                       if log_line is None:
                           continue
                       line = rendered_line(log_line.group(2), log_line.group(1), reason.group(1))
-                      if line not in doc:
+                      # Bounded by the backticks the doc quotes it in, so text added inside them fails.
+                      if f"`{line}`" not in doc:
                           finding(
                               f"{DOC} does not quote {line!r} verbatim, the line release-guard.py@{action_sha} logs"
                               f" for the {label!r} refusal. Correct the quoted line in {SECTION}."
@@ -199,5 +200,5 @@ jobs:
           print(
               f"release.yml pins reusable-maven-release.yml@{workflow_sha}, whose guard job runs"
               f" release-guard@{action_sha}; every pin {DOC} cites matches, and both reason lines it quotes"
-              " are the lines release-guard.py at that pin renders for a SKIP."
+              f" are the lines release-guard.py at that pin renders for a {log_line.group(1)}."
           )
