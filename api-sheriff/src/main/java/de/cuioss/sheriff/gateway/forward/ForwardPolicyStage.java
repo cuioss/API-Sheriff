@@ -377,13 +377,13 @@ public final class ForwardPolicyStage {
         CookieAllow allow = policy.allow();
         List<String> admitted = new ArrayList<>();
         for (String crumb : header.get().split(";", -1)) {
-            String pair = trimCookieText(crumb);
+            String pair = GatewayCookies.trimBlanks(crumb);
             if (pair.isEmpty()) {
                 continue;
             }
             int separator = pair.indexOf('=');
-            String name = separator < 0 ? "" : trimCookieText(pair.substring(0, separator));
-            String value = separator < 0 ? pair : trimCookieText(pair.substring(separator + 1));
+            String name = separator < 0 ? "" : GatewayCookies.trimBlanks(pair.substring(0, separator));
+            String value = separator < 0 ? pair : GatewayCookies.trimBlanks(pair.substring(separator + 1));
             if (gatewayCookies.matchesPair(name, value)) {
                 continue;
             }
@@ -393,23 +393,6 @@ public final class ForwardPolicyStage {
             }
         }
         return List.copyOf(admitted);
-    }
-
-    /** Removes the spaces and horizontal tabs a user agent ignores around a cookie pair, name or value. */
-    private static String trimCookieText(String text) {
-        int start = 0;
-        int end = text.length();
-        while (start < end && isCookieWhitespace(text.charAt(start))) {
-            start++;
-        }
-        while (end > start && isCookieWhitespace(text.charAt(end - 1))) {
-            end--;
-        }
-        return text.substring(start, end);
-    }
-
-    private static boolean isCookieWhitespace(char character) {
-        return character == ' ' || character == '\t';
     }
 
     /**

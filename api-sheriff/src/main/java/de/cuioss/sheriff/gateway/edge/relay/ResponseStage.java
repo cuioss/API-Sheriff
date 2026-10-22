@@ -164,7 +164,6 @@ public final class ResponseStage {
      * @param end                ends the client response once the upstream body has been streamed
      * @return a future completing when the body has been fully streamed and the response ended
      */
-    // One parameter per route-derived input of the relay; the dispatch passes them straight through.
     @SuppressWarnings("java:S107") // the relay's route inputs, passed through by the terminal dispatch
     public Future<Void> relay(HttpClientResponse upstream, HttpServerResponse client,
             boolean notModifiedEnabled, @Nullable LocationRewriter locationRewriter, CookiesConfig cookies,
@@ -279,7 +278,6 @@ public final class ResponseStage {
      * @return a future completing when the body and trailers have been fully relayed — or the call was
      *         ended by its stream-idle bound — and the response ended
      */
-    // One parameter per route-derived input of the relay; the dispatch passes them straight through.
     @SuppressWarnings("java:S107") // the relay's route inputs, passed through by the terminal dispatch
     public Future<Void> relayWithTrailers(HttpClientResponse upstream, HttpServerResponse client,
             boolean notModifiedEnabled, CookiesConfig cookies, Map<String, String> setHeaders,

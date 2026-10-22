@@ -145,13 +145,20 @@ public final class GatewayCookies {
         int attributes = setCookieLine.indexOf(';');
         String pair = attributes < 0 ? setCookieLine : setCookieLine.substring(0, attributes);
         int separator = pair.indexOf('=');
-        String name = separator < 0 ? "" : trim(pair.substring(0, separator));
-        String value = trim(separator < 0 ? pair : pair.substring(separator + 1));
+        String name = separator < 0 ? "" : trimBlanks(pair.substring(0, separator));
+        String value = trimBlanks(separator < 0 ? pair : pair.substring(separator + 1));
         return matchesPair(name, value);
     }
 
-    /** Removes the spaces and horizontal tabs a user agent ignores around a cookie name or value. */
-    private static String trim(String text) {
+    /**
+     * Removes the spaces and horizontal tabs a user agent ignores around a cookie pair, name or value,
+     * the trimming this class reads a pair with — shared with the request-direction rebuild of the
+     * {@code Cookie} header so both read a pair alike.
+     *
+     * @param text the text to trim
+     * @return {@code text} without its leading and trailing spaces and horizontal tabs
+     */
+    public static String trimBlanks(String text) {
         int start = 0;
         int end = text.length();
         while (start < end && isBlank(text.charAt(start))) {
