@@ -23,8 +23,8 @@
  * effective allowed-method membership, forwarded trust-all rejection, CORS
  * wildcard-with-credentials rejection, session-mode conditionals and the rest. It runs every
  * entry in list order and collects every violation in a single pass; the list is the only place
- * that decides the reporting order. The rule bodies live in the concern classes of the
- * {@code rule} package or, for a concern not yet extracted, as private methods of the validator.
+ * that decides the reporting order. Every rule body lives in a concern class of the {@code rule}
+ * package; the validator itself holds none.
  * <p>
  * <strong>Pre-boot seam (ADR-0061, ADR-0062).</strong> The validator and its rules
  * carry no framework imports, because the offline configuration check runs them

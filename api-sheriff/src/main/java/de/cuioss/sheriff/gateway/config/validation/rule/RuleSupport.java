@@ -30,8 +30,7 @@ import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The helpers every boot-time {@link ValidationRule} shares, whichever concern class or
- * not-yet-extracted rule of the configuration validator it belongs to: where a {@link ConfigError}
+ * The helpers the boot-time {@link ValidationRule}s share across concern classes: where a {@link ConfigError}
  * is reported (the file, the JSON pointer and the anchors pointer), how an offending configured value
  * is echoed into a refusal message, which anchor a route resolves, which protocol a route rides, which
  * {@code auth.require} a route resolves, the wildcard-origin token, the RFC 9110 media-type token,

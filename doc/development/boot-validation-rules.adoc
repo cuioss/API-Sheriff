@@ -32,10 +32,7 @@ class is a stateless Lombok `@UtilityClass` named `{Concern}Rules` in the `rule`
 each rule as a `public static validateXxx(...)` method with the narrowest parameter list the rule
 needs. `ConfigValidator` adapts each method with one lambda in `DEFAULT_RULES`. A concern class
 publishes no rule list of its own: a per-class list would be a second place deciding the order,
-and it would have no reader.
-
-Not every concern has been extracted yet. Until it is, its rules stay `private static` methods of
-`ConfigValidator`, registered in `DEFAULT_RULES` at their position exactly like an extracted rule.
+and it would have no reader. `ConfigValidator` itself holds no rule body.
 
 The helpers every rule shares live once, in
 link:../../api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/RuleSupport.java[`RuleSupport`]:
@@ -45,10 +42,10 @@ anchor name (`declaredAnchorName`), which protocol a route rides (`effectiveProt
 `auth.require` a route resolves (`requireOf`), the wildcard-origin token (`WILDCARD_ORIGIN`), the
 RFC 9110 media-type token (`MEDIA_TYPE_TOKEN`), anchor-namespace containment (`prefixContains`,
 `strictlyContains`) and whether the gateway lacks a configured token issuer
-(`lacksConfiguredIssuer`). A helper moves into `RuleSupport` with the first extracted concern class that
-needs it, not before. A rule never resolves a policy block or a route's anchor itself: it reads them
-through `PolicyBlock` and `PolicyBlock.ScopeChain.of` (ADR-0067), so boot validation and the route
-table cannot disagree.
+(`lacksConfiguredIssuer`). A helper shared by two or more concern classes lives once in
+`RuleSupport`; a helper used by one concern stays private to that class. A rule never resolves a
+policy block or a route's anchor itself: it reads them through `PolicyBlock` and
+`PolicyBlock.ScopeChain.of` (ADR-0067), so boot validation and the route table cannot disagree.
 
 The `ValidationRule` seam is not widened. Every rule today has the shape above, and a rule that
 logs does so as a side effect with its own logger. Change the interface only for a check this
@@ -59,7 +56,13 @@ shape genuinely cannot express, and record why.
 Every rule in `DEFAULT_RULES` belongs to exactly one concern class below. The map names each rule's
 owner; how many rules there are, and the order they run in, is read from `DEFAULT_RULES` itself,
 which is the only record of both. "Extracted" means the concern class exists and owns the rule
-bodies; "private in `ConfigValidator`" means the rules are still private methods there.
+bodies.
+
+The map is written by hand, so it is bound to the list by a test:
+link:../../api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/BootValidationConcernMapContractTest.java[`BootValidationConcernMapContractTest`]
+reads the registrations in `DEFAULT_RULES` and fails the build when a registration has no row
+here, when its rule is missing from the row of the concern class it calls, or when a row names a
+rule that `DEFAULT_RULES` does not register through that row's class.
 
 [cols="2,4,3,2"]
 |===
@@ -69,7 +72,7 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `validateVersion`, `validateEndpointIdUniqueness`, `validateRouteIdUniqueness`,
   `validateBaseUrlResolvable`
 | `version`, endpoint and route ids, `endpoint.base_url`
-| private in `ConfigValidator`
+| extracted
 
 | `RouteMatchingRules`
 | `validateRouteDisjointness`, `validateHeaderMatcherConsistency`, `validateMethodMembership`
@@ -106,7 +109,7 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `HeaderRules`
 | `validateCors`, `validateContentSecurityPolicy`, `validateHeaderModes`
 | `security_headers` (global and anchor)
-| private in `ConfigValidator`
+| extracted
 
 | `OidcSessionRules`
 | `validateSessionMode`, `validateSessionMaxSessions`, `validateSessionIdleTimeout`,
@@ -124,7 +127,7 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 | `ReservedPathRules`
 | `validateClientJwksPath`, `validateUserInfo`, `validateLoginPath`, `validateStepUpPath`
 | the reserved OIDC endpoint paths
-| private in `ConfigValidator`
+| extracted
 
 | `ProtocolRules`
 | `validateWebSocketConfig`, `validateRewriteLocationProtocol`
@@ -158,20 +161,20 @@ bodies; "private in `ConfigValidator`" means the rules are still private methods
 . *Pick the concern by the configuration block the rule judges*, using the map above. A rule that
   compares a route's `forward` block against its `auth.token_relay` belongs to `ForwardingRules`,
   whichever of the two keys the refusal message names first.
-. *Add the method where that concern lives today.* For an extracted concern, add a
-  `public static validateXxx(...)` method to its class, with Javadoc stating the rule and why it
-  exists. For a concern that is not extracted yet, add a `private static` method to
-  `ConfigValidator`; it moves with the rest of its concern when that concern is extracted.
+. *Add the method to that concern class*: a `public static validateXxx(...)` method, with Javadoc
+  stating the rule and why it exists.
 . *Register it as one lambda line in `DEFAULT_RULES`*, at the position that keeps the reported
   order -- normally beside the rules of the same concern. Never concatenate whole class lists: one
   entry per rule, in one list.
 . *Document the log message* if the rule logs, in `doc/LogMessages.adoc`, as for any other
   `LogRecord`.
 
-A new concern class is created the same way the existing ones were: a `@UtilityClass` in the `rule`
-package, its rules moved verbatim from `ConfigValidator`, each registration in `DEFAULT_RULES`
-changed in place to call the class, and the helpers it needs moved into `RuleSupport` if they are
-not there yet. Refusal texts and the reporting order do not change in such a move.
+A rule that fits no existing concern gets a new concern class, authored fresh as a stateless
+`@UtilityClass` in the `rule` package with `public static validateXxx(...)` methods. Its rules are
+registered one lambda each in `DEFAULT_RULES` at the position that keeps the reported order, a row
+for the class is added to the concern map above, and a helper it shares with another concern class
+goes into `RuleSupport`. The refusal texts and the reporting order of the existing rules are
+untouched by it.
 
 == Tests
 
@@ -188,8 +191,9 @@ concern-class method directly. That is deliberate: a rule that is written but dr
 `DEFAULT_RULES` -- or registered with the wrong arguments -- then fails its own tests, while a test
 of the bare method would stay green over a rule that never runs.
 
-The tests of a not-yet-extracted concern stay in `ConfigValidatorTest` until the concern moves,
-and move with it.
+`ConfigValidatorTest` holds the orchestration cases only: a well-formed configuration passes, the
+structural `TRACE` and `CONNECT` rejection, and the single-pass aggregation of violations from
+several rules. A rule's own cases never go there.
 
 == Constraints every rule keeps
 

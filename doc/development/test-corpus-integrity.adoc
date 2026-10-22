@@ -1437,7 +1437,7 @@ refusal control.*
 |===
 | File | Lines | Why it is stronger than a density ranking would guess
 
-| `config/validation/ConfigValidatorTest.java`   | 3347 | no vacuity marker; every admit paired with a matched refusal
+| `config/validation/rule/*RulesTest.java`       | 3347 | no vacuity marker; every admit paired with a matched refusal. Measured at `3abc370` as the single validator test class; its rule cases now live in one test class per configuration concern under `config/validation/rule/`
 | `config/load/ConfigLoaderTest.java`            | 2146 | four `assertNotNull`, every one a structural precondition ahead of a substantive assertion
 | `forward/ForwardPolicyStageTest.java`          | 1300 | no vacuity marker; carries the corpus's own worked example of ADR-0030's matched-positive-control leg (below)
 | `edge/GatewayEdgeQueryHandoffTest.java`        |  526 | no vacuity marker

@@ -109,6 +109,9 @@ public class EdgeRules {
      * already surface. The un-warned residual applies unchanged: an environment-supplied IPv4
      * {@code /16} or IPv6 {@code /48} boots with no signal at all, the same chosen exposure with no
      * review behind it. The decision and its rejected alternatives are recorded in ADR-0044.
+     *
+     * @param gateway the bound gateway document, whose {@code forwarded.trusted_proxies} are judged
+     * @param errors  the shared violation list every refusal is appended to
      */
     public static void validateForwardedTrust(GatewayConfig gateway, List<ConfigError> errors) {
         ForwardedConfig forwarded = gateway.forwarded();
@@ -214,6 +217,10 @@ public class EdgeRules {
      * and never reaches the route table, so the route is never routed. The comparison ignores
      * letter case, and a route that matches no host is not judged. One violation is collected per
      * colliding route and host; the rule never fails fast.
+     *
+     * @param gateway   the bound gateway document, whose {@code tls.passthrough_sni} hosts are compared against
+     * @param endpoints the enabled endpoints, whose every route's {@code match.host} is judged
+     * @param errors    the shared violation list every refusal is appended to
      */
     public static void validatePassthroughHostCollision(GatewayConfig gateway, List<EndpointConfig> endpoints,
             List<ConfigError> errors) {
@@ -243,6 +250,10 @@ public class EdgeRules {
      * to an origin with no base path — a resolved base path other than empty or {@code /} is
      * refused. An unresolved alias and a resolved alias carrying a base path are each collected as
      * a violation; the rule never fails fast.
+     *
+     * @param gateway  the bound gateway document, whose {@code tls.passthrough_sni} aliases are judged
+     * @param topology the resolved topology every passthrough alias must resolve in
+     * @param errors   the shared violation list every refusal is appended to
      */
     public static void validatePassthroughAliasResolvable(GatewayConfig gateway, ResolvedTopology topology,
             List<ConfigError> errors) {
