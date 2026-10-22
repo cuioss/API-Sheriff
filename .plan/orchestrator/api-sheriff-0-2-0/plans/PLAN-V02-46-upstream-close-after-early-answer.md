@@ -57,10 +57,15 @@ Split guard: 4 deliverables. This is a behaviour change, so the normal limits ap
 ## Claim Labels
 
 - OBSERVED: the default upstream client sets `SO_LINGER 0` — `edge/upstream/EgressClients.java` ~171 (`setSoLinger(0)`) — `origin/main` at `99e9dfd3`
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EgressClients ~171 setSoLinger(0); edge/ unchanged 99e9dfd3..00293178
 - OBSERVED: ADR-0060 A1 says the reset "frees the connection" and makes it "free for the next" (lines ~208, ~229); Amendment A2 starts at ~310 — `origin/main` at `99e9dfd3`
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0060 A1 ~208/~229 wording unchanged; A2 at ~310
 - OBSERVED: `EdgeAdmission.tryAdmit` (~93) checks `draining` before `inFlight.incrementAndGet()` (~97), and `drain()` (~157) sets the flag and then waits for `inFlight` to reach zero — `origin/main` at `99e9dfd3`
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EdgeAdmission.tryAdmit ~93-97 checks draining before incrementAndGet; drain ~157
 - OBSERVED: ADR-0066 Amendment A1 (~242) records `SO_LINGER 0`; the threat model's `gw-07-upstream-ports` entry (~1364, matrix row ~3598) states it COVERED — `origin/main` at `99e9dfd3`
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0066 A1 ~242; threat model gw-07-upstream-ports entry and matrix row present
 - HYPOTHESIS: an upstream that does not process the RST keeps its side open until its own idle timeout — from inbox `-004`, observed in PLAN-32's investigation (verify at outline)
+  - verdict: unverifiable | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a reproduction against a stack that drops the RST; verify at outline
 
 ## Expected Surface
 
@@ -72,18 +77,28 @@ Split guard: 4 deliverables. This is a behaviour change, so the normal limits ap
 
 - After `PLAN-V02-25` (#487) and `PLAN-V02-45` (#506, `99e9dfd3`), which edited the same relay and
   dispatch code. Both have landed.
-- Runs alongside `PLAN-V02-43` (#505, config validation) and `PLAN-V02-22` (demo client, release docs).
-  The only shared file is `doc/security-threat-model.adoc`: V02-43 edits other sections. Rebase onto
-  `origin/main` before push, and if deliverable 3 adds an ADR rather than an amendment, re-check the
-  next free ordinal (0071 is taken by #505).
-- Deliverable 2 is documentation only. If it should land sooner, it can ride with any doc-touching plan
-  in `edge/`; say so in the PR.
+- Runs alongside `PLAN-V02-22` (demo client, release docs) and `PLAN-V02-23` (cookie forwarding policy:
+  `forward/`, `http/ConnectionHeaders`, `edge/relay/`, `edge/terminal/`, `config/`). No shared source file.
+  Shared docs: `doc/architecture.adoc` and `doc/security-threat-model.adoc` (V02-23 edits other sections).
+  Rebase onto `origin/main` before push. If deliverable 3 adds an ADR rather than an amendment, re-check the
+  next free ordinal before push (0071 is the latest at `00293178`; V02-23 may add one too).
 
 ## Hand-Off Command
 
 ```text
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-46-upstream-close-after-early-answer.md" plan_id=plan-v02-46-upstream-close-after-early-answer
 ```
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 

@@ -51,27 +51,27 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 
 ## Claim Labels
 
-- OBSERVED: the per-event taxonomy exists and is category-typed — `events/EventType.java` (categories
+- OBSERVED: the per-event taxonomy exists and is category-typed — `events/EventType.java` over `events/EventCategory.java` (categories
   INPUT_VALIDATION / ROUTING / AUTHENTICATION / AUTHORIZATION / UPSTREAM / CONFIGURATION — `ROUTING` added
   by #383, ADR-0059), surfaced via
   `events/GatewayEventCounter.java` → `quarkus/SheriffMetrics.java` (Micrometer) and WARN logging in
-  `edge/error/RejectionReporter.java` (`SECURITY_FILTER_VIOLATION`, payload-safe). Find the WARN site by
+  `edge/error/RejectionReporter.java` `reportRejection` (`SECURITY_FILTER_VIOLATION`, payload-safe; `PASSTHROUGH_HOST_SMUGGLED` a second WARN case). Find the WARN site by
   content — `LOGGER.warn(ApiSheriffLogMessages.WARN.SECURITY_FILTER_VIOLATION, …)` — not by line.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory has six values incl. ROUTING; GatewayEdgeRoute.reportRejection WARNs SECURITY_FILTER_VIOLATION; SheriffMetrics.ERRORS_TOTAL exists
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventCategory (~34-52) six values; RejectionReporter.reportRejection (~107) WARNs SECURITY_FILTER_VIOLATION and PASSTHROUGH_HOST_SMUGGLED; SheriffMetrics ERRORS_TOTAL (~81); bullet re-pointed
 - OBSERVED absence: no cross-request scoring / campaign notion exists — the counter is global-per-event,
   not per-client-windowed. (CRS itself scores per-request only; the cross-request accumulation is the
   net-new value here.)
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no anomaly, campaign, ECS, OCSF or score construct in api-sheriff/src/main/java
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no anomaly, campaign, ECS or OCSF construct in api-sheriff/src/main/java
 - HYPOTHESIS: `PLAN-V02-06`'s per-client substrate is reusable as the accumulation window for the score
   rather than a second parallel per-client store. Confirm/refute at the substrate `PLAN-V02-06` actually
   ships § its per-client state API (verify-at-outline) — **central risk**: if that substrate is
   bucket-only (recon codes) and not general-purpose, the gap is a finding against `PLAN-V02-06`'s
   substrate contract, not work to absorb here and not a reason to build a second store.
-  - verdict: unverifiable | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06's substrate has not shipped, so reuse cannot be judged
+  - verdict: unverifiable | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: PLAN-V02-06 not shipped; substrate reuse cannot be checked
 - Verify-first clause: scope the ECS/OCSF field set against the actual schema (Elastic Common Schema /
   OCSF event classes), not against this spec's field list, before emitting — the shape must validate
   against a real consumer.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still applicable: no ECS or OCSF emitter exists
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no ECS or OCSF emitter exists
 
 ## Expected Surface
 
@@ -111,6 +111,17 @@ logging (LogRecord for the ALERT; ranges per `doc/LogMessages.adoc`).
 ```text
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-07-threat-classification.md" plan_id=plan-v02-07-threat-classification
 ```
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 

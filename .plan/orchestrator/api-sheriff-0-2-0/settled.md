@@ -357,3 +357,35 @@ _Relocated 2026-10-13 by `analyze`: the fix is confirmed on five consecutive run
     still near the threshold, not fixed.
     **CONFIRMED 2026-10-13:** 0 `ENHANCE_YOUR_CALM` lines in each of the five post-merge benchmark runs
     since #431 (38364519750, 38370104773, 38380688567, 38401958753, 38409700336), all success.
+
+## Watch — superseded reviewer cuioss-review-bot (closed 2026-10-22 by #505)
+
+- **SUPERSEDED REVIEWER: cuioss-review-bot (PR-Agent) was removed on 2026-10-20** (#493, #494). `.plan/marshal.json`
+  records `required_bots: coderabbit`, `optional_bots: sourcery`. `CLAUDE.md` and `AGENTS.md` are corrected (#502).
+  `doc/development/README.adoc` and `re-review-on-loopback.adoc` still describe PR-Agent; `PLAN-V02-43` owns them.
+
+## Open Defect 3 — demo start script readiness contract (closed 2026-10-09)
+
+3. **CLOSED 2026-10-09 — already fixed: the script gates on `/health/ready` with one named budget, `GATEWAY_READY_ATTEMPTS=30` (in place since #341). `PLAN-V02-22` no longer carries it.** Was: MEDIUM — divergent readiness contract. `demo-client/scripts/start-dev-environment.sh` gates on
+   `/q/health/live` with an unmeasured 30-attempt budget while `start-integration-container.sh` gates
+   on readiness with a measured one (PLAN-42 D2 proved the live→ready delta is 0.00s across six
+   instances under contention). Deliberate scoping at the time and disclosed in-tree, but it is the
+   one place the recorded readiness contract is not honoured. Route with (2) — same file.
+
+## Open Defect 12 — RouteRuntimeAssembler dead WebSocket allocation (resolved by #476)
+
+12. **MEDIUM, dead allocation — NO OWNER (2026-10-09: `PLAN-V02-01` did not adopt it; ADR-0062 § Not adopted says it "has no owner yet") — `RouteRuntimeAssembler` allocates a per-tuple `HttpClient` and a
+    resilience `Guard` for `WEBSOCKET` routes that no longer read them.** Opened 2026-08-09 by
+    `PLAN-V02-02`, **reported rather than swept** exactly as the standing rule requires. Collapsing
+    it is a behavioural change to boot-time allocation plus a nullability-contract change reaching
+    `RouteRuntime` and `DispatchStage` — a design task, not a sweep edit, so it needs a home rather
+    than a follow-up commit.
+
+## Open Defect 11 — doc/README.adoc fully-adapted claim (closed 2026-10-09)
+
+11. **CLOSED 2026-10-09 — the claim is gone: `doc/README.adoc` no longer says "fully adapted"; #197 (`89a3cfed`) removed the sentence with the Archived Sources row. `PLAN-V02-22` no longer carries it.** Was: LOW, traceability — the deleted `doc/archive/others/excluded.adoc` traces to nothing live.**
+    Opened 2026-08-09 by `PLAN-V02-03` D1. Its content (Apiman, WSO2 and other
+    considered-but-not-evaluated gateways) has no live design document behind it —
+    `doc/features-analysis.adoc` distils only the six *evaluated* gateways. Zero inbound refs and git
+    history preserves it, so the deletion stood, but **`doc/README.adoc`'s "fully adapted" claim
+    over-reaches for that one file.** Either narrow the claim or restore the content somewhere live.

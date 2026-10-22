@@ -88,7 +88,7 @@ work already done.
 1. **Establish what the extension's beans actually do at the pinned version.** Read the shipped
    artifact, not its description and not the issue threads: `health.JwksEndpointHealthCheck`,
    `health.TokenValidatorHealthCheck` and `metrics.JwtMetricsCollector` in
-   `token-sheriff-validation-quarkus` 0.9.7. Report, per bean: what it reads, when it can fail,
+   `token-sheriff-validation-quarkus` 0.9.8. Report, per bean: what it reads, when it can fail,
    whether it observes a **live** condition or a construction fact, and — the question that decides
    D2 — **whether it now observes this gateway's produced `@GatewayValidator` validator or still
    needs the property namespace.** Look for any further bean of the same shape rather than assuming
@@ -96,9 +96,11 @@ work already done.
    something to work around here.
 
    A closed issue is not a released capability. Verify against the resolved jar. Include the build
-   step: whether `TokenSheriffProcessor` (0.9.7) registering the health checks as unremovable still
-   loses to `quarkus.arc.exclude-types`, and pin the answer with a test that fails if the beans come
-   back (the current carriers assert the property line, not the beans' absence).
+   step: whether `TokenSheriffProcessor` (0.9.8) registering the health checks as unremovable still
+   loses to `quarkus.arc.exclude-types`. `DefaultProfileReadinessTest.shouldExcludeExtensionHealthChecksFromBeanDiscovery`
+   (~139-151, `@Any Instance<HealthCheck>`) and `ExtensionUnqualifiedBeanExclusionTest.shouldExcludeExtensionMetricsCollectorFromBeanDiscovery`
+   (~107-122) already assert the beans' absence; they were vacuous before 0.9.7 and are load-bearing
+   since. Confirm they are non-vacuous on 0.9.8 rather than adding a new one.
 
 2. **Decide the config-mapping question, with the answer written down either way.** The deliverable
    is a reasoned verdict, not a presupposed one. Candidate directions:
@@ -172,7 +174,7 @@ work already done.
      metadata. Confirm the metadata is sufficient for this application's native build before D2
      relies on dropping the extension.
    - *"`JwtMetricsCollector` fails hard on an empty namespace."* The upstream change asked for
-     warn-once-and-go-idle. Confirm from the jar what 0.9.7 actually does. If the gateway keeps the
+     warn-once-and-go-idle. Confirm from the jar what 0.9.8 actually does. If the gateway keeps the
      exclusion, this matters less for API Sheriff but remains correct for every other consumer.
 
 **Split-guard.** Five deliverables, under the threshold. If a split is ever forced, the line is
@@ -180,18 +182,18 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 
 ## Claim Labels
 
-- OBSERVED: token-sheriff is pinned at `0.9.7` (#449, `5c2a8143`) — `pom.xml`
-  - verdict: contradicted | checked_at: 5c2a8143fc2414e6644ae4efb4ef4c9986cabb1c | by: api-sheriff-0-2-0/analyze | rescoped: yes | evidence: root pom.xml pins version.token-sheriff 0.9.7 since #449; claim and fact list re-scoped from 0.9.6
+- OBSERVED: token-sheriff is pinned at `0.9.8` (#491, `199a0cda`; 0.9.6→0.9.7 was #449, `5c2a8143`) — `pom.xml` ~63; the BOM comment block (~110-133) still records its last measurement at token-sheriff 0.9.5 / Quarkus 3.39.3
+  - verdict: contradicted | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: pom.xml ~63 pins 0.9.8 (#491); BOM comment still at 0.9.5; claim and body re-scoped
 - OBSERVED: the `quarkus.arc.exclude-types` exclusion of token-sheriff health/metrics beans is unconditional — `application.properties`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties quarkus.arc.exclude-types covers the token quarkus health and metrics packages, unconditional, single occurrence
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: application.properties ~345 quarkus.arc.exclude-types excludes quarkus.health/metrics unconditionally
 - OBSERVED: readiness already reads live `IssuerKeySetStatus` — `GatewayReadinessCheck`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayReadinessCheck injects Instance<IssuerKeySetStatus>; file unchanged since 1a20edad
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayReadinessCheck ~141/~153 takes Instance<IssuerKeySetStatus>
 - OBSERVED: the token validator's `SecurityEventCounter` is bound to no meter; `SheriffMetrics` binds only cui-http's counter — D3's metrics half
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics.bindSecurityEventCounter binds only cui-http's counter; the token-side counter is bound to no meter
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SheriffMetrics.bindSecurityEventCounter (~242) binds only cui-http SecurityEventCounter
 - OBSERVED: `ADR-0027` carries no `#641`/`#617` reference — `doc/adr/0027-*.adoc`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: doc/adr/0027 contains neither 641 nor 617 (control matched its Status line); ADR-0062 does not mention 0027
-- OBSERVED (re-check at 0.9.7): `token-sheriff-validation-0.9.6.jar` ships `META-INF/native-image/.../reflect-config.json` — `unzip -l` of the resolved artifact
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: token-sheriff-validation-0.9.6.jar lists META-INF/native-image reflect-config.json and native-image.properties
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0027 names neither #641 nor #617; ADR-0062 names neither TokenValidatorProducer nor 0027
+- OBSERVED: `token-sheriff-validation-0.9.8.jar` ships `META-INF/native-image/de.cuioss.sheriff.token/token-sheriff-validation/reflect-config.json` and `native-image.properties` — `unzip -l` of the resolved artifact
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: token-sheriff-validation-0.9.8.jar ships native-image reflect-config.json and native-image.properties; bullet re-pointed to 0.9.8
 
 ## Expected Surface
 
@@ -205,14 +207,14 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 - `doc/` — the three-layer documentation, and ADR-0027 or its successor
 - `api-sheriff/src/test/**` — `ShippedApplicationPropertiesTest`, `DefaultProfileReadinessTest`, `ExtensionUnqualifiedBeanExclusionTest`, `JwksTrustProfileResolverTest`
 - `pom.xml` — the BOM comment block, re-measured on a version bump
-- Read-only: the `token-sheriff-validation-quarkus` and `token-sheriff-validation` 0.9.7 artifacts
+- Read-only: the `token-sheriff-validation-quarkus` and `token-sheriff-validation` 0.9.8 artifacts
 
 ## Dependencies and Sequencing
 
-- Depends on: **`PLAN-V02-12`, including its held D5–D7.** Those wait for a `token-sheriff-client`
-  release with a back-channel/discovery override that also covers revocation (epic queue annotation,
-  2026-10-13), so this plan waits on that release too, not only on V02-12's first PR. Both write `BffRuntimeProducer` and the `oidc` block, and this plan
-  goes after it. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058); scope D3's discovery probe
+- `PLAN-V02-12` has landed (#450, #492 `03cb4755`, ADR-0069); token-sheriff 0.9.8 (#491) delivered the
+  back-channel override and `oidc.back_channel_origin` (`OidcConfig.backChannelOrigin`) is on `main`.
+  Only V02-12's D3 (the `/auth`-fronted sample variant) is still held. Re-anchor D3's discovery probe
+  against `BffRuntimeProducer` as it stands after #492. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058); scope D3's discovery probe
   against the PAR-and-DPoP login it introduced. Never concurrent with `PLAN-V02-20`, which writes the
   same block.
 - `PLAN-V02-01` (ADR-0005 reversal) has landed. ADR-0062 sets the standing rule D2 applies: a
@@ -232,6 +234,17 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
 ```
 
 **The explicit `plan_id` is load-bearing — do not drop it.**
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 

@@ -20,7 +20,7 @@ length that matches its weight.
 explicitly *not* the subject — the operator ruled on that. Fix such things only where a merge or
 deletion forces it.
 
-**Every count in this spec is a lead.** The corpus has grown at each measurement (33, 37, 49, 55
+**Every count in this spec is a lead.** The corpus has grown at each measurement (33, 37, 49, 55, 62, 71
 records). Enumerate `doc/adr/` at outline and work from that listing, resolving records by current
 filename, never by a number quoted here.
 
@@ -69,7 +69,7 @@ filename, never by a number quoted here.
    such rather than editing history — a superseded decision is legitimate content, an inaccurate one
    is not.
 
-   **Statuses are the largest part of this.** 41 of 62 records read `Proposed` when last counted, most
+   **Statuses are the largest part of this.** 45 of 71 records read `Proposed` at `00293178`, most
    of them for shipped work. That makes this a sweep, not a spot-fix; re-count at outline. ADR-0059
    and ADR-0060 are among them; both decisions have shipped.
 
@@ -101,16 +101,16 @@ filename, never by a number quoted here.
 
 ## Claim Labels
 
-- OBSERVED: `doc/adr/` holds 62 records (`0001`–`0062`, contiguous; ~14,507 lines) at `386f3f74`, and has grown at every measurement — `git ls-tree --name-only HEAD doc/adr/`
-  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: doc/adr/ holds 62 records (0001-0062 contiguous) and 14507 lines at 386f3f74, not 61 / 14049; claim and body re-scoped
-- OBSERVED: 41 of 62 records read status `Proposed` at `386f3f74` (19 Accepted or Accepted-and-amended, 2 Superseded: `0005` and `0034`) — first line of the `== Status` block per record
-  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 41 of 62 records read Proposed; 19 Accepted or amended, 2 Superseded (0005, 0034); claim and body re-scoped
+- OBSERVED: `doc/adr/` holds 71 records (`0001`–`0071`, contiguous; ~17,445 lines) at `00293178`, and has grown at every measurement — `git ls-tree --name-only 00293178 doc/adr/`
+  - verdict: contradicted | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: doc/adr/ holds 71 records (0001-0071 contiguous, ~17,445 lines) at 00293178; claim and body re-scoped
+- OBSERVED: 45 of 71 records read status `Proposed` at `00293178` (24 Accepted or Accepted-and-amended, 2 Superseded: `0005` and `0034`) — first line of the `== Status` block per record
+  - verdict: contradicted | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 45 of 71 Proposed, 24 Accepted or amended, 2 Superseded (0005, 0034) at 00293178; claim and D3 re-scoped
 - OBSERVED: every ordinal in `doc/adr/` is claimed by exactly one record, and `AdrOrdinalUniquenessContractTest` fails the build on a duplicate — `doc/adr/` basenames `uniq -d`; the former duplicate `0053` was resolved by renumbering the header-matcher record to `0056`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no duplicate ordinal across 62 basenames; AdrOrdinalUniquenessContractTest asserts it with a control
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 71 basenames, no duplicate ordinal; AdrOrdinalUniquenessContractTest guards it
 - OBSERVED: the artifact-purity and nullable-not-Optional records are `0032` and `0033`, each with an ordinal of its own — `doc/adr/0032-*`, `0033-*`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032 and 0033 each own an ordinal
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0032 and 0033 each hold their own ordinal
 - OBSERVED: `0005-module-structure.adoc` reads `Superseded by ADR-0062` (landed by `PLAN-V02-01`), and `0027` is `Proposed` and not re-opened, so V02-09 has not pre-empted this audit — confirm again at outline (verify-at-outline)
-  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: 0005 Status reads Superseded by ADR-0062 (#410); 0027 still Proposed and untouched; claim, body and dependencies re-scoped
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 0005 Superseded by ADR-0062; 0027 still Proposed, untouched since 386f3f74
 
 ## Expected Surface
 
@@ -128,7 +128,7 @@ filename, never by a number quoted here.
 
 - Depends on: none. `PLAN-V02-19` has landed, so the audit starts from a corpus with unique ordinals.
 - **Not concurrent with any plan that authors or re-opens an ADR**: `PLAN-V02-06`, `PLAN-V02-07`,
-  `PLAN-V02-09`, `PLAN-V02-11`, `PLAN-V02-12`. A merge or
+  `PLAN-V02-09`, `PLAN-V02-11`, `PLAN-V02-46` (amends ADR-0060/0066). A merge or
   deletion here moves the ground under a record being written there.
 - Merges and deletions break links in released versions' documentation. That cost is real and is
   accepted; report every removed or merged record with its replacement so the break is traceable.
@@ -140,6 +140,17 @@ filename, never by a number quoted here.
 ```
 
 **The explicit `plan_id` is load-bearing — do not drop it.**
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 

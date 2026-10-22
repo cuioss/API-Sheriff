@@ -102,9 +102,10 @@ must work through that negotiation, not around it.
    length, chunk size and idle timeout on every listener. `Upgrade` and `Connection` are already in
    `ConnectionHeaders.REQUEST_STRIP` (#185, pinned in `ConnectionHeadersTest`), so the h2c strip is
    done except for `HTTP2-Settings`, which nothing strips. `maxConcurrentStreams` is done: #466 (kidicap PLAN-32) caps it at 100
-   per connection. Releasing the buffered credit of refused and queued streams, and bounding request
-   bodies (total-body bound, gRPC stream idle), is owned by `PLAN-V02-45`. That plan runs before or after
-   this one, never together. Remaining scope here: a
+   per connection. `PLAN-V02-45` has landed (#506, `99e9dfd3`, ADR-0060
+   Amendment A2): a fixed 25 s request-body deadline, a fixed five-minute gRPC stream-idle bound, and
+   tests pinning that refused and client-reset queued HTTP/2 uploads return their credit. Its
+   gateway-sent `NO_ERROR` resets do not feed a Rapid-Reset count; `gw-08` stays `GAP`. Remaining scope here: a
    stream-reset rate bound, CONTINUATION bounds, the `HTTP2-Settings` strip, and checking whether
    ADR-0060's declared-length framing (#385) already re-derives `Content-Length` on h2→h1 (if it
    does, pin it with a test rather than re-implement it). `GrpcDispatchStage`'s Javadoc claims the `gw-08` bounds hold on the gRPC path
@@ -161,25 +162,25 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 - OBSERVED (the oracle): the differentiated codes are real — `events/EventType.java`: `NO_ROUTE_MATCHED`
   (404), `TOKEN_MISSING` (401), `PATH_NOT_ALLOWED` (400); rendered by `edge/error/ErrorResponseWriter.java`
   `renderProblem` per the event's HTTP mapping.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType NO_ROUTE_MATCHED 404, PATH_NOT_ALLOWED 400, TOKEN_MISSING 401; renderProblem derives status from eventType.httpStatus()
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: EventType NO_ROUTE_MATCHED 404 (~56), PATH_NOT_ALLOWED 400 (~72), TOKEN_MISSING 401 (~134); status from httpStatus()
 - OBSERVED: deny-by-default routing (no listing) — `pipeline/RouteSelectionStage.java`
   (`NO_ROUTE_MATCHED`, "the gateway never forwards an unmatched request").
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: RouteSelectionStage throws GatewayException(NO_ROUTE_MATCHED) and documents that an unmatched request is never forwarded
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: pipeline/RouteSelectionStage never forwards unmatched (~37), throws NO_ROUTE_MATCHED (~73)
 - OBSERVED: no per-client recon detection exists — `events/GatewayEventCounter.java` counts events
   globally (Micrometer), not per-source; a grep for a per-client/leaky-bucket construct returns nothing.
   Confirm/refute at `events/` § its counter set (verify-at-outline).
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter is a global EventType-to-AtomicLong map; no per-client or rate construct in main beyond the unused RateLimitConfig
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: GatewayEventCounter is a global ConcurrentHashMap<EventType,AtomicLong>; no per-client construct; RateLimitConfig read by no runtime
 - HYPOTHESIS: the "trusted / authenticated caller" signal needed for the trust-boundary branch is
   available at the render point (the request carries its auth outcome). Confirm/refute at
   each `renderProblem` call site, for what auth state is in scope there
   (verify-at-outline) — if the reject path cannot see auth state, the branch needs the pipeline to
   thread it, which widens the deliverable. Re-grounding refuted it; D1 now carries the threading.
-  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: PipelineRequest gained an Optional admittingSession (#412, session routes only) but still no bearer or unauthenticated outcome; renderProblem sees none; D1 body re-scoped
+  - verdict: contradicted | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: PipelineRequest exposes mediatedBearer (~347) and admittingSession (~367) but no auth outcome reaches renderProblem (ErrorResponseWriter ~243); D1 already carries the threading
 - Verify-first clause: confirm that collapsing to 404 does not break the shipped BFF/XHR contracts
   (the user-info endpoint deliberately returns 401-not-redirect for XHR) — the uniform-404 must NOT
   apply to those authenticated-session flows; scope the "untrusted" predicate against the landed auth
   model, not this spec's prose.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: UserInfoEndpoint javadoc: no live session yields 401 problem+json, never a redirect; reserved paths resolve before route selection
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: bff/reserved/UserInfoEndpoint Javadoc (~63-65): no live session yields 401 problem+json, never a redirect
 
 ## Expected Surface
 
@@ -194,12 +195,12 @@ the trust-boundary threading in D1 is itself large, split D1 off rather than blo
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/ErrorPageClassifier.java` — D1 works through the negotiating renderer
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java`, `doc/LogMessages.adoc` — the trip event's metric and log record
 - `doc/architecture.adoc`, `doc/adr/` — the substrate ADR (D6); `benchmarks/**` — the upload benchmark as D8's regression check
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java` — D8: the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). This is where `maxConcurrentStreams`, the stream-reset rate bound and the h2c `Upgrade` strip would land.
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java` — D8: the per-listener transport bounds (header size, initial-line and chunk size, idle timeout). `maxConcurrentStreams` is already bounded here (~139, #466) and the h2c `Upgrade`/`Connection` strip lives in `ConnectionHeaders.REQUEST_STRIP`; the stream-reset rate bound and the `HTTP2-Settings` strip are what remain.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/GrpcDispatchStage.java` — D8: its Javadoc claims the gw-08 HTTP/2 abuse bounds hold on the gRPC path, while `doc/security-threat-model.adoc` still marks gw-08 `GAP`. Reconcile one or the other.
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/end/EarlyResponseEnd.java`, `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/end/InboundStreamWindow.java` — D8: the early-response `NO_ERROR` reset path (#431, ADR-0066) that a reset-rate bound must not count; read, edited only if the bound needs a hook there
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/RateLimitConfig.java` — D9: the reserved key, read by nothing on the request path
-- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D9: the boot WARN for a set `rate_limit` (or the route-table build, whichever already emits per-route boot WARNs; verify-at-outline)
+- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/LimitRules.java` — D9: the boot WARN for a set `rate_limit`, on the `ValidationRule` seam (ADR-0071; per-route boot WARNs are already emitted by `EdgeRules`, `OidcSessionRules`, `TerminalActionRules`); verify-at-outline
 - OBSERVED: `README.adoc`, `doc/user/README.adoc`, `doc/adr/0016-grpc-trailers-only-rejection-mapping.adoc` — D9 wording alignment (`doc/configuration.adoc`, `doc/architecture.adoc`, `doc/user/endpoint-routes.adoc`, `doc/LogMessages.adoc` are D9 sites too)
 
 ## Dependencies and Sequencing
@@ -224,6 +225,17 @@ Three-layer docs, Sonar zero-findings, named line items, integration tests in th
 ```text
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-06-enumeration-hardening.md" plan_id=plan-v02-06-enumeration-hardening
 ```
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 
