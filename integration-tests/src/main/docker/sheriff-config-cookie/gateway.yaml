@@ -195,6 +195,23 @@ oidc:
     # construction, which the boot rule requires. It names the same routable public page as
     # logout.final_redirect above, for the same reasons: '/' is not servable on this stack.
     default_return_url: /assets/demo/landing.html
+# --- Negotiated HTML error pages (demo rejection panel, 06-rejection-panel.spec.js) -------------
+# The demo SPA's gateway-rejection panel asserts ONE expectation per probe in both Playwright
+# projects: session-server against the base instance, session-cookie against this one. So this
+# instance negotiates the same HTML error pages as the base document's portal block — a navigation
+# that explicitly accepts text/html gets the HTML page with the same status, a fetch keeps
+# application/problem+json. It is a reduced mirror on purpose: path, title and error_pages only. No
+# template_dir, so the built-in template renders, and no cache_seconds, a limit-shaped key.
+# Placed after every cited key, so no line declared-limit-assertion-coverage.adoc cites moves.
+#
+# NOTE for api-sheriff-cookie-2: that peer mounts this overlay VERBATIM and therefore gains the
+# portal too. That is harmless: an HTML page is only offered to a request whose Accept lists
+# text/html explicitly, on a gateway-originated exit, and that peer only replays an already-sealed
+# cookie on a steady-state REST-client GET.
+portal:
+  path: /portal
+  title: API Sheriff Cookie Demo Portal
+  error_pages: true
 # --- Trust for the BFF OIDC back-channel -------------------------------------------------------
 # Binds the BFF back-channel — the calls the oidc block above makes to Keycloak — to the trust
 # profile the JWKS issuers already name through jwks.tls_profile. Last block of the document on

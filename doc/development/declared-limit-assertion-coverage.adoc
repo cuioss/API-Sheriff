@@ -235,6 +235,14 @@ declarations rather than each document's, plus the one endpoint-level list the s
 `reserved-path-overlap/bff-overlap.yaml`. The documents described below that copy the base, or
 stand alone, declare further base-cited keys; each paragraph says which.
 
+`sheriff-config-cookie/gateway.yaml`, one of the four `×4` documents, also carries a *reduced*
+`portal` block, so the demo rejection panel's one expectation per probe holds on both demo
+instances. The block sits after every key a row cites, so no `cookie:N` citation moved. It declares
+`path`, `title` and `error_pages` -- none of which matches the sweep pattern -- and omits
+`cache_seconds`, so the base-only `portal.cache_seconds` row does not derive onto it, and the file
+stays limit-bearing on exactly the keys it declared before. The inventory, the limit-bearing list
+and the nineteen are unchanged.
+
 `sheriff-config-passthrough-empty/gateway.yaml` is deliberately *outside* that `×N` notation, and
 the `×4` rows are **not** re-cited as `×5`. It is not an independently authored descriptor: it is a
 verbatim copy of the base document with the `tls.passthrough_sni` block -- and only that block --
@@ -258,8 +266,8 @@ the removed `edge_hardening` block. Measured against the base, each therefore *o
   both);
 * `oidc.step_up.path`, which the base gained for `BffSessionScopeParityIT` (only the
   passthrough-empty overlay mirrors it);
-* the `portal` block the base gained for `PortalIT` / `HtmlErrorPageIT` (again mirrored by the
-  passthrough-empty overlay only).
+* the `portal` block the base gained for `PortalIT` / `HtmlErrorPageIT` (mirrored in full by the
+  passthrough-empty overlay; the cookie overlay carries a reduced block, described above).
 
 Some values differ as well, none of them the bound of a limit: `metadata.config_version` is each
 overlay's own label, `oidc.logout.final_redirect` is `/` where the base names
@@ -324,9 +332,11 @@ is derived from the *cookie* document rather than the base one: it is
 `sheriff-config-cookie/gateway.yaml` with three *behavioural* values repointed -- `oidc.client_id` to
 `cookie-refresh-client`, `session.refresh.enabled` from `false` to `true`, and the gateway origin from 10445
 to 10455 -- plus the `metadata.config_version` document label, which the overlay itself records as a
-label rather than a fourth behavioural difference. No key is added, and exactly one is not carried
-over: `oidc.login.default_return_url`, which the cookie document sets and this overlay leaves unset.
-That key matches no alternative in the sweep pattern, so no row is affected. Apart from it the
+label rather than a fourth behavioural difference. No key is added, and two parts of the cookie
+document are not carried over: `oidc.login.default_return_url`, which the cookie document sets and
+this overlay leaves unset, and the cookie document's reduced `portal` block (`path`, `title`,
+`error_pages`), which exists there for the demo rejection panel only. None of those keys matches any
+alternative in the sweep pattern, so no row is affected. Apart from them the
 overlay declares exactly the key set the cookie document declares, and the `×4` rows are **not**
 re-cited to include it. None of the three repointed values is
 limit-shaped: `client_id` and `enabled` match no alternative in the sweep pattern, and the origin
