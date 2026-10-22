@@ -86,15 +86,18 @@ A leg signs nothing and writes no release tag.
 
 A join job runs only when the matrix as a whole succeeded. It assembles the index with
 `docker buildx imagetools create` from exactly the two digests the legs handed over — no attestation
-entry, no third platform, no tag lookup — and points `<version>` and `sha-<release-tag sha>` at it.
-It then reads the tags back from the registry and asserts that both resolve to one index digest,
-that the index lists exactly `linux/amd64` and `linux/arm64`, each pointing at its own leg's tested
-digest, and that pulling the index for `linux/amd64` yields the image the amd64 leg tested.
+entry, no third platform, no tag lookup — under a candidate tag, `leg-<release-tag sha>-index`.
+It reads that tag back from the registry and asserts that it resolves to an index listing exactly
+`linux/amd64` and `linux/arm64`, each pointing at its own leg's tested digest, and that pulling the
+index for `linux/amd64` yields the image the amd64 leg tested. It signs and verifies the three
+digests, and only then points `<version>` and `sha-<release-tag sha>` at the index digest and reads
+both back.
 
 *A failed or cancelled leg publishes no release tag.* The legs run with `fail-fast`, so a failing
 leg cancels the other, and a matrix that did not fully succeed leaves the join skipped. Either both
 architectures ship under the release tags or neither does. A failed run leaves at most a leg-local
-tag behind, which no consumer is pointed at.
+tag behind, which no consumer is pointed at, and so does a failure of the index assertions or of
+the signatures: the release tags are the join's last write.
 
 The run/skip guard that keeps a guard-declined merge from re-pushing and re-signing an already
 released tag sits on the legs and on the join alike.
@@ -161,14 +164,16 @@ a release: the release job refuses it on every ref, so no Maven publication, SCM
 release can result. Every tag a dry run pushes is `dryrun-<run_id>-<attempt>[-<arch>]`, scoped to
 the run attempt and asserted before the push; the images carry the version label
 `dryrun-<run_id>`, which names the run rather than the attempt; signatures are verified under an
-identity derived from the dispatching ref; and a cleanup job deletes, by the digests the run
+identity derived from the dispatching ref, except that a dry run dispatched from `main` does not
+sign; and a cleanup job deletes, by the digests the run
 recorded, every package version the run created. It then fails, naming each one, on any version
 still carrying an exact tag of any attempt of the run. The tags are attempt-scoped because a leg
 pushes before it records its digest: a re-run pushing under an unchanged tag would move it off an
 earlier attempt's unrecorded version and leave that version unnamed, while an attempt-scoped tag
 stays on it. A dry run may be dispatched from a non-`main`
 ref, because it publishes nothing a consumer pulls by a release tag and its signatures do not
-satisfy the published identity unless it was dispatched from `main`.
+satisfy the published identity. From `main` they would, so a dry run dispatched from `main` skips
+signing.
 
 === What this record does not change
 

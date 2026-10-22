@@ -3,7 +3,7 @@
   Release publish flow — two independent tracks: the release lane (one release run, entered by a
   guarded version-bump merge or a deliberate dispatch, splitting after the Maven release into one
   leg per architecture, each building, testing, scanning, pushing and smoking its own image, then
-  converging on one join that assembles the index, writes the release tags and signs) and the
+  converging on one join that assembles the index, signs and verifies it, and only then writes the release tags) and the
   pull-request lane (an independent, non-gating early signal).
   The two tracks deliberately never converge.
   theme-handling: A (theme-neutral)
@@ -13,7 +13,7 @@
      role="img" aria-labelledby="title desc"
      font-family="ui-sans-serif, -apple-system, system-ui, 'Segoe UI', sans-serif">
   <title id="title">API Sheriff release publish flow</title>
-  <desc id="desc">Two independent tracks. The release lane is entered by either of two triggers — merging a version change that the centrally-owned version-changed guard admits, or a deliberate workflow_dispatch. From there the Maven release is cut, and the lane splits into two legs, one per architecture: linux/amd64 on an amd64 runner and linux/arm64 on an arm64 runner. Each leg checks out the release tag and asserts the version, then runs the integration-test suite, whose docker compose build is that leg's one and only image build, so what the leg publishes is by construction exactly what it tested. A Syft SBOM and a gating Trivy scan at HIGH and CRITICAL then run before the leg writes to the registry. The leg pushes its image under a leg-local tag only, and pulls the digest back on its own architecture to assert it is identical to the tested image. The two legs converge on one join, reached only when both are green: it assembles one image index from exactly the two tested digests, writes the two release tags onto it, asserts that the index lists exactly linux/amd64 and linux/arm64, and signs and verifies the index digest and both platform digests keylessly with Cosign. A failed leg leaves the join skipped, so no release tag is written. On the pull-request lane, an independent non-gating scan of the pinned base image and the repository filesystem reports on every change without ever building an image or failing the check. The two lanes never converge.</desc>
+  <desc id="desc">Two independent tracks. The release lane is entered by either of two triggers — merging a version change that the centrally-owned version-changed guard admits, or a deliberate workflow_dispatch. From there the Maven release is cut, and the lane splits into two legs, one per architecture: linux/amd64 on an amd64 runner and linux/arm64 on an arm64 runner. Each leg checks out the release tag and asserts the version, then runs the integration-test suite, whose docker compose build is that leg's one and only image build, so what the leg publishes is by construction exactly what it tested. A Syft SBOM and a gating Trivy scan at HIGH and CRITICAL then run before the leg writes to the registry. The leg pushes its image under a leg-local tag only, and pulls the digest back on its own architecture to assert it is identical to the tested image. The two legs converge on one join, reached only when both are green: it assembles one image index from exactly the two tested digests under a candidate tag no consumer is pointed at, asserts that the index lists exactly linux/amd64 and linux/arm64, signs and verifies the index digest and both platform digests keylessly with Cosign, and only then writes the two release tags onto the verified index. A failed leg leaves the join skipped, and a failed assertion or signature leaves the release tags unwritten. On the pull-request lane, an independent non-gating scan of the pinned base image and the repository filesystem reports on every change without ever building an image or failing the check. The two lanes never converge.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
@@ -102,9 +102,9 @@
   <rect class="stroke" x="980"  y="186" width="110" height="60" rx="6"/>
   <rect class="stroke" x="1116" y="186" width="110" height="60" rx="6"/>
   <text x="1035" y="168" class="stage">Assemble index</text>
-  <text x="1171" y="168" class="stage">Cosign sign</text>
-  <text x="1035" y="272" class="sub">two release tags<tspan x="1035" dy="13">exactly amd64 + arm64</tspan></text>
-  <text x="1171" y="272" class="sub">index + both platforms<tspan x="1171" dy="13">keyless, verified</tspan></text>
+  <text x="1171" y="168" class="stage">Sign, then tag</text>
+  <text x="1035" y="272" class="sub">candidate tag only<tspan x="1035" dy="13">exactly amd64 + arm64</tspan></text>
+  <text x="1171" y="272" class="sub">index + both platforms<tspan x="1171" dy="13">verify, then tag</tspan></text>
 
   <!-- ======================= lane separator (never converge) ======================= -->
   <line class="dash" x1="20" y1="384" x2="1250" y2="384"/>
