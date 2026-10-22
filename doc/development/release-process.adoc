@@ -457,7 +457,11 @@ moves.* The `uses:` of `release.yml`'s `release` job (currently line 132) pins
 `cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@7115714` (v0.42.0), and
 that workflow's `guard` job runs `cuioss/cuioss-organization/.github/actions/release-guard@ecd94a9`
 (v0.42.0). The check order and the reason lines quoted above are those of that action's
-`release-guard.py` at `ecd94a9`.
+`release-guard.py` at `ecd94a9`. A moved pin does not go unnoticed: `ReleaseGuardPinDocsContractTest`
+fails the build when the workflow pin cited here is not the one the `release` job uses, and
+link:../../.github/workflows/release-guard-docs.yml[`release-guard-docs.yml`] fetches the
+cuioss-organization sources at both pins on every pull request into `main` that touches `release.yml`
+or this document, failing when the cited action pin or a quoted reason line no longer matches them.
 
 *The `paths:` filter is a prefilter, never the decision.* It matches *every* edit to
 `.github/project.yml` -- `name`, `description`, `maven-build`, `sonar`, `pages`, `github-automation`,

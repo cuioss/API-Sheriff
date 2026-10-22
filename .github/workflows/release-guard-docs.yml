@@ -1,0 +1,168 @@
+# RELEASE-GUARD DOC DRIFT CHECK — keeps what doc/development/release-process.adoc § "The
+# version-changed guard is the release decision" says about the central guard tied to the guard the
+# release actually runs.
+#
+# WHAT IT CHECKS. That section describes the guard at a pin, and the guard lives in
+# cuioss/cuioss-organization, not here. Three of the values it states can only be read there:
+#   * the nested action pin — the `guard` job of reusable-maven-release.yml, AT the SHA the `release`
+#     job of release.yml pins, runs .github/actions/release-guard at a SHA; every short SHA the doc
+#     cites for that action must be a prefix of it;
+#   * the two reason lines the doc quotes — their fragments must occur in that action's
+#     release-guard.py AT the action SHA, and in the doc.
+# The fourth value, the reusable-workflow pin itself, is checked offline by
+# ReleaseGuardPinDocsContractTest in api-sheriff, which runs in every Maven build.
+#
+# WHY A WORKFLOW AND NOT A TEST. The Maven build is offline by design; fetching another repository's
+# sources at a pin is a network call it must not make. This job makes exactly two read-only fetches
+# from raw.githubusercontent.com, both addressed by a full 40-character commit SHA read from a file
+# and validated as such before it reaches a URL, so neither fetch can be redirected by a branch name.
+#
+# A NEW FILE rather than a job in an existing workflow: no other pull-request workflow is triggered
+# by these paths, and this check needs no build, no JDK and no secret.
+#
+# Values reach the script through files and constants only, never through `${{ }}` expansion inside
+# a run block — expression interpolation into a script body is a script-injection sink.
+
+name: Release Guard Docs
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'doc/development/release-process.adoc'
+      - '.github/workflows/release-guard-docs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-guard-docs:
+    name: Guard pins and reason lines cited in release-process.adoc
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every finding is reported as an ::error:: annotation before the step fails, so one run names
+      # every drifted value rather than only the first.
+      - name: Check the cited guard pins and reason lines against cuioss-organization
+        shell: python
+        run: |
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          RAW = "https://raw.githubusercontent.com/cuioss/cuioss-organization/{sha}/{path}"
+          REUSABLE_WORKFLOW = ".github/workflows/reusable-maven-release.yml"
+          GUARD_SCRIPT = ".github/actions/release-guard/release-guard.py"
+          DOC = Path("doc/development/release-process.adoc")
+          RELEASE_WORKFLOW = Path(".github/workflows/release.yml")
+          SECTION = 'release-process.adoc § "The version-changed guard is the release decision"'
+          # The literal parts of the two reason lines the doc quotes; <version> is the variable part.
+          REASON_FRAGMENTS = (
+              "Release guard: ",
+              "release.current-version unchanged at",
+              "release.current-version changed to",
+              "but a tag for",
+              "already exists",
+          )
+          FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+          findings = []
+
+
+          def finding(message):
+              print(f"::error::{message}")
+              findings.append(message)
+
+
+          def job_block(text, job):
+              start = re.search(rf"(?m)^  {re.escape(job)}:[ \t]*$", text)
+              if start is None:
+                  return None
+              end = re.compile(r"(?m)^  \S").search(text, start.end())
+              return text[start.end():end.start() if end else len(text)]
+
+
+          def single_pin(block, pattern, label):
+              pins = re.findall(pattern, block or "")
+              if len(pins) != 1:
+                  finding(f"{label}: expected exactly one full-SHA pin, found {len(pins)}: {pins}")
+                  return None
+              if not FULL_SHA.match(pins[0]):
+                  finding(f"{label}: {pins[0]!r} is not a full commit SHA")
+                  return None
+              return pins[0]
+
+
+          def fetch(sha, path):
+              url = RAW.format(sha=sha, path=path)
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      return response.read().decode("utf-8")
+              except (urllib.error.URLError, TimeoutError, UnicodeDecodeError) as error:
+                  finding(f"could not fetch {path} at {sha} from cuioss-organization: {error}")
+                  return None
+
+
+          doc = DOC.read_text(encoding="utf-8")
+          release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+          workflow_sha = single_pin(
+              job_block(release_workflow, "release"),
+              r"(?m)^\s+uses:\s*cuioss/cuioss-organization/\.github/workflows/reusable-maven-release\.yml@([0-9a-f]+)",
+              f"{RELEASE_WORKFLOW}: the `release` job's reusable-maven-release.yml pin",
+          )
+          reusable = fetch(workflow_sha, REUSABLE_WORKFLOW) if workflow_sha else None
+          action_sha = single_pin(
+              job_block(reusable, "guard"),
+              r"(?m)^\s+uses:\s*cuioss/cuioss-organization/\.github/actions/release-guard@([0-9a-f]+)",
+              f"{REUSABLE_WORKFLOW}@{workflow_sha}: the `guard` job's release-guard pin",
+          ) if reusable else None
+
+          if action_sha:
+              cited = re.findall(r"cuioss/cuioss-organization/\.github/actions/release-guard@([0-9a-f]{7,40})\b", doc)
+              if not cited:
+                  finding(f"{DOC} cites no cuioss/cuioss-organization/.github/actions/release-guard@<sha> pin at all")
+              cited += re.findall(r"`release-guard\.py` at `([0-9a-f]{7,40})`", doc)
+              cited += re.findall(r"the current pin `([0-9a-f]{7,40})`", doc)
+              for sha in cited:
+                  if not action_sha.startswith(sha):
+                      finding(
+                          f"{DOC} cites the release-guard action at {sha}, but reusable-maven-release.yml@{workflow_sha}"
+                          f" runs it at {action_sha}. Re-check {SECTION} against release-guard.py at the new pin"
+                          " before updating the cited SHA."
+                      )
+
+              guard_script = fetch(action_sha, GUARD_SCRIPT)
+              if guard_script is not None:
+                  for fragment in REASON_FRAGMENTS:
+                      if fragment not in guard_script:
+                          finding(
+                              f"release-guard.py@{action_sha} no longer contains {fragment!r}, which {SECTION}"
+                              " quotes as part of a guard reason line. Re-read the script and correct the quoted lines."
+                          )
+                      if fragment not in doc:
+                          finding(f"{DOC} no longer quotes {fragment!r} from the guard's reason lines")
+
+          if findings:
+              sys.exit(1)
+          print(
+              f"release.yml pins reusable-maven-release.yml@{workflow_sha}, whose guard job runs"
+              f" release-guard@{action_sha}; every pin {DOC} cites matches, and both quoted reason lines"
+              " occur in release-guard.py at that pin."
+          )
