@@ -277,7 +277,7 @@ function renderProbeRow(id, status, contentType, redirected) {
   setText(el(`probe-${id}-redirected`), redirected);
 }
 
-/** The current probe run. A probe renders only while its own run is still the current one. */
+/** The current probe run. */
 let probeRun = 0;
 
 /**
