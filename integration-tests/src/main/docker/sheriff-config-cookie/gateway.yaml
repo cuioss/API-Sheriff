@@ -206,8 +206,8 @@ oidc:
 #
 # NOTE for api-sheriff-cookie-2: that peer mounts this overlay VERBATIM and therefore serves the
 # portal too -- the /portal overview page as well as the negotiated error pages. No suite drives
-# either against that peer; its one exercised request replays an already-sealed cookie on a
-# steady-state REST-client GET.
+# either against that peer; the requests it does exercise are REST-client GETs replaying a sealed
+# cookie (one of them tampered), none asking for text/html or /portal.
 portal:
   path: /portal
   title: API Sheriff Cookie Demo Portal

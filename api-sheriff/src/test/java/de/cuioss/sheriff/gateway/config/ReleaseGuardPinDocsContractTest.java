@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.config;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -31,6 +32,7 @@ import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.opentest4j.AssertionFailedError;
 
 /**
  * Binds the reusable-workflow pin {@code doc/development/release-process.adoc} cites for the
@@ -61,9 +63,10 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>No vacuous pass.</strong> A doc that cites no workflow pin, a {@code release.yml} without a
  * {@code release} job, and a {@code release} job without exactly one cuioss-organization {@code uses:} line
- * each fail naming the file. A control drives synthetic documents and workflows through the same helpers: a
- * matching pair is accepted, while a moved SHA, a different workflow path, and a doc citing no pin are each
- * reported.
+ * each fail naming the file. Controls drive synthetic documents and workflows through the same helpers: a
+ * matching pair is accepted while a moved SHA, a different workflow path and a doc citing no pin are each
+ * reported; the {@code release} pin is recovered from between two other jobs that pin other workflows; and a
+ * workflow without a {@code release} job and a {@code release} job with two pins are both refused.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -99,15 +102,37 @@ class ReleaseGuardPinDocsContractTest {
 
     private static final String CONTROL_FULL_SHA = "0123456789abcdef0123456789abcdef01234567";
 
+    /** A second full SHA, pinned by a job other than {@code release}. */
+    private static final String CONTROL_OTHER_SHA = "fedcba9876543210fedcba9876543210fedcba98";
+
+    /**
+     * The {@code release} job is preceded and followed by jobs that also call a cuioss-organization reusable
+     * workflow at a full SHA, so a reader that strays out of the {@code release} block picks up a pin the
+     * control can tell apart.
+     */
     private static final String CONTROL_WORKFLOW = """
             jobs:
+              build:
+                uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-build.yml@%2$s # v1.0.0
               release:
                 if: always()
-                uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@%s # v1.0.0
+                uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@%1$s # v1.0.0
               publish-image:
-                steps:
-                  - uses: cuioss/cuioss-organization/.github/actions/read-project-config@%s # v1.0.0
-            """.formatted(CONTROL_FULL_SHA, "fedcba9876543210fedcba9876543210fedcba98");
+                uses: cuioss/cuioss-organization/.github/workflows/reusable-image-publish.yml@%2$s # v1.0.0
+            """.formatted(CONTROL_FULL_SHA, CONTROL_OTHER_SHA);
+
+    private static final String CONTROL_NO_RELEASE_JOB = """
+            jobs:
+              build:
+                uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-build.yml@%s # v1.0.0
+            """.formatted(CONTROL_FULL_SHA);
+
+    private static final String CONTROL_TWO_PINS = """
+            jobs:
+              release:
+                uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@%s # v1.0.0
+                uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@%s # v1.0.0
+            """.formatted(CONTROL_FULL_SHA, CONTROL_OTHER_SHA);
 
     private static final String CONTROL_MATCHING_DOC =
             "The release job pins `cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@0123456`.";
@@ -167,6 +192,25 @@ class ReleaseGuardPinDocsContractTest {
                         .isEmpty(), "the detector must report a cited workflow path the release job does not call"),
                 () -> assertFalse(pinDrift(pinned, documentedPins(CONTROL_SILENT_DOC), "the silent doc").isEmpty(),
                         "the detector must report a doc that cites no pin, not accept it"));
+    }
+
+    /**
+     * Matched control over the workflow reader's two refusals: a workflow without a {@code release} job, and
+     * a {@code release} job that does not carry exactly one pin, each fail rather than yield a pin to compare.
+     */
+    @Test
+    @DisplayName("The workflow reader refuses a workflow without a release job and a release job without exactly one pin")
+    void workflowReaderRefusesAMissingReleaseJobAndAnAmbiguousPin() {
+        AssertionFailedError noReleaseJob = assertThrows(AssertionFailedError.class,
+                () -> releaseJobPin(CONTROL_NO_RELEASE_JOB, "the job-less control"));
+        AssertionFailedError twoPins = assertThrows(AssertionFailedError.class,
+                () -> releaseJobPin(CONTROL_TWO_PINS, "the two-pin control"));
+
+        assertAll("workflow reader refusals",
+                () -> assertTrue(noReleaseJob.getMessage().contains("no `release:` job"),
+                        "a workflow without a release job must be refused as such: " + noReleaseJob.getMessage()),
+                () -> assertTrue(twoPins.getMessage().contains("expected exactly one"),
+                        "a release job with two pins must be refused as ambiguous: " + twoPins.getMessage()));
     }
 
     // --- extraction helpers ----------------------------------------------------------------------

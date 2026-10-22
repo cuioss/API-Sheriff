@@ -7,8 +7,9 @@
 #   * the nested action pin — the `guard` job of reusable-maven-release.yml, AT the SHA the `release`
 #     job of release.yml pins, runs .github/actions/release-guard at a SHA; every short SHA the doc
 #     cites for that action must be a prefix of it;
-#   * the two reason lines the doc quotes — their fragments must occur in that action's
-#     release-guard.py AT the action SHA, and in the doc.
+#   * the two reason lines the doc quotes — release-guard.py AT the action SHA must still build them
+#     from the same literal parts (its print format, its SKIP verdict and both reason templates), and
+#     rendering those parts with <version> for each placeholder must give exactly the doc's lines.
 # The fourth value, the reusable-workflow pin itself, is checked offline by
 # ReleaseGuardPinDocsContractTest in api-sheriff, which runs in every Maven build.
 #
@@ -72,13 +73,19 @@ jobs:
           DOC = Path("doc/development/release-process.adoc")
           RELEASE_WORKFLOW = Path(".github/workflows/release.yml")
           SECTION = 'release-process.adoc § "The version-changed guard is the release decision"'
-          # The literal parts of the two reason lines the doc quotes; <version> is the variable part.
-          REASON_FRAGMENTS = (
-              "Release guard: ",
-              "release.current-version unchanged at",
-              "release.current-version changed to",
-              "but a tag for",
-              "already exists",
+          # How release-guard.py builds a reason line: one print format, the refusal verdict, and one
+          # f-string template per refusal. Each is matched as a whole, with any {placeholder} as the
+          # variable part, so a renamed verdict, a changed separator or a reworded reason all fail.
+          LINE_FORMAT = re.compile(r'Release guard: \{verdict\} — \{reason\}')
+          SKIP_VERDICT = re.compile(r'"SKIP"')
+          REASON_TEMPLATES = (
+              re.compile(r'release\.current-version unchanged at \{[^{}]+\}'),
+              re.compile(r'release\.current-version changed to \{[^{}]+\}, but a tag for \{[^{}]+\} already exists'),
+          )
+          # The two lines the doc quotes are those parts rendered with <version> for each placeholder.
+          QUOTED_LINES = (
+              "Release guard: SKIP — release.current-version unchanged at <version>",
+              "Release guard: SKIP — release.current-version changed to <version>, but a tag for <version> already exists",
           )
           FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -150,14 +157,16 @@ jobs:
 
               guard_script = fetch(action_sha, GUARD_SCRIPT)
               if guard_script is not None:
-                  for fragment in REASON_FRAGMENTS:
-                      if fragment not in guard_script:
+                  for part in (LINE_FORMAT, SKIP_VERDICT, *REASON_TEMPLATES):
+                      if not part.search(guard_script):
                           finding(
-                              f"release-guard.py@{action_sha} no longer contains {fragment!r}, which {SECTION}"
-                              " quotes as part of a guard reason line. Re-read the script and correct the quoted lines."
+                              f"release-guard.py@{action_sha} no longer builds its reason lines from {part.pattern!r},"
+                              f" which the lines {SECTION} quotes are rendered from. Re-read the script and correct"
+                              " the quoted lines."
                           )
-                      if fragment not in doc:
-                          finding(f"{DOC} no longer quotes {fragment!r} from the guard's reason lines")
+              for line in QUOTED_LINES:
+                  if line not in doc:
+                      finding(f"{DOC} no longer quotes the guard reason line {line!r} verbatim")
 
           if findings:
               sys.exit(1)
