@@ -158,7 +158,7 @@ class CsrfDefenceTest {
             assertRejected(closed, request(HttpMethod.POST, Map.of(ORIGIN_HEADER, List.of(TRUSTED_ORIGIN))),
                     "with no trusted origins configured, every Origin is untrusted");
             assertDoesNotThrow(() -> closed.enforce(request(HttpMethod.POST,
-                    Map.of(SEC_FETCH_SITE_HEADER, List.of(SAME_ORIGIN)))),
+                            Map.of(SEC_FETCH_SITE_HEADER, List.of(SAME_ORIGIN)))),
                     "a same-origin fetch still passes with an empty trusted set");
         }
 
