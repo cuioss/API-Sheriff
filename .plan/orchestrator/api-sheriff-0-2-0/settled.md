@@ -389,3 +389,9 @@ _Relocated 2026-10-13 by `analyze`: the fix is confirmed on five consecutive run
     `doc/features-analysis.adoc` distils only the six *evaluated* gateways. Zero inbound refs and git
     history preserves it, so the deletion stood, but **`doc/README.adoc`'s "fully adapted" claim
     over-reaches for that one file.** Either narrow the claim or restore the content somewhere live.
+
+## Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512
+
+2. **CLOSED 2026-10-22 — `start-dev-environment.sh` now prints `(cd demo-client && PLAYWRIGHT_BASE_URL_SERVER=… PLAYWRIGHT_BASE_URL_COOKIE=… npm run test)`, with both values taken from the gateway rows it started and a refusal when a row supplies none (`abf911dc`, line 366).** Was: MEDIUM developer trap, `playwright.config.js` routes two variables through `required()` at module scope while only the Maven execution supplied them, so the printed `cd demo-client && npm run test` aborted at config load. **Keep the generalizable check**: for any doc offering run-it-directly beside run-it-through-the-build, enumerate what the build supplies that the direct path does not — environment, working directory, classpath.
+
+- **ISSUE #189 REMAINDER — CLOSED 2026-10-22 by #512 (`abf911dc`).** The demo client has a rejection panel (`spa/app.js`, `spa/index.html`) covered by `demo-client/tests/06-rejection-panel.spec.js`; `doc/variants/01-base-gateway.adoc`, `demo-client/doc/integration-sample.adoc` and the PROHIBITED ASSERTION scope in `demo-client/doc/playwright-suite.adoc` are corrected. `doc/plan/04-request-pipeline.adoc` no longer exists. Issue #189 was closed against the PR at 2026-10-22T19:21:54Z.
