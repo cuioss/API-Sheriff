@@ -79,7 +79,7 @@ endpoint:
         additional_origins: ["https://partner.sheriff.test"]
 
     # POLICY: a list with the same-origin check switched off. The gateway forwards a cross-site unsafe
-    # request carrying the listed cookie and logs WARN ApiSheriff-123 for this route at boot: the
+    # request carrying the listed cookie and logs WARN ApiSheriff-139 for this route at boot: the
     # upstream is left to defend itself against cross-site request forgery.
     - id: cookie-policy-unchecked
       match:
