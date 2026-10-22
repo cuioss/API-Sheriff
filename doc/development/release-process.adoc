@@ -378,10 +378,12 @@ still in flight.
 
 After deleting, it reads the package again and *fails, naming each one*, when anything it should
 have removed is still there: a recorded digest the delete did not remove, or a version still
-carrying one of this run's tags. Those are checked by exact name for *every* attempt of the run, from
-`1` to the current attempt -- `dryrun-<run_id>-<attempt>`, `dryrun-<run_id>-<attempt>-promoted`,
-`dryrun-<run_id>-<attempt>-amd64` and `dryrun-<run_id>-<attempt>-arm64` for each -- never by prefix or pattern. The tag check only reports;
-it deletes nothing.
+carrying one of this run's tags. Those are matched for *every* attempt of the run, from `1` to the
+current attempt, as `dryrun-<run_id>-<attempt>` with at most one lowercase-alphanumeric suffix
+(`-amd64`, `-arm64`, `-promoted`, or a leg added later). The match is anchored at both ends on this
+run's id and the attempt, so it never reaches another run's or another attempt's tags, and it needs
+no list of architectures to keep in step with the legs. The tag check only reports; it deletes
+nothing.
 
 *The tags are attempt-scoped so that a re-run cannot hide a version.* A leg pushes before it records
 the digest, so a push followed by a failed record leaves a version only its tag still names. Were the

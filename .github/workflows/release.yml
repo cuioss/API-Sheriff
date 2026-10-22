@@ -1383,14 +1383,16 @@ jobs:
   #
   # WHAT IT REPORTS, AND THAT IT NEVER PASSES SILENTLY. After deleting, it reads the package again
   # and fails, naming each one, when any version it should have removed is still there: a recorded
-  # digest the delete did not remove, or a version still carrying one of this run's exact tags —
-  # for EVERY attempt a of this run, 1 through the current run attempt: dryrun-<run_id>-<a>,
-  # dryrun-<run_id>-<a>-promoted, dryrun-<run_id>-<a>-amd64 and dryrun-<run_id>-<a>-arm64. The tag check only reports; it deletes
-  # nothing, so it is a completeness check over what the digests found, not a second way to find
+  # digest the delete did not remove, or a version still carrying one of this run's tags —
+  # for EVERY attempt a of this run, 1 through the current run attempt: dryrun-<run_id>-<a> with at
+  # most one lowercase-alphanumeric suffix (-amd64, -arm64, -promoted, or a leg added later). The tag
+  # check only reports; it deletes nothing, so it is a completeness check over what the digests found, not a second way to find
   # what to delete. It is how a version the run pushed but could not record still surfaces — and it
   # holds across re-runs because the tags are attempt-scoped: a re-run pushes under its own
   # attempt's tags and never moves a tag off an earlier attempt's version, so an unrecorded version
-  # stays tagged, and the check matches each tag exactly, never by prefix or pattern.
+  # stays tagged. The match is anchored at both ends on this run's id and the attempt, so it never
+  # reaches another run's or another attempt's tags, and it needs no list of architectures to keep
+  # in step with the publish-image matrix.
   #
   # WHY `always()`. A dry run that failed half-way has still created versions — a leg that pushed
   # before a later step failed, an index that failed its assertions — and cancelling a run must not
@@ -1520,10 +1522,10 @@ jobs:
             TARGETS+=("$DIGEST")
           done
 
-          # 4. Read the package again and name every version this run left behind. The architectures
-          #    are the publish-image matrix's; a leg added there must be added here. The exact tags of
-          #    EVERY attempt are checked, not only the current one: a version an earlier attempt
-          #    pushed but could not record is still tagged with that attempt's number.
+          # 4. Read the package again and name every version this run left behind. The tags of EVERY
+          #    attempt are checked, not only the current one: a version an earlier attempt pushed but
+          #    could not record is still tagged with that attempt's number. The pattern is anchored on
+          #    this run's id and the attempt, so it needs no list of architectures.
           REMAINING="$(list_versions)"
           for DIGEST in "${TARGETS[@]}"; do
             if jq -e --arg name "$DIGEST" 'any(.[]; .name == $name)' <<< "$REMAINING" > /dev/null; then
@@ -1534,12 +1536,15 @@ jobs:
             PROBLEMS+=("the run attempt '${RUN_ATTEMPT}' is not a positive integer, so no attempt's dry-run tags were checked")
             RUN_ATTEMPT=0
           fi
+          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            PROBLEMS+=("the run id '${RUN_ID}' is not a number, so no dry-run tags were checked")
+            RUN_ATTEMPT=0
+          fi
           for ((A = 1; A <= RUN_ATTEMPT; A++)); do
-            for TAG in "dryrun-${RUN_ID}-${A}" "dryrun-${RUN_ID}-${A}-promoted" "dryrun-${RUN_ID}-${A}-amd64" "dryrun-${RUN_ID}-${A}-arm64"; do
-              mapfile -t TAGGED < <(jq -r --arg tag "$TAG" '.[] | select(any(.tags[]; . == $tag)) | .name' <<< "$REMAINING")
-              for DIGEST in "${TAGGED[@]}"; do
-                PROBLEMS+=("package version ${DIGEST} still carries this run's tag ${TAG}")
-              done
+            PATTERN="^dryrun-${RUN_ID}-${A}(-[a-z0-9]+)?\$"
+            mapfile -t TAGGED < <(jq -r --arg re "$PATTERN" '.[] | .name as $name | .tags[] | select(test($re)) | "\($name) \(.)"' <<< "$REMAINING")
+            for ENTRY in "${TAGGED[@]}"; do
+              PROBLEMS+=("package version ${ENTRY%% *} still carries this run's tag ${ENTRY#* }")
             done
           done
 
