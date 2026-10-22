@@ -38,9 +38,10 @@ tag points at, so this tag answers "which source produced this image?" unambiguo
 ordinary registry tag: nothing at the registry prevents it from being repointed, and it is not the
 index digest. Use it to trace an image back to its source -- not as a deployment pin.
 
-The package also lists `leg-<commit>-amd64` and `leg-<commit>-arm64` tags, one pair per release.
-*They are not release tags.* The release lane pushes each platform image under one of them before
-the index exists, and leaves them on the two platform images afterwards. Do not pull or pin them:
+The package also lists `leg-<commit>-amd64` and `leg-<commit>-arm64` tags, one pair per release,
+and a `leg-<commit>-index` tag on the index. *They are not release tags.* The release lane pushes
+each platform image under one of them before the index exists, and the index under the third until
+it has been signed and verified; it leaves them in place afterwards. Do not pull or pin them:
 use a release tag, or a digest as described below.
 
 *There is no `:latest` tag, and that is deliberate -- the registry is not broken.* Pin by version,
@@ -285,7 +286,8 @@ only lists the two images.
 
 Each platform image is scanned with Trivy on its own build, and a finding at *HIGH or CRITICAL* in
 either image fails the release before that image is pushed to GHCR. A failure on either platform
-blocks the release for both: the release tags are written only once both platform images passed.
+blocks the release for both: the release tags are written only once both platform images passed and
+the index over them has been signed and verified.
 The gate is the `Scan the tested image (gating, HIGH and CRITICAL)` step of
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`], which runs ahead of the
 registry login on each platform's build. It cannot hold back the Maven artifacts, which the release

@@ -90,7 +90,7 @@ release job has cut it, so nothing about the image can be validated beforehand.
 The consequence is worth stating plainly rather than discovering during an incident. A failure
 anywhere in the image lane leaves a *partial release*: the jars are on Maven Central and are
 irrevocable, while GHCR holds less than a release. *What* it holds depends on where the failure
-was, and the line between the two cases is the join's first registry write:
+was, and the line between the cases is the join's last step, which writes the release tags:
 
 * *A failed or cancelled leg* -- the integration-test suite, the SBOM step, the Trivy gate, the
   push, the plain-manifest check or the smoke test on either platform -- *leaves no release tag at
@@ -98,10 +98,15 @@ was, and the line between the two cases is the join's first registry write:
   skipped. The legs run with `fail-fast`, so a red leg also cancels the other one. At most a
   leg-local `leg-<commit>-<arch>` tag is left behind, which no consumer is pointed at. There is no
   half release: no release tag ever names one platform while the other failed.
-* *A failure in the join after it assembled the index* -- an index assertion, a signature or its
-  verification -- leaves the two release tags on an index that is not, or not completely, signed and
-  verified. The join writes the tags in the same call that assembles the index, and proves and signs
-  it afterwards.
+* *A failure in the join before it writes the release tags* -- an index assertion, a signature or
+  its verification -- *also leaves no release tag.* The join pushes the index under the candidate tag
+  `leg-<commit>-index` alone and proves, signs and verifies it there; the release tags are the last
+  thing it writes. At most the `leg-<commit>-<arch>` tags and that candidate tag are left behind,
+  which no consumer is pointed at.
+* *A failure in the join's last two steps* -- promoting the verified index to its release tags, or
+  reading them back -- is the only case that can leave a release tag behind. The promotion points the
+  tags at the digest that was signed and verified, so a tag it did write names a signed index; re-run
+  the join.
 
 Everywhere this document or the workflow says a step runs "before anything is pushed", read it as
 *before anything is pushed to GHCR*.
@@ -140,8 +145,8 @@ reproduces the same inputs without touching Maven Central.
   they are. The re-run leg rebuilds and retests its image and hands the join its new digest.
 * *Both legs are green and the join failed* (`Join the tested digests into the signed release
   index`): re-run the join alone. It reads the two digests the legs recorded in this run, so no image
-  is rebuilt; it assembles the index from them again, writes the release tags, and signs and verifies
-  all three digests.
+  is rebuilt; it assembles the index from them again under the candidate tag, signs and verifies all three
+  digests, and only then writes the release tags.
 
 Anything carried in the tree or the workflow::
 The source, the Dockerfile, the base-image pin, a `.trivyignore`, `release.yml` itself, the runner
@@ -205,7 +210,9 @@ exactly the drift the inversion removes -- and the drift is silent, because ever
   The following `Verify all three signatures under the published identity` step then runs the
   operator verification command from link:../user/container-image.adoc[the container image guide]
   against each of the three digests and fails the release if any of them does not verify under the
-  published identity.
+  published identity. Only after that does `Promote the verified index to its final tags` write
+  `<version>` and `sha-<commit>`, by the index digest, and `Assert every final tag names the signed
+  index` reads both back.
 
 The image scan is narrower than it looks. Each platform image is that architecture's variant of the
 pinned distroless base plus one native executable and contains no jars, so each scan is in substance
@@ -271,11 +278,14 @@ naming the triggering commit would point at a tree that never built them. The ta
 source produced this?" unambiguously, but it remains an ordinary mutable registry tag and is not the
 index digest -- which is exactly why Cosign signs digests rather than either tag.
 
-*The `leg-<commit>-<arch>` tags are not release tags.* Each leg pushes its platform image under
-`leg-<commit>-amd64` or `leg-<commit>-arm64` before the index exists, and never under a release tag:
+*The `leg-<commit>-<arch>` and `leg-<commit>-index` tags are not release tags.* Each leg pushes its
+platform image under `leg-<commit>-amd64` or `leg-<commit>-arm64` before the index exists, and the
+join pushes the index under `leg-<commit>-index` until it has been signed and verified; none is a
+release tag, and the join writes `<version>` and `sha-<commit>` only afterwards:
 a release tag may only ever name the index over both platforms, so a leg that wrote one would
 publish a single-platform release the moment it finished. The leg tags stay on the two platform
-images after the release and accumulate, one pair per release. They are harmless -- they name images
+images after the release and accumulate, one pair per release; the candidate tag stays on the index.
+They are harmless -- they name images
 that are part of a signed release -- but no consumer is pointed at them, and the README's version
 badge ignores them, together with the `sha-`, `sha256-` and `dryrun-` tags.
 
@@ -332,16 +342,22 @@ requires write access to the repository, so allowing other refs widens nothing.
   inspects the image the suite built; the rest runs as on a release: the integration-test suite, the
   SBOM, the Trivy gate, the push, the plain-manifest check and the smoke test by digest.
 * *The join assembles the two-platform index and runs every index assertion*, then signs the index
-  and both platform digests and verifies all three. The verification uses an identity derived from
-  the dispatching ref -- the published identity with that ref, regex-escaped, in place of
-  `refs/heads/main`. A dry run dispatched from a feature branch therefore produces signatures the
+  and both platform digests, verifies all three, and promotes the verified index to
+  `dryrun-<run_id>-<attempt>-promoted`, so the promotion and its read-back run for real. The
+  verification uses an identity derived from the dispatching ref -- the published identity with that
+  ref, regex-escaped, in place of `refs/heads/main`. A dry run therefore produces signatures the
   published operator identity refuses.
+* *A dry run dispatched from `main` does not sign.* A signature made from `refs/heads/main` would
+  satisfy the published operator identity whatever the run was for, so on `main` the join skips the
+  signing and its verification and says so in a notice. Dispatch the dry run from a branch to
+  exercise them -- the branch runs the same steps under its own identity.
 
 === What it never does
 
 * *It writes no `<version>`, no `sha-<commit>` and no `leg-<commit>-<arch>` tag.* Every tag it pushes
   names the run *and its attempt*: `dryrun-<run_id>-<attempt>-amd64`,
-  `dryrun-<run_id>-<attempt>-arm64` or, on the index, `dryrun-<run_id>-<attempt>`, where `<attempt>`
+  `dryrun-<run_id>-<attempt>-arm64` or, on the index, `dryrun-<run_id>-<attempt>` and
+  `dryrun-<run_id>-<attempt>-promoted`, where `<attempt>`
   is the workflow's run attempt -- `1`, and one more for each re-run. Each leg and the
   join assert this against the run's own id and attempt, anchored at both ends, before their first
   push. The version label stays `dryrun-<run_id>`: it names the run, not the attempt.
@@ -363,8 +379,8 @@ still in flight.
 After deleting, it reads the package again and *fails, naming each one*, when anything it should
 have removed is still there: a recorded digest the delete did not remove, or a version still
 carrying one of this run's tags. Those are checked by exact name for *every* attempt of the run, from
-`1` to the current attempt -- `dryrun-<run_id>-<attempt>`, `dryrun-<run_id>-<attempt>-amd64` and
-`dryrun-<run_id>-<attempt>-arm64` for each -- never by prefix or pattern. The tag check only reports;
+`1` to the current attempt -- `dryrun-<run_id>-<attempt>`, `dryrun-<run_id>-<attempt>-promoted`,
+`dryrun-<run_id>-<attempt>-amd64` and `dryrun-<run_id>-<attempt>-arm64` for each -- never by prefix or pattern. The tag check only reports;
 it deletes nothing.
 
 *The tags are attempt-scoped so that a re-run cannot hide a version.* A leg pushes before it records

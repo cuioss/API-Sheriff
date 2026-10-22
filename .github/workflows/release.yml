@@ -23,8 +23,8 @@ name: Release
 # legs with their full integration-test suites, the join, the three signatures and their
 # verification — WITHOUT a release. The `release` job refuses it on every ref, so no Maven
 # publication, SCM tag or GitHub release can result; each leg builds the dispatching commit, labelled
-# with the version dryrun-<run_id>; every tag the run pushes is dryrun-<run_id>-<attempt>[-<arch>],
-# scoped to the run attempt and asserted before the push; and the cleanup job deletes, by the digests
+# with the version dryrun-<run_id>; every tag the run pushes is dryrun-<run_id>-<attempt>[-<arch>|
+# -promoted], scoped to the run attempt and asserted before the push; and the cleanup job deletes, by the digests
 # the run recorded, every package version the run created. It is how the two-platform lane is proven
 # before a real release depends on it.
 #
@@ -32,8 +32,9 @@ name: Release
 # main-ref restriction on the release job exists because a release publishes what consumers pull by a
 # release tag, under the one signing identity operators verify against. A dry run publishes neither:
 # it writes no `<version>` and no `sha-*` tag, its images are labelled dryrun-<run_id> and deleted
-# again, and it signs under the identity of the ref it was dispatched from, which — from any ref but
-# main — the published refs/heads/main identity does not even accept. Proving a change to this lane
+# again, and it signs under the identity of the ref it was dispatched from, which the published
+# refs/heads/main identity does not even accept. A dry run dispatched from main would be accepted by
+# it, so from main a dry run does not sign at all. Proving a change to this lane
 # is exactly what a feature branch needs it for, before the change is merged. Nor does it widen who
 # can publish: a dispatch already requires write access to the repository.
 on:
@@ -804,8 +805,8 @@ jobs:
         run: |
           docker rm -f api-sheriff-smoke || true
 
-  # Joins the two tested leg digests into the ONE image index a consumer pulls, writes the two release
-  # tags onto it, and signs it.
+  # Joins the two tested leg digests into the ONE image index a consumer pulls, signs and verifies
+  # it, and only then writes the two release tags onto it.
   #
   # THE ONLY JOB THAT WRITES A RELEASE TAG, AND THE ONLY ONE THAT SIGNS. `<version>` and
   # `sha-<release-tag sha>` are written here and nowhere else, so they can only ever name an index
@@ -813,8 +814,14 @@ jobs:
   # a matrix job reports success only when EVERY leg succeeded: a failed or cancelled leg — and
   # `fail-fast: true` on the legs cancels the survivor the moment one fails — leaves this job
   # skipped, and a skipped join publishes no release tag at all. There is no half release: either
-  # both platforms ship under the release tags, or neither does. What a failed run leaves behind is
-  # at most a leg-local `leg-*` tag, which no consumer is pointed at.
+  # both platforms ship under the release tags, or neither does.
+  #
+  # THE RELEASE TAGS ARE THE LAST THING THIS JOB WRITES. The index is first pushed under a candidate
+  # tag no consumer is pointed at — leg-<release-tag sha>-index, or dryrun-<run_id>-<attempt> — and
+  # is asserted, pulled, signed and verified there. Only a verified, signed index is then given its
+  # release tags, by digest, in a call that cannot change what they name. A failure at any earlier
+  # step therefore leaves at most `leg-*` tags behind, never a release tag on an index that is
+  # unsigned or unproven.
   #
   # That success is WRITTEN OUT rather than left to the implicit `success()`, because the condition
   # starts with `!cancelled()` — which replaces the implicit `success()` — so that a dry run, whose
@@ -830,9 +837,11 @@ jobs:
   # them only.
   #
   # ON A DRY RUN the join assembles the same two-platform index from the same two tested digests
-  # and runs every assertion and every signature the release path runs, but it tags the index
-  # dryrun-<run_id>-<attempt> alone — never `<version>`, never `sha-*` — asserted before the index is
-  # written. The attempt keeps a re-run join from moving the tag off an earlier attempt's index.
+  # and runs every assertion the release path runs, but it tags the index dryrun-<run_id>-<attempt>
+  # and, in place of the release tags, dryrun-<run_id>-<attempt>-promoted — never `<version>`, never
+  # `sha-*` — both asserted before the index is written. The attempt keeps a re-run join from moving
+  # a tag off an earlier attempt's index. A dry run dispatched from a ref other than main signs and
+  # verifies too; one dispatched from main does not (see the signing step below).
   #
   # The index is assembled from EXACTLY the two leg digests and nothing else — no attestation entry,
   # no third platform, no tag lookup. Every value it is built from arrives in a leg-digest-<arch>
@@ -911,10 +920,17 @@ jobs:
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # THE TAGS THE INDEX IS WRITTEN UNDER, computed once and read by the create call, the dry-run
-      # assertion and the read-back alike, so all three see the same list. Release: `<version>` and
-      # `sha-<release-tag sha>`. Dry run: dryrun-<run_id>-<attempt> alone, attempt-scoped for the
-      # reason given on the legs' "Resolve the leg tag" step. Space-separated: a tag carries no space.
+      # THE TWO TAG SETS THE INDEX IS WRITTEN UNDER, computed once and read by every step that names
+      # a tag, so all of them see the same lists. Each is space-separated: a tag carries no space.
+      #
+      #   candidate — the ONE tag the index is first pushed under, and the one it is asserted, pulled,
+      #               signed and verified through. Release: leg-<release-tag sha>-index, a `leg-*` tag
+      #               like the legs' own, which no consumer is pointed at and the README badge
+      #               ignores. Dry run: dryrun-<run_id>-<attempt>, attempt-scoped for the reason given
+      #               on the legs' "Resolve the leg tag" step.
+      #   promoted  — the tags the verified index is then given. Release: `<version>` and
+      #               `sha-<release-tag sha>`. Dry run: dryrun-<run_id>-<attempt>-promoted, so the
+      #               promotion step runs for real on a dry run, and is cleaned up with the version.
       - name: Resolve the index tags
         id: tags
         env:
@@ -925,9 +941,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$DRY_RUN" = true ]; then
-            echo "value=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}" >> "$GITHUB_OUTPUT"
+            echo "candidate=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}" >> "$GITHUB_OUTPUT"
+            echo "promoted=ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-promoted" >> "$GITHUB_OUTPUT"
           else
-            echo "value=ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION} ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}" >> "$GITHUB_OUTPUT"
+            echo "candidate=ghcr.io/cuioss/api-sheriff:leg-${TAG_SHA}-index" >> "$GITHUB_OUTPUT"
+            echo "promoted=ghcr.io/cuioss/api-sheriff:${RELEASED_VERSION} ghcr.io/cuioss/api-sheriff:sha-${TAG_SHA}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download the leg digests
@@ -988,40 +1006,46 @@ jobs:
         run: |
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-      # THE DRY-RUN TAG CHECK, on the join's own push: the index tag list must be exactly this run
-      # attempt's dryrun-<run_id>-<attempt>, anchored at both ends — one tag, no `<version>`, no
-      # `sha-*`, no other attempt's tag — before the index is written to the registry.
-      - name: Assert the dry run writes only its own dry-run tag
+      # THE DRY-RUN TAG CHECK, on the join's own pushes: the candidate and the promoted tag lists
+      # must each be exactly this run attempt's tag, anchored at both ends — one tag apiece, no
+      # `<version>`, no `sha-*`, no other attempt's tag — before the index is written to the registry.
+      - name: Assert the dry run writes only its own dry-run tags
         if: env.DRY_RUN == 'true'
         env:
-          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          CANDIDATE_TAGS: ${{ steps.tags.outputs.candidate }}
+          PROMOTED_TAGS: ${{ steps.tags.outputs.promoted }}
           RUN_ID: ${{ github.run_id }}
           ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          read -r -a TAGS <<< "$INDEX_TAGS"
-          if [ "${#TAGS[@]}" -ne 1 ] || ! [[ "${TAGS[0]}" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}$ ]]; then
-            echo "::error::A dry run may tag its index only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}, but the join would write '${INDEX_TAGS}'. Refusing to write the index."
+          read -r -a CANDIDATES <<< "$CANDIDATE_TAGS"
+          if [ "${#CANDIDATES[@]}" -ne 1 ] || ! [[ "${CANDIDATES[0]}" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}$ ]]; then
+            echo "::error::A dry run may tag its index only ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}, but the join would write '${CANDIDATE_TAGS}'. Refusing to write the index."
             exit 1
           fi
-          echo "Dry-run index tag confirmed: ${TAGS[0]}"
+          read -r -a PROMOTED <<< "$PROMOTED_TAGS"
+          if [ "${#PROMOTED[@]}" -ne 1 ] || ! [[ "${PROMOTED[0]}" =~ ^ghcr\.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-promoted$ ]]; then
+            echo "::error::A dry run may promote its index only to ghcr.io/cuioss/api-sheriff:dryrun-${RUN_ID}-${ATTEMPT}-promoted, but the join would write '${PROMOTED_TAGS}'. Refusing to write the index."
+            exit 1
+          fi
+          echo "Dry-run index tags confirmed: ${CANDIDATES[0]}, ${PROMOTED[0]}"
 
-      # THE RELEASE TAGS ARE WRITTEN HERE AND NOWHERE ELSE. `imagetools create` assembles the index
-      # inside the registry from exactly the two leg digests — the platform of each entry is read
-      # from that image's own config, nothing is rebuilt and nothing is re-pushed — and points every
-      # index tag at it in one call: both release tags, or the one dry-run tag. The sources are
-      # plain image manifests (each leg asserted that), so the index carries no attestation entry.
-      # Do NOT add a source here, and do NOT replace this with `docker buildx build --push`: see
-      # ATTESTATION POSTURE on publish-image.
-      - name: Assemble the index and write its tags
+      # THE INDEX IS WRITTEN HERE, UNDER THE CANDIDATE TAG ALONE. `imagetools create` assembles the
+      # index inside the registry from exactly the two leg digests — the platform of each entry is
+      # read from that image's own config, nothing is rebuilt and nothing is re-pushed. The sources
+      # are plain image manifests (each leg asserted that), so the index carries no attestation
+      # entry. Do NOT add a source here, do NOT add a release tag here, and do NOT replace this with
+      # `docker buildx build --push`: see ATTESTATION POSTURE on publish-image. The release tags are
+      # written by "Promote the verified index" below, after the signatures verified.
+      - name: Assemble the index under its candidate tag
         id: assemble
         env:
-          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          CANDIDATE_TAGS: ${{ steps.tags.outputs.candidate }}
           AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
           ARM64_DIGEST: ${{ steps.legs.outputs.arm64-digest }}
         run: |
           set -euo pipefail
-          read -r -a TAGS <<< "$INDEX_TAGS"
+          read -r -a TAGS <<< "$CANDIDATE_TAGS"
           TAG_ARGS=()
           for TAG in "${TAGS[@]}"; do
             TAG_ARGS+=(--tag "$TAG")
@@ -1037,11 +1061,11 @@ jobs:
       - name: Record the index digest for the dry-run cleanup
         if: always() && env.DRY_RUN == 'true' && steps.assemble.outcome == 'success'
         env:
-          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          CANDIDATE_TAGS: ${{ steps.tags.outputs.candidate }}
           ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          read -r -a TAGS <<< "$INDEX_TAGS"
+          read -r -a TAGS <<< "$CANDIDATE_TAGS"
           DIGEST="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${TAGS[0]}")"
           mkdir -p "${RUNNER_TEMP}/dryrun-created"
           jq -n --arg kind index --arg digest "$DIGEST" '{kind: $kind, digest: $digest}' \
@@ -1056,20 +1080,20 @@ jobs:
           path: ${{ runner.temp }}/dryrun-created/index-${{ github.run_attempt }}.json
           if-no-files-found: error
 
-      # PROVE WHAT THE INDEX TAGS NOW NAME, read back from the registry rather than trusted from the
-      # create call. Every tag written must resolve to ONE index digest — on a release, `<version>`
-      # and `sha-*` must agree; that digest must address an index (not a single image); and the
+      # PROVE WHAT THE CANDIDATE TAG NOW NAMES, read back from the registry rather than trusted from
+      # the create call. The tag must resolve to an index digest (not a single image), and the
       # index must list exactly linux/amd64 and linux/arm64, each pointing at its own leg's tested
       # digest, with no third entry. A stray attestation entry, a platform pointing at the other
-      # leg's image, or a tag left on an older index all fail here.
+      # leg's image, or a tag left on an older index all fail here — and nothing a consumer pulls by a
+      # release tag has been written yet.
       #
       # An entry's platform is compared as os/architecture. A `variant` an arm64 image config may
       # carry (v8) is not part of the comparison — the legs' own platform check compares the same
       # os/architecture pair — while the entry count still refuses any third entry.
-      - name: Assert every index tag names one two-platform index
+      - name: Assert the candidate tag names one two-platform index
         id: index
         env:
-          INDEX_TAGS: ${{ steps.tags.outputs.value }}
+          INDEX_TAGS: ${{ steps.tags.outputs.candidate }}
           AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
           ARM64_DIGEST: ${{ steps.legs.outputs.arm64-digest }}
         run: |
@@ -1141,11 +1165,25 @@ jobs:
           fi
           echo "linux/amd64 through the index is the tested amd64 image: ${PULLED_ID}"
 
+      # A DRY RUN DISPATCHED FROM MAIN SIGNS NOTHING. The published operator identity names
+      # release.yml@refs/heads/main, and a signature made from that ref would satisfy it whatever the
+      # run was for — a rehearsal's image carrying a signature indistinguishable from a release's.
+      # The signing, its verification and the Cosign install therefore run on a release and on a dry
+      # run from any other ref, whose certificate the published identity refuses. The rest of the
+      # lane is exercised from main exactly as elsewhere; the release path's own signing is proved
+      # by the release itself and by a dry run from a branch, which runs the same steps.
+      - name: Note that this dry run signs nothing
+        if: env.DRY_RUN == 'true' && github.ref == 'refs/heads/main'
+        run: |
+          echo "::notice::A dry run dispatched from main does not sign: a signature from refs/heads/main would satisfy the published operator identity. Dispatch the dry run from a branch to exercise signing."
+
       - name: Install Cosign
+        if: env.DRY_RUN != 'true' || github.ref != 'refs/heads/main'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # KEYLESS OIDC SIGNING, BY DIGEST — THREE DIGESTS PER RELEASE, after the index has been
-      # assembled and proved, so every signed artifact is provably the tested and published one. The
+      # assembled and proved, so every signed artifact is provably the tested one, and before the
+      # release tags are written, so no release tag ever names an index that is not signed. The
       # three are the index digest the release tags name, plus BOTH platform digests: a client can
       # pull by platform digest, bypassing the index entirely, and an unsigned platform digest would
       # then verify as nothing. Never sign a tag: a tag is a mutable pointer, so signing one signs
@@ -1197,16 +1235,17 @@ jobs:
       # relax it to a `.*` — a loose identity would accept a signature from any workflow in any
       # repository and the check would prove nothing.
       #
-      # A DRY RUN SIGNS TOO, AND UNDER ITS OWN REF. It signs the same three digests the same way, so
-      # the sign-and-verify path a release depends on is exercised before a release depends on it.
-      # Its certificate names the ref it was dispatched from, so the verify step checks it against
-      # an identity derived from that ref — the published regexp with the dispatching ref, regex-
-      # escaped, in place of refs/heads/main, and anchored at both ends exactly like it. The release
-      # path's regexp is the literal below and is never derived. A dry run dispatched from a feature
-      # branch therefore produces signatures the published operator identity REFUSES; one dispatched
-      # from main produces signatures it accepts, over images labelled dryrun-<run_id> and tagged
-      # only dryrun-<run_id>-<attempt>[-<arch>], which the cleanup job deletes together with their
-      # signatures.
+      # A DRY RUN SIGNS TOO, UNDER ITS OWN REF — EXCEPT FROM MAIN. Dispatched from any other ref it
+      # signs the same three digests the same way, so the sign-and-verify path a release depends on
+      # is exercised before a release depends on it. Its certificate names the ref it was dispatched
+      # from, so the verify step checks it against an identity derived from that ref — the published
+      # regexp with the dispatching ref, regex-escaped, in place of refs/heads/main, and anchored at
+      # both ends exactly like it. The release path's regexp is the literal below and is never
+      # derived. Such a dry run therefore produces signatures the published operator identity
+      # REFUSES. A dry run dispatched from main would produce signatures it ACCEPTS, over images that
+      # are not a release, so it does not sign: the three steps carry the condition
+      # `env.DRY_RUN != 'true' || github.ref != 'refs/heads/main'`, and the dry-run branch of the
+      # verify step below is only ever reached off main.
       #
       # doc/user/container-image.adoc publishes the same two strings to operators, and the verify step
       # below RUNS them against all three digests — the lane proves its own signing identity rather
@@ -1214,6 +1253,7 @@ jobs:
       #
       # SLSA provenance and any further attestation are deliberately out of scope.
       - name: Sign the release index and both platform digests (keyless)
+        if: env.DRY_RUN != 'true' || github.ref != 'refs/heads/main'
         env:
           INDEX_DIGEST: ${{ steps.index.outputs.digest }}
           AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
@@ -1243,6 +1283,7 @@ jobs:
       # matches with, so a ref is matched as the literal it is — a `.` in a branch name matches a
       # dot, never any character.
       - name: Verify all three signatures under the published identity
+        if: env.DRY_RUN != 'true' || github.ref != 'refs/heads/main'
         env:
           INDEX_DIGEST: ${{ steps.index.outputs.digest }}
           AMD64_DIGEST: ${{ steps.legs.outputs.amd64-digest }}
@@ -1286,6 +1327,48 @@ jobs:
             echo "Signature verified under ${IDENTITY_REGEXP}: ${REF}"
           done
 
+      # THE RELEASE TAGS ARE WRITTEN HERE AND NOWHERE ELSE, and only now: the index has been
+      # asserted, pulled, signed and verified under its candidate tag, so no release tag can name an
+      # index that is unsigned or unproven. The source is the index DIGEST, not a tag, so what the
+      # tags are pointed at is exactly what was signed; `imagetools create` over a single index
+      # source re-points the tags at it without rebuilding it or changing its digest, and the next
+      # step reads every tag back to prove that. On a dry run the promoted tag is the attempt's
+      # dryrun-<run_id>-<attempt>-promoted, so this step and its read-back run for real before a
+      # release depends on them.
+      - name: Promote the verified index to its final tags
+        id: promote
+        env:
+          PROMOTED_TAGS: ${{ steps.tags.outputs.promoted }}
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+        run: |
+          set -euo pipefail
+          read -r -a TAGS <<< "$PROMOTED_TAGS"
+          TAG_ARGS=()
+          for TAG in "${TAGS[@]}"; do
+            TAG_ARGS+=(--tag "$TAG")
+          done
+          docker buildx imagetools create \
+            "${TAG_ARGS[@]}" \
+            "ghcr.io/cuioss/api-sheriff@${INDEX_DIGEST}"
+
+      # Every final tag must resolve to the very digest that was signed — on a release `<version>` and
+      # `sha-*` must agree with it and with each other.
+      - name: Assert every final tag names the signed index
+        env:
+          PROMOTED_TAGS: ${{ steps.tags.outputs.promoted }}
+          INDEX_DIGEST: ${{ steps.index.outputs.digest }}
+        run: |
+          set -euo pipefail
+          read -r -a TAGS <<< "$PROMOTED_TAGS"
+          for TAG in "${TAGS[@]}"; do
+            TAG_DIGEST="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$TAG")"
+            if [ "$TAG_DIGEST" != "$INDEX_DIGEST" ]; then
+              echo "::error::${TAG} resolves to '${TAG_DIGEST}', not to the signed index ${INDEX_DIGEST}."
+              exit 1
+            fi
+            echo "${TAG} names the signed index ${INDEX_DIGEST}"
+          done
+
   # Deletes the package versions a dry run created, so a dry run leaves nothing in the package.
   #
   # WHAT IS DELETED, AND HOW IT IS FOUND. Exactly the versions this run created: the index, both
@@ -1302,7 +1385,7 @@ jobs:
   # and fails, naming each one, when any version it should have removed is still there: a recorded
   # digest the delete did not remove, or a version still carrying one of this run's exact tags —
   # for EVERY attempt a of this run, 1 through the current run attempt: dryrun-<run_id>-<a>,
-  # dryrun-<run_id>-<a>-amd64 and dryrun-<run_id>-<a>-arm64. The tag check only reports; it deletes
+  # dryrun-<run_id>-<a>-promoted, dryrun-<run_id>-<a>-amd64 and dryrun-<run_id>-<a>-arm64. The tag check only reports; it deletes
   # nothing, so it is a completeness check over what the digests found, not a second way to find
   # what to delete. It is how a version the run pushed but could not record still surfaces — and it
   # holds across re-runs because the tags are attempt-scoped: a re-run pushes under its own
@@ -1452,7 +1535,7 @@ jobs:
             RUN_ATTEMPT=0
           fi
           for ((A = 1; A <= RUN_ATTEMPT; A++)); do
-            for TAG in "dryrun-${RUN_ID}-${A}" "dryrun-${RUN_ID}-${A}-amd64" "dryrun-${RUN_ID}-${A}-arm64"; do
+            for TAG in "dryrun-${RUN_ID}-${A}" "dryrun-${RUN_ID}-${A}-promoted" "dryrun-${RUN_ID}-${A}-amd64" "dryrun-${RUN_ID}-${A}-arm64"; do
               mapfile -t TAGGED < <(jq -r --arg tag "$TAG" '.[] | select(any(.tags[]; . == $tag)) | .name' <<< "$REMAINING")
               for DIGEST in "${TAGGED[@]}"; do
                 PROBLEMS+=("package version ${DIGEST} still carries this run's tag ${TAG}")

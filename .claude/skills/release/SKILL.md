@@ -121,7 +121,7 @@ happened.
 |---|---|
 | `release` (job `release` in `release.yml`) — `uses: reusable-maven-release.yml` | Maven artifacts to Maven Central; the SCM tag; the GitHub release |
 | `publish-image` (job `publish-image` in `release.yml`) — local, `needs: [release]`, a matrix of **two legs**: `linux/amd64` on `ubuntu-latest` and `linux/arm64` on `ubuntu-24.04-arm` | per leg: one platform image, built natively and integration-tested on its own architecture, pushed **only** under the leg-local tag `leg-<release-tag sha>-<arch>`, plus that leg's SPDX SBOM (`api-sheriff-<version>-<arch>-sbom.spdx.json`). **No release tag, no signature.** |
-| `join` (job `join` in `release.yml`) — local, `needs: [release, publish-image]`, runs only when **both** legs succeeded | the image index over exactly the two leg digests, the two release tags `<version>` and `sha-<release-tag sha>` on it, and **three** Cosign signatures — the index digest and both platform digests |
+| `join` (job `join` in `release.yml`) — local, `needs: [release, publish-image]`, runs only when **both** legs succeeded | the image index over exactly the two leg digests, first under the candidate tag `leg-<release-tag sha>-index`; **three** Cosign signatures — the index digest and both platform digests; and only once all three verified, the two release tags `<version>` and `sha-<release-tag sha>` on that index |
 
 A fourth job, `cleanup-dry-run`, runs on a dry run only and publishes nothing; on a release it is
 skipped.
@@ -161,10 +161,15 @@ irrevocable, while GHCR holds less than a release. What it holds depends on whic
   release tag.** Only the join writes release tags, and the join runs only when both legs succeeded;
   `fail-fast` cancels the surviving leg the moment one fails. At most a `leg-<sha>-<arch>` tag is
   left behind, which no consumer is pointed at. **There is no half release.**
-- **A failure in the join after the index was assembled** — an index assertion, a signature or its
-  verification — leaves the two release tags on an index that is not, or not completely, signed and
-  verified: the join writes the tags in the call that assembles the index, and proves and signs it
-  afterwards.
+- **A failure in the join before the release tags are written** — an index assertion, a signature
+  or its verification — **leaves the jars and no release tag.** The join pushes the index under the
+  candidate tag `leg-<release-tag sha>-index` alone, and proves, signs and verifies it there; the
+  release tags are the last thing it writes. At most `leg-<sha>-<arch>` tags and that candidate tag
+  are left behind, which no consumer is pointed at.
+- **A failure in the join's last two steps** — promoting the verified index to its release tags, or
+  reading them back — is the only case that can leave a release tag behind. It leaves one on an
+  index that **was** signed and verified (the promotion re-points the tags at that very digest), so
+  the failure is in the tags, not in the signatures; re-run the join.
 
 Everywhere this file or the workflow says a step runs "before anything is pushed", read it as
 **before anything is pushed to GHCR**.
@@ -194,8 +199,8 @@ Everywhere this file or the workflow says a step runs "before anything is pushed
        once they are. A re-run leg rebuilds and retests its image and hands the join its new digest.
      - **Both legs are green and the join failed** (`Join the tested digests into the signed release
        index`) — re-run **the join alone**. It reads the two digests the legs recorded in this run,
-       so nothing is rebuilt; it re-assembles the index from them, rewrites the release tags, and
-       signs and verifies all three digests.
+       so nothing is rebuilt; it re-assembles the index from them under the candidate tag, signs and
+       verifies all three digests, and only then rewrites the release tags.
    - **Anything carried in the tree or the workflow** — the source, the Dockerfile, the base-image
      pin, a `.trivyignore`, `release.yml` itself, a leg's runner label. A re-run reproduces the same
      inputs and so fails the same way, every time. Fix the cause on `main` and **cut a new patch
@@ -244,7 +249,9 @@ digest its own leg tested.
 
 **The `leg-<commit>-amd64` / `leg-<commit>-arm64` tags are NOT release tags.** Each leg pushes its
 platform image under one before the index exists; they stay on the two platform images afterwards
-and accumulate, one pair per release. Never count them as release tags in Step 8, and never point
+and accumulate, one pair per release. The join likewise pushes the index under
+`leg-<commit>-index` before it is signed, and that candidate tag stays on the index afterwards — also
+not a release tag. Never count them as release tags in Step 8, and never point
 anyone at them.
 
 **Neither release tag is a deployment pin.** Only `ghcr.io/cuioss/api-sheriff@sha256:...` is
@@ -934,7 +941,7 @@ Three jobs, and they fail differently:
   propagation, not a hang. The arm64 leg runs on `ubuntu-24.04-arm`; a leg that sits queued with no
   runner is a runner-availability problem, not a build problem.
 - The **`join` job** starts only once both legs are green, and takes minutes: it assembles the
-  index, writes the release tags, and signs and verifies three digests.
+  index, signs and verifies three digests, and only then writes the release tags.
 
 **If an image job fails after `release` succeeded**, you have a partial release: go to
 *If the image lane fails after the Maven release* above and **classify the failure before touching
