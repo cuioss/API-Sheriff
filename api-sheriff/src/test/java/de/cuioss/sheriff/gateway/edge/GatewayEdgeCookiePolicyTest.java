@@ -298,7 +298,7 @@ class GatewayEdgeCookiePolicyTest {
                 () -> assertEquals(mode.expectedTrailerSetCookies, answer.trailerSetCookies(),
                         "a trailer passes the same filter as a leading header"),
                 () -> assertFalse(answer.trailerSetCookies().stream()
-                        .anyMatch(GatewayEdgeCookiePolicyTest::carriesDomain),
+                                .anyMatch(GatewayEdgeCookiePolicyTest::carriesDomain),
                         "no relayed trailer carries a Domain attribute"));
     }
 
@@ -508,7 +508,7 @@ class GatewayEdgeCookiePolicyTest {
      * @param grpcStatus        the {@code grpc-status} trailer, {@code null} when none was sent
      */
     private record Answer(int status, List<String> setCookies, List<String> trailerSetCookies,
-            @Nullable String grpcStatus) {
+    @Nullable String grpcStatus) {
     }
 
     /** Minimal {@link Instance} double resolving to one bean; the routes here never read it. */
