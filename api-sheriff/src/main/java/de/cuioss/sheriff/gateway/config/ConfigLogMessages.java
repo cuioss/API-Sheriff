@@ -573,7 +573,7 @@ public final class ConfigLogMessages {
          */
         public static final LogRecord COOKIE_SAME_ORIGIN_CHECK_DISABLED = LogRecordModel.builder()
                 .prefix(PREFIX)
-                .identifier(123)
+                .identifier(139)
                 .template("Route '%s' forwards browser cookies with cookies.same_origin_check: false — the gateway does not refuse cross-site unsafe requests carrying a forwarded cookie on it, so the upstream must defend itself against cross-site request forgery")
                 .build();
     }

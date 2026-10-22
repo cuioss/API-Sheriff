@@ -3815,7 +3815,7 @@ whatever a broader scope declares.
 | `same_origin_check`
 | *Optional* boolean, *default `true`*. Whether the gateway refuses a cross-site unsafe request
   that carries a forwarded cookie on this route (see link:#_cookies_same_origin_check[The same-origin
-  check] below). `false` removes the check and logs `WARN ApiSheriff-123` naming the route.
+  check] below). `false` removes the check and logs `WARN ApiSheriff-139` naming the route.
   Declaring the key on a block whose `allow` is `none` is refused at boot: nothing is forwarded, so
   the check never runs.
 
@@ -3879,7 +3879,7 @@ exception, settled below.
   non-browser client -- a gRPC service or a server-to-server caller that sends no `Origin` and no
   cookie -- therefore needs neither. Safe methods are never checked.
 * *Turning it off.* `same_origin_check: false` removes the check from the cookie-forwarding routes
-  the block reaches, and route-table assembly logs `WARN ApiSheriff-123` once per such route other
+  the block reaches, and route-table assembly logs `WARN ApiSheriff-139` once per such route other
   than a WebSocket route, naming it. Defending that upstream against cross-site request forgery is
   then the upstream's own job.
 
@@ -3941,7 +3941,7 @@ Two WARNs make the remaining choices visible, neither of which refuses the boot:
 
 * `ApiSheriff-101` -- an endpoint or route block replaces an anchor's `cookies` block (see
   link:user/anchors.adoc#_policy_block_override_warn[The override WARN]).
-* `ApiSheriff-123` -- a cookie-forwarding route runs with `same_origin_check: false`.
+* `ApiSheriff-139` -- a cookie-forwarding route runs with `same_origin_check: false`.
 
 [[_cookies_size]]
 ==== Forwarded cookies and the cookie-size cap
@@ -4805,7 +4805,7 @@ topology leak RFC 7239 §8.2/§8.3 warn about more simply than the obfuscation t
   `cookies` block on an asset or redirect route fails the boot, and so does a `protocol: websocket`
   route whose effective block forwards any cookie without a non-empty `websocket.allowed_origins`.
   A declared `allow: []` is refused at load. A cookie-forwarding route with `same_origin_check: false`
-  emits the `ApiSheriff-123` boot WARN (see link:#_cookies_boot_rules[Boot refusals and WARNs]).
+  emits the `ApiSheriff-139` boot WARN (see link:#_cookies_boot_rules[Boot refusals and WARNs]).
 * A route whose *effective* auth is `require: bearer` requires a `token_validation` block with
   at least one issuer.
 * A route whose *effective* auth is `require: session` requires an `oidc` block.

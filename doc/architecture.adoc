@@ -1359,7 +1359,7 @@ predicate has nothing to judge there; an asset with `source: upstream` strips ev
 *The same-origin check of a cookie-forwarding route.* Route-table assembly builds one `CsrfDefence`
 per non-WebSocket route whose effective block forwards any cookie and keeps `same_origin_check` on,
 and attaches it as `Route.cookieOriginDefence`; a route with the check off gets none, and its id is
-logged as `WARN ApiSheriff-123`. The instance trusts the origin the request was received on --
+logged as `WARN ApiSheriff-139`. The instance trusts the origin the request was received on --
 `PipelineRequest.scheme()`, `host()` and `authorityPort()`, rendered `scheme://host[:port]` with a
 default port dropped on both sides -- plus the block's exact `additional_origins`. Its proof is the
 session-route defence's: a trusted `Origin`, or with no `Origin` a `Sec-Fetch-Site: same-origin`;

@@ -1469,7 +1469,7 @@ class RouteTableBuilderTest {
     class CookieOriginDefenceAssembly {
 
         /** The identifier of the check-disabled WARN; absent from the log when none was emitted. */
-        private static final String CHECK_DISABLED_WARN_ID = "ApiSheriff-123";
+        private static final String CHECK_DISABLED_WARN_ID = "ApiSheriff-139";
         private static final String CHECK_DISABLED_TEXT =
                 "Route 'r' forwards browser cookies with cookies.same_origin_check: false";
         private static final String ADDITIONAL_ORIGIN = "https://partner.example.com";

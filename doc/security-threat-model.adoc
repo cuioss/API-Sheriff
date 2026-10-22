@@ -300,7 +300,7 @@ ADR-0007 forbids.
 which browser cookies cross for its routes -- a longer list, or `allow: all` -- and can switch the
 same-origin check off, against what the anchor declares for its namespace. The controls: the
 replacement is announced by the `ApiSheriff-101` boot WARN, which names the route, the anchor and the
-block; a route that runs with `same_origin_check: false` is announced by `ApiSheriff-123`; and the
+block; a route that runs with `same_origin_check: false` is announced by `ApiSheriff-139`; and the
 gateway's own cookies cross under no block whatever scope declared it (<<gw-15>>). The residual is
 the widening that stays legal, which the WARNs make visible but do not refuse.
 
@@ -2041,7 +2041,7 @@ checked.
 mode and that `admittedCookiePairs` returns exactly what is forwarded; `UpstreamSetCookieFilterTest`
 and `ResponseStageTest` pin the response predicate, the `Domain` removal and the trailer filter;
 `CsrfDefenceTest` and `RouteTableBuilderTest` pin the check, its trusted origins and the
-`ApiSheriff-123` WARN; `GatewayEdgeCookiePolicyTest` drives all of it over a live edge on the HTTP,
+`ApiSheriff-139` WARN; `GatewayEdgeCookiePolicyTest` drives all of it over a live edge on the HTTP,
 gRPC and WebSocket paths; `WebSocketRelayStageTest` pins that no upstream `Set-Cookie` crosses an
 upgrade. `CookieForwardingPolicyIT` proves the HTTP path on the native image against a real upstream:
 each mode in both directions, the session cookie withheld under `all`, the `Domain` removal, and the
@@ -2058,7 +2058,7 @@ sends such a cookie to that path, and the neighbour receives it only when its ow
 admits the name. A list naming exactly what one upstream needs is the mitigation.
 
 *Residual risk (accepted) -- an upstream that opts out of the check.* `same_origin_check: false`
-removes the check from a route and logs `WARN ApiSheriff-123` naming it at assembly; defending that
+removes the check from a route and logs `WARN ApiSheriff-139` naming it at assembly; defending that
 upstream against cross-site request forgery is then the upstream's own job.
 
 *Residual risk (accepted) -- the received origin behind a TLS-offloading hop.* The check trusts the

@@ -269,7 +269,7 @@ a request carrying no forwardable cookie hands the upstream no ambient browser
 credential, so there is nothing for a cross-site page to forge, and a non-browser
 client — a gRPC service, a server-to-server caller — that sends no `Origin` keeps
 working without one. `same_origin_check: false` removes the check from a route and
-logs a WARN (`ApiSheriff-123`) naming it once at assembly: defending that upstream
+logs a WARN (`ApiSheriff-139`) naming it once at assembly: defending that upstream
 against CSRF is then the upstream's own job, a choice the operator makes visibly.
 
 **A WebSocket route is settled differently, and the condition above does not
@@ -291,7 +291,7 @@ that is not a serialized origin. A route-scope block on an asset or a redirect
 route is refused, as is the cookie-forwarding WebSocket route without
 `allowed_origins` and a `forward` list naming `Cookie`. Two WARNs make the
 remaining choices visible: the anchor-override WARN (`ApiSheriff-101`) and the
-check-disabled WARN (`ApiSheriff-123`).
+check-disabled WARN (`ApiSheriff-139`).
 
 === The gateway-understood protocol set
 
