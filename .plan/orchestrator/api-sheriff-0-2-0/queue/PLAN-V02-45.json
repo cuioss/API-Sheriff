@@ -2,9 +2,9 @@
   "id": "PLAN-V02-45",
   "slug": "request-body-and-h2-buffer-bounds",
   "workstream": "WS-03",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-45-request-body-and-h2-buffer-bounds",
-  "pr": "",
-  "landing": "",
+  "pr": "506",
+  "landing": "landings/PLAN-V02-45.md",
   "seq": 45
 }
