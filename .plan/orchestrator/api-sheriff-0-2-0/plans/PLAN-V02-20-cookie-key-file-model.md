@@ -35,7 +35,8 @@ and the key cannot be shared across replicas — are unaffected.
    - `CookieKeyMaterial` (`bff/cookie/`) and its wiring in `BffRuntimeProducer`;
    - the secrets rule in `ConfigLoader`, which today lists `/oidc/session/encryption_key` among the
      values a defaulted placeholder must not materialise;
-   - `ConfigValidator`, whose cookie-mode rule documents the omitted-key generate mode;
+   - `config/validation/rule/OidcSessionRules` (~104), whose cookie-mode rule documents the omitted-key generate mode (moved there from `ConfigValidator` in #502, ADR-0071);
+   - `config/model/OidcConfig.java`;
    - `schema/gateway.schema.json`;
    - the cookie-mode integration overlays (`sheriff-config-cookie`, `sheriff-config-cookie-refresh`)
      and their compose wiring;
@@ -50,7 +51,8 @@ and the key cannot be shared across replicas — are unaffected.
      `doc/user/tls-scenarios.adoc` and the diagram
      `doc/resources/diagrams/tls-key-material.svg`;
    - the test fixtures and tests that set the key: `api-sheriff/src/test/resources/config/cookieboot/gateway.yaml`,
-     `CookieKeyMaterialTest`, `ConfigLoaderTest`, `ConfigValidatorTest`, `CookieModeBootTest` and the
+     `CookieKeyMaterialTest`, `ConfigLoaderTest`, `OidcSessionRulesTest`, `BffRuntimeProducerTest`,
+     `ConfigModelContractTest`, `NativeRuntimeInitRegistrationArchTest`, `CookieModeBootTest` and the
      integration test `BffCookieActivationWiringTest`.
 
 3. **Tests** for both modes: a provided key file is read and seals and unseals; a malformed,
@@ -59,7 +61,7 @@ and the key cannot be shared across replicas — are unaffected.
 3a. **Two key-file checks left open by `PLAN-V02-08` (#377).** Decide whether the boot refuses a
     configuration in which the client-authentication key file and the DPoP proof key file name the
     same file — the published client key would then also be the DPoP proof key — and implement the
-    answer in `ConfigValidator` with a test. Re-measure the sealed cookie size with the `cnf` claim
+    answer in the matching rule class (`OidcClientRules`, which owns the client-auth and DPoP key rules) with a test. ADR-0058 (~88) and `gateway.schema.json` (~408) currently say the DPoP `key_file` may name the same file (two keys recommended), so a refusal reverses a recorded decision and needs an ADR-0058 amendment. Re-measure the sealed cookie size with the `cnf` claim
     DPoP adds, against the cookie-size budget, and record the headroom.
 
 4. **Documentation** in the layers that describe the key today: `doc/user/bff-cookie.adoc` ("Key
@@ -68,24 +70,26 @@ and the key cannot be shared across replicas — are unaffected.
 ## Claim Labels
 
 - OBSERVED: the cookie sealing key's provided mode is a base64 value set through `session.encryption_key` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/CookieKeyMaterial.java` § `Mode.PASSED` and `ENCRYPTION_KEY_FIELD`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CookieKeyMaterial ENCRYPTION_KEY_FIELD session.encryption_key; Mode.PASSED decodes base64 and refuses anything else
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: CookieKeyMaterial ENCRYPTION_KEY_FIELD (~77), Mode.PASSED via decodeKey (~101), Base64 decode (~239-242)
 - OBSERVED: the two signing keys are provided as a PEM file named by path, or generated at startup — read at `doc/adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc` § "A key is either provided or generated"
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0058 section 3: a provided key is a PEM file named by key_file; the two keys are client authentication and DPoP
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ADR-0058 ~119 '=== 3. A key is either provided or generated'
 - OBSERVED: `ConfigLoader` treats `/oidc/session/encryption_key` as a secret a defaulted placeholder must not materialise — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/load/ConfigLoader.java` § the secrets list
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ConfigLoader.SECRET_POINTERS lists /oidc/client_secret and /oidc/session/encryption_key
-- OBSERVED: the current shape is carried by `gateway.schema.json`, two cookie-mode integration overlays, `doc/user/bff-cookie.adoc`, `doc/configuration.adoc` and `doc/user/environment-variable-overrides.adoc` — a search for `encryption_key` on `origin/main` at `cd383c2e`
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: all named carriers contain encryption_key at HEAD
-- HYPOTHESIS: no further carrier exists outside the listed files — confirm/refute at outline by a repository-wide search for `encryption_key` and `CookieKeyMaterial`, without a pathspec (verify-at-outline). Re-grounding refuted the list twice; D2 and the Expected Surface now name every carrier a search at `386f3f74` returns, and the search, not the list, is the authority
-  - verdict: contradicted | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: a search at 386f3f74 finds further carriers (SessionActivityCookieCodec, four tests and specimens, four docs); D2 and the surface re-scoped, the search named as the authority
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ConfigLoader SECRET_POINTERS (~187-188) lists /oidc/client_secret and /oidc/session/encryption_key
+- OBSERVED: the current shape is carried by `gateway.schema.json`, two cookie-mode integration overlays (`sheriff-config-cookie/gateway.yaml` ~164, `sheriff-config-cookie-refresh/gateway.yaml` ~181, both `${SESSION_ENCRYPTION_KEY}`, supplied by `integration-tests/docker-compose.yml`), `doc/user/bff-cookie.adoc`, `doc/configuration.adoc` and `doc/user/environment-variable-overrides.adoc` — a search for `encryption_key` on `origin/main` at `00293178`
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: overlays sheriff-config-cookie ~164 and -refresh ~181 use SESSION_ENCRYPTION_KEY; anchor moved to 00293178
+- HYPOTHESIS: no further carrier exists outside the listed files — confirm/refute at outline by a repository-wide search for `encryption_key`, `encryptionKey` and `CookieKeyMaterial`, without a pathspec (verify-at-outline). D2 and the Expected Surface name every carrier a search at `00293178` returns, including `config/model/OidcConfig.java`, `config/validation/rule/OidcSessionRules.java`, `arch/NativeRuntimeInitRegistrationArchTest` and `arch/specimen/StaticSecureRandomSpecimen`; `ConfigValidator`/`ConfigValidatorTest` no longer carry it. The search, not the list, is the authority
+  - verdict: contradicted | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: yes | evidence: search at 00293178 adds OidcConfig, OidcSessionRules, OidcSessionRulesTest, BffRuntimeProducerTest, ConfigModelContractTest, NativeRuntimeInitRegistrationArchTest, StaticSecureRandomSpecimen; ConfigValidator no longer carries it; list re-scoped
 - Verify-first clause: confirm at outline whether ADR-0058's key-file reader can be shared for a symmetric key or must stay separate; a shared reader that admits a PEM block where raw key bytes are expected is a defect, not a simplification
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause applicable: ClientSigningKey is a two-block PEM reader while CookieKeyMaterial decodes base64 AES-256
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ClientSigningKey bounded 16 KiB two-block PEM reader; CookieKeyMaterial decodes base64 AES-256
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/cookie/CookieKeyMaterial.java` — D2
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` — D2
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/load/ConfigLoader.java` — D2
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — D2
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/OidcSessionRules.java` — D2
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/OidcClientRules.java` — D3a
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java` — D2
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/BffLogMessages.java` — D2
 - OBSERVED: `api-sheriff/src/main/resources/schema/gateway.schema.json` — D2
 - OBSERVED: `integration-tests/src/main/docker/sheriff-config-cookie/gateway.yaml`, `integration-tests/src/main/docker/sheriff-config-cookie-refresh/gateway.yaml`, `integration-tests/docker-compose.yml` — D2
@@ -100,9 +104,8 @@ and the key cannot be shared across replicas — are unaffected.
 ## Dependencies and Sequencing
 
 - Depends on: none now that `PLAN-V02-08` has landed.
-- It touches the `oidc` block and `BffRuntimeProducer`, so it joins the sequential chain with
-  `PLAN-V02-12` and `PLAN-V02-09`: never concurrent with either. Order among the three is decided at
-  emit time.
+- It touches the `oidc` block and `BffRuntimeProducer`, so it is never concurrent with
+  `PLAN-V02-09` (`PLAN-V02-12` has landed, #492). Order between the two is decided at emit time.
 - Not concurrent with `PLAN-V02-04` (ADR corpus audit), because D1 adds a record.
 - `docker-compose*.yml` is a gate-requiring path, so D2 runs the full pre-commit process.
 
@@ -111,6 +114,17 @@ and the key cannot be shared across replicas — are unaffected.
 ```text
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-20-cookie-key-file-model.md" plan_id=plan-v02-20-cookie-key-file-model
 ```
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 

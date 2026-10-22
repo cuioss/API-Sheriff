@@ -127,11 +127,11 @@ pre-commit process.
   A search for an `oidc` block or a `session` key returns nothing; `gateway.yaml` names BFF
   sessions among the deliberate omissions and documents the public anchor's absent auth block;
   `endpoints/demo-api.yaml` is `require: none`.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: 14 tracked files under deployment/compose-sample; gateway.yaml has no oidc block or session key; demo-api.yaml require: none
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: compose-sample has no oidc block or session key; demo-api.yaml require: none
 - OBSERVED: a Keycloak realm import already ships at
   `deployment/compose-sample/docker/keycloak/sample-realm.json`, and it carries the confidential
   client `sample-client`, so D1's client work is at most an edit rather than new infrastructure.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json carries sample-client, publicClient false, placeholder secret, standard flow enabled
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: sample-realm.json sample-client confidential, client-secret, standard flow, redirect https://localhost:8443/*
 
 ## Expected Surface
 
@@ -145,19 +145,19 @@ pre-commit process.
 
 ## Dependencies and Sequencing
 
-- Depends on: **`PLAN-V02-12` (idp-addressing-model)**, for D5 — and specifically on its held second
-  half (D5–D7), which waits for a `token-sheriff-client` release with a back-channel/discovery
-  override (epic queue annotation, 2026-10-13). This is the one genuine dependency,
-  and ignoring it produces a sample that hard-codes the wrong answer. The plan is emittable earlier
-  only if D5 is explicitly deferred, which defers the one deliverable that keeps the sample from
-  becoming the de-facto addressing specification. Prefer sequencing after `PLAN-V02-12` over
-  emitting a partial.
-- Overlaps with: `PLAN-V02-12` on the compose sample and `doc/user/`;
-  `PLAN-V02-14` on `.github/workflows/**` and `doc/user/compose-sample.adoc`. The disjointness gate
-  decides at emit time.
+- Depends on: none outstanding. `PLAN-V02-12` landed (#450, #492 `03cb4755`, ADR-0069) on token-sheriff
+  0.9.8 (#491); apply ADR-0069 in D5. #492 already put the sample's token side on the one public
+  identity (`KC_HOSTNAME=https://localhost:1443`, `issuer: https://localhost:1443/realms/sample`, JWKS
+  via `https://keycloak:8443`); what D5 still owes is the `oidc` block's `back_channel_origin`.
+  V02-12's held D3 (the `/auth`-fronted variant) is built later as an overlay of this sample.
+- `doc/user/compose-sample.adoc` was last edited by #492 and #504; re-read it at outline. The
+  disjointness gate decides overlaps at emit time.
 - The sample's `.env` pins `ghcr.io/cuioss/api-sheriff:0.2.4`, which predates the session keys
   `PLAN-V02-01` added (`idle_timeout_seconds`, `max_sessions_per_subject`); a sample that sets them
-  needs a newer pin. `ConfigValidator` now also requires the `__Host-` cookie-name prefix.
+  needs a newer pin. 0.2.4 is still the latest release (`project.yml` current-version 0.2.4), so the
+  newer pin needs a release cut first; multi-arch images (#504, ADR-0070) start with that release.
+  `config/validation/rule/OidcSessionRules` (`validateSessionCookieName`) also requires the `__Host-`
+  cookie-name prefix.
 - `.github/workflows/config-validation.yml` already validates the sample's configuration set offline.
   That proves the new `oidc` block parses, not that a login works; D4 still owes the login run.
 - Surface note: `deployment/compose-sample/.env` carries the version pins. Any pin bump touches the
@@ -177,6 +177,17 @@ close explicitly after the merge.
 ```text
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-15-bff-compose-sample.md" plan_id=plan-v02-15-bff-compose-sample
 ```
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 

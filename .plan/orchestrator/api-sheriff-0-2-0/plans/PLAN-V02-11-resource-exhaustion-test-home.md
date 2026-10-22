@@ -22,7 +22,7 @@ Defect 6). Three shipped defects prove it:
 
 - `218b5c`, the unauthenticated WebSocket admission-permit leak: any upgrade leaked a permit until the
   gateway answered 503 to all traffic until restart (fixed in #126).
-- The body-cap derivation defect (fixed in #131 and #134).
+- The body-cap derivation defect (fixed in #131; #134 was a benchmark-workflow follow-up).
 - GitHub issue [#201](https://github.com/cuioss/API-Sheriff/issues/201): `MtlsHandshakeIT` fails
   2 of 3 under `-Pjfr` only — fail-open on handshake rejection — while the identical tree passes
   3 of 3 under `-Pintegration-tests`.
@@ -87,9 +87,10 @@ found by inspection rather than by a gate.
 ## Claim Labels
 
 - **OBSERVED** — epic Open Defect (6): the IT suite cannot detect resource-lifecycle or layer-boundary
-  defect classes. Two shipped instances (`218b5c` WebSocket permit leak, fixed in `#126`; the
-  body-cap derivation defect, fixed in `#131 #134`).
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: epic Open Defect 6 matches; #126 releases the WebSocket permit, #131 derives the body limit and 413; #134 is a benchmark.yml follow-up to #131
+  defect classes. Two shipped instances (`218b5c` WebSocket permit leak, fixed in `#126` `23949a92`; the
+  body-cap derivation defect, fixed in `#131` `29f1dacf`, whose follow-up `#134` `d332e8b1` only repaired
+  the benchmark coverage step).
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: #126 23949a92 and #131 29f1dacf fixed them; #134 d332e8b1 only repaired the benchmark coverage step; bullet made precise
 - **OBSERVED** — the benchmark lane runs **12** k6 goals and is green (run 38073671464), and both
   formerly quarantined goals are enabled (`skip.benchmark.upload.large` and
   `skip.benchmark.websocket.echo` both default `false` in `benchmarks/pom.xml`). **Precedent for D1:**
@@ -97,16 +98,16 @@ found by inspection rather than by a gate.
   `-Pbenchmark` into the gating Failsafe suite `BffPendingLoginBoundIT`, on the reasoning that a
   capacity bound is a security property, not a throughput figure. D1 weighs that choice rather than
   re-deciding it silently.
-  - verdict: corroborated | checked_at: 2657be7c4e90b9bc51b0de67aea1ca169f7c3c04 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: claim restated at 2657be7c: benchmarks/pom.xml has 12 run-k6 executions after #427; quarantine props false; benchmark run 38073671464 success; flood now BffPendingLoginBoundIT
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmarks/pom.xml 12 run-k6 executions, skip properties false; latest benchmark runs green
 - **HYPOTHESIS — the benchmark lane is not currently *gating*.** It runs post-merge on the PR and does
   not block the merge itself. Confirm against `.github/workflows/benchmark.yml` (verify-at-outline).
   **If it is not gating, deliverable 1's "benchmark lane" branch carries making it gate as a stated
   cost, not as an afterthought.**
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmark.yml runs on pull_request closed with merged==true plus tags and dispatch; it cannot block a merge
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: benchmark.yml triggers on PR closed/tags/dispatch, gated on merged == true; cannot block a merge
 - **Verify-first clause**: re-read both fixed defects' regression tests before deciding. If those fixes
   already added detection that generalises, this plan narrows to documenting that and the
   design question is largely settled.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause applicable: compose service api-sheriff-ws-admission exists as the permit-exhaustion rig; LargeBodyIT covers #131
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: docker-compose api-sheriff-ws-admission service (~824) and LargeBodyIT exist
 
 ## Expected Surface
 
@@ -152,6 +153,17 @@ merge commit, including `deploy-snapshot`. Report the merge and stop.
 ```
 
 **The explicit `plan_id` is load-bearing — do not drop it.**
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 

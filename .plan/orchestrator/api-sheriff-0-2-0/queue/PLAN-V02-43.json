@@ -2,9 +2,9 @@
   "id": "PLAN-V02-43",
   "slug": "validator-reserved-header-topology-rules",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-43-validator-reserved-header-topology-rules",
-  "pr": "",
-  "landing": "",
+  "pr": "505",
+  "landing": "landings/PLAN-V02-43.md",
   "seq": 43
 }

@@ -106,6 +106,17 @@ negative control proves.
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-22-demo-client-and-doc-leftovers.md" plan_id=plan-v02-22-demo-client-and-doc-leftovers
 ```
 
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
+
 ## Write-Boundary
 
 The plan implementing this spec touches only its own repository source and tests. It creates and

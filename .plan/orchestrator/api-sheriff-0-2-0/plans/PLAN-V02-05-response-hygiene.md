@@ -30,10 +30,12 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
    strip applied to one call site still leaks on every trailers-carrying response. Fix the shared
    filter — or the shared response-direction policy `ConnectionHeaders.RESPONSE_STRIP` that both
    paths read, which is the more natural home — and prove both paths with a test each.
-   `PLAN-V02-23` (runs first) already routes every response relay path (HTTP, gRPC trailers,
-   WebSocket upgrade) through one response-header predicate for its `Set-Cookie` policy, with a test
-   per path. Reuse that predicate and its path coverage; add the identity-header strip to it rather
-   than re-deriving which paths exist.
+   Today the one shared response predicate is `edge/relay/ResponseStage.relaysUpstreamHeader`
+   (`isForwardableResponseHeader` plus `UpstreamSetCookieFilter`), used by `relay()` and
+   `relayWithTrailers()`; the WebSocket upgrade path (`edge/relay/WebSocketRelayStage`) is separate.
+   `PLAN-V02-23` D4 builds one predicate over every relay path for its `Set-Cookie` policy: if it has
+   landed by outline, add the identity-header strip to that predicate and reuse its path coverage;
+   otherwise add it to `relaysUpstreamHeader` and cover the WebSocket path separately.
 2. **Security response headers default-on**: HSTS / `X-Content-Type-Options: nosniff` /
    `X-Frame-Options` apply by a secure default posture, remaining per-config overridable (do not force
    them where a route legitimately opts out). Today `SecurityHeadersStage` emits each only when the
@@ -84,22 +86,22 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
   hop-by-hop and conditional headers — it does **not** strip `Server`/`X-Powered-By`, so an upstream
   emitting them leaks them through; `relay()` and `relayWithTrailers()` both copy every forwardable
   upstream header through that one filter.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ResponseStage.isForwardableResponseHeader drops only connection-specific and etag/last-modified; both relays reach it through relaysUpstreamHeader
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: edge/relay/ResponseStage isForwardableResponseHeader (~114-122) strips only connection-specific and etag/last-modified; Server/X-Powered-By relayed via relaysUpstreamHeader (~105)
 - OBSERVED: security headers are opt-in today — `pipeline/SecurityHeadersStage.java` emits HSTS /
   nosniff / frame-deny only when the `security_headers` block enables each.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: SecurityHeadersStage.OwnedHeader emits HSTS, nosniff and frame DENY only when the security_headers block sets them
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: pipeline/SecurityHeadersStage OwnedHeader: HSTS, nosniff, DENY each opt-in (~128, ~150, ~164)
 - OBSERVED: error bodies are already clean — `edge/error/ErrorResponseWriter.java` `renderProblem` emits a
   minimal `{"type","title","status"}` with generic `EventCategory` titles, no stack/framework signature.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: renderProblem/problemBody emit type, title, status plus extension members only; no stack or framework text
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: ErrorResponseWriter.renderProblem (~243) sets status from eventType.httpStatus() (~326)
 - HYPOTHESIS: the gateway itself emits no `Server`/`X-Powered-By` by default (Vert.x/Quarkus default;
   no `quarkus.http.server-header` property exists — override idiom is `quarkus.http.header."Server".value`).
   Confirm/refute at outline with a live `curl -I` against the running native gateway (verify-at-outline)
   — do not build self-header suppression for a header we do not emit; the real work is the *upstream*
   passthrough strip.
-  - verdict: unverifiable | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a live curl -I against the native gateway; statically no quarkus.http.header or server-header key in main
+  - verdict: unverifiable | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: needs a live curl -I; statically no quarkus.http.header or server-header key in api-sheriff/src/main/resources
 - Verify-first clause: enumerate the actual set of identity-leaking headers an upstream can send (the IT
   stack: Keycloak, go-httpbin) and confirm which pass through today before fixing the allowlist.
-  - verdict: corroborated | checked_at: 386f3f74094516d787f06dca0946825c62421b89 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: procedural clause still accurate: RESPONSE_STRIP is a deny list of 10 names; go-httpbin 2.23.1 and Keycloak identity headers unenumerated
+  - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: http/ConnectionHeaders RESPONSE_STRIP (~77-80) is a 10-name deny list without identity headers
 
 ## Expected Surface
 
@@ -135,6 +137,17 @@ Three-layer docs, Sonar zero-findings, named line items, integration tests in th
 ```text
 /plan-marshall task="implement .plan/orchestrator/api-sheriff-0-2-0/plans/PLAN-V02-05-response-hygiene.md" plan_id=plan-v02-05-response-hygiene
 ```
+
+## Security Findings
+
+Fix a security finding inside this plan whenever possible; that is the preferred outcome. A finding
+that is not fixed right away (out of scope, unconfirmed, deferred) stays out of git: it is never
+written into a tracked file, a commit message, the PR title, body or review replies, a code comment,
+the docs, or this plan's inbox and landing messages. Record it instead in
+`.plan/local/security_notes.adoc` (git-ignored; create the file if it is missing and append, never
+rewrite). Each entry carries the date, this plan's id, the location (file and line or component),
+what was observed, and why it was not fixed. Tracked text may say only that a security note was
+recorded locally, never what it says.
 
 ## Write-Boundary
 
