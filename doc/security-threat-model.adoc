@@ -3548,8 +3548,9 @@ logged at debug level only.
 the anonymous error model; `HtmlErrorPageIT` asserts status, content type, the portal CSP and
 `no-store` per reachable error class against the native image.
 
-*Assertion.* An HTML error page carries the unchanged status and the fixed title only; it never names
-a user, an upstream or an internal detail.
+*Assertion.* An HTML error page carries no request-derived input beyond the unchanged status: its
+title is the fixed per-status one, the rest is the operator's portal configuration rendered
+anonymously, and it never names a user, an upstream or an internal detail.
 
 [#html-06]
 === HTML-06 -- Origin-response interception and content-negotiation confusion
