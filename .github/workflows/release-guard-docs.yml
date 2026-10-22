@@ -1,0 +1,270 @@
+# RELEASE-GUARD DOC DRIFT CHECK — keeps what doc/development/release-process.adoc § "The
+# version-changed guard is the release decision" says about the central guard tied to the guard the
+# release actually runs.
+#
+# WHAT IT CHECKS. That section describes the guard at a pin, and the guard lives in
+# cuioss/cuioss-organization, not here. Three of the values it states can only be read there:
+#   * the nested action pin — the `guard` job of reusable-maven-release.yml, AT the SHA the `release`
+#     job of release.yml pins, runs .github/actions/release-guard at a SHA; every short SHA the doc
+#     cites for that action must be a prefix of it;
+#   * the two reason lines the doc quotes — read out of release-guard.py AT the action SHA: its print
+#     f-string, the verdict a refusal assigns and one reason f-string per refusal, each bounded by
+#     its own quotes; rendered together, with <version> for each placeholder, each line must occur in
+#     that section verbatim, as the whole of a backtick-quoted span;
+#   * the refusal set — every refusal decide() can return must be one of those two, or one the
+#     `release` job's own `if:` keeps out (named in UNREACHED_REFUSALS with the top-level clause of
+#     that condition that does so).
+# Both refs must be full commit SHAs, ending at the line end or a comment.
+# The fourth value, the reusable-workflow pin itself, is checked offline by
+# ReleaseGuardPinDocsContractTest in api-sheriff, which runs in every Maven build.
+#
+# WHY A WORKFLOW AND NOT A TEST. The Maven build is offline by design; fetching another repository's
+# sources at a pin is a network call it must not make. This job makes exactly two read-only fetches
+# from raw.githubusercontent.com, both addressed by a full 40-character commit SHA read from a file
+# and validated as such before it reaches a URL, so neither fetch can be redirected by a branch name.
+#
+# A NEW FILE rather than a job in an existing workflow: no other pull-request workflow is triggered
+# by these paths, and this check needs no build, no JDK and no secret.
+#
+# Values reach the script through files and constants only, never through `${{ }}` expansion inside
+# a run block — expression interpolation into a script body is a script-injection sink.
+
+name: Release Guard Docs
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/release.yml'
+      - 'doc/development/release-process.adoc'
+      - '.github/workflows/release-guard-docs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-guard-docs:
+    name: Guard pins and reason lines cited in release-process.adoc
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every finding is reported as an ::error:: annotation before the step fails, so one run names
+      # every drifted value rather than only the first.
+      - name: Check the cited guard pins and reason lines against cuioss-organization
+        shell: python
+        run: |
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          RAW = "https://raw.githubusercontent.com/cuioss/cuioss-organization/{sha}/{path}"
+          REUSABLE_WORKFLOW = ".github/workflows/reusable-maven-release.yml"
+          GUARD_SCRIPT = ".github/actions/release-guard/release-guard.py"
+          DOC = Path("doc/development/release-process.adoc")
+          RELEASE_WORKFLOW = Path(".github/workflows/release.yml")
+          SECTION = 'release-process.adoc § "The version-changed guard is the release decision"'
+          # How release-guard.py builds a reason line: one print f-string with {verdict} and {reason},
+          # the verdict a refusal assigns, and one f-string per refusal reason. Every part is read OUT
+          # of the script, bounded by its own string quotes, and the doc's line is rendered from what
+          # was read -- so a renamed verdict, a changed separator, a reworded reason or text added to
+          # any of them changes the rendered line, or stops the bounded match, and the check fails.
+          # The patterns below only locate the parts; none of them supplies text to the rendered line.
+          # The verdict assignment and the print that logs it, as ONE unit: the script assigns `verdict`
+          # more than once (the step summary has its own wording), and only the assignment directly
+          # before the "Release guard:" print decides what the log line says.
+          LOG_LINE = re.compile(
+              r'(?m)^[ \t]*verdict\s*=\s*"[^"\n]+"\s+if\s+proceed\s+else\s+"([^"\n]+)"[ \t]*\n'
+              r'[ \t]*print\(f"(Release guard: \{verdict\}[^"\n]*\{reason\}[^"\n]*)"'
+          )
+          REASON_TEMPLATES = (
+              ("unchanged", re.compile(r'f"(release\.current-version unchanged at \{[^{}"\n]+\}[^"\n]*)"')),
+              ("already tagged", re.compile(r'f"(release\.current-version changed to [^"\n]*already exists[^"\n]*)"')),
+          )
+          PLACEHOLDER = re.compile(r"\{[^{}]+\}")
+          # Every refusal decide() can return, as its string literal. Each one must either be checked
+          # above, or be one the release job never reaches -- named here with the clause of the job's
+          # own `if:` that keeps it out, which must still be one of that condition's top-level `&&`
+          # clauses in release.yml. A refusal the guard adds later is therefore reported, not passed over.
+          DECIDE = re.compile(r"(?ms)^def decide\(.*?(?=^def |\Z)")
+          REFUSAL = re.compile(r'\bFalse,\s*(f?"[^"\n]*")')
+          UNREACHED_REFUSALS = {
+              '"pull request was closed without being merged"':
+                  "(github.event_name != 'pull_request' || github.event.pull_request.merged == true)",
+          }
+          # The `release` job's own `if:` -- the key directly under the job, inline or as a block scalar
+          # whose lines are indented deeper -- so a step condition, an env value or a comment holding the
+          # same text does not count.
+          JOB_IF = re.compile(r"(?m)^    if:[ \t]*(?:[>|][-+]?[ \t]*\n((?:      .*(?:\n|$))+)|(\S.*)$)")
+          # The section the quoted lines and the action pin must appear in -- from its anchor up to the
+          # next heading (with that heading's own anchor, if it has one).
+          SECTION_ANCHOR = "[#guard-refusal-predicates]"
+          NEXT_HEADING = re.compile(r"(?m)^(?:\[#[^\]\n]+\]\n)?==+ ")
+
+
+          def rendered_line(line_format, verdict, reason_text):
+              # The line the guard logs for this refusal, as the doc quotes it: the script's own print
+              # f-string with its verdict and reason substituted, each remaining {placeholder} written
+              # as <version>. Every character comes from the script; nothing here is a second literal.
+              line = line_format.replace("{verdict}", verdict).replace("{reason}", reason_text)
+              return PLACEHOLDER.sub("<version>", line)
+          FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+          findings = []
+
+
+          def finding(message):
+              print(f"::error::{message}")
+              findings.append(message)
+
+
+          def job_block(text, job):
+              start = re.search(rf"(?m)^  {re.escape(job)}:[ \t]*$", text)
+              if start is None:
+                  return None
+              end = re.compile(r"(?m)^  \S").search(text, start.end())
+              return text[start.end():end.start() if end else len(text)]
+
+
+          def single_pin(block, pattern, label):
+              pins = re.findall(pattern, block or "")
+              if len(pins) != 1:
+                  finding(f"{label}: expected exactly one full-SHA pin, found {len(pins)}: {pins}")
+                  return None
+              if not FULL_SHA.match(pins[0]):
+                  finding(f"{label}: {pins[0]!r} is not a full commit SHA")
+                  return None
+              return pins[0]
+
+
+          def fetch(sha, path):
+              url = RAW.format(sha=sha, path=path)
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as response:
+                      return response.read().decode("utf-8")
+              except (urllib.error.URLError, TimeoutError, UnicodeDecodeError) as error:
+                  finding(f"could not fetch {path} at {sha} from cuioss-organization: {error}")
+                  return None
+
+
+          doc = DOC.read_text(encoding="utf-8")
+          release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+          release_job = job_block(release_workflow, "release")
+
+
+          def job_if_clauses(block):
+              conditions = JOB_IF.findall(block or "")
+              if len(conditions) != 1:
+                  finding(f"{RELEASE_WORKFLOW}: expected exactly one `if:` on the `release` job, found {len(conditions)}")
+                  return set()
+              folded, inline = conditions[0]
+              condition = " ".join(folded.split()) if folded else re.sub(r"\s+#.*$", "", inline).strip()
+              return {" ".join(clause.split()) for clause in condition.split("&&")}
+
+
+          release_if_clauses = job_if_clauses(release_job)
+
+          section = ""
+          anchor_at = doc.find(SECTION_ANCHOR)
+          if anchor_at < 0:
+              finding(f"{DOC} has no {SECTION_ANCHOR} anchor, so {SECTION} cannot be located")
+          else:
+              heading_end = doc.find("\n", doc.find("\n", anchor_at) + 1)
+              next_heading = NEXT_HEADING.search(doc, heading_end if heading_end >= 0 else len(doc))
+              section = doc[anchor_at:next_heading.start() if next_heading else len(doc)]
+
+          workflow_sha = single_pin(
+              release_job,
+              r"(?m)^\s+uses:\s*cuioss/cuioss-organization/\.github/workflows/reusable-maven-release\.yml@([^\s#]+)",
+              f"{RELEASE_WORKFLOW}: the `release` job's reusable-maven-release.yml pin",
+          )
+          reusable = fetch(workflow_sha, REUSABLE_WORKFLOW) if workflow_sha else None
+          action_sha = single_pin(
+              job_block(reusable, "guard"),
+              r"(?m)^\s+uses:\s*cuioss/cuioss-organization/\.github/actions/release-guard@([^\s#]+)",
+              f"{REUSABLE_WORKFLOW}@{workflow_sha}: the `guard` job's release-guard pin",
+          ) if reusable else None
+
+          if action_sha:
+              cited = re.findall(r"cuioss/cuioss-organization/\.github/actions/release-guard@([0-9a-f]{7,40})\b", doc)
+              if not re.search(r"cuioss/cuioss-organization/\.github/actions/release-guard@[0-9a-f]{7,40}\b", section):
+                  finding(f"{SECTION} cites no cuioss/cuioss-organization/.github/actions/release-guard@<sha> pin")
+              cited += re.findall(r"`release-guard\.py` at `([0-9a-f]{7,40})`", doc)
+              cited += re.findall(r"the current pin `([0-9a-f]{7,40})`", doc)
+              for sha in cited:
+                  if not action_sha.startswith(sha):
+                      finding(
+                          f"{DOC} cites the release-guard action at {sha}, but reusable-maven-release.yml@{workflow_sha}"
+                          f" runs it at {action_sha}. Re-check {SECTION} against release-guard.py at the new pin"
+                          " before updating the cited SHA."
+                      )
+
+              guard_script = fetch(action_sha, GUARD_SCRIPT)
+              if guard_script is not None:
+                  log_line = LOG_LINE.search(guard_script)
+                  if log_line is None:
+                      finding(
+                          f"release-guard.py@{action_sha}: the refusal verdict assignment directly followed by the"
+                          f" \"Release guard:\" print can no longer be located, so the lines {SECTION} quotes cannot"
+                          " be rendered from it. Re-read the script and correct the quoted lines."
+                      )
+                  checked_refusals = set()
+                  for label, template in REASON_TEMPLATES:
+                      reason = template.search(guard_script)
+                      if reason is None:
+                          finding(
+                              f"release-guard.py@{action_sha} no longer holds the {label!r} reason f-string matching"
+                              f" {template.pattern!r}. Re-read the script and correct the line {SECTION} quotes."
+                          )
+                          continue
+                      checked_refusals.add(f'f"{reason.group(1)}"')
+                      if log_line is None:
+                          continue
+                      line = rendered_line(log_line.group(2), log_line.group(1), reason.group(1))
+                      # Bounded by the backticks the doc quotes it in, so text added inside them fails.
+                      if f"`{line}`" not in section:
+                          finding(
+                              f"{SECTION} does not quote {line!r} verbatim, the line release-guard.py@{action_sha}"
+                              f" logs for the {label!r} refusal. Correct the quoted line there."
+                          )
+
+                  decide_body = DECIDE.search(guard_script)
+                  refusals = REFUSAL.findall(decide_body.group(0)) if decide_body else []
+                  if not refusals:
+                      finding(
+                          f"release-guard.py@{action_sha}: no refusal can be read out of decide(), so the refusal set"
+                          f" {SECTION} describes cannot be checked. Re-read the script."
+                      )
+                  for refusal in refusals:
+                      if refusal in checked_refusals:
+                          continue
+                      gate = UNREACHED_REFUSALS.get(refusal)
+                      if gate is not None and gate in release_if_clauses:
+                          continue
+                      finding(
+                          f"release-guard.py@{action_sha} can refuse with {refusal}, which this check neither verifies"
+                          f" in {SECTION} nor knows the `release` job never reaches. Document the refusal there and"
+                          " extend this check, or name the job's gate that keeps it out."
+                      )
+
+          if findings:
+              sys.exit(1)
+          print(
+              f"release.yml pins reusable-maven-release.yml@{workflow_sha}, whose guard job runs"
+              f" release-guard@{action_sha}; every pin {DOC} cites matches, and both reason lines it quotes"
+              f" are the lines release-guard.py at that pin renders for a {log_line.group(1)}."
+          )

@@ -1716,8 +1716,14 @@ error body from `lua-resty-jwt` -> forge tokens). The code review's own findings
 errors can echo resolved secret values into the boot log; the interim `/api/info` leaks a
 version string.
 
-*Control.* Every gateway-generated rejection is `application/problem+json` naming the
-category only, no internal detail (link:architecture.adoc#_error_contract[error contract]).
+*Control.* Every gateway-generated rejection carries no internal detail
+(link:architecture.adoc#_error_contract[error contract]), in one of three renderings: an
+`application/problem+json` document naming the category only; for an HTML-eligible exit requested
+with an explicit `text/html` `Accept` while `portal.error_pages` is on, the negotiated HTML error
+page, whose only request-derived input is the unchanged status -- its title comes from a fixed
+per-status table, and everything else on it is operator portal configuration rendered anonymously
+(link:architecture.adoc#_html_error_pages[negotiated HTML error pages], <<html-05>>); and, on a
+`protocol: grpc` route, the trailers-only form whose `grpc-message` is the category slug.
 Config binding-error messages are sanitized/truncated so no resolved scalar (secret) is ever
 logged. `OidcConfig`/`Session` `toString()` redaction already holds; the binding path must not
 bypass it. No `/api/info` or `/api/health` placeholder resource is exposed on the public port.
@@ -1727,7 +1733,9 @@ redaction is enforced by the configuration validator.
 
 *Assertion.* No error response or log line contains a resolved secret value or a stack
 trace/internal detail; a bind failure adjacent to a resolved secret never surfaces the
-secret; problem+json bodies carry category only.
+secret; problem+json bodies carry the category only, an HTML error page carries no
+request-derived input beyond the unchanged status, and a gRPC trailers-only rejection's
+`grpc-message` carries the category slug only.
 
 [#gw-13]
 === GW-13 -- Open redirect through a gateway-answered redirect (CWE-601)
@@ -3558,8 +3566,9 @@ logged at debug level only.
 the anonymous error model; `HtmlErrorPageIT` asserts status, content type, the portal CSP and
 `no-store` per reachable error class against the native image.
 
-*Assertion.* An HTML error page carries the unchanged status and the fixed title only; it never names
-a user, an upstream or an internal detail.
+*Assertion.* An HTML error page carries no request-derived input beyond the unchanged status: its
+title is the fixed per-status one, the rest is the operator's portal configuration rendered
+anonymously, and it never names a user, an upstream or an internal detail.
 
 [#html-06]
 === HTML-06 -- Origin-response interception and content-negotiation confusion

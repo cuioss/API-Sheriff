@@ -347,10 +347,10 @@ oidc:
 # of this file by line number, and a block inserted above them would silently shift every citation.
 #
 # Declared on this base document, so the portal is live on the main instance (10443) and on
-# api-sheriff-plain-mgmt, the one instance that mounts this document as shipped. The one overlay
-# that mirrors it is sheriff-config-passthrough-empty, whose single-variable guard requires it to be
-# this document minus tls.passthrough_sni; every other overlay declares no portal block, so every
-# other instance behaves exactly as before.
+# api-sheriff-plain-mgmt, the one instance that mounts this document as shipped. Two overlays mirror
+# it: sheriff-config-passthrough-empty in full, as its single-variable guard requires, and
+# sheriff-config-cookie reduced to path, title and error_pages, because the demo rejection panel
+# needs one outcome per probe on both demo instances. Every other overlay declares no portal block.
 #
 #   * path: /portal is an otherwise-unrouted address -- no anchor prefix covers it and it is none of
 #     the reserved /bff paths -- so the portal is observably answered AHEAD of the route table

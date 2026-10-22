@@ -410,7 +410,7 @@ surface".
 
 That is a deliberate and correct choice, not a defect: the stack serves a self-signed `localhost`
 bundle, and the browser lane handles it the same way with `--ignore-certificate-errors`
-(link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note], `:299-321`). It is
+(link:../../demo-client/doc/playwright-suite.adoc[the Playwright suite note], `:302-319`). It is
 recorded here because it is the second member of the class, and because the class is the thing worth
 knowing. A wider sweep of the integration corpus for pro-forma tests belongs to
 link:test-corpus-integrity.adoc[Test-Corpus Integrity], not here.

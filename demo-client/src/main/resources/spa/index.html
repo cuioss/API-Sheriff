@@ -18,7 +18,7 @@
         <h1>API Sheriff BFF Demo</h1>
         <p class="app__lede">
           A dependency-free sample of the browser-facing contract: the gateway serves this page,
-          so it is same-origin with the reserved <code>/auth</code> paths and can exercise them
+          so it is same-origin with the reserved <code>/bff</code> paths and can exercise them
           with a plain <code>fetch</code>.
         </p>
       </header>
@@ -73,6 +73,56 @@
         <h2 id="metadata-heading">Session metadata</h2>
         <dl class="kv" data-testid="session">
           <dd class="empty">No live session.</dd>
+        </dl>
+      </section>
+
+      <section class="panel" aria-labelledby="rejections-heading">
+        <h2 id="rejections-heading">Gateway rejections</h2>
+        <p class="hint">
+          Fire these while anonymous: the session floor then rejects before any upstream is
+          reached, so every answer below is the gateway's own. Each row reads status &middot;
+          Content-Type &middot; redirected.
+        </p>
+        <p class="actions">
+          <button type="button" data-testid="fire-probes">Fire probes</button>
+        </p>
+        <dl class="kv" data-testid="probes">
+          <dt><code>GET /bff/session</code>, JSON &mdash; <code>Accept</code>-blind</dt>
+          <dd>
+            <span data-testid="probe-userinfo-xhr-status">&mdash;</span> &middot;
+            <span data-testid="probe-userinfo-xhr-content-type">&mdash;</span> &middot;
+            <span data-testid="probe-userinfo-xhr-redirected">&mdash;</span>
+          </dd>
+          <dt><code>GET /app/&hellip;</code> session route, JSON</dt>
+          <dd>
+            <span data-testid="probe-session-xhr-status">&mdash;</span> &middot;
+            <span data-testid="probe-session-xhr-content-type">&mdash;</span> &middot;
+            <span data-testid="probe-session-xhr-redirected">&mdash;</span>
+          </dd>
+          <dt><code>GET /app/&hellip;</code> session route, HTML</dt>
+          <dd>
+            <span data-testid="probe-session-navigation-status">&mdash;</span> &middot;
+            <span data-testid="probe-session-navigation-content-type">&mdash;</span> &middot;
+            <span data-testid="probe-session-navigation-redirected">&mdash;</span>
+          </dd>
+          <dt><code>GET</code> an unrouted path, HTML</dt>
+          <dd>
+            <span data-testid="probe-unrouted-navigation-status">&mdash;</span> &middot;
+            <span data-testid="probe-unrouted-navigation-content-type">&mdash;</span> &middot;
+            <span data-testid="probe-unrouted-navigation-redirected">&mdash;</span>
+          </dd>
+          <dt><code>GET</code> an unrouted path, JSON</dt>
+          <dd>
+            <span data-testid="probe-unrouted-xhr-status">&mdash;</span> &middot;
+            <span data-testid="probe-unrouted-xhr-content-type">&mdash;</span> &middot;
+            <span data-testid="probe-unrouted-xhr-redirected">&mdash;</span>
+          </dd>
+          <dt><code>DELETE /assets/demo/index.html</code>, HTML</dt>
+          <dd>
+            <span data-testid="probe-method-navigation-status">&mdash;</span> &middot;
+            <span data-testid="probe-method-navigation-content-type">&mdash;</span> &middot;
+            <span data-testid="probe-method-navigation-redirected">&mdash;</span>
+          </dd>
         </dl>
       </section>
 

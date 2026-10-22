@@ -324,17 +324,44 @@ $COMPOSE_CMD ps --format "table {{.Service}}\t{{.State}}" "${DEMO_IDP_SERVICE}" 
 echo ""
 # Printed from the SAME derived rows the readiness loop used, so the banner cannot drift from what
 # docker-compose.yml actually publishes. demo-client/pom.xml's demo.baseUrl.* properties carry the
-# same addresses for the Playwright suite; a literal copy here would be a third place to keep in
+# same addresses for the -Pe2e-demo run; a literal copy here would be a third place to keep in
 # lockstep with the model.
+#
+# The same loop collects the suite's two base URLs. Each demo gateway backs exactly one Playwright
+# project, named by the variable demo-client/playwright.config.js reads for that project's baseURL,
+# and the service name is the key. A gateway row with no project mapping, or a mapping no row
+# filled, fails HERE: a command missing a variable would only fail later, inside the config's
+# required(), one step further from the cause.
+SUITE_BASE_URL_SERVER=""
+SUITE_BASE_URL_COOKIE=""
 echo "📱 Demo entry points (the SPA is served BY the gateway, so it is same-origin with /bff/*):"
 while read -r GATEWAY_SERVICE _ _ GATEWAY_PUBLIC_PORT _; do
     [[ -z "$GATEWAY_SERVICE" ]] && continue
-    echo "  🖥️  ${GATEWAY_SERVICE}: https://localhost:${GATEWAY_PUBLIC_PORT}/assets/demo/index.html"
+    GATEWAY_BASE_URL="https://localhost:${GATEWAY_PUBLIC_PORT}"
+    echo "  🖥️  ${GATEWAY_SERVICE}: ${GATEWAY_BASE_URL}/assets/demo/index.html"
+    case "$GATEWAY_SERVICE" in
+        api-sheriff) SUITE_BASE_URL_SERVER="$GATEWAY_BASE_URL" ;;
+        api-sheriff-cookie) SUITE_BASE_URL_COOKIE="$GATEWAY_BASE_URL" ;;
+        *)
+            echo "❌ ${GATEWAY_SERVICE} backs no Playwright project: map it to a PLAYWRIGHT_BASE_URL_* variable in this script"
+            exit 1
+            ;;
+    esac
 done <<< "$GATEWAY_TARGETS"
 echo "  🔑 ${DEMO_IDP_SERVICE}: https://localhost:${IDP_PUBLIC_PORT}/auth"
 echo ""
+if [[ -z "$SUITE_BASE_URL_SERVER" ]]; then
+    echo "❌ No gateway row supplied PLAYWRIGHT_BASE_URL_SERVER (expected from api-sheriff)"
+    exit 1
+fi
+if [[ -z "$SUITE_BASE_URL_COOKIE" ]]; then
+    echo "❌ No gateway row supplied PLAYWRIGHT_BASE_URL_COOKIE (expected from api-sheriff-cookie)"
+    exit 1
+fi
 # 'npm run test', NOT npx: npm run resolves node_modules/.bin only, while npx's auto-confirm
 # suppresses the prompt guarding its registry fallback. The build was deliberately moved off npx
 # (demo-client/pom.xml, playwright-test execution); this banner must not send a developer back to it.
-echo "🧪 Run the suite:  cd demo-client && npm run test"
+# The subshell runs the suite from the repository root and leaves the caller there, like the stop
+# hint below.
+echo "🧪 Run the suite:  (cd demo-client && PLAYWRIGHT_BASE_URL_SERVER=${SUITE_BASE_URL_SERVER} PLAYWRIGHT_BASE_URL_COOKIE=${SUITE_BASE_URL_COOKIE} npm run test)"
 echo "🛑 To stop:        demo-client/scripts/stop-dev-environment.sh"

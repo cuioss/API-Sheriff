@@ -35,8 +35,23 @@ default; see link:../adr/0003-forwarded-headers.adoc[ADR-0003]).
 image::../resources/diagrams/base-bearer-sequence.svg[Client sends a bearer token; the gateway filters, validates offline, and forwards to the upstream, align=center]
 
 A request that fails filtering is rejected with `400`; a missing or invalid token yields
-`401`; a valid token lacking a needed scope yields `403 insufficient_scope`. In every rejection case the
-upstream is never called.
+`401`; a valid token lacking a needed scope yields `403 insufficient_scope`. A request that matches
+no route is answered `404`, and a method outside the matched route's allowlist `405`; both are
+statements about the route table rather than about the request's content, so they report under the
+`ROUTING` problem category (`urn:api-sheriff:problem:routing`, see
+link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
+In every rejection case the upstream is never called.
+
+A gateway-originated rejection is an RFC 9457 `application/problem+json` document by default. With
+`portal.error_pages: true`, a request whose `Accept` lists `text/html` explicitly -- a browser
+navigation -- gets the negotiated HTML error page instead for an HTML-eligible exit, the `403`, `404`
+and `405` above among them, and the status stays the same. `fetch`, XHR and REST clients send
+`+*/*+` by default and so keep `application/problem+json`. The `400` and `401` above always keep
+their shape, and a response relayed from the upstream is never replaced, whatever the request
+accepts (see
+link:../adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053],
+link:../user/portal.adoc#_error_pages[HTML error pages] and
+link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML error pages]).
 
 == Responsibilities
 
@@ -174,8 +189,8 @@ rather than fetched over HTTP.
 
 * *Stateless* -- no session, no store, horizontally scalable with no coordination.
 * *Self-contained* -- no database, no Redis, no etcd.
-* *Fail-secure* -- deny-by-default routing (a request matching no route reaches no upstream),
-  filtering, and scope enforcement. Within a route it reaches, what crosses is the forward
+* *Fail-secure* -- deny-by-default routing (a request matching no route reaches no upstream and is
+  answered `404` under the `ROUTING` category), filtering, and scope enforcement. Within a route it reaches, what crosses is the forward
   policy's per-dimension mode, bounded by the gateway-owned never-forward set.
 
 == Performance baseline

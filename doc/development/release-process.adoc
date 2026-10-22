@@ -32,9 +32,11 @@ skipped silently and publishes nothing, and a dispatch with `dry_run` set is ref
 publishes whatever `.github/project.yml` declares there, including a re-declaration of a version
 already published -- nothing central refuses it. Reach for it when the merge path did not
 fire -- and when a merge cut no release, establish *which* of the guard's two conditions refused it
-before dispatching (<<guard-refusal-predicates>>). Only an unmoved version is a reason to dispatch.
-An already-existing tag means that version was already released, and dispatching then republishes a
-published coordinate.
+before dispatching: the `release / guard` job logs it as its `Release guard: SKIP` reason line
+(<<guard-refusal-predicates>>). Only an unmoved version is a reason to dispatch, and only for a
+version no tag names yet -- the guard checks the version first, so an `unchanged` line says nothing
+about the tag. An already-existing tag means that version was already released, and dispatching
+then republishes a published coordinate.
 
 link:../../.github/workflows/release.yml[`.github/workflows/release.yml`] delegates to the
 cuioss-organization reusable Maven release workflow, pinned to a specific commit SHA. Neither the
@@ -123,8 +125,9 @@ Everywhere this document or the workflow says a step runs "before anything is pu
 +
 [WARNING]
 ====
-Do not read that silent no-release as "the version didn't move" and reach for the dispatch on the
-strength of it. The dispatch refuses nothing, so acting on that diagnosis republishes an
+Do not read that no-release as "the version didn't move" and reach for the dispatch on the strength
+of it -- not even when the guard's reason line says `unchanged`, because the version is checked
+before the tag and that line says nothing about the tag. The dispatch refuses nothing, so acting on that diagnosis republishes an
 already-published coordinate -- the failure class this whole procedure exists to prevent.
 ====
 . *Classify the failure first -- a re-run cannot pick up a fix.* *Re-run failed jobs* creates a new
@@ -422,10 +425,22 @@ skipped before anything is published. On the merge path the
 question *"is this merge a release?"* is answered by the pinned cuioss-organization workflow's
 *version-changed guard*.
 
-*It refuses on either of two conditions, and a refusal announces neither of them:*
+*It refuses on either of two conditions, checked in this order:*
 
 . The declared `current-version` did not move against the parent commit.
 . A tag for the declared version already exists.
+
+*The guard names the condition that refused.* It returns the refusal as its `reason` output, logs it
+in the `release / guard` job as one of these two lines, and writes the same reason to that job's
+summary:
+
+* `Release guard: SKIP — release.current-version unchanged at <version>`
+* `Release guard: SKIP — release.current-version changed to <version>, but a tag for <version> already exists`
+
+What does not name the reason is the downstream rendering: an empty `released-version` and the
+skipped jobs after the guard look identical for both conditions. Read the `release / guard` line,
+never the skipped jobs, to learn which condition refused. Because the version is checked first, an
+`unchanged` line says nothing about whether a tag for that version exists.
 
 Both must be false for the merge to publish. The guard is named for the first condition because that
 is what it was added for, but reading a no-release outcome as "the version didn't move" is a
@@ -436,6 +451,17 @@ central guard refuses at all.
 *That guard is consumed, never re-implemented here.* A local copy of a security-relevant decision is
 a second answer, and the local copy is the one that drifts out of sync. Do not add a caller-local
 version comparison.
+
+*What this section says about the guard holds for two pins, and must be re-checked when either
+moves.* The `uses:` of `release.yml`'s `release` job (currently line 132) pins
+`cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@7115714` (v0.42.0), and
+that workflow's `guard` job runs `cuioss/cuioss-organization/.github/actions/release-guard@ecd94a9`
+(v0.42.0). The check order and the reason lines quoted above are those of that action's
+`release-guard.py` at `ecd94a9`. A moved pin does not go unnoticed: `ReleaseGuardPinDocsContractTest`
+fails the build when the workflow pin cited here is not the one the `release` job uses, and
+link:../../.github/workflows/release-guard-docs.yml[`release-guard-docs.yml`] fetches the
+cuioss-organization sources at both pins on every pull request into `main` that touches `release.yml`
+or this document, failing when the cited action pin or a quoted reason line no longer matches them.
 
 *The `paths:` filter is a prefilter, never the decision.* It matches *every* edit to
 `.github/project.yml` -- `name`, `description`, `maven-build`, `sonar`, `pages`, `github-automation`,
@@ -474,8 +500,8 @@ point of the control. The guard's two refusal predicates and its central ownersh
 <<guard-refusal-predicates>> and decided by ADR-0035; they are consumed here, not restated.
 
 *The run is identified by a rule, not by a value:* *the Release workflow run attached to this pull
-request's merge commit*. No run id is committed here. An id would need a future edit to stay
-correct, and a placeholder for one would be an untrue statement sitting in the tree.
+request's merge commit*. The prediction committed no run id. An id would have needed a future edit to
+stay correct, and a placeholder for one would have been an untrue statement sitting in the tree.
 
 *The predicted signature is a conjunction of four rows:*
 
@@ -516,24 +542,43 @@ one-predicate reading <<guard-refusal-predicates>> warns against.
 finding about the guard, not a run id to file. It goes in-tree, in a follow-up PR, and the
 artifact's claim is withdrawn until it does.
 
-The observed run id and the rendered conclusions are posted as a comment on the merged pull request
--- public, permanent, and reachable from the merge commit -- not committed here.
+The observed run id and the rendered conclusions were posted as a comment on the merged pull request.
+That comment is associated with the pull request, not with any commit, and like any pull-request
+comment it can be edited or deleted -- so it is not the record. Now that the run has happened,
+<<guard-negative-control-limits>> cites it by id as the evidence.
 
 [#guard-negative-control-limits]
 === What that control proves, and what it does not
 
-*The caveat, undiminished:* the four-row signature above is *also* exactly what a guard permanently
-stuck on "unchanged" would render. Such a guard refuses this merge for entirely the wrong reason and
-looks identical doing it. The control therefore proves the guard *refused*. It does *not* prove the
-guard *can proceed*, and it must never be cited as though it did.
+*The four rows alone cannot tell which condition declined.* In control run `31256991225` both were
+true: `current-version` was `0.1.1` at the merge and at its parent, and a tag `0.1.1` already
+existed. The signature is the same for either refusal.
+
+*The guard's reason line can, and it is the evidence.* The `release / guard` log of that run reads
+`Release guard: SKIP — release.current-version unchanged at 0.1.1`. `decide` checks "unchanged"
+before "already tagged", so a guard stuck on "changed" would have passed the first check and logged
+the tag reason -- `release.current-version changed to 0.1.1, but a tag for 0.1.1 already exists` --
+instead. On that line the control proves the guard *refused*, and refused on the version check.
+The run executed the guard at the earlier action pin `b94a4a9`; `decide`'s check order and both
+reason strings are unchanged at the current pin `ecd94a9`, and the diff between the two is
+formatting only.
+
+*The caveat, undiminished:* a guard permanently stuck on "unchanged" logs exactly the same line and
+renders exactly the same four rows. Such a guard refuses this merge for entirely the wrong reason and
+looks identical doing it. The control does *not* prove the guard *can proceed*, and it must never be
+cited as though it did.
 
 *Two things settle that, and both are cited rather than re-manufactured.* The 0.1.1 cut -- run
 `31157727796` -- is the positive control: the guard did let a release through when the declared
 version had genuinely moved, so a second deliberate release is not needed to re-establish it. And
-the checkout depth of the pinned reusable workflow is what settles the *mechanism*, because the
-guard decides by comparing the declared version against the parent commit and can only do so when
-the checkout actually reaches that commit. Citing one without the other lets the negative control
-imply more than it shows.
+the checkout of the pinned reusable workflow settles the *mechanism*, because the guard decides by
+comparing the declared version against the parent commit and checking the tags. Its `guard` job
+checks out with `fetch-depth: 0` and `fetch-tags: true` on every event except `workflow_dispatch`,
+so the clone reaches that parent and carries the tags; the control run's guard log shows the
+checkout running with both. When the parent commit is missing anyway, the guard cannot decide:
+`release-guard.py` exits `1`, the `release / guard` job fails and the run goes red. That is a failed
+run, not a refusal -- a refusal is a green `release / guard` with `proceed=false`. Citing one of the
+two without the other lets the negative control imply more than it shows.
 
 *The asymmetry is recorded, not erased.* The two stuck-guard failure modes are not equally bad:
 
@@ -542,8 +587,9 @@ imply more than it shows.
 * *Stuck on "changed" fails DANGEROUS.* It publishes irrevocably. A wrong GA coordinate cannot be
   withdrawn, only abandoned and relocation-stubbed, as the 2026-07-12 defect required.
 
-The dangerous direction is therefore the one worth an empirical control, and it is the one this
-control covers -- deliberately, and first. *Anyone later tempted to "balance" the two directions
+The dangerous direction is therefore the one worth an empirical control, and the reason line is what
+makes this control cover it: a guard stuck on "changed" would have logged the tag reason, not
+`unchanged at 0.1.1`. It covers that direction deliberately, and first. *Anyone later tempted to "balance" the two directions
 must not do so by weakening the negative control.* The remedy for an under-evidenced safe direction
 is more evidence on that side, never less on this one.
 

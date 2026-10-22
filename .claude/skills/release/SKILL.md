@@ -98,22 +98,27 @@ Consequently:
   definition **from the base branch**. `doc/development/release-process.adoc` records that rule; do
   not restate it from memory.
 
-### The guard has fired once and has never been observed refusing — read this before cutting
+### The guard has been observed both firing and refusing — read this before cutting
 
-**The merge path has run exactly once.** `0.1.1` was cut on 2026-08-07 by merging the version-bump
-PR (#186): its signing certificate carries `github_workflow_trigger = pull_request` at
+**The merge path has cut exactly one release.** `0.1.1` was cut on 2026-08-07 by merging the
+version-bump PR (#186): its signing certificate carries `github_workflow_trigger = pull_request` at
 `github_workflow_sha = f3b9ed6`, the merge commit. The central version-changed guard has therefore
 been observed **firing** on a real version change. The `0.1.0` cut before it went out by
 `workflow_dispatch`, the *unconditional* path, which exercises no discrimination at all.
 
-**What has never been observed is the guard REFUSING.** No merge leaving the declared version
-unchanged has been watched arriving at the workflow and being turned away. That half ships proven in
-self-test and **unproven here**.
+**The guard has also been observed REFUSING.** Release run `31256991225` followed a merge that
+touched `.github/project.yml` without moving the declared version: `release / guard` succeeded, its
+log reads `Release guard: SKIP — release.current-version unchanged at 0.1.1`, and every job after it
+skipped. The guard names the condition that refused in that `release / guard` line (and in the job
+summary) — `unchanged at <version>`, or `changed to <version>, but a tag for <version> already
+exists`. It checks the version first, so an `unchanged` line says nothing about the tag. What the run
+does **not** show is that the guard can tell a moved version from an unmoved one on a merge that
+should publish; that rests on the `0.1.1` cut above. The control and its limits are recorded in
+`doc/development/release-process.adoc` § *What that control proves, and what it does not*.
 
-That is not a reason to avoid the merge path. It is a reason to **read the run** rather than assume
-it: after the merge, open the `Release` run and observe what the `release`, `publish-image` and
-`join` jobs actually did (Step 5, *Path A*), instead of inferring the outcome from the merge having
-happened.
+Neither observation is a reason to stop reading runs. **Read the run** rather than assume it: after
+the merge, open the `Release` run and observe what the `release`, `publish-image` and `join` jobs
+actually did (Step 5, *Path A*), instead of inferring the outcome from the merge having happened.
 
 ### What one release run produces — on either path
 
@@ -786,15 +791,15 @@ gh run view "$RUN_ID" --repo cuioss/API-Sheriff --json displayTitle,headBranch,h
 > confirm it names the version-bump PR before watching it.
 
 **Now READ THE RUN. Do not infer the outcome from the merge having happened** — see *The guard has
-fired once and has never been observed refusing* above. Exactly one merge-triggered cut (`0.1.1`) has
-been read off a run, so a firing guard is a confirmation of that single precedent; a *refusing* guard
-would still be a first observation:
+been observed both firing and refusing* above. One merge-triggered cut (`0.1.1`) and one refusal
+(run `31256991225`) have been read off a run, so either outcome confirms a precedent rather than
+replacing the reading:
 
 | what the run shows | what decided it | published? |
 |---|---|---|
 | No `Release` run at all | The trigger did not match: the merge touched no `.github/project.yml` path, or the PR's base was not `main`. The `paths:`/`branches:` prefilter, not the guard | nothing |
 | Run exists, `release` job **skipped** | The caller-side `merged == true` gate — the PR was closed **without** merging | nothing |
-| Run exists, `release` ran, `publish-image` and `join` **skipped** on `released-version != ''` | **The central guard refused**: `release.current-version` did not change between the merge commit and its first parent, **or** a tag for it already exists. Both are correct refusals | nothing |
+| Run exists, `release` ran, `publish-image` and `join` **skipped** on `released-version == ''` | **The central guard refused**: `release.current-version` did not change between the merge commit and its first parent, **or** a tag for it already exists. Both are correct refusals. The `release / guard` log line `Release guard: SKIP — …` names which condition refused | nothing |
 | `release` succeeded and the two `publish-image` legs are running | The guard proceeded — **the release is being cut** | jars are, or shortly will be, irrevocable — go to Step 6 |
 
 **Tell a correct refusal apart from a broken guard BEFORE reaching for a dispatch.** A dispatch on
