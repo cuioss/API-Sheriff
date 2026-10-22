@@ -7,9 +7,10 @@
 #   * the nested action pin — the `guard` job of reusable-maven-release.yml, AT the SHA the `release`
 #     job of release.yml pins, runs .github/actions/release-guard at a SHA; every short SHA the doc
 #     cites for that action must be a prefix of it;
-#   * the two reason lines the doc quotes — release-guard.py AT the action SHA must still build them
-#     from its print format, its SKIP verdict and one reason template per refusal; each template as
-#     the script holds it, rendered with <version> for each placeholder, must occur in the doc verbatim.
+#   * the two reason lines the doc quotes — read out of release-guard.py AT the action SHA: its print
+#     f-string, the verdict a refusal assigns and one reason f-string per refusal, each bounded by
+#     its own quotes; rendered together, with <version> for each placeholder, each line must occur in
+#     the doc verbatim.
 # The fourth value, the reusable-workflow pin itself, is checked offline by
 # ReleaseGuardPinDocsContractTest in api-sheriff, which runs in every Maven build.
 #
@@ -73,23 +74,32 @@ jobs:
           DOC = Path("doc/development/release-process.adoc")
           RELEASE_WORKFLOW = Path(".github/workflows/release.yml")
           SECTION = 'release-process.adoc § "The version-changed guard is the release decision"'
-          # How release-guard.py builds a reason line: one print format, the refusal verdict, and one
-          # f-string template per refusal. Each is matched as a whole, with any {placeholder} as the
-          # variable part, so a renamed verdict, a changed separator or a reworded reason all fail.
-          LINE_FORMAT = re.compile(r'Release guard: \{verdict\} — \{reason\}')
-          SKIP_VERDICT = re.compile(r'(?m)^\s*verdict\s*=.*"SKIP"')
+          # How release-guard.py builds a reason line: one print f-string with {verdict} and {reason},
+          # the verdict a refusal assigns, and one f-string per refusal reason. Every part is read OUT
+          # of the script, bounded by its own string quotes, and the doc's line is rendered from what
+          # was read -- so a renamed verdict, a changed separator, a reworded reason or text added to
+          # any of them changes the rendered line, or stops the bounded match, and the check fails.
+          # The patterns below only locate the parts; none of them supplies text to the rendered line.
+          # The verdict assignment and the print that logs it, as ONE unit: the script assigns `verdict`
+          # more than once (the step summary has its own wording), and only the assignment directly
+          # before the "Release guard:" print decides what the log line says.
+          LOG_LINE = re.compile(
+              r'(?m)^[ \t]*verdict\s*=\s*"[^"\n]+"\s+if\s+proceed\s+else\s+"([^"\n]+)"[ \t]*\n'
+              r'[ \t]*print\(f"(Release guard: \{verdict\}[^"\n]*\{reason\}[^"\n]*)"'
+          )
           REASON_TEMPLATES = (
-              re.compile(r'release\.current-version unchanged at \{[^{}]+\}'),
-              re.compile(r'release\.current-version changed to \{[^{}]+\}, but a tag for \{[^{}]+\} already exists'),
+              ("unchanged", re.compile(r'f"(release\.current-version unchanged at \{[^{}"\n]+\}[^"\n]*)"')),
+              ("already tagged", re.compile(r'f"(release\.current-version changed to [^"\n]*already exists[^"\n]*)"')),
           )
           PLACEHOLDER = re.compile(r"\{[^{}]+\}")
 
 
-          def rendered_line(template_text):
-              # The line the guard logs for a SKIP with this reason, as the doc quotes it: the template
-              # text found IN the script, each {placeholder} written as <version>. Rendering what the
-              # script holds, not a second literal, is what ties the doc's lines to the script.
-              return "Release guard: SKIP — " + PLACEHOLDER.sub("<version>", template_text)
+          def rendered_line(line_format, verdict, reason_text):
+              # The line the guard logs for this refusal, as the doc quotes it: the script's own print
+              # f-string with its verdict and reason substituted, each remaining {placeholder} written
+              # as <version>. Every character comes from the script; nothing here is a second literal.
+              line = line_format.replace("{verdict}", verdict).replace("{reason}", reason_text)
+              return PLACEHOLDER.sub("<version>", line)
           FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
           findings = []
@@ -160,26 +170,28 @@ jobs:
 
               guard_script = fetch(action_sha, GUARD_SCRIPT)
               if guard_script is not None:
-                  for part in (LINE_FORMAT, SKIP_VERDICT):
-                      if not part.search(guard_script):
+                  log_line = LOG_LINE.search(guard_script)
+                  if log_line is None:
+                      finding(
+                          f"release-guard.py@{action_sha}: the refusal verdict assignment directly followed by the"
+                          f" \"Release guard:\" print can no longer be located, so the lines {SECTION} quotes cannot"
+                          " be rendered from it. Re-read the script and correct the quoted lines."
+                      )
+                  for label, template in REASON_TEMPLATES:
+                      reason = template.search(guard_script)
+                      if reason is None:
                           finding(
-                              f"release-guard.py@{action_sha} no longer builds its reason lines from {part.pattern!r},"
-                              f" which the lines {SECTION} quotes are rendered from. Re-read the script and correct"
-                              " the quoted lines."
-                          )
-                  for template in REASON_TEMPLATES:
-                      match = template.search(guard_script)
-                      if match is None:
-                          finding(
-                              f"release-guard.py@{action_sha} no longer holds a reason template matching"
+                              f"release-guard.py@{action_sha} no longer holds the {label!r} reason f-string matching"
                               f" {template.pattern!r}. Re-read the script and correct the line {SECTION} quotes."
                           )
                           continue
-                      line = rendered_line(match.group(0))
+                      if log_line is None:
+                          continue
+                      line = rendered_line(log_line.group(2), log_line.group(1), reason.group(1))
                       if line not in doc:
                           finding(
                               f"{DOC} does not quote {line!r} verbatim, the line release-guard.py@{action_sha} logs"
-                              f" for this refusal. Correct the quoted line in {SECTION}."
+                              f" for the {label!r} refusal. Correct the quoted line in {SECTION}."
                           )
 
           if findings:
