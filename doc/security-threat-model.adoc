@@ -1400,10 +1400,24 @@ Amendment A1]):
 * *The reset leaves no error record.* The `StreamResetException` of the gateway's own upstream reset
   is dropped, so a burst of uploads does not write one `ERROR` record per upload (CWE-779).
 
+*FIN-first was evaluated and rejected*
+(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#amendment-a2[ADR-0066
+Amendment A2]). A close that shuts down the write side, drains the connection for a bounded time and
+falls back to `SO_LINGER 0` only when the drain fails was weighed against the abortive close for the
+early answer, the client abort and the request-body deadline. Every drain that completes makes the
+gateway the side that sent the first `FIN`, so its local port is held in `TIME_WAIT` again, on triggers
+a client drives at rate; the abortive close stays. A Linux reproduction of the upstream's side found that
+the upstream resets at once on loopback, after one round trip with a delayed path, and after one
+challenge ACK (RFC 5961) when the reset overtakes body data still in flight. Only when the reset is lost
+does the upstream keep its socket open until its own idle timeout.
+
 *Residual (accepted).* Each such upload still costs one new upstream connection, and the upstream sees
 a TCP reset instead of a `FIN` for every connection the gateway closes, idle-pool evictions included,
 and on TLS no `close_notify`. The rate of those connections is bounded by what the edge admits and by
-nothing narrower.
+nothing narrower. An upstream whose copy of the reset is lost keeps its side of the connection
+`ESTABLISHED`, with the unread body in its receive queue, until its own idle timeout -- 30 s in the
+reproduction. The cost lands on the upstream's socket table, is bounded by the upstream's own timeout,
+and needs a lost segment on the gateway-to-upstream path, which a client cannot cause.
 
 *Status of this control:* COVERED. `GatewayEdgeEarlyResponseResetTest` drives early-answered HTTP/2
 uploads against an HTTP/1.1 stub upstream and asserts that every upstream connection the gateway
@@ -1434,8 +1448,12 @@ link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared
 A2]):
 
 * *A body that stops.* A dispatch that holds its upstream connection and is reading the body ends
-  after 10 s without a forwarded body byte: the upstream request is reset, which frees the
-  connection, and the client is answered `408` (`REQUEST_BODY_TIMEOUT`)
+  after 10 s without a forwarded body byte: the upstream request is reset, which ends the dispatch's
+  hold on its pooled upstream connection, and the client is answered `408` (`REQUEST_BODY_TIMEOUT`).
+  On HTTP/1.1 the connection itself goes back to the pool only when no body chunk had been forwarded;
+  a partly sent request closes its connection abortively (<<gw-07-upstream-ports>>), and the next
+  dispatch obtains a new one. On an HTTP/2 upstream the reset ends one stream and the connection
+  carries on
   (link:architecture.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout]).
 * *A body that keeps arriving.* A body that has not ended 25 s after its upstream attempt started is
   ended there, 5 s before the guard's timeout. Before the response head the dispatch is answered

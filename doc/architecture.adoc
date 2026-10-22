@@ -642,8 +642,8 @@ than per-route by necessity: the gate runs *before* route selection, so no route
 it to. Omitted, it resolves to `false` and every framing rejection is preserved bit-for-bit.
 
 [[_request_body_idle_timeout]]
-*A request body that stops arriving ends its dispatch after 10 s, and the upstream connection it held
-is released.* A proxied dispatch holds one pooled upstream connection while it forwards the request
+*A request body that stops arriving ends its dispatch after 10 s, and the dispatch stops holding its
+upstream connection.* A proxied dispatch holds one pooled upstream connection while it forwards the request
 body. Once it holds that connection and is reading the body, 10 s without a forwarded body byte ends
 the dispatch as `REQUEST_BODY_TIMEOUT` (`408`, `INPUT_VALIDATION`). The clock starts when the dispatch
 hands the body to its upstream request and restarts with every forwarded chunk, so one value covers
@@ -656,8 +656,14 @@ the wait for the first body byte and every gap between chunks. It does not count
 * the time after the response was handed over -- the clock stops when the upstream request's send
   completes, whether its response arrived or the send failed.
 
-When it fires, the upstream request is reset, which frees the pooled upstream connection it held for
-the next dispatch at once instead of holding it until the guard's timeout. The client is answered
+When it fires, the upstream request is reset, which ends the dispatch's hold on its pooled upstream
+connection at once instead of keeping it until the guard's timeout. What becomes of that connection
+depends on what was written to it. The dispatch never sends the request head on its own: the head
+leaves together with the first forwarded body chunk. On HTTP/1.1 the connection itself therefore goes
+back to the pool only when no body chunk had been forwarded, so nothing of the request was written; a
+partly sent request closes its connection (abortively, see <<_http2_post_response_reset>>), and the
+next dispatch obtains a new one. On an HTTP/2 upstream the reset ends one stream and the connection
+carries on. The client is answered
 `408` with the input-validation problem document, and the answer ends what the unread body arrived
 on: on HTTP/2 the stream is reset with `NO_ERROR` through the one end rule
 (<<_http2_post_response_reset>>) and the connection carries on; on HTTP/1.x the answer carries

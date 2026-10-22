@@ -883,7 +883,9 @@ deployment that never writes it keeps the behaviour shown here.
 | Request-body idle timeout
 | 10 s
 | A proxied request whose body makes no progress for this long while the gateway reads it is
-  answered `408` and its upstream connection is released. Not applied to bodyless requests or
+  answered `408` and stops holding its upstream connection. On an HTTP/1.1 upstream that connection
+  is reused only when no body chunk had been forwarded; otherwise it is closed and the next request
+  opens a new one. Not applied to bodyless requests or
   `protocol: grpc` routes; not configurable. Shorter than the upstream guard's 30 s timeout, which
   bounds the dispatch until the upstream's response head. See
   link:../architecture.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout].

@@ -114,8 +114,10 @@ public enum EventType {
     /**
      * A proxied request's body made no progress for the gateway's fixed request-body idle timeout
      * while its dispatch held an upstream connection and was reading the body. {@code DispatchStage}
-     * resets the upstream request, which releases its connection at once, and reports this event; the
-     * client is answered {@code 408}. The wait for a pooled connection, the upstream's backpressure and
+     * resets the upstream request, which ends the dispatch's hold on that connection at once, and
+     * reports this event; the client is answered {@code 408}. On HTTP/1.1 the connection returns to the
+     * pool only when no body chunk had been forwarded; a partly sent request closes it. The wait for a
+     * pooled connection, the upstream's backpressure and
      * the time after the response was handed over are not counted, and bodyless requests and gRPC
      * routes are never watched.
      * <p>

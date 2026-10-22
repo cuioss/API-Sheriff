@@ -44,7 +44,9 @@ import io.vertx.core.http.HttpServerOptions;
  * path that never reaches the per-route body cap, the
  * {@linkplain #requestBodyIdleTimeoutMillis() request-body idle timeout} bounds how long a proxied
  * dispatch holding an upstream connection waits for request-body progress while it reads the body
- * (answered {@code 408}, its upstream connection released), and the
+ * (answered {@code 408}, and the reset ends the dispatch's hold on its upstream connection; on
+ * HTTP/1.1 that connection returns to the pool only when no body chunk had been forwarded, and a
+ * partly sent request closes it), and the
  * {@linkplain #requestBodyDeadlineMillis() request-body deadline} bounds how long, from the start of
  * its upstream attempt, a proxied dispatch waits for the whole body. Both are fixed gateway constants,
  * like the upstream guard they sit under: each is shorter than the guard's whole-dispatch timeout, so a

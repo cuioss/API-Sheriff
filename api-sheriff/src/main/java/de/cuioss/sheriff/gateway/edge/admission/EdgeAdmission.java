@@ -34,7 +34,10 @@ import io.vertx.ext.web.RoutingContext;
  * {@code SIGTERM}.
  * <p>
  * Thread-safe: the permits are semaphores, the in-flight count is atomic, the draining flag is
- * volatile, and every per-request release is latched so it happens exactly once.
+ * volatile, and every per-request release is latched so it happens exactly once. The volatile flag
+ * alone does not keep a request from being admitted after the drain has finished; that guarantee
+ * comes from the order of the accesses — {@link #tryAdmit()} publishes its claim before it reads the
+ * flag, and {@link #drain()} sets the flag before it reads the in-flight count.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -87,14 +90,32 @@ public final class EdgeAdmission {
      * Admits one request: refused while the edge drains or once the admission cap is exhausted, so a
      * flood is answered {@code 503} rather than spawning unbounded virtual threads. An admitted
      * request holds one general permit and counts as in flight until {@link #releaseAdmission}.
+     * <p>
+     * The claim is published before the draining flag is read: the permit is acquired and the
+     * in-flight count incremented first, and only then is {@code draining} checked. When the flag is
+     * set, both are undone and the request is refused. {@link #drain()} does the mirror image — it sets
+     * the flag and then reads the in-flight count. Because every one of these accesses is volatile or
+     * atomic, the two sides cannot miss each other: either this method sees the flag and withdraws its
+     * claim, or the drain sees the claim and waits for its release. Reading the flag first, as a
+     * pre-check, would reopen the window in which a request passes the check, the drain reads zero in
+     * flight and returns, and the request is admitted after the drain has finished.
+     * <p>
+     * A request refused this way holds a permit and an in-flight count for the moment between the
+     * increment and the undo, so a concurrent drain may wait one poll interval longer; nothing is left
+     * behind.
      *
      * @return {@code true} when the request was admitted
      */
     public boolean tryAdmit() {
-        if (draining || !admission.tryAcquire()) {
+        if (!admission.tryAcquire()) {
             return false;
         }
         inFlight.incrementAndGet();
+        if (draining) {
+            inFlight.decrementAndGet();
+            admission.release();
+            return false;
+        }
         return true;
     }
 

@@ -9,8 +9,8 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: Every response end on the edge passes one seam; an HTTP/2 response answered while its request body is still open stops reading the body at once (the upstream request is reset, the inbound stream paused so no flow-control window is returned), holds its final END_STREAM frame until the client can send nothing more, its window has been unchanged for a quiet period or a hard time cap has passed, and then writes the end and RST_STREAM(NO_ERROR) together in one event-loop turn; the gateway's own reset is marked on the inbound body and never recorded as INBOUND_BODY_ABORTED; HTTP/1.x, an ended body, the CANCEL late-body refusal, WebSocket and the L4 relay are unchanged; raising the reset limits, changing the upstream, per-writer marks, a reset straight after the write and a stream-window-only bound are rejected. AMENDED (A1, the upstream leg): a connection the gateway's HTTP/1.1 upstream client closes is closed abortively (SO_LINGER 0), so the reset of an HTTP/1.1 upstream request still costs that connection but no longer holds a local port in TIME_WAIT, which had let a client driving early answers or aborted uploads at rate exhaust the gateway's ephemeral ports and open the per-upstream circuit breaker for every client; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; the StreamResetException of the gateway's own upstream reset is absorbed instead of logged at ERROR; draining the upstream message is rejected for the same reason as draining the inbound one, because its missing bytes are the client's
-// tags: http2, edge, flow-control, stream-reset, rapid-reset, early-response, rfc9113, response-end, upload, abort-attribution, framework-seam, upstream-connection, http1, so-linger, time-wait, port-exhaustion, circuit-breaker, availability
+// summary: Every response end on the edge passes one seam; an HTTP/2 response answered while its request body is still open stops reading the body at once (the upstream request is reset, the inbound stream paused so no flow-control window is returned), holds its final END_STREAM frame until the client can send nothing more, its window has been unchanged for a quiet period or a hard time cap has passed, and then writes the end and RST_STREAM(NO_ERROR) together in one event-loop turn; the gateway's own reset is marked on the inbound body and never recorded as INBOUND_BODY_ABORTED; HTTP/1.x, an ended body, the CANCEL late-body refusal, WebSocket and the L4 relay are unchanged; raising the reset limits, changing the upstream, per-writer marks, a reset straight after the write and a stream-window-only bound are rejected. AMENDED (A1, the upstream leg): a connection the gateway's HTTP/1.1 upstream client closes is closed abortively (SO_LINGER 0), so the reset of an HTTP/1.1 upstream request still costs that connection but no longer holds a local port in TIME_WAIT, which had let a client driving early answers or aborted uploads at rate exhaust the gateway's ephemeral ports and open the per-upstream circuit breaker for every client; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; the StreamResetException of the gateway's own upstream reset is absorbed instead of logged at ERROR; draining the upstream message is rejected for the same reason as draining the inbound one, because its missing bytes are the client's. AMENDED (A2, FIN-first evaluated and rejected): the client-wide SO_LINGER 0 is kept on every trigger of the close -- the early upstream answer, the client abort and the 25 s request-body deadline; a FIN-first close (write-side shutdown, a bounded drain, SO_LINGER 0 only as fallback) is rejected because every drain that completes makes the gateway the first-FIN side and brings back the 60 s TIME_WAIT of A1 on a trigger an unauthenticated client drives at rate, while a drain against an upstream that stopped reading cannot send its FIN past the queued body and ends in the same reset, and because a per-connection close needs the Vert.x internal A1 declined (ADR-0062); a Linux reproduction showed the upstream resetting at once on loopback, after one round trip with delay and after a challenge ACK (RFC 5961) when the reset overtook in-flight data, and holding its socket ESTABLISHED until its own 30 s idle timeout only when every reset segment was dropped -- an accepted upstream-side residual; no variant was built because the pin test fails under FIN-first by construction; close, never reuse is unchanged
+// tags: http2, edge, flow-control, stream-reset, rapid-reset, early-response, rfc9113, response-end, upload, abort-attribution, framework-seam, upstream-connection, http1, so-linger, time-wait, port-exhaustion, circuit-breaker, availability, fin-first, half-close, rfc5961
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
@@ -347,6 +347,174 @@ This amendment supersedes one statement above: the negative consequence that an 
 reset is paid for with a new upstream connection alone, which is reworded for the current behaviour.
 The one seam, the three steps, the rule's two branches and the rejected alternatives stand.
 
+[[amendment-a2]]
+== Amendment A2 (2026-10-22): the abortive upstream close is kept -- a FIN-first close was evaluated and rejected
+
+*Amendment A1 closes a gateway-closed HTTP/1.1 upstream connection abortively. An external comparison
+proposed a FIN-first close instead: shut down the write side, drain the connection for about one second
+with a byte cap, and fall back to `SO_LINGER 0` only when the drain fails. The abortive close stays, on
+every trigger of the close, and FIN-first is rejected.*
+
+=== Context
+
+Three triggers close a gateway-dialled HTTP/1.1 upstream connection while its request is still open,
+and all three are reachable by an unauthenticated client at rate on a public upload route:
+
+* *the early upstream answer* -- the upstream answers before reading the body, and step 1 resets the
+  upstream request;
+
+* *the client abort* -- the client drops its upload mid-body, and the dispatch ends as
+  `INBOUND_BODY_ABORTED`;
+
+* *the request-body deadline* -- the body is still arriving 25 s after its upstream attempt started,
+  and the dispatch ends as `REQUEST_BODY_TIMEOUT`
+  (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[ADR-0060
+  Amendment A2]).
+
+The other resets A1 lists close the connection the same way, and the reasoning below holds for them
+unchanged.
+
+A FIN-first close would end each of these in order. `shutdown(SHUT_WR)` queues a `FIN` behind the
+data already sent, the gateway reads and discards what the upstream still sends for a bounded time and
+number of bytes, and only a drain that does not complete within that budget falls back to the abortive
+close. The motive is the upstream's view of the close. A `FIN` is the orderly end and is retransmitted
+until it is acknowledged. A TCP reset is sent once, and an upstream that does not process it -- because
+it was lost, or because its sequence number is not the one the upstream expects next and RFC 5961 makes
+the upstream answer with a challenge ACK instead -- might go on holding its side of the connection. A1
+recorded that the upstream sees a reset; it did not test that hypothesis.
+
+=== Decision
+
+*The default upstream client keeps `SO_LINGER 0`, client-wide, on all three triggers. There is no
+drain, no half-close and no per-trigger exception.*
+
+=== Evidence
+
+*A drain that succeeds brings `TIME_WAIT` back.* In a FIN-first close the gateway sends the first
+`FIN`. When the drain completes -- the upstream reads the rest of what it was sent and answers the
+`FIN` -- the connection ends in order, and on Linux the side that closed first holds its local port in
+`TIME_WAIT` for 60 s. That is the port-exhaustion mechanism of <<amendment-a1,Amendment A1>>. Only a
+drain that fails reaches the abortive fallback and avoids it, so FIN-first restores the port cost for
+every upstream that behaves well and removes it only for those that do not. Each of the three triggers
+is in a client's hands -- the early answer by sending uploads the upstream answers early, the client
+abort by dropping its own uploads, the deadline by trickling a body -- so every completed drain is a
+local port a client can hold for a minute, the lever A1 closed. Where the drain cannot complete, the
+proposal adds only delay: the `FIN` is sequenced after the body bytes already queued, and an upstream
+that has stopped reading holds those bytes behind a zero window once its receive buffer is full, so the
+`FIN` does not leave before the drain budget is spent and the close ends abortively anyway. Its buffer
+was full in the reproduction below: the gateway's send queue still held about 2.5 MB of unacknowledged
+body when it closed.
+
+*A per-connection close needs the Vert.x internal A1 declined.* The abortive close is the client's
+public option and applies to every connection the client closes. A drain with a fallback is a decision
+taken per connection, at the moment one reset path closes one connection: shut down the write side,
+read until a deadline, then choose the linger. Vert.x exposes neither a half-close nor a per-connection
+linger on a pooled HTTP/1.1 client connection, so the sequence would have to reach the Netty channel
+underneath it -- the Vert.x internal that A1 declined for the narrower close (Decision item 1, and the
+risk "Dropping the option for a narrower close").
+link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+prefers the platform mechanism over a hand-rolled equivalent; the client option is the platform
+mechanism, and a close sequence written against an internal channel is not.
+
+*The reproduction.* The hypothesis was tested once, on Linux, in a throwaway container (Docker
+`debian:bookworm-slim` with `python3`, `iproute2` and `tcpdump`, run with `--cap-add NET_ADMIN`; kernel
+`7.2.9-orbstack`, `tcp_invalid_ratelimit` 500 ms). Both ends ran on the container's loopback interface.
+The upstream was a Python server that read the head of an upload declaring a 1 GiB `Content-Length`,
+answered `200` at once, then stopped reading and waited only for a hang-up or a socket error, with an
+application idle timeout of 30 s. The gateway was a Python client that streamed the body and, when the
+early answer arrived, filled its send queue and closed with `SO_LINGER {1,0}` -- at kernel level what
+`setSoLinger(0)` does for Vert.x. The upstream socket was sampled with `ss -tano` once per second until
+the upstream's idle timeout; `nstat` recorded `TcpExtTCPChallengeACK` and
+`TcpExtTCPACKSkippedChallenge`, and `tcpdump` the reset, `FIN` and `SYN` segments. Four network
+variants were run:
+
+[cols="2,3,4,3,2", options="header"]
+|===
+|Variant |Network on the loopback interface |What the upstream observed |Its socket |Challenge ACKs (sent / skipped)
+
+|Loopback
+|no shaping
+|`ECONNRESET` within 10 ms of its answer
+|gone at the first sample
+|0 / 0
+
+|Delay
+|`netem delay 50ms` on every packet (100 ms round trip)
+|`ECONNRESET` 0.11 s after its answer, one round trip
+|gone at the second sample
+|0 / 0
+
+|Reset overtakes data
+|every packet delayed 50 ms except TCP reset segments
+|`ECONNRESET` 0.20 s after its answer
+|gone at the second sample
+|1 / 1
+
+|Reset dropped
+|every TCP reset segment dropped (`netem loss 100%` on a reset-only band)
+|no EOF and no reset; its own idle timeout after 30.03 s, then its own close
+|`ESTABLISHED`, 94,277 unread body bytes in its receive queue, for the full 30 s; gone at t+31 s
+|0 / 0
+|===
+
+When the reset overtook the body segments still in flight, its sequence number was ahead of what the
+upstream expected next, and the upstream answered with a challenge ACK instead of resetting, as RFC 5961
+requires; a second challenge was suppressed by the rate limit. The gateway's host had no socket for the
+connection any more and answered the upstream's late segments with plain resets, and one of those
+carried the expected sequence number and was accepted. An out-of-order reset therefore cost the
+upstream about one and a half round trips, not its idle timeout. The hypothesis reproduced only in the
+last variant: a reset that never arrives, on a connection where the upstream has answered and stopped
+reading and so sends nothing that could draw another reset, leaves the upstream holding its socket and
+the unread body until its own idle timeout. A FIN-first close would not have changed that case: the
+upstream had stopped reading, so the `FIN` would have stayed queued behind the body and the drain would
+have ended in the same reset.
+
+*No variant was measured.*
+`GatewayEdgeEarlyResponseResetTest.earlyAnsweredUpstreamConnectionsAreClosedByReset` asserts that every
+upstream connection the gateway closed reached the stub upstream as a reset and none as an orderly close.
+A FIN-first variant fails it by construction, so it is no measure of port exhaustion, and no test
+observes the gateway's own `TIME_WAIT` sockets. No variant was built and no comparative benchmark was
+run.
+
+*Close, never reuse.* Neither close keeps the connection for reuse, and FIN-first would change only how
+a closed connection ends. On HTTP/1.1 the request head leaves together with the first forwarded body
+chunk, so a reset returns the connection to the pool only when no body chunk had been forwarded and
+nothing of the request was written; a partly sent request closes its connection, abortively, and the
+next dispatch obtains a new one
+(link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a1[ADR-0060
+Amendment A1]).
+
+=== Consequences of the amendment
+
+*Positive.*
+
+* The port-exhaustion fix of A1 holds on every trigger, with no drain timer, no per-connection close
+  state and no Vert.x internal.
+
+*Negative.*
+
+* The upstream keeps seeing a TCP reset instead of a `FIN` for every connection the gateway closes, as
+  A1 records.
+
+* An upstream whose copy of the reset is lost keeps its side of the connection `ESTABLISHED` until its
+  own idle timeout, as the reset-dropped variant shows. The cost lands on the upstream's socket table,
+  is bounded by the upstream's own timeout, and needs a lost segment on the gateway-to-upstream path,
+  which a client cannot cause. It is recorded as accepted with
+  link:../security-threat-model.adoc#gw-07-upstream-ports[the threat model (GW-07)].
+
+*Risks.*
+
+* *Adding a drain to be polite to the upstream.* Any close that lets a drain complete makes the gateway
+  the side that sent the first `FIN` and brings `TIME_WAIT` back; such a change has to be judged
+  against A1 and this amendment.
+
+* *Rewriting the pin test to pass.*
+  `GatewayEdgeEarlyResponseResetTest.earlyAnsweredUpstreamConnectionsAreClosedByReset` fails under an
+  orderly close by design; making it accept an orderly close removes the guard on the abortive close.
+
+This amendment supersedes no statement above. It records why the abortive close of A1 is kept and adds
+the reproduced upstream-side residual.
+
 == References
 
 * link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060 -- Dispatch sends a bodyless method no body] -- the late body refusal whose `CANCEL` reset stays outside this rule.
@@ -356,3 +524,4 @@ The one seam, the three steps, the rule's two branches and the rejected alternat
 * link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the guarded call outside which the gateway's reset after a complete response falls (Amendment A1).
 * link:../security-threat-model.adoc[Threat Model] -- GW-08, the Rapid-Reset guard whose limits this decision leaves unchanged, and link:../security-threat-model.adoc#gw-07-upstream-ports[GW-07], the port exhaustion Amendment A1 closes.
 * RFC 9113 §8.1 -- permits a complete response followed by a `NO_ERROR` stream reset when the response does not depend on the rest of the request body.
+* RFC 5961 §3 -- a reset whose sequence number is in the window but not the one expected next draws a challenge ACK instead of ending the connection; the case the reproduction of Amendment A2 drives.

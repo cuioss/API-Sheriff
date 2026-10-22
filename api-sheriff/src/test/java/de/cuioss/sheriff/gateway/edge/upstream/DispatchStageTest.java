@@ -1430,8 +1430,9 @@ class DispatchStageTest {
             Awaits.until(() -> receivedPaths.contains(HELD_PATH), "the upstream to receive the occupying request",
                     Awaits.CONNECT_CEILING_SECONDS);
 
-            // Act — the dispatch stops waiting for a second attempt queued behind it; then the first
-            // completes and frees the connection, and a well-framed drain request follows on the client.
+            // Act — the dispatch stops waiting for a second attempt queued behind it; then the first, a
+            // bodyless GET that forwarded no body chunk, is answered in full and its connection returns to
+            // the pool, and a well-framed drain request follows on the client.
             GatewayException rejection = rejectionOf(dispatchGet(route(upstreamClient, attemptGuard), ABANDONED_PATH));
             releaseHeld.complete(Buffer.buffer(ANSWER));
             String occupied = answerOf(occupying);
@@ -2246,13 +2247,15 @@ class DispatchStageTest {
 
     /**
      * The request-body idle timeout over a live upstream: a body that stops arriving while its dispatch
-     * holds a pooled upstream connection ends the dispatch as {@link EventType#REQUEST_BODY_TIMEOUT} and
-     * frees the connection at once, while a body that keeps arriving, however slowly, is never cut off,
-     * and neither is a body that goes idle only after the upstream answered: the clock stops when the
+     * holds a pooled upstream connection ends the dispatch as {@link EventType#REQUEST_BODY_TIMEOUT} at
+     * once, and a body that forwarded no chunk leaves that connection reusable, because the request head
+     * leaves with the first chunk; a body that keeps arriving, however slowly, is never cut off, and
+     * neither is a body that goes idle only after the upstream answered: the clock stops when the
      * attempt's send completes.
      * <p>
      * The upstream client holds at most one HTTP/1.1 connection, so a follow-up dispatch on the same
-     * client is served only once the idle dispatch released it. Every route's guard leaves the dispatch
+     * client is served only once the idle dispatch, which forwarded no body chunk, has handed that
+     * connection back to the pool. Every route's guard leaves the dispatch
      * far more time than the idle timeout, so without the idle clock an idle dispatch would hold the
      * connection until that guard timed it out as an upstream timeout.
      */
