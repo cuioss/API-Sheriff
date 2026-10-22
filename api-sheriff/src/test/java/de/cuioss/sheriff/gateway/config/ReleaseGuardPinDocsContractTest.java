@@ -131,7 +131,7 @@ class ReleaseGuardPinDocsContractTest {
 
     @Test
     @DisplayName("Every workflow pin the doc cites names the path and a prefix of the SHA the release job uses")
-    void docCitesTheReusableWorkflowPinTheReleaseJobUses() throws IOException {
+    void docCitesTheReusableWorkflowPinTheReleaseJobUses() throws Exception {
         Pin pinned = releaseJobPin(read(RELEASE_WORKFLOW), RELEASE_WORKFLOW);
         List<Pin> documented = documentedPins(read(RELEASE_DOC));
 
