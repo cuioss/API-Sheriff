@@ -215,7 +215,7 @@ Keycloak runs `start-dev --import-realm`; an operator copying the stack shape ma
 == Verified positives
 
 * *demo-client (PER-14)*: no XSS sink exists — all rendering via `textContent`
-  (`spa/app.js:54-83`), no `innerHTML` anywhere, zero inline script/style (commented as
+  (`spa/app.js:92-121`), no `innerHTML` anywhere, zero inline script/style (commented as
   deliberate), login/logout are top-level navigations with `encodeURIComponent`-ed returnUrl.
   ESLint runs `eslint-plugin-security` at `--max-warnings 0`; `npm ci` with integrity-pinned
   committed lockfile; the POM documents why `npx` is banned (registry-fallback RCE). Docs match

@@ -1702,7 +1702,8 @@ version string.
 (link:architecture.adoc#_error_contract[error contract]), in one of three renderings: an
 `application/problem+json` document naming the category only; for an HTML-eligible exit requested
 with an explicit `text/html` `Accept` while `portal.error_pages` is on, the negotiated HTML error
-page carrying the unchanged status and a fixed per-status title only
+page, whose only request-derived input is the unchanged status -- its title comes from a fixed
+per-status table, and everything else on it is operator portal configuration rendered anonymously
 (link:architecture.adoc#_html_error_pages[negotiated HTML error pages], <<html-05>>); and, on a
 `protocol: grpc` route, the trailers-only form whose `grpc-message` is the category slug.
 Config binding-error messages are sanitized/truncated so no resolved scalar (secret) is ever
@@ -1714,9 +1715,9 @@ redaction is enforced by the configuration validator.
 
 *Assertion.* No error response or log line contains a resolved secret value or a stack
 trace/internal detail; a bind failure adjacent to a resolved secret never surfaces the
-secret; problem+json bodies carry the category only, an HTML error page carries the unchanged
-status and its fixed title only, and a gRPC trailers-only rejection's `grpc-message` carries the
-category slug only.
+secret; problem+json bodies carry the category only, an HTML error page carries no
+request-derived input beyond the unchanged status, and a gRPC trailers-only rejection's
+`grpc-message` carries the category slug only.
 
 [#gw-13]
 === GW-13 -- Open redirect through a gateway-answered redirect (CWE-601)

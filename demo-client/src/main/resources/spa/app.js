@@ -44,9 +44,10 @@ const UNROUTED_PATH = '/unrouted/rejection-probe';
 const DEMO_PAGE_PATH = '/assets/demo/index.html';
 
 /**
- * The gateway-rejection probes. Each is ONE same-origin request, and none reaches an upstream: the
- * reserved endpoint answers itself, the session floor rejects before anything is forwarded, and
- * the routing rejections never leave the gateway.
+ * The gateway-rejection probes. Each is ONE same-origin request. While anonymous -- the state the
+ * panel is meant for -- none reaches an upstream: the reserved endpoint answers itself, the session
+ * floor rejects before anything is forwarded, and the routing rejections never leave the gateway.
+ * With a live session the two session-route probes pass the floor and are relayed upstream.
  *
  * `userinfo-xhr` is deliberately sent with JSON only. The info endpoint is `Accept`-blind (rule 1),
  * so it is never asked for `text/html` -- a probe that did would demonstrate nothing.
