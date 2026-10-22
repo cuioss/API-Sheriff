@@ -126,7 +126,7 @@ skipped by property; the module's real toolchain is npm, driven by `frontend-mav
 | Two projects, `session-server` and `session-cookie`, differing only in `baseURL`.
 
 | `tests/`, `fixtures/`, `utils/`
-| The suite: five spec files, the shared fixtures, and the Keycloak login helper.
+| The suite: six spec files, the shared fixtures, and the Keycloak login helper.
 
 | `scripts/`
 | `start-dev-environment.sh` / `stop-dev-environment.sh` -- the trimmed three-container bring-up.
@@ -210,7 +210,7 @@ The profile carries the lifecycle bindings:
 | `start-dev-environment.sh` -- the trimmed three-container bring-up
 
 | `integration-test`
-| `npm run test`
+| `npm run test`, with both `PLAYWRIGHT_BASE_URL_*` variables set from POM properties
 
 | `post-integration-test`
 | `stop-dev-environment.sh`
@@ -228,7 +228,8 @@ transitive version enter a build that still looks reproducible.
 registry fallback, so a missing binary is a hard failure. `npx` with its auto-confirm flag
 suppresses the prompt guarding its fallback path, which would let an unpinned `playwright` package
 be fetched and executed from the registry -- outside the integrity-pinned lock the previous step
-just enforced.
+just enforced. The suite command `start-dev-environment.sh` prints for a standalone run keeps the
+same `npm run test`; it only sets the two base URLs inline, derived from the Compose model.
 
 Lint at `process-resources`, not `verify`:: `verify` runs *after* `integration-test`, so a lint
 failure used to surface only once a native image had been rebuilt, three containers were up and a
@@ -242,8 +243,10 @@ downloaded Node toolchain lands under the already-ignored `target/` tree rather 
 top-level directory needing its own ignore rule.
 
 The two base URLs and `PW_TEST_HTML_REPORT_OPEN=never` are passed to the test
-execution as environment, sourced from POM properties. *No port number is restated inside
-JavaScript* -- when a published port changes, it changes in one place.
+execution as environment, sourced from POM properties. A standalone run gets the two base URLs
+from the suite command the start script prints, built from the same Compose-derived rows as its
+entry-point banner, so no one hand-exports them. *No port number is restated inside JavaScript* --
+when a published port changes, it changes in one place.
 
 [#_running_the_suite_locally]
 == Running the Suite Locally
@@ -377,12 +380,21 @@ later reader does not re-derive it -- or worse, reverse it.
 *No test may send `Accept: text/html` to the info endpoint expecting `302` -- the 401-vs-302 split
 is PATH-based.*
 
-The contract itself -- that both reserved endpoints are `Accept`-blind, and that which of the two
-answers a caller gets is determined by *which path it called* rather than by content negotiation --
-is stated for integrators in
+The prohibition protects the reserved endpoints: the info endpoint `/bff/session`, which answers
+`401 application/problem+json` without a session whatever `Accept` says, and `/bff/login` and
+`/bff/logout`, which answer `302` whatever `Accept` says. The contract itself -- that the reserved
+endpoints are `Accept`-blind, and that which of the two answers a caller gets is determined by
+*which path it called* rather than by content negotiation -- is stated for integrators in
 link:integration-sample.adoc#_the_401_versus_302_split[Demo Client -- Integration Sample]. The
 prohibition this section carries is the testing consequence: no spec may assert that the info
 endpoint varies on `Accept`, and none may send an `Accept` header to it expecting a redirect.
+
+It does not cover the gateway's own rejections or a session route's floor. Those DO negotiate on
+`Accept` by design -- an unrouted path or a method outside a route's allowlist answers an explicit
+`text/html` request with the HTML error page and keeps its status, and a `require: session` route
+answers a navigation with a `302` into login and a `fetch` with a `401` -- and
+`tests/06-rejection-panel.spec.js` asserts that split by `Accept` on purpose. Its info-endpoint row
+sends JSON only and expects the `401`, so it stays inside the prohibition.
 
 This prohibition is recorded verbatim because a superseded framing described the split as
 `Accept`-driven, and a test written against that framing would pass for the wrong reason on the
@@ -443,7 +455,8 @@ is recorded so it reads as a decision rather than an omission:
 
 | `screenshot: only-on-failure`
 | Screenshots here are *documentation artifacts*, captured deliberately on the success path at the
-  meaningful states -- anonymous, authenticated, full allowlisted view, claim denied, logged out.
+  meaningful states -- anonymous, authenticated, full allowlisted view, claim denied, logged out,
+  and the filled gateway-rejection panel.
   Failure-path retention stays on for diagnostics, but the success-path set is the point.
 
 | A Quarkus Dev UI orientation

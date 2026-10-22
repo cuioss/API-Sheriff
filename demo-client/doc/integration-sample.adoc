@@ -77,17 +77,53 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | `fetch /bff/session` -- after logout
 | `401`
 | The authoritative proof the session is gone.
+
+| navigate an unrouted path
+| `404`
+| The negotiated HTML error page (`text/html`), not a redirect. Deny-by-default routing: no route
+  serves the address.
+
+| `fetch` an unrouted path
+| `404`
+| `application/problem+json` of type `urn:api-sheriff:problem:routing`, title `Routing`. Not a
+  redirect.
+
+| a method outside the route's allowlist -- e.g. `DELETE /assets/demo/index.html`
+| `405`
+| The negotiated HTML error page for an explicit `text/html` request, `application/problem+json` of
+  the same `Routing` category otherwise. Not a redirect either way.
+
+| navigate a `require: session` route -- no session
+| `302`
+| Into login. The session floor answers a navigation by starting the login it requires.
+
+| `fetch` a `require: session` route -- no session
+| `401`
+| `application/problem+json`. Not a redirect.
 |===
+
+The gateway's own rejections -- the `404` and `405` rows -- keep their status whichever rendering a
+request gets. The HTML error page is offered only to a request whose `Accept` lists `text/html`
+explicitly, and only when the operator enables it with `portal.error_pages: true`; without it, every
+request gets `application/problem+json`. A response relayed from an upstream is never replaced. See
+link:../../doc/user/portal.adoc#_error_pages[Application Portal -- Error pages] and
+link:../../doc/adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]
+for the `Routing` category. The sample's rejection panel fires one request per row -- a "navigate"
+row as a `fetch` carrying `Accept: text/html` with `redirect: 'manual'`, so the `302` is observed
+rather than followed -- and shows the status, `Content-Type` and whether a redirect happened.
 
 Two properties of this table are worth stating explicitly, because assuming otherwise is the most
 common way to mis-integrate:
 
 [#_the_401_versus_302_split]
-* *The `401`-versus-`302` split is PATH-based, not `Accept`-based.* Both reserved endpoints are
-  blind to the request's `Accept` header. `/bff/session` is an XHR probe and answers
-  `401 application/problem+json` without a session -- it never redirects, whatever you send. Do not
-  write a client that sends `Accept: text/html` to the info endpoint expecting a redirect, and do
-  not write one that treats a `302` from the info endpoint as reachable. It is not.
+* *On the reserved endpoints, the `401`-versus-`302` split is PATH-based, not `Accept`-based.*
+  `/bff/session`, `/bff/login` and `/bff/logout` are blind to the request's `Accept` header.
+  `/bff/session` is an XHR probe and answers `401 application/problem+json` without a session -- it
+  never redirects, whatever you send -- and `/bff/login` and `/bff/logout` answer `302` whatever you
+  send. Do not write a client that sends `Accept: text/html` to the info endpoint expecting a
+  redirect, and do not write one that treats a `302` from the info endpoint as reachable. It is not.
+  The rest of the gateway is different by design: its own rejections and a session route's floor
+  DO negotiate on `Accept`, as the last five rows of the table show.
 * *Login is a navigation, logout is a navigation.* `/bff/login` and `/bff/logout` answer `302`
   into the identity provider. A `fetch` cannot follow that meaningfully -- the browser must own the
   navigation. Use `window.location.assign(...)`, never `fetch`.
