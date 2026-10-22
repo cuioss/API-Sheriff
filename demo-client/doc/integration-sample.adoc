@@ -93,11 +93,11 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | The negotiated HTML error page for an explicit `text/html` request, `application/problem+json` of
   the same `Routing` category otherwise. Not a redirect either way.
 
-| navigate a `require: session` route -- no session
+| a `text/html` request (a navigation) to a `require: session` route -- no session
 | `302`
-| Into login. The session floor answers a navigation by starting the login it requires.
+| Into login. The session floor answers such a request by starting the login it requires.
 
-| `fetch` a `require: session` route -- no session
+| any other request (e.g. a JSON `fetch`) to a `require: session` route -- no session
 | `401`
 | `application/problem+json`. Not a redirect.
 |===

@@ -16,12 +16,13 @@
  *      `window.location.assign(...)` for both, never `fetch`.
  *   3. No token material exists here to handle. The endpoint discloses none, the session cookie is
  *      `HttpOnly`, and this client neither reads a cookie nor writes to storage. Nothing is logged.
- *   4. Only the reserved endpoints are `Accept`-blind. The gateway's OWN rejections -- an unrouted
- *      path, a method outside a route's allowlist -- and a session route's floor DO negotiate on
- *      `Accept`. A routing rejection keeps its status and only changes its body: the HTML error
- *      page for a request that lists `text/html` explicitly, `application/problem+json` otherwise.
- *      The floor answers such a navigation with a `302` into login and anything else with a
- *      `401`. The rejection panel demonstrates exactly this split.
+ *   4. Unlike the reserved endpoints, the rejections the panel probes DO negotiate on `Accept`.
+ *      With `portal.error_pages: true` (both demo instances set it), an unrouted path or a method
+ *      outside a route's allowlist keeps its status and only changes its body: the HTML error
+ *      page for a request that lists `text/html` explicitly, `application/problem+json`
+ *      otherwise. A session route's floor answers such a request with a `302` into login and
+ *      anything else with a `401`. Not every exit negotiates -- a filter `400` or a bearer `401`
+ *      keeps its shape whatever `Accept` says. The rejection panel demonstrates the split.
  */
 
 const USERINFO_PATH = '/bff/session';
@@ -276,8 +277,11 @@ function renderProbeRow(id, status, contentType, redirected) {
   setText(el(`probe-${id}-redirected`), redirected);
 }
 
+/** The current probe run. A probe renders only while its own run is still the current one. */
+let probeRun = 0;
+
 /**
- * Fires one rejection probe and renders its row.
+ * Fires one rejection probe and renders its row, unless a newer run has started meanwhile.
  *
  * `redirect: 'manual'` is what makes a redirect observable instead of followed: under it the
  * browser hands back every redirect, same-origin or not, as an opaque redirect
@@ -287,9 +291,15 @@ function renderProbeRow(id, status, contentType, redirected) {
  * the others.
  *
  * @param {{id: string, method: string, path: string, accept: string}} probe the probe to fire
- * @returns {Promise<void>} resolves once the row is rendered, whatever the outcome
+ * @param {number} run the run this probe belongs to
+ * @returns {Promise<void>} resolves once the probe has answered, whatever the outcome
  */
-async function fireRejectionProbe(probe) {
+async function fireRejectionProbe(probe, run) {
+  const renderCurrent = (...cells) => {
+    if (run === probeRun) {
+      renderProbeRow(probe.id, ...cells);
+    }
+  };
   try {
     const response = await fetch(probe.path, {
       method: probe.method,
@@ -298,27 +308,30 @@ async function fireRejectionProbe(probe) {
       headers: { Accept: probe.accept },
     });
     if (response.type === 'opaqueredirect') {
-      renderProbeRow(probe.id, EM_DASH, EM_DASH, 'yes');
+      renderCurrent(EM_DASH, EM_DASH, 'yes');
       return;
     }
     const contentType = response.headers.get('content-type') || EM_DASH;
-    renderProbeRow(probe.id, String(response.status), contentType, 'no');
+    renderCurrent(String(response.status), contentType, 'no');
   } catch (reason) {
     const detail = reason instanceof Error ? reason.message : String(reason);
-    renderProbeRow(probe.id, `failed ${EM_DASH} ${detail}`, EM_DASH, EM_DASH);
+    renderCurrent(`failed ${EM_DASH} ${detail}`, EM_DASH, EM_DASH);
   }
 }
 
 /**
- * Fires every rejection probe, clearing the rows first so a re-run never shows a stale answer.
+ * Fires every rejection probe as a new run, clearing the rows first. A probe of an earlier run
+ * that answers late renders nothing, so a re-run never shows a stale answer.
  *
- * @returns {Promise<void>} resolves once every row is rendered
+ * @returns {Promise<void>} resolves once every probe of this run has answered
  */
 async function fireRejectionProbes() {
+  probeRun += 1;
+  const run = probeRun;
   for (const probe of REJECTION_PROBES) {
     renderProbeRow(probe.id, EM_DASH, EM_DASH, EM_DASH);
   }
-  await Promise.all(REJECTION_PROBES.map(fireRejectionProbe));
+  await Promise.all(REJECTION_PROBES.map((probe) => fireRejectionProbe(probe, run)));
 }
 
 /**

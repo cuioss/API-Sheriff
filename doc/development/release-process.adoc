@@ -496,8 +496,8 @@ point of the control. The guard's two refusal predicates and its central ownersh
 <<guard-refusal-predicates>> and decided by ADR-0035; they are consumed here, not restated.
 
 *The run is identified by a rule, not by a value:* *the Release workflow run attached to this pull
-request's merge commit*. No run id is committed here. An id would need a future edit to stay
-correct, and a placeholder for one would be an untrue statement sitting in the tree.
+request's merge commit*. The prediction committed no run id. An id would have needed a future edit to
+stay correct, and a placeholder for one would have been an untrue statement sitting in the tree.
 
 *The predicted signature is a conjunction of four rows:*
 
@@ -538,8 +538,9 @@ one-predicate reading <<guard-refusal-predicates>> warns against.
 finding about the guard, not a run id to file. It goes in-tree, in a follow-up PR, and the
 artifact's claim is withdrawn until it does.
 
-The observed run id and the rendered conclusions are posted as a comment on the merged pull request
--- public, permanent, and reachable from the merge commit -- not committed here.
+The observed run id and the rendered conclusions were posted as a comment on the merged pull request
+-- public, permanent, and reachable from the merge commit. Now that the run has happened,
+<<guard-negative-control-limits>> cites it by id as the evidence.
 
 [#guard-negative-control-limits]
 === What that control proves, and what it does not
