@@ -96,7 +96,7 @@ class EdgeAdmissionTest {
 
     @Test
     @DisplayName("the drain waits while an admitted request is unreleased, and returns soon after its release")
-    void drainWaitsForAnAdmittedRequestUntilItIsReleased() throws InterruptedException {
+    void drainWaitsForAnAdmittedRequestUntilItIsReleased() throws Exception {
         assertTrue(admission.tryAdmit(), "precondition: the request is admitted before the drain starts");
         Thread drain = Thread.ofPlatform().daemon().start(admission::drain);
 
@@ -114,7 +114,7 @@ class EdgeAdmissionTest {
 
     @Test
     @DisplayName("an admission racing the drain is never admitted after the drain has returned")
-    void admissionRacingTheDrainIsNeverAdmittedAfterTheDrainReturned() throws InterruptedException {
+    void admissionRacingTheDrainIsNeverAdmittedAfterTheDrainReturned() throws Exception {
         int admittedRounds = 0;
         List<Integer> admittedAfterTheDrain = new ArrayList<>();
         List<Integer> unsettled = new ArrayList<>();
