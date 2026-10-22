@@ -2,9 +2,9 @@
   "id": "PLAN-V02-46",
   "slug": "upstream-close-after-early-answer",
   "workstream": "WS-03",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-46-upstream-close-after-early-answer",
-  "pr": "",
-  "landing": "",
+  "pr": "513",
+  "landing": "landings/PLAN-V02-46.md",
   "seq": 46
 }

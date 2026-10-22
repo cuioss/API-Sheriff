@@ -460,6 +460,16 @@ doc-only or build-light plan for the second and third slots.
   framing, so re-running until green can hide a regression. **This is the only entry tracking the
   flake across both epics** (kidicap's Open Defect now points here). Owner when it recurs: whichever plan next touches `edge/` (`PLAN-V02-06`), or a dedicated
   fix. Reproduce with `-XX:ActiveProcessorCount=1`.
+  **Related, separate test (2026-10-22, `PLAN-V02-46` landing, #513):**
+  `Http2EarlyResponseResetIT.earlyAnsweredUploadsStayAnsweredWithoutGoAway` failed once in the merge_group
+  Integration Tests run `39812067667`: *"every stream must end in the gateway's NO_ERROR reset; the client
+  reset the rest itself with CANCEL … expected: <400> but was: <390>"*, two connections used. The same tree
+  was green on PR CI and on the re-enqueue (`39823097862`), and post-merge `main` at `e70743f7` is green. First
+  observed failure of this test; it guards the #431 early-response reset path. A merge-queue-only failure
+  here may be a real reset-before-write race, as the HTTP/2 framing flake was (#403), so a re-enqueue is not
+  an answer. On a recurrence, reproduce under `-XX:ActiveProcessorCount=1` with repeated runs first, and check
+  whether an early answer plus the abortive upstream close can still send CANCEL or GOAWAY to unrelated
+  streams. Same owner rule as above. Source: inbox `plan-v02-46-upstream-close-after-early-answer-001`.
 
 - **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy
   key-material generators from TokenSheriff, proposal 7) and #423 (IT concurrency not realised: the
