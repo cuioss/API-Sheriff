@@ -400,9 +400,10 @@ is in a client's hands -- the early answer by sending uploads the upstream answe
 abort by dropping its own uploads, the deadline by trickling a body -- so every completed drain is a
 local port a client can hold for a minute, the lever A1 closed. Where the drain cannot complete, the
 proposal adds only delay: the `FIN` is sequenced after the body bytes already queued, and an upstream
-that has stopped reading holds those bytes behind a zero window, so the `FIN` does not leave before the
-drain budget is spent and the close ends abortively anyway. In the reproduction below the gateway's send
-queue still held about 2.5 MB of unacknowledged body when it closed.
+that has stopped reading holds those bytes behind a zero window once its receive buffer is full, so the
+`FIN` does not leave before the drain budget is spent and the close ends abortively anyway. Its buffer
+was full in the reproduction below: the gateway's send queue still held about 2.5 MB of unacknowledged
+body when it closed.
 
 *A per-connection close needs the Vert.x internal A1 declined.* The abortive close is the client's
 public option and applies to every connection the client closes. A drain with a fallback is a decision
