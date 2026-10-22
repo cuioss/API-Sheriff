@@ -392,7 +392,7 @@ endpoint varies on `Accept`, and none may send an `Accept` header to it expectin
 It does not cover the gateway's own rejections or a session route's floor. Those DO negotiate on
 `Accept` by design -- an unrouted path or a method outside a route's allowlist answers an explicit
 `text/html` request with the HTML error page and keeps its status, and a `require: session` route
-answers a navigation with a `302` into login and a `fetch` with a `401` -- and
+answers an explicit `text/html` request with a `302` into login and any other with a `401` -- and
 `tests/06-rejection-panel.spec.js` asserts that split by `Accept` on purpose. Its info-endpoint row
 sends JSON only and expects the `401`, so it stays inside the prohibition.
 

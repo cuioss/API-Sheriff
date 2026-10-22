@@ -279,11 +279,12 @@ function renderProbeRow(id, status, contentType, redirected) {
 /**
  * Fires one rejection probe and renders its row.
  *
- * `redirect: 'manual'` is what makes a redirect observable instead of followed: the `302` the
- * session floor answers a navigation with points into the identity provider, cross-origin, so the
- * browser hands back an opaque redirect (`response.type === 'opaqueredirect'`, no status, no
- * headers) rather than chasing it. No response body is read at all, so no error page content can
- * reach the DOM. A transport failure is rendered on its own row and never breaks the others.
+ * `redirect: 'manual'` is what makes a redirect observable instead of followed: under it the
+ * browser hands back every redirect, same-origin or not, as an opaque redirect
+ * (`response.type === 'opaqueredirect'`, no status, no headers) — here the `302` into login the
+ * session floor answers a `text/html` request with. No response body is read at all, so no error
+ * page content can reach the DOM. A transport failure is rendered on its own row and never breaks
+ * the others.
  *
  * @param {{id: string, method: string, path: string, accept: string}} probe the probe to fire
  * @returns {Promise<void>} resolves once the row is rendered, whatever the outcome

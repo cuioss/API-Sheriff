@@ -198,8 +198,8 @@ oidc:
 # --- Negotiated HTML error pages (demo rejection panel, 06-rejection-panel.spec.js) -------------
 # The demo SPA's gateway-rejection panel asserts ONE expectation per probe in both Playwright
 # projects: session-server against the base instance, session-cookie against this one. So this
-# instance negotiates the same HTML error pages as the base document's portal block — a navigation
-# that explicitly accepts text/html gets the HTML page with the same status, a fetch keeps
+# instance negotiates the same HTML error pages as the base document's portal block — a request
+# whose Accept lists text/html explicitly gets the HTML page with the same status, any other keeps
 # application/problem+json. It is a reduced mirror on purpose: path, title and error_pages only. No
 # template_dir, so the built-in template renders, and no cache_seconds, a limit-shaped key.
 # Placed after every cited key, so no line declared-limit-assertion-coverage.adoc cites moves.
