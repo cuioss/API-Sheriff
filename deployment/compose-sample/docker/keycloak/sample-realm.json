@@ -23,7 +23,7 @@
     {
       "clientId": "sample-client",
       "name": "API Sheriff Sample Client",
-      "description": "The sample gateway's BFF client. It holds no secret: the gateway authenticates with a private_key_jwt assertion signed by its generated client-authentication key, and Keycloak fetches the public half from the gateway's /bff/jwks (the URL each compose variant supplies through SAMPLE_GATEWAY_JWKS_URL). Every authorization request is pushed (PAR) and every token is DPoP-bound. Register your own client the same way, against your own gateway's JWKS URL and callback, before this realm is reachable by anything you care about.",
+      "description": "The sample gateway's BFF client: no secret (private_key_jwt, key fetched from the gateway's /bff/jwks), pushed authorization requests, DPoP-bound tokens. Register your own client the same way before this realm is reachable by anything you care about.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -39,7 +39,7 @@
         "https://localhost:8443"
       ],
       "defaultClientScopes": [
-        "openid",
+        "basic",
         "profile",
         "email",
         "roles"
