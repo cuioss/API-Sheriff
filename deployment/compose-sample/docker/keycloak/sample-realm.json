@@ -23,18 +23,17 @@
     {
       "clientId": "sample-client",
       "name": "API Sheriff Sample Client",
-      "description": "Sample client. Its secret is the placeholder CHANGE-ME-BEFORE-PRODUCTION and MUST be replaced, from the deployment rather than from this file, before this realm is reachable by anything you care about.",
+      "description": "The sample gateway's BFF client. It holds no secret: the gateway authenticates with a private_key_jwt assertion signed by its generated client-authentication key, and Keycloak fetches the public half from the gateway's /bff/jwks (the URL each compose variant supplies through SAMPLE_GATEWAY_JWKS_URL). Every authorization request is pushed (PAR) and every token is DPoP-bound. Register your own client the same way, against your own gateway's JWKS URL and callback, before this realm is reachable by anything you care about.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "CHANGE-ME-BEFORE-PRODUCTION",
+      "clientAuthenticatorType": "client-jwt",
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "https://localhost:8443/*"
+        "https://localhost:8443/bff/callback"
       ],
       "webOrigins": [
         "https://localhost:8443"
@@ -44,7 +43,15 @@
         "profile",
         "email",
         "roles"
-      ]
+      ],
+      "attributes": {
+        "use.jwks.url": "true",
+        "jwks.url": "${SAMPLE_GATEWAY_JWKS_URL}",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true",
+        "post.logout.redirect.uris": "https://localhost:8443/bff/logout/return"
+      }
     }
   ],
 

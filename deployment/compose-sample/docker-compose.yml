@@ -3,7 +3,8 @@
 # THREE services on one bridge network, and nothing else:
 #
 #   api-sheriff  the gateway, running the PUBLISHED image (never a local build)
-#   keycloak     the identity provider whose realm mints the bearer tokens the gateway validates
+#   keycloak     the identity provider whose realm mints the bearer tokens the gateway validates, and
+#                which also logs browser users in through the gateway's BFF (/app)
 #   demo-api     a stand-in upstream serving a canned JSON document, reached only on the internal network
 #
 # This is a SAMPLE, not a test harness. It deliberately carries none of the integration-tests
@@ -53,9 +54,23 @@ services:
       # (scheme and port included). Every realm issuer and every URL Keycloak mints derives from it,
       # whichever address a request arrives on — the realm carries no frontendUrl of its own.
       - KC_HOSTNAME=https://localhost:1443
+      # Keycloak is a TLS CLIENT too: it fetches the BFF's client JWKS from the gateway to verify the
+      # private_key_jwt assertion the gateway authenticates with. The gateway serves the sample's
+      # self-signed certificate, so this anchors exactly that certificate as trusted. Hostname
+      # verification stays ON — it succeeds because the certificate's SAN names api-sheriff (and
+      # tls-terminator, the address the plain-HTTP variant dials instead).
+      - KC_TRUSTSTORE_PATHS=/opt/keycloak/certificates/localhost.crt
+      # Where Keycloak fetches the BFF's client JWKS. sample-realm.json names this variable rather
+      # than a URL (`jwks.url: ${SAMPLE_GATEWAY_JWKS_URL}`, resolved at realm import) because the
+      # address differs per variant: here the gateway terminates TLS itself, so Keycloak dials it
+      # directly on the internal network; docker-compose.plain-http.yml points it at the TLS hop.
+      - SAMPLE_GATEWAY_JWKS_URL=https://api-sheriff:8443/bff/jwks
     ports:
-      # Published so an operator can reach the admin console and mint a token from the host, and
-      # bound to the LOOPBACK interface for the same reason the gateway's management port below is:
+      # Published so the browser reaches the login page the gateway's BFF redirects it to, and so an
+      # operator reaches the admin console. No token can be minted from the host any more:
+      # sample-client has no secret and no password grant (directAccessGrantsEnabled is false) — a
+      # user signs in through the BFF at https://localhost:8443/app instead. The port is bound to the
+      # LOOPBACK interface for the same reason the gateway's management port below is:
       # this is the Keycloak ADMIN CONSOLE, reachable with the sample bootstrap credentials three
       # lines above, on the IdP that mints every token the gateway trusts. Publishing it on 0.0.0.0
       # would hand full control of the stack's trust root to anything that can reach the host — a
@@ -64,7 +79,8 @@ services:
       # https://localhost:1443, which still resolves.
       #
       # The realm identity is this published https://localhost:1443 (KC_HOSTNAME above), but the
-      # gateway does NOT dial it — its JWKS fetch stays on keycloak:8443 on the internal network.
+      # gateway does NOT dial it — its JWKS fetch and its BFF back channel stay on keycloak:8443 on
+      # the internal network.
       - "127.0.0.1:1443:8443"
     volumes:
       - ./docker/keycloak:/opt/keycloak/data/import:ro
@@ -223,14 +239,22 @@ services:
       # says https and why the readiness probe passes -k against the self-signed bundle.
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_FILES=/app/certificates/localhost.crt
       - QUARKUS_MANAGEMENT_SSL_CERTIFICATE_KEY_FILES=/app/certificates/localhost.key
-      # The trust material behind gateway.yaml's `jwks.tls_profile: sample-idp`. gateway.yaml names
-      # only the logical profile; this properties file binds it to the generated truststore holding
-      # the sample certificate Keycloak serves. Without it the gateway refuses to boot (a named but
+      # The trust material behind gateway.yaml's `jwks.tls_profile: sample-idp` (and, through
+      # `egress_tls.oidc_tls_profile`, behind the BFF's back channel to the same IdP). gateway.yaml
+      # names only the logical profile; this properties file binds it to the generated truststore
+      # holding the sample certificate Keycloak serves. Without it the gateway refuses to boot (a named but
       # unbound profile is a startup error, never a silent fallback to default trust) — and without
       # the profile at all, the JWKS fetch would fail certificate validation against the self-signed
       # IdP and readiness would stay DOWN. Loaded from the already-mounted certificates/ volume, the
       # same mechanism the integration-test stack uses for its benchmark-idp profile.
       - QUARKUS_CONFIG_LOCATIONS=/app/certificates/sample-idp-trust.properties
+      # The BFF's two signing keys, behind gateway.yaml's bare ${SHERIFF_CLIENT_AUTH_KEY_FILE} and
+      # ${SHERIFF_DPOP_KEY_FILE} placeholders — the document names no key path, the deployment does.
+      # The first signs the private_key_jwt assertion the gateway authenticates to Keycloak with, the
+      # second signs the DPoP proofs that bind its tokens. Both are generated alongside the TLS
+      # material and ride the same read-only certificates/ mount, so no further volume is needed.
+      - SHERIFF_CLIENT_AUTH_KEY_FILE=/app/certificates/client-auth.pem
+      - SHERIFF_DPOP_KEY_FILE=/app/certificates/dpop.pem
       # NOTE: QUARKUS_HTTP_SSL_PORT is deliberately ABSENT. The integration stack sets it to move the
       # terminated listener off 8443 because its gateway.yaml declares a passthrough_sni block that
       # claims the public port for the SNI front listener. This sample declares no passthrough_sni,

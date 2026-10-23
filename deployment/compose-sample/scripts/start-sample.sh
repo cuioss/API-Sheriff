@@ -214,16 +214,20 @@ fi
 # burns its whole budget against a stack that was never going to come up. Checking for it here turns
 # that into one line naming the one-time command that fixes it.
 #
-# The truststore is checked too, and separately named: material generated BEFORE the sample bound the
-# `sample-idp` trust profile has the certificate pair but no store, and the gateway then refuses to
-# boot on an unloadable profile. Re-running the generator produces all three together.
+# The truststore and the BFF's two signing keys are checked too, and separately named: a set
+# generated BEFORE the sample bound the `sample-idp` trust profile has the certificate pair but no
+# store, and a set generated before the sample carried the BFF has no client-auth.pem or dpop.pem. The
+# gateway refuses to boot on either — an unloadable profile, or a key file its oidc block names but
+# cannot read. Re-running the generator produces all five together.
 if [[ ! -f "${SAMPLE_DIR}/docker/certificates/localhost.crt" \
    || ! -f "${SAMPLE_DIR}/docker/certificates/localhost.key" \
-   || ! -f "${SAMPLE_DIR}/docker/certificates/sample-idp-truststore.p12" ]]; then
-    echo "❌ The sample's TLS material is missing or incomplete."
-    echo "   docker/certificates/localhost.crt, localhost.key and sample-idp-truststore.p12 are"
-    echo "   generated, never committed. Generate them (again, if you have an older set), then"
-    echo "   re-run this script:"
+   || ! -f "${SAMPLE_DIR}/docker/certificates/sample-idp-truststore.p12" \
+   || ! -f "${SAMPLE_DIR}/docker/certificates/client-auth.pem" \
+   || ! -f "${SAMPLE_DIR}/docker/certificates/dpop.pem" ]]; then
+    echo "❌ The sample's TLS material or BFF signing keys are missing or incomplete."
+    echo "   docker/certificates/localhost.crt, localhost.key, sample-idp-truststore.p12,"
+    echo "   client-auth.pem and dpop.pem are generated, never committed. Generate them (again, if"
+    echo "   you have an older set), then re-run this script:"
     echo "     ./docker/certificates/generate-certificates.sh"
     exit 1
 fi
@@ -457,3 +461,7 @@ else
     echo "🎉 The API Sheriff compose sample is ready."
     echo "   Try it:  curl -k https://localhost:8443/api"
 fi
+# The BFF entry point is the same in both variants: the browser addresses https://localhost:8443
+# whichever component answers the TLS handshake, and the login check takes that URL as its default.
+echo "   Log in through the BFF:  https://localhost:8443/app  (in a browser, as sample-user)"
+echo "   Prove a real login:      ./scripts/check-bff-login.sh"
