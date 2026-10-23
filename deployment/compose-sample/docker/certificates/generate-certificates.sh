@@ -203,7 +203,7 @@ generate_key_file "${DPOP_KEY}" -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -
 
 # EVERY file is world-readable, the keys deliberately so. Read this before "tightening" it:
 #
-# The two containers that mount this directory run as DIFFERENT non-root uids — the gateway as
+# The two containers that read these files run as DIFFERENT non-root uids — the gateway as
 # nonroot (65532, from its Dockerfile) and Keycloak as 1000 — while these files are owned by
 # whichever host user ran this script. Neither uid can be matched from the host without root, so
 # mode 600 makes a key unreadable inside the container and the gateway dies at boot with

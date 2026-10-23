@@ -84,7 +84,19 @@ services:
       - "127.0.0.1:1443:8443"
     volumes:
       - ./docker/keycloak:/opt/keycloak/data/import:ro
-      - ./docker/certificates:/opt/keycloak/certificates:ro
+      # The TLS certificate and its key, FILE BY FILE — never the whole certificates/ directory. That
+      # directory also holds the BFF's two private signing keys (client-auth.pem, dpop.pem), which
+      # belong to the gateway alone: Keycloak verifies the client assertion against the PUBLIC half it
+      # fetches from /bff/jwks and needs no key file. Long syntax, so a missing file fails the
+      # bring-up instead of Docker creating an empty directory in its place on the host.
+      - type: bind
+        source: ./docker/certificates/localhost.crt
+        target: /opt/keycloak/certificates/localhost.crt
+        read_only: true
+      - type: bind
+        source: ./docker/certificates/localhost.key
+        target: /opt/keycloak/certificates/localhost.key
+        read_only: true
       # /opt/keycloak/data must be writable under read_only: true — Keycloak writes its
       # transaction/state there during the realm import. A NAMED VOLUME rather than a tmpfs so the
       # imported realm survives a restart. The read-only import bind above nests inside it: Compose

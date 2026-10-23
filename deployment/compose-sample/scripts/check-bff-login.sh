@@ -345,6 +345,12 @@ fi
 if ! FORM_ACTION="$(helper form-action "${BODY}" "${LOGIN_PAGE_URL}")"; then
     fail "the login page carries no POST form with a password field"
 fi
+# The credentials go to the identity provider that served the form and nowhere else. The action is
+# read out of a page, so a form posting to another origin — or to plain http — is refused before the
+# password leaves this script.
+if [[ "$(helper origin "${FORM_ACTION}")" != "$(helper origin "${LOGIN_PAGE_URL}")" ]]; then
+    fail "the login form posts to $(helper redact-url "${FORM_ACTION}"), not to the identity provider that served it — the credentials were not sent"
+fi
 
 request "${FORM_ACTION}" --header "Accept: text/html" \
     --cookie "${COOKIE_JAR}" --cookie-jar "${COOKIE_JAR}" \

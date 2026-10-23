@@ -584,12 +584,12 @@ The sample is deliberately loud about being a sample. Every item below is a plac
   naming only the logical profile.
 
 | *The BFF signing keys* -- `client-auth.pem` and `dpop.pem`, generated next to the certificate,
-  unencrypted and world-readable, in the `certificates/` directory both the gateway *and Keycloak*
-  mount.
+  unencrypted and world-readable, in the `certificates/` directory the gateway mounts. Keycloak and
+  the plain-HTTP variant's terminator mount only `localhost.crt` and `localhost.key` out of it, file
+  by file, so the signing keys reach the gateway alone.
 | Supplies its own client-authentication and DPoP keys, with ownership matched to the gateway's
-  runtime uid, and mounts them into the *gateway only*. The identity provider needs no key file: it
-  fetches the public client key from the gateway's JWKS endpoint. The sample shares one directory
-  between both containers only because it is a sample.
+  runtime uid, and keeps them in the *gateway only*, as the sample does. The identity provider needs
+  no key file: it fetches the public client key from the gateway's JWKS endpoint.
 
 | *The Keycloak realm client* -- `sample-client` in `docker/keycloak/sample-realm.json`, registered
   for `https://localhost:8443` and for a JWKS URL on the sample's internal network.

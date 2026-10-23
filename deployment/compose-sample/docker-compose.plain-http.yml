@@ -125,8 +125,18 @@ services:
     volumes:
       - ./docker/nginx/tls-terminator.conf:/etc/nginx/conf.d/default.conf:ro
       # The SAME self-signed bundle the gateway used to terminate with. Read-only: the terminator
-      # never writes key material.
-      - ./docker/certificates:/etc/nginx/certificates:ro
+      # never writes key material. Mounted FILE BY FILE, not as the certificates/ directory, which
+      # also holds the BFF's private signing keys (client-auth.pem, dpop.pem) — those belong to the
+      # gateway alone, and a TLS hop has no use for them. Long syntax, so a missing file fails the
+      # bring-up instead of Docker creating an empty directory in its place on the host.
+      - type: bind
+        source: ./docker/certificates/localhost.crt
+        target: /etc/nginx/certificates/localhost.crt
+        read_only: true
+      - type: bind
+        source: ./docker/certificates/localhost.key
+        target: /etc/nginx/certificates/localhost.key
+        read_only: true
     networks:
       api-sheriff:
         # The static address the /32 above names. This is the whole reason the network below declares
