@@ -55,6 +55,7 @@ import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules.JwksRefreshKey;
@@ -69,13 +70,15 @@ import org.junit.jupiter.params.provider.MethodSource;
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Eleven shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Thirteen shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
  * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
  * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
  * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — those two
  * schemas each additionally list the
- * authentication posture set carried by {@link Require}, and the boot-validation list of
+ * authentication posture set carried by {@link Require} and the two {@code cookies.allow} mode
+ * keywords carried by {@link CookieAllow#NONE_KEYWORD} and {@link CookieAllow#ALL_KEYWORD}, and the
+ * boot-validation list of
  * {@code doc/configuration.adoc} names the JWKS refresh keys and the range each admits, carried by
  * {@link JwksRefreshKey}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
@@ -151,8 +154,9 @@ import org.junit.jupiter.params.provider.MethodSource;
  * quietly widen into a blanket refusal nor the carve-out into a blanket exemption.
  * <p>
  * <strong>No vacuous pass.</strong> Every extraction is anchored on a named constant — a literal
- * sentence fragment for the prose surfaces, and a JSON pointer for the posture set, which the schema
- * already models as an array and so needs no text scraping. When an anchor cannot be located, or
+ * sentence fragment for the prose surfaces, and a JSON pointer for the posture set and the
+ * {@code cookies.allow} keywords, which the schema already models as arrays and so need no text
+ * scraping. When an anchor cannot be located, or
  * locates an empty set, the test fails naming both the document and the anchor rather than asserting
  * over nothing. A guard that stops
  * matching after a rewrite must break loudly; one that quietly matches nothing is worse than absent.
@@ -487,6 +491,21 @@ class DocumentedSetsContractTest {
     private static final String SCALAR_OR_LIST_KEY = "cookies.allow";
 
     /**
+     * JSON pointer to the mode keywords of {@code cookies.allow}: the string {@code enum} of the first
+     * {@code oneOf} branch at {@link #SCALAR_OR_LIST_POINTER}, which both bundled schemas declare on
+     * their shared {@code cookies} definition.
+     * <p>
+     * <strong>Why this guard exists.</strong> Each schema hardcodes the two keywords independently of
+     * {@link CookieAllow}, which binds the scalar by switching on {@link CookieAllow#NONE_KEYWORD} and
+     * {@link CookieAllow#ALL_KEYWORD}. The schema is what refuses an unknown scalar before binding ever
+     * reaches the type, so a keyword renamed in one place and not the other is either unreachable
+     * configuration or a value that passes the schema and then fails the boot bind — and the
+     * shape-only check of {@code scalarOrStringListOneOfIsCountedAsAnArrayKey} sees neither.
+     */
+    private static final String COOKIE_ALLOW_KEYWORD_ENUM_POINTER =
+            SCALAR_OR_LIST_POINTER + "/" + APPLICATOR_ONE_OF + "/0/" + SCHEMA_ENUM;
+
+    /**
      * The keywords allowed to sit beside a {@code $ref}. Draft 2020-12 <em>applies</em> a {@code $ref}'s
      * siblings rather than discarding them the way Draft-07 did, while the derivation follows the
      * reference alone — so a sibling carrying schema would declare keys the walk never reads. These
@@ -599,6 +618,18 @@ class DocumentedSetsContractTest {
     @DisplayName("the bundled endpoint schema enumerates exactly the Require posture set")
     void endpointSchemaEnumeratesTheRequirePostures() throws Exception {
         assertRequirePostures(ENDPOINT_SCHEMA_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("the bundled gateway schema declares exactly the CookieAllow keywords for cookies.allow")
+    void gatewaySchemaDeclaresTheCookieAllowKeywords() throws Exception {
+        assertCookieAllowKeywords(GATEWAY_SCHEMA_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("the bundled endpoint schema declares exactly the CookieAllow keywords for cookies.allow")
+    void endpointSchemaDeclaresTheCookieAllowKeywords() throws Exception {
+        assertCookieAllowKeywords(ENDPOINT_SCHEMA_RESOURCE);
     }
 
     @ParameterizedTest(name = "{1} in {0}")
@@ -1507,6 +1538,39 @@ class DocumentedSetsContractTest {
     }
 
     /**
+     * Asserts one bundled schema's {@code cookies.allow} keyword enum against {@link CookieAllow} — the
+     * set it names, and how many entries it listed to name it.
+     * <p>
+     * The comparison is against {@link CookieAllow#NONE_KEYWORD} and {@link CookieAllow#ALL_KEYWORD}
+     * because those constants are what {@link CookieAllow#fromYaml} switches on, so they <em>are</em> the
+     * scalar spellings the bind accepts. The listed-entry count is asserted alongside the set for the
+     * reason every other enumeration here asserts it: a {@link Set} cannot observe a duplicate, so an
+     * array naming {@code none} twice collapses into exactly the set a correct array produces.
+     *
+     * @param resource the classpath resource of the schema to assert
+     * @throws IOException when the bundled schema cannot be read
+     */
+    private static void assertCookieAllowKeywords(String resource) throws IOException {
+        TokenList declared = schemaEnumAt(resource, COOKIE_ALLOW_KEYWORD_ENUM_POINTER);
+        Set<String> keywords = cookieAllowKeywords();
+
+        assertFalse(declared.tokens().isEmpty(), resource + ": " + COOKIE_ALLOW_KEYWORD_ENUM_POINTER
+                + " resolved to an empty enum array — the guard would pass vacuously");
+        assertEquals(keywords, sorted(declared.tokens()),
+                resource + " enumerates the cookies.allow mode keywords at " + COOKIE_ALLOW_KEYWORD_ENUM_POINTER
+                        + ", which are authoritatively defined by CookieAllow.NONE_KEYWORD and"
+                        + " CookieAllow.ALL_KEYWORD, and has drifted from them. The schema is what refuses an"
+                        + " unknown scalar before binding ever reaches the type, so a keyword CookieAllow binds"
+                        + " and the schema omits is unreachable configuration, and one the schema declares and"
+                        + " CookieAllow omits fails the boot bind instead of the validation");
+        assertEquals(keywords.size(), declared.rawCount(),
+                resource + " lists a different number of cookies.allow keywords at "
+                        + COOKIE_ALLOW_KEYWORD_ENUM_POINTER + " than CookieAllow declares. The count is taken"
+                        + " over the raw array entries rather than over the de-duplicated set, so a keyword"
+                        + " listed twice fails here even though the set equality above still holds");
+    }
+
+    /**
      * Asserts one {@code profile} enum array against {@link SecurityProfile} — the set it names, and
      * how many entries it listed to name it.
      * <p>
@@ -2336,6 +2400,15 @@ class DocumentedSetsContractTest {
             names.add(posture.toString());
         }
         return names;
+    }
+
+    /**
+     * The scalar mode keywords {@link CookieAllow} binds, sorted for comparison.
+     *
+     * @return {@link CookieAllow#NONE_KEYWORD} and {@link CookieAllow#ALL_KEYWORD}
+     */
+    private static Set<String> cookieAllowKeywords() {
+        return new TreeSet<>(Set.of(CookieAllow.NONE_KEYWORD, CookieAllow.ALL_KEYWORD));
     }
 
     private static Set<String> modeNames() {
