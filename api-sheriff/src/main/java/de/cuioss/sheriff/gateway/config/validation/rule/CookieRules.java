@@ -146,7 +146,7 @@ public class CookieRules {
      * Rule: no {@code cookies.allow} list may name one of the gateway's own cookies.
      * <p>
      * The gateway's own cookies — every name under {@value GatewayCookies#RESERVED_PREFIX} and the
-     * configured session cookie, with its activity cookie in cookie mode ({@link GatewayCookies}) —
+     * configured session cookie, with its activity cookie in every session mode ({@link GatewayCookies}) —
      * never reach an upstream under any mode. Listing one therefore admits nothing, and the boot refuses
      * it rather than let the block suggest that a session credential is handed on. The refusal names
      * the listed name.

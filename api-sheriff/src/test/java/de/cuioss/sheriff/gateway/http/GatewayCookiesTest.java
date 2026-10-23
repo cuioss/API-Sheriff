@@ -40,7 +40,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for {@link GatewayCookies}: the reserved prefix is a gateway cookie on every gateway, the
- * configured session cookie and — in cookie mode only — its activity cookie are added to it, and a
+ * configured session cookie and — in every session mode — its activity cookie are added to it, and a
  * name is read and compared the way a user agent reads and stores it.
  * <p>
  * Every matched case is paired with a name as close to it as a different cookie can be, so a
@@ -120,17 +120,20 @@ class GatewayCookiesTest {
         }
 
         @Test
-        @DisplayName("Should match the activity cookie in cookie mode only")
-        void shouldMatchActivityCookieInCookieModeOnly() {
+        @DisplayName("Should match the activity cookie in both session modes")
+        void shouldMatchActivityCookieInBothSessionModes() {
             String activity = customName + SessionActivityCookieCodec.COOKIE_NAME_SUFFIX;
             GatewayCookies cookieMode = GatewayCookies.of(gatewayWithSession(OidcConfig.Session.MODE_COOKIE, customName));
             GatewayCookies serverMode = GatewayCookies.of(gatewayWithSession(OidcConfig.Session.MODE_SERVER, customName));
 
-            assertAll("the activity cookie belongs to cookie mode",
-                    () -> assertTrue(cookieMode.matchesName(activity), activity),
+            assertAll("the activity cookie is reserved whichever mode issues it",
+                    () -> assertTrue(cookieMode.matchesName(activity), "cookie mode issues the activity cookie"),
                     () -> assertTrue(cookieMode.matchesName(customName), "the session cookie in cookie mode"),
-                    () -> assertFalse(serverMode.matchesName(activity),
-                            "server mode keeps the last access in its store and sets no activity cookie"));
+                    () -> assertTrue(serverMode.matchesName(activity),
+                            "server mode issues none, but one issued before a switch from cookie mode stays live"),
+                    () -> assertTrue(serverMode.matchesName(customName), "the session cookie in server mode"),
+                    () -> assertFalse(WITHOUT_OIDC.matchesName(activity),
+                            "control: the activity name is not a gateway cookie where its session name is not configured"));
         }
 
         @Test

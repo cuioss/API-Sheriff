@@ -15,7 +15,6 @@
  */
 package de.cuioss.sheriff.gateway.http;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -37,8 +36,11 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
  *   <li>The configured {@code oidc.session.cookie_name} ({@link SessionCookieCodec#DEFAULT_COOKIE_NAME}
  *       when the key is omitted), because an operator may name the session cookie outside the
  *       prefix.</li>
- *   <li>In {@code cookie} session mode, the activity cookie of that session cookie — its name plus
- *       {@link SessionActivityCookieCodec#COOKIE_NAME_SUFFIX}.</li>
+ *   <li>The activity cookie of that session cookie — its name plus
+ *       {@link SessionActivityCookieCodec#COOKIE_NAME_SUFFIX} — in every session mode. Only
+ *       {@code cookie} mode issues it; {@code server} mode sets none, but an activity cookie issued
+ *       before an operator switched the gateway from {@code cookie} to {@code server} mode stays live
+ *       in the browser until it expires, and it must never cross to an upstream nor be set by one.</li>
  * </ul>
  * The definition is derived from the configuration, not from the assembled session runtime, so the
  * pre-boot validation rules can read it before any runtime exists; the boot rules, the request
@@ -83,8 +85,9 @@ public final class GatewayCookies {
      * Derives the gateway's own cookies from the bound configuration.
      *
      * @param gateway the bound gateway document
-     * @return the definition: the reserved prefix, the configured session cookie and, in
-     *         {@code cookie} session mode, its activity cookie
+     * @return the definition: the reserved prefix, the configured session cookie and its activity
+     *         cookie — the activity cookie in every session mode, because one issued in {@code cookie}
+     *         mode outlives a switch to {@code server} mode until it expires
      */
     public static GatewayCookies of(GatewayConfig gateway) {
         Objects.requireNonNull(gateway, "gateway");
@@ -92,12 +95,8 @@ public final class GatewayCookies {
         OidcConfig.Session session = oidc == null ? null : oidc.session();
         String declaredName = session == null ? null : session.cookieName();
         String sessionCookieName = declaredName == null ? SessionCookieCodec.DEFAULT_COOKIE_NAME : declaredName;
-        List<String> names = new ArrayList<>(2);
-        names.add(sessionCookieName);
-        if (session != null && session.isCookieMode()) {
-            names.add(sessionCookieName + SessionActivityCookieCodec.COOKIE_NAME_SUFFIX);
-        }
-        return new GatewayCookies(names);
+        return new GatewayCookies(
+                List.of(sessionCookieName, sessionCookieName + SessionActivityCookieCodec.COOKIE_NAME_SUFFIX));
     }
 
     /**

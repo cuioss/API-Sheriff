@@ -189,8 +189,10 @@ owner; `Cookie` is governed by its own block because it is many.
 direction.** One framework-free definition, `GatewayCookies`, holds them: every
 cookie under the reserved `__Host-sheriff-` prefix — always, on a gateway with or
 without a BFF, so a gateway cookie added later is covered by construction — plus
-the configured `oidc.session.cookie_name` and, in cookie session mode, its
-`-activity` sibling. The boot rules, the request rebuild and the response
+the configured `oidc.session.cookie_name` and its `-activity` sibling, in both
+session modes: only cookie mode issues the activity cookie, but one issued before
+a switch to server mode stays live in the browser until it expires, and it must
+not cross either. The boot rules, the request rebuild and the response
 predicate all read that one definition, so the three cannot disagree about what
 the gateway owns. A cookie name is read the way a user agent reads it; the
 `__Host-` and `__Secure-` prefixes compare without regard to case. This is the

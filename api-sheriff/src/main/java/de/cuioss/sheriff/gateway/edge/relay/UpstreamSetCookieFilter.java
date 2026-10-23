@@ -30,8 +30,8 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li><strong>The gateway's cookies are set by the gateway alone</strong>, under every mode. Every
  *       cookie under the reserved {@value GatewayCookies#RESERVED_PREFIX} prefix, the configured
- *       session cookie and, in cookie mode, its activity cookie are written by the gateway and by
- *       nothing else — with or without a session runtime. A relayed upstream response shares the
+ *       session cookie and, in every session mode, its activity cookie are written by the gateway and
+ *       by nothing else — with or without a session runtime. A relayed upstream response shares the
  *       browser's cookie jar with them, so an upstream line naming one of them is dropped.</li>
  *   <li>{@code allow: none} — the default when no scope declares a {@code cookies} block — drops
  *       every line.</li>
