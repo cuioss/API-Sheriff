@@ -177,8 +177,11 @@ class GatewayCookiesTest {
             assertAll("the bare value a browser sends back",
                     () -> assertTrue(WITHOUT_OIDC.matchesPair("", SessionCookieCodec.DEFAULT_COOKIE_NAME + "=x")),
                     () -> assertTrue(WITHOUT_OIDC.namesGatewayCookie("=" + BindingCookieCodec.COOKIE_NAME + "=x; Path=/")),
-                    () -> assertFalse(WITHOUT_OIDC.matchesPair("", SessionCookieCodec.DEFAULT_COOKIE_NAME),
-                            "a value without = is read back as no name at all"),
+                    () -> assertTrue(WITHOUT_OIDC.matchesPair("", SessionCookieCodec.DEFAULT_COOKIE_NAME),
+                            "a bare value without = is read back by a server decoder as a cookie of that name"),
+                    () -> assertTrue(WITHOUT_OIDC.namesGatewayCookie(BindingCookieCodec.COOKIE_NAME + "; Path=/"),
+                            "a Set-Cookie line whose bare pair is a gateway cookie name"),
+                    () -> assertFalse(WITHOUT_OIDC.matchesPair("", "dark"), "control: a bare application crumb"),
                     () -> assertFalse(WITHOUT_OIDC.matchesPair("", "theme=dark"), "control: an application crumb"));
         }
 
@@ -198,7 +201,8 @@ class GatewayCookiesTest {
                 "\t__Host-sheriff-session\t=attacker; Path=/",
                 "__Host-sheriff-session=a=b=c",
                 "__Host-sheriff-anything-new=x",
-                " = __Host-sheriff-binding=x; Path=/"})
+                " = __Host-sheriff-binding=x; Path=/",
+                "__Host-sheriff-session"})
         @DisplayName("Should read the name of a Set-Cookie line with surrounding spaces and tabs removed")
         void shouldNameGatewayCookieInLine(String line) {
             assertTrue(WITHOUT_OIDC.namesGatewayCookie(line));
@@ -209,8 +213,7 @@ class GatewayCookiesTest {
                 "JSESSIONID=abc; Path=/app; HttpOnly",
                 "note=__Host-sheriff-session=x",
                 "note=1; __Host-sheriff-session=x",
-                "note=1; Path=/__Host-sheriff-binding=x",
-                "__Host-sheriff-session"})
+                "note=1; Path=/__Host-sheriff-binding=x"})
         @DisplayName("Should not name a gateway cookie that appears only in a value or an attribute")
         void shouldNotNameGatewayCookieOutsideTheNamePosition(String line) {
             assertFalse(WITHOUT_OIDC.namesGatewayCookie(line));

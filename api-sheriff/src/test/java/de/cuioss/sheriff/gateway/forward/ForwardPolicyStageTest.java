@@ -1072,13 +1072,14 @@ class ForwardPolicyStageTest {
         void allSendsEverythingButGatewayCookies() {
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
 
-            ForwardPolicyStage.Result result = stage.process(cookieRequest(MIXED_HEADER + "; __HOST-sheriff-x=1"),
-                    forwardAll(), cookies(CookieAllow.ALL), false);
+            ForwardPolicyStage.Result result = stage.process(
+                    cookieRequest(MIXED_HEADER + "; __HOST-sheriff-x=1; " + SESSION_COOKIE), forwardAll(),
+                    cookies(CookieAllow.ALL), false);
 
             assertEquals(List.of("theme=dark; app=1; lang=de"), valuesNamed(result.headers(), COOKIE),
                     "the reserved prefix (in any case of its __Host- part), the configured session"
-                            + " cookie and a nameless crumb naming a gateway cookie are dropped; every"
-                            + " other pair crosses in order");
+                            + " cookie and a nameless crumb naming a gateway cookie — with or without"
+                            + " a value — are dropped; every other pair crosses in order");
         }
 
         @Test

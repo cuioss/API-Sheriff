@@ -3830,7 +3830,8 @@ whatever a broader scope declares.
 splits it into pairs on `;`, drops every pair that names one of the gateway's own cookies, keeps
 the pairs the mode admits, and writes one `Cookie` header from them, joined by `"; "` in their
 inbound order with duplicates kept. A pair without `=` is a nameless crumb: a list never admits
-one, and `all` keeps it unless its value begins with a gateway cookie's `name=`. When nothing is
+one, and `all` keeps it unless it is a gateway cookie's name -- a server reads a bare crumb as a
+cookie of that name with an empty value. When nothing is
 kept, no `Cookie` header is sent. The rebuilt header reaches the upstream on every dispatch path --
 the HTTP proxy, gRPC and the WebSocket upgrade -- and the `forward` mode has no part in it.
 

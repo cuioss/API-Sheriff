@@ -106,7 +106,9 @@ class UpstreamSetCookieFilterTest {
         @ValueSource(strings = {
                 "=__Host-sheriff-session=attacker",
                 " = __Host-sheriff-binding=x; Path=/",
-                "=__Host-shop-session=attacker"})
+                "=__Host-shop-session=attacker",
+                "__Host-sheriff-session",
+                " __Host-sheriff-binding ; Path=/"})
         @DisplayName("Should drop a nameless cookie whose value would be read back as a gateway cookie")
         void shouldDropNamelessCookieCarryingOwnedName(String line) {
             assertNull(relayed(line, ALL));

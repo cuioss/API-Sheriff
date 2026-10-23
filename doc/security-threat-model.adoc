@@ -3422,8 +3422,8 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   reserved prefix, the session cookie, the activity cookie -- is dropped under every `cookies`
   policy, with or without a BFF. Every other line is relayed only as the route's policy admits the
   cookie it names, with its `Domain` attribute removed (<<gw-15>>). The name is compared exactly,
-  the `+__Host-+` and `+__Secure-+` prefixes without case, and a nameless line whose value starts
-  with an owned name is dropped as well. A WebSocket upgrade and an asset answer relay no upstream
+  the `+__Host-+` and `+__Secure-+` prefixes without case, and a nameless line whose value is an
+  owned name, alone or before its first `=`, is dropped as well. A WebSocket upgrade and an asset answer relay no upstream
   `Set-Cookie` at all.
 * *A WebSocket relay ends with its session.* A relay opened for a request a session was let through
   with is closed on both legs, with close code `1008` and the reason `session ended`, at the

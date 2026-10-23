@@ -50,8 +50,9 @@ import de.cuioss.sheriff.gateway.config.model.OidcConfig;
  * {@code __Secure-} prefixes are compared without regard to case, because a user agent recognises
  * them that way; the rest of the name is compared case-sensitively, as a browser stores it. A nameless
  * cookie — a pair whose name is empty — is sent back by the browser as its bare value, which a server
- * then reads as a cookie of its own: such a crumb counts as the gateway cookie its value names before
- * its first {@code =}.
+ * then reads as a cookie of its own: such a crumb counts as the gateway cookie its value names — the
+ * text before its first {@code =}, or the whole value when it holds no {@code =}, since a server
+ * decoder reads a bare crumb as a cookie of that name with an empty value.
  * <p>
  * Usage:
  * {@snippet :
@@ -133,7 +134,7 @@ public final class GatewayCookies {
             return matchesName(name);
         }
         int separator = value.indexOf('=');
-        return separator >= 0 && matchesName(value.substring(0, separator));
+        return matchesName(separator < 0 ? value : trimBlanks(value.substring(0, separator)));
     }
 
     /**
