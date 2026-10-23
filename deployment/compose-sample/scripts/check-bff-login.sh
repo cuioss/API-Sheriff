@@ -132,10 +132,7 @@ done
 # Everything this run writes — the cookie jar, the credential files, each response — lives in one
 # private directory, removed on EVERY exit path. mktemp -d creates it mode 700.
 WORK_DIR="$(mktemp -d)"
-cleanup() {
-    rm -rf "${WORK_DIR}"
-}
-trap cleanup EXIT
+trap 'rm -rf "${WORK_DIR}"' EXIT
 
 COOKIE_JAR="${WORK_DIR}/cookies.txt"
 HEADERS="${WORK_DIR}/headers.txt"
@@ -158,11 +155,14 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 
-def read_headers(path):
+def read_lines(path):
     # The header block of the one response curl wrote (redirects are never followed by curl here).
     with open(path, encoding="iso-8859-1") as handle:
-        lines = [line.rstrip("\r\n") for line in handle]
-    return [line.split(":", 1) for line in lines[1:] if ":" in line]
+        return [line.rstrip("\r\n") for line in handle]
+
+
+def read_headers(path):
+    return [line.split(":", 1) for line in read_lines(path)[1:] if ":" in line]
 
 
 def without_query(url):
@@ -202,9 +202,7 @@ if command == "header":
     sys.stdout.write(found[-1] if found else "")
 elif command == "redact-headers":
     # redact-headers FILE -> the header block with every cookie value and URL query removed.
-    with open(args[0], encoding="iso-8859-1") as handle:
-        lines = [line.rstrip("\r\n") for line in handle]
-    for line in lines:
+    for line in read_lines(args[0]):
         if not line:
             continue
         name, sep, value = line.partition(":")

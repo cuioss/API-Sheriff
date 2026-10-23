@@ -33,26 +33,14 @@ set -euo pipefail
 
 CERT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-usage() {
-    echo "Usage: ${0##*/} [--if-missing]"
-}
-
-IF_MISSING=false
-if (( $# > 1 )); then
-    usage >&2
-    exit 2
-fi
-if (( $# == 1 )); then
-    case "$1" in
-        --if-missing)
-            IF_MISSING=true
-            ;;
-        *)
-            usage >&2
-            exit 2
-            ;;
-    esac
-fi
+case "$#:${1:-}" in
+    0:) IF_MISSING=false ;;
+    1:--if-missing) IF_MISSING=true ;;
+    *)
+        echo "Usage: ${0##*/} [--if-missing]" >&2
+        exit 2
+        ;;
+esac
 
 # CN=localhost so a browser on the host addresses the gateway as https://localhost:8443. The SAN list
 # is what actually matters to a modern client, and it carries the host-facing name AND every compose
