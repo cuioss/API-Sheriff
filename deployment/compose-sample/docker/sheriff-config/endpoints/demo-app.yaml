@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The session-protected endpoint the sample's BFF logs a browser in for.
+#
+# One endpoint, one route, under the `app` anchor of gateway.yaml (type: bff, auth: require: session),
+# so the route inherits the session floor rather than declaring one. A browser that opens
+# https://localhost:8443/app without a session is sent to the IdP's login page and back; an API
+# client without a session gets 401. With a session, the request reaches the same demo-api responder
+# the public /api route reaches, carrying the access token the gateway holds for that session — and
+# demo-api answers the same canned document, which is what scripts/check-bff-login.sh asserts after a
+# real login.
+endpoint:
+  id: demo-app
+  enabled: true
+  # Resolved through topology.properties. Never a literal address here.
+  base_url: UPSTREAM
+  anchor: app
+  routes:
+    - id: demo-app-session
+      match:
+        path_prefix: /app
+      # No forward block: the recommended starting point the demo-api endpoint's comment describes.
+      # HTTP mechanics cross on their own, and the gateway-owned never-forward set withholds the
+      # browser's Cookie — the session cookie never reaches the upstream. The access token is not a
+      # client header at all: the gateway merges it into the upstream request itself, whatever the
+      # forward mode says.

@@ -6,16 +6,18 @@
 # and which token issuers it trusts. Endpoints live in endpoints/, topology aliases in
 # topology.properties.
 #
-# The document is deliberately SMALL. It declares one public proxy namespace and one token issuer,
-# which is the minimum that still demonstrates the shape of a real deployment. Everything the
-# integration suite needs and an operator does not — passthrough SNI, BFF sessions, asset anchors,
-# mTLS — is absent rather than present-and-disabled.
+# The document is deliberately SMALL. It declares one public proxy namespace, one token issuer, and
+# one server-session BFF — a session-protected namespace, the OIDC client behind it and the public
+# page a signed-out browser lands on — which is the minimum that still demonstrates the shape of a
+# real deployment. Everything the integration suite needs and an operator does not — passthrough SNI,
+# mTLS — is absent rather than present-and-disabled: that is test scaffolding, not deployment shape.
 version: 1
 metadata:
   config_version: "compose-sample"
 
 # The methods this gateway will admit at all. Anything outside this list is rejected before route
-# selection. Narrow it further for a real deployment: this list is what the demo endpoint needs.
+# selection. Narrow it further for a real deployment: this list is what the demo endpoints need. The
+# BFF legs the sample drives — login, the callback, logout and the client JWKS — are all GET.
 allowed_methods: ["GET", "HEAD"]
 
 # The gateway-wide inbound-filter baseline. Declared EXPLICITLY rather than left to the omitted-key
@@ -58,18 +60,40 @@ tls:
 forwarded:
   trusted_proxies: "${SHERIFF_TRUSTED_PROXIES}"
 
-# One namespace. `type: proxy` + `access: public` are the two mandatory classification axes, and a
-# public anchor carries NO auth block — public IS the absence of auth, so the require: none posture
-# lives on the endpoint instead (endpoints/demo-api.yaml).
+# Three namespaces. `type` + `access` are the two mandatory classification axes of every anchor.
 anchors:
+  # The public proxy namespace. A public anchor carries NO auth block — public IS the absence of auth,
+  # so the require: none posture lives on the endpoint instead (endpoints/demo-api.yaml).
   api:
     path_prefix: /api
     type: proxy
     access: public
+  # The BFF namespace: a browser that opens /app without a session is redirected to the IdP's login
+  # page, and once signed in every request it sends here reaches the upstream carrying the access
+  # token the gateway holds for that session — the browser itself only ever holds the session cookie.
+  # type: bff forces access: authenticated, and the session floor is backed by the oidc block below
+  # (a session floor with no oidc block is refused at boot). Every route under it inherits the floor
+  # (endpoints/demo-app.yaml).
+  app:
+    path_prefix: /app
+    type: bff
+    access: authenticated
+    auth:
+      require: session
+  # The public page namespace, serving static files only — today the one page a signed-out browser
+  # lands on (oidc.logout.final_redirect below, endpoints/signed-out-page.yaml). An asset anchor
+  # serves nothing but GET and HEAD, so it says so.
+  pages:
+    path_prefix: /pages
+    type: asset
+    access: public
+    allowed_methods: ["GET", "HEAD"]
 
-# The issuers whose tokens this gateway will validate. Declared even though the one endpoint below is
-# public, because an operator adapting this sample will make a route authenticated as their first
-# change — and the issuer block is the part that is easy to get wrong.
+# The issuers whose tokens this gateway will validate. The BFF needs this one: the tokens the realm
+# mints for a browser session are validated against it, so the oidc block below and this issuer name
+# the same identity. It is also what an operator adapting this sample reaches for when they make the
+# public /api route require a bearer token — and the issuer block is the part that is easy to get
+# wrong.
 token_validation:
   issuers:
     - name: sample-keycloak
@@ -102,3 +126,76 @@ token_validation:
         #
         # For a real deployment keep the name (or pick your own) and bind it to your IdP's CA.
         tls_profile: sample-idp
+
+# The BFF's OIDC client: the confidential client the gateway logs a browser in with, behind the
+# require: session floor of the `app` anchor above. Server session mode, so the tokens stay in the
+# gateway and the browser holds only an opaque session cookie.
+#
+# The client follows FAPI 2.0 rather than the simplest thing that works: there is no client_secret,
+# so the gateway authenticates with a private_key_jwt assertion; every authorization request is
+# pushed (PAR) and every access token is bound to the gateway's DPoP key. The realm's sample-client
+# (docker/keycloak/sample-realm.json) requires all three, so a configuration that dropped one would be
+# refused by the IdP rather than quietly downgraded.
+oidc:
+  # The IdP's ONE identity — the same value the token_validation issuer above carries, and the
+  # authority the browser is redirected to for the login page (https://localhost:1443, published by
+  # keycloak in docker-compose.yml).
+  issuer: https://localhost:1443/realms/sample
+  # Where the gateway's own calls to the IdP go — discovery, the pushed authorization request, the
+  # code exchange, refresh and revocation. The browser-facing identity above is NOT reachable from
+  # inside the bridge network, so these calls are dialled to keycloak:8443 instead; the identity is
+  # untouched and every issuer check still compares against https://localhost:1443 (ADR-0069). A bare
+  # https origin: no path, no query, no user-info — the boot refuses anything else.
+  back_channel_origin: https://keycloak:8443
+  client_id: sample-client
+  # NO client_secret, deliberately: its absence is what selects private_key_jwt. The assertion is
+  # signed with the key below; Keycloak verifies it against the public half the gateway publishes at
+  # /bff/jwks (the default client JWKS path), which it fetches from the address the deployment names
+  # (SAMPLE_GATEWAY_JWKS_URL in docker-compose.yml).
+  #
+  # Both key files are BARE placeholders. A key file is a location, not a secret, but it is still a
+  # deployment fact: this document stays free of paths, as the TLS block above promises, and
+  # docker-compose.yml supplies them. An unset variable fails the boot rather than starting a BFF
+  # with no key.
+  client_authentication:
+    key_file: "${SHERIFF_CLIENT_AUTH_KEY_FILE}"
+  # The DPoP proof key every access token of this gateway is bound to. A token copied out of the
+  # gateway is useless without it.
+  sender_constraint:
+    key_file: "${SHERIFF_DPOP_KEY_FILE}"
+  scopes: ["openid", "profile", "email"]
+  # The full browser-facing callback URL, registered as the client's ONLY redirect URI in the realm
+  # (exact match, no wildcard). Its host is the host the reserved /bff paths answer on, and its
+  # origin is the one return URLs and the CSRF check are held to.
+  redirect_uri: https://localhost:8443/bff/callback
+  login:
+    path: /bff/login
+  logout:
+    path: /bff/logout
+    # Where the IdP sends the browser after it ended its own session — registered in the realm as the
+    # client's post-logout redirect URI.
+    post_logout_redirect_uri: https://localhost:8443/bff/logout/return
+    # Where the gateway sends the browser after that: a real public page (the `pages` anchor above)
+    # rather than a namespace that would only redirect it straight back to the login page.
+    final_redirect: /pages/signed-out.html
+  session:
+    mode: server
+    # Sessions live in the gateway's memory, so a restart signs every browser out. That is the right
+    # trade for a single-instance sample; a replicated deployment needs a shared store.
+    store: memory
+    # The session cookie's name. The __Host- prefix is required — it makes the browser enforce
+    # Secure, Path=/ and no Domain — and the name must differ from the gateway's own binding and
+    # logout cookies. The login check (scripts/check-bff-login.sh) asserts the cookie by this name.
+    cookie_name: __Host-sample-session
+    ttl_seconds: 3600
+    # The gateway refreshes the access token it holds before it expires, so a long-lived browser
+    # session never forwards an expired token upstream.
+    refresh:
+      enabled: true
+      leeway_seconds: 30
+
+# Which trust anchors the BFF's calls to the IdP verify Keycloak's certificate against — the same
+# self-signed certificate the JWKS fetch above trusts, so the same logical profile. Without it the
+# back channel would fall back to default trust and fail PKIX path building on the first login.
+egress_tls:
+  oidc_tls_profile: sample-idp

@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The public page a browser lands on after it signed out through the BFF.
+#
+# gateway.yaml's oidc.logout.final_redirect names /pages/signed-out.html: after the gateway ended the
+# session and the IdP ended its own, the browser is sent here. It must be a PUBLIC page — sending a
+# signed-out browser back into the session-protected /app would only start a new login.
+#
+# Served by the gateway itself from a directory, so the demo upstream stays a canned JSON responder
+# and nothing new runs in the stack. The directory lies inside the read-only configuration mount
+# (./docker/sheriff-config -> /app/sheriff-config in docker-compose.yml), so no further volume is
+# needed. The gateway confines every request path under that root and sets the content type from the
+# file extension.
+endpoint:
+  id: signed-out-page
+  enabled: true
+  # No base_url: every route here is an asset route that never proxies anywhere.
+  anchor: pages
+  # The `pages` anchor is access: public, so it carries no auth block and the endpoint declares the
+  # posture itself.
+  auth:
+    require: none
+  routes:
+    - id: signed-out-page
+      match:
+        path_prefix: /pages
+      asset:
+        source: directory
+        directory: /app/sheriff-config/pages
