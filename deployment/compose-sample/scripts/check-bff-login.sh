@@ -60,7 +60,7 @@ CA_CERT="${SAMPLE_DIR}/docker/certificates/localhost.crt"
 CONNECT_TIMEOUT=10
 REQUEST_TIMEOUT=30
 # How many redirects step 4 follows from the credential response: the hop to the callback and the
-# callback's own redirect to {path}, with one to spare. A chain longer than this is a loop.
+# callback's own redirect to {path}, with two to spare. A chain longer than this is a loop.
 MAX_RETURN_HOPS=4
 
 usage() {

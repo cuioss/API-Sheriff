@@ -109,6 +109,9 @@ fi
 # The private half of a signing key is written to this intermediate file before it is joined with its
 # public half. It is named *-private.pem so the .gitignore's *.pem covers a run interrupted mid-key.
 WORK_FILE=""
+# A signing-key file is assembled under this scratch name and moved into place only after its format
+# check passes. Also *.pem, so the .gitignore covers it.
+ASSEMBLED_FILE=""
 
 # Remove the intermediates on EVERY exit path, not just the success one. Under `set -e` a failing
 # keytool or openssl aborts the script before any explicit cleanup, which would otherwise strand a
@@ -118,6 +121,7 @@ WORK_FILE=""
 cleanup() {
     rm -f "${TEMP_KEYSTORE}"
     [[ -n "${WORK_FILE}" ]] && rm -f "${WORK_FILE}"
+    [[ -n "${ASSEMBLED_FILE}" ]] && rm -f "${ASSEMBLED_FILE}"
     return 0
 }
 trap cleanup EXIT
@@ -179,21 +183,26 @@ generate_key_file() {
     local target="$1"
     shift
     WORK_FILE="${target%.pem}-private.pem"
+    ASSEMBLED_FILE="${target%.pem}-assembled.pem"
     openssl genpkey "$@" -out "${WORK_FILE}"
     {
         cat "${WORK_FILE}"
         openssl pkey -in "${WORK_FILE}" -pubout
-    } > "${target}"
+    } > "${ASSEMBLED_FILE}"
     rm -f "${WORK_FILE}"
     WORK_FILE=""
     # The two labels are what the gateway accepts. An openssl build that writes a traditional
     # 'RSA PRIVATE KEY' or 'EC PRIVATE KEY' block would produce a file the gateway refuses at boot,
-    # so that is caught here and not in the stack.
-    if ! grep -qx -- '-----BEGIN PRIVATE KEY-----' "${target}" \
-        || ! grep -qx -- '-----BEGIN PUBLIC KEY-----' "${target}"; then
+    # so that is caught here and not in the stack. The file is assembled under a scratch name and only
+    # moved to its real name once it passes: --if-missing checks presence alone, so a failed or
+    # interrupted run must never leave a bad key at the name that check treats as complete.
+    if ! grep -qx -- '-----BEGIN PRIVATE KEY-----' "${ASSEMBLED_FILE}" \
+        || ! grep -qx -- '-----BEGIN PUBLIC KEY-----' "${ASSEMBLED_FILE}"; then
         echo "❌ ${target} does not hold a PKCS#8 PRIVATE KEY block and a PUBLIC KEY block." >&2
         exit 1
     fi
+    mv -f "${ASSEMBLED_FILE}" "${target}"
+    ASSEMBLED_FILE=""
 }
 
 echo "  Generating the BFF client-authentication key (RSA-2048, PS256)..."
