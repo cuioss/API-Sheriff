@@ -1332,7 +1332,7 @@ rules may use it before any runtime exists. It covers every cookie under the res
 `oidc.session.cookie_name` and, in cookie session mode, its `-activity` sibling. A name is read the
 way a user agent reads it: the text before the first `=` of a pair, the `+__Host-+` and
 `+__Secure-+` prefixes compared without regard to case, the rest exactly, and a nameless crumb whose
-value begins with a gateway cookie's `name=` counted as that cookie. `CookieRules` refuses a
+value is a gateway cookie's name -- alone, or before its first `=` -- counted as that cookie. `CookieRules` refuses a
 `cookies.allow` list naming one, `ForwardPolicyStage` drops them from the request, and the response
 predicate drops a `Set-Cookie` naming one.
 
