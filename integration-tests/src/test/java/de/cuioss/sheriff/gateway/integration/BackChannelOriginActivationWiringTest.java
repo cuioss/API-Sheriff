@@ -58,8 +58,8 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>Every descriptor is covered, none is listed.</strong> The descriptors are enumerated from the
  * {@code sheriff-config*} directories and the realm imports from the {@code keycloak} directory of both
- * stacks that run Keycloak — the integration-test stack and the compose sample, whose realm and compose
- * file CI never starts — so a new instance or realm is held to the contract the moment it is committed.
+ * stacks that run Keycloak — the integration-test stack and the compose sample, whose BFF logs in through
+ * the same contract — so a new instance or realm is held to the contract the moment it is committed.
  * The non-vacuity floor of
  * {@value #OIDC_DESCRIPTOR_FLOOR} oidc-bearing descriptors keeps an empty or mis-rooted enumeration from
  * passing the per-descriptor loop by finding nothing to check.
@@ -79,14 +79,16 @@ class BackChannelOriginActivationWiringTest {
 
     /**
      * The directory holding the {@code sheriff-config*} gateway descriptors of every stack that runs
-     * Keycloak: the integration-test stack and the compose sample. CI never starts the sample, so this
-     * guard is the only check its descriptor gets.
+     * Keycloak: the integration-test stack and the compose sample. CI brings the sample up only after the
+     * integration suite, so this guard is what catches a sample descriptor that broke the contract in a
+     * surefire run, before any stack starts.
      */
     private static final List<Path> GATEWAY_DESCRIPTOR_ROOTS = List.of(DOCKER, COMPOSE_SAMPLE.resolve("docker"));
 
     /**
      * The realm-import directory of every stack that runs Keycloak: the integration-test stack and the
-     * compose sample. CI never starts the sample, so this guard is the only check its realm gets.
+     * compose sample. As for the descriptors, this guard checks the sample's realm in a surefire run,
+     * before CI brings the sample up behind the integration suite.
      */
     private static final List<Path> REALM_IMPORT_DIRECTORIES = List.of(DOCKER.resolve("keycloak"),
             COMPOSE_SAMPLE.resolve("docker/keycloak"));
@@ -109,10 +111,11 @@ class BackChannelOriginActivationWiringTest {
 
     /**
      * The oidc-bearing descriptors committed today. The enumeration must find at least this many, so
-     * an empty or mis-rooted directory scan fails loudly instead of passing vacuously. All of them sit
-     * in the integration-test stack: the compose sample's descriptor declares no oidc block.
+     * an empty or mis-rooted directory scan fails loudly instead of passing vacuously. Ten sit in the
+     * integration-test stack; the eleventh is the compose sample's, whose descriptor declares the oidc
+     * block of its server-session BFF.
      */
-    private static final int OIDC_DESCRIPTOR_FLOOR = 10;
+    private static final int OIDC_DESCRIPTOR_FLOOR = 11;
 
     private static final String KEYCLOAK_SERVICE = "keycloak";
     private static final String HOSTNAME_VARIABLE = "KC_HOSTNAME";
