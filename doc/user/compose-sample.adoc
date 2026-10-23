@@ -20,9 +20,17 @@ number from here.
 
 It lives at `deployment/compose-sample/` and is a *sample*, not a test harness. It carries three
 services and nothing else -- the gateway, an identity provider whose realm mints the tokens the
-gateway validates, and a stand-in upstream that the gateway proxies to. The
+gateway validates and signs browser users in, and a stand-in upstream that the gateway proxies to.
+The gateway serves that upstream twice: as a public API at `/api`, and behind a *server-session
+BFF* at `/app`, where a browser logs in through the identity provider and the gateway holds the
+tokens. See <<_logging_in_through_the_bff>>. The
 link:../development/compose-sample.adoc[contributor guide] explains why it is a separate stack from
 the one `integration-tests` brings up, and draws the topology.
+
+IMPORTANT: The sample's BFF needs the gateway release *after* `0.2.4`. The image the sample pins,
+`0.2.4`, predates `oidc.back_channel_origin` and the `/bff/*` reserved paths, so it refuses the
+sample's `gateway.yaml` at boot. Until that release is cut and the pin moves to it, run the sample
+with a locally built image -- <<_route_b_a_locally_built_image>>.
 
 An optional override file adds a fourth service, a TLS-terminating hop in front of the gateway, to
 demonstrate the ingress / sidecar deployment shape in which the gateway itself serves plain HTTP.
@@ -39,10 +47,15 @@ WARNING: Every credential and every piece of key material in this sample is a pl
 You need Docker with Compose v2 (`docker compose version` must succeed), and a gateway image. There
 are two routes to the image; pick one.
 
+The image must be the gateway release after `0.2.4` or a local build of the current source. The
+sample's `gateway.yaml` carries the BFF's `oidc` block, and `0.2.4` -- the image the sample still
+pins -- predates `oidc.back_channel_origin` and the `/bff/*` reserved paths and refuses that document
+at boot. Until the next release moves the pin, Route B is the route that works.
+
 === Route A -- the published image (the default)
 
 The sample defaults to the pinned published image and needs nothing from you but the ability to
-reach `ghcr.io`:
+reach `ghcr.io` -- once the pin names a release after `0.2.4`; see above:
 
 [source,bash]
 ----
@@ -58,10 +71,12 @@ what the published image contains, how it is tagged, and how to verify its signa
 link:container-image.adoc[Container Image -- Pulling, Running and Verifying]; this guide does not
 restate any of it.
 
+[[_route_b_a_locally_built_image]]
 === Route B -- a locally built image
 
-You need Route B in exactly three cases: your host is an arm64 machine and the pin is still a tag
-that predates the two-platform lane (`0.2.4` or earlier, which is `linux/amd64` only); your host's
+You need Route B in exactly four cases: the pin is still `0.2.4` or earlier, which predates the
+sample's BFF configuration and refuses it at boot; your host is an arm64 machine and the pin is still
+a tag that predates the two-platform lane (`0.2.4` or earlier, which is `linux/amd64` only); your host's
 CPU is below the baseline the published image is compiled for -- an x86-64 CPU without AVX2, or an
 older AArch64 core such as Graviton 1 or the Raspberry Pi 4, as listed in
 link:../../README.adoc#_known_limitations[the README's Known Limitations]; or you want to run the
@@ -98,22 +113,45 @@ The stack serves TLS everywhere, and *no key material is committed*. Generate it
 ./deployment/compose-sample/docker/certificates/generate-certificates.sh
 ----
 
-This writes a self-signed `localhost.crt` and `localhost.key` next to the script, plus
-`sample-idp-truststore.p12`, a truststore holding that one certificate and no key. All three are
-git-ignored. The certificate names `localhost`, `keycloak`, `api-sheriff` and `demo-api` in its SAN
-list, because the gateway reaches the identity provider by its compose service name and a
-certificate without that name would fail hostname verification on the token-key fetch.
+This writes five files next to the script, all git-ignored:
+
+* `localhost.crt` and `localhost.key` -- a self-signed certificate and its key, served by the
+  gateway and by Keycloak alike;
+* `sample-idp-truststore.p12` -- a truststore holding that one certificate and no key;
+* `client-auth.pem` -- the BFF's RSA client-authentication key. The gateway signs the
+  `private_key_jwt` assertion it authenticates to Keycloak with using it (PS256);
+* `dpop.pem` -- the BFF's EC P-256 DPoP key. The gateway signs the DPoP proofs that bind every
+  access token it holds to itself using it (ES256).
+
+The two signing keys need no change in the realm when you regenerate them: Keycloak holds no copy of
+the client key and fetches its public half from the gateway, and a DPoP proof carries its own public
+key.
+
+The certificate's SAN list names every host a TLS client in the stack dials: `localhost` for the
+browser; `keycloak`, because the gateway reaches the identity provider by its compose service name
+and a certificate without that name would fail hostname verification on the token-key fetch and the
+BFF back channel; and `api-sheriff` and `tls-terminator`, because Keycloak in turn fetches the BFF's
+public client key from the gateway -- directly in the base sample, through the terminating hop in
+<<_the_plain_http_variant>>.
 
 The truststore is how the gateway comes to trust Keycloak at all. The issuer in
 `docker/sheriff-config/gateway.yaml` names the trust profile `jwks.tls_profile: sample-idp`, and the
 committed `docker/certificates/sample-idp-trust.properties` binds that name to the generated store;
-the compose file loads it through `QUARKUS_CONFIG_LOCATIONS`. Without that binding the token-key
+the compose file loads it through `QUARKUS_CONFIG_LOCATIONS`. The BFF's back channel to Keycloak --
+discovery, the pushed authorization request, the code exchange -- names the same profile through
+`egress_tls.oidc_tls_profile`. Without that binding the token-key
 fetch would fail certificate validation against the self-signed identity provider, and the gateway
 would never report ready. Nothing is relaxed to make it work: chain and hostname are both verified,
 against exactly the one certificate Keycloak serves.
 
-If you generated the material before the truststore existed, run the script again -- the bring-up
-refuses to start with an incomplete set and says so.
+Trust runs the other way too. Keycloak verifies the gateway's certificate when it fetches the client
+key, against the same certificate, which the compose file anchors through `KC_TRUSTSTORE_PATHS`.
+Hostname verification stays on there as well.
+
+If you generated the material before the truststore or the signing keys existed, run the script
+again -- the bring-up refuses to start with an incomplete set and says so. Run with no argument, the
+script always replaces the whole set; `--if-missing` replaces it only when a file of the set is
+missing, and is what the Maven profile below calls.
 
 === 2. Start it
 
@@ -137,14 +175,20 @@ gateway built with a different one serves its probes elsewhere
 first; <<_reading_the_container_health_signal>> explains what each one proves. Either layer failing
 exits non-zero, printing the container log and the full health payload.
 
-Alternatively, run it through the build as an opt-in Maven profile, which brings the stack up, gates
-on readiness, and tears it down again:
+Alternatively, run it through the build as an opt-in Maven profile. It generates the certificate
+material and signing keys first when any file of the set is missing (a complete set is left
+untouched), brings the stack up, gates on readiness, logs in through the BFF with the login check
+described in <<_logging_in_through_the_bff>>, and tears the stack down again:
 
 [source,bash]
 ----
 python3 .plan/execute-script.py plan-marshall:build-maven:maven run \
   --command-args "verify -Pcompose-sample -pl deployment -am"
 ----
+
+`-Dcompose-sample.image=IMAGE` runs the profile against another gateway image: it exports
+`API_SHERIFF_IMAGE=IMAGE` into the bring-up, exactly as Route B does by hand. CI uses it to run the
+sample against the image it has just built -- see <<_after_a_keycloak_update>>.
 
 Without `-Pcompose-sample` the `deployment` module is a no-op: the default build starts no container
 and costs no measurable time.
@@ -178,14 +222,61 @@ Two other endpoints are published:
   restates. <<_reading_the_container_health_signal>> composes the probe from it.
 
 | `https://localhost:1443`
-| The Keycloak admin console, for inspecting the realm or minting a token by hand. It is also the
-  identity provider's one identity: Keycloak's `KC_HOSTNAME` is this published URL, so the sample
-  realm's issuer is `https://localhost:1443/realms/sample` whichever address a request arrives on,
-  and that is the issuer the gateway validates tokens against. The gateway does not dial it: its
-  key-set fetch stays on `keycloak:8443` on the internal network.
+| Keycloak: the login page the BFF sends a browser to, and the admin console for inspecting the
+  realm. No token is minted here by hand any more: `sample-client` has no secret and no password
+  grant, so a user signs in through the BFF instead. It is also the identity provider's one
+  identity: Keycloak's `KC_HOSTNAME` is this published URL, so the sample realm's issuer is
+  `https://localhost:1443/realms/sample` whichever address a request arrives on, and that is the
+  issuer the gateway validates tokens against. The gateway does not dial it: its key-set fetch and
+  its BFF back channel (`oidc.back_channel_origin`) stay on `keycloak:8443` on the internal network.
 |===
 
-=== 4. Stop it
+[[_logging_in_through_the_bff]]
+=== 4. Log in through the BFF
+
+Open `https://localhost:8443/app` in a browser. The browser warns about the self-signed certificate
+twice -- once for the gateway on `8443`, once for Keycloak's login page on `1443` -- because both
+serve the generated certificate. Sign in as `sample-user`, with the password from
+`docker/keycloak/sample-realm.json` (`CHANGE-ME-BEFORE-PRODUCTION`). The browser lands back on
+`/app`, which answers with the same `demo-api` document `/api` serves. The difference is how it got
+there: the gateway holds the user's tokens and forwards the access token upstream, and the browser
+holds only the gateway's `+__Host-sample-session+` cookie.
+
+`/app` is a `type: bff` anchor with a `require: session` floor (see
+link:anchors.adoc[Anchors -- Namespace-Scoped Policy]), and its one route,
+`endpoints/demo-app.yaml`, inherits that floor rather than declaring one (see
+link:endpoint-routes.adoc[Endpoint Route Configuration]). A browser navigation without a session is
+redirected to the login page; an API request without one gets `401`.
+
+To sign out, open `https://localhost:8443/bff/logout`. The gateway ends its session, sends the
+browser to Keycloak to end the realm session too, and lands it on the public page
+`/pages/signed-out.html` rather than back on `/app`, which would only start the next login.
+
+The same login, without a browser:
+
+[source,bash]
+----
+./deployment/compose-sample/scripts/check-bff-login.sh
+----
+
+This is a real login flow, not a smoke test. It drives the whole authorization-code round trip with
+one cookie jar and asserts every leg: a session-less API request to `/app` must be refused with
+`401` (without that control a public route would make the rest of the check vacuous), the browser
+navigation must be redirected with a pushed authorization request, Keycloak's login form is read and
+the credentials posted, the redirects lead back through the gateway's callback, and `/app` must
+finally answer `200` with the `demo-api` document while the jar holds the session cookie. Every
+request verifies TLS against the generated certificate, and a failure prints the failing step, the
+status and the response headers with cookie values and URL queries removed. `--help` lists the
+options -- base URL, path, user, password and cookie name.
+
+For the token exchange, Keycloak authenticates the gateway by fetching the BFF's public client key
+from the gateway's `/bff/jwks`. That fetch runs server-to-server, so the realm names the URL through
+a placeholder, `${SAMPLE_GATEWAY_JWKS_URL}`, which each variant's compose file sets to the address it
+can actually dial: `https://api-sheriff:8443/bff/jwks` in the base sample, and
+`https://tls-terminator:8443/bff/jwks` in <<_the_plain_http_variant>>, where the gateway itself
+serves no TLS.
+
+=== 5. Stop it
 
 [source,bash]
 ----
@@ -195,6 +286,7 @@ Two other endpoints are published:
 This removes the containers, the network and the volumes, so the next bring-up starts from a known
 state and re-imports the realm.
 
+[[_after_a_keycloak_update]]
 === After a Keycloak update
 
 The sample's Keycloak image is pinned by tag and digest, and that pin is updated automatically: one
@@ -202,9 +294,14 @@ Dependabot group moves it in the same pull request as the integration-test stack
 build-time test keeps the two pins identical. The image line in
 `deployment/compose-sample/docker-compose.yml` is the record of the version the sample runs.
 
-CI never brings this sample up. The bump pull request runs the integration suite against the
-integration-test stack, and the configuration-validation workflow validates only the gateway
-configuration set -- neither starts the sample's Keycloak.
+CI brings the base sample up on every pull request. After the integration suite has torn its own
+stack down, the `integration-tests` workflow runs the `compose-sample` profile against the native
+image that job has just built from the pull request's source
+(`-Dcompose-sample.image=api-sheriff:distroless`), so the sample's Keycloak is started and a real
+login through the BFF is checked. A Keycloak bump pull request reaches the sample through that job
+and no other; the configuration-validation workflow still validates only the gateway configuration
+set. CI does *not* bring up <<_the_plain_http_variant>> -- check that one by hand after a bump that
+touches it.
 
 So after pulling a Keycloak bump, tear the sample down with `stop-sample.sh` before the next start.
 The script runs `down -v`, and that matters here: the `keycloak-quarkus` named volume holds
@@ -243,7 +340,8 @@ base file.
 
 The request you drive through it is the same one, at the same address: the terminator publishes the
 port the gateway used to publish, so `curl -k https://localhost:8443/api` still works. What changed
-is which component answers the handshake.
+is which component answers the handshake. The BFF login is unchanged too: `/app` logs a browser in
+the same way, and `check-bff-login.sh` runs against this variant without an argument.
 
 === Requires Docker Compose 2.24.4 or newer
 
@@ -485,16 +583,23 @@ The sample is deliberately loud about being a sample. Every item below is a plac
   supplied by the deployment with a password that is not in a repository. `gateway.yaml` keeps
   naming only the logical profile.
 
-| *The Keycloak realm client secret* -- `CHANGE-ME-BEFORE-PRODUCTION` in
-  `docker/keycloak/sample-realm.json`.
-| Registers its own confidential client and supplies the secret from the deployment, never from a
-  file in a repository.
+| *The BFF signing keys* -- `client-auth.pem` and `dpop.pem`, generated next to the certificate,
+  unencrypted and world-readable, in the `certificates/` directory both the gateway *and Keycloak*
+  mount.
+| Supplies its own client-authentication and DPoP keys, with ownership matched to the gateway's
+  runtime uid, and mounts them into the *gateway only*. The identity provider needs no key file: it
+  fetches the public client key from the gateway's JWKS endpoint. The sample shares one directory
+  between both containers only because it is a sample.
+
+| *The Keycloak realm client* -- `sample-client` in `docker/keycloak/sample-realm.json`, registered
+  for `https://localhost:8443` and for a JWKS URL on the sample's internal network.
+| Registers its own confidential client against its own gateway address -- see <<_adapting_it>>.
 
 | *The Keycloak bootstrap admin credentials* -- `admin` / `admin` in `docker-compose.yml`.
 | Sets real credentials, and does not publish the admin console at all unless it means to.
 
 | *The sample realm user* -- `sample-user` with a placeholder password.
-| Deletes it. It exists only so you can mint a token while trying the stack out.
+| Deletes it. It exists only so you can log in through the BFF while trying the stack out.
 
 | *`start-dev`* -- Keycloak runs in development mode.
 | Runs Keycloak in production mode against a real database. The sample's realm lives in a volume and
@@ -502,10 +607,14 @@ The sample is deliberately loud about being a sample. Every item below is a plac
 |===
 
 The gateway's own configuration under `docker/sheriff-config/` needs less adaptation than the rest
-of the stack: it declares the `strict` inbound filter profile explicitly, a TLS floor of 1.2, one
-public proxy namespace, and a token issuer whose egress allowance is pinned by an explicit,
-host-exact `allowed_egress_hosts` list rather than left to the allowance derived from its JWKS URL
-(see the comment on that key). The one endpoint is
+of the stack: it declares the `strict` inbound filter profile explicitly, a TLS floor of 1.2, and
+three namespaces -- the public proxy namespace `/api`, the BFF namespace `/app` with its
+`require: session` floor, and the public `/pages` namespace serving the signed-out page. It declares
+one token issuer, whose egress allowance is pinned by an explicit, host-exact `allowed_egress_hosts`
+list rather than left to the allowance derived from its JWKS URL (see the comment on that key), and
+one `oidc` block: a server-session client with no secret, authenticating with `private_key_jwt`,
+pushing every authorization request and binding its tokens with DPoP, keeping the browser-facing
+issuer identity while dialling Keycloak at `oidc.back_channel_origin`. The public `/api` endpoint is
 `auth: require: none`, which is the first thing to change when adapting the sample -- switch it to
 `require: bearer` and the route is gated on a token from the declared issuer.
 
@@ -527,13 +636,13 @@ Keycloak the defence reaches further than the replayed copy: the integration sui
 `BffRefreshReuseIT` observed that a detected replay also revokes the successor refresh token, so the
 legitimate holder's session ends too, while the Keycloak user session survives.
 
-The sample gateway itself mediates no session -- its one route is `auth: require: none` -- so the
-setting only acts once you add a BFF route with refresh enabled. Such a route additionally needs an
-identity-provider client that accepts pushed authorization requests and binds its access tokens with DPoP
-and, in the default key mode, fetches the gateway's key set; the sample's own client is a
-secret-authenticated token-minting client and is not that client (see
-link:bff-session.adoc#key-material[Server-Session BFF -- Key material]). The rotation setting is
-shipped on so the realm you copy already carries the defence.
+The sample gateway's BFF mediates server-mode sessions with refresh enabled
+(`oidc.session.refresh`), so the setting acts on the sample itself: every refresh the gateway performs
+for an `/app` session rotates the refresh token, and a replayed one ends the session. The sample's
+client is the kind such a session needs -- it accepts pushed authorization requests, binds its
+access tokens with DPoP and fetches the gateway's key set (see
+link:bff-session.adoc#key-material[Server-Session BFF -- Key material]) -- and the rotation setting
+is shipped on so the realm you copy already carries the defence.
 
 *The cost you take on.* With no reuse permitted, a *duplicate* refresh of the same refresh token is
 indistinguishable from theft, and it ends the session. The gateway single-flights refreshes per
@@ -567,7 +676,14 @@ rather than configuring the gateway. Its default is written once in `deployment/
 the file Compose auto-loads from the sample directory. That file is the only place the published
 image reference appears -- `docker-compose.yml` references the variable with no inline fallback, and
 `scripts/start-sample.sh` derives the effective value from the resolved Compose model. An exported
-`API_SHERIFF_IMAGE` wins over the file, which is how Route B above works.
+`API_SHERIFF_IMAGE` wins over the file, which is how Route B above works, and how the Maven
+profile's `-Dcompose-sample.image` works.
+
+The BFF's two key files arrive through that `environment:` block like every other deployment fact:
+`gateway.yaml` names them only as the bare placeholders `${SHERIFF_CLIENT_AUTH_KEY_FILE}` and
+`${SHERIFF_DPOP_KEY_FILE}`, and the compose file points them at the generated files on the
+already-mounted `certificates/` directory. An unset variable fails the boot rather than starting a
+BFF without a key.
 
 One deliberate absence is worth naming, because it differs from the integration stack:
 `QUARKUS_HTTP_SSL_PORT` is *not* set here. The integration stack moves its terminated listener off
@@ -575,11 +691,12 @@ One deliberate absence is worth naming, because it differs from the integration 
 passthrough SNI, so the gateway terminates directly on 8443 and an override would only mis-address
 it.
 
+[[_adapting_it]]
 == Adapting it
 
 The sample is meant to be copied. The `deployment/compose-sample/` directory is self-contained --
 nothing in it reaches into `integration-tests/` or into the `api-sheriff` module -- so copying the
-directory gives you a working starting point. From there the usual first three changes are:
+directory gives you a working starting point. From there the usual first four changes are:
 
 . Point the `UPSTREAM` alias in `docker/sheriff-config/topology.properties` at your real backend, or
   override `TOPOLOGY_UPSTREAM` in the environment. It is the one place a backend address is written
@@ -620,4 +737,16 @@ exactly what it always was.
   still does not name is refused and its key set never loads. Update the entry, or delete the list to
   take the allowance derived from the JWKS URL's host. Rebind the `jwks.tls_profile` it names to your provider's CA at the
   same time: the gateway refuses to boot on a profile it cannot load, and it will not report ready
-  until it has fetched the provider's keys over a verified connection.
+  until it has fetched the provider's keys over a verified connection. The `oidc` block moves with
+  it: `oidc.issuer` takes the same identity, and `oidc.back_channel_origin` the address the gateway
+  dials -- or drop that key when the gateway reaches the provider at its public identity.
+. Register your own BFF client at the identity provider, and point the `oidc` block at it. The
+  realm's `sample-client` shows every setting the gateway asks for: client authentication by signed
+  JWT (`client-jwt` on Keycloak) with the provider fetching the key from your gateway's JWKS URL as
+  the provider can reach it, pushed authorization requests required, DPoP-bound access tokens, and
+  your gateway's callback and post-logout return URLs registered exactly. On Keycloak, keep the
+  `basic` client scope among the client's default scopes: it carries the `sub` claim, and the gateway
+  refuses a login whose token has none. Then set `oidc.client_id`, `oidc.redirect_uri` and the logout
+  URLs to match. link:bff-session.adoc[Server-Session BFF -- Operator Setup] is the full guide;
+  link:bff-cookie.adoc[Cookie-Based BFF -- Operator Setup] covers switching the session to cookie
+  mode.

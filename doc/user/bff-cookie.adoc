@@ -71,6 +71,18 @@ The BFF runtime is built from exactly two inputs: a recognised `session.mode` (`
 routes are what *use* the runtime once it exists, not what turns it on. With no recognised
 `session.mode` the runtime stays inert, so a bearer-only deployment is unaffected.
 
+*A runnable starting point.* The compose sample runs a working BFF -- in *server* mode:
+`deployment/compose-sample/docker/sheriff-config/gateway.yaml` with its Keycloak realm, its signing
+keys and a login check (see link:compose-sample.adoc#_logging_in_through_the_bff[Compose Sample --
+Log in through the BFF]). Everything in it but the `oidc.session` block carries over to this variant
+unchanged -- the client, its signing keys, `back_channel_origin`, the redirect and logout URLs. To run
+it in cookie mode, replace that block: `mode: cookie` instead of `mode: server`, drop `store`, and
+settle the two decisions only this variant has -- whether to pass a sealing key (<<_key_material>>)
+and the cookie size budget (<<_cookie_size_budget>>). The sample needs the gateway release after `0.2.4`: the `0.2.4` image it
+pins predates `back_channel_origin` and the `/bff/*` reserved paths and refuses its `gateway.yaml` at
+boot, so until that release run it on a locally built image
+(link:compose-sample.adoc#_route_b_a_locally_built_image[Route B]).
+
 *An identity provider the gateway reaches at a different address.* Keep `oidc.issuer` the
 browser-facing identity, set `oidc.back_channel_origin` to the internal origin the gateway dials, and
 point `token_validation.issuers[].jwks.url` at the internal host. No DNS trick is needed. The setup is
@@ -544,6 +556,7 @@ name (or delete the line to take the default). Existing sessions under the old n
 over: browsers keep sending the old cookie, the gateway no longer reads it, and those users log in
 again.
 
+[[_cookie_size_budget]]
 == Cookie size budget
 
 Because the session travels in the cookie, its sealed value has a size budget --
