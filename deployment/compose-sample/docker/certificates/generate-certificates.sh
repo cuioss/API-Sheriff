@@ -115,8 +115,9 @@ ASSEMBLED_FILE=""
 
 # Remove the intermediates on EVERY exit path, not just the success one. Under `set -e` a failing
 # keytool or openssl aborts the script before any explicit cleanup, which would otherwise strand a
-# PKCS#12 file or a bare private key in a directory an operator is told to treat as
-# generated-and-disposable. The trap is armed here, immediately after both paths are defined, so no
+# PKCS#12 file, a bare private key or a half-assembled key file in a directory an operator is told to
+# treat as generated-and-disposable. The trap is armed here, immediately after all three intermediate
+# paths are defined, so no
 # failure between this line and the end of the script can escape it.
 cleanup() {
     rm -f "${TEMP_KEYSTORE}"
