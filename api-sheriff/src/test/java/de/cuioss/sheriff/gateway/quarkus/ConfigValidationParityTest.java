@@ -150,7 +150,9 @@ class ConfigValidationParityTest {
         return Stream.of(
                 new CorpusSet("shipped compose-sample set",
                         ignored -> REPOSITORY.resolve("deployment/compose-sample/docker/sheriff-config"),
-                        Map.of("SHERIFF_TRUSTED_PROXIES", "172.30.0.0/16"), false),
+                        Map.of("SHERIFF_TRUSTED_PROXIES", "192.0.2.10/32,192.0.2.11/32",
+                                "SHERIFF_CLIENT_AUTH_KEY_FILE", "/app/certificates/client-auth.pem",
+                                "SHERIFF_DPOP_KEY_FILE", "/app/certificates/dpop.pem"), false),
                 new CorpusSet("shipped integration-test set",
                         ignored -> REPOSITORY.resolve("integration-tests/src/main/docker/sheriff-config"),
                         Map.of("OIDC_DPOP_KEY_FILE", "/app/signing-keys/dpop-ec.pem"), false),
