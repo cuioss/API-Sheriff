@@ -378,21 +378,31 @@ public final class ForwardPolicyStage {
         List<String> admitted = new ArrayList<>();
         for (String crumb : header.get().split(";", -1)) {
             String pair = GatewayCookies.trimBlanks(crumb);
-            if (pair.isEmpty()) {
-                continue;
-            }
-            int separator = pair.indexOf('=');
-            String name = separator < 0 ? "" : GatewayCookies.trimBlanks(pair.substring(0, separator));
-            String value = separator < 0 ? pair : GatewayCookies.trimBlanks(pair.substring(separator + 1));
-            if (gatewayCookies.matchesPair(name, value)) {
-                continue;
-            }
-            boolean policyAdmits = name.isEmpty() ? allow instanceof CookieAllow.All : allow.admits(name);
-            if (policyAdmits) {
+            if (!pair.isEmpty() && admitsPair(pair, allow)) {
                 admitted.add(pair);
             }
         }
         return List.copyOf(admitted);
+    }
+
+    /**
+     * Whether one trimmed, non-empty cookie pair crosses under {@code allow} — steps 3 and 4 of
+     * {@link #admittedCookiePairs}. A pair's name is the text before its first {@code =}, trimmed; a
+     * pair without {@code =} is a nameless crumb. A gateway cookie never crosses, a nameless crumb
+     * crosses only under {@code all}, and any other pair crosses when the mode admits its name.
+     *
+     * @param pair  the trimmed, non-empty pair
+     * @param allow the route's {@code cookies.allow} mode
+     * @return {@code true} when the pair is forwarded
+     */
+    private boolean admitsPair(String pair, CookieAllow allow) {
+        int separator = pair.indexOf('=');
+        String name = separator < 0 ? "" : GatewayCookies.trimBlanks(pair.substring(0, separator));
+        String value = separator < 0 ? pair : GatewayCookies.trimBlanks(pair.substring(separator + 1));
+        if (gatewayCookies.matchesPair(name, value)) {
+            return false;
+        }
+        return name.isEmpty() ? allow instanceof CookieAllow.All : allow.admits(name);
     }
 
     /**

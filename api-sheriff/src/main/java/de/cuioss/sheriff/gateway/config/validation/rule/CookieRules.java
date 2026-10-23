@@ -324,7 +324,7 @@ public class CookieRules {
     }
 
     private static List<String> listedNames(CookiesConfig cookies) {
-        return cookies.allow() instanceof CookieAllow.Named named ? named.names() : List.of();
+        return cookies.allow() instanceof CookieAllow.Named(var names) ? names : List.of();
     }
 
     /**

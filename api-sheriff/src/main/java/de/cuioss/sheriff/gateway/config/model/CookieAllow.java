@@ -106,6 +106,17 @@ public sealed interface CookieAllow permits CookieAllow.None, CookieAllow.All, C
     boolean admits(String cookieName);
 
     /**
+     * The null check every mode's {@link #admits} opens with, so the three variants refuse a
+     * {@code null} name with one message.
+     *
+     * @param cookieName the cookie name handed to {@link #admits}
+     * @return {@code cookieName}, never {@code null}
+     */
+    private static String requireCookieName(String cookieName) {
+        return Objects.requireNonNull(cookieName, "cookieName");
+    }
+
+    /**
      * The {@code none} mode: no cookie crosses.
      *
      * @since 1.0
@@ -114,7 +125,7 @@ public sealed interface CookieAllow permits CookieAllow.None, CookieAllow.All, C
 
         @Override
         public boolean admits(String cookieName) {
-            Objects.requireNonNull(cookieName, "cookieName");
+            CookieAllow.requireCookieName(cookieName);
             return false;
         }
     }
@@ -128,7 +139,7 @@ public sealed interface CookieAllow permits CookieAllow.None, CookieAllow.All, C
 
         @Override
         public boolean admits(String cookieName) {
-            Objects.requireNonNull(cookieName, "cookieName");
+            CookieAllow.requireCookieName(cookieName);
             return true;
         }
     }
@@ -151,8 +162,7 @@ public sealed interface CookieAllow permits CookieAllow.None, CookieAllow.All, C
 
         @Override
         public boolean admits(String cookieName) {
-            Objects.requireNonNull(cookieName, "cookieName");
-            return names.contains(cookieName);
+            return names.contains(CookieAllow.requireCookieName(cookieName));
         }
     }
 }

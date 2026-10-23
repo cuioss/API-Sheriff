@@ -92,7 +92,7 @@ class CookieAllowTest {
 
         @Test
         @DisplayName("Should bind [all] and [none] to the cookies named all and none, not to the modes")
-        void shouldBindKeywordListsAsNames() throws Exception {
+        void shouldBindKeywordListsAsNames() {
             assertAll("a sequence is always names",
                     () -> assertEquals(new CookieAllow.Named(List.of("all")), bind("[all]")),
                     () -> assertEquals(new CookieAllow.Named(List.of("none")), bind("[none]")));

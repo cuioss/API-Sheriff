@@ -239,8 +239,12 @@ relay, the gRPC leading headers and the gRPC trailers. For `Set-Cookie` it relay
 a line only when the route's `allow` admits the cookie it names and the name is
 not one of the gateway's own, and it removes the `Domain` attribute from every
 line it relays, so an upstream can neither set a gateway cookie nor widen a cookie
-past the host the browser addressed — the cookie-tossing path between two
-upstreams behind one host is closed. **Under the default `none` no upstream
+past the host the browser addressed. `Path` is relayed as sent, so a cookie one
+upstream sets still reaches every route of the host its path covers, and that
+route's upstream receives it only when its own policy admits the name — the
+accepted residual
+link:../security-threat-model.adoc#gw-15[GW-15 of the threat model] records.
+**Under the default `none` no upstream
 `Set-Cookie` is relayed at all. That is a breaking change for every upstream that
 sets cookies today:** its route has to declare the cookies it relies on. A
 WebSocket upgrade's `101` relays no upstream header, so the predicate has nothing

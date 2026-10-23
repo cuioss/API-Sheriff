@@ -1497,10 +1497,12 @@ class RouteTableBuilderTest {
 
             CsrfDefence defence = resolved.cookieOriginDefence();
             assertNotNull(defence, "a route forwarding a listed cookie carries the check");
+            PipelineRequest fromAdditionalOrigin = postFrom(ADDITIONAL_ORIGIN);
+            PipelineRequest fromForeignOrigin = postFrom(FOREIGN_ORIGIN);
             assertAll("the check trusts exactly what the block declares",
-                    () -> assertDoesNotThrow(() -> defence.enforce(postFrom(ADDITIONAL_ORIGIN)),
+                    () -> assertDoesNotThrow(() -> defence.enforce(fromAdditionalOrigin),
                             "the block's additional origin is trusted"),
-                    () -> assertThrows(GatewayException.class, () -> defence.enforce(postFrom(FOREIGN_ORIGIN)),
+                    () -> assertThrows(GatewayException.class, () -> defence.enforce(fromForeignOrigin),
                             "an origin the block does not declare is refused"));
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
         }
@@ -1512,7 +1514,8 @@ class RouteTableBuilderTest {
 
             CsrfDefence defence = resolved.cookieOriginDefence();
             assertNotNull(defence, "a route forwarding every cookie carries the check");
-            assertThrows(GatewayException.class, () -> defence.enforce(postFrom(ADDITIONAL_ORIGIN)),
+            PipelineRequest fromUndeclaredOrigin = postFrom(ADDITIONAL_ORIGIN);
+            assertThrows(GatewayException.class, () -> defence.enforce(fromUndeclaredOrigin),
                     "a route declaring no additional origin trusts none");
             LogAsserts.assertNoLogMessagePresent(TestLogLevel.WARN, CHECK_DISABLED_WARN_ID);
         }
