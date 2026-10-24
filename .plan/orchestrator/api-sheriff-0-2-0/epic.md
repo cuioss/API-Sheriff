@@ -80,7 +80,8 @@ would otherwise force a retrofit.
   Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1 (that second PR). **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
   half and runs after V02-23. Since the 2026-10-13 dedup it is also an overlay of `PLAN-V02-15`'s
-  BFF sample and extends that plan's CI login proof, so it runs after V02-15 as well.
+  BFF sample and extends that plan's CI login proof. Both have landed (#515, #516, 2026-10-24), so no plan holds
+  D3 any more; it has no staged row yet, and staging one is the operator's call.
 - **`PLAN-V02-21` shipped 2026-10-13** as #439 (`48e8d5a6`): D1, D2, D3 and D5; D4 (`ImageMetadataIT`)
   declined by the operator at refine. `integration-tests/docker-compose.yml` now has two YAML
   anchors (`x-gateway-hardening`, `x-gateway-backend-deps`) merged into all twelve gateway services,
@@ -430,7 +431,12 @@ doc-only or build-light plan for the second and third slots.
   by the release skill's "exactly one of each" check; (5) `cleanup-dry-run` is skipped. A failure
   before promotion leaves no release tag (re-run the join alone); a promote or read-back failure can
   leave one; a promoted digest that differs from the signed one is a real defect, so the release is
-  treated as partial. Close this watch once one real release passes the checklist.
+  treated as partial. Close this watch once one real release passes the checklist. **Also owed by that release
+  (from `PLAN-V02-15`, #516, 2026-10-24):** bump the pin in `deployment/compose-sample/.env` (still
+  `ghcr.io/cuioss/api-sheriff:0.2.4`, which predates the BFF keys the sample now sets) and run
+  `deployment/compose-sample/scripts/check-bff-login.sh` against the published image; until then the default
+  sample runs only against a local build through `API_SHERIFF_IMAGE`. CI proves the HTTPS variant's login
+  only; the plain-HTTP variant (`start-sample.sh --plain-http`) was proven locally.
 
 - **RELEASE-GUARD DOCS CHECK FAILS A PIN MOVE UNTIL THE SECTION IS RE-CHECKED** (added 2026-10-22, from the
   `PLAN-V02-22` landing, #512). New workflow `.github/workflows/release-guard-docs.yml` runs on pull

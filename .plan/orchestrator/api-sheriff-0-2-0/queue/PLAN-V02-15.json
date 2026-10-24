@@ -2,9 +2,9 @@
   "id": "PLAN-V02-15",
   "slug": "bff-compose-sample",
   "workstream": "WS-02",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "",
-  "pr": "",
-  "landing": "",
+  "pr": "516",
+  "landing": "landings/PLAN-V02-15.md",
   "seq": 15
 }
