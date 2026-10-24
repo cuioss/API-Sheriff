@@ -80,7 +80,8 @@ would otherwise force a retrofit.
   Downstream: `PLAN-V02-09` and `PLAN-V02-15` sequence behind V02-12's D1 (that second PR). **D3 (the `/auth`-fronted Keycloak sample) is out of V02-12's running half**
   (inbox `-001`): it needs the cookie policy of `PLAN-V02-23` and V02-12's own D1, so it joins the held
   half and runs after V02-23. Since the 2026-10-13 dedup it is also an overlay of `PLAN-V02-15`'s
-  BFF sample and extends that plan's CI login proof, so it runs after V02-15 as well.
+  BFF sample and extends that plan's CI login proof. Both have landed (#515, #516, 2026-10-24), so no plan holds
+  D3 any more; it has no staged row yet, and staging one is the operator's call.
 - **`PLAN-V02-21` shipped 2026-10-13** as #439 (`48e8d5a6`): D1, D2, D3 and D5; D4 (`ImageMetadataIT`)
   declined by the operator at refine. `integration-tests/docker-compose.yml` now has two YAML
   anchors (`x-gateway-hardening`, `x-gateway-backend-deps`) merged into all twelve gateway services,
@@ -367,13 +368,7 @@ doc-only or build-light plan for the second and third slots.
    it inside 0.1.0; the operator ruled it out of the release track 2026-07-27. **0.1.0 and 0.1.1 both
    ship with this leak.** OWNER: `PLAN-V02-05` D1. *Re-grounded 2026-08-08: still present, and the
    fix must cover **both** relay paths — `relay`:84 and `relayWithTrailers`:118.*
-2. **MEDIUM, developer trap — OWNER: `PLAN-V02-22` D2 (2026-10-06).** `demo-client/playwright.config.js` routes three variables through
-   `required()` at module scope while `demo-client/pom.xml` supplies them only for the Maven
-   execution, so the copy-pasteable `cd demo-client && npm run test` aborts at config load. The
-   README was fixed to export them first, but `start-dev-environment.sh`:289 still prints that exact
-   command. **Keep the generalizable check**: for any doc offering run-it-directly beside
-   run-it-through-the-build, enumerate what the build supplies that the direct path does not —
-   environment, working directory, classpath.
+2. > ↪ Relocated to `settled.md` § "Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512"
 3. > ↪ Relocated to `settled.md` § "Open Defect 3 — demo start script readiness contract (closed 2026-10-09)" — already fixed since #341
 4. **LOW, not release-gating** — the test-corpus integrity backlog PLAN-43 left as a countable
    residual: 43 files / 140 marker occurrences, enumerated in
@@ -436,13 +431,28 @@ doc-only or build-light plan for the second and third slots.
   by the release skill's "exactly one of each" check; (5) `cleanup-dry-run` is skipped. A failure
   before promotion leaves no release tag (re-run the join alone); a promote or read-back failure can
   leave one; a promoted digest that differs from the signed one is a real defect, so the release is
-  treated as partial. Close this watch once one real release passes the checklist.
+  treated as partial. Close this watch once one real release passes the checklist. **Also owed by that release
+  (from `PLAN-V02-15`, #516, 2026-10-24):** bump the pin in `deployment/compose-sample/.env` (still
+  `ghcr.io/cuioss/api-sheriff:0.2.4`, which predates the BFF keys the sample now sets) and run
+  `deployment/compose-sample/scripts/check-bff-login.sh` against the published image; until then the default
+  sample runs only against a local build through `API_SHERIFF_IMAGE`. CI proves the HTTPS variant's login
+  only; the plain-HTTP variant (`start-sample.sh --plain-http`) was proven locally.
+
+- **RELEASE-GUARD DOCS CHECK FAILS A PIN MOVE UNTIL THE SECTION IS RE-CHECKED** (added 2026-10-22, from the
+  `PLAN-V02-22` landing, #512). New workflow `.github/workflows/release-guard-docs.yml` runs on pull
+  requests into `main` that touch `release.yml`, `doc/development/release-process.adoc` or itself, with
+  `ReleaseGuardPinDocsContractTest` behind it. When the `cuioss-organization` release workflow or the
+  `release-guard` pin moves, the pins and quoted reason lines in the section must be re-read first. The
+  check is intended; the Watch exists so that the first pin bump (Renovate or manual) is not read as a
+  broken build. It is path-triggered, so an absent check-run is not a pass (standing rule 2). Close it
+  once one pin bump has gone through the check.
 
 - **`PLAN-V02-21` DOCUMENTATION LEFTOVERS, NONE STAGED** (added 2026-10-13, from the landing).
   ADR-0031 line 115 still says the integration stack runs "seven gateway instances"; there are twelve.
   `demo-client/scripts/start-dev-environment.sh` keeps a literal `120` for its Keycloak wait (lines
-  244–255), against the amended ADR-0031's one-named-constant rule. Natural home for the script:
-  `PLAN-V02-22`, which already declares that file; fold both at its outline.
+  244–260), against the amended ADR-0031's one-named-constant rule. Both are still present at `abf911dc`:
+  `PLAN-V02-22` (#512) edited the script but did not take the literal. No owner; fold them into the next
+  plan that touches ADR-0031 or the script, or into `PLAN-V02-04`'s truth check for the ADR.
 
 - **HTTP/1.1 DRAIN 502 FLAKE IN THE FRAMING CORPUS, NONE STAGED** (added 2026-10-13). The `main` push
   `Maven Build` on `09edaea9` (#431, run 38364519502) failed in `build (25)`:
@@ -460,6 +470,25 @@ doc-only or build-light plan for the second and third slots.
   framing, so re-running until green can hide a regression. **This is the only entry tracking the
   flake across both epics** (kidicap's Open Defect now points here). Owner when it recurs: whichever plan next touches `edge/` (`PLAN-V02-06`), or a dedicated
   fix. Reproduce with `-XX:ActiveProcessorCount=1`.
+  **Related, separate test (2026-10-22, `PLAN-V02-46` landing, #513):**
+  `Http2EarlyResponseResetIT.earlyAnsweredUploadsStayAnsweredWithoutGoAway` failed once in the merge_group
+  Integration Tests run `39812067667`: *"every stream must end in the gateway's NO_ERROR reset; the client
+  reset the rest itself with CANCEL … expected: <400> but was: <390>"*, two connections used. The same tree
+  was green on PR CI and on the re-enqueue (`39823097862`), and post-merge `main` at `e70743f7` is green. First
+  observed failure of this test; it guards the #431 early-response reset path. A merge-queue-only failure
+  here may be a real reset-before-write race, as the HTTP/2 framing flake was (#403), so a re-enqueue is not
+  an answer. On a recurrence, reproduce under `-XX:ActiveProcessorCount=1` with repeated runs first, and check
+  whether an early answer plus the abortive upstream close can still send CANCEL or GOAWAY to unrelated
+  streams. Same owner rule as above. Source: inbox `plan-v02-46-upstream-close-after-early-answer-001`.
+
+- **`PLAN-V02-23` (#515) ADVISORIES LEFT UNFIXED, NONE STAGED** (added 2026-10-24, from the landing). The
+  plan left 7 code-review and 15 functional-review advisories open. The landing names these: commit messages
+  that still say `ApiSheriff-123` (history, not fixable); the reader list in `http/package-info.java`;
+  `RouteTableBuilder` emitting `ApiSheriff-101` on terminal routes; the `@return` wording of `setCookieName`;
+  the BFF-2 heading in `doc/quality-report/`; the outline's D2 change note. Read the full list in the plan's
+  archived findings before acting. Owner: whichever plan next touches `config/RouteTableBuilder`, `http/` or
+  `doc/quality-report/`, or a dedicated cleanup. The security audit also recorded one design follow-up; it is
+  in the git-ignored local security notes only.
 
 - **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy
   key-material generators from TokenSheriff, proposal 7) and #423 (IT concurrency not realised: the
@@ -485,12 +514,7 @@ doc-only or build-light plan for the second and third slots.
   (ADR-0061 § Risks). Declined in #387 because it reaches the TLS, JWKS, BFF and portal refusal paths.
   Stage a plan when the hand-kept list drifts or the refusal paths are touched anyway.
 
-- **ISSUE #189 REMAINDER — STAGED AS `PLAN-V02-22` D1 (2026-10-06; that spec now has three deliverables)** (added 2026-10-04, from the `PLAN-V02-13` landing). Still open:
-  a demo-client panel (`demo-client/src/main/resources/spa/index.html`, `app.js`) that fires each
-  rejection variant and reports status, `Content-Type` and redirect; `doc/variants/01-base-gateway.adoc`;
-  `demo-client/doc/integration-sample.adoc`; and the PROHIBITED ASSERTION scope wording in
-  `demo-client/doc/playwright-suite.adoc`. The issue comment also names `doc/plan/04-request-pipeline.adoc`,
-  which no longer exists — discharged. Stage a small plan when wanted.
+- > ↪ Relocated to `settled.md` § "Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512"
 - **ADR-0059 AND ADR-0060 ARE `Proposed` — OWNER: `PLAN-V02-04` D3's status sweep** (added 2026-10-04; ADR-0060 added 2026-10-05). Both
   decisions are shipped — the ROUTING problem category (#383) and bodyless-method dispatch with exact
   declared-length framing (#385). Each record needs an acceptance decision. Operator call, or
@@ -716,9 +740,10 @@ this knowledge exists.** These are instance-specific cautions; the process itsel
   them apart — **but the guard log can**: it reads `unchanged at 0.1.1`, and the guard checks
   "unchanged" before "already tagged", so a guard stuck on `changed` would have logged the tag reason.
   A guard stuck on `unchanged` would log the same line; that direction fails safe. The mechanism is
-  settled: the pinned guard job (v0.36.0) checks out with `fetch-depth: 0` and `fetch-tags: true`.
-  `doc/development/release-process.adoc` still says a refusal announces no reason and rests its
-  claims on the job rendering; **owner: `PLAN-V02-22` D4**.
+  settled: the pinned guard job checks out with `fetch-depth: 0` and `fetch-tags: true`.
+  `doc/development/release-process.adoc` now rests these claims on the guard's reason line, at the
+  v0.42.0 pin (#512). `release-guard-docs.yml` fails a pull request that moves the pin until the section
+  is re-checked.
 
 ## Standing Rules Inherited from the `api-sheriff-roadmap` Close-Out
 

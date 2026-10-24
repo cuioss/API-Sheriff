@@ -2,8 +2,8 @@
   "id": "PLAN-V02-27",
   "slug": "test-simplification",
   "workstream": "WS-01",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "plan-v02-27-test-simplification",
   "pr": "",
   "landing": "",
   "seq": 27

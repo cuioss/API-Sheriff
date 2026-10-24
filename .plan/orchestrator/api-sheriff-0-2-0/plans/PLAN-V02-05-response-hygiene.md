@@ -30,12 +30,11 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
    strip applied to one call site still leaks on every trailers-carrying response. Fix the shared
    filter — or the shared response-direction policy `ConnectionHeaders.RESPONSE_STRIP` that both
    paths read, which is the more natural home — and prove both paths with a test each.
-   Today the one shared response predicate is `edge/relay/ResponseStage.relaysUpstreamHeader`
-   (`isForwardableResponseHeader` plus `UpstreamSetCookieFilter`), used by `relay()` and
-   `relayWithTrailers()`; the WebSocket upgrade path (`edge/relay/WebSocketRelayStage`) is separate.
-   `PLAN-V02-23` D4 builds one predicate over every relay path for its `Set-Cookie` policy: if it has
-   landed by outline, add the identity-header strip to that predicate and reuse its path coverage;
-   otherwise add it to `relaysUpstreamHeader` and cover the WebSocket path separately.
+   The one shared response predicate is `edge/relay/ResponseStage.relayedUpstreamHeader`
+   (`isForwardableResponseHeader` plus `UpstreamSetCookieFilter`, landed by `PLAN-V02-23` #515 at
+   `bd730f5a`). It judges every leading header and trailer on the HTTP relay and on the gRPC relay. Add the
+   identity-header strip to that predicate and reuse its path coverage. The WebSocket upgrade relays no
+   upstream header (pinned by a `PLAN-V02-23` test), so it needs no strip; keep that test green.
 2. **Security response headers default-on**: HSTS / `X-Content-Type-Options: nosniff` /
    `X-Frame-Options` apply by a secure default posture, remaining per-config overridable (do not force
    them where a route legitimately opts out). Today `SecurityHeadersStage` emits each only when the

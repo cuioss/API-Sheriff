@@ -257,9 +257,9 @@ suite is its proof.
 
 - Depends on: `PLAN-V02-12` (#492) and `PLAN-V02-21` (#439), and the edge/config refactor it was parked for (`PLAN-V02-24` #465, `-44` #476, `-25` #487, `-26` #463, `-28` #467, `-40` … `-43` #485/#489/#502/#505). All have landed. Operator direction (2026-10-13): this plan is the next one emitted, ahead of every other staged plan in the queue.
 - Both concurrent writers named at the 2026-10-14 emission have merged (`PLAN-V02-12` #492; kidicap
-  `PLAN-30` #448). In flight at `00293178`: `PLAN-V02-22` (demo client, docs); `PLAN-V02-46` (`edge/upstream/`,
-  `edge/admission/`, `doc/security-threat-model.adoc`) is emitted alongside. Re-fetch `origin/main` before
-  outline and again before push.
+  `PLAN-30` #448). In flight at `e70743f7`: `PLAN-V02-22` (demo client, docs). `PLAN-V02-46` (#513) has merged; it edited
+  `edge/upstream/`, `edge/admission/`, `doc/architecture.adoc` and `doc/security-threat-model.adoc`. Re-fetch
+  `origin/main` before outline and again before push.
 - Depended on by: `PLAN-V02-12`'s held D3 (the `/auth`-fronted Keycloak sample), which also needs
   `PLAN-V02-12` D1 and its upstream `token-sheriff-client` release.
 - Overlaps with: every staged spec declaring `edge/**`, `forward/**`, `config/**` or the docs above —

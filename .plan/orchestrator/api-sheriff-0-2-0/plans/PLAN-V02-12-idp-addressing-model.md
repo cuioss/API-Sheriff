@@ -168,9 +168,11 @@ Both advertise the same issuer string.
    `/auth` on its internal port too (`http-relative-path=/auth`), or the variant does not work. Settle
    that before anything else in this deliverable. **No IdP goes into any shipped image** — this is deployment sample
    material only. **It is an overlay or variant of `deployment/compose-sample`, not a second
-   standalone sample:** `PLAN-V02-15` owns the BFF-capable sample and its CI login proof, and this
-   deliverable builds on that sample and extends that proof (allowlist and `/admin/` canonicalization
-   test included) rather than bringing its own Keycloak stack and login rig.
+   standalone sample:** `PLAN-V02-15` landed the BFF-capable sample and its CI login proof (#516,
+   `053e3d51`: `scripts/check-bff-login.sh`, which follows every URL from the responses and so is not tied to
+   one IdP host, and `start-sample.sh` with its `--plain-http` variant). This deliverable builds on that sample and
+   extends that proof (allowlist and `/admin/` canonicalization test included) rather than bringing its own
+   Keycloak stack and login rig.
 
    **Expose an allowlist, never a catch-all.** Per the vendor's own recommendations:
    `/realms/`, `/resources/` (without it the login UI is broken), `/.well-known/`, and `/lb-check`

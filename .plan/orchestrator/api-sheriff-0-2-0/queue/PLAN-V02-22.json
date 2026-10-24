@@ -2,9 +2,9 @@
   "id": "PLAN-V02-22",
   "slug": "demo-client-and-doc-leftovers",
   "workstream": "WS-02",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-22-demo-client-and-doc-leftovers",
-  "pr": "",
-  "landing": "",
+  "pr": "512",
+  "landing": "landings/PLAN-V02-22.md",
   "seq": 22
 }
