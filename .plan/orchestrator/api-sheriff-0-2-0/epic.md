@@ -475,6 +475,15 @@ doc-only or build-light plan for the second and third slots.
   whether an early answer plus the abortive upstream close can still send CANCEL or GOAWAY to unrelated
   streams. Same owner rule as above. Source: inbox `plan-v02-46-upstream-close-after-early-answer-001`.
 
+- **`PLAN-V02-23` (#515) ADVISORIES LEFT UNFIXED, NONE STAGED** (added 2026-10-24, from the landing). The
+  plan left 7 code-review and 15 functional-review advisories open. The landing names these: commit messages
+  that still say `ApiSheriff-123` (history, not fixable); the reader list in `http/package-info.java`;
+  `RouteTableBuilder` emitting `ApiSheriff-101` on terminal routes; the `@return` wording of `setCookieName`;
+  the BFF-2 heading in `doc/quality-report/`; the outline's D2 change note. Read the full list in the plan's
+  archived findings before acting. Owner: whichever plan next touches `config/RouteTableBuilder`, `http/` or
+  `doc/quality-report/`, or a dedicated cleanup. The security audit also recorded one design follow-up; it is
+  in the git-ignored local security notes only.
+
 - **TEST-CYCLE REWORK RESIDUE (#424), NONE STAGED** (added 2026-10-10). Open issues #422 (lazy
   key-material generators from TokenSheriff, proposal 7) and #423 (IT concurrency not realised: the
   idle-timeout legs and four sequential suites). Quality points the brief's "no decrease" rule

@@ -2,9 +2,9 @@
   "id": "PLAN-V02-23",
   "slug": "cookie-forwarding-policy",
   "workstream": "WS-03",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-23-cookie-forwarding-policy-r2",
-  "pr": "",
-  "landing": "",
+  "pr": "515",
+  "landing": "landings/PLAN-V02-23.md",
   "seq": 23
 }

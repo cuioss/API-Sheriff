@@ -80,7 +80,8 @@ filename, never by a number quoted here.
 
 4. **Bring every survivor under the ceiling and make it true.**
    - **Ceiling.** Enumerate every record over 500 lines at outline (at `e70743f7`: `0058` 806, `0018` 677,
-     `0066` 527, `0060` 520, `0040` 518, `0025` 515; #513 grew `0066` and `0060`) and every record near it. Cut each to the ceiling or below by
+     `0037` 599, `0066` 527, `0060` 520, `0040` 518, `0025` 515; #513 grew `0066` and `0060`, #515 rewrote `0037`
+     in place and left it `Accepted`) and every record near it. Cut each to the ceiling or below by
      **moving or deleting content, never by summarising away the reasoning**: implementation narrative,
      restated rationale and operator how-to go to `doc/development/**` or `doc/user/**` and the ADR links
      there. The rejected alternatives and the "why not the other thing" are the load-bearing part of an
