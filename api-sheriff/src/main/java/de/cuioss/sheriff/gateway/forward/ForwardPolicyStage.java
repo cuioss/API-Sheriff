@@ -33,8 +33,11 @@ import java.util.stream.Stream;
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ResolvedForwarding;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import org.jspecify.annotations.Nullable;
@@ -68,6 +71,13 @@ import org.jspecify.annotations.Nullable;
  *       makes the forward-all baseline safe. {@code Authorization} is the single re-admittable
  *       member and only under a positive-list naming it; {@code TE} crosses only as the
  *       {@code trailers} token.</li>
+ *   <li><strong>The {@code Cookie} header is rebuilt, never copied.</strong> No forward mode copies
+ *       the client's {@code Cookie}: the header is governed by the route's {@code cookies} block
+ *       alone, and {@link #admittedCookiePairs} decides which of its pairs cross. The gateway's own
+ *       cookies ({@link GatewayCookies}) are dropped under every mode; then {@code none} sends no
+ *       {@code Cookie}, a list keeps only the pairs whose exact name it lists, and {@code all} keeps
+ *       the rest. The kept pairs are rejoined with {@code "; "} in their inbound order, duplicates
+ *       included, and the header is omitted when nothing is kept.</li>
  *   <li><strong>The gateway-understood protocol set.</strong> The {@link #PROTOCOL_HEADERS} names
  *       cross on their own, so an operator never has to enumerate HTTP mechanics to make a backend
  *       work. Under forward-all the set is redundant; under a positive-list it is where it earns its
@@ -102,9 +112,9 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  * <p>
  * <strong>The application order is pinned, and it encodes a precedence rule.</strong>
- * {@link #process} runs: the mode copy and the never-forward strip, then the protocol set, then
- * {@code set_headers}, then the regenerated forwarding headers, then the mediated bearer. Two
- * sentences explain every step of it — <em>operator configuration beats client input</em>, so
+ * {@link #process} runs: the mode copy and the never-forward strip, then the rebuilt {@code Cookie},
+ * then the protocol set, then {@code set_headers}, then the regenerated forwarding headers, then the
+ * mediated bearer. Two sentences explain every step of it — <em>operator configuration beats client input</em>, so
  * {@code set_headers} is merged after everything sourced from the request; and <em>gateway-owned
  * transport truth beats operator configuration</em>, so regeneration and the mediated bearer are
  * merged after {@code set_headers}, with the mediated bearer last.
@@ -128,6 +138,10 @@ public final class ForwardPolicyStage {
     private static final String TE = "te";
     /** The one {@code TE} value RFC 9110 admits end-to-end; every other value is hop-scoped. */
     private static final String TRAILERS = "trailers";
+    /** The request cookie header — governed by the route's {@code cookies} block, never by a mode. */
+    private static final String COOKIE = "Cookie";
+    /** The separator the rebuilt {@code Cookie} header joins its kept pairs with (RFC 6265 §5.4). */
+    private static final String COOKIE_PAIR_SEPARATOR = "; ";
 
     private static final Set<String> FORWARDING_HEADERS = Set.of(
             "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port",
@@ -172,8 +186,9 @@ public final class ForwardPolicyStage {
      * operator entry.
      * <p>
      * Membership answers <em>"does the gateway know what this header means?"</em>, not "is it
-     * technically necessary". The latter rule would admit {@code Cookie} and {@code Authorization},
-     * which is precisely what {@link ConnectionHeaders#REQUEST_STRIP} withholds. {@code User-Agent}
+     * technically necessary". The latter rule would admit {@code Authorization}, which
+     * {@link ConnectionHeaders#REQUEST_STRIP} withholds, and {@code Cookie}, which crosses only as
+     * the route's {@code cookies} policy rebuilds it — never on its own. {@code User-Agent}
      * is deliberately out on the same test: widely expected, required for nothing, and a backend that
      * genuinely needs it can name it.
      * <p>
@@ -187,34 +202,44 @@ public final class ForwardPolicyStage {
     private final ForwardedHeaderResolver resolver;
     private final TcpPeerGate peerGate;
     private final boolean emitForwarded;
+    private final GatewayCookies gatewayCookies;
 
     /**
-     * @param resolver the shared, boot-wired forwarded-header resolver
-     * @param peerGate the immediate-TCP-peer trust gate (ADR-0003)
-     * @param emitMode the {@code forwarded.emit} mode ({@code x-forwarded} or {@code both})
+     * @param resolver       the shared, boot-wired forwarded-header resolver
+     * @param peerGate       the immediate-TCP-peer trust gate (ADR-0003)
+     * @param emitMode       the {@code forwarded.emit} mode ({@code x-forwarded} or {@code both})
+     * @param gatewayCookies the gateway's own cookies, withheld from every upstream under every
+     *                       {@code cookies} mode
      */
-    public ForwardPolicyStage(ForwardedHeaderResolver resolver, TcpPeerGate peerGate, String emitMode) {
+    public ForwardPolicyStage(ForwardedHeaderResolver resolver, TcpPeerGate peerGate, String emitMode,
+            GatewayCookies gatewayCookies) {
         this.resolver = Objects.requireNonNull(resolver, "resolver");
         this.peerGate = Objects.requireNonNull(peerGate, "peerGate");
         this.emitForwarded = EMIT_BOTH.equals(Objects.requireNonNull(emitMode, "emitMode"));
+        this.gatewayCookies = Objects.requireNonNull(gatewayCookies, "gatewayCookies");
     }
 
     /**
      * Computes the upstream header and query projection for an already-authorised route, applying
-     * the route's per-dimension forward mode in the pinned order documented on the class.
+     * the route's per-dimension forward mode and its cookie policy in the pinned order documented on
+     * the class.
      *
      * @param request            the in-flight request context
      * @param forwardConfig      the selected route's {@code forward} block
+     * @param cookies            the selected route's resolved {@code cookies} block
      * @param notModifiedEnabled whether the route honours conditional requests
      * @return the forwarded headers and query parameters that cross to the upstream
      */
-    public Result process(PipelineRequest request, ForwardConfig forwardConfig, boolean notModifiedEnabled) {
+    public Result process(PipelineRequest request, ForwardConfig forwardConfig, CookiesConfig cookies,
+            boolean notModifiedEnabled) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(forwardConfig, "forwardConfig");
+        Objects.requireNonNull(cookies, "cookies");
 
         Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         copyHeadersByMode(request, forwardConfig, headers);
         applyRequestStrip(forwardConfig, headers);
+        applyCookiePolicy(request, cookies, headers);
         applyProtocolHeaders(request, forwardConfig, notModifiedEnabled, headers);
         headers.putAll(forwardConfig.setHeaders());
         applyRegeneratedForwarding(request, headers);
@@ -246,7 +271,9 @@ public final class ForwardPolicyStage {
      * The {@link #FORWARDING_HEADERS} skip is applied on every mode, and on the
      * {@linkplain #isRegeneratedForwardingName separator-folded} name: a regenerated header must
      * never be copied from the client under any spelling, so neither forward-all nor an
-     * {@code X-Forwarded_For} is a way to smuggle one in.
+     * {@code X-Forwarded_For} is a way to smuggle one in. {@code Cookie} is skipped on every mode as
+     * well: {@link #applyCookiePolicy} rebuilds it from the route's {@code cookies} block, so a mode
+     * copy of the client's header would bypass that block.
      */
     private static void copyHeadersByMode(PipelineRequest request, ForwardConfig forwardConfig,
             Map<String, String> headers) {
@@ -261,7 +288,7 @@ public final class ForwardPolicyStage {
     private static void copyPositiveListHeaders(PipelineRequest request, List<String> allow,
             Map<String, String> headers) {
         for (String name : allow) {
-            if (isRegeneratedForwardingName(name)) {
+            if (isSkippedByModeCopy(name)) {
                 continue;
             }
             request.firstHeader(name).ifPresent(value -> headers.put(name, value));
@@ -279,11 +306,103 @@ public final class ForwardPolicyStage {
         for (Map.Entry<String, List<String>> entry : request.headers().entrySet()) {
             String name = entry.getKey();
             List<String> values = entry.getValue();
-            if (values.isEmpty() || isRegeneratedForwardingName(name) || denied.contains(name)) {
+            if (values.isEmpty() || isSkippedByModeCopy(name) || denied.contains(name)) {
                 continue;
             }
             headers.put(name, values.getFirst());
         }
+    }
+
+    /**
+     * Whether the mode copy skips {@code name} whatever the route's header mode: a regenerated
+     * forwarding name under any spelling, or the {@code Cookie} header the cookie policy rebuilds.
+     */
+    private static boolean isSkippedByModeCopy(String name) {
+        return isRegeneratedForwardingName(name) || COOKIE.equalsIgnoreCase(name);
+    }
+
+    /**
+     * Rebuilds the outbound {@code Cookie} header from the pairs the route's {@code cookies} block
+     * admits — see {@link #admittedCookiePairs} — joined by {@code "; "} in their inbound order. When
+     * no pair is admitted the header is omitted rather than sent empty.
+     */
+    private void applyCookiePolicy(PipelineRequest request, CookiesConfig cookies, Map<String, String> headers) {
+        List<String> admitted = admittedCookiePairs(request, cookies);
+        if (!admitted.isEmpty()) {
+            headers.put(COOKIE, String.join(COOKIE_PAIR_SEPARATOR, admitted));
+        }
+    }
+
+    /**
+     * The cookie pairs of the request that cross to the upstream under {@code policy}, in their
+     * inbound order — the one reading of the request {@code Cookie} header.
+     * <p>
+     * Stage 5 rebuilds the outbound header from exactly this list, and the same-origin guard asks it
+     * whether a request carries a forwardable cookie at all; because both read the header here, the
+     * guard and the rebuild can never disagree about what the upstream receives.
+     * <ol>
+     *   <li><strong>The first {@code Cookie} value is read.</strong> RFC 6265 §5.4 has a user agent
+     *       send one {@code Cookie} header; on HTTP/1.1 a repeated header is read by its first value,
+     *       the same first-value rule the mode copy applies to every header. An HTTP/2 request whose
+     *       cookies arrive as separate fields reaches this method already joined into that one
+     *       value by the transport.</li>
+     *   <li><strong>The value is split into pairs on {@code ;}.</strong> Spaces and horizontal tabs
+     *       around each pair are removed; an empty pair is discarded. A pair's name is the text before
+     *       its first {@code =}, trimmed the same way; a pair without {@code =} is a nameless crumb.</li>
+     *   <li><strong>The gateway's own cookies are dropped under every mode</strong>, read by
+     *       {@link GatewayCookies#matchesPair} — so a nameless crumb whose value names a gateway cookie
+     *       is dropped too.</li>
+     *   <li><strong>The policy decides the rest.</strong> {@code none} admits nothing; a list admits
+     *       the pairs whose exact, case-sensitive name it lists — a nameless crumb is never listed;
+     *       {@code all} admits every remaining pair.</li>
+     * </ol>
+     * Duplicates are kept: two pairs of one name both cross, in the order they arrived. Each kept
+     * pair crosses as its trimmed inbound text, unchanged.
+     *
+     * @param request the in-flight request context
+     * @param policy  the selected route's resolved {@code cookies} block
+     * @return the admitted pairs in inbound order; empty when the request carries no {@code Cookie}
+     *         header, or when nothing in it would be forwarded
+     */
+    public List<String> admittedCookiePairs(PipelineRequest request, CookiesConfig policy) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(policy, "policy");
+        if (!policy.forwardsAny()) {
+            return List.of();
+        }
+        Optional<String> header = request.firstHeader(COOKIE);
+        if (header.isEmpty()) {
+            return List.of();
+        }
+        CookieAllow allow = policy.allow();
+        List<String> admitted = new ArrayList<>();
+        for (String crumb : header.get().split(";", -1)) {
+            String pair = GatewayCookies.trimBlanks(crumb);
+            if (!pair.isEmpty() && admitsPair(pair, allow)) {
+                admitted.add(pair);
+            }
+        }
+        return List.copyOf(admitted);
+    }
+
+    /**
+     * Whether one trimmed, non-empty cookie pair crosses under {@code allow} — steps 3 and 4 of
+     * {@link #admittedCookiePairs}. A pair's name is the text before its first {@code =}, trimmed; a
+     * pair without {@code =} is a nameless crumb. A gateway cookie never crosses, a nameless crumb
+     * crosses only under {@code all}, and any other pair crosses when the mode admits its name.
+     *
+     * @param pair  the trimmed, non-empty pair
+     * @param allow the route's {@code cookies.allow} mode
+     * @return {@code true} when the pair is forwarded
+     */
+    private boolean admitsPair(String pair, CookieAllow allow) {
+        int separator = pair.indexOf('=');
+        String name = separator < 0 ? "" : GatewayCookies.trimBlanks(pair.substring(0, separator));
+        String value = separator < 0 ? pair : GatewayCookies.trimBlanks(pair.substring(separator + 1));
+        if (gatewayCookies.matchesPair(name, value)) {
+            return false;
+        }
+        return name.isEmpty() ? allow instanceof CookieAllow.All : allow.admits(name);
     }
 
     /**
@@ -601,8 +720,9 @@ public final class ForwardPolicyStage {
      * mode-filtered query parameters that cross to the upstream.
      *
      * @param headers the outbound header set, merged in the stage's pinned order (mode-filtered
-     *                client headers, the gateway-understood protocol set, {@code set_headers}, the
-     *                regenerated forwarding headers, and the mediated bearer)
+     *                client headers, the policy-rebuilt {@code Cookie}, the gateway-understood
+     *                protocol set, {@code set_headers}, the regenerated forwarding headers, and the
+     *                mediated bearer)
      * @param query   the outbound query pairs (mode-filtered client pairs only) in their raw,
      *                still-encoded wire form, as an ordered sequence in inbound wire order —
      *                interleaved repeated names included; a {@code null} value is a bare pair

@@ -716,7 +716,9 @@ cookie. All other responses keep the upstream's cache policy.
 
 *It shares the `Cookie` header headroom.* The inbound `Cookie` header cap is unchanged:
 `max_cookie_size` plus 512 bytes. The activity cookie takes 88 of those 512 bytes under the default
-name.
+name. The application cookies a route forwards travel in the same header, and the upstream receives
+only those pairs -- but they may still be larger than the upstream's own header limits accept (see
+link:../configuration.adoc#_cookies_size[Forwarded cookies and the cookie-size cap]).
 
 *A WebSocket or a streamed response counts once, when it starts.* An open WebSocket does not keep
 the session alive. On a session route the gateway closes a WebSocket at the session's absolute
@@ -876,9 +878,12 @@ that happens after the gate, not at it. So a retired format is never mis-parsed.
   browser on `oidc.logout.final_redirect` with `ApiSheriff-135` logged once (see
   link:bff-session.adoc#logout[Logout]).
 * *Replace a passed sealing key on schedule.* See <<key-rotation>>.
-* *The application cannot set the gateway's cookies.* An upstream `Set-Cookie` naming the session
-  cookie, the activity cookie, `+__Host-sheriff-binding+` or `+__Host-sheriff-logout+` is dropped
-  (see link:bff-session.adoc#gateway-cookies[The gateway's cookies and your application]).
+* *The gateway's cookies stay at the gateway.* The session cookie and the activity cookie are
+  gateway cookies, as are `+__Host-sheriff-binding+` and `+__Host-sheriff-logout+`: none of them
+  reaches an upstream under any `cookies` policy, and an upstream `Set-Cookie` naming one is dropped.
+  The application's own cookies cross only as the route's `cookies` block admits them (see
+  link:bff-session.adoc#gateway-cookies[The gateway's cookies and your application] and
+  link:../configuration.adoc#_never_forward_set[the never-forward set]).
 * *Scopes are enforced as in the server-session variant.* A session lacking a scope the route needs
   is refreshed, widened or refused `403` exactly as
   link:bff-session.adoc#scope-enforcement[the server-session guide] describes. One case is specific

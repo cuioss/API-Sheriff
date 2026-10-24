@@ -33,10 +33,13 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +68,8 @@ import de.cuioss.sheriff.gateway.bff.session.SessionCookieCodec;
 import de.cuioss.sheriff.gateway.bff.session.SessionRecord;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -110,6 +115,7 @@ import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.http.WebSocketFrame;
 import io.vertx.core.http.WebSocketFrameType;
 import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
 import jakarta.enterprise.inject.Instance;
@@ -1331,6 +1337,158 @@ class WebSocketRelayStageTest {
                     () -> assertEquals(Set.of(Direction.CLIENT_TO_UPSTREAM, Direction.UPSTREAM_TO_CLIENT),
                             relayTimeline.relayedDirections(),
                             "the edge's relay reported a first relayed frame in both directions"));
+        }
+    }
+
+    /**
+     * The WebSocket path relays no upstream response header: an upstream {@code Set-Cookie} on its
+     * {@code 101} or on a refused upgrade never reaches the client, so a header relay added to this path
+     * later has to go through the response relay's shared upstream-header predicate. The route carries
+     * {@code cookies.allow: all} — the most permissive policy — so a cookie that still does not arrive is
+     * the path relaying no header, not the policy refusing it.
+     * <p>
+     * The upstream is a raw socket server, because it has to write the handshake answer itself: one
+     * that accepts with a {@code Set-Cookie} beside its {@code Sec-WebSocket-Accept}, and one that
+     * refuses {@code 403} with a {@code Set-Cookie}.
+     */
+    @Nested
+    @DisplayName("upstream Set-Cookie — none reaches the client on an accepted or a refused upgrade")
+    class UpstreamSetCookie {
+
+        private static final String SET_COOKIE = "Set-Cookie";
+        private static final String UPSTREAM_COOKIE = "upstream=1; Path=/";
+        /** The GUID RFC 6455 section 4.2.2 appends to the client key before hashing it. */
+        private static final String HANDSHAKE_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+        private final AtomicInteger handshakesSeen = new AtomicInteger();
+
+        /**
+         * An accepted upgrade as the client saw it.
+         *
+         * @param socket  the upgraded WebSocket
+         * @param headers a copy of the headers of its {@code 101}
+         */
+        private record Upgraded(WebSocket socket, MultiMap headers) {
+        }
+
+        @Test
+        @DisplayName("an accepted upgrade whose 101 carries a Set-Cookie reaches the client without it")
+        void acceptedUpgradeRelaysNoUpstreamSetCookie() throws Exception {
+            NetServer upstream = startHandshakeAnsweringUpstream(true);
+            HttpServer relayServer = startAllowAllRelayServer(upstream.actualPort());
+            try {
+                // The handshake headers are readable only in the upgrade's own completion, so they are
+                // copied there.
+                Upgraded upgraded = Awaits.connect(wsClient.connect(relayOnlyOptions(relayServer.actualPort()))
+                                .map(socket -> new Upgraded(socket,
+                                        MultiMap.caseInsensitiveMultiMap().addAll(socket.headers()))),
+                        "the WebSocket upgrade against the relay server");
+
+                assertAll("the client's 101",
+                        () -> assertEquals(1, handshakesSeen.get(),
+                                "precondition: the upstream answered the handshake with its Set-Cookie"),
+                        () -> assertTrue(upgraded.headers().contains("Upgrade"),
+                                () -> "precondition: the client's handshake headers were read: " + upgraded.headers()),
+                        () -> assertEquals(List.of(), upgraded.headers().getAll(SET_COOKIE),
+                                "no upstream Set-Cookie crosses the WebSocket path, even under allow: all"));
+                Awaits.teardown(upgraded.socket().close(), "the relayed WebSocket to close");
+            } finally {
+                Awaits.teardown(relayServer.close(), "the relay server to close");
+                Awaits.teardown(upstream.close(), "the raw upstream to close");
+            }
+        }
+
+        @Test
+        @DisplayName("a refused upgrade whose answer carries a Set-Cookie reaches the client without it")
+        void refusedUpgradeRelaysNoUpstreamSetCookie() throws Exception {
+            NetServer upstream = startHandshakeAnsweringUpstream(false);
+            HttpServer relayServer = startAllowAllRelayServer(upstream.actualPort());
+            try {
+                ExecutionException failure = assertThrows(ExecutionException.class,
+                        () -> Awaits.connect(wsClient.connect(relayOnlyOptions(relayServer.actualPort())),
+                                "the refused WebSocket upgrade against the relay server"));
+
+                UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class,
+                        failure.getCause());
+                assertAll("the client's refusal",
+                        () -> assertEquals(1, handshakesSeen.get(),
+                                "precondition: the upstream refused the handshake with its Set-Cookie"),
+                        () -> assertEquals(List.of(), rejected.getHeaders().getAll(SET_COOKIE),
+                                "no upstream Set-Cookie crosses a refused upgrade either"));
+            } finally {
+                Awaits.teardown(relayServer.close(), "the relay server to close");
+                Awaits.teardown(upstream.close(), "the raw upstream to close");
+            }
+        }
+
+        /**
+         * A raw upstream that answers the first handshake it reads: a {@code 101} carrying a valid
+         * {@code Sec-WebSocket-Accept} and a {@code Set-Cookie} when {@code accept}, otherwise a
+         * {@code 403} carrying a {@code Set-Cookie}.
+         */
+        private NetServer startHandshakeAnsweringUpstream(boolean accept) throws Exception {
+            return Awaits.connect(vertx.createNetServer().connectHandler(socket -> {
+                Buffer received = Buffer.buffer();
+                socket.handler(chunk -> {
+                    received.appendBuffer(chunk);
+                    String head = received.toString(StandardCharsets.ISO_8859_1);
+                    if (!head.contains("\r\n\r\n")) {
+                        return;
+                    }
+                    // Answered once; whatever the relay sends after the handshake is not read.
+                    socket.handler(ignored -> {
+                    });
+                    handshakesSeen.incrementAndGet();
+                    if (accept) {
+                        socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                                + "Connection: Upgrade\r\nSec-WebSocket-Accept: " + acceptKey(clientKey(head))
+                                + "\r\n" + SET_COOKIE + ": " + UPSTREAM_COOKIE + "\r\n\r\n");
+                    } else {
+                        socket.write("HTTP/1.1 403 Forbidden\r\n" + SET_COOKIE + ": " + UPSTREAM_COOKIE
+                                + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                                .onComplete(written -> socket.close());
+                    }
+                });
+            }).listen(0, LoopbackHost.ADDRESS), "the raw upstream to start listening");
+        }
+
+        /** A relay-only server whose route carries {@code cookies.allow: all}. */
+        private HttpServer startAllowAllRelayServer(int upstreamTargetPort) throws Exception {
+            Route route = relayOnlyRoute("relay-allow-all", upstreamTargetPort).toBuilder()
+                    .effectiveCookies(new CookiesConfig(CookieAllow.ALL, null, null)).build();
+            WebSocketRelayStage stage = new WebSocketRelayStage(relayUpstreamClient,
+                    new UpstreamFailureMapper(new GatewayEventCounter()), new GatewayEventCounter(),
+                    relayTimeline.observer(RelayObserver.NO_OP));
+            Router router = Router.router(vertx);
+            router.route().handler(ctx -> {
+                ctx.request().pause();
+                stage.relay(ctx, Vertx.currentContext(), route, Map.of(), Map.of(), "/",
+                        UNOBSERVED_ADMISSION_RELEASE, SessionRelayRegistry.untracked());
+            });
+            return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+                    "the relay server to start listening");
+        }
+
+        /** The {@code Sec-WebSocket-Key} of a raw handshake head. */
+        private static String clientKey(String head) {
+            for (String line : head.split("\r\n")) {
+                int colon = line.indexOf(':');
+                if (colon > 0 && "Sec-WebSocket-Key".equalsIgnoreCase(line.substring(0, colon).trim())) {
+                    return line.substring(colon + 1).trim();
+                }
+            }
+            throw new IllegalStateException("the handshake carries no Sec-WebSocket-Key: " + head);
+        }
+
+        /** The {@code Sec-WebSocket-Accept} answering {@code key} (RFC 6455 section 4.2.2). */
+        private static String acceptKey(String key) {
+            try {
+                byte[] digest = MessageDigest.getInstance("SHA-1")
+                        .digest((key + HANDSHAKE_GUID).getBytes(StandardCharsets.US_ASCII));
+                return Base64.getEncoder().encodeToString(digest);
+            } catch (NoSuchAlgorithmException missing) {
+                throw new IllegalStateException("SHA-1 is a mandatory JDK algorithm", missing);
+            }
         }
     }
 

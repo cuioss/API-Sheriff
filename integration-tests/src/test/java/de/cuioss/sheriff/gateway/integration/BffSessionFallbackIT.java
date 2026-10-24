@@ -68,8 +68,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * </ul>
  * Every BEARER row that admits a session cookie is run with and without one, because the cookie is
  * exactly what an attacker would hope rescues a failed bearer: it never does, and on an admitted
- * bearer it is stripped rather than forwarded. The browser cookie is withheld upstream on every
- * admitted request by the gateway-owned never-forward set.
+ * bearer it is stripped rather than forwarded. The session cookie is a gateway cookie, withheld
+ * upstream on every admitted request under every cookies policy; the route declares no cookies block,
+ * so it resolves the default {@code cookies.allow: none} and forwards no browser cookie at all. No
+ * forward mode re-admits {@code Cookie}.
  */
 class BffSessionFallbackIT extends BaseIntegrationTest {
 

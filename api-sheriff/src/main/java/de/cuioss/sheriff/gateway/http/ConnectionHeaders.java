@@ -29,8 +29,11 @@ import lombok.experimental.UtilityClass;
  * propose but the gateway must never place on the client's connection. {@link #REQUEST_STRIP} is
  * the request-direction set: names a client may send but the gateway never forwards upstream. The
  * request-direction set is what makes the permissive forward-all baseline safe — without it a
- * forward-all route would send the BFF's sealed session cookie to every upstream, defeating the
- * pattern whose entire premise is that the backend never sees it.
+ * forward-all route would relay the client's own {@code Authorization} and its spoofable provenance
+ * claims to every upstream. The {@code Cookie} header is not a member: it is neither copied by any
+ * forward mode nor withheld wholesale, but rebuilt per route — the gateway's own cookies
+ * ({@link GatewayCookies}) are withheld under every mode, and the browser's other cookies cross only
+ * as far as the route's {@code cookies} policy admits them.
  * <p>
  * <strong>Every path that answers a client reads the response set.</strong> The gateway has two:
  * the proxy data plane's streamed relay ({@code edge.relay.ResponseStage}) and the asset terminal
@@ -86,8 +89,10 @@ public class ConnectionHeaders {
      * Membership answers one of five questions, and it matters which applies to which name:
      * <ul>
      *   <li><strong>Credentials the gateway terminates or mediates.</strong> {@code authorization}
-     *       (superseded by the mediated bearer), {@code cookie} (the BFF's sealed session cookie is
-     *       the gateway's, never the backend's).</li>
+     *       (superseded by the mediated bearer). {@code cookie} is deliberately absent: the gateway's
+     *       own cookies — the BFF's sealed session cookie among them — are withheld by
+     *       {@link GatewayCookies} under every forward mode, and the browser's other cookies by the
+     *       route's {@code cookies} policy, both applied where stage 5 rebuilds the header.</li>
      *   <li><strong>Hop-by-hop and connection-specific names</strong> describing the hop the gateway
      *       terminates rather than the message it forwards: {@code connection}, {@code keep-alive},
      *       {@code proxy-connection}, {@code te}, {@code trailer}, {@code transfer-encoding},
@@ -155,7 +160,7 @@ public class ConnectionHeaders {
      * request-direction application in {@code forward.ForwardPolicyStage}, not to a set of names.
      */
     public static final Set<String> REQUEST_STRIP = Set.of(
-            "authorization", "connection", "content-length", "cookie", "date", "host",
+            "authorization", "connection", "content-length", "date", "host",
             "keep-alive", "origin", "proxy-authenticate", "proxy-authorization",
             "proxy-connection", "referer", "te", "trailer", "transfer-encoding", "upgrade",
             "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto", "x_forwarded_port",

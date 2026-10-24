@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -99,7 +98,6 @@ public final class BffRuntime {
     private final @Nullable StepUpEndpoint stepUpEndpoint;
     private final @Nullable ClientJwksEndpoint clientJwksEndpoint;
     private final @Nullable GatewayJson gatewayJson;
-    private final Set<String> gatewayCookieNames;
     private final @Nullable SessionRelayRegistry sessionRelays;
     private final @Nullable Predicate<String> sessionHeld;
 
@@ -111,11 +109,10 @@ public final class BffRuntime {
             @Nullable BackchannelLogoutEndpoint backchannelLogoutEndpoint,
             @Nullable UserInfoEndpoint userInfoEndpoint, @Nullable LoginInitiationEndpoint loginInitiationEndpoint,
             @Nullable StepUpEndpoint stepUpEndpoint, @Nullable ClientJwksEndpoint clientJwksEndpoint,
-            @Nullable GatewayJson gatewayJson, Set<String> gatewayCookieNames,
-            @Nullable SessionRelayRegistry sessionRelays, @Nullable Predicate<String> sessionHeld) {
+            @Nullable GatewayJson gatewayJson, @Nullable SessionRelayRegistry sessionRelays,
+            @Nullable Predicate<String> sessionHeld) {
         this.sessionRelays = sessionRelays;
         this.sessionHeld = sessionHeld;
-        this.gatewayCookieNames = Set.copyOf(gatewayCookieNames);
         this.active = active;
         this.sessionStage = sessionStage;
         this.csrfDefence = csrfDefence;
@@ -150,10 +147,7 @@ public final class BffRuntime {
      *                                  withheld form for client-secret authentication
      * @param gatewayJson               the serializer the user-info body, the step-up {@code 401}
      *                                  problem body and the client JWKS document are rendered through
-     * @param gatewayCookieNames        the name of every cookie this runtime sets: the session cookie,
-     *                                  any further cookie of the session binding, the login-binding
-     *                                  cookie and the logout-state cookie
-     * @param sessionRelays             the registry of the long-lived relays opened with a session;
+     * @param sessionRelays            the registry of the long-lived relays opened with a session;
      *                                  in server mode it is also the session store's end listener
      * @param sessionHeld               whether the session binding still holds the session of a given
      *                                  identity server-side; always {@code true} for a binding that
@@ -165,7 +159,7 @@ public final class BffRuntime {
             Supplier<LogoutEndpoint> logoutEndpoint, BackchannelLogoutEndpoint backchannelLogoutEndpoint,
             UserInfoEndpoint userInfoEndpoint, LoginInitiationEndpoint loginInitiationEndpoint,
             StepUpEndpoint stepUpEndpoint, ClientJwksEndpoint clientJwksEndpoint, GatewayJson gatewayJson,
-            Set<String> gatewayCookieNames, SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
+            SessionRelayRegistry sessionRelays, Predicate<String> sessionHeld) {
         this(true,
                 Objects.requireNonNull(sessionStage, "sessionStage"),
                 Objects.requireNonNull(csrfDefence, "csrfDefence"),
@@ -178,7 +172,6 @@ public final class BffRuntime {
                 Objects.requireNonNull(stepUpEndpoint, "stepUpEndpoint"),
                 Objects.requireNonNull(clientJwksEndpoint, "clientJwksEndpoint"),
                 Objects.requireNonNull(gatewayJson, "gatewayJson"),
-                Objects.requireNonNull(gatewayCookieNames, "gatewayCookieNames"),
                 Objects.requireNonNull(sessionRelays, "sessionRelays"),
                 Objects.requireNonNull(sessionHeld, "sessionHeld"));
     }
@@ -212,24 +205,11 @@ public final class BffRuntime {
     }
 
     /**
-     * The names of the cookies this runtime sets and no other party may set: the session cookie, any
-     * further cookie of the session binding (the activity cookie in cookie mode), the login-binding
-     * cookie and the logout-state cookie. The edge uses them to keep an upstream response from
-     * setting one of them.
-     *
-     * @return the immutable cookie names; empty for the inert runtime, which sets no cookie
-     */
-    public Set<String> gatewayCookieNames() {
-        return gatewayCookieNames;
-    }
-
-    /**
      * @return the inert runtime — a gateway serving no BFF variant in either session mode. It reports
      *         {@link #isActive()} {@code false}, exposes no session stage, and dispatches nothing.
      */
     public static BffRuntime inert() {
-        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null, null, Set.of(),
-                null, null);
+        return new BffRuntime(false, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     /**

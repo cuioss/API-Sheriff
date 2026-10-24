@@ -330,7 +330,8 @@ budget sits in the table alongside the other five rather than outside it.
 | The browser, by evicting cookies past its per-domain cap.
 | *Not covered*
 | Nowhere. The gateway sets several `__Host-` cookies on one origin
-  (`BffRuntime.gatewayCookieNames()` returns their names), and a `HashMap` has no cap to hit.
+  (`GatewayCookies` defines them: the reserved `__Host-sheriff-` prefix plus the configured session
+  cookie and its activity cookie), and a `HashMap` has no cap to hit.
 
 | Aggregate per-domain cookie size
 | The browser, by evicting or refusing once the domain's total is exceeded.

@@ -140,10 +140,12 @@ Once the session exists, an API call carries only the session cookie. The gatewa
   refuses (see <<_scope_enforcement>>).
 . Injects `Authorization: Bearer <token>` and forwards, applying the same
   link:01-base-gateway.adoc[base-gateway] filtering and per-route
-  link:../configuration.adoc#_forward[forward policy]. The client's own `Cookie` header --
-  including the session cookie the gateway just consumed -- is in the gateway-owned
-  never-forward set and reaches no upstream under *any* forward mode; that absoluteness is what
-  makes the BFF premise hold. The mediated bearer is merged last, so it wins over any inbound
+  link:../configuration.adoc#_forward[forward policy]. The session cookie the gateway just
+  consumed is one of the gateway's own cookies and reaches no upstream under *any* policy or mode --
+  that is what makes the BFF premise hold. The browser's other cookies cross only as the route's
+  link:../configuration.adoc#_cookies[`cookies`] block admits them, and under the default
+  `allow: none` not at all (see link:../configuration.adoc#_never_forward_set[the never-forward
+  set]). The mediated bearer is merged last, so it wins over any inbound
   `Authorization` a route's mode admitted. A route resolving `auth.token_relay: false` skips this
   injection: the session is still required and still held to the route's scopes, but the upstream
   receives no `Authorization` at all,
@@ -235,6 +237,13 @@ a cookie, every `auth.require: session` route applies *origin verification* on u
 
 This is fixed behaviour, not configuration: a cookie-authenticated gateway without CSRF defence
 is simply broken, so there is no knob to disable it.
+
+A route that forwards the browser's *own* application cookies to its upstream through a `cookies`
+block carries a second, per-route same-origin check with the same proof, trusting the origin the
+request was received on plus the block's `additional_origins` rather than `trusted_origins`. It runs
+only on an unsafe request that carries a cookie the route forwards, and `same_origin_check: false`
+removes it (see link:../configuration.adoc#_cookies_same_origin_check[The same-origin check]). The
+session-route defence above is unaffected by it.
 
 NOTE: CSRF and CORS are the two halves of the cross-origin story. `trusted_origins` governs
 what the *gateway accepts*; for an SPA served from a different origin than the gateway, the
@@ -459,10 +468,11 @@ endpoint:
     - id: orders-api
       match: { path_prefix: /api/orders }
       # No forward block: every client header and query parameter crosses, bounded by the
-      # gateway-owned never-forward set -- and `Cookie` is in it absolutely, so the session
-      # cookie never reaches the backend on this posture either. The mediated
-      # "Authorization: Bearer" is injected automatically on session routes, last, so it wins.
-      # Declare headers_deny / query_deny (or a positive-list) only to narrow this.
+      # gateway-owned never-forward set. No cookies block either: allow: none, so no browser
+      # cookie reaches the backend -- and the session cookie never does, under any cookies
+      # block. The mediated "Authorization: Bearer" is injected automatically on session
+      # routes, last, so it wins. Declare headers_deny / query_deny (or a positive-list) only
+      # to narrow this.
       upstream: { path: /orders }
 ----
 

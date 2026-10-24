@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
+# The cookie-policy acceptance endpoint exercised by CookieForwardingPolicyIT (and, for its relay
+# case, BffSessionCookieControlsIT). Every route here declares or omits a `cookies` block on purpose,
+# so the integration stack proves the policy end to end against a real upstream instead of leaving it
+# to unit tests.
+#
+# UPSTREAM — the HTTPBIN_ROOT alias, the go-httpbin backend WITHOUT the /anything base path. No route
+# declares an upstream.path, so the remainder after the match key is the whole go-httpbin path
+# (ADR-0004 Amendment A2): /proxy/cookie-policy/named/cookies reaches go-httpbin's /cookies, which
+# answers the cookies it received as JSON; .../response-headers?Set-Cookie=... makes the upstream
+# answer the Set-Cookie lines the test names; .../anything echoes any method, an unsafe one included.
+#
+# ANCHORS — the routes ride the EXISTING 'api' anchor (/proxy, public) and, for the session route, the
+# EXISTING 'app' anchor (/app, type: bff, require: session). No anchor and no Compose service is
+# added: every gateway instance mounts this shared endpoints directory, and every one of them already
+# resolves both anchors and the HTTPBIN_ROOT alias (bff-session.yaml and origin-headers.yaml need the
+# same three).
+#
+# POLICY — no gateway.yaml declares a root `cookies` block, so a route without one resolves the
+# fallback `allow: none`. Each route below names the policy it resolves and the claim it backs.
+endpoint:
+  id: cookie-policy
+  enabled: true
+  base_url: HTTPBIN_ROOT
+  anchor: api
+  routes:
+    # POLICY: none, by omission. No browser cookie reaches the upstream and no upstream Set-Cookie
+    # line reaches the client — the default an upgraded deployment gets on every route it did not
+    # touch.
+    - id: cookie-policy-default
+      match:
+        path_prefix: /proxy/cookie-policy/default
+      auth:
+        require: none
+
+    # POLICY: a list. Exactly the two named cookies cross, in either direction; any other cookie is
+    # removed from the rebuilt Cookie header and any other Set-Cookie line is dropped.
+    - id: cookie-policy-named
+      match:
+        path_prefix: /proxy/cookie-policy/named
+      auth:
+        require: none
+      cookies:
+        allow: ["app-theme", "app-locale"]
+
+    # POLICY: all. Every browser cookie crosses except the gateway's own (the __Host-sheriff- prefix
+    # and the configured session cookie), and every upstream Set-Cookie line is relayed except one
+    # naming a gateway cookie, each with its Domain attribute removed. The same-origin check applies
+    # with no further origin: an unsafe request carrying a forwardable cookie must come from the origin
+    # the request was received on.
+    - id: cookie-policy-every
+      match:
+        path_prefix: /proxy/cookie-policy/every
+      auth:
+        require: none
+      cookies:
+        allow: all
+
+    # POLICY: all, on a require: session route of the 'app' anchor. The route inherits the anchor's
+    # session floor; the claim it backs is that the BFF session cookie stays at the gateway even under
+    # `all`, while the browser's other cookies cross.
+    - id: cookie-policy-session
+      anchor: app
+      match:
+        path_prefix: /app/cookie-policy
+      cookies:
+        allow: all
+
+    # POLICY: all, with one further trusted origin. An unsafe request carrying a forwardable cookie is
+    # admitted from the received origin and from https://partner.sheriff.test, a test-only origin no
+    # other suite sends; any other origin is refused 403.
+    - id: cookie-policy-partner
+      match:
+        path_prefix: /proxy/cookie-policy/partner
+      auth:
+        require: none
+      cookies:
+        allow: all
+        additional_origins: ["https://partner.sheriff.test"]
+
+    # POLICY: a list with the same-origin check switched off. The gateway forwards a cross-site unsafe
+    # request carrying the listed cookie and logs WARN ApiSheriff-139 for this route at boot: the
+    # upstream is left to defend itself against cross-site request forgery.
+    - id: cookie-policy-unchecked
+      match:
+        path_prefix: /proxy/cookie-policy/unchecked
+      auth:
+        require: none
+      cookies:
+        allow: ["app-theme"]
+        same_origin_check: false

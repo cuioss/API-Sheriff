@@ -22,6 +22,8 @@ import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AssetDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CatalogConfig;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
@@ -57,7 +59,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
  * The {@link de.cuioss.sheriff.gateway.config.model} records carry no framework imports
  * (the pre-boot rule, ADR-0062); this framework-bound holder consolidates their native
  * reflection registration in one place — listing every Jackson-bound record, its
- * nested records, and the bound enums — rather than annotating each model type.
+ * nested records, the bound enums and the sealed {@link CookieAllow} with every variant (its
+ * delegating creator is reached through reflection) — rather than annotating each model type.
  * The class has no runtime behavior; it exists solely to carry the
  * {@link RegisterForReflection} targets.
  *
@@ -83,6 +86,11 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         UpstreamDefaultsConfig.class,
         ForwardedConfig.class,
         ForwardConfig.class,
+        CookiesConfig.class,
+        CookieAllow.class,
+        CookieAllow.None.class,
+        CookieAllow.All.class,
+        CookieAllow.Named.class,
         EdgeHardeningConfig.class,
         TokenValidationConfig.class,
         IssuerConfig.class,

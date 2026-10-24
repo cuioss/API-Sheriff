@@ -33,8 +33,8 @@ import org.jspecify.annotations.Nullable;
  * one instance per inbound request from its framework-specific {@code RoutingContext} (no
  * Vert.x / Quarkus type leaks in here), then hands it to stages 0-7 in order.
  * <p>
- * <strong>Inbound fields are immutable</strong> (the raw method, path, query, headers, host,
- * peer address, and body framing, all supplied by the edge). <strong>Derived fields are
+ * <strong>Inbound fields are immutable</strong> (the raw method, path, query, headers, scheme,
+ * authority host and port, peer address, and body framing, all supplied by the edge). <strong>Derived fields are
  * populated by the stages</strong> as the request flows: the {@linkplain #canonicalPath()
  * single canonical path} (stage 1), the {@linkplain #selectedRoute() selected route} (stage 2),
  * the accumulating {@linkplain #responseHeaders() response-header map} (stage 0 onward, applied
@@ -57,7 +57,9 @@ public final class PipelineRequest {
     private final String requestPath;
     private final List<QueryParameter> queryParameters;
     private final Map<String, List<String>> headers;
+    private final @Nullable String scheme;
     private final @Nullable String host;
+    private final int authorityPort;
     private final @Nullable String peerAddress;
     private final long declaredContentLength;
     private final boolean bodyPresent;
@@ -78,7 +80,9 @@ public final class PipelineRequest {
         // pair order, interleaved repeated names included.
         this.queryParameters = List.copyOf(builder.queryParameters);
         this.headers = normalizeHeaders(builder.headers);
+        this.scheme = builder.scheme;
         this.host = builder.host;
+        this.authorityPort = builder.authorityPort;
         this.peerAddress = builder.peerAddress;
         this.declaredContentLength = builder.declaredContentLength;
         this.bodyPresent = builder.bodyPresent;
@@ -188,10 +192,29 @@ public final class PipelineRequest {
     }
 
     /**
-     * @return the request host authority, or {@code null} when absent
+     * The scheme the request was received on — {@code http} or {@code https} for a request served
+     * over TCP. Together with {@link #host()} and {@link #authorityPort()} it renders the origin the
+     * request was received on, which the same-origin check of a cookie-forwarding route trusts.
+     *
+     * @return the inbound request scheme, or {@code null} when the edge did not supply one
+     */
+    public @Nullable String scheme() {
+        return scheme;
+    }
+
+    /**
+     * @return the request host authority without its port, or {@code null} when absent
      */
     public @Nullable String host() {
         return host;
+    }
+
+    /**
+     * @return the port the request's authority declared, or {@code -1} when the authority declares
+     *         none (the scheme's default port applies) or the request has no authority
+     */
+    public int authorityPort() {
+        return authorityPort;
     }
 
     /**
@@ -417,7 +440,9 @@ public final class PipelineRequest {
         private @Nullable String requestPath;
         private List<QueryParameter> queryParameters = List.of();
         private Map<String, List<String>> headers = Map.of();
+        private @Nullable String scheme;
         private @Nullable String host;
+        private int authorityPort = -1;
         private @Nullable String peerAddress;
         private long declaredContentLength = -1L;
         private boolean bodyPresent;
@@ -467,11 +492,30 @@ public final class PipelineRequest {
         }
 
         /**
-         * @param host the request host authority
+         * @param scheme the scheme the request was received on
+         * @return this builder
+         */
+        public Builder scheme(@Nullable String scheme) {
+            this.scheme = scheme;
+            return this;
+        }
+
+        /**
+         * @param host the request host authority, without its port
          * @return this builder
          */
         public Builder host(@Nullable String host) {
             this.host = host;
+            return this;
+        }
+
+        /**
+         * @param authorityPort the port the request's authority declared, or {@code -1} when it
+         *                      declares none
+         * @return this builder
+         */
+        public Builder authorityPort(int authorityPort) {
+            this.authorityPort = authorityPort;
             return this;
         }
 

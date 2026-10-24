@@ -28,7 +28,7 @@ import org.jspecify.annotations.Nullable;
  * Each anchor <em>owns</em> a URL path namespace ({@code pathPrefix}); anchor
  * prefixes are pairwise disjoint (enforced by the configuration validator). An
  * anchor optionally carries the policy floor — {@code auth},
- * {@code securityFilter}, {@code securityHeaders} and {@code allowedMethods} — that
+ * {@code securityFilter}, {@code securityHeaders}, {@code allowedMethods} and {@code cookies} — that
  * every route inside its namespace inherits, subject to wholesale replacement at
  * the endpoint and route levels. The auth floor cannot be weakened to
  * {@code require: none}; replacing one non-{@code none} posture with another is
@@ -58,6 +58,8 @@ import org.jspecify.annotations.Nullable;
  *                         anchor declares none
  * @param allowedMethods   the anchor-level verb allowlist, empty when the anchor
  *                         declares none
+ * @param cookies          the anchor-level {@code cookies} block, {@code null} when the anchor
+ *                         declares none
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -71,7 +73,8 @@ AccessLevel access,
 @Nullable AuthConfig auth,
 @Nullable SecurityFilterConfig securityFilter,
 @Nullable SecurityHeadersConfig securityHeaders,
-List<HttpMethod> allowedMethods) {
+List<HttpMethod> allowedMethods,
+@Nullable CookiesConfig cookies) {
 
     /**
      * Canonical constructor requiring {@code name}, {@code pathPrefix},

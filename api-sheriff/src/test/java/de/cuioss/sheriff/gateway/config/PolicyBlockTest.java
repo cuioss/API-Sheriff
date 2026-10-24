@@ -38,6 +38,8 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -103,6 +105,10 @@ class PolicyBlockTest {
         return SecurityHeadersConfig.builder().frameDeny(true).build();
     }
 
+    private static CookiesConfig cookies(String cookieName) {
+        return new CookiesConfig(new CookieAllow.Named(List.of(cookieName)), null, null);
+    }
+
     private static UpstreamDefaultsConfig upstreamDefaults() {
         return UpstreamDefaultsConfig.builder().retryEnabled(false).notModifiedEnabled(false).build();
     }
@@ -112,12 +118,12 @@ class PolicyBlockTest {
     class Declarations {
 
         @Test
-        @DisplayName("ALL enumerates the seven policy blocks, each under its own yaml key")
-        void shouldEnumerateTheSevenBlocks() {
+        @DisplayName("ALL enumerates the eight policy blocks, each under its own yaml key")
+        void shouldEnumerateTheEightBlocks() {
             List<String> keys = PolicyBlock.ALL.stream().map(PolicyBlock::yamlKey).toList();
 
             assertEquals(List.of("auth", "allowed_methods", "security_filter", "security_headers",
-                    "upstream_defaults", "forward", "websocket"), keys);
+                    "upstream_defaults", "forward", "websocket", "cookies"), keys);
         }
 
         @Test
@@ -135,7 +141,8 @@ class PolicyBlockTest {
                     () -> assertEquals(EnumSet.of(Scope.GATEWAY, Scope.ANCHOR), scopes.get("security_headers")),
                     () -> assertEquals(EnumSet.of(Scope.GATEWAY, Scope.ENDPOINT), scopes.get("upstream_defaults")),
                     () -> assertEquals(EnumSet.of(Scope.ENDPOINT, Scope.ROUTE), scopes.get("forward")),
-                    () -> assertEquals(EnumSet.of(Scope.ROUTE), scopes.get("websocket")));
+                    () -> assertEquals(EnumSet.of(Scope.ROUTE), scopes.get("websocket")),
+                    () -> assertEquals(EnumSet.allOf(Scope.class), scopes.get("cookies")));
         }
 
         @Test
@@ -151,12 +158,56 @@ class PolicyBlockTest {
         }
 
         @Test
-        @DisplayName("Exactly allowed_methods and security_filter opt into the override WARN")
+        @DisplayName("Exactly allowed_methods, security_filter and cookies opt into the override WARN")
         void shouldOptExactlyTheDecidedBlocksIntoTheOverrideWarn() {
             Set<String> optedIn = PolicyBlock.ALL.stream().filter(PolicyBlock::overrideWarn)
                     .map(PolicyBlock::yamlKey).collect(Collectors.toSet());
 
-            assertEquals(Set.of("allowed_methods", "security_filter"), optedIn);
+            assertEquals(Set.of("allowed_methods", "security_filter", "cookies"), optedIn);
+        }
+
+        @Test
+        @DisplayName("cookies resolves allow: none when no scope declares it")
+        void shouldFallBackToNoCookies() {
+            CookiesConfig resolved = PolicyBlock.COOKIES.resolve(
+                    ScopeChain.of(gateway().build(), endpoint().build(), route().build()));
+
+            assertAll("nothing-declared cookies fallback",
+                    () -> assertSame(CookiesConfig.NONE, resolved),
+                    () -> assertNull(PolicyBlock.COOKIES.declared(
+                                    ScopeChain.of(gateway().build(), endpoint().build(), route().build())),
+                            "the fallback is not a declaration"),
+                    () -> assertTrue(PolicyBlock.ALL.contains(PolicyBlock.COOKIES)));
+        }
+
+        @Test
+        @DisplayName("cookies: route over endpoint over anchor over gateway, whole block")
+        void shouldResolveCookiesNearestFirst() {
+            CookiesConfig gatewayCookies = cookies(name());
+            CookiesConfig anchorCookies = cookies(name());
+            CookiesConfig endpointCookies = cookies(name());
+            CookiesConfig routeCookies = new CookiesConfig(CookieAllow.ALL, null, null);
+            AnchorConfig anchor = anchor(name()).cookies(anchorCookies).build();
+            GatewayConfig gateway = gateway().cookies(gatewayCookies).anchors(Map.of(anchor.name(), anchor)).build();
+
+            CookiesConfig routeWins = PolicyBlock.COOKIES.resolve(ScopeChain.of(gateway,
+                    endpoint().anchor(anchor.name()).cookies(endpointCookies).build(),
+                    route().cookies(routeCookies).build()));
+            CookiesConfig endpointWins = PolicyBlock.COOKIES.resolve(ScopeChain.of(gateway,
+                    endpoint().anchor(anchor.name()).cookies(endpointCookies).build(), route().build()));
+            CookiesConfig anchorWins = PolicyBlock.COOKIES.resolve(ScopeChain.of(gateway,
+                    endpoint().anchor(anchor.name()).build(), route().build()));
+            CookiesConfig gatewayWins = PolicyBlock.COOKIES.resolve(ScopeChain.of(gateway, endpoint().build(),
+                    route().build()));
+
+            assertAll("cookies chain",
+                    () -> assertSame(routeCookies, routeWins, "the route block replaces the broader ones whole"),
+                    () -> assertSame(endpointCookies, endpointWins),
+                    () -> assertSame(anchorCookies, anchorWins),
+                    () -> assertSame(gatewayCookies, gatewayWins),
+                    () -> assertEquals(EnumSet.allOf(Scope.class), PolicyBlock.COOKIES.declaringScopes(
+                            ScopeChain.of(gateway, endpoint().anchor(anchor.name()).cookies(endpointCookies).build(),
+                                    route().cookies(routeCookies).build()))));
         }
 
         @Test
@@ -399,14 +450,18 @@ class PolicyBlockTest {
         @DisplayName("Every descriptor reads exactly its own scopes on a chain declaring everything")
         void shouldReadOnlyDeclarableScopes() {
             AnchorConfig anchor = anchor(name()).auth(auth(Require.BEARER)).securityFilter(filter())
-                    .securityHeaders(headers()).allowedMethods(List.of(HttpMethod.GET)).build();
+                    .securityHeaders(headers()).allowedMethods(List.of(HttpMethod.GET)).cookies(cookies(name()))
+                    .build();
             GatewayConfig gateway = gateway().allowedMethods(List.of(HttpMethod.GET)).securityHeaders(headers())
-                    .upstreamDefaults(upstreamDefaults()).anchors(Map.of(anchor.name(), anchor)).build();
+                    .upstreamDefaults(upstreamDefaults()).cookies(cookies(name()))
+                    .anchors(Map.of(anchor.name(), anchor)).build();
             EndpointConfig endpoint = endpoint().anchor(anchor.name()).auth(auth(Require.BEARER))
                     .allowedMethods(List.of(HttpMethod.GET)).upstreamDefaults(upstreamDefaults())
-                    .securityFilter(filter()).forward(ForwardConfig.builder().build()).build();
+                    .securityFilter(filter()).forward(ForwardConfig.builder().build()).cookies(cookies(name()))
+                    .build();
             RouteConfig route = route().auth(auth(Require.BEARER)).securityFilter(filter())
-                    .forward(ForwardConfig.builder().build()).websocket(WebSocketConfig.builder().build()).build();
+                    .forward(ForwardConfig.builder().build()).websocket(WebSocketConfig.builder().build())
+                    .cookies(cookies(name())).build();
             ScopeChain chain = ScopeChain.of(gateway, endpoint, route);
 
             assertAll("declaring scopes", PolicyBlock.ALL.stream().map(block -> (Executable) () -> assertEquals(

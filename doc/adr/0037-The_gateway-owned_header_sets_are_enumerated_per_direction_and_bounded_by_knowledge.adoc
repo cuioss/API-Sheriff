@@ -4,15 +4,15 @@
 :sectnums:
 
 // adr-metadata
-// summary: The gateway owns three header sets — a request-direction never-forward set, a response-direction strip, and a gateway-understood protocol set that crosses without an operator entry — each enumerated in full per direction rather than derived from a sibling; membership answers "does the gateway know what this header means?" rather than "is it technically necessary", and the two value- or mode-dependent behaviours (TE: trailers, the single re-admittable Authorization) live in the application rather than in a set literal.
-// tags: header-policy, forward-policy, connection-headers, zero-trust, rfc9110, rfc9113, conditional-requests, protocol-set
+// summary: The gateway owns three header sets — a request-direction never-forward set, a response-direction strip, and a gateway-understood protocol set that crosses without an operator entry — each enumerated in full per direction rather than derived from a sibling; membership answers "does the gateway know what this header means?" rather than "is it technically necessary", and the value- or mode-dependent behaviours (TE: trailers, the single re-admittable Authorization) live in the application rather than in a set literal. The browser Cookie is not a set member: a per-route cookies block (allow none | all | list, same_origin_check, additional_origins; four scopes, whole-block replacement, default none) decides which cookies reach the upstream and which upstream Set-Cookie lines reach the client, the gateway's own cookies never cross under any block (one GatewayCookies definition), and a cookie-forwarding route refuses a cross-site unsafe request that carries a forwarded cookie.
+// tags: header-policy, forward-policy, connection-headers, zero-trust, rfc9110, rfc9113, conditional-requests, protocol-set, cookie-policy, csrf
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
 
 == Status
 
-Proposed
+Accepted
 
 == Context
 
@@ -50,13 +50,29 @@ validators; the response half stripped two headers. Whether those halves were
 one decision or two had never been recorded, and the request half's membership
 was demonstrably incomplete against RFC 9110 §13.
 
+A fourth question sat inside the first and was answered too bluntly. **What
+happens to the browser's `Cookie`?** It used to be an absolute member of the
+request-direction set, withheld from every upstream on every route. That kept
+the BFF's own session cookie away from backends, which is the property that
+matters, but it also made the gateway unable to front an upstream that keeps its
+own session in a cookie — a legacy application, an admin console, a framework
+whose CSRF token travels as a cookie. Fronting such an upstream is a case the
+gateway supports, so a strip that breaks every one of them is a gap, not a
+safety margin. The response direction had the mirror-image gap: an upstream's
+`Set-Cookie` was relayed with no policy at all, so one upstream could set a
+cookie, with a `Domain` of its choosing, that the browser then sent to every
+other upstream behind the same host.
+
 A membership rule was needed that could be applied to a name mechanically, and
-that would not quietly expand.
+that would not quietly expand — and a cookie rule was needed that separates the
+gateway's own cookies, which must never cross, from the application's, which an
+operator may let through.
 
 == Decision
 
 **Three sets, each enumerated in full for the direction it serves, and none
-derived from another.**
+derived from another. The browser `Cookie` is not a member of any of them: it is
+governed per route by the `cookies` policy block, in both directions.**
 
 === The response-direction strip
 
@@ -78,22 +94,25 @@ and the other lacked.
 === The request-direction never-forward set
 
 The names a client may send that the gateway never relays upstream, whatever
-mode the route resolved. Membership answers one of five questions:
+mode the route resolved. The members are listed once, in
+xref:../configuration.adoc#_never_forward_set[the never-forward section of the
+configuration reference]; this record states the rule that admits a name, not
+the list. Membership answers one of five questions:
 
-* **Credentials the gateway terminates or mediates** — `authorization`,
-  `cookie`. The BFF's sealed session cookie is the gateway's, never the
-  backend's; forwarding it defeats the pattern whose entire premise is that the
-  backend never sees it.
+* **Credentials the gateway terminates or mediates** — the inbound
+  `Authorization`, which the gateway validates and replaces with the mediated
+  bearer. The browser `Cookie` is deliberately *not* here: it is not one
+  credential but a jar holding the gateway's cookies and the application's side
+  by side, and a set member can only withhold the jar whole. The gateway's own
+  cookies are withheld by name instead, under every policy (see
+  <<_the_browser_cookie_is_a_per_route_policy>>).
 * **Hop-by-hop and connection-specific names** describing the hop the gateway
   terminates rather than the message it forwards.
-* **Framing the gateway re-establishes** — `content-length`.
-* **Names the gateway itself owns or regenerates** — `host`, `origin`,
-  `referer`, `date`.
+* **Framing the gateway re-establishes** — the body length.
+* **Names the gateway itself owns or regenerates** — the authority, the request's
+  origin and referrer, and the date.
 * **Spoofable provenance claims only the gateway is entitled to make** — the
-  underscore spellings of the forwarding names (`x_forwarded_for`,
-  `x_forwarded_host`, `x_forwarded_proto`, `x_forwarded_port`,
-  `x_forwarded_prefix`) and the vendor client-IP aliases (`x-real-ip`,
-  `x-client-ip`, `true-client-ip`, `cf-connecting-ip`).
+  underscore spellings of the forwarding names and the vendor client-IP aliases.
 
 **The forwarding-name equivalence class is split across two sets, by which
 question each name answers.** The *canonical* forwarding names stay in the
@@ -155,11 +174,132 @@ set literal**, because both are value- or mode-dependent:
    admits that one value end-to-end; any other negotiates a transfer coding for
    the hop the gateway terminates.
 
-That asymmetry — `authorization` overridable by an operator, `cookie` not — is
-the decision, not an oversight. Re-admitting an inbound `Authorization` on a
-route that names it is a policy choice an operator can legitimately make for a
-pure-proxy route. Re-admitting `Cookie` is a security regression in every case
-the gateway supports, so naming it changes nothing.
+**The `forward` block never decides about `Cookie`.** The mode copy skips the
+name on every posture, and a `forward.headers_allow`, `forward.headers_deny` or
+`forward.set_headers` entry naming `Cookie` is refused at boot: the `cookies`
+block is the one place that decides which cookies cross, and a second place
+would let two blocks disagree about the same header. `authorization` stays
+re-admittable through a positive-list because it is one credential with one
+owner; `Cookie` is governed by its own block because it is many.
+
+[[_the_browser_cookie_is_a_per_route_policy]]
+=== The browser `Cookie` is a per-route policy
+
+**The gateway's own cookies never cross, under any policy and in either
+direction.** One framework-free definition, `GatewayCookies`, holds them: every
+cookie under the reserved `__Host-sheriff-` prefix — always, on a gateway with or
+without a BFF, so a gateway cookie added later is covered by construction — plus
+the configured `oidc.session.cookie_name` and its `-activity` sibling, in both
+session modes: only cookie mode issues the activity cookie, but one issued before
+a switch to server mode stays live in the browser until it expires, and it must
+not cross either. The boot rules, the request rebuild and the response
+predicate all read that one definition, so the three cannot disagree about what
+the gateway owns. A cookie name is read the way a user agent reads it; the
+`__Host-` and `__Secure-` prefixes compare without regard to case. This is the
+property the absolute strip existed for, kept on its own terms: the BFF's sealed
+session cookie is the gateway's, never the backend's, and forwarding it defeats
+the pattern whose entire premise is that the backend never sees it. A single
+definition is what closes that class — a session cookie forwarded to the proxied
+API (GHSA-vvg7-p7jw-8qr3) is the failure a second, hand-maintained list of
+"cookies to drop" eventually produces, when one side learns a new cookie name and
+the other does not.
+
+**Which application cookies cross is the route's `cookies` block.**
+
+[source,yaml]
+----
+cookies:
+  allow: [SESSIONID, theme]      # none | all | a list of cookie names
+  same_origin_check: true        # default true
+  additional_origins:            # exact origins trusted beside the gateway's own
+    - https://app.example.com
+----
+
+* `allow` is YAML-typed: the scalar `none`, the scalar `all`, or a list of RFC
+  6265 cookie names. A declared empty list is refused by the schema, because it
+  would spell `none` a second way.
+* The block is declarable at the gateway, an anchor, an endpoint and a route,
+  and resolves like every policy block
+  (link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067]):
+  the nearest declared block wins and is taken whole, never merged. An anchor
+  block replaced at the endpoint or the route is announced by the override WARN
+  (`ApiSheriff-101`), which the `cookies` descriptor opts into.
+* **The default is `none`**, the nothing-crosses posture, when no scope declares
+  a block. An asset or a redirect route always resolves `none`: it has no upstream
+  to hand a cookie to or relay one from.
+
+**The request rebuild.** Stage 5 removes the inbound `Cookie` and writes a new
+one from the admitted pairs: the gateway's cookies are dropped first, always;
+then `none` writes no `Cookie` at all, a list keeps exactly the named pairs, and
+`all` keeps every remaining pair. The kept pairs travel in their inbound order,
+joined `"; "` into one header. The same rebuilt header reaches the upstream on
+every dispatch path — the HTTP proxy, gRPC and the WebSocket upgrade.
+
+**The response predicate.** One shared predicate decides which upstream response
+headers reach the client, and it is read on all three relay sites: the HTTP
+relay, the gRPC leading headers and the gRPC trailers. For `Set-Cookie` it relays
+a line only when the route's `allow` admits the cookie it names and the name is
+not one of the gateway's own, and it removes the `Domain` attribute from every
+line it relays, so an upstream can neither set a gateway cookie nor widen a cookie
+past the host the browser addressed. `Path` is relayed as sent, so a cookie one
+upstream sets still reaches every route of the host its path covers, and that
+route's upstream receives it only when its own policy admits the name — the
+accepted residual
+link:../security-threat-model.adoc#gw-15[GW-15 of the threat model] records.
+**Under the default `none` no upstream
+`Set-Cookie` is relayed at all. That is a breaking change for every upstream that
+sets cookies today:** its route has to declare the cookies it relies on. A
+WebSocket upgrade's `101` relays no upstream header, so the predicate has nothing
+to judge there.
+
+**A cookie-forwarding route is guarded against cross-site requests by the
+gateway.** Once a browser cookie can reach an upstream, a cross-site page can make
+the browser send it there — the ambient-credential shape CSRF rests on. Route-table
+assembly therefore builds one same-origin check for every non-WebSocket route whose
+block forwards a cookie. It trusts the origin the request was received on — the
+inbound scheme, authority host and authority port, with a default port dropped on
+both sides of the comparison — plus exactly the block's `additional_origins`. An
+unsafe request passes when its `Origin` is trusted or, with no `Origin`, when it
+carries `Sec-Fetch-Site: same-origin`; anything else is refused `403` before
+authentication and before the upstream, and a gRPC route answers the refusal as a
+trailers-only `PERMISSION_DENIED`. The refusal is recorded by the `CSRF_REJECTED`
+event counter and a DEBUG diagnostic only; no `ApiSheriff-xxx` log record is written
+for it.
+
+**The check applies only to an unsafe request that carries at least one cookie
+the route would forward** — read after the gateway-cookie removal and the policy
+filter, through the same reading stage 5 rebuilds the header from, so the check
+and the rebuild cannot disagree about what "forwarded" means. An unsafe request
+with no forwardable cookie — no `Cookie` at all, only gateway cookies, or only
+names the route's list does not admit — passes unchecked, and safe methods
+(`GET`, `HEAD`, `OPTIONS`) are never checked. The reason is the threat itself:
+a request carrying no forwardable cookie hands the upstream no ambient browser
+credential, so there is nothing for a cross-site page to forge, and a non-browser
+client — a gRPC service, a server-to-server caller — that sends no `Origin` keeps
+working without one. `same_origin_check: false` removes the check from a route and
+logs a WARN (`ApiSheriff-139`) naming it once at assembly: defending that upstream
+against CSRF is then the upstream's own job, a choice the operator makes visibly.
+
+**A WebSocket route is settled differently, and the condition above does not
+reach it.** Its upgrade is already gated by the exact-match
+`websocket.allowed_origins` allowlist, which is stricter than the same-origin
+check — an absent `Origin` is always refused — so a second origin list on the
+same upgrade would only add a way for the two to disagree. A `protocol: websocket`
+route whose effective block forwards any cookie must instead declare a non-empty
+`websocket.allowed_origins`, and boot is refused otherwise; `same_origin_check`
+and `additional_origins` do not act on a WebSocket route.
+
+**The boot refusals and WARNs.** At every scope the block is declarable at, boot
+is refused for: a gateway-scope `allow: all`, because a gateway-wide "every
+cookie to every upstream" is the exposure the policy exists to scope; a listed
+name that is not an RFC 6265 cookie name; a listed name that is one of the
+gateway's own cookies; `same_origin_check` or `additional_origins` on a block
+whose `allow` is `none`, where neither acts; and an `additional_origins` entry
+that is not a serialized origin. A route-scope block on an asset or a redirect
+route is refused, as is the cookie-forwarding WebSocket route without
+`allowed_origins` and a `forward` list naming `Cookie`. Two WARNs make the
+remaining choices visible: the anchor-override WARN (`ApiSheriff-101`) and the
+check-disabled WARN (`ApiSheriff-139`).
 
 === The gateway-understood protocol set
 
@@ -174,8 +314,9 @@ The names that cross **without an operator entry**, in two tiers:
 **The membership rule is knowledge, not necessity.** A name is in the set when
 the gateway knows what it means and can reason about the consequences of
 relaying it. The tempting alternative rule — "is it technically necessary for
-backends to work?" — is strictly worse, because it admits `Cookie` and
-`Authorization`, which is precisely what the never-forward set withholds.
+backends to work?" — is strictly worse, because it admits `Authorization`, which
+the never-forward set withholds, and `Cookie` wholesale, gateway cookies
+included, where the `cookies` block admits only what the route names.
 `User-Agent` is deliberately out on the same test: widely expected, required for
 nothing, and a backend that genuinely needs it can name it. The set is a fixed
 constant with no configuration surface; an operator who wants one of these
@@ -234,6 +375,12 @@ boundary is visible, and left as an open question rather than resolved silently.
   `If-Range` and `If-Unmodified-Since` work where they previously did not.
 * The membership rule is stateable in one sentence, so a future addition can be
   argued against it rather than judged ad hoc.
+* The gateway can front an upstream that keeps its own session in a cookie, while
+  its own cookies stay out of every upstream by one definition rather than by the
+  strip.
+* An upstream can no longer plant a cookie the gateway owns, or one scoped to a
+  wider `Domain` than the host the browser addressed, and a cross-site page can no
+  longer ride a forwarded cookie into a state-changing upstream request.
 
 === Negative
 
@@ -245,6 +392,13 @@ boundary is visible, and left as an open question rather than resolved silently.
 * The knowledge rule requires a judgement per name. It is sharper than
   "necessary", but it is not mechanical, and `User-Agent` sits close enough to
   the line that its exclusion needs the rationale recorded.
+* The default `none` relays no upstream `Set-Cookie`, so every upstream that sets
+  a cookie today stops receiving it back until its route declares a `cookies`
+  block — a breaking change made deliberately, because the alternative default
+  relays cookies no one decided to relay.
+* A cookie-forwarding route that serves a browser from a second origin needs that
+  origin in `additional_origins`; the check names no wildcard and trusts nothing
+  it was not told.
 
 === Risks
 
@@ -264,6 +418,15 @@ boundary is visible, and left as an open question rather than resolved silently.
   live defect** rather than a latent one. Adding a client-sendable,
   gateway-owned header to the protocol landscape now requires updating that set
   in the same change.
+* **`allow: all` exposes every application cookie on the host to that route's
+  upstream**, including cookies another upstream set. It is refused at the gateway
+  scope for that reason and should stay rare below it; a list names exactly what
+  one upstream needs.
+* **A gateway cookie set outside `GatewayCookies` would cross.** The reserved
+  prefix covers every cookie named under it, so the risk is confined to a cookie
+  the gateway sets under a name of an operator's choosing — the session cookie
+  and its activity sibling, which the definition reads from the same
+  configuration key the session runtime does.
 
 == Alternatives Considered
 
@@ -294,9 +457,10 @@ needs a name the gateway does not know.
 
 Admit any header a backend commonly requires.
 
-*Rejected because* the rule admits `Cookie` and `Authorization` — the two names
+*Rejected because* the rule admits `Authorization` and the whole `Cookie` jar —
+the inbound credential the gateway replaces, and a header carrying the cookies
 whose withholding the BFF pattern depends on. A rule that contradicts the
-never-forward set at its most important members is not a rule.
+gateway's own credential boundary at its most important names is not a rule.
 
 === Drop the `not_modified` toggle and always forward validators
 
@@ -322,6 +486,84 @@ forward-all currently says "the client's headers cross", and this would carve an
 exception into that promise based on an unrelated flag. That is a decision about
 mode semantics and belongs with ADR-0036's model, argued on its own terms.
 
+=== Forward every cookie by default
+
+Relay the browser `Cookie` and the upstream `Set-Cookie` untouched unless an
+operator removes them — the default of Kong, Traefik, NGINX and Apache APISIX.
+
+*Rejected because* the gateway terminates a browser session of its own. A
+forward-everything default hands that session cookie to every upstream until
+someone remembers to remove it, and lets any upstream set a cookie every other
+upstream then receives. A gateway whose premise is that the backend never sees
+the session cannot ship that default.
+
+=== An all-or-nothing opt-in per endpoint
+
+Let an endpoint switch cookie forwarding on or off as one flag — the shape of
+KrakenD's `input_headers`, where naming `Cookie` forwards the whole header.
+
+*Rejected because* the useful decision is per cookie, not per header. An
+all-or-nothing switch forwards the gateway's own cookies alongside the
+application's the moment it is on, and offers no way to give one upstream its
+`SESSIONID` without the rest of the jar.
+
+=== Keep the absolute strip
+
+Withhold `Cookie` from every upstream and relay no upstream `Set-Cookie` — the
+posture of Duende BFF and of a Spring Cloud Gateway route with
+`RemoveRequestHeader=Cookie`.
+
+*Rejected because* fronting a cookie-dependent upstream is a supported case, and
+the strip makes every such upstream fail with no configuration that repairs it.
+The strip's one real benefit — the gateway's session never reaches a backend — is
+kept by `GatewayCookies` under every policy, so dropping the strip costs that
+property nothing.
+
+=== A comma-separated cookie list
+
+Spell `allow` as one string, `allow: "SESSIONID,theme"`.
+
+*Rejected because* it puts a second parser in front of a value YAML already
+types. A comma is not a cookie-name character, so the format is unambiguous in
+principle, but `all`, `none` and a one-name list become indistinguishable by type,
+and a stray space or an empty segment becomes a boot error to explain instead of a
+schema error the editor shows. The YAML scalar-or-list makes the three modes three
+shapes.
+
+=== A gateway-scope `allow: all`
+
+Let one gateway-wide block forward every application cookie to every upstream.
+
+*Rejected because* it is the forward-everything default re-entered through
+configuration: every upstream, including ones added later, would receive cookies
+the others set. `all` is accepted at the anchor, endpoint and route scopes, where
+it names the upstreams it reaches; at the gateway scope it is refused at boot.
+
+=== Forward `Origin` and leave CSRF to each upstream
+
+Relay the browser's `Origin` and let every cookie-dependent upstream defend
+itself.
+
+*Rejected because* `Origin` is a member of the never-forward set — a name the
+gateway owns — and re-admitting it for this purpose would carve the first
+exception into that set for a job the gateway can do itself. It would also make
+CSRF protection something each upstream has to get right individually, behind a
+gateway that already knows the origin the request was received on. The check
+runs once, at the edge; an upstream that wants to keep the job sets
+`same_origin_check: false`, visibly.
+
+=== Refuse every `Origin`-less unsafe request on a cookie-forwarding route
+
+Apply the same-origin check to every unsafe request on such a route, whether or
+not it carries a forwardable cookie.
+
+*Rejected as the stricter variant.* It refuses the non-browser clients — gRPC
+services, server-to-server callers — that send no `Origin` and no cookie, and so
+carry no ambient credential to forge. The threat the check answers needs a
+forwarded cookie to exist; a request without one is outside it, and the check
+that applies only to cookie-carrying requests closes the threat without breaking
+those clients.
+
 == Generalisation
 
 When a system relaxes a restrictive default, the sets it relies on change status
@@ -339,10 +581,19 @@ loudest integration asked for. Where two members of such a set carry behaviour
 beyond membership, that behaviour belongs in the code applying the set, not in
 the literal — a set of names should be readable as a set of names.
 
+A header that carries several owners' values is not a set member at all. Withholding
+it whole protects one owner by breaking the others; the durable shape is one
+definition of what the system owns, consulted by every direction that could leak
+it, and a per-route policy for the rest.
+
 == References
 
 * link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] — the three-mode forward model these sets bound
+* link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067] — the resolution rule the `cookies` block follows
+* link:0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] — the WebSocket `allowed_origins` gate a cookie-forwarding WebSocket route relies on
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018] — the BFF session and the fixed CSRF defence the same-origin check shares its proof with
 * link:0014-asset-serving-terminal-action.adoc[ADR-0014] — the asset terminal action that shares the response-direction strip
 * link:0008-data-plane-transport.adoc[ADR-0008] — the data-plane transport and its conditional-validator handling
+* GHSA-vvg7-p7jw-8qr3 — a session cookie forwarded to the proxied API, the class the single gateway-cookie definition prevents
 * `doc/architecture.adoc` — the request pipeline and its header policy
-* `doc/configuration.adoc` — the operator-facing `forward` reference
+* `doc/configuration.adoc` — the operator-facing `forward` and `cookies` reference, and the never-forward section

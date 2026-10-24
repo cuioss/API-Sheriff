@@ -50,6 +50,31 @@
         "allowed_content_types": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "cookies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow"],
+      "description": "Cookie policy: which browser cookies a route forwards to its upstream and which upstream Set-Cookie lines it relays back. Declarable at the gateway root, on an anchor, on an endpoint and on a route; the nearest declaration replaces every broader one wholesale, and with none declared no cookie crosses in either direction (allow: none). The gateway's own cookies never cross under any block. allow: all at the gateway root, a listed name that is not an RFC 6265 cookie name or that names one of the gateway's own cookies, same_origin_check or additional_origins on an allow: none block, an additional_origins entry that is not a serialized origin, and a route-level block on an asset or redirect route are all refused at boot (enforced in code).",
+      "properties": {
+        "allow": {
+          "description": "The cookie mode, typed by its YAML shape: the scalar none (no cookie crosses), the scalar all (every cookie crosses), or a non-empty list of exact, case-sensitive cookie names (only those cross). A list is always names, so [all] and [none] are the cookies named all and none. One mode governs both directions.",
+          "oneOf": [
+            { "type": "string", "enum": ["none", "all"] },
+            { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          ]
+        },
+        "same_origin_check": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether an unsafe request carrying a cookie this route forwards must come from the gateway's own origin or an additional_origins entry. Defaults to true."
+        },
+        "additional_origins": {
+          "type": "array",
+          "description": "Further exact origins (scheme, host and optional port; no path, query, fragment or user-info) a cookie-carrying unsafe request may come from. Compared case-insensitively.",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "hsts": {
       "type": "object",
       "additionalProperties": false,
@@ -251,6 +276,10 @@
       "$ref": "#/$defs/allowedMethods",
       "description": "Global positive HTTP-verb allowlist. An anchor or endpoint may REPLACE this wholesale (no inheritance)."
     },
+    "cookies": {
+      "$ref": "#/$defs/cookies",
+      "description": "Optional gateway-wide cookie policy. An anchor, endpoint or route block replaces it wholesale. allow: all is refused at this scope (enforced in code)."
+    },
     "anchors": {
       "type": "object",
       "description": "Optional named, namespace-scoped policy anchors. Each anchor OWNS a disjoint path namespace (path_prefix) and carries the policy floor for every route inside it. Every anchor declares two required classification axes: 'type' (proxy/bff/asset; the former 'passthrough' value renamed to 'proxy') and 'access' (public/authenticated). Anchor prefixes must be pairwise disjoint (enforced in code).",
@@ -267,7 +296,8 @@
             "auth": { "$ref": "#/$defs/auth" },
             "security_filter": { "$ref": "#/$defs/securityFilter" },
             "security_headers": { "$ref": "#/$defs/responseHeaders" },
-            "allowed_methods": { "$ref": "#/$defs/allowedMethods" }
+            "allowed_methods": { "$ref": "#/$defs/allowedMethods" },
+            "cookies": { "$ref": "#/$defs/cookies" }
           }
         }
       }

@@ -390,9 +390,12 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
         @DisplayName("forward-all: an unlisted client header crosses, but no gateway-owned name does")
         void forwardAllIsBoundedByTheGatewayOwnedSet() {
             // Arrange + Act — the route declares no forward block at all, which is the shape most
-            // deployments ship. One request carries the permissive control alongside the three
-            // never-forward classes the baseline has to keep withholding for it to be safe at all:
-            // a mediated credential, the BFF's sealed cookie, and a spoofed provenance claim.
+            // deployments ship. One request carries the permissive control alongside three names the
+            // baseline has to keep withholding for it to be safe at all: an inbound credential, a
+            // spoofed provenance claim, and a browser cookie. The cookie is an ordinary application
+            // cookie, not one of the gateway's own; it is withheld because the route declares no
+            // cookies block and so resolves the default cookies.allow: none, which no forward mode
+            // can widen.
             var response = given()
                     .header(UNLISTED_HEADER, "crosses-on-the-baseline")
                     .header("Cookie", "__Host-sid=sealed")
@@ -411,8 +414,9 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
                     "control: with neither list declared every client header crosses, echoed headers were: "
                             + forwardedHeaders.keySet());
             assertFalse(containsIgnoringCase(forwardedHeaders, "Cookie"),
-                    "Cookie is absolute — no mode and no list re-admits it, and that absoluteness is what"
-                            + " makes a forward-all baseline safe to offer. Echoed headers were: "
+                    "no browser cookie crosses under the default cookies.allow: none the route resolves;"
+                            + " a forward mode never re-admits Cookie, which the cookies block alone governs,"
+                            + " and the gateway's own cookies cross under no policy. Echoed headers were: "
                             + forwardedHeaders.keySet());
             assertFalse(containsIgnoringCase(forwardedHeaders, "Authorization"),
                     "Authorization is re-admittable ONLY under a positive-list naming it; forward-all"

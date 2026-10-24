@@ -32,6 +32,7 @@ import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.AuthenticationStage;
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
@@ -73,6 +74,7 @@ import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.forward.ForwardPolicyStage;
 import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.BasicChecksStage;
 import de.cuioss.sheriff.gateway.pipeline.CanonicalPathGuard;
 import de.cuioss.sheriff.gateway.pipeline.FramingGate;
@@ -160,10 +162,14 @@ import jakarta.inject.Inject;
  *       bearer-token validation on the bearer branch, the server-session runtime on the session
  *       branch. The session branch — a {@code require: session} route, or the
  *       {@code Authorization}-less request on a {@code session_fallback} route — first passes the
- *       fixed CSRF defence; the bearer branch does not. A {@code session_fallback} route counts the
+ *       fixed CSRF defence; the bearer branch does not. A cookie-forwarding route's
+ *       {@linkplain Route#cookieOriginDefence() same-origin check} runs next, on an unsafe request
+ *       that carries a cookie the route would forward. A {@code session_fallback} route counts the
  *       selected branch against {@link SheriffMetrics#AUTH_BRANCH_TOTAL};</li>
  *   <li>stage 5 — the zero-trust forward policy, consuming the route's resolved
- *       {@link Route#effectiveForward() effectiveForward} and the global forwarded block;</li>
+ *       {@link Route#effectiveForward() effectiveForward}, its resolved
+ *       {@link Route#effectiveCookies() effectiveCookies} (which rebuilds the outbound {@code Cookie}
+ *       header) and the global forwarded block;</li>
  *   <li>stage 6 / 7 — the route's terminal action ({@link TerminalDispatch}): streamed upstream
  *       dispatch (byte-capped) and the streamed response relay for a proxy route, the buffered
  *       governed asset response for an asset route, or — for a redirect route — the
@@ -395,10 +401,13 @@ public class GatewayEdgeRoute {
         this.authenticationStage = bffRuntime.isActive()
                 ? new AuthenticationStage(tokenValidator, bffRuntime.sessionStage())
                 : new AuthenticationStage(tokenValidator);
-        this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode);
-        // The names of the cookies the session runtime sets; empty for a bearer-only gateway. An
-        // upstream Set-Cookie line naming one of them is not relayed.
-        ResponseStage responseStage = new ResponseStage(bffRuntime.gatewayCookieNames());
+        // The gateway's own cookies, derived once from the configuration — the reserved prefix with or
+        // without a BFF, plus the configured session cookie and its activity sibling. One instance
+        // serves both directions: stage 5 withholds them from every upstream request's Cookie header,
+        // and an upstream Set-Cookie line naming one of them is not relayed.
+        GatewayCookies gatewayCookies = GatewayCookies.of(gatewayConfig);
+        this.forwardPolicyStage = new ForwardPolicyStage(resolver, peerGate, emitMode, gatewayCookies);
+        ResponseStage responseStage = new ResponseStage(gatewayCookies);
         this.redirectStage = new RedirectStage();
         OriginValidationStage originValidationStage = new OriginValidationStage();
         // One WebSocketClient for the whole edge, carrying the gateway-global egress-TLS values (see
@@ -588,6 +597,7 @@ public class GatewayEdgeRoute {
             if (bffRuntime.isActive() && branch == AuthBranch.SESSION) {
                 bffRuntime.csrfDefence().enforce(request);
             }
+            enforceCookieOrigin(request, route);
             authenticationStage.process(request);
             // Honor an auth-stage short-circuit before forwarding: the BFF SessionAuthenticationStage
             // redirects a navigation by setting shortCircuit(302) plus a Location header. Without this gate
@@ -608,8 +618,10 @@ public class GatewayEdgeRoute {
                         route.matcher().matchHeaderNames()));
                 return;
             }
+            // The route's cookie policy is applied here, once, so every dispatch path below — the HTTP
+            // proxy, gRPC and the WebSocket upgrade — receives the same rebuilt Cookie header.
             ForwardPolicyStage.Result forward = forwardPolicyStage.process(request,
-                    route.effectiveForward(), route.notModifiedEnabled());
+                    route.effectiveForward(), route.effectiveCookies(), route.notModifiedEnabled());
             // Protocol-dispatch seam: a WebSocket route validates its handshake Origin and hands the
             // upgrade to the opaque relay; a gRPC route dispatches over the forced-h2 GrpcDispatchStage
             // and relays response trailers; HTTP and GraphQL take the HTTP dispatch path. The split is
@@ -627,6 +639,30 @@ public class GatewayEdgeRoute {
         } catch (RuntimeException unexpected) {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
             errorResponseWriter.renderProblem(ctx, request, null);
+        }
+    }
+
+    /**
+     * The same-origin check of a cookie-forwarding route, run before authentication so a refused
+     * request reaches neither the identity check nor the upstream. A route carries the check exactly
+     * when it forwards browser cookies with {@code cookies.same_origin_check} on and is not a WebSocket
+     * route, whose upgrade {@code OriginValidationStage} gates instead.
+     *
+     * @param request the in-flight request
+     * @param route   the selected route
+     * @throws GatewayException carrying {@code CSRF_REJECTED} when the check refuses the request
+     */
+    private void enforceCookieOrigin(PipelineRequest request, Route route) {
+        CsrfDefence cookieOriginDefence = route.cookieOriginDefence();
+        // Asked only of an unsafe request that carries at least one cookie the route would forward,
+        // read through the same admittedCookiePairs stage 5 rebuilds the Cookie header from. A request
+        // carrying no forwardable cookie — no Cookie at all, only the gateway's own cookies, or only
+        // names the route's list does not admit — hands the upstream no ambient browser credential, so
+        // there is no cross-site request to forge, and a non-browser client without an Origin passes.
+        // A safe method is never checked.
+        if (cookieOriginDefence != null && CsrfDefence.isUnsafeMethod(request.method())
+                && !forwardPolicyStage.admittedCookiePairs(request, route.effectiveCookies()).isEmpty()) {
+            cookieOriginDefence.enforce(request);
         }
     }
 }

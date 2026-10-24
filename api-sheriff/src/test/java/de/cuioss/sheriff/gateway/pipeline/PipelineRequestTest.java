@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.pipeline;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.List;
 import java.util.Map;
@@ -116,6 +117,47 @@ class PipelineRequestTest {
             assertAll("appending never replaces a line",
                     () -> assertEquals(List.of(first, second), request.responseSetCookies()),
                     () -> assertEquals(Map.of(CACHE_CONTROL, NO_STORE), request.responseHeaders()));
+        }
+    }
+
+    /**
+     * The scheme, authority host and authority port render the origin the request was received on,
+     * which the same-origin check of a cookie-forwarding route trusts.
+     */
+    @Nested
+    @DisplayName("the inbound origin fields round-trip through the builder")
+    class ReceivedOrigin {
+
+        @Test
+        @DisplayName("the scheme, host and authority port the edge supplies are the ones read back")
+        void roundTrip() {
+            String scheme = Generators.fixedValues("http", "https").next();
+            String host = Generators.letterStrings(3, 12).next() + ".example";
+            int port = Generators.integers(1, 65_535).next();
+
+            PipelineRequest request = PipelineRequest.builder()
+                    .method(HttpMethod.POST)
+                    .requestPath("/app/orders")
+                    .scheme(scheme)
+                    .host(host)
+                    .authorityPort(port)
+                    .build();
+
+            assertAll("the received origin is carried unchanged",
+                    () -> assertEquals(scheme, request.scheme()),
+                    () -> assertEquals(host, request.host()),
+                    () -> assertEquals(port, request.authorityPort()));
+        }
+
+        @Test
+        @DisplayName("control: a request the edge supplied no origin fields for has no scheme and port -1")
+        void absentByDefault() {
+            PipelineRequest request = request();
+
+            assertAll("an absent authority reads as unknown, never as a default",
+                    () -> assertNull(request.scheme()),
+                    () -> assertNull(request.host()),
+                    () -> assertEquals(-1, request.authorityPort()));
         }
     }
 }

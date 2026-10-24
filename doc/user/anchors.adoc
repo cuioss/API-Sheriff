@@ -57,8 +57,8 @@ Semantics -- deliberately few rules:
   namespace, so it does not count as coverage and the enclosing route is refused just as if the
   anchor had no covering member. Declaring `methods: [GET]` on the covering route is the easiest way
   to trip this: the anchor looks covered, but a `POST` would have fallen through.
-* *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers` and
-  `allowed_methods`. Every policy block is resolved by one rule -- the nearest declared scope of
+* *Policy blocks.* An anchor may carry `auth`, `security_filter`, `security_headers`,
+  `allowed_methods` and `cookies`. Every policy block is resolved by one rule -- the nearest declared scope of
   *gateway -> anchor -> endpoint -> route* wins and replaces every broader declaration *whole,
   never merged* -- and each block is declarable at a fixed set of those scopes. The rule and the
   per-block scope table are in <<_policy_block_resolution>> below.
@@ -68,13 +68,13 @@ Semantics -- deliberately few rules:
 * *The auth floor cannot be weakened.* Where the anchor declares `require: bearer` or
   `require: session`, a member whose *effective* auth resolves to `require: none` fails the
   boot. Replacing one non-`none` posture with another (anchor `bearer`, route `session`) is
-  allowed. An endpoint or route replacing an anchor's `allowed_methods` or `security_filter` block
-  is allowed and logged as a boot WARN (see <<_policy_block_override_warn>>).
+  allowed. An endpoint or route replacing an anchor's `allowed_methods`, `security_filter` or
+  `cookies` block is allowed and logged as a boot WARN (see <<_policy_block_override_warn>>).
 * *Anchored endpoints may omit `auth`.* The endpoint-level `auth` block becomes optional when
   the endpoint's anchor declares one; every route must still resolve to an unambiguous
   effective auth (route, else endpoint, else anchor) or the boot fails.
 * *Anchors vanish at runtime.* They are resolved during route-table assembly into the
-  materialized per-route *effective* values (auth, `allowed_methods`, filter, headers); the
+  materialized per-route *effective* values (auth, `allowed_methods`, filter, headers, `cookies`); the
   request pipeline never consults an anchor. The boot log reports the effective posture per
   route.
 
@@ -109,6 +109,41 @@ link:../adr/0067-Every_policy_block_is_one_declaration_resolved_nearest_declared
 
 The route table and the boot validator resolve every block through the same code, so the posture
 the boot validator judges is the posture the route runs.
+
+*An example: `cookies` declared at three scopes.* The `cookies` block is the one block declarable at
+all four scopes, so it shows the whole chain:
+
+[source,yaml]
+----
+# gateway.yaml
+cookies: { allow: none }                     # gateway scope
+anchors:
+  app:
+    path_prefix: /app
+    type: proxy
+    access: public
+    cookies: { allow: [SESSIONID, theme] }   # anchor scope
+
+# endpoints/legacy.yaml
+endpoint:
+  id: legacy
+  base_url: LEGACY
+  anchor: app
+  auth: { require: none }
+  routes:
+    - id: legacy-admin
+      match: { path_prefix: /app/admin }
+      cookies: { allow: [ADMINSESSION] }     # route scope
+    - id: legacy-app
+      match: { path_prefix: /app }
+----
+
+`legacy-admin` forwards `ADMINSESSION` alone: its block replaces the anchor's list rather than adding
+to it, and the replacement is announced by `ApiSheriff-101`. `legacy-app` declares no block and its
+endpoint declares none either, so the anchor's `[SESSIONID, theme]` applies. A route outside every
+anchor whose endpoint declares no block resolves the gateway's `allow: none`, which is also what a
+route resolves when no scope declares the block at all. What each mode forwards and relays is in
+link:../configuration.adoc#_cookies[the `cookies` reference].
 
 [[_policy_block_scopes]]
 .Where each policy block is declarable
@@ -157,7 +192,8 @@ the boot validator judges is the posture the route runs.
 
 | `forward`
 | endpoint, route
-| Forward-all on both dimensions, bounded by the gateway-owned sets no configuration re-admits.
+| Forward-all on both dimensions, bounded by the gateway-owned sets no configuration re-admits (see
+  link:../configuration.adoc#_never_forward_set[the never-forward set]).
 | No
 | No anchor or gateway scope: forward filtering is upstream-specific
   (link:../adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036]).
@@ -174,6 +210,16 @@ the boot validator judges is the posture the route runs.
   fail-closed per-route allowlist
   (link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015]); an endpoint block would
   reach the endpoint's other routes.
+
+| `cookies`
+| gateway, anchor, endpoint, route
+| `allow: none`: no browser cookie reaches the upstream and no upstream `Set-Cookie` reaches the
+  browser. The gateway's own cookies never cross under any block.
+| Yes -- any endpoint or route block replacing the anchor's
+| Every scope, because which cookies an upstream may receive is decided per upstream but may be
+  set once for a namespace or the whole gateway. An asset or redirect route has no upstream: it
+  always resolves `allow: none`, and a route-level block on one is refused. `allow: all` is refused
+  at the gateway scope.
 |===
 
 [[_policy_block_override_warn]]

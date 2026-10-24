@@ -409,7 +409,7 @@ class RouteAssemblerTest {
     @Test
     @DisplayName("Should carry a negative-list forward block from the resolved route")
     void shouldCarryEffectiveForwardDenyLists() {
-        ForwardConfig forward = ForwardConfig.builder().headersDeny(List.of("Cookie"))
+        ForwardConfig forward = ForwardConfig.builder().headersDeny(List.of("X-Internal"))
                 .queryDeny(List.of("debug")).setHeaders(Map.of()).build();
         RouteTable table = new RouteTable(List.of(Route.builder()
                 .id("deny").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/d").build())

@@ -18,17 +18,22 @@ package de.cuioss.sheriff.gateway.edge.relay;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
@@ -54,6 +59,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("ResponseStage — stage 7 streamed response header policy")
 @Tag("isolated-fork")
 class ResponseStageTest {
+
+    /** The gateway cookies of a gateway without an {@code oidc} block: the reserved prefix alone. */
+    private static final GatewayCookies RESERVED_ONLY = GatewayCookies.of(GatewayConfig.builder().version(1).build());
 
     @ParameterizedTest
     @ValueSource(longs = {0L, -1L})
@@ -234,13 +242,13 @@ class ResponseStageTest {
 
             // Front server: relays exactly as the proxy dispatch path does, with X-Frame-Options in
             // set mode and Content-Security-Policy in default mode.
-            ResponseStage responseStage = new ResponseStage(Set.of());
+            ResponseStage responseStage = new ResponseStage(RESERVED_ONLY);
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
                     .request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, clientReq.path())
                     .compose(HttpClientRequest::send)
                     .onSuccess(upResp -> responseStage
-                            .relay(upResp, clientReq.response(), false, null, Map.of(FRAME_OPTIONS, "DENY"),
-                                    Map.of(CSP, GATEWAY_POLICY), Supplier::get)
+                            .relay(upResp, clientReq.response(), false, null, CookiesConfig.NONE,
+                                    Map.of(FRAME_OPTIONS, "DENY"), Map.of(CSP, GATEWAY_POLICY), Supplier::get)
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
@@ -291,27 +299,86 @@ class ResponseStageTest {
     }
 
     /**
-     * Both relays over a live origin that sends three {@code Set-Cookie} lines, the middle one naming a
-     * cookie the gateway owns. The same origin is relayed through a stage that owns that name and
-     * through one that owns none, so the missing line is the owning stage's doing.
-     * <p>
-     * The origin also sends a trailer section. The trailing-header relay copies it as sent: a
-     * {@code Set-Cookie} in a trailer is not looked at, because a browser does not process one there.
+     * The one shared upstream-header predicate both relays pass every leading header and trailer
+     * through, judged directly.
      */
     @Nested
-    @DisplayName("an upstream Set-Cookie line naming a gateway cookie is dropped from the leading headers of both relays")
+    @DisplayName("relayedUpstreamHeader — the one judgement every upstream header passes")
+    class SharedPredicate {
+
+        private final ResponseStage stage = new ResponseStage(RESERVED_ONLY);
+        private final CookiesConfig all = new CookiesConfig(CookieAllow.ALL, null, null);
+
+        @Test
+        @DisplayName("a hop-by-hop header does not cross under any cookie policy")
+        void hopByHopNeverCrosses() {
+            assertAll("the forwardability rule comes first",
+                    () -> assertNull(stage.relayedUpstreamHeader("Connection", "close", true, all)),
+                    () -> assertNull(stage.relayedUpstreamHeader("Transfer-Encoding", "chunked", true, all)));
+        }
+
+        @Test
+        @DisplayName("a validator crosses only on a not_modified-enabled route")
+        void validatorFollowsNotModified() {
+            assertAll("the not_modified gate is part of the shared judgement",
+                    () -> assertEquals("\"v1\"", stage.relayedUpstreamHeader("ETag", "\"v1\"", true, CookiesConfig.NONE)),
+                    () -> assertNull(stage.relayedUpstreamHeader("ETag", "\"v1\"", false, CookiesConfig.NONE)));
+        }
+
+        @Test
+        @DisplayName("an ordinary header crosses unchanged even under allow: none")
+        void ordinaryHeaderCrossesUnchanged() {
+            assertEquals("text/plain",
+                    stage.relayedUpstreamHeader("Content-Type", "text/plain", false, CookiesConfig.NONE));
+        }
+
+        @Test
+        @DisplayName("a Set-Cookie line crosses by the policy, with its Domain attribute removed")
+        void setCookieFollowsThePolicy() {
+            assertAll("the cookie policy is part of the shared judgement",
+                    () -> assertNull(stage.relayedUpstreamHeader("Set-Cookie", "app=1", false, CookiesConfig.NONE),
+                            "the default none relays no upstream cookie"),
+                    () -> assertEquals("app=1; Path=/",
+                            stage.relayedUpstreamHeader("Set-Cookie", "app=1; Domain=example.com; Path=/", false, all)),
+                    () -> assertNull(stage.relayedUpstreamHeader("Set-Cookie", "__Host-sheriff-x=1", false, all),
+                            "a gateway cookie is dropped under all"));
+        }
+    }
+
+    /**
+     * Both relays over a live origin that sends four {@code Set-Cookie} leading lines — an application
+     * cookie, the configured session cookie, an unlisted tracker and a theme cookie carrying a
+     * {@code Domain} — and a trailer section holding three {@code Set-Cookie} trailers beside its
+     * {@code grpc-status}. The front server relays that one origin under {@code none}, a list and
+     * {@code all}, so every difference between the answers is the policy's doing; a stage whose
+     * configuration does not name the session cookie is the control for the gateway-cookie drop.
+     */
+    @Nested
+    @DisplayName("upstream Set-Cookie lines cross by the route's cookie policy on both relays, trailers included")
     class UpstreamSetCookie {
 
         private static final String SET_COOKIE = "Set-Cookie";
-        private static final String OWNED_NAME = "__Host-sheriff-session";
-        private static final String FIRST_LINE = "app=1; Path=/app";
+        /** A configured session cookie name, outside the reserved prefix every stage owns. */
+        private static final String OWNED_NAME = "__Host-shop-session";
+        private static final String APP_LINE = "app=1; Path=/app";
         private static final String OWNED_LINE = OWNED_NAME + "=from-upstream; Path=/";
-        private static final String LAST_LINE = "theme=dark";
-        private static final String OWNED_TRAILER_LINE = OWNED_NAME + "=from-trailer";
-        private static final String OWNING = "/owning";
+        private static final String TRACKER_LINE = "tracker=1";
+        private static final String THEME_LINE = "theme=dark; Domain=example.com";
+        /** {@link #THEME_LINE} as it reaches the client: its {@code Domain} attribute removed. */
+        private static final String THEME_RELAYED = "theme=dark";
+        private static final String THEME_TRAILER = "theme=trailer; Domain=example.com";
+        private static final String TRACKER_TRAILER = "tracker=trailer";
+        private static final String OWNED_TRAILER = OWNED_NAME + "=from-trailer";
+        private static final String NONE = "/none";
+        private static final String LISTED = "/listed";
+        private static final String ALL = "/all";
         private static final String OWNING_NOTHING = "/owning-nothing";
         private static final String RELAY = "/relay";
         private static final String WITH_TRAILERS = "/with-trailers";
+
+        private static final CookiesConfig LIST_POLICY = new CookiesConfig(
+                new CookieAllow.Named(List.of("app", "theme")), null, null);
+        private static final CookiesConfig ALL_POLICY = new CookiesConfig(CookieAllow.ALL, null, null);
 
         private Vertx vertx;
         private HttpClient client;
@@ -328,29 +395,48 @@ class ResponseStageTest {
             client = vertx.createHttpClient();
             upstream = Awaits.connect(vertx.createHttpServer().requestHandler(req -> {
                 HttpServerResponse response = req.response();
-                response.headers().add(SET_COOKIE, FIRST_LINE).add(SET_COOKIE, OWNED_LINE).add(SET_COOKIE, LAST_LINE);
+                response.headers().add(SET_COOKIE, APP_LINE).add(SET_COOKIE, OWNED_LINE)
+                        .add(SET_COOKIE, TRACKER_LINE).add(SET_COOKIE, THEME_LINE);
                 response.setChunked(true);
-                response.putTrailer(SET_COOKIE, OWNED_TRAILER_LINE);
-                response.putTrailer("grpc-status", "0");
+                response.trailers().add(SET_COOKIE, THEME_TRAILER).add(SET_COOKIE, TRACKER_TRAILER)
+                        .add(SET_COOKIE, OWNED_TRAILER).add("grpc-status", "0");
                 response.end("origin-body");
             }).listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
             int upstreamPort = upstream.actualPort();
 
-            ResponseStage owning = new ResponseStage(Set.of(OWNED_NAME));
-            ResponseStage owningNothing = new ResponseStage(Set.of());
+            ResponseStage owning = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1)
+                    .oidc(OidcConfig.builder().redirectUri("https://gw.example.com/auth/callback")
+                            .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER)
+                                    .cookieName(OWNED_NAME).build())
+                            .build())
+                    .build()));
+            ResponseStage owningNothing = new ResponseStage(RESERVED_ONLY);
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> {
-                ResponseStage stage = clientReq.path().startsWith(OWNING_NOTHING) ? owningNothing : owning;
-                boolean withTrailers = clientReq.path().endsWith(WITH_TRAILERS);
+                String path = clientReq.path();
+                ResponseStage stage = path.startsWith(OWNING_NOTHING) ? owningNothing : owning;
+                CookiesConfig policy = policyFor(path);
+                boolean withTrailers = path.endsWith(WITH_TRAILERS);
                 client.request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, "/")
                         .compose(HttpClientRequest::send)
                         .onSuccess(upResp -> (withTrailers
-                                ? stage.relayWithTrailers(upResp, clientReq.response(), false, Map.of(), Map.of(),
-                                Supplier::get, ResponseStage.GrpcStreamIdleBound.on(vertx))
-                                : stage.relay(upResp, clientReq.response(), false, null, Map.of(), Map.of(),
+                                ? stage.relayWithTrailers(upResp, clientReq.response(), false, policy, Map.of(),
+                                Map.of(), Supplier::get, ResponseStage.GrpcStreamIdleBound.on(vertx))
+                                : stage.relay(upResp, clientReq.response(), false, null, policy, Map.of(), Map.of(),
                                 Supplier::get))
                                 .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                         .onFailure(failure -> clientReq.response().setStatusCode(502).end());
             }).listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
+        }
+
+        /** The policy a front-server path relays under; the owning-nothing control relays under {@code all}. */
+        private static CookiesConfig policyFor(String path) {
+            if (path.startsWith(NONE)) {
+                return CookiesConfig.NONE;
+            }
+            if (path.startsWith(LISTED)) {
+                return LIST_POLICY;
+            }
+            return ALL_POLICY;
         }
 
         @AfterEach
@@ -369,40 +455,66 @@ class ResponseStageTest {
                     "the relayed response to " + path);
         }
 
-        @Test
-        @DisplayName("relay: the owned line is dropped, the other two arrive unchanged and in order")
-        void relayDropsTheOwnedLine() throws Exception {
-            Relayed answer = relayed(OWNING + RELAY);
+        @ParameterizedTest
+        @ValueSource(strings = {RELAY, WITH_TRAILERS})
+        @DisplayName("default none: no upstream Set-Cookie line reaches the client, not even an application cookie")
+        void noneRelaysNoLine(String relay) throws Exception {
+            Relayed answer = relayed(NONE + relay);
 
-            assertEquals(List.of(FIRST_LINE, LAST_LINE), answer.headers().getAll(SET_COOKIE));
-        }
-
-        @Test
-        @DisplayName("relayWithTrailers: the owned line is dropped from the leading headers the same way")
-        void trailingRelayDropsTheOwnedLineFromTheLeadingHeaders() throws Exception {
-            Relayed answer = relayed(OWNING + WITH_TRAILERS);
-
-            assertEquals(List.of(FIRST_LINE, LAST_LINE), answer.headers().getAll(SET_COOKIE));
-        }
-
-        @Test
-        @DisplayName("relayWithTrailers: the trailer section is copied as the upstream sent it, a Set-Cookie trailer included")
-        void trailingRelayCopiesTheTrailerSectionAsSent() throws Exception {
-            Relayed answer = relayed(OWNING + WITH_TRAILERS);
-
-            assertAll("the trailers are not filtered",
-                    () -> assertEquals(List.of("0"), answer.trailers().getAll("grpc-status")),
-                    () -> assertEquals(List.of(OWNED_TRAILER_LINE), answer.trailers().getAll(SET_COOKIE),
-                            "a Set-Cookie in a trailer section is relayed: only leading headers are filtered"));
+            assertEquals(List.of(), answer.headers().getAll(SET_COOKIE),
+                    "under the default none an upstream cookie is not relayed — the stated breaking change");
         }
 
         @ParameterizedTest
         @ValueSource(strings = {RELAY, WITH_TRAILERS})
-        @DisplayName("control: a stage that owns no cookie relays all three lines on both relays")
-        void stageOwningNothingRelaysEveryLine(String relay) throws Exception {
+        @DisplayName("a list: only the listed lines arrive, in order, with Domain removed")
+        void listRelaysListedLines(String relay) throws Exception {
+            Relayed answer = relayed(LISTED + relay);
+
+            assertEquals(List.of(APP_LINE, THEME_RELAYED), answer.headers().getAll(SET_COOKIE));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {RELAY, WITH_TRAILERS})
+        @DisplayName("all: every line but the gateway cookie arrives, in order, with Domain removed")
+        void allRelaysEveryOtherLine(String relay) throws Exception {
+            Relayed answer = relayed(ALL + relay);
+
+            assertEquals(List.of(APP_LINE, TRACKER_LINE, THEME_RELAYED), answer.headers().getAll(SET_COOKIE));
+        }
+
+        @Test
+        @DisplayName("relayWithTrailers: a Set-Cookie trailer outside the policy is not relayed, grpc-status is")
+        void trailersPassTheSharedFilter() throws Exception {
+            Relayed listed = relayed(LISTED + WITH_TRAILERS);
+            Relayed none = relayed(NONE + WITH_TRAILERS);
+
+            assertAll("the trailers pass the same judgement as the leading headers",
+                    () -> assertEquals(List.of("0"), listed.trailers().getAll("grpc-status")),
+                    () -> assertEquals(List.of("theme=trailer"), listed.trailers().getAll(SET_COOKIE),
+                            "only the listed trailer crosses, with Domain removed; the unlisted and the gateway"
+                                    + " trailer are dropped"),
+                    () -> assertEquals(List.of("0"), none.trailers().getAll("grpc-status")),
+                    () -> assertEquals(List.of(), none.trailers().getAll(SET_COOKIE),
+                            "under none no Set-Cookie trailer crosses"));
+        }
+
+        @Test
+        @DisplayName("relayWithTrailers under all: every Set-Cookie trailer but the gateway cookie is relayed")
+        void allRelaysEveryOtherTrailer() throws Exception {
+            Relayed answer = relayed(ALL + WITH_TRAILERS);
+
+            assertEquals(List.of("theme=trailer", TRACKER_TRAILER), answer.trailers().getAll(SET_COOKIE));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {RELAY, WITH_TRAILERS})
+        @DisplayName("control: under all, a stage whose configuration does not name the session cookie relays it too")
+        void stageOwningNothingRelaysTheSessionLine(String relay) throws Exception {
             Relayed answer = relayed(OWNING_NOTHING + relay);
 
-            assertEquals(List.of(FIRST_LINE, OWNED_LINE, LAST_LINE), answer.headers().getAll(SET_COOKIE));
+            assertEquals(List.of(APP_LINE, OWNED_LINE, TRACKER_LINE, THEME_RELAYED),
+                    answer.headers().getAll(SET_COOKIE));
         }
     }
 
@@ -448,7 +560,7 @@ class ResponseStageTest {
                     .listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
             int upstreamPort = upstream.actualPort();
 
-            ResponseStage stage = new ResponseStage(Set.of());
+            ResponseStage stage = new ResponseStage(RESERVED_ONLY);
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> {
                 HttpServerResponse response = clientReq.response();
                 AtomicInteger endsRequested = new AtomicInteger();
@@ -482,9 +594,9 @@ class ResponseStageTest {
         private Future<Void> relay(ResponseStage stage, String path, HttpClientResponse upResp,
                 HttpServerResponse response, ResponseEnd end) {
             return WITH_TRAILERS.equals(path)
-                    ? stage.relayWithTrailers(upResp, response, false, Map.of(), Map.of(), end,
+                    ? stage.relayWithTrailers(upResp, response, false, CookiesConfig.NONE, Map.of(), Map.of(), end,
                     ResponseStage.GrpcStreamIdleBound.on(vertx))
-                    : stage.relay(upResp, response, false, null, Map.of(), Map.of(), end);
+                    : stage.relay(upResp, response, false, null, CookiesConfig.NONE, Map.of(), Map.of(), end);
         }
 
         @ParameterizedTest

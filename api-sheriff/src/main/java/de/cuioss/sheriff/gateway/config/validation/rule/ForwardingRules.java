@@ -40,7 +40,9 @@ import org.jspecify.annotations.Nullable;
  * because each dimension resolves exactly one of the three modes (positive-list, negative-list,
  * forward-all). The token-relay conflict rule ({@link #validateTokenRelayForwardConflict}) refuses a
  * route resolving {@code auth.token_relay: false} whose effective {@code forward.headers_allow}
- * re-admits {@code Authorization}.
+ * re-admits {@code Authorization}. The cookie-header rule ({@link #validateCookieOutsideCookiesBlock})
+ * refuses a {@code forward.headers_allow}, {@code forward.headers_deny} or {@code forward.set_headers}
+ * naming {@code Cookie}, which only the {@code cookies} block governs.
  * <p>
  * Policy blocks are resolved only through the {@link PolicyBlock} descriptors over
  * {@link ScopeChain#of}, the same resolution the route table uses. Every rule appends file- and
@@ -58,6 +60,61 @@ public class ForwardingRules {
 
     /** The request header a {@code token_relay: false} route must not re-admit through {@code headers_allow}. */
     private static final String AUTHORIZATION_HEADER = "Authorization";
+
+    /** The request header only the {@code cookies} block governs, never a {@code forward} list. */
+    private static final String COOKIE_HEADER = "Cookie";
+
+    /**
+     * Rule: no {@code forward.headers_allow}, {@code forward.headers_deny} or {@code forward.set_headers}
+     * of an endpoint or a route may name {@code Cookie}, in any letter case.
+     * <p>
+     * Which browser cookies reach the upstream is decided by the {@code cookies} block alone: the
+     * gateway removes its own cookies and rebuilds the {@code Cookie} header from the pairs that block
+     * admits, under every forward mode. A {@code headers_allow} entry naming the header would not admit
+     * a cookie and a {@code headers_deny} entry would not withhold one, and a {@code set_headers} entry
+     * would contest the decision the {@code cookies} block exists to make in one place — so the boot
+     * refuses each of them and points at the {@code cookies} block. Every
+     * scope {@link PolicyBlock#FORWARD} declares is checked, and each offending key of each block is
+     * one refusal (ADR-0009).
+     *
+     * @param endpoints the enabled endpoints
+     * @param errors    the shared list every violation is appended to
+     */
+    public static void validateCookieOutsideCookiesBlock(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            checkCookieHeader(endpoint, endpoint.forward(), "endpoint '%s'".formatted(endpoint.id()),
+                    ENDPOINT_FORWARD_POINTER, errors);
+            List<RouteConfig> routes = endpoint.routes();
+            for (int index = 0; index < routes.size(); index++) {
+                RouteConfig route = routes.get(index);
+                checkCookieHeader(endpoint, route.forward(), "route '%s'".formatted(route.id()),
+                        ENDPOINT_ROUTES_POINTER + "/" + index + "/forward", errors);
+            }
+        }
+    }
+
+    /** Checks the three header keys of one declared {@code forward} block for a {@code Cookie} entry. */
+    private static void checkCookieHeader(EndpointConfig endpoint, @Nullable ForwardConfig forward, String subject,
+            String pointer, List<ConfigError> errors) {
+        if (forward == null) {
+            return;
+        }
+        checkCookieEntry(endpoint, subject, pointer, "headers_allow", forward.headersAllow(), errors);
+        checkCookieEntry(endpoint, subject, pointer, "headers_deny", forward.headersDeny(), errors);
+        checkCookieEntry(endpoint, subject, pointer, "set_headers", List.copyOf(forward.setHeaders().keySet()),
+                errors);
+    }
+
+    private static void checkCookieEntry(EndpointConfig endpoint, String subject, String pointer, String key,
+            @Nullable List<String> headerNames, List<ConfigError> errors) {
+        if (headerNames == null || headerNames.stream().noneMatch(COOKIE_HEADER::equalsIgnoreCase)) {
+            return;
+        }
+        errors.add(new ConfigError(endpointFile(endpoint), pointer + "/" + key,
+                ("%s names Cookie in forward.%s; which cookies reach the upstream is decided by the cookies "
+                        + "block alone — remove the entry and declare cookies.allow instead")
+                        .formatted(subject, key)));
+    }
 
     /**
      * Rule: neither an endpoint nor a route may declare both the positive-list and the negative-list

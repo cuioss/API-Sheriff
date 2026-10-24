@@ -41,7 +41,8 @@ import org.junit.jupiter.api.Timeout;
 /**
  * Proves four properties of the server-mode session and its cookie on the native image, through the
  * primary gateway instance and the compose Keycloak. Each is a rule the gateway applies on its own,
- * with no key declared for it in the primary stack's {@code gateway.yaml}.
+ * with no key declared for it in the primary stack's {@code gateway.yaml}; the relay case needs a
+ * route that relays upstream cookies at all, which the default {@code cookies.allow: none} does not.
  * <ul>
  *   <li><em>One subject holds at most {@value #DEFAULT_SESSIONS_PER_SUBJECT} sessions.</em> The
  *       primary descriptor declares no {@code oidc.session.max_sessions_per_subject}, so the default
@@ -53,7 +54,8 @@ import org.junit.jupiter.api.Timeout;
  *       new session only: the cookie value of the earlier session is answered as unauthenticated.</li>
  *   <li><em>An upstream cannot set the session cookie.</em> The go-httpbin upstream is made to answer
  *       two {@code Set-Cookie} lines, one naming the gateway's session cookie and one naming a cookie
- *       of its own. Only the second reaches the client — which is also the control that the route
+ *       of its own, on a route whose {@code cookies.allow: all} relays every line but a gateway
+ *       cookie's. Only the second reaches the client — which is also the control that the route
  *       relays an upstream's {@code Set-Cookie} lines at all.</li>
  *   <li><em>An HTTP/2 request may carry its cookies in more than one {@code cookie} field.</em> RFC
  *       9113 section 8.2.3 lets a client split the header, and a gateway that read the first field
@@ -87,10 +89,12 @@ class BffSessionCookieControlsIT {
     private static final String SESSION_ROUTE = "/app/get";
 
     /**
-     * The route whose upstream, go-httpbin's {@code /response-headers}, answers every query parameter
-     * back as a response header (see {@code endpoints/origin-headers.yaml}).
+     * A route declaring {@code cookies.allow: all} whose upstream, go-httpbin's {@code /response-headers},
+     * answers every query parameter back as a response header (see {@code endpoints/cookie-policy.yaml}).
+     * Under {@code all} the route relays every upstream {@code Set-Cookie} line but one naming a gateway
+     * cookie, so the one line it drops is dropped for being the session cookie's and for nothing else.
      */
-    private static final String UPSTREAM_HEADERS_ROUTE = "/proxy/origin-headers";
+    private static final String UPSTREAM_HEADERS_ROUTE = "/proxy/cookie-policy/every/response-headers";
 
     /** A cookie of the upstream's own, which the gateway has no claim on. */
     private static final String UPSTREAM_COOKIE_LINE = "upstream-preference=compact";

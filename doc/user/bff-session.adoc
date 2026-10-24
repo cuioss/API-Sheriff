@@ -540,8 +540,12 @@ endpoint:
 
 | Valid bearer token, with or without a session cookie
 | Admitted when the token carries every scope the route needs; the upstream receives exactly that
-  token as `Authorization: Bearer`. No session is looked up, no CSRF check runs, no cookie is set, and
-  the session cookie is not forwarded. `headers_allow` does not need to name `Authorization`.
+  token as `Authorization: Bearer`. No session is looked up, the fixed CSRF defence does not run, the
+  gateway does not set a session cookie, and the session cookie is not forwarded (see <<gateway-cookies>>). The route's cookie
+  same-origin check is not a session check and still applies: an unsafe request carrying a cookie the
+  route's `cookies` policy forwards is checked before authentication (see
+  link:../configuration.adoc#_cookies_same_origin_check[Configuration Reference -- The same-origin
+  check]). `headers_allow` does not need to name `Authorization`.
 | Bearer token lacking a needed scope
 | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`.
 | Invalid token, a `Basic` credential or an empty `Authorization`, with or without a session cookie
@@ -550,7 +554,8 @@ endpoint:
 | No `Authorization`, live session
 | Served exactly as on a `require: session` route. The session's scopes are compared with the set
   the route needs. A session that carries them is relayed: its token goes upstream (unless
-  `token_relay: false`) and is refreshed near expiry, and the session cookie is stripped. A session
+  `token_relay: false`) and is refreshed near expiry, and the session cookie is dropped from what
+  the upstream receives (see <<gateway-cookies>>). A session
   lacking one is not relayed: a scope inside its granted set is obtained by a refresh, any other is
   obtained by widening the session on a navigation, and an XHR or API call gets `403`
   `application/problem+json` naming the `missing_scopes` and, when `oidc.step_up.path` is
@@ -1132,11 +1137,24 @@ one of its cookies on a response, that response is sent with `Cache-Control: no-
 the upstream's value. In this variant that is the login, logout and step-up answers and the answer
 that ends a session. Every other response keeps the cache policy the upstream sent.
 
+*The gateway's cookies never reach an upstream, under any policy.* The session cookie -- the
+configured `oidc.session.cookie_name` -- its `-activity` sibling, and every cookie under the
+reserved `+__Host-sheriff-+` prefix, `+__Host-sheriff-binding+` and `+__Host-sheriff-logout+` among
+them, are dropped from the
+`Cookie` header on every route, whatever the route's `cookies` block admits; naming one in
+`cookies.allow` is refused at boot.
+
 *An application behind the gateway cannot set a gateway cookie.* A `Set-Cookie` in an upstream
-response that names the session cookie, `+__Host-sheriff-binding+` or `+__Host-sheriff-logout+` is
-dropped; every other `Set-Cookie` is relayed unchanged. Nothing is logged. Do not use those names
-in the application. On a gRPC route the rule covers the leading headers; trailers are relayed as
-the upstream sent them.
+response that names one of those cookies is dropped under every policy, on the HTTP relay and on the
+gRPC leading headers and trailers alike. Nothing is logged. Do not use those names in the
+application.
+
+*Your application's own cookies cross only as its route admits them.* Under the default
+`cookies.allow: none` the upstream receives no browser cookie and no upstream `Set-Cookie` reaches
+the browser. A route whose upstream needs its own cookies names them in a `cookies` block, and every
+`Set-Cookie` the gateway then relays has its `Domain` attribute removed. See
+link:../configuration.adoc#_never_forward_set[the never-forward set] and
+link:../configuration.adoc#_cookies[the `cookies` reference].
 
 [[multi-replica]]
 == Running more than one replica

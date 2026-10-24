@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Each of the seven policy blocks (auth, allowed_methods, security_filter, security_headers, upstream_defaults, forward, websocket) is one PolicyBlock descriptor -- its declarable scopes, its "is declared" test (null or an empty list is absent), its nothing-declared fallback and its override-WARN opt-in -- and one generic resolver applies the rule of ADR-0007 to all of them: the nearest declared scope of gateway -> anchor -> endpoint -> route wins and replaces every broader declaration wholesale. The route table and the boot validator both resolve through the descriptors. The operator decided the scope set of every block: security_filter and forward gain the endpoint scope, every other block keeps its scopes; the boot readers of the two widened blocks are extended to the endpoint scope; the override WARN is derived from the descriptor and opted into by allowed_methods and security_filter; the two field-level fallbacks (security_filter.profile, the route's upstream retry / not_modified toggles) stay as documented exceptions behind one config-side seam; the request-pipeline edge is unchanged.
+// summary: Every policy block is one PolicyBlock descriptor -- its declarable scopes, its "is declared" test (null or an empty list is absent), its nothing-declared fallback and its override-WARN opt-in -- and one generic resolver applies the rule of ADR-0007 to all of them: the nearest declared scope of gateway -> anchor -> endpoint -> route wins and replaces every broader declaration wholesale. The route table and the boot validator both resolve through the descriptors. The operator decided the scope set of every block that existed: security_filter and forward gain the endpoint scope, every other block keeps its scopes; the boot readers of the two widened blocks are extended to the endpoint scope; the override WARN is derived from the descriptor, and each descriptor declares its own opt-in; the two field-level fallbacks (security_filter.profile, the route's upstream retry / not_modified toggles) stay as documented exceptions behind one config-side seam; the request-pipeline edge is unchanged.
 // tags: configuration-model, anchors, precedence, policy-resolution, boot-validation, wholesale-replacement, override-warn
 // affects: api-sheriff, documentation
 // supersedes:
@@ -129,6 +129,13 @@ The operator decided every block's scopes, each on the default recommended at ou
   endpoint's other routes.
 |===
 
+The table records the blocks this decision covered. A block added later declares its scopes in its
+own descriptor and appears in the live scope table,
+link:../user/anchors.adoc#_policy_block_scopes[Where each policy block is declarable], which a contract
+test binds to the descriptors -- `cookies`
+(link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037])
+is the first, declarable at all four scopes.
+
 The net change to the configuration surface is two scopes, both *breaking*: an endpoint document may
 now declare `security_filter` and `forward`. A configuration that booted before resolves exactly as it
 did, because both keys were refused at the endpoint until now.
@@ -162,9 +169,13 @@ descriptor opts in when the route's anchor declares the block *and* a nearer sco
 endpoint or the route itself -- declares it too. It is logged once per route and block, and the log
 template is unchanged.
 
-The opt-in set is exactly `allowed_methods` and `security_filter`. `auth` is excluded because
-weakening its floor is a boot refusal, which is stronger than a warning. `security_headers` has no
-scope nearer than the anchor; `upstream_defaults`, `forward` and `websocket` have no anchor scope.
+The opt-in is the descriptor's `overrideWarn` flag, declared per block. The blocks that set it are
+listed in the Override WARN column of
+link:../user/anchors.adoc#_policy_block_scopes[the policy-block scope table] -- currently
+`allowed_methods`, `security_filter` and `cookies`. `auth` is excluded because weakening its floor is
+a boot refusal, which is stronger than a warning. `security_headers` has no scope nearer than the
+anchor; `upstream_defaults`, `forward` and `websocket` have no anchor scope. `cookies` has anchor,
+endpoint and route scopes, so an anchor block can be replaced from both nearer scopes, and it opts in.
 
 === Two field-level fallbacks stay, as documented exceptions
 
@@ -213,7 +224,9 @@ The twelve decisions this record rests on, each taken by the operator rather tha
 . `websocket` stays route-only.
 . The `security_filter.profile` fallback stays field-level, implemented once on the config side.
 . The WARN means "the anchor declares the block and a nearer scope declares it too"; its template is
-  unchanged; the opt-in set is `allowed_methods` and `security_filter`.
+  unchanged; of the blocks this decision covered, `allowed_methods` and `security_filter` opt in. A
+  block added later declares its own opt-in in its descriptor -- `cookies` opts in
+  (link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
 . The validator's `allowed_methods` chain resolves through the shared resolver as well.
 . The request-pipeline edge stays unchanged, its shared seams keeping their signatures.
 . The three boot readers of the widened blocks -- the token-relay conflict, forward mode exclusivity
@@ -228,8 +241,9 @@ The twelve decisions this record rests on, each taken by the operator rather tha
   schemas and to the user-documentation scope table by a contract test that fails in either direction.
 * Adding a block is a listed set of steps, each with the test that catches a missed one
   (link:../development/README.adoc#_adding_a_policy_block[Development -- Adding a policy block]).
-* The override WARN covers `allowed_methods` replaced at the endpoint and `security_filter` replaced at
-  the endpoint or the route, from one flag per block instead of a list kept by hand.
+* The override WARN covers `allowed_methods` replaced at the endpoint, and `security_filter` and
+  `cookies` replaced at the endpoint or the route, from one flag per block instead of a list kept by
+  hand.
 
 === Negative
 

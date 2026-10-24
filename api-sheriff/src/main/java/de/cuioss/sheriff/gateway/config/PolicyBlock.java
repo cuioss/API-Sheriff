@@ -28,6 +28,7 @@ import java.util.function.Function;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder.RouteTableException;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -41,8 +42,9 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * One policy block of the gateway configuration — {@code auth}, {@code allowed_methods},
- * {@code security_filter}, {@code security_headers}, {@code upstream_defaults}, {@code forward} or
- * {@code websocket} — declared once, together with the one rule every block is resolved by.
+ * {@code security_filter}, {@code security_headers}, {@code upstream_defaults}, {@code forward},
+ * {@code websocket} or {@code cookies} — declared once, together with the one rule every block is
+ * resolved by.
  * <p>
  * A descriptor names the scopes the block is declarable at and, per scope, the accessor reading
  * the declaration there. The rule is the same for every block (ADR-0007): the scopes are ordered
@@ -52,7 +54,7 @@ import org.jspecify.annotations.Nullable;
  * <em>not declared</em> ({@link #isDeclared}). When no scope declares the block, the descriptor's
  * {@link Fallback} decides: a fixed value, {@code null}, or a boot error.
  * <p>
- * The seven descriptors ({@link #ALL}) are the single place the inheritance chains live: the route
+ * The eight descriptors ({@link #ALL}) are the single place the inheritance chains live: the route
  * table ({@link RouteTableBuilder}) and the boot validator
  * ({@code de.cuioss.sheriff.gateway.config.validation.ConfigValidator}) both resolve through them,
  * so the boot refusal and the runtime posture can never resolve a block differently. Two
@@ -81,8 +83,8 @@ import org.jspecify.annotations.Nullable;
  *                     {@link Scope} order
  * @param fallback     what the block resolves to when no scope declares it
  * @param overrideWarn whether replacing an anchor-declared block from a nearer scope (endpoint or
- *                     route) is announced as a boot WARN; opted in by {@link #ALLOWED_METHODS} and
- *                     {@link #SECURITY_FILTER} only
+ *                     route) is announced as a boot WARN; opted in by {@link #ALLOWED_METHODS},
+ *                     {@link #SECURITY_FILTER} and {@link #COOKIES} only
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -168,9 +170,23 @@ Map<Scope, Function<ScopeChain, @Nullable T>> accessors, Fallback<T> fallback, b
             new Fallback.None<>(),
             false);
 
+    /**
+     * {@code cookies}: declarable at gateway, anchor, endpoint and route — the one block present at
+     * all four scopes. When no scope declares one, {@link CookiesConfig#NONE} applies, so no cookie
+     * crosses in either direction. Any endpoint or route block replacing the anchor's is announced by
+     * the override WARN, whatever the two blocks say.
+     */
+    public static final PolicyBlock<CookiesConfig> COOKIES = new PolicyBlock<>("cookies",
+            Map.of(Scope.GATEWAY, atGateway(GatewayConfig::cookies),
+                    Scope.ANCHOR, atAnchor(AnchorConfig::cookies),
+                    Scope.ENDPOINT, atEndpoint(EndpointConfig::cookies),
+                    Scope.ROUTE, atRoute(RouteConfig::cookies)),
+            new Fallback.Value<>(CookiesConfig.NONE),
+            true);
+
     /** Every policy-block descriptor, one per block. */
     public static final List<PolicyBlock<?>> ALL = List.of(AUTH, ALLOWED_METHODS, SECURITY_FILTER,
-            SECURITY_HEADERS, UPSTREAM_DEFAULTS, FORWARD, WEBSOCKET);
+            SECURITY_HEADERS, UPSTREAM_DEFAULTS, FORWARD, WEBSOCKET, COOKIES);
 
     /**
      * Canonical constructor requiring every component and freezing the accessors in {@link Scope}

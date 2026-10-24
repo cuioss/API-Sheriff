@@ -66,6 +66,7 @@ import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigLoader;
 import de.cuioss.sheriff.gateway.config.load.EnvSecretResolver;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -90,6 +91,7 @@ import de.cuioss.sheriff.gateway.edge.terminal.TerminalDispatch;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.portal.PortalRenderer;
@@ -492,8 +494,9 @@ class GatewayEdgeRouteTest {
                     .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
-                    .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(Set.of())
-                            .relay(ended, ctx.response(), false, null, Map.of(), Map.of(), end))));
+                    .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(
+                            GatewayCookies.of(GatewayConfig.builder().version(1).build()))
+                            .relay(ended, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(), end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the relaying front server to start listening");
@@ -621,8 +624,9 @@ class GatewayEdgeRouteTest {
                         return received;
                     }))
                     .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
-                            end -> new ResponseStage(Set.of())
-                                    .relay(received, ctx.response(), false, null, Map.of(), Map.of(), end)
+                            end -> new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()))
+                                    .relay(received, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(),
+                                            end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),

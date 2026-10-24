@@ -25,10 +25,12 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
+import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
 import de.cuioss.sheriff.gateway.config.model.AssetConfig;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -77,7 +79,9 @@ import org.jspecify.annotations.Nullable;
  * effective {@code security_filter} / {@code security_headers}, effective retry
  * / not-modified toggles, the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
- * wholesale, deny lists included), the effective upstream base path (the route-level
+ * wholesale, deny lists included), the effective {@code cookies} block (the nothing-crosses
+ * {@code allow: none} for an asset or redirect route, which has no upstream), the effective upstream
+ * base path (the route-level
  * {@code upstream.path} appended to the alias-derived base path when declared), and the
  * needed scope set ({@code oidc.scopes} united with the owning endpoint's {@code scopes})
  * into a {@link Route}. The route derives the compiled {@link RouteMatcher} and the effective
@@ -254,11 +258,16 @@ public final class RouteTableBuilder {
         // per-list resolution. When no scope declares it, the descriptor's fallback is the all-absent
         // block, which is FORWARD-ALL on both dimensions — not a nothing-crosses allowlist.
         ForwardConfig effectiveForward = PolicyBlock.FORWARD.resolve(chain);
+        // An asset or redirect route has no upstream to hand a cookie to or relay one from, so it
+        // resolves the nothing-crosses block whatever a broader scope declares.
+        CookiesConfig effectiveCookies = route.isProxyRoute() ? PolicyBlock.COOKIES.resolve(chain)
+                : CookiesConfig.NONE;
         // Written as an explicit null check rather than Objects.requireNonNullElse: Sonar's dataflow
         // does not model requireNonNullElse as null-eliminating, so it carried route.protocol()'s
         // @Nullable onto the result and raised java:S4449 at the first use of the local (PR #146).
         Protocol declaredProtocol = route.protocol();
         Protocol protocol = declaredProtocol != null ? declaredProtocol : Protocol.HTTP;
+        CsrfDefence cookieOriginDefence = cookieOriginDefence(route.id(), protocol, effectiveCookies);
         WebSocketConfig websocket = PolicyBlock.WEBSOCKET.resolve(chain);
         Set<String> allowedOrigins = effectiveAllowedOrigins(websocket);
         Integer idleTimeout = resolveWebSocketIdleTimeout(websocket, protocol);
@@ -275,6 +284,8 @@ public final class RouteTableBuilder {
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
                 .effectiveForward(effectiveForward)
+                .effectiveCookies(effectiveCookies)
+                .cookieOriginDefence(cookieOriginDefence)
                 .effectiveAllowedOrigins(allowedOrigins)
                 .effectiveWebSocketIdleTimeoutSeconds(idleTimeout)
                 .neededScopes(neededScopes(gateway, endpoint));
@@ -305,6 +316,33 @@ public final class RouteTableBuilder {
         Route resolved = builder.build();
         logPosture(resolved, gateway);
         return resolved;
+    }
+
+    /**
+     * Builds the same-origin check of a route that forwards browser cookies: one
+     * {@link CsrfDefence} per route, trusting the request's received origin plus the block's
+     * {@code additional_origins}. None is built for a route that forwards no cookie, and none for a
+     * WebSocket route, whose upgrade is gated by its {@code websocket.allowed_origins} instead
+     * ({@code CookieRules} requires that list on a cookie-forwarding WebSocket route). A forwarding
+     * route whose block turns the check off gets none either, and its id is logged
+     * {@link ConfigLogMessages.WARN#COOKIE_SAME_ORIGIN_CHECK_DISABLED} once here.
+     *
+     * @param routeId  the route id, named by the WARN
+     * @param protocol the route's effective protocol
+     * @param cookies  the route's effective {@code cookies} block
+     * @return the route's same-origin check, or {@code null} when the route carries none
+     */
+    private static @Nullable CsrfDefence cookieOriginDefence(String routeId, Protocol protocol,
+            CookiesConfig cookies) {
+        if (protocol == Protocol.WEBSOCKET || !cookies.forwardsAny()) {
+            return null;
+        }
+        if (!cookies.effectiveSameOriginCheck()) {
+            LOGGER.warn(ConfigLogMessages.WARN.COOKIE_SAME_ORIGIN_CHECK_DISABLED, routeId);
+            return null;
+        }
+        List<String> additionalOrigins = cookies.additionalOrigins();
+        return CsrfDefence.forCookieForwardingRoute(additionalOrigins == null ? List.of() : additionalOrigins);
     }
 
     /**

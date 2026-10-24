@@ -29,10 +29,15 @@ import java.util.Set;
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.pipeline.QueryParameter;
 import org.jspecify.annotations.Nullable;
@@ -65,6 +70,19 @@ class ForwardPolicyStageTest {
     private static final String FORWARDED = "Forwarded";
     /** The one TE value RFC 9110 admits end-to-end, and the only one gRPC sends. */
     private static final String TRAILERS_TOKEN = "trailers";
+    /** A custom session cookie name outside the reserved prefix, so the configured name is exercised. */
+    private static final String SESSION_COOKIE = "__Host-app-session";
+    /** The gateway's own cookies: the reserved prefix plus the configured {@link #SESSION_COOKIE}. */
+    private static final GatewayCookies GATEWAY_COOKIES = GatewayCookies.of(GatewayConfig.builder()
+            .version(1)
+            .oidc(OidcConfig.builder()
+                    .redirectUri("https://gw.example.com/auth/callback")
+                    .session(OidcConfig.Session.builder()
+                            .mode(OidcConfig.Session.MODE_SERVER)
+                            .cookieName(SESSION_COOKIE)
+                            .build())
+                    .build())
+            .build());
 
     @Nested
     @DisplayName("drop-and-regenerate forwarding headers")
@@ -79,7 +97,7 @@ class ForwardPolicyStageTest {
                     Map.of(XFF, List.of(CLIENT_IP + ", " + TRUSTED_PEER)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), CookiesConfig.NONE, false);
 
             // Assert — the regenerated value is the client only, never the verbatim inbound chain
             assertTrue(result.headers().containsValue(CLIENT_IP),
@@ -100,7 +118,7 @@ class ForwardPolicyStageTest {
                     Map.of(XFF, List.of(CLIENT_IP, APPENDED_HOP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), CookiesConfig.NONE, false);
 
             // Assert — nearest hop wins across the joined chain, so the SECOND instance is the client.
             // Asserting the first instance is absent is what makes this fail against a single-valued
@@ -117,7 +135,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(TRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), CookiesConfig.NONE, false);
 
             // Assert — both X-Forwarded-* and Forwarded are emitted
             assertTrue(result.headers().containsValue(CLIENT_IP),
@@ -136,7 +154,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(TRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), CookiesConfig.NONE, false);
 
             // Assert
             assertTrue(result.headers().containsValue(CLIENT_IP),
@@ -158,7 +176,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), CookiesConfig.NONE, false);
 
             // Assert — the spoofed value crosses neither as X-Forwarded-For nor as Forwarded
             assertFalse(result.headers().containsValue(CLIENT_IP),
@@ -175,7 +193,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(null, Map.of(XFF, List.of(CLIENT_IP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), CookiesConfig.NONE, false);
 
             // Assert
             assertFalse(result.headers().containsValue(CLIENT_IP),
@@ -197,7 +215,7 @@ class ForwardPolicyStageTest {
                     "X-Secret", List.of("leak")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("X-Api-Version")), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("X-Api-Version")), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals("v2", result.headers().get("X-Api-Version"), "allow-listed header must cross");
@@ -212,9 +230,9 @@ class ForwardPolicyStageTest {
 
             // Act — dropped when not listed, crosses when listed
             ForwardPolicyStage.Result dropped = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result crossed = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("Authorization")), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("Authorization")), CookiesConfig.NONE, false);
 
             // Assert
             assertFalse(dropped.headers().containsKey("Authorization"),
@@ -231,7 +249,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of(XFF)), CookiesConfig.NONE, false);
 
             // Assert — the verbatim inbound value is never copied through the allowlist path
             assertFalse(result.headers().containsValue(CLIENT_IP),
@@ -252,7 +270,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryAllow(List.of("page")).build(), false);
+                    ForwardConfig.builder().queryAllow(List.of("page")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("2"), valuesOf(result, "page"), "allow-listed query parameter must cross");
@@ -269,7 +287,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryAllow(List.of()).build(), false);
+                    ForwardConfig.builder().queryAllow(List.of()).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertTrue(result.query().isEmpty(),
@@ -285,7 +303,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("X-Api-Version", List.of("v2")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of()), CookiesConfig.NONE, false);
 
             // Assert
             assertFalse(result.headers().containsKey("x-api-version"),
@@ -307,7 +325,7 @@ class ForwardPolicyStageTest {
                     "X-Secret", List.of("leak")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Secret")), false);
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Secret")), CookiesConfig.NONE, false);
 
             // Assert — the inbound names are lower-case-keyed by PipelineRequest, and the negative-list
             // copy carries them through under that key
@@ -325,7 +343,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("X-SECRET", List.of("leak")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("x-secret")), false);
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("x-secret")), CookiesConfig.NONE, false);
 
             // Assert
             assertFalse(result.headers().containsKey("x-secret"),
@@ -342,7 +360,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryDeny(List.of("secret")).build(), false);
+                    ForwardConfig.builder().queryDeny(List.of("secret")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("2"), valuesOf(result, "page"), "an undenied parameter crosses");
@@ -358,7 +376,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Unrelated")), false);
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Unrelated")), CookiesConfig.NONE, false);
 
             // Assert
             assertFalse(result.headers().containsValue(CLIENT_IP),
@@ -379,7 +397,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("X-Api-Version", List.of("v2")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals("v2", result.headers().get("x-api-version"),
@@ -395,7 +413,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = queryRequest(pair("page", "2"));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("2"), valuesOf(result, "page"),
@@ -410,7 +428,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of(XFF, List.of(CLIENT_IP)));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertFalse(result.headers().containsValue(CLIENT_IP),
@@ -432,7 +450,7 @@ class ForwardPolicyStageTest {
                     .build();
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("X-Api-Version")), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("X-Api-Version")), CookiesConfig.NONE, false);
 
             // Assert
             assertAll("the header dimension is a positive-list while the query dimension is forward-all",
@@ -458,7 +476,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().setHeaders(Map.of("X-Gateway", "sheriff")).build(), false);
+                    ForwardConfig.builder().setHeaders(Map.of("X-Gateway", "sheriff")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals("sheriff", result.headers().get("X-Gateway"), "static set_headers must be appended verbatim");
@@ -474,7 +492,7 @@ class ForwardPolicyStageTest {
 
             // Act — forward-all, so the mode copy really does carry the client's value in first
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().setHeaders(Map.of("Content-Type", "application/json")).build(), false);
+                    ForwardConfig.builder().setHeaders(Map.of("Content-Type", "application/json")).build(), CookiesConfig.NONE, false);
 
             // Assert — exactly ONE Content-Type reaches the upstream, carrying the operator's value.
             // Asserting the cardinality is the point: a case-sensitive outbound map would send the
@@ -495,7 +513,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Accept", List.of("application/json")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("application/json"), valuesNamed(result.headers(), "Accept"),
@@ -514,7 +532,7 @@ class ForwardPolicyStageTest {
             ForwardPolicyStage.Result result = stage.process(request, ForwardConfig.builder()
                     .headersDeny(List.of("Content-Type"))
                     .setHeaders(Map.of("Content-Type", "application/json"))
-                    .build(), false);
+                    .build(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("application/json"), valuesNamed(result.headers(), "Content-Type"),
@@ -538,8 +556,8 @@ class ForwardPolicyStageTest {
             PipelineRequest unmediated = request(UNTRUSTED_PEER, Map.of());
 
             // Act
-            ForwardPolicyStage.Result withBearer = stage.process(mediated, forward, false);
-            ForwardPolicyStage.Result withoutBearer = stage.process(unmediated, forward, false);
+            ForwardPolicyStage.Result withBearer = stage.process(mediated, forward, CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result withoutBearer = stage.process(unmediated, forward, CookiesConfig.NONE, false);
 
             // Assert
             assertAll("gateway-owned credential beats operator configuration; operator configuration is not filtered",
@@ -568,9 +586,9 @@ class ForwardPolicyStageTest {
 
             // Act — the same route under both not_modified states
             ForwardPolicyStage.Result toggleOff = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result toggleOn = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), true);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), CookiesConfig.NONE, true);
 
             // Assert — this is the matched control for the conditional tier: only the conditional half
             // rides not_modified, so a change that accidentally gated the WHOLE set behind the toggle
@@ -594,9 +612,9 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result disabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result enabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), true);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), CookiesConfig.NONE, true);
 
             // Assert
             assertAll("the conditional tier is the protocol set's gated half",
@@ -615,7 +633,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Accept", List.of("application/json")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("Accept")), false);
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("Accept")), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of(), valuesNamed(result.headers(), "Accept"),
@@ -631,7 +649,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Content-Type", List.of("text/plain")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("content-type")), false);
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("content-type")), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of(), valuesNamed(result.headers(), "Content-Type"),
@@ -647,7 +665,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("If-None-Match", List.of("\"etag-1\"")));
 
             // Act — the toggle is ON, so only the deny entry can withhold it
-            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("If-None-Match")), true);
+            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("If-None-Match")), CookiesConfig.NONE, true);
 
             // Assert
             assertEquals(List.of(), valuesNamed(result.headers(), "If-None-Match"),
@@ -691,9 +709,9 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result disabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result enabled = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), true);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of()), CookiesConfig.NONE, true);
 
             // Assert
             assertAll("the request question and the response answer are gated as one",
@@ -731,7 +749,7 @@ class ForwardPolicyStageTest {
                     Map.of(requestValidator, List.of("probe-value")));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("probe-value"), valuesNamed(result.headers(), requestValidator),
@@ -754,7 +772,7 @@ class ForwardPolicyStageTest {
             ForwardPolicyStage.Result result = stage.process(request, ForwardConfig.builder()
                     .headersAllow(List.of("Authorization"))
                     .setHeaders(Map.of("Content-Type", "application/json"))
-                    .build(), false);
+                    .build(), CookiesConfig.NONE, false);
 
             // Assert
             assertAll("applyMediatedBearer is the last merge in the pinned order",
@@ -773,51 +791,12 @@ class ForwardPolicyStageTest {
                 .trustedProxies(resolverTrusted)
                 .build();
         ForwardedHeaderResolver resolver = new ForwardedHeaderResolver(config, new SecurityEventCounter());
-        return new ForwardPolicyStage(resolver, new TcpPeerGate(tcpTrusted), emitMode);
+        return new ForwardPolicyStage(resolver, new TcpPeerGate(tcpTrusted), emitMode, GATEWAY_COOKIES);
     }
 
     @Nested
     @DisplayName("the gateway-owned never-forward set (no mode re-admits it)")
     class RequestStrip {
-
-        @Test
-        @DisplayName("Cookie never crosses under forward-all")
-        void cookieNeverCrossesUnderForwardAll() {
-            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Cookie", List.of("__Host-sid=sealed")));
-
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
-
-            assertFalse(result.headers().containsKey("cookie"),
-                    "the BFF's sealed session cookie is the gateway's, never the backend's — the"
-                            + " permissive baseline must not leak it");
-        }
-
-        @Test
-        @DisplayName("Cookie never crosses under a negative-list that does not name it")
-        void cookieNeverCrossesUnderNegativeList() {
-            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Cookie", List.of("__Host-sid=sealed")));
-
-            ForwardPolicyStage.Result result = stage.process(request, deny(List.of("X-Unrelated")), false);
-
-            assertFalse(result.headers().containsKey("cookie"),
-                    "no negative-list is needed to withhold Cookie — the gateway owns it");
-        }
-
-        @Test
-        @DisplayName("Cookie never crosses even when a positive-list explicitly names it")
-        void cookieNeverCrossesEvenWhenAllowListed() {
-            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Cookie", List.of("__Host-sid=sealed")));
-
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("Cookie")), false);
-
-            assertFalse(result.headers().containsKey("Cookie"),
-                    "Cookie is one of the 15 absolute members: an operator naming it does not"
-                            + " re-admit it, because doing so is a security regression rather than a"
-                            + " policy choice");
-        }
 
         @ParameterizedTest
         @ValueSource(strings = {"Host", "Content-Length", "Connection", "Referer", "Origin", "Proxy-Authorization"})
@@ -826,7 +805,7 @@ class ForwardPolicyStageTest {
             ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of(name, List.of("value")));
 
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             assertTrue(result.headers().isEmpty(),
                     () -> name + " is gateway-owned and must not reach the upstream under forward-all");
@@ -852,10 +831,10 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result forwardAllResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
-                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result negativeListResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
                     Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers),
-                    deny(List.of("X-Unrelated")), false);
+                    deny(List.of("X-Unrelated")), CookiesConfig.NONE, false);
 
             // Assert — containsValue rather than a name lookup, so a variant that crossed under any
             // spelling at all still fails. The gateway never emits this value itself, so a hit can
@@ -898,13 +877,13 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result forwardAllResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
-                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+                    Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result negativeListResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
                     Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers),
-                    deny(List.of("X-Unrelated")), false);
+                    deny(List.of("X-Unrelated")), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result positiveListResult = stage(EMIT_XFORWARDED, List.of(TRUSTED_CIDR),
                     Set.of(TRUSTED_CIDR)).process(request(UNTRUSTED_PEER, headers),
-                    allow(List.of(name, "X-Api-Version")), false);
+                    allow(List.of(name, "X-Api-Version")), CookiesConfig.NONE, false);
 
             // Assert — containsValue rather than a name lookup, so the spoof failing to cross under
             // ANY spelling still fails the test. The gateway never emits this value itself.
@@ -936,7 +915,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().setHeaders(Map.of("X-Real-IP", "10.1.2.3")).build(), false);
+                    ForwardConfig.builder().setHeaders(Map.of("X-Real-IP", "10.1.2.3")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("10.1.2.3"), valuesNamed(result.headers(), "X-Real-IP"),
@@ -950,11 +929,11 @@ class ForwardPolicyStageTest {
             Map<String, List<String>> headers = Map.of("Authorization", List.of("Bearer inbound-xyz"));
 
             ForwardPolicyStage.Result allowListed = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("Authorization")), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("Authorization")), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result forwardAllResult = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result negativeListResult = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), deny(List.of("X-Unrelated")), false);
+                    .process(request(UNTRUSTED_PEER, headers), deny(List.of("X-Unrelated")), CookiesConfig.NONE, false);
 
             assertAll("re-admission is a positive-list-only carve-out",
                     () -> assertEquals("Bearer inbound-xyz", allowListed.headers().get("Authorization"),
@@ -973,7 +952,7 @@ class ForwardPolicyStageTest {
                     Map.of("Authorization", List.of("Bearer inbound-xyz")));
             request.mediatedBearer("mediated-abc");
 
-            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("Authorization")), false);
+            ForwardPolicyStage.Result result = stage.process(request, allow(List.of("Authorization")), CookiesConfig.NONE, false);
 
             assertEquals("Bearer mediated-abc", result.headers().get("Authorization"),
                     "applyMediatedBearer runs last, so the upstream sees only the mediated bearer even"
@@ -987,9 +966,9 @@ class ForwardPolicyStageTest {
             ForwardPolicyStage gzipStage = stage(EMIT_XFORWARDED, List.of(), Set.of());
 
             ForwardPolicyStage.Result trailers = trailersStage.process(
-                    request(UNTRUSTED_PEER, Map.of("TE", List.of("trailers"))), forwardAll(), false);
+                    request(UNTRUSTED_PEER, Map.of("TE", List.of("trailers"))), forwardAll(), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result gzip = gzipStage.process(
-                    request(UNTRUSTED_PEER, Map.of("TE", List.of("gzip"))), forwardAll(), false);
+                    request(UNTRUSTED_PEER, Map.of("TE", List.of("gzip"))), forwardAll(), CookiesConfig.NONE, false);
 
             assertAll("the TE carve-out is value-dependent, which is why it is not in the set literal",
                     () -> assertEquals("trailers", trailers.headers().get("te"),
@@ -1012,11 +991,11 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result named = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("te")), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("te")), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result omitted = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("X-Unrelated")), false);
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of("X-Unrelated")), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result permissive = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), false);
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertAll("the carve-out is a survival rule, not an admission path",
@@ -1037,11 +1016,249 @@ class ForwardPolicyStageTest {
             PipelineRequest request = request(UNTRUSTED_PEER, Map.of("Host", List.of("client.example")));
 
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().setHeaders(Map.of("Host", "upstream.internal")).build(), false);
+                    ForwardConfig.builder().setHeaders(Map.of("Host", "upstream.internal")).build(), CookiesConfig.NONE, false);
 
             assertEquals("upstream.internal", result.headers().get("Host"),
                     "the strip governs CLIENT input; an operator's static set_headers is gateway"
                             + " configuration and is merged after it");
+        }
+    }
+
+    /**
+     * The {@code Cookie} header is rebuilt from the route's {@code cookies} block: the gateway's own
+     * cookies are dropped under every mode, then {@code none} sends nothing, a list keeps the listed
+     * pairs and {@code all} keeps the rest. Every case carries an unowned companion header
+     * ({@code X-Api-Version}) under forward-all where the mode copy runs, so an absent {@code Cookie}
+     * is a decision of the policy and not an empty mode copy.
+     */
+    @Nested
+    @DisplayName("the request Cookie header, rebuilt by the route's cookies policy")
+    class CookiePolicy {
+
+        private static final String MIXED_HEADER = "theme=dark; __Host-sheriff-binding=b; app=1; "
+                + SESSION_COOKIE + "=s; =__Host-sheriff-session=forged; lang=de";
+
+        @ParameterizedTest(name = "under {0}")
+        @ValueSource(strings = {"positive-list", "negative-list", "forward-all"})
+        @DisplayName("none sends no Cookie whatever the header mode")
+        void noneSendsNoCookie(String headerMode) {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result result = stage.process(cookieRequest("theme=dark; app=1"),
+                    headerMode(headerMode), CookiesConfig.NONE, false);
+
+            assertAll("allow: none withholds every cookie",
+                    () -> assertEquals(List.of(), valuesNamed(result.headers(), COOKIE),
+                            "no Cookie header reaches the upstream under none"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(result.headers(), "X-Api-Version"),
+                            "control: the unowned companion header still crossed"));
+        }
+
+        @Test
+        @DisplayName("a list sends exactly the listed pairs, in inbound order, duplicates kept")
+        void listSendsExactlyTheListedPairs() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result result = stage.process(cookieRequest("a=1; theme=dark; b=2; a=3; Theme=x"),
+                    forwardAll(), cookies(named("a", "b")), false);
+
+            assertEquals(List.of("a=1; b=2; a=3"), valuesNamed(result.headers(), COOKIE),
+                    "only the listed names cross, both a pairs in the order they arrived, and the"
+                            + " case-differing Theme is a different cookie the list does not name");
+        }
+
+        @Test
+        @DisplayName("all sends every pair except the gateway's own cookies")
+        void allSendsEverythingButGatewayCookies() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result result = stage.process(
+                    cookieRequest(MIXED_HEADER + "; __HOST-sheriff-x=1; " + SESSION_COOKIE), forwardAll(),
+                    cookies(CookieAllow.ALL), false);
+
+            assertEquals(List.of("theme=dark; app=1; lang=de"), valuesNamed(result.headers(), COOKIE),
+                    "the reserved prefix (in any case of its __Host- part), the configured session"
+                            + " cookie and a nameless crumb naming a gateway cookie — with or without"
+                            + " a value — are dropped; every other pair crosses in order");
+        }
+
+        @Test
+        @DisplayName("a list drops the gateway's own cookies, even one the list names")
+        void listDropsGatewayCookies() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result result = stage.process(cookieRequest(MIXED_HEADER), forwardAll(),
+                    cookies(named("theme", SESSION_COOKIE, "__Host-sheriff-binding", "lang")), false);
+
+            assertEquals(List.of("theme=dark; lang=de"), valuesNamed(result.headers(), COOKIE),
+                    "boot refuses a list naming a gateway cookie; the stage drops it regardless, so"
+                            + " the gateway's cookies never depend on the boot rule alone");
+        }
+
+        @Test
+        @DisplayName("an empty result omits the Cookie header rather than sending it empty")
+        void emptyResultOmitsTheHeader() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result unlisted = stage.process(cookieRequest("other=1"), forwardAll(),
+                    cookies(named("theme")), false);
+            ForwardPolicyStage.Result gatewayOnly = stage.process(cookieRequest(SESSION_COOKIE + "=s"),
+                    forwardAll(), cookies(CookieAllow.ALL), false);
+
+            assertAll("nothing kept, nothing sent",
+                    () -> assertEquals(List.of(), valuesNamed(unlisted.headers(), COOKIE),
+                            "only unlisted names under a list"),
+                    () -> assertEquals(List.of(), valuesNamed(gatewayOnly.headers(), COOKIE),
+                            "only gateway cookies under all"));
+        }
+
+        @ParameterizedTest(name = "under {0}")
+        @ValueSource(strings = {"positive-list", "negative-list", "forward-all"})
+        @DisplayName("the header forward mode neither copies nor withholds the Cookie the policy rebuilds")
+        void headerModeIsIndependentOfThePolicy(String headerMode) {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result result = stage.process(cookieRequest(MIXED_HEADER), headerMode(headerMode),
+                    cookies(named("theme", "app")), false);
+
+            assertAll("every header mode yields the policy's Cookie and nothing else",
+                    () -> assertEquals(List.of("theme=dark; app=1"), valuesNamed(result.headers(), COOKIE),
+                            "the rebuilt header is the same under every mode"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(result.headers(), "X-Api-Version"),
+                            "control: the mode copy ran"));
+        }
+
+        @Test
+        @DisplayName("a positive-list naming Cookie never copies the client's Cookie; only the policy decides")
+        void positiveListNamingCookieNeverCopiesIt() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            ForwardConfig namingCookie = allow(List.of("Cookie", "cookie", "X-Api-Version"));
+
+            ForwardPolicyStage.Result underNone = stage.process(cookieRequest(MIXED_HEADER), namingCookie,
+                    CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result gatewayOnlyUnderAll = stage.process(
+                    cookieRequest(SESSION_COOKIE + "=s; __Host-sheriff-binding=b"), namingCookie,
+                    cookies(CookieAllow.ALL), false);
+            ForwardPolicyStage.Result underList = stage.process(cookieRequest(MIXED_HEADER), namingCookie,
+                    cookies(named("theme")), false);
+
+            assertAll("the mode copy skips Cookie in every spelling the list names",
+                    () -> assertEquals(List.of(), valuesNamed(underNone.headers(), COOKIE),
+                            "under none no Cookie crosses, although the positive-list names it"),
+                    () -> assertEquals(List.of(), valuesNamed(gatewayOnlyUnderAll.headers(), COOKIE),
+                            "a header holding only gateway cookies is never copied verbatim"),
+                    () -> assertEquals(List.of("theme=dark"), valuesNamed(underList.headers(), COOKIE),
+                            "under a list exactly the policy's rebuilt header crosses"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(underNone.headers(), "X-Api-Version"),
+                            "control: the positive-list copy ran for the other name it lists"));
+        }
+
+        @Test
+        @DisplayName("pairs are trimmed of spaces and tabs, and empty pairs are discarded")
+        void pairsAreTrimmedAndEmptyPairsDiscarded() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result result = stage.process(cookieRequest("  theme=dark ;\tapp = 1\t;; ;"),
+                    forwardAll(), cookies(named("theme", "app")), false);
+
+            assertEquals(List.of("theme=dark; app = 1"), valuesNamed(result.headers(), COOKIE),
+                    "the name is read trimmed, each kept pair crosses as its trimmed inbound text, and"
+                            + " the rebuilt header joins them with a semicolon and one space");
+        }
+
+        @Test
+        @DisplayName("a nameless crumb crosses under all and is never listed")
+        void namelessCrumbCrossesOnlyUnderAll() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+
+            ForwardPolicyStage.Result underAll = stage.process(cookieRequest("bare; theme=dark"), forwardAll(),
+                    cookies(CookieAllow.ALL), false);
+            ForwardPolicyStage.Result underList = stage.process(cookieRequest("bare; theme=dark"), forwardAll(),
+                    cookies(named("bare", "theme")), false);
+
+            assertAll("a pair without = has no name to list",
+                    () -> assertEquals(List.of("bare; theme=dark"), valuesNamed(underAll.headers(), COOKIE),
+                            "all keeps every pair that is not a gateway cookie"),
+                    () -> assertEquals(List.of("theme=dark"), valuesNamed(underList.headers(), COOKIE),
+                            "a list matches names, and a crumb's text is a value, not the name bare"));
+        }
+
+        @Test
+        @DisplayName("only the first Cookie value is read")
+        void onlyTheFirstCookieValueIsRead() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of(COOKIE, List.of("theme=dark", "app=1")));
+
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), cookies(CookieAllow.ALL), false);
+
+            assertEquals(List.of("theme=dark"), valuesNamed(result.headers(), COOKIE),
+                    "a repeated Cookie header is read by its first value, the first-value rule the"
+                            + " mode copy applies to every header");
+        }
+
+        @Test
+        @DisplayName("admittedCookiePairs returns exactly the pairs process forwards")
+        void admittedPairsAreWhatProcessForwards() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = cookieRequest(MIXED_HEADER + "; theme=light");
+            CookiesConfig all = cookies(CookieAllow.ALL);
+            CookiesConfig list = cookies(named("lang", "theme"));
+
+            List<String> admittedUnderAll = stage.admittedCookiePairs(request, all);
+            List<String> admittedUnderList = stage.admittedCookiePairs(request, list);
+
+            assertAll("the guard and the rebuild read the header the same way",
+                    () -> assertEquals(List.of("theme=dark", "app=1", "lang=de", "theme=light"), admittedUnderAll),
+                    () -> assertEquals(List.of(String.join("; ", admittedUnderAll)),
+                            valuesNamed(stage.process(request, forwardAll(), all, false).headers(), COOKIE)),
+                    () -> assertEquals(List.of("theme=dark", "lang=de", "theme=light"), admittedUnderList),
+                    () -> assertEquals(List.of(String.join("; ", admittedUnderList)),
+                            valuesNamed(stage.process(request, forwardAll(), list, false).headers(), COOKIE)));
+        }
+
+        @Test
+        @DisplayName("admittedCookiePairs is empty when nothing in the request would be forwarded")
+        void admittedPairsAreEmptyWhenNothingIsForwarded() {
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            CookiesConfig all = cookies(CookieAllow.ALL);
+
+            assertAll("no forwardable cookie",
+                    () -> assertEquals(List.of(),
+                            stage.admittedCookiePairs(request(UNTRUSTED_PEER, Map.of()), all),
+                            "no Cookie header at all"),
+                    () -> assertEquals(List.of(),
+                            stage.admittedCookiePairs(cookieRequest(SESSION_COOKIE + "=s; __Host-sheriff-binding=b"),
+                                    all),
+                            "a header holding only gateway cookies"),
+                    () -> assertEquals(List.of(),
+                            stage.admittedCookiePairs(cookieRequest("other=1; more=2"), cookies(named("theme"))),
+                            "a header holding only unlisted names under a list"),
+                    () -> assertEquals(List.of(),
+                            stage.admittedCookiePairs(cookieRequest(MIXED_HEADER), CookiesConfig.NONE),
+                            "any header under none"));
+        }
+
+        private static final String COOKIE = "Cookie";
+
+        private static PipelineRequest cookieRequest(String cookieHeader) {
+            return request(UNTRUSTED_PEER, Map.of(COOKIE, List.of(cookieHeader), "X-Api-Version", List.of("v2")));
+        }
+
+        private static CookiesConfig cookies(CookieAllow allow) {
+            return CookiesConfig.builder().allow(allow).build();
+        }
+
+        private static CookieAllow named(String... names) {
+            return new CookieAllow.Named(List.of(names));
+        }
+
+        /** One forward block per header mode, each letting the unowned companion header cross. */
+        private static ForwardConfig headerMode(String headerMode) {
+            return switch (headerMode) {
+                case "positive-list" -> allow(List.of("X-Api-Version"));
+                case "negative-list" -> deny(List.of("X-Unrelated"));
+                default -> forwardAll();
+            };
         }
     }
 
@@ -1094,7 +1311,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryDeny(List.of("token")).build(), false);
+                    ForwardConfig.builder().queryDeny(List.of("token")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertFalse(namesOf(result).contains(ENCODED_TOKEN), "an encoded spelling cannot evade the deny");
@@ -1110,7 +1327,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryAllow(List.of("token")).build(), false);
+                    ForwardConfig.builder().queryAllow(List.of("token")).build(), CookiesConfig.NONE, false);
 
             // Assert — the pair crosses byte-for-byte as validated: raw name, raw value
             assertEquals(List.of("a%2Fb"), valuesOf(result, ENCODED_TOKEN),
@@ -1128,7 +1345,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryDeny(List.of("session id")).build(), false);
+                    ForwardConfig.builder().queryDeny(List.of("session id")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertTrue(result.query().isEmpty(), "form semantics: '+' is a space in the decoded name");
@@ -1144,8 +1361,8 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result denyResult = stage.process(request,
-                    ForwardConfig.builder().queryDeny(List.of("unrelated")).build(), false);
-            ForwardPolicyStage.Result forwardAllResult = stage.process(request, forwardAll(), false);
+                    ForwardConfig.builder().queryDeny(List.of("unrelated")).build(), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result forwardAllResult = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertTrue(denyResult.query().isEmpty(), "no decoded name can be proven absent from the deny list");
@@ -1160,7 +1377,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = queryRequest(pair("z", "1"), pair("flag", null), pair("a", "2"));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("z", "flag", "a"), namesOf(result), "inbound order is kept");
@@ -1181,7 +1398,7 @@ class ForwardPolicyStageTest {
                     : ForwardConfig.builder().queryDeny(List.of("token")).build();
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forward, false);
+            ForwardPolicyStage.Result result = stage.process(request, forward, CookiesConfig.NONE, false);
 
             // Assert
             assertAll(mode,
@@ -1199,7 +1416,7 @@ class ForwardPolicyStageTest {
             PipelineRequest request = queryRequest(pair(FULL_WIDTH_TOKEN, "secret"));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of(pair(FULL_WIDTH_TOKEN, "secret")), result.query(),
@@ -1215,11 +1432,11 @@ class ForwardPolicyStageTest {
             List<QueryParameter> inbound = request.queryParameters();
 
             // Act
-            ForwardPolicyStage.Result forwardAll = stage.process(request, forwardAll(), false);
+            ForwardPolicyStage.Result forwardAll = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result allowBoth = stage.process(request,
-                    ForwardConfig.builder().queryAllow(List.of("a", "b")).build(), false);
+                    ForwardConfig.builder().queryAllow(List.of("a", "b")).build(), CookiesConfig.NONE, false);
             ForwardPolicyStage.Result denyOther = stage.process(request,
-                    ForwardConfig.builder().queryDeny(List.of("c")).build(), false);
+                    ForwardConfig.builder().queryDeny(List.of("c")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertAll("the forwarded sequence equals the validated sequence, pair for pair",
@@ -1237,7 +1454,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryDeny(List.of("b")).build(), false);
+                    ForwardConfig.builder().queryDeny(List.of("b")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of(pair("a", "1"), pair("a", "3"), pair("c", null)), result.query(),
@@ -1253,7 +1470,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryDeny(List.of("token")).build(), false);
+                    ForwardConfig.builder().queryDeny(List.of("token")).build(), CookiesConfig.NONE, false);
 
             // Assert — the ';' stays inside the one judged pair; the edge renders it as %3B
             assertAll("the stage judges '&'-split pairs only",
@@ -1271,7 +1488,7 @@ class ForwardPolicyStageTest {
 
             // Act
             ForwardPolicyStage.Result result = stage.process(request,
-                    ForwardConfig.builder().queryAllow(List.of("x")).build(), false);
+                    ForwardConfig.builder().queryAllow(List.of("x")).build(), CookiesConfig.NONE, false);
 
             // Assert
             assertEquals(List.of("x"), namesOf(result), "only the allow-listed pair crosses");

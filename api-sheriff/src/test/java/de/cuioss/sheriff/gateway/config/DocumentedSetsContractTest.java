@@ -55,6 +55,7 @@ import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.validation.rule.TokenValidationRules.JwksRefreshKey;
@@ -62,19 +63,22 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Eleven shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Thirteen shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
  * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
  * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
  * three symmetric {@code profile} enum sites the two bundled JSON Schemas declare — those two
  * schemas each additionally list the
- * authentication posture set carried by {@link Require}, and the boot-validation list of
+ * authentication posture set carried by {@link Require} and the two {@code cookies.allow} mode
+ * keywords carried by {@link CookieAllow#NONE_KEYWORD} and {@link CookieAllow#ALL_KEYWORD}, and the
+ * boot-validation list of
  * {@code doc/configuration.adoc} names the JWKS refresh keys and the range each admits, carried by
  * {@link JwksRefreshKey}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
@@ -139,15 +143,20 @@ import org.junit.jupiter.params.provider.MethodSource;
  * annotation, because such a branch asserts <em>which</em> keys a document declares and can declare
  * none of its own, and it is refused as before the moment a branch carries anything that could. That
  * is the shape the endpoint schema uses to make {@code match.path_prefix} and {@code match.path}
- * mutually exclusive. One negative control per refusal injects the unmodelled shape into a copy of the
+ * mutually exclusive. One more {@code oneOf} shape is modelled rather than refused: exactly a string
+ * {@code enum} branch beside an array-of-strings branch, carrying nothing else, which the
+ * {@code cookies.allow} key uses for its scalar-or-list form and which is counted as a string-item
+ * array key — its list branch is the array. The same {@code oneOf} with any further keyword in a
+ * branch is refused again, and a positive and a negative control pin both sides. One negative control per refusal injects the unmodelled shape into a copy of the
  * gateway schema and asserts the derivation refuses it naming that shape — including a {@code oneOf}
  * whose branch declares a key — and two further controls inject the exemptions and the keyless
  * {@code oneOf} and assert the derived inventory is unchanged, so neither the fail-closed walk can
  * quietly widen into a blanket refusal nor the carve-out into a blanket exemption.
  * <p>
  * <strong>No vacuous pass.</strong> Every extraction is anchored on a named constant — a literal
- * sentence fragment for the prose surfaces, and a JSON pointer for the posture set, which the schema
- * already models as an array and so needs no text scraping. When an anchor cannot be located, or
+ * sentence fragment for the prose surfaces, and a JSON pointer for the posture set and the
+ * {@code cookies.allow} keywords, which the schema already models as arrays and so need no text
+ * scraping. When an anchor cannot be located, or
  * locates an empty set, the test fails naming both the document and the anchor rather than asserting
  * over nothing. A guard that stops
  * matching after a rewrite must break loudly; one that quietly matches nothing is worse than absent.
@@ -465,6 +474,37 @@ class DocumentedSetsContractTest {
     private static final Set<String> KEYLESS_BRANCH_KEYWORDS = Set.of(SCHEMA_REQUIRED, "description", "title",
             "$comment", ERROR_MESSAGE_KEYWORD);
 
+    /** The annotation keywords a branch of the scalar-or-list {@code oneOf} may carry besides its schema. */
+    private static final Set<String> BRANCH_ANNOTATIONS = Set.of("description", "title", "$comment");
+
+    /** The {@code minItems} keyword the list branch of the scalar-or-list {@code oneOf} may carry. */
+    private static final String SCHEMA_MIN_ITEMS = "minItems";
+
+    /**
+     * Where the shipped schemas declare the scalar-or-list {@code oneOf} the second carve-out exists for:
+     * the {@code allow} key of the shared {@code cookies} definition, which the gateway schema reaches
+     * from its root and from an anchor.
+     */
+    private static final String SCALAR_OR_LIST_POINTER = "/$defs/cookies/properties/allow";
+
+    /** The name the derivation gives the shipped scalar-or-list key. */
+    private static final String SCALAR_OR_LIST_KEY = "cookies.allow";
+
+    /**
+     * JSON pointer to the mode keywords of {@code cookies.allow}: the string {@code enum} of the first
+     * {@code oneOf} branch at {@link #SCALAR_OR_LIST_POINTER}, which both bundled schemas declare on
+     * their shared {@code cookies} definition.
+     * <p>
+     * <strong>Why this guard exists.</strong> Each schema hardcodes the two keywords independently of
+     * {@link CookieAllow}, which binds the scalar by switching on {@link CookieAllow#NONE_KEYWORD} and
+     * {@link CookieAllow#ALL_KEYWORD}. The schema is what refuses an unknown scalar before binding ever
+     * reaches the type, so a keyword renamed in one place and not the other is either unreachable
+     * configuration or a value that passes the schema and then fails the boot bind — and the
+     * shape-only check of {@code scalarOrStringListOneOfIsCountedAsAnArrayKey} sees neither.
+     */
+    private static final String COOKIE_ALLOW_KEYWORD_ENUM_POINTER =
+            SCALAR_OR_LIST_POINTER + "/" + APPLICATOR_ONE_OF + "/0/" + SCHEMA_ENUM;
+
     /**
      * The keywords allowed to sit beside a {@code $ref}. Draft 2020-12 <em>applies</em> a {@code $ref}'s
      * siblings rather than discarding them the way Draft-07 did, while the derivation follows the
@@ -578,6 +618,18 @@ class DocumentedSetsContractTest {
     @DisplayName("the bundled endpoint schema enumerates exactly the Require posture set")
     void endpointSchemaEnumeratesTheRequirePostures() throws Exception {
         assertRequirePostures(ENDPOINT_SCHEMA_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("the bundled gateway schema declares exactly the CookieAllow keywords for cookies.allow")
+    void gatewaySchemaDeclaresTheCookieAllowKeywords() throws Exception {
+        assertCookieAllowKeywords(GATEWAY_SCHEMA_RESOURCE);
+    }
+
+    @Test
+    @DisplayName("the bundled endpoint schema declares exactly the CookieAllow keywords for cookies.allow")
+    void endpointSchemaDeclaresTheCookieAllowKeywords() throws Exception {
+        assertCookieAllowKeywords(ENDPOINT_SCHEMA_RESOURCE);
     }
 
     @ParameterizedTest(name = "{1} in {0}")
@@ -1104,6 +1156,55 @@ class DocumentedSetsContractTest {
     }
 
     @Test
+    @DisplayName("the walk counts a oneOf of a string enum and a string list as a string-item array key")
+    void scalarOrStringListOneOfIsCountedAsAnArrayKey() throws Exception {
+        // Arrange — the carve-out earns its place only while a shipped schema still writes that shape
+        JsonNode shipped = schemaTree(GATEWAY_SCHEMA_RESOURCE);
+        assertTrue(isScalarOrStringList(shipped.at(SCALAR_OR_LIST_POINTER).path(APPLICATOR_ONE_OF)),
+                GATEWAY_SCHEMA_RESOURCE + " no longer declares the scalar-or-list '" + APPLICATOR_ONE_OF + "' at "
+                        + SCALAR_OR_LIST_POINTER + ", so the carve-out is no longer exercised by a shipped schema");
+        JsonNode injected = shipped.deepCopy();
+        ObjectNode properties = mutableAt(injected, INJECTED_ARRAY_PARENT_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        properties.set(INJECTED_ARRAY_KEY, scalarOrStringList(properties));
+
+        // Act
+        Map<String, ItemKind> shippedKeys = deriveArrayKeys(shipped, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE);
+        Map<String, ItemKind> derived = deriveArrayKeys(injected, GATEWAY_ARRAY_ROOT, GATEWAY_SCHEMA_RESOURCE
+                + " with a scalar-or-list '" + APPLICATOR_ONE_OF + "' injected at " + INJECTED_ARRAY_PARENT_POINTER);
+
+        // Assert
+        Map<String, ItemKind> expected = new TreeMap<>(shippedKeys);
+        expected.put(INJECTED_ARRAY_NAME, ItemKind.STRING);
+        assertAll("the list branch is a string-item array key",
+                () -> assertEquals(ItemKind.STRING, shippedKeys.get(SCALAR_OR_LIST_KEY),
+                        "the shipped " + SCALAR_OR_LIST_KEY + " is derived as a string-item array key"),
+                () -> assertEquals(expected, derived, "injecting the shape adds exactly its own key, as a"
+                        + " string-item array key, and nothing else"));
+    }
+
+    @ParameterizedTest(name = "a further ''{1}'' in the {0}")
+    @CsvSource({"string branch,pattern", "list branch,maxItems", "list items,pattern"})
+    @DisplayName("the walk still refuses the scalar-or-list oneOf once any branch carries a further keyword")
+    void scalarOrStringListOneOfWithAFurtherKeywordIsRefused(String where, String keyword) throws Exception {
+        // Arrange
+        JsonNode injected = schemaTree(GATEWAY_SCHEMA_RESOURCE).deepCopy();
+        ObjectNode properties = mutableAt(injected, INJECTED_ARRAY_PARENT_POINTER, GATEWAY_SCHEMA_RESOURCE);
+        ObjectNode key = scalarOrStringList(properties);
+        ArrayNode branches = (ArrayNode) key.get(APPLICATOR_ONE_OF);
+        ObjectNode target = switch (where) {
+            case "string branch" -> (ObjectNode) branches.get(0);
+            case "list branch" -> (ObjectNode) branches.get(1);
+            default -> (ObjectNode) branches.get(1).get(SCHEMA_ITEMS);
+        };
+        target.put(keyword, "x");
+        properties.set(INJECTED_ARRAY_KEY, key);
+
+        // Act + Assert
+        assertDerivationRefuses(injected, GATEWAY_SCHEMA_RESOURCE + " with a scalar-or-list '" + APPLICATOR_ONE_OF
+                + "' carrying a further '" + keyword + "' in its " + where, "uses " + APPLICATOR_ONE_OF);
+    }
+
+    @Test
     @DisplayName("doc/configuration.adoc's boot-validation list names exactly the JWKS refresh keys and their ranges")
     void configurationAdocStatesTheJwksRefreshKeyRanges() throws Exception {
         // Arrange
@@ -1308,6 +1409,23 @@ class DocumentedSetsContractTest {
     }
 
     /**
+     * A key node whose {@code oneOf} is the scalar-or-list shape: a string {@code enum} branch and a
+     * non-empty array-of-strings branch — the shape the shipped {@code cookies.allow} is written in.
+     *
+     * @param factory any node of the tree being mutated, used only as a node factory
+     * @return the key node
+     */
+    private static ObjectNode scalarOrStringList(ObjectNode factory) {
+        ObjectNode scalar = factory.objectNode().put(SCHEMA_TYPE, TYPE_STRING);
+        scalar.set(SCHEMA_ENUM, factory.arrayNode().add("none").add("all"));
+        ObjectNode list = factory.objectNode().put(SCHEMA_TYPE, TYPE_ARRAY).put(SCHEMA_MIN_ITEMS, 1);
+        list.set(SCHEMA_ITEMS, factory.objectNode().put(SCHEMA_TYPE, TYPE_STRING));
+        ObjectNode key = factory.objectNode().put("description", "scalar or list");
+        key.set(APPLICATOR_ONE_OF, factory.arrayNode().add(scalar).add(list));
+        return key;
+    }
+
+    /**
      * The mutable node a control injects into, failing when the pointer no longer resolves rather than
      * mutating nothing and passing.
      *
@@ -1417,6 +1535,39 @@ class DocumentedSetsContractTest {
                 resource + " lists a different number of postures than Require declares. The count is"
                         + " taken over the raw array entries rather than over the de-duplicated set, so a"
                         + " posture listed twice fails here even though the set equality above still holds");
+    }
+
+    /**
+     * Asserts one bundled schema's {@code cookies.allow} keyword enum against {@link CookieAllow} — the
+     * set it names, and how many entries it listed to name it.
+     * <p>
+     * The comparison is against {@link CookieAllow#NONE_KEYWORD} and {@link CookieAllow#ALL_KEYWORD}
+     * because those constants are what {@link CookieAllow#fromYaml} switches on, so they <em>are</em> the
+     * scalar spellings the bind accepts. The listed-entry count is asserted alongside the set for the
+     * reason every other enumeration here asserts it: a {@link Set} cannot observe a duplicate, so an
+     * array naming {@code none} twice collapses into exactly the set a correct array produces.
+     *
+     * @param resource the classpath resource of the schema to assert
+     * @throws IOException when the bundled schema cannot be read
+     */
+    private static void assertCookieAllowKeywords(String resource) throws IOException {
+        TokenList declared = schemaEnumAt(resource, COOKIE_ALLOW_KEYWORD_ENUM_POINTER);
+        Set<String> keywords = cookieAllowKeywords();
+
+        assertFalse(declared.tokens().isEmpty(), resource + ": " + COOKIE_ALLOW_KEYWORD_ENUM_POINTER
+                + " resolved to an empty enum array — the guard would pass vacuously");
+        assertEquals(keywords, sorted(declared.tokens()),
+                resource + " enumerates the cookies.allow mode keywords at " + COOKIE_ALLOW_KEYWORD_ENUM_POINTER
+                        + ", which are authoritatively defined by CookieAllow.NONE_KEYWORD and"
+                        + " CookieAllow.ALL_KEYWORD, and has drifted from them. The schema is what refuses an"
+                        + " unknown scalar before binding ever reaches the type, so a keyword CookieAllow binds"
+                        + " and the schema omits is unreachable configuration, and one the schema declares and"
+                        + " CookieAllow omits fails the boot bind instead of the validation");
+        assertEquals(keywords.size(), declared.rawCount(),
+                resource + " lists a different number of cookies.allow keywords at "
+                        + COOKIE_ALLOW_KEYWORD_ENUM_POINTER + " than CookieAllow declares. The count is taken"
+                        + " over the raw array entries rather than over the de-duplicated set, so a keyword"
+                        + " listed twice fails here even though the set equality above still holds");
     }
 
     /**
@@ -1943,6 +2094,14 @@ class DocumentedSetsContractTest {
     private static void walkNode(JsonNode schema, JsonNode node, String name, Map<String, ItemKind> keys,
             Map<String, String> followed, String label) {
         assertModelledShape(node, name, label);
+        if (isScalarOrStringList(node.path(APPLICATOR_ONE_OF))) {
+            // A string scalar or a list of strings: the list branch is a string-item array key.
+            if (keys.put(name, ItemKind.STRING) != null) {
+                fail(label + ": two array-typed nodes derive the same key name '" + name + "' without sharing a"
+                        + " definition, so the document could not tell them apart");
+            }
+            return;
+        }
         if (!TYPE_ARRAY.equals(node.path(SCHEMA_TYPE).asText())) {
             walkChildren(schema, node, name, keys, followed, label);
             return;
@@ -1977,7 +2136,8 @@ class DocumentedSetsContractTest {
      */
     private static void assertModelledShape(JsonNode node, String name, String label) {
         for (String applicator : UNMODELLED_APPLICATORS) {
-            if (node.has(applicator) && !declaresNoKey(applicator, node.get(applicator))) {
+            if (node.has(applicator) && !declaresNoKey(applicator, node.get(applicator))
+                    && !(APPLICATOR_ONE_OF.equals(applicator) && isScalarOrStringList(node.get(applicator)))) {
                 fail(label + ": '" + qualified(name, applicator) + "' uses " + applicator + ", which the array-key"
                         + " derivation does not model; extend DocumentedSetsContractTest before relying on it, or"
                         + " the inventory would silently miss any array key declared inside it");
@@ -2021,6 +2181,53 @@ class DocumentedSetsContractTest {
                 if (!KEYLESS_BRANCH_KEYWORDS.contains(keyword.getKey())) {
                     return false;
                 }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a {@code oneOf} is exactly the scalar-or-list shape: two branches, one a string
+     * {@code enum} and one an array of strings, so the key it sits on is either one of the enumerated
+     * words or a list of strings — and counts as a string-item array key.
+     * <p>
+     * The test is an allow-list on every level, so it fails closed: the string branch may carry only
+     * {@code type: string} and its {@code enum}, the list branch only {@code type: array}, an
+     * {@code items} of {@code type: string} alone and an optional {@code minItems}, and each branch
+     * nothing else but annotation. Any further keyword is one that could constrain or declare something
+     * the walk does not read, so the {@code oneOf} is then refused as before.
+     *
+     * @param value the {@code oneOf} keyword's value, missing when the node declares none
+     * @return {@code true} only for the scalar-or-list shape
+     */
+    private static boolean isScalarOrStringList(JsonNode value) {
+        if (!value.isArray() || value.size() != 2) {
+            return false;
+        }
+        JsonNode first = value.get(0);
+        JsonNode second = value.get(1);
+        return isStringEnumBranch(first) && isStringListBranch(second)
+                || isStringListBranch(first) && isStringEnumBranch(second);
+    }
+
+    private static boolean isStringEnumBranch(JsonNode branch) {
+        return branch.isObject() && TYPE_STRING.equals(branch.path(SCHEMA_TYPE).asText())
+                && branch.path(SCHEMA_ENUM).isArray() && !branch.path(SCHEMA_ENUM).isEmpty()
+                && carriesOnly(branch, Set.of(SCHEMA_TYPE, SCHEMA_ENUM));
+    }
+
+    private static boolean isStringListBranch(JsonNode branch) {
+        JsonNode items = branch.path(SCHEMA_ITEMS);
+        return branch.isObject() && TYPE_ARRAY.equals(branch.path(SCHEMA_TYPE).asText())
+                && carriesOnly(branch, Set.of(SCHEMA_TYPE, SCHEMA_ITEMS, SCHEMA_MIN_ITEMS))
+                && items.isObject() && TYPE_STRING.equals(items.path(SCHEMA_TYPE).asText())
+                && carriesOnly(items, Set.of(SCHEMA_TYPE));
+    }
+
+    private static boolean carriesOnly(JsonNode node, Set<String> schemaKeywords) {
+        for (Map.Entry<String, JsonNode> keyword : node.properties()) {
+            if (!schemaKeywords.contains(keyword.getKey()) && !BRANCH_ANNOTATIONS.contains(keyword.getKey())) {
+                return false;
             }
         }
         return true;
@@ -2193,6 +2400,15 @@ class DocumentedSetsContractTest {
             names.add(posture.toString());
         }
         return names;
+    }
+
+    /**
+     * The scalar mode keywords {@link CookieAllow} binds, sorted for comparison.
+     *
+     * @return {@link CookieAllow#NONE_KEYWORD} and {@link CookieAllow#ALL_KEYWORD}
+     */
+    private static Set<String> cookieAllowKeywords() {
+        return new TreeSet<>(Set.of(CookieAllow.NONE_KEYWORD, CookieAllow.ALL_KEYWORD));
     }
 
     private static Set<String> modeNames() {

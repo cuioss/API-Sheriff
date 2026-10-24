@@ -31,6 +31,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -52,6 +53,7 @@ import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
 import de.cuioss.sheriff.gateway.edge.upstream.GrpcDispatchStage;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.FramingGate;
 import de.cuioss.sheriff.gateway.pipeline.OriginValidationStage;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -270,7 +272,8 @@ class TerminalDispatchGrpcStreamIdleTest {
                 BffRuntime.inert(), new EdgeAdmission(hardening), new ConnectionRetirement(new FramingGate(false)),
                 rejectionReporter, new ErrorResponseWriter(PortalEndpoint.inert(), new GatewayJson(new ObjectMapper()),
                         new GrpcStatusMapper(), rejectionReporter),
-                new ResponseStage(Set.of()), new OriginValidationStage(),
+                new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build())),
+                new OriginValidationStage(),
                 new WebSocketRelayStage(vertx.createWebSocketClient(), failureMapper, eventCounter,
                         WebSocketRelayStage.RelayObserver.NO_OP));
     }

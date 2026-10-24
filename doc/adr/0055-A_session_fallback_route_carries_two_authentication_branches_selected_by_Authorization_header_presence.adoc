@@ -76,7 +76,10 @@ request carries an `Authorization` header.*
   `forward.headers_allow: [Authorization]` (ADR-0037), so the route needs no forward-list entry for it,
   and the upstream receives the token that was validated, not whatever inbound header crossed.
   `token_relay` governs the SESSION branch only; the BEARER branch always forwards. The browser
-  `Cookie` stays withheld by the gateway-owned never-forward set on both branches. A plain
+  `Cookie` is treated alike on both branches: the gateway's own cookies, the session cookie among
+  them, never reach the upstream, and the browser's other cookies cross only as the route's
+  `cookies` policy admits them (see
+  link:../configuration.adoc#_never_forward_set[the never-forward set]). A plain
   `require: bearer` route is unchanged: it records no mediated bearer.
 * *Refused where it cannot act, visible where it does.* The key rides the `auth` block's wholesale
   cascade (ADR-0007). The boot refuses `session_fallback: true` on a posture other than

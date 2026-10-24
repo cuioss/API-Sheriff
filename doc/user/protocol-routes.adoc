@@ -22,10 +22,13 @@ protocol does and does not inspect.
 *A route that declares no `forward` block forwards every client header and query parameter the
 gateway-owned never-forward set does not withhold* -- so a protocol route needs no enumeration of
 its own mechanics to work, and the routes shown below deliberately declare none. Neither of the
-example routes on this page is thereby unguarded: `Cookie` is absolute against client input --
-no mode and no list re-admits it -- as are the hop-by-hop, framing and provenance names. An
-inbound `Authorization` is the one re-admittable member, and only where a route declares a
-`headers_allow` naming it; the routes below declare no list at all, so it is withheld here.
+example routes on this page is thereby unguarded: the hop-by-hop, framing and provenance names of
+the link:../configuration.adoc#_never_forward_set[never-forward set] are withheld under every mode.
+An inbound `Authorization` is the one re-admittable member, and only where a route declares a
+`headers_allow` naming it; the routes below declare no list at all, so it is withheld here. The
+browser `Cookie` is decided by the route's link:../configuration.adoc#_cookies[`cookies`] block,
+not by `forward`; the routes below declare none, so they resolve `allow: none` and forward no
+cookie (see <<_cookies_on_protocol_routes>>).
 Declare a `forward` block only to *narrow* that. One protocol-specific caution: a gRPC route that *does*
 declare `headers_allow` must list `te`, because a positive-list never copies a name it does not
 name and gRPC over HTTP/2 requires `TE: trailers`. See
@@ -127,8 +130,11 @@ A `protocol: grpc` route proxies gRPC calls -- each an HTTP/2 `POST` to a servic
 The gateway forces the *upstream* connection to HTTP/2 (gRPC requires HTTP/2 end-to-end), streams
 the request and response bodies as opaque length-prefixed frames (it never inspects the protobuf
 payload), and relays the upstream response *trailers* (`grpc-status`, `grpc-message`) back to the
-client untouched -- except for a call it ends itself because it went quiet (see
-<<_what_bounds_a_long_lived_call>>). Author it in an `endpoints/*.yaml` file:
+client -- except for a call it ends itself because it went quiet (see
+<<_what_bounds_a_long_lived_call>>). The leading headers and the trailers pass the same response
+filter as an HTTP response, so an upstream `Set-Cookie` in either reaches the client only as the
+route's `cookies` policy admits it (see <<_cookies_on_protocol_routes>>). Author it in an
+`endpoints/*.yaml` file:
 
 [source,yaml]
 ----
@@ -190,6 +196,42 @@ HTTP status on an HTTP route onto the canonical gRPC status; for example, a bear
 called without a token is rejected `UNAUTHENTICATED` (16). Operators do not configure this
 mapping -- it is fixed. The full mapping table is in
 link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)].
+
+[[_cookies_on_protocol_routes]]
+== Cookies on WebSocket and gRPC routes
+
+A protocol route takes a `cookies` block like any other route; the full contract is the
+link:../configuration.adoc#_cookies[`cookies` reference]. Two things differ per protocol.
+
+*A WebSocket route.* The upgrade request carries the rebuilt `Cookie` header: the gateway's own
+cookies are dropped and the remaining pairs are filtered by the route's policy, exactly as on an
+HTTP route. A route whose effective block forwards any cookie must declare a non-empty
+`websocket.allowed_origins` -- on a `require: none` route too, which could otherwise boot with the
+list empty -- and the boot is refused otherwise. That allowlist, not the per-route same-origin check,
+is what gates a cookie-forwarding upgrade: it is stricter, because an absent `Origin` is always
+refused. `same_origin_check` and `additional_origins` therefore do not act on a WebSocket route.
+The gateway relays no upstream header on the `101` answer and none on a refused upgrade, so no
+upstream `Set-Cookie` reaches the client on this path.
+
+[source,yaml]
+----
+- id: live-updates
+  protocol: websocket
+  match: { path_prefix: /app/stream }
+  auth: { require: none }
+  cookies: { allow: [SESSIONID] }    # forwards a cookie, so allowed_origins is mandatory
+  websocket:
+    allowed_origins: [https://app.example.com]
+  upstream: { path: /stream }
+----
+
+*A gRPC route.* The call carries the rebuilt `Cookie` header, and the upstream's leading headers
+and trailers pass the shared response filter, which relays a `Set-Cookie` only as the policy admits
+it and with its `Domain` attribute removed. A gRPC route whose block forwards a cookie carries the
+same-origin check, and the check applies only to an unsafe call -- every gRPC call is a `POST` --
+that carries at least one cookie the route would forward. A non-browser gRPC client that sends no
+cookie therefore needs no `Origin` and passes unchecked; a cross-site browser call carrying a
+forwarded cookie is refused with a trailers-only `PERMISSION_DENIED`.
 
 == See also
 

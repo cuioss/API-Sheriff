@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,9 +25,12 @@ import java.lang.reflect.Type;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
+import de.cuioss.sheriff.gateway.config.model.CookieAllow;
+import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import io.quarkus.runtime.annotations.RegisterForReflection;
@@ -99,6 +103,21 @@ class ConfigModelReflectionTest {
         assertTrue(reachable.containsAll(BINDING_ROOTS), "the binding roots are themselves bound types");
     }
 
+    @Test
+    @DisplayName("Should register the cookies block and every cookies.allow variant")
+    void shouldRegisterTheCookiesBlockAndEveryAllowVariant() {
+        Set<Class<?>> registered = registeredTargets();
+        Set<Class<?>> reachable = reachableModelTypes();
+        Set<Class<?>> cookieTypes = Set.of(CookiesConfig.class, CookieAllow.class, CookieAllow.None.class,
+                CookieAllow.All.class, CookieAllow.Named.class);
+
+        assertAll("the cookies block is bound in the native image as on the JVM",
+                () -> assertTrue(registered.containsAll(cookieTypes),
+                        "every cookies type is a @RegisterForReflection target: " + cookieTypes),
+                () -> assertTrue(reachable.containsAll(cookieTypes),
+                        "the traversal reaches the cookies block and every permitted variant of the sealed mode"));
+    }
+
     /** Reads the consolidated target list off the holder class. */
     private static Set<Class<?>> registeredTargets() {
         RegisterForReflection annotation = ConfigModelReflection.class.getAnnotation(RegisterForReflection.class);
@@ -117,6 +136,11 @@ class ConfigModelReflectionTest {
             Class<?> current = queue.poll();
             if (!isModelType(current) || !visited.add(current)) {
                 continue;
+            }
+            if (current.isSealed()) {
+                // A sealed model type is bound through a creator that returns one of its variants,
+                // so every permitted variant is constructed in the native image too.
+                queue.addAll(List.of(current.getPermittedSubclasses()));
             }
             if (!current.isRecord()) {
                 continue;

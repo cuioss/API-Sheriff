@@ -109,6 +109,8 @@ import de.cuioss.sheriff.gateway.bff.login.QueryResponseModeAuthorizationRequest
 import de.cuioss.sheriff.gateway.bff.login.ReturnTargetScopes;
 import de.cuioss.sheriff.gateway.bff.login.ScopedEngineFlows;
 import de.cuioss.sheriff.gateway.bff.login.SessionWidening;
+import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
+import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
 import de.cuioss.sheriff.gateway.bff.pending.PendingAuthorizationStore;
 import de.cuioss.sheriff.gateway.bff.refresh.EndedRefreshTokens;
 import de.cuioss.sheriff.gateway.bff.refresh.StepUpCoordinator;
@@ -136,6 +138,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -635,19 +638,25 @@ class BffRuntimeProducerTest {
     }
 
     /**
-     * The names the produced runtime hands the edge as the cookies no upstream response may set. The
-     * set is derived from the session binding the producer built, so it follows the session mode and a
-     * configured {@code cookie_name}.
+     * The by-construction guard between the cookies the produced runtime sets and the gateway cookies
+     * the edge derives from the configuration ({@link GatewayCookies#of}): every name the assembled
+     * session binding clears — one per cookie it sets, by its contract — plus the login-binding and the
+     * logout-state cookie is a gateway cookie of the same configuration. A cookie the runtime set
+     * outside that definition would be one an upstream response could overwrite.
      */
     @Nested
-    @DisplayName("Gateway cookie names — the cookies the produced runtime sets, by session mode and cookie_name")
+    @DisplayName("Gateway cookies — every cookie the produced runtime sets is a gateway cookie of its configuration")
     class GatewayCookieNames {
 
-        private static final String BINDING_COOKIE = "__Host-sheriff-binding";
-        private static final String LOGOUT_STATE_COOKIE = "__Host-sheriff-logout";
         private static final String CONFIGURED_NAME = "__Host-shop-session";
 
-        private Set<String> namesFor(OidcConfig.Session session) {
+        /**
+         * Builds the runtime for {@code session}, reads the cookie names its binding clears, and asserts
+         * those names are exactly {@code expectedBindingCookies} and — with the binding and logout-state
+         * cookie — all gateway cookies of the configuration the runtime was built from.
+         */
+        private void assertRuntimeCookiesAreGatewayCookies(OidcConfig.Session session,
+                Class<? extends SessionBinding> bindingType, List<String> expectedBindingCookies) {
             OidcConfig oidc = OidcConfig.builder()
                     .issuer(ISSUER)
                     .clientId("gateway-client")
@@ -656,42 +665,56 @@ class BffRuntimeProducerTest {
                     .redirectUri(REDIRECT_URI)
                     .session(session)
                     .build();
-            return producer(oidc).bffRuntime().gatewayCookieNames();
+            SessionBinding binding = single(reachableInstancesOf(producer(oidc).bffRuntime(), bindingType),
+                    "session binding");
+            List<String> bindingCookies = binding.clearingSetCookieHeaders().stream()
+                    .map(clearing -> clearing.substring(0, clearing.indexOf('=')))
+                    .toList();
+            List<String> runtimeCookies = new ArrayList<>(bindingCookies);
+            runtimeCookies.add(BindingCookieCodec.COOKIE_NAME);
+            runtimeCookies.add(RpInitiatedLogout.LOGOUT_STATE_COOKIE_NAME);
+            GatewayCookies gatewayCookies = GatewayCookies.of(GatewayConfig.builder().version(1).oidc(oidc).build());
+
+            assertAll("the runtime's cookies against the configuration's gateway cookies",
+                    () -> assertEquals(expectedBindingCookies, bindingCookies,
+                            "precondition: the cookies the assembled binding sets"),
+                    () -> assertEquals(List.of(),
+                            runtimeCookies.stream().filter(name -> !gatewayCookies.matchesName(name)).toList(),
+                            "no cookie the runtime sets lies outside the gateway's own cookies"));
         }
 
         @Test
-        @DisplayName("server mode: the login-binding cookie, the logout-state cookie and the default session cookie")
+        @DisplayName("server mode: the default session cookie, the login-binding and the logout-state cookie")
         void serverModeDefaultName() {
-            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, SessionCookieCodec.DEFAULT_COOKIE_NAME),
-                    namesFor(OidcConfig.Session.builder().mode("server").build()));
+            assertRuntimeCookiesAreGatewayCookies(OidcConfig.Session.builder().mode("server").build(),
+                    ServerSessionBinding.class, List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME));
         }
 
         @Test
-        @DisplayName("server mode: a configured cookie_name replaces the default session cookie name")
+        @DisplayName("server mode: a configured cookie_name outside the reserved prefix is a gateway cookie")
         void serverModeConfiguredName() {
-            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, CONFIGURED_NAME),
-                    namesFor(OidcConfig.Session.builder().mode("server").cookieName(CONFIGURED_NAME).build()));
+            assertRuntimeCookiesAreGatewayCookies(
+                    OidcConfig.Session.builder().mode("server").cookieName(CONFIGURED_NAME).build(),
+                    ServerSessionBinding.class, List.of(CONFIGURED_NAME));
         }
 
         @Test
-        @DisplayName("cookie mode: the activity cookie of the session cookie is owned as well")
+        @DisplayName("cookie mode: the session cookie and its activity cookie are gateway cookies")
         void cookieModeDefaultName() {
-            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, SessionCookieCodec.DEFAULT_COOKIE_NAME,
-                            SessionCookieCodec.DEFAULT_COOKIE_NAME + "-activity"),
-                    namesFor(OidcConfig.Session.builder().mode("cookie").build()));
+            assertRuntimeCookiesAreGatewayCookies(cookieSession(null), CookieSessionBinding.class,
+                    List.of(SessionCookieCodec.DEFAULT_COOKIE_NAME,
+                            SessionCookieCodec.DEFAULT_COOKIE_NAME + SessionActivityCookieCodec.COOKIE_NAME_SUFFIX));
         }
 
         @Test
-        @DisplayName("cookie mode: a configured cookie_name names the session cookie and its activity cookie")
+        @DisplayName("cookie mode: a configured cookie_name and its activity cookie are gateway cookies")
         void cookieModeConfiguredName() {
-            assertEquals(Set.of(BINDING_COOKIE, LOGOUT_STATE_COOKIE, CONFIGURED_NAME, CONFIGURED_NAME + "-activity"),
-                    namesFor(OidcConfig.Session.builder().mode("cookie").cookieName(CONFIGURED_NAME).build()));
+            assertRuntimeCookiesAreGatewayCookies(cookieSession(CONFIGURED_NAME), CookieSessionBinding.class,
+                    List.of(CONFIGURED_NAME, CONFIGURED_NAME + SessionActivityCookieCodec.COOKIE_NAME_SUFFIX));
         }
 
-        @Test
-        @DisplayName("control: the inert runtime of a gateway without sessions owns no cookie")
-        void inertRuntimeOwnsNothing() {
-            assertEquals(Set.of(), BffRuntime.inert().gatewayCookieNames());
+        private static OidcConfig.Session cookieSession(@Nullable String cookieName) {
+            return OidcConfig.Session.builder().mode("cookie").cookieName(cookieName).build();
         }
     }
 
