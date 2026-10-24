@@ -13,6 +13,11 @@
 # the TLS work, and re-terminating in the gateway would be duplicated work at best and a second,
 # separately-configured trust decision at worst.
 #
+# The identity provider follows the same edge. Keycloak fetches the BFF's client JWKS from the
+# gateway, and in this variant the gateway serves no TLS — so Keycloak reaches /bff/jwks through the
+# terminating hop, exactly as an IdP outside the cluster would, rather than over a cleartext dial to
+# the gateway's internal port.
+#
 # REQUIRES DOCKER COMPOSE v2.24.4 OR NEWER. The gateway's `ports:` below carries the Compose-Spec
 # `!override` merge tag, and 2.24.4 is the release that implements THAT tag. 2.24.0 — the figure this
 # file used to name — is where the sibling `!reset` tag landed, and the two are not interchangeable
@@ -39,6 +44,17 @@
 # interaction verdicts this deployment shape rests on.
 
 services:
+
+  # --- The identity provider, pointed at the edge -------------------------------------------------
+  keycloak:
+    environment:
+      # MERGED BY NAME over the base file's value (see the merge note in the header): only the address
+      # Keycloak fetches the BFF's client JWKS from changes. The base dials https://api-sheriff:8443,
+      # which in this variant listens for nothing. The terminator answers every Host on 8443 and
+      # forwards to the gateway, whose /bff/jwks is served on every host; its certificate is the same
+      # self-signed one the base's KC_TRUSTSTORE_PATHS anchors, and its SAN names tls-terminator, so
+      # hostname verification stays on here too.
+      - SAMPLE_GATEWAY_JWKS_URL=https://tls-terminator:8443/bff/jwks
 
   # --- The gateway, with its TLS termination taken away -------------------------------------------
   api-sheriff:
@@ -109,8 +125,18 @@ services:
     volumes:
       - ./docker/nginx/tls-terminator.conf:/etc/nginx/conf.d/default.conf:ro
       # The SAME self-signed bundle the gateway used to terminate with. Read-only: the terminator
-      # never writes key material.
-      - ./docker/certificates:/etc/nginx/certificates:ro
+      # never writes key material. Mounted FILE BY FILE, not as the certificates/ directory, which
+      # also holds the BFF's private signing keys (client-auth.pem, dpop.pem) — those belong to the
+      # gateway alone, and a TLS hop has no use for them. Long syntax, so a missing file fails the
+      # bring-up instead of Docker creating an empty directory in its place on the host.
+      - type: bind
+        source: ./docker/certificates/localhost.crt
+        target: /etc/nginx/certificates/localhost.crt
+        read_only: true
+      - type: bind
+        source: ./docker/certificates/localhost.key
+        target: /etc/nginx/certificates/localhost.key
+        read_only: true
     networks:
       api-sheriff:
         # The static address the /32 above names. This is the whole reason the network below declares
