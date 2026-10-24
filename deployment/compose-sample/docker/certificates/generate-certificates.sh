@@ -63,6 +63,11 @@ CERT_DNAME="CN=localhost, OU=Compose Sample, O=API-Sheriff, L=Berlin, ST=Berlin,
 CERT_SAN="dns:localhost,dns:keycloak,dns:api-sheriff,dns:demo-api,dns:tls-terminator,ip:127.0.0.1"
 CERT_VALIDITY=365
 
+# The certificate and its unencrypted private key. Like every other artifact path below, each is named
+# once and used both by the command that writes the file and by ARTIFACTS.
+TLS_CERT="${CERT_DIR}/localhost.crt"
+TLS_KEY="${CERT_DIR}/localhost.key"
+
 TEMP_KEYSTORE="${CERT_DIR}/temp-keystore.p12"
 TEMP_PASSWORD="temp-$(date +%s)"
 
@@ -89,11 +94,12 @@ TRUSTSTORE_PASSWORD="sample-idp-trust"
 CLIENT_AUTH_KEY="${CERT_DIR}/client-auth.pem"
 DPOP_KEY="${CERT_DIR}/dpop.pem"
 
-# The set --check and --if-missing check, and the set a run produces. One list, so neither check
-# can disagree with the output about what "complete" means.
+# The set --check and --if-missing check, and the set a run produces. One list of the same path
+# variables the commands below write to, so neither check can disagree with the output about what
+# "complete" means.
 ARTIFACTS=(
-    "${CERT_DIR}/localhost.crt"
-    "${CERT_DIR}/localhost.key"
+    "${TLS_CERT}"
+    "${TLS_KEY}"
     "${TRUSTSTORE}"
     "${CLIENT_AUTH_KEY}"
     "${DPOP_KEY}"
@@ -132,8 +138,7 @@ ASSEMBLED_FILE=""
 # keytool or openssl aborts the script before any explicit cleanup, which would otherwise strand a
 # PKCS#12 file, a bare private key or a half-assembled key file in a directory an operator is told to
 # treat as generated-and-disposable. The trap is armed here, immediately after all three intermediate
-# paths are defined, so no
-# failure between this line and the end of the script can escape it.
+# paths are defined, so no failure between this line and the end of the script can escape it.
 cleanup() {
     rm -f "${TEMP_KEYSTORE}"
     [[ -n "${WORK_FILE}" ]] && rm -f "${WORK_FILE}"
@@ -165,7 +170,7 @@ keytool -genkeypair \
 echo "  Exporting the certificate (PEM)..."
 keytool -exportcert \
   -alias localhost \
-  -file "${CERT_DIR}/localhost.crt" \
+  -file "${TLS_CERT}" \
   -keystore "${TEMP_KEYSTORE}" \
   -storetype PKCS12 \
   -storepass "${TEMP_PASSWORD}" \
@@ -176,7 +181,7 @@ openssl pkcs12 -in "${TEMP_KEYSTORE}" \
   -passin pass:"${TEMP_PASSWORD}" \
   -nodes \
   -nocerts \
-  -out "${CERT_DIR}/localhost.key"
+  -out "${TLS_KEY}"
 
 # The gateway verifies Keycloak's certificate on the JWKS fetch and the back channel with full chain
 # AND hostname validation — nothing here relaxes either. It can succeed only because this store
@@ -186,7 +191,7 @@ openssl pkcs12 -in "${TEMP_KEYSTORE}" \
 echo "  Building the sample-idp truststore (the certificate only, no key)..."
 keytool -importcert \
   -alias sample-idp \
-  -file "${CERT_DIR}/localhost.crt" \
+  -file "${TLS_CERT}" \
   -keystore "${TRUSTSTORE}" \
   -storetype PKCS12 \
   -storepass "${TRUSTSTORE_PASSWORD}" \
@@ -246,8 +251,8 @@ generate_key_file "${DPOP_KEY}" -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -
 # 600, but that mode is nominal: those certificates are COMMITTED, and git records only the exec
 # bit, so a fresh checkout materialises them world-readable anyway. The sample commits no key
 # material, so the mode it is created with is the mode the container actually sees.)
-chmod 644 "${CERT_DIR}/localhost.crt"
-chmod 644 "${CERT_DIR}/localhost.key"
+chmod 644 "${TLS_CERT}"
+chmod 644 "${TLS_KEY}"
 chmod 644 "${CLIENT_AUTH_KEY}"
 chmod 644 "${DPOP_KEY}"
 # The truststore holds only the public certificate, so world-read costs nothing and is required for
