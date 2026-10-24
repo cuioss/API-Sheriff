@@ -137,10 +137,7 @@ class BackChannelOriginActivationWiringTest {
                 continue;
             }
             Map<?, ?> oidc = assertInstanceOf(Map.class, oidcNode, descriptor + " declares a non-map oidc block");
-            Path root = GATEWAY_DESCRIPTOR_ROOTS.stream().map(DescriptorRoot::directory)
-                    .filter(descriptor::startsWith).findFirst()
-                    .orElseThrow(() -> new AssertionError(descriptor + " lies under no descriptor root"));
-            oidcDescriptorsSeen.merge(root, 1, Integer::sum);
+            oidcDescriptorsSeen.merge(rootOf(descriptor), 1, Integer::sum);
 
             assertEquals(BACK_CHANNEL_ORIGIN, oidc.get("back_channel_origin"), descriptor
                     + " declares an oidc block whose back_channel_origin is not " + BACK_CHANNEL_ORIGIN + ". Without"
@@ -168,11 +165,11 @@ class BackChannelOriginActivationWiringTest {
     @Test
     @DisplayName("no token_validation issuer names the back-channel address keycloak:8443")
     void noTokenValidationIssuerNamesTheBackChannelAddress() throws Exception {
-        int issuersSeen = 0;
+        Map<Path, Integer> issuersSeen = new HashMap<>();
 
         for (Path descriptor : committedGatewayDescriptors()) {
             for (Map<?, ?> issuer : tokenValidationIssuers(descriptor)) {
-                issuersSeen++;
+                issuersSeen.merge(rootOf(descriptor), 1, Integer::sum);
                 String declared = assertInstanceOf(String.class, issuer.get("issuer"), descriptor
                         + " token_validation issuer '" + issuer.get("name") + "' declares no textual issuer");
                 assertFalse(declared.contains(BACK_CHANNEL_AUTHORITY), descriptor + " token_validation issuer '"
@@ -182,9 +179,23 @@ class BackChannelOriginActivationWiringTest {
             }
         }
 
-        assertTrue(issuersSeen > 0, "no token_validation issuer was found in any committed descriptor under "
-                + GATEWAY_DESCRIPTOR_ROOTS.stream().map(DescriptorRoot::directory).toList()
-                + " — this control would pass vacuously; check the directory enumeration");
+        for (DescriptorRoot root : GATEWAY_DESCRIPTOR_ROOTS) {
+            assertTrue(issuersSeen.getOrDefault(root.directory(), 0) > 0, "no token_validation issuer was found"
+                    + " in any committed descriptor under " + root.directory() + " — this control would pass"
+                    + " vacuously for that stack; check its descriptors and the directory enumeration");
+        }
+    }
+
+    /**
+     * The descriptor root a committed descriptor lies under.
+     *
+     * @param descriptor a path returned by {@link #committedGatewayDescriptors()}
+     * @return the directory of the {@link DescriptorRoot} containing it
+     */
+    private static Path rootOf(Path descriptor) {
+        return GATEWAY_DESCRIPTOR_ROOTS.stream().map(DescriptorRoot::directory)
+                .filter(descriptor::startsWith).findFirst()
+                .orElseThrow(() -> new AssertionError(descriptor + " lies under no descriptor root"));
     }
 
     @Test
