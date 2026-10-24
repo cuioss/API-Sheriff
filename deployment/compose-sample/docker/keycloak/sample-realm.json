@@ -23,28 +23,35 @@
     {
       "clientId": "sample-client",
       "name": "API Sheriff Sample Client",
-      "description": "Sample client. Its secret is the placeholder CHANGE-ME-BEFORE-PRODUCTION and MUST be replaced, from the deployment rather than from this file, before this realm is reachable by anything you care about.",
+      "description": "The sample gateway's BFF client: no secret (private_key_jwt, key fetched from the gateway's /bff/jwks), pushed authorization requests, DPoP-bound tokens. Register your own client the same way before this realm is reachable by anything you care about.",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
-      "clientAuthenticatorType": "client-secret",
-      "secret": "CHANGE-ME-BEFORE-PRODUCTION",
+      "clientAuthenticatorType": "client-jwt",
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
+      "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "redirectUris": [
-        "https://localhost:8443/*"
+        "https://localhost:8443/bff/callback"
       ],
       "webOrigins": [
         "https://localhost:8443"
       ],
       "defaultClientScopes": [
-        "openid",
+        "basic",
         "profile",
         "email",
         "roles"
-      ]
+      ],
+      "attributes": {
+        "use.jwks.url": "true",
+        "jwks.url": "${SAMPLE_GATEWAY_JWKS_URL}",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "require.pushed.authorization.requests": "true",
+        "dpop.bound.access.tokens": "true",
+        "post.logout.redirect.uris": "https://localhost:8443/bff/logout/return"
+      }
     }
   ],
 

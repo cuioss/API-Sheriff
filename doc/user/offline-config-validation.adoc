@@ -44,6 +44,8 @@ image's executable:
 docker run --rm --network none \
   -v "$PWD/sheriff-config:/app/sheriff-config:ro" \
   -e SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32 \
+  -e SHERIFF_CLIENT_AUTH_KEY_FILE=/app/certificates/client-auth.pem \
+  -e SHERIFF_DPOP_KEY_FILE=/app/certificates/dpop.pem \
   ghcr.io/cuioss/api-sheriff:<version> \
   --validate-config /app/sheriff-config
 ----
@@ -53,8 +55,10 @@ docker run --rm --network none \
 * The image runs as `nonroot`, a different user than the one who owns your files. Every file in the
   mounted directory must be readable by others, or the check reports `gateway.yaml` as unreadable and
   exits `2`.
-* Replace the `-e` line with the variables *your* deployment sets -- see <<_placeholder_policy>>. The
-  example shows the one variable the compose sample's `gateway.yaml` requires.
+* Replace the `-e` lines with the variables *your* deployment sets -- see <<_placeholder_policy>>. The
+  example shows the three variables the compose sample's `gateway.yaml` requires: the trusted
+  proxies and the paths of the BFF's two signing keys. The check does not open the key files -- key
+  material is not evaluated offline -- so the paths only have to be set, not to exist.
 * The flag is part of the binary from 0.2.4 onwards. An older image does not know
   the token and does not run the check, so pin a release that carries it.
 
@@ -69,6 +73,8 @@ A CI pipeline that builds the gateway from source runs the JVM runner it has jus
 ----
 ./mvnw -B -ntp package -pl api-sheriff -am -DskipTests
 SHERIFF_TRUSTED_PROXIES=10.0.0.5/32,10.0.0.6/32 \
+SHERIFF_CLIENT_AUTH_KEY_FILE=/app/certificates/client-auth.pem \
+SHERIFF_DPOP_KEY_FILE=/app/certificates/dpop.pem \
   java -jar api-sheriff/target/quarkus-app/quarkus-run.jar --validate-config deployment/compose-sample/docker/sheriff-config
 ----
 

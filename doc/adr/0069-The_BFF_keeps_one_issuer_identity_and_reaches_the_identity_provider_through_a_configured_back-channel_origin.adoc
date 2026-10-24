@@ -165,8 +165,9 @@ red in the stub suites too.
 * *One Dependabot `docker-compose` group*, `keycloak`, moves both pins in a single pull request.
   Minor and patch bumps are auto-merged by the organisation's sweeper only once
   `integration-tests / conclusion` is green; a major bump is never auto-merged.
-* The demo Playwright suite sees a bump only after merge, and the compose sample is not exercised
-  by CI.
+* The demo Playwright suite sees a bump only after merge. The compose sample sees it in the bump
+  pull request itself: the `integration-tests` job brings the sample up after the integration suite
+  and runs its BFF login check on the image built from the pull request.
 * *Every release's notes name the Keycloak version* the release was verified against, derived from
   both pins at the release tag (the release runbook, Step 11).
 * *Documentation names no Keycloak version number* for behaviour a suite pins; it names the pinned

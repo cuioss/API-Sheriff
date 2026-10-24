@@ -134,11 +134,15 @@ link:../../README.adoc#_known_limitations[Known Limitations].
 
 | link:compose-sample.adoc[Compose Sample -- a Deployment-Shaped Stack You Can Run]
 | The runnable sample under `deployment/compose-sample`: three containers on one network, brought up
-  with generated sample certificates and gated on a real readiness probe. Covers both routes to the
-  gateway image (the pinned GHCR default and the `API_SHERIFF_IMAGE` local-build override), the
-  request that proves the stack works, and -- explicitly -- every sample-only value that must change
-  before the stack is reachable by anything you care about. Links to the Container Image guide for
-  pulling and verifying, and to Environment-Variable Overrides for the deployment-owned knobs.
+  with generated sample certificates and signing keys and gated on a real readiness probe. Covers
+  both routes to the gateway image (the pinned GHCR default and the `API_SHERIFF_IMAGE` local-build
+  override, which the sample's BFF needs until the release after `0.2.4`), the request that proves
+  the stack works, logging a browser in through the sample's server-session BFF at `/app` and the
+  `check-bff-login.sh` script that proves that login (CI runs it on every pull request), and --
+  explicitly -- every sample-only value that must change before the stack is reachable by anything
+  you care about. Links to the Container Image guide for pulling and verifying, to
+  Environment-Variable Overrides for the deployment-owned knobs, and to the Server-Session BFF guide
+  for registering your own client.
 
 | link:context-path.adoc[The Context Path]
 | Where the data plane serves, where health and metrics serve, and why moving either is a *rebuild*

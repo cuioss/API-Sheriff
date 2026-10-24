@@ -17,10 +17,12 @@
     </description>
 
     <!-- This module carries NO Java. It owns exactly ONE subtree, compose-sample/, holding the compose
-         file, the configuration it mounts, the certificate tooling and the bring-up scripts. Nothing here
-         is built, tested or published: a default reactor build of this module is a deliberate no-op, so the
-         sample costs the standard build nothing. See doc/user/compose-sample.adoc for the operator guide and
-         doc/development/compose-sample.adoc for the rationale. -->
+         file, the configuration it mounts, the certificate tooling, the bring-up scripts and the BFF
+         login check. Nothing here is built or published, and a default reactor build of this module is a
+         deliberate no-op, so the sample costs the standard build nothing. The opt-in compose-sample
+         profile below is the one place it is exercised: it generates missing certificate material, brings
+         the stack up, logs in through the BFF and tears the stack down. See doc/user/compose-sample.adoc
+         for the operator guide and doc/development/compose-sample.adoc for the rationale. -->
 
     <dependencies />
 
@@ -66,6 +68,13 @@
              it, so neither pulls an image nor starts a container. A default reactor build of this
              module stays the genuine no-op the header above promises.
 
+             In phase order it generates the certificate material and signing keys when any are
+             missing, brings the sample up behind its readiness gate, logs in through the BFF with
+             scripts/check-bff-login.sh, and tears the stack down. The login check is what makes the
+             profile a gate on the sample WORKING rather than on it merely starting: a stack whose
+             gateway reports READY but cannot complete a login fails here. The gateway image is the
+             .env pin unless the compose-sample-image profile below points it elsewhere.
+
              Note there is no <skipTests>false</skipTests> here, and none is needed. demo-client's
              e2e-demo profile requires that flip because frontend-maven-plugin's test execution is
              bound to a TESTING phase and therefore honours the inherited skipTests. exec-maven-
@@ -107,6 +116,33 @@
                                          exists to prevent. -->
                                 </configuration>
                             </execution>
+                            <!-- Generate the certificate material and the BFF signing keys when any
+                                 of them is missing. All of it is git-ignored, so a fresh checkout —
+                                 every CI runner — has none, and start-sample.sh's preflight would
+                                 refuse to start the stack. The generator's if-missing mode (the one
+                                 argument below) generates the whole set there and leaves an
+                                 operator's complete set untouched, so a local run never rotates keys
+                                 behind anyone's back. The generator needs only keytool
+                                 (the build JDK) and openssl (present on the hosted Ubuntu runner).
+
+                                 Declared BEFORE start-sample on purpose: both are bound to
+                                 pre-integration-test, and Maven runs the executions of one phase in
+                                 declaration order. -->
+                            <execution>
+                                <id>generate-certificates</id>
+                                <phase>pre-integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipComposeSample}</skip>
+                                    <executable>./compose-sample/docker/certificates/generate-certificates.sh</executable>
+                                    <arguments>
+                                        <argument>--if-missing</argument>
+                                    </arguments>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
                             <!-- The gate itself. start-sample.sh preflights the image and now owns
                                  BOTH gate layers directly: a `compose up` wait, which blocks on the
                                  HEALTHCHECK baked into the gateway image, and a bounded
@@ -130,6 +166,24 @@
                                     <workingDirectory>${project.basedir}</workingDirectory>
                                 </configuration>
                             </execution>
+                            <!-- A real login through the BFF against the stack start-sample brought
+                                 up: a session-less API request refused, the pushed authorization
+                                 request, the identity provider's login form, the callback, and the
+                                 session reaching the upstream. Between bring-up and teardown, so a
+                                 sample that starts but cannot log anyone in fails the build. The script
+                                 header documents what each step proves. -->
+                            <execution>
+                                <id>check-bff-login</id>
+                                <phase>integration-test</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <skip>${skipComposeSample}</skip>
+                                    <executable>./compose-sample/scripts/check-bff-login.sh</executable>
+                                    <workingDirectory>${project.basedir}</workingDirectory>
+                                </configuration>
+                            </execution>
                             <!-- The SUCCESS-path teardown, and deliberately only that — the same
                                  decision demo-client/pom.xml records: Maven offers no always-runs
                                  hook, so a FAILING gate never reaches this phase and leaves the
@@ -150,6 +204,43 @@
                                          pre-clean execution above: exit 1 here can only be a real
                                          teardown failure, and swallowing it would report a green
                                          build over containers and volumes that were left running. -->
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- Points the sample at a gateway image other than the .env pin, without editing anything:
+             -Dcompose-sample.image=IMAGE exports API_SHERIFF_IMAGE=IMAGE into start-sample.sh's
+             environment, and Compose lets an exported variable win over .env. CI uses it to run the
+             sample against the native image its integration build just produced from the pull
+             request's source; an operator's run without the property keeps the .env default, and
+             start-sample.sh preflights whichever image results.
+
+             Activated by the property alone and carrying nothing but that one variable: the
+             execution id matches the compose-sample profile's start-sample, so Maven merges this
+             configuration into that execution. Without -Pcompose-sample there is no bound execution
+             for it to join, so the property on its own starts nothing. -->
+        <profile>
+            <id>compose-sample-image</id>
+            <activation>
+                <property>
+                    <name>compose-sample.image</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>start-sample</id>
+                                <configuration>
+                                    <environmentVariables>
+                                        <API_SHERIFF_IMAGE>${compose-sample.image}</API_SHERIFF_IMAGE>
+                                    </environmentVariables>
                                 </configuration>
                             </execution>
                         </executions>

@@ -23,9 +23,18 @@ jobs:
       # pull cancels the job, which reads as a test failure rather than a timeout.
       timeout-minutes: 60
       report-name: integration-tests
+      # The third line runs the deployment compose sample end to end, including a real login
+      # through its BFF (deployment/compose-sample/scripts/check-bff-login.sh). It runs after the
+      # integration suite has torn its stack down, so the sample's host ports 8443,
+      # 127.0.0.1:9000 and 127.0.0.1:1443 are free again, and it reuses the native
+      # api-sheriff:distroless image the integration build produced from this pull request's
+      # source rather than the released image the sample pins in its .env. The 60-minute limit
+      # above keeps headroom over the ~35-minute suite plus the few minutes of sample bring-up
+      # and login.
       maven-args-input: |
         install -DskipTests -DskipITs -pl integration-tests -am
         verify -Pintegration-tests -pl integration-tests
+        verify -Pcompose-sample -pl deployment -Dcompose-sample.image=api-sheriff:distroless
       reports-folder: |
         integration-tests/target/failsafe-reports
     secrets:
