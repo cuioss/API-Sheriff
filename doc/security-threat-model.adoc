@@ -3391,8 +3391,8 @@ prefixed cookie without `Secure`, so the browser kept it. Duende BFF GHSA-vvg7-p
   refresh clear every cookie the active binding sets.
 * *The gateway's cookies do not reach an upstream.* Stage 5 rebuilds the `Cookie` header from the
   route's `cookies` policy and drops every gateway cookie first, under every policy and every mode:
-  the reserved `+__Host-sheriff-+` prefix, the configured session cookie and, in cookie mode, its
-  activity cookie, all read from one definition (`GatewayCookies`). No `cookies.allow` list can name
+  the reserved `+__Host-sheriff-+` prefix, the configured session cookie and, in every session mode,
+  its activity cookie, all read from one definition (`GatewayCookies`). No `cookies.allow` list can name
   one -- the boot refuses it -- and no `forward` list can name `Cookie` at all (<<gw-15>>). This holds
   for the HTTP, the gRPC and the WebSocket dispatch.
 * *Reading a cookie costs bounded work before anything is authenticated.* The `Cookie` header is

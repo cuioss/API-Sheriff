@@ -56,8 +56,8 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>{@code Set-Cookie}</strong> lines of an upstream are relayed by the route's
  *       {@code cookies} policy, each as its own line (see {@link UpstreamSetCookieFilter}). A line
  *       naming one of the gateway's own cookies — every cookie under the reserved
- *       {@value GatewayCookies#RESERVED_PREFIX} prefix, the configured session cookie and, in cookie
- *       mode, its activity cookie, as {@link GatewayCookies} defines them — is dropped under every
+ *       {@value GatewayCookies#RESERVED_PREFIX} prefix, the configured session cookie and, in every
+ *       session mode, its activity cookie, as {@link GatewayCookies} defines them — is dropped under every
  *       mode; {@code allow: none}, the default, drops every line; a list relays only the lines setting
  *       a listed cookie; {@code allow: all} relays the rest. Every relayed line has its {@code Domain}
  *       attribute removed and keeps everything else as sent. The rule holds on the HTTP relay, on the

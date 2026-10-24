@@ -1138,8 +1138,9 @@ the upstream's value. In this variant that is the login, logout and step-up answ
 that ends a session. Every other response keeps the cache policy the upstream sent.
 
 *The gateway's cookies never reach an upstream, under any policy.* The session cookie -- the
-configured `oidc.session.cookie_name` -- and every cookie under the reserved `+__Host-sheriff-+`
-prefix, `+__Host-sheriff-binding+` and `+__Host-sheriff-logout+` among them, are dropped from the
+configured `oidc.session.cookie_name` -- its `-activity` sibling, and every cookie under the
+reserved `+__Host-sheriff-+` prefix, `+__Host-sheriff-binding+` and `+__Host-sheriff-logout+` among
+them, are dropped from the
 `Cookie` header on every route, whatever the route's `cookies` block admits; naming one in
 `cookies.allow` is refused at boot.
 
