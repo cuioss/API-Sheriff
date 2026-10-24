@@ -352,6 +352,24 @@ public final class TerminalDispatch {
      */
     public void dispatchGrpc(RoutingContext ctx, PipelineRequest request, Route route,
             ForwardPolicyStage.Result forward) {
+        dispatchGrpc(ctx, request, route, forward, ResponseStage.GrpcStreamIdleBound.on(ctx.vertx()));
+    }
+
+    /**
+     * Dispatches a {@code protocol: grpc} route under the given stream-idle bound — the body of the
+     * public {@link #dispatchGrpc(RoutingContext, PipelineRequest, Route, ForwardPolicyStage.Result)},
+     * which passes the fixed five-minute {@link ResponseStage.GrpcStreamIdleBound#on bound}.
+     * Package-private so a test can run the real dispatch under a bound built with a shorter timeout;
+     * the class is {@code final}, so no other seam reaches it.
+     *
+     * @param ctx       the request
+     * @param request   the pipeline request, through stage 5
+     * @param route     the selected {@code protocol: grpc} route
+     * @param forward   the forward policy's result
+     * @param idleBound the call's stream-idle bound
+     */
+    void dispatchGrpc(RoutingContext ctx, PipelineRequest request, Route route,
+            ForwardPolicyStage.Result forward, ResponseStage.GrpcStreamIdleBound idleBound) {
         String remainder = EdgeRequests.remainderAfterMatchKey(route, EdgeRequests.requireCanonicalPath(request));
         String query = EdgeRequests.renderQuery(forward.query());
         ResolvedUpstream upstreamTarget = route.upstream();
@@ -363,7 +381,7 @@ public final class TerminalDispatch {
         long cap = routeSecurity == null ? defaultMaxBodySize : routeSecurity.maxBodySize();
 
         GrpcDispatchStage grpcDispatchStage = new GrpcDispatchStage(upstreamClients, cap, upstreamFailureMapper);
-        relayGrpcCall(ctx, request, route, ResponseStage.GrpcStreamIdleBound.on(ctx.vertx()),
+        relayGrpcCall(ctx, request, route, idleBound,
                 body -> grpcDispatchStage.dispatch(route, request.method(), uri, forward.headers(), body,
                         request.declaredContentLength()));
     }
@@ -373,10 +391,8 @@ public final class TerminalDispatch {
      * upstream URI and the body cap are resolved. The dispatch is handed the request body the bound
      * {@linkplain ResponseStage.GrpcStreamIdleBound#watch watches}, the bound is passed to
      * {@link ResponseStage#relayWithTrailers}, and its expiry is logged as {@code ApiSheriff-25}.
-     * Package-private so a test can run this wiring with a bound built with a shorter timeout than the
-     * fixed five minutes.
      */
-    void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
+    private void relayGrpcCall(RoutingContext ctx, PipelineRequest request, Route route,
             ResponseStage.GrpcStreamIdleBound idleBound, Function<ReadStream<Buffer>, HttpClientResponse> dispatch) {
         // Every request frame the dispatch reads, and every upstream frame the relay writes, keeps the
         // call's stream-idle bound from expiring.

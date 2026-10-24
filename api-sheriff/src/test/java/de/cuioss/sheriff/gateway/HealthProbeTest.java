@@ -17,13 +17,12 @@ package de.cuioss.sheriff.gateway;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.fail;
 
-import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.util.stream.Stream;
 
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.generator.junit.parameterized.GeneratorType;
 import de.cuioss.test.generator.junit.parameterized.GeneratorsSource;
@@ -38,12 +37,16 @@ import org.junit.jupiter.params.provider.MethodSource;
  * Tests the pre-boot container health probe on {@link HealthProbe} — the branch the
  * distroless image's {@code HEALTHCHECK} invokes, which has to answer before Quarkus is started.
  * <p>
- * Two contracts are covered. {@link HealthProbe#probe()} derives liveness purely from
- * whether {@code 127.0.0.1:9000} accepts a TCP connection, so it is exercised against a real
- * {@link ServerSocket} and against a genuinely closed port rather than against a double: a stubbed
- * socket would prove nothing about the accept-versus-refuse distinction the exit code encodes. Both
- * port-dependent tests fail loudly when the port is not in the state they need, because a probe test
- * that quietly passes without a real listener asserts nothing at all.
+ * Three contracts are covered. {@link HealthProbe#probe(int)} derives liveness purely from whether
+ * {@code 127.0.0.1:port} accepts a TCP connection, so it is exercised against a real
+ * {@link ServerSocket} on an ephemeral loopback port and against a loopback port that refuses every
+ * dial ({@link UnreachablePort}) rather than against a double: a stubbed socket would prove nothing
+ * about the accept-versus-refuse distinction the exit code encodes. Neither case needs a fixed port
+ * to be free, so neither depends on what else runs on the host.
+ * <p>
+ * The no-arg {@link HealthProbe#probe()} the entry point calls probes the compiled-in management port;
+ * that port is pinned as a literal (ADR-0039), so a change to it has to be made deliberately in both
+ * places.
  * <p>
  * {@link HealthProbe#isProbe(String[])} matches one exact token. The command lines below
  * are spelled as literals because the accepted spelling <em>is</em> the contract — the image's
@@ -54,22 +57,23 @@ import org.junit.jupiter.params.provider.MethodSource;
 class HealthProbeTest {
 
     /**
-     * The management port the probe measures. Restated here rather than read from the production
+     * The management port the no-arg probe measures. Restated here rather than read from the production
      * constant so that a change to the compiled-in port has to be made deliberately in both places.
      */
-    private static final int PROBE_PORT = 9000;
+    private static final int MANAGEMENT_PORT = 9000;
 
+    /** The loopback address the probe dials; the probe's own literal, so the listener binds the same one. */
     private static final String LOOPBACK = "127.0.0.1";
 
     @Nested
-    @DisplayName("probe() reports what the management port did")
+    @DisplayName("probe(port) reports what the probed port did")
     class ProbeExitCode {
 
         @Test
-        @DisplayName("Should return 0 when the management port accepts the connection")
+        @DisplayName("Should return 0 when the probed port accepts the connection")
         void shouldReturnZeroWhenPortAccepts() throws Exception {
-            try (ServerSocket listener = openListenerOrFail()) {
-                int exitCode = HealthProbe.probe();
+            try (ServerSocket listener = new ServerSocket(0, 1, InetAddress.getByName(LOOPBACK))) {
+                int exitCode = HealthProbe.probe(listener.getLocalPort());
 
                 assertEquals(0, exitCode,
                         "A port that accepted the connection should be reported healthy");
@@ -79,41 +83,20 @@ class HealthProbeTest {
         }
 
         @Test
-        @DisplayName("Should return 1 when nothing is listening on the management port")
-        void shouldReturnOneWhenPortRefusesConnection() {
-            requirePortFree();
-
-            int exitCode = HealthProbe.probe();
+        @DisplayName("Should return 1 when nothing is listening on the probed port")
+        void shouldReturnOneWhenPortRefusesConnection() throws Exception {
+            int exitCode = HealthProbe.probe(UnreachablePort.pick());
 
             assertEquals(1, exitCode,
                     "A port with no listener should be reported unhealthy — this is the matched"
                             + " negative control for the accepting-port case");
         }
 
-        /**
-         * Binds the real management port, failing the test rather than skipping when it is taken:
-         * passing without a listener would assert nothing about the accepting-port branch.
-         */
-        private ServerSocket openListenerOrFail() {
-            try {
-                return new ServerSocket(PROBE_PORT, 1, InetAddress.getByName(LOOPBACK));
-            } catch (IOException e) {
-                return fail(LOOPBACK + ":" + PROBE_PORT + " is already in use, so no listener could be"
-                        + " opened for the accepting-port case. Free the port and re-run.", e);
-            }
-        }
-
-        /**
-         * Establishes that the port is genuinely closed before the refusal case runs, so a foreign
-         * listener is reported as the setup failure it is instead of as a probe defect.
-         */
-        private void requirePortFree() {
-            try (ServerSocket unused = new ServerSocket(PROBE_PORT, 1, InetAddress.getByName(LOOPBACK))) {
-                assertFalse(unused.isClosed(), "The probe port should have been bindable");
-            } catch (IOException e) {
-                fail(LOOPBACK + ":" + PROBE_PORT + " is already in use by another process, so the"
-                        + " refused-connection control cannot be established. Free the port and re-run.", e);
-            }
+        @Test
+        @DisplayName("Should probe the compiled-in management port 9000 on the no-arg path")
+        void shouldProbeTheCompiledInManagementPort() {
+            assertEquals(MANAGEMENT_PORT, HealthProbe.PROBE_PORT,
+                    "The baked HEALTHCHECK measures the Quarkus management-port default (ADR-0039)");
         }
     }
 

@@ -46,7 +46,8 @@ import org.junit.jupiter.api.Test;
  * before it reads the in-flight count. With that order an admission that succeeds is always one the
  * drain waits for, so it is never admitted after the drain has returned. With the flag read first,
  * an admission can pass the check, the drain can read zero in flight and return, and the admission
- * then completes after the drain has finished.
+ * then completes after the drain has finished. The race also requires at least one admitted round: a
+ * race in which no round admits observes nothing about that order and must not pass.
  */
 @DisplayName("EdgeAdmission — admission against the shutdown drain")
 class EdgeAdmissionTest {
@@ -134,6 +135,8 @@ class EdgeAdmissionTest {
 
         int admitted = admittedRounds;
         assertAll("%d rounds of tryAdmit() against drain(), %d of them admitted".formatted(RACE_ROUNDS, admitted),
+                () -> assertTrue(admitted > 0,
+                        "control: at least one round must admit, or the race never ran the case it pins"),
                 () -> assertEquals(List.of(), admittedAfterTheDrain,
                         "an admission that succeeds must be one the drain waits for"),
                 () -> assertEquals(List.of(), unsettled,

@@ -21,11 +21,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
@@ -50,9 +52,9 @@ import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
 import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
-import de.cuioss.sheriff.gateway.edge.upstream.GrpcDispatchStage;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
+import de.cuioss.sheriff.gateway.forward.ForwardPolicyStage;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.FramingGate;
 import de.cuioss.sheriff.gateway.pipeline.OriginValidationStage;
@@ -86,25 +88,29 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * The stream-idle bound of a gRPC call, driven through the edge's own wiring
- * ({@link TerminalDispatch#relayGrpcCall}, which {@link TerminalDispatch#dispatchGrpc} runs) against a
- * live prior-knowledge h2c stub upstream: the dispatch is handed the request stream the bound watches,
- * the relay is given the bound, and an expiry is recorded as {@code ApiSheriff-25}. Only the bound
- * itself is built with the test-only {@value #IDLE_BOUND_MILLIS} ms timeout in place of the fixed five
- * minutes; the dispatch is the real {@link GrpcDispatchStage}.
+ * The stream-idle bound of a gRPC call, driven through {@link TerminalDispatch#dispatchGrpc} itself —
+ * the package-private overload taking the call's bound, which the public {@code dispatchGrpc} calls with
+ * the fixed five-minute bound — against a live prior-knowledge h2c stub upstream: the dispatch function
+ * is the edge's own, so the dispatch is handed the request stream the bound watches, the relay is given
+ * the bound, and an expiry is recorded as {@code ApiSheriff-25}, latched per route. Only the bound itself
+ * is built with the test-only {@value #IDLE_BOUND_MILLIS} ms timeout in place of the fixed five minutes;
+ * the bound the public path builds is asserted to carry exactly those five minutes.
  * <p>
  * <strong>What the stub upstream does.</strong> A call is answered at once with its headers and a first
  * frame {@code head}; its answer ends with a {@code grpc-status: 0} trailer when the request stream has
  * ended. The stub records every frame it read, and whether the request stream ended or failed — a failed
  * stream is how it observes the gateway resetting the call.
  */
-@EnableTestLogger
+@EnableTestLogger(debug = TerminalDispatch.class)
 @DisplayName("TerminalDispatch — a gRPC call runs under the stream-idle bound the edge wires")
 @Tag("isolated-fork")
 class TerminalDispatchGrpcStreamIdleTest {
 
     private static final String CALL_PATH = "/svc.Service/Bidi";
     private static final String ROUTE_ID = "g";
+    /** The call path of the second route, used where a case needs a route other than {@value #ROUTE_ID}. */
+    private static final String OTHER_CALL_PATH = "/svc.Other/Bidi";
+    private static final String OTHER_ROUTE_ID = "h";
     /** The test-only stream-idle timeout the bound of every call is built with. */
     private static final long IDLE_BOUND_MILLIS = 1_000L;
     /** How often the client sends a frame while the upstream stays silent: a fifth of the bound. */
@@ -131,6 +137,7 @@ class TerminalDispatchGrpcStreamIdleTest {
     private HttpClient edgeClient;
     private TerminalDispatch terminalDispatch;
     private Route route;
+    private Route otherRoute;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -140,14 +147,8 @@ class TerminalDispatchGrpcStreamIdleTest {
                 .listen(0, LoopbackHost.ADDRESS), "the stub gRPC upstream to start listening");
         forcedH2 = vertx.createHttpClient(priorKnowledgeH2());
         edgeClient = vertx.createHttpClient(priorKnowledgeH2());
-        route = Route.builder()
-                .id(ROUTE_ID)
-                .protocol(Protocol.GRPC)
-                .match(MatchConfig.builder().pathPrefix("/svc.Service").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.POST))
-                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
-                .build();
+        route = grpcRoute(ROUTE_ID, "/svc.Service");
+        otherRoute = grpcRoute(OTHER_ROUTE_ID, "/svc.Other");
         terminalDispatch = terminalDispatch();
         Router front = Router.router(vertx);
         front.route().handler(this::relayThroughTheEdgeWiring);
@@ -187,8 +188,10 @@ class TerminalDispatchGrpcStreamIdleTest {
     }
 
     /**
-     * The request frames count only because the edge hands the dispatch the stream the bound watches: a
-     * client that keeps sending while the upstream is silent keeps the call open.
+     * The request frames count only because {@code dispatchGrpc} hands the dispatch the stream the bound
+     * watches: a client that keeps sending while the upstream is silent keeps the call open. A dispatch
+     * function that streamed the request body unwatched would let the bound expire under the client's
+     * traffic.
      */
     @Test
     @DisplayName("a client that keeps sending keeps the call open while the upstream is silent past the stream-idle bound")
@@ -217,6 +220,52 @@ class TerminalDispatchGrpcStreamIdleTest {
                 () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, STREAM_IDLE_RECORD));
     }
 
+    @Test
+    @DisplayName("the bound the public dispatchGrpc builds ends a call after exactly five minutes")
+    void publicPathBoundIsTheFixedFiveMinutes() {
+        ResponseStage.GrpcStreamIdleBound bound = ResponseStage.GrpcStreamIdleBound.on(vertx);
+
+        assertEquals(TimeUnit.MINUTES.toMillis(5), bound.timeoutMillis(),
+                "the stream-idle bound of every gRPC call is the fixed five minutes, reached by no configuration");
+    }
+
+    /**
+     * Three calls go quiet at once: two on route {@value #ROUTE_ID}, one on route {@value #OTHER_ROUTE_ID}.
+     * Whichever of the two {@value #ROUTE_ID} expiries comes first is recorded at {@code INFO}, the other
+     * one stays at {@code DEBUG}, and the first expiry on {@value #OTHER_ROUTE_ID} is recorded at
+     * {@code INFO} again.
+     */
+    @Test
+    @DisplayName("a repeated expiry on a route stays at DEBUG; a first expiry on another route is recorded at INFO")
+    void idleExpiryRecordIsLatchedPerRoute() throws Exception {
+        List<ClientCall> calls = List.of(open(CALL_PATH), open(CALL_PATH), open(OTHER_CALL_PATH));
+        for (ClientCall call : calls) {
+            Awaits.connect(call.request().write("first"), "the first frame of a call to be sent");
+        }
+        List<String> statuses = new ArrayList<>();
+        for (ClientCall call : calls) {
+            statuses.add(Awaits.connect(call.trailers(), "an idle call to be ended by its stream-idle bound")
+                    .get(GRPC_STATUS));
+        }
+        String deadlineExceeded = Integer.toString(GrpcStatusMapper.DEADLINE_EXCEEDED);
+
+        assertAll("three idle calls on two routes",
+                () -> assertEquals(List.of(deadlineExceeded, deadlineExceeded, deadlineExceeded), statuses,
+                        "every call is ended by its stream-idle bound"),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                        routeRecord(ROUTE_ID)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.DEBUG,
+                        routeRecord(ROUTE_ID)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                        routeRecord(OTHER_ROUTE_ID)),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.DEBUG, routeRecord(OTHER_ROUTE_ID)));
+    }
+
+    /** The text the stream-idle record of {@code routeId} carries, at either level. */
+    private static String routeRecord(String routeId) {
+        return "gRPC call on route '" + routeId + "' carried no frame";
+    }
+
     private void handleUpstreamCall(HttpServerRequest request) {
         HttpServerResponse response = request.response().setChunked(true);
         request.handler(frame -> {
@@ -235,8 +284,9 @@ class TerminalDispatchGrpcStreamIdleTest {
     }
 
     /**
-     * The front server's handler: arms the request body as the edge root does and runs the call through
-     * the edge's own gRPC wiring, under a stream-idle bound of {@value #IDLE_BOUND_MILLIS} ms.
+     * The front server's handler: arms the request body as the edge root does and dispatches the call
+     * through {@link TerminalDispatch#dispatchGrpc}, under a stream-idle bound of
+     * {@value #IDLE_BOUND_MILLIS} ms, on the route whose prefix the path names.
      */
     private void relayThroughTheEdgeWiring(RoutingContext ctx) {
         ctx.request().pause();
@@ -245,11 +295,24 @@ class TerminalDispatchGrpcStreamIdleTest {
                 ResponseStage.GrpcStreamIdleBound.withTimeout(vertx, IDLE_BOUND_MILLIS);
         idleBound.expiry().onSuccess(expired -> boundExpired.complete(null));
         String path = ctx.request().path();
-        PipelineRequest request = PipelineRequest.builder().method(HttpMethod.POST).requestPath(path).build();
-        GrpcDispatchStage stage = new GrpcDispatchStage(clients(), 1024L * 1024L,
-                new UpstreamFailureMapper(new GatewayEventCounter()));
-        Thread.ofVirtual().start(() -> terminalDispatch.relayGrpcCall(ctx, request, route, idleBound,
-                body -> stage.dispatch(route, HttpMethod.POST, path, Map.of(), body, -1L)));
+        Route selected = path.startsWith(OTHER_CALL_PATH) ? otherRoute : route;
+        PipelineRequest request = PipelineRequest.builder().method(HttpMethod.POST).requestPath(path)
+                .declaredContentLength(-1L).build();
+        request.canonicalPath(path);
+        ForwardPolicyStage.Result forward = new ForwardPolicyStage.Result(Map.of(), List.of());
+        Thread.ofVirtual().start(() -> terminalDispatch.dispatchGrpc(ctx, request, selected, forward, idleBound));
+    }
+
+    /** A {@code protocol: grpc} route under {@code prefix} to the stub upstream. */
+    private Route grpcRoute(String id, String prefix) {
+        return Route.builder()
+                .id(id)
+                .protocol(Protocol.GRPC)
+                .match(MatchConfig.builder().pathPrefix(prefix).build())
+                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+                .effectiveAllowedMethods(Set.of(HttpMethod.POST))
+                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
+                .build();
     }
 
     /** The forced-h2 client and a stand-in guard of {@value #GUARD_SECONDS} s for the route's upstream. */
@@ -279,13 +342,23 @@ class TerminalDispatchGrpcStreamIdleTest {
     }
 
     /**
-     * Opens a call to the front server and records what comes back.
+     * Opens a call on route {@value #ROUTE_ID} and records what comes back.
      *
      * @return the open call; its request headers are sent with its first frame
      */
     private ClientCall open() throws Exception {
+        return open(CALL_PATH);
+    }
+
+    /**
+     * Opens a call to {@code path} on the front server and records what comes back.
+     *
+     * @param path the call path, naming the route by its prefix
+     * @return the open call; its request headers are sent with its first frame
+     */
+    private ClientCall open(String path) throws Exception {
         HttpClientRequest request = Awaits.connect(edgeClient.request(io.vertx.core.http.HttpMethod.POST,
-                frontServer.actualPort(), LoopbackHost.ADDRESS, CALL_PATH), "a call to the front server to open");
+                frontServer.actualPort(), LoopbackHost.ADDRESS, path), "a call to the front server to open");
         request.setChunked(true);
         request.exceptionHandler(failure -> {
             // The one end rule resets an answered stream whose request is still open once the answer is

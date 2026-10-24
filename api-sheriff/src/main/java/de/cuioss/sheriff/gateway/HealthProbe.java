@@ -65,8 +65,9 @@ final class HealthProbe {
 
     /**
      * Compiled-in Quarkus management-port default — the port the baked {@code HEALTHCHECK} measures.
+     * Package-private so a test pins the port the no-arg {@link #probe()} delegates with.
      */
-    private static final int PROBE_PORT = 9000;
+    static final int PROBE_PORT = 9000;
 
     /**
      * Connect timeout for the probe, in milliseconds. Kept well below the image's
@@ -94,7 +95,19 @@ final class HealthProbe {
     }
 
     /**
-     * Probes the management listener by opening a TCP connection and immediately closing it.
+     * Probes the management listener on the compiled-in {@link #PROBE_PORT} by opening a TCP
+     * connection and immediately closing it — see {@link #probe(int)}.
+     *
+     * @return {@code 0} when the port accepted the connection, {@code 1} on refusal, timeout, or any
+     *         other I/O failure
+     * @since 1.0
+     */
+    static int probe() {
+        return probe(PROBE_PORT);
+    }
+
+    /**
+     * Probes {@code 127.0.0.1:port} by opening a TCP connection and immediately closing it.
      * <p>
      * A successful accept is the whole signal: nothing is written to or read from the socket, so the
      * result is independent of whether the management interface speaks HTTP or HTTPS.
@@ -103,18 +116,22 @@ final class HealthProbe {
      * installed on this path, so {@code CuiLogger} is unavailable; the container runtime captures
      * health-check output into the container's health log, which is the only diagnostic sink a
      * pre-boot branch has.
+     * <p>
+     * Package-private so a test can probe a port it bound itself; production reaches it only through
+     * {@link #probe()}.
      *
+     * @param port the loopback port to probe
      * @return {@code 0} when the port accepted the connection, {@code 1} on refusal, timeout, or any
      *         other I/O failure
      * @since 1.0
      */
-    static int probe() {
+    static int probe(int port) {
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", PROBE_PORT), PROBE_CONNECT_TIMEOUT_MILLIS);
+            socket.connect(new InetSocketAddress("127.0.0.1", port), PROBE_CONNECT_TIMEOUT_MILLIS);
             return 0;
         } catch (IOException e) {
             // cui-rewrite:disable CuiLoggerStandardsRecipe
-            System.err.println("health-probe: 127.0.0.1:" + PROBE_PORT + " not accepting: " + e); // NOSONAR java:S106 pre-boot probe: no logging manager yet; the healthcheck log is the only sink
+            System.err.println("health-probe: 127.0.0.1:" + port + " not accepting: " + e); // NOSONAR java:S106 pre-boot probe: no logging manager yet; the healthcheck log is the only sink
             return 1;
         }
     }

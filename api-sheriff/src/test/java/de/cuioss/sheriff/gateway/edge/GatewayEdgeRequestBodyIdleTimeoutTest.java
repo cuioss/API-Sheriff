@@ -48,6 +48,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
@@ -146,7 +147,7 @@ import org.junit.jupiter.api.Test;
  * trickling upload is planned to outlast it.
  */
 @EnableGeneratorController
-@EnableTestLogger
+@EnableTestLogger(debug = RejectionReporter.class)
 @DisplayName("GatewayEdgeRoute — a request body that stops arriving or arrives too slowly is ended as the request's")
 @Tag("isolated-fork")
 class GatewayEdgeRequestBodyIdleTimeoutTest {
@@ -488,6 +489,56 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
                 () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
                         REQUEST_BODY_DEADLINE_RECORD),
                 () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.INFO, REQUEST_BODY_TIMEOUT_RECORD));
+    }
+
+    /**
+     * Three uploads trickle at once to an upstream that answered at once: two on route
+     * {@value #TRICKLE_ROUTE}, one on route {@value #ROUTE}. Each is ended at the deadline. Whichever of
+     * the two {@value #TRICKLE_ROUTE} ends comes first is recorded at {@code INFO} as
+     * {@value #REQUEST_BODY_DEADLINE_RECORD} and the other stays at {@code DEBUG}; the end on
+     * {@value #ROUTE} is that route's first, so it is recorded at {@code INFO} again. Every end is metered.
+     */
+    @Test
+    @DisplayName("a repeated deadline end on a route stays at DEBUG; a first one on another route is recorded at INFO")
+    void deadlineRecordIsLatchedPerRoute() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        List<String> paths = List.of("/" + TRICKLE_ROUTE + STREAMING + "-1", "/" + TRICKLE_ROUTE + STREAMING + "-2",
+                "/" + ROUTE + STREAMING + "-3");
+        List<Future<Answer>> answers = new ArrayList<>();
+        List<CompletableFuture<Throwable>> streamEnds = new ArrayList<>();
+        for (String path : paths) {
+            HttpClientRequest upload = open(http2Client, "POST", path);
+            CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+            upload.exceptionHandler(streamEnd::complete);
+            answers.add(answerOf(upload));
+            streamEnds.add(streamEnd);
+            Awaits.connect(upload.setChunked(true).sendHead(), "the head of the trickling upload " + path + " to be sent");
+            trickle(streamEnd::isDone, () -> upload.write(TRICKLE_CHUNK), upload::end);
+        }
+        List<Integer> statuses = new ArrayList<>();
+        for (Future<Answer> answered : answers) {
+            statuses.add(Awaits.connect(answered, "a relayed answer to a trickling upload to end").response()
+                    .statusCode());
+        }
+        for (CompletableFuture<Throwable> streamEnd : streamEnds) {
+            Awaits.connect(streamEnd, "the edge to reset a trickling upload stream");
+        }
+
+        assertAll("three uploads ended at the deadline on two routes",
+                () -> assertEquals(List.of(200, 200, 200), statuses, "every head the upstream sent stands"),
+                () -> assertEquals(2.0, errorCount(TRICKLE_ROUTE, REQUEST_BODY_TIMEOUT), "both ends are metered"),
+                () -> assertEquals(1.0, errorCount(ROUTE, REQUEST_BODY_TIMEOUT), "the other route's end is metered"),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                        deadlineRecord(TRICKLE_ROUTE)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.DEBUG,
+                        deadlineRecord(TRICKLE_ROUTE)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, deadlineRecord(ROUTE)),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.DEBUG, deadlineRecord(ROUTE)));
+    }
+
+    /** The text the deadline record of {@code route} carries, at either level. */
+    private static String deadlineRecord(String route) {
+        return "Request body on route '" + route + "' did not end within";
     }
 
     /**

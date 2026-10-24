@@ -1506,7 +1506,7 @@ duration: a call that carries a frame at least every five minutes stays open, as
 calls are normal for gRPC
 (Amendment A2).
 
-*Status of this control:* PARTIAL. `GatewayEdgeRequestBodyIdleTimeoutTest` drives a body trickling
+*Status of this control:* COVERED. `GatewayEdgeRequestBodyIdleTimeoutTest` drives a body trickling
 to an upstream that reads it whole and to one that answered at once, over HTTP/2 and HTTP/1.1
 (`http2TrickleToAWholeBodyReaderIsAnswered408NotTheGuardsTimeout`,
 `http2TrickleToAStreamingUpstreamIsEndedAtTheDeadline`,
@@ -1519,7 +1519,9 @@ response head and no body byte (`http2TrickleToAHeadOnlyUpstreamKeepsTheUpstream
 `http1TrickleToAHeadOnlyUpstreamKeepsTheUpstreamStatus`): the client still receives the upstream's
 status at the deadline; both were red, answered `502`, before the relay failure kept that status.
 `TerminalDispatchLateBodyTimeoutTest` asserts the same decision on the unwritten head directly,
-including a relay that had not set the upstream status yet. `GatewayEdgeRequestBodyIdleTimeoutTest` also asserts that an upload queued for a pooled
+including a relay that had not set the upstream status yet, and drives the late timeout's retirement
+and the failed relay that follows it through their production callers, never through the retirement
+calls themselves. `GatewayEdgeRequestBodyIdleTimeoutTest` also asserts that an upload queued for a pooled
 connection longer than the idle timeout but within its deadline is served `200`
 (`uploadQueuedForAPooledConnectionIsServed`), and that one which obtains its connection only after its
 deadline is answered `408` as soon as its body is read (`uploadQueuedPastItsDeadlineIsAnswered408`).
@@ -1541,20 +1543,26 @@ that a call idle in both directions ends with `DEADLINE_EXCEEDED`
 (`callIdleInBothDirectionsIsEndedWithDeadlineExceeded`), and that traffic in either direction alone
 keeps a call open (`upstreamTrafficKeepsTheCallOpenWhileTheClientIsSilent`,
 `clientTrafficKeepsTheCallOpenWhileTheUpstreamIsSilent`). Those cases compose the gRPC path
-themselves; `TerminalDispatchGrpcStreamIdleTest` runs a call through the edge's own wiring,
-`TerminalDispatch.relayGrpcCall`, which `dispatchGrpc` runs once it has resolved the upstream URI and
-the body cap: a call idle in both directions ends with `DEADLINE_EXCEEDED` and is recorded as
+themselves; `TerminalDispatchGrpcStreamIdleTest` runs a call through `TerminalDispatch.dispatchGrpc`
+itself -- the package-private overload that takes the call's stream-idle bound, which the public
+`dispatchGrpc` calls with the fixed five-minute bound -- so the dispatch function and the relay are
+the edge's own: a call idle in both directions ends with `DEADLINE_EXCEEDED` and is recorded as
 `ApiSheriff-25` (`idleCallIsEndedAndRecorded`), and a client that keeps sending keeps the call open
-(`clientTrafficKeepsTheCallOpen`), which turned red with the `watch(...)` wrap of the request body
-removed. `GatewayEdgeEarlyResponseResetTest` asserts
+(`clientTrafficKeepsTheCallOpen`), which is red when the dispatch function hands the dispatch the
+request stream unwatched. The same class asserts that the bound the public path builds,
+`GrpcStreamIdleBound.on(...)`, carries exactly the fixed five minutes
+(`publicPathBoundIsTheFixedFiveMinutes`). The per-route latch of the records is asserted for
+`ApiSheriff-24` (`GatewayEdgeRequestBodyIdleTimeoutTest`, `deadlineRecordIsLatchedPerRoute`) and
+`ApiSheriff-25` (`TerminalDispatchGrpcStreamIdleTest`, `idleExpiryRecordIsLatchedPerRoute`): a repeat
+on the same route stays at `DEBUG`, and a first occurrence on another route is recorded at `INFO`.
+`GatewayEdgeEarlyResponseResetTest` asserts
 the release of credit and permit (`admissionRefusedUploadReturnsItsConnectionWindow`,
 `uploadResetWhileWaitingForAnUpstreamConnectionReturnsItsWindowAndPermit`). The trickle and pool-wait
 cases run a shorter test-only idle timeout and deadline, and the stream-idle cases a 1 s bound, in
 place of the fixed 10 s, 25 s and five minutes; the gRPC pause case pauses past the fixed 10 s and
-25 s. Two steps of the gRPC wiring are asserted by no test: that the dispatch function `dispatchGrpc`
-passes to `relayGrpcCall` hands the watched request stream to the dispatch (the test supplies its
-own), and the fixed five-minute value `dispatchGrpc` builds. `GrpcProxyIT` sends real calls through
-`dispatchGrpc` and so runs both, but asserts neither.
+25 s. What no test observes is the public `dispatchGrpc`'s one-line hand-over of that five-minute
+bound to the overload: a test cannot wait five minutes for it, and `GrpcProxyIT` sends real calls
+through it without asserting the bound.
 
 [#gw-08]
 === GW-08 -- HTTP/2 & gRPC abuse (Rapid Reset, CONTINUATION flood, downgrade smuggling, h2c)
@@ -3763,7 +3771,7 @@ outstanding hardening work (next section).
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
-| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 Amendments A1 and A2 | PARTIAL (two steps of the edge's gRPC stream-idle wiring in `dispatchGrpc` are asserted by no test: that the dispatch function it hands to `relayGrpcCall` receives the watched request stream, and the fixed five-minute value)
+| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 Amendments A1 and A2 | COVERED (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
