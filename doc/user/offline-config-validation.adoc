@@ -55,7 +55,7 @@ docker run --rm --network none \
 * The image runs as `nonroot`, a different user than the one who owns your files. Every file in the
   mounted directory must be readable by others, or the check reports `gateway.yaml` as unreadable and
   exits `2`.
-* Replace the `-e` line with the variables *your* deployment sets -- see <<_placeholder_policy>>. The
+* Replace the `-e` lines with the variables *your* deployment sets -- see <<_placeholder_policy>>. The
   example shows the three variables the compose sample's `gateway.yaml` requires: the trusted
   proxies and the paths of the BFF's two signing keys. The check does not open the key files -- key
   material is not evaluated offline -- so the paths only have to be set, not to exist.

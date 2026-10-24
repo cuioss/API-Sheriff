@@ -165,8 +165,11 @@ oidc:
     key_file: "${SHERIFF_DPOP_KEY_FILE}"
   scopes: ["openid", "profile", "email"]
   # The full browser-facing callback URL, registered as the client's ONLY redirect URI in the realm
-  # (exact match, no wildcard). Its host is the host the reserved /bff paths answer on, and its
-  # origin is the one return URLs and the CSRF check are held to.
+  # (exact match, no wildcard). Its host is the host the browser-facing reserved /bff paths answer
+  # on (login, callback, logout and the other browser legs). The two paths the identity provider dials
+  # server-to-server, the client JWKS (/bff/jwks) and the back-channel logout receiver, answer on
+  # every host, which is why Keycloak can fetch https://api-sheriff:8443/bff/jwks. Its origin is the
+  # one return URLs and the CSRF check are held to.
   redirect_uri: https://localhost:8443/bff/callback
   login:
     path: /bff/login
