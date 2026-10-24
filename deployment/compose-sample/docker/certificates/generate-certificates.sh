@@ -24,20 +24,26 @@
 #                                          what the deployment module's -Pcompose-sample profile
 #                                          calls, so a fresh checkout gets its material while an
 #                                          operator's existing set is never rotated behind their back.
+#   generate-certificates.sh --check       Generate nothing. Print the names of the missing artifacts
+#                                          on one line and exit 1 when any is missing; exit 0 silently
+#                                          when the set is complete. start-sample.sh's preflight calls
+#                                          this, so the bring-up reads "complete" from ARTIFACTS below
+#                                          instead of keeping a second copy of the list.
 #
-# "The whole set" in both cases, never a partial regeneration: the certificate, its key and the
-# truststore are one decision — a store anchoring a certificate Keycloak no longer serves fails the
-# JWKS fetch — so a missing member is answered by replacing every member.
+# "The whole set" in both generating modes, never a partial regeneration: the certificate, its key
+# and the truststore are one decision — a store anchoring a certificate Keycloak no longer serves
+# fails the JWKS fetch — so a missing member is answered by replacing every member.
 
 set -euo pipefail
 
 CERT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case "$#:${1:-}" in
-    0:) IF_MISSING=false ;;
-    1:--if-missing) IF_MISSING=true ;;
+    0:) MODE=always ;;
+    1:--if-missing) MODE=if-missing ;;
+    1:--check) MODE=check ;;
     *)
-        echo "Usage: ${0##*/} [--if-missing]" >&2
+        echo "Usage: ${0##*/} [--if-missing | --check]" >&2
         exit 2
         ;;
 esac
@@ -83,8 +89,8 @@ TRUSTSTORE_PASSWORD="sample-idp-trust"
 CLIENT_AUTH_KEY="${CERT_DIR}/client-auth.pem"
 DPOP_KEY="${CERT_DIR}/dpop.pem"
 
-# The set --if-missing checks, and the set a run produces. One list, so the check and the output
-# cannot disagree about what "complete" means.
+# The set --check and --if-missing check, and the set a run produces. One list, so neither check
+# can disagree with the output about what "complete" means.
 ARTIFACTS=(
     "${CERT_DIR}/localhost.crt"
     "${CERT_DIR}/localhost.key"
@@ -93,11 +99,20 @@ ARTIFACTS=(
     "${DPOP_KEY}"
 )
 
-if [[ "${IF_MISSING}" == "true" ]]; then
-    MISSING=()
-    for artifact in "${ARTIFACTS[@]}"; do
-        [[ -f "${artifact}" ]] || MISSING+=("$(basename "${artifact}")")
-    done
+MISSING=()
+for artifact in "${ARTIFACTS[@]}"; do
+    [[ -f "${artifact}" ]] || MISSING+=("$(basename "${artifact}")")
+done
+
+if [[ "${MODE}" == "check" ]]; then
+    if (( ${#MISSING[@]} == 0 )); then
+        exit 0
+    fi
+    echo "${MISSING[*]}"
+    exit 1
+fi
+
+if [[ "${MODE}" == "if-missing" ]]; then
     if (( ${#MISSING[@]} == 0 )); then
         echo "The sample's certificate material and signing keys are complete in ${CERT_DIR};"
         echo "nothing was regenerated. Run without --if-missing to replace the whole set."
@@ -195,8 +210,8 @@ generate_key_file() {
     # The two labels are what the gateway accepts. An openssl build that writes a traditional
     # 'RSA PRIVATE KEY' or 'EC PRIVATE KEY' block would produce a file the gateway refuses at boot,
     # so that is caught here and not in the stack. The file is assembled under a scratch name and only
-    # moved to its real name once it passes: --if-missing checks presence alone, so a failed or
-    # interrupted run must never leave a bad key at the name that check treats as complete.
+    # moved to its real name once it passes: --if-missing and --check test presence alone, so a failed
+    # or interrupted run must never leave a bad key at the name those checks treat as complete.
     if ! grep -qx -- '-----BEGIN PRIVATE KEY-----' "${ASSEMBLED_FILE}" \
         || ! grep -qx -- '-----BEGIN PUBLIC KEY-----' "${ASSEMBLED_FILE}"; then
         echo "❌ ${target} does not hold a PKCS#8 PRIVATE KEY block and a PUBLIC KEY block." >&2

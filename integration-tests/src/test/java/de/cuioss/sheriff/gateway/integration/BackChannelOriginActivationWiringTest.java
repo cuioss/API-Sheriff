@@ -28,6 +28,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.yaml.snakeyaml.Yaml;
@@ -60,9 +61,9 @@ import org.junit.jupiter.api.Test;
  * {@code sheriff-config*} directories and the realm imports from the {@code keycloak} directory of both
  * stacks that run Keycloak — the integration-test stack and the compose sample, whose BFF logs in through
  * the same contract — so a new instance or realm is held to the contract the moment it is committed.
- * The non-vacuity floor of
- * {@value #OIDC_DESCRIPTOR_FLOOR} oidc-bearing descriptors keeps an empty or mis-rooted enumeration from
- * passing the per-descriptor loop by finding nothing to check.
+ * The non-vacuity floors in {@link #OIDC_DESCRIPTOR_FLOORS}, one per stack, keep an empty or mis-rooted
+ * enumeration from passing the per-descriptor loop by finding nothing to check, and keep an oidc
+ * descriptor one stack gains from hiding one the other stack lost.
  * <p>
  * It parses the committed files only — it starts no container and reaches no network. Modelled on
  * {@code EgressAllowlistActivationWiringTest}.
@@ -110,12 +111,14 @@ class BackChannelOriginActivationWiringTest {
     private static final String BACK_CHANNEL_AUTHORITY = "keycloak:8443";
 
     /**
-     * The oidc-bearing descriptors committed today. The enumeration must find at least this many, so
-     * an empty or mis-rooted directory scan fails loudly instead of passing vacuously. Ten sit in the
-     * integration-test stack; the eleventh is the compose sample's, whose descriptor declares the oidc
-     * block of its server-session BFF.
+     * The oidc-bearing descriptors committed today, per descriptor root. The enumeration must find at
+     * least this many under EACH root, so an empty or mis-rooted directory scan fails loudly instead of
+     * passing vacuously, and a descriptor one stack gains cannot cover for one the other stack lost. Ten
+     * sit in the integration-test stack; the compose sample's one descriptor declares the oidc block of
+     * its server-session BFF.
      */
-    private static final int OIDC_DESCRIPTOR_FLOOR = 11;
+    private static final Map<Path, Integer> OIDC_DESCRIPTOR_FLOORS = Map.of(DOCKER, 10,
+            COMPOSE_SAMPLE.resolve("docker"), 1);
 
     private static final String KEYCLOAK_SERVICE = "keycloak";
     private static final String HOSTNAME_VARIABLE = "KC_HOSTNAME";
@@ -128,7 +131,7 @@ class BackChannelOriginActivationWiringTest {
     @Test
     @DisplayName("every descriptor with an oidc block dials keycloak:8443 through back_channel_origin and issues on localhost:1443")
     void everyOidcDescriptorDeclaresTheBackChannelOriginAndThePublishedIssuer() throws Exception {
-        int oidcDescriptorsSeen = 0;
+        Map<Path, Integer> oidcDescriptorsSeen = new HashMap<>();
 
         for (Path descriptor : committedGatewayDescriptors()) {
             Object oidcNode = loadYaml(descriptor).get("oidc");
@@ -136,7 +139,9 @@ class BackChannelOriginActivationWiringTest {
                 continue;
             }
             Map<?, ?> oidc = assertInstanceOf(Map.class, oidcNode, descriptor + " declares a non-map oidc block");
-            oidcDescriptorsSeen++;
+            Path root = GATEWAY_DESCRIPTOR_ROOTS.stream().filter(descriptor::startsWith).findFirst()
+                    .orElseThrow(() -> new AssertionError(descriptor + " lies under no descriptor root"));
+            oidcDescriptorsSeen.merge(root, 1, Integer::sum);
 
             assertEquals(BACK_CHANNEL_ORIGIN, oidc.get("back_channel_origin"), descriptor
                     + " declares an oidc block whose back_channel_origin is not " + BACK_CHANNEL_ORIGIN + ". Without"
@@ -152,10 +157,12 @@ class BackChannelOriginActivationWiringTest {
                     + " mints into every token and discovery document.");
         }
 
-        assertTrue(oidcDescriptorsSeen >= OIDC_DESCRIPTOR_FLOOR, "expected at least " + OIDC_DESCRIPTOR_FLOOR
-                + " committed descriptors with an oidc block under " + GATEWAY_DESCRIPTOR_ROOTS + ", found "
-                + oidcDescriptorsSeen
-                + " — the back-channel contract would pass vacuously; check the directory enumeration");
+        OIDC_DESCRIPTOR_FLOORS.forEach((root, floor) -> {
+            int seen = oidcDescriptorsSeen.getOrDefault(root, 0);
+            assertTrue(seen >= floor, "expected at least " + floor + " committed descriptors with an oidc block"
+                    + " under " + root + ", found " + seen + " — the back-channel contract would pass unchecked for"
+                    + " that stack; check its descriptors and the directory enumeration");
+        });
     }
 
     @Test

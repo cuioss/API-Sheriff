@@ -151,7 +151,8 @@ Hostname verification stays on there as well.
 If you generated the material before the truststore or the signing keys existed, run the script
 again -- the bring-up refuses to start with an incomplete set and says so. Run with no argument, the
 script always replaces the whole set; `--if-missing` replaces it only when a file of the set is
-missing, and is what the Maven profile below calls.
+missing, and is what the Maven profile below calls; `--check` generates nothing and only names the
+missing files, and is what the bring-up's refusal is based on.
 
 === 2. Start it
 

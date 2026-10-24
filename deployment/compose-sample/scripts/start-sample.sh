@@ -218,16 +218,15 @@ fi
 # generated BEFORE the sample bound the `sample-idp` trust profile has the certificate pair but no
 # store, and a set generated before the sample carried the BFF has no client-auth.pem or dpop.pem. The
 # gateway refuses to boot on either — an unloadable profile, or a key file its oidc block names but
-# cannot read. Re-running the generator produces all five together.
-if [[ ! -f "${SAMPLE_DIR}/docker/certificates/localhost.crt" \
-   || ! -f "${SAMPLE_DIR}/docker/certificates/localhost.key" \
-   || ! -f "${SAMPLE_DIR}/docker/certificates/sample-idp-truststore.p12" \
-   || ! -f "${SAMPLE_DIR}/docker/certificates/client-auth.pem" \
-   || ! -f "${SAMPLE_DIR}/docker/certificates/dpop.pem" ]]; then
+# cannot read. Re-running the generator produces the whole set together.
+#
+# What "complete" means is read from the generator's own artifact list through its --check mode,
+# never restated here — the same derive-don't-restate rule the image preflight below follows.
+if ! MISSING_MATERIAL="$("${SAMPLE_DIR}/docker/certificates/generate-certificates.sh" --check)"; then
     echo "❌ The sample's TLS material or BFF signing keys are missing or incomplete."
-    echo "   docker/certificates/localhost.crt, localhost.key, sample-idp-truststore.p12,"
-    echo "   client-auth.pem and dpop.pem are generated, never committed. Generate them (again, if"
-    echo "   you have an older set), then re-run this script:"
+    echo "   Missing from docker/certificates/: ${MISSING_MATERIAL:-(the check itself failed; see above)}"
+    echo "   They are generated, never committed. Generate them (again, if you have an older set),"
+    echo "   then re-run this script:"
     echo "     ./docker/certificates/generate-certificates.sh"
     exit 1
 fi
