@@ -40,6 +40,7 @@ import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.ext.web.Router;
@@ -394,7 +395,7 @@ class GatewayEdgeQueryHandoffTest {
 
     private Response get(String uri, Map<String, String> requestHeaders) throws Exception {
         RequestOptions options = new RequestOptions().setHost(LoopbackHost.ADDRESS)
-                .setPort(frontServer.actualPort()).setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+                .setPort(frontServer.actualPort()).setMethod(HttpMethod.GET).setURI(uri);
         CompletableFuture<Response> future = client.request(options)
                 .compose(request -> {
                     requestHeaders.forEach(request::putHeader);
