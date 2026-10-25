@@ -502,8 +502,8 @@ the native image, in this order:
 The last line is the restart verdict: a restart with newly generated keys does not end a live
 session. The failure message of the test names the other possible verdict -- the refresh is refused
 and the session ends through `oidc.session.refresh.on_failure` -- so a Keycloak upgrade that changes
-the behaviour turns the test red. The decision record states the limits of this observation
-(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc#observed-on-the-integration-stack[ADR-0058: Observed on the integration stack]).
+the behaviour turns the test red. The contributor guide states the limits of this observation
+(link:bff-session.adoc#observed-on-the-integration-stack[Server-Session BFF -- Observed on the integration stack]).
 
 [#test-started-host-ports]
 === The test-started containers and their host ports
