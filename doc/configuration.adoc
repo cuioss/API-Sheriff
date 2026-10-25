@@ -3690,7 +3690,9 @@ reaches an upstream *only as the route's link:#_cookies[`cookies`] policy admits
 gateway's own cookies *never*: every cookie under the reserved `+__Host-sheriff-+` prefix, the
 configured `oidc.session.cookie_name` and its `-activity` sibling -- in both session modes, since an
 activity cookie issued before a switch from cookie to server mode stays live until it expires -- are
-dropped under every policy and every mode. Stage 5 rebuilds the header from the pairs that remain,
+dropped under every policy and every mode. A cookie name is read the way a user agent reads it: the
+`+__Host-+` and `+__Secure-+` prefixes compare without regard to case, so a respelled prefix does not
+take a gateway cookie past the drop. Stage 5 rebuilds the header from the pairs that remain,
 so the upstream receives at most the application cookies the route names. Under the default
 `allow: none` no `Cookie` reaches the upstream at all. A `forward.headers_allow`,
 `forward.headers_deny` or `forward.set_headers` entry naming `Cookie` is refused at boot: the
