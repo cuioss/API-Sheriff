@@ -2382,7 +2382,7 @@ same census the derivation above uses.
 | `edge/GatewayEdgePipelineTest.java`                | 0 | 3 |
 | `edge/GatewayEdgeRouteBffWiringTest.java`          | 2 | 0 |
 | `edge/upstream/GrpcDispatchStageTest.java`         | 2 | 0 |
-| `edge/ReservedBodyCeilingTest.java`                | 4 | 0 |
+| `edge/reserved/ReservedBodyCeilingTest.java`       | 4 | 0 |
 | `pipeline/CanonicalPathGuardTest.java`             | 2 | 0 |
 | `pipeline/RouteSelectionStageTest.java`            | 0 | 2 |
 | `pipeline/VerbGateStageTest.java`                  | 2 | 0 |
