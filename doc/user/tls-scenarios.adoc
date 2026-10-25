@@ -723,7 +723,8 @@ name. Never pick it to reach a self-signed or private-CA peer -- the chain is st
 is <<_scenario_corporate_ca_upstreams>> or <<_scenario_private_ca_idp>>. Fixing the certificate's
 names is always the better answer. Both keys are gateway-wide: there is no per-route or per-issuer
 override (see link:../configuration.adoc#_egress_tls_hostname_scope[What disabling hostname
-verification does and does not do]).
+verification does and does not do]). Which key reaches which outbound leg is tabled in
+link:tls-edge.adoc#_outbound_tls[TLS Edge -- Outbound TLS].
 
 The two keys below cover proxied upstreams and the JWKS fetch. The BFF's own back-channel to the
 identity provider -- discovery, the pushed authorization request, the code exchange, refresh and
@@ -734,7 +735,12 @@ in <<_scenario_bff_oidc_back_channel>>.
 === Preconditions
 
 * A peer whose certificate chains to an anchor the gateway already trusts on that leg.
-* For the JWKS key: no `http`-sourced issuer names `jwks.tls_profile`.
+* For the JWKS key: no `http`-sourced issuer names `jwks.tls_profile`. An issuer that needs both a
+  private CA and the relaxation has no supported combination on the JWKS leg: the library relaxes
+  hostname matching only on the default-trust-store context it derives itself. Fix the certificate's
+  names, or put the CA into the JVM default trust store and name no profile on that issuer (see
+  link:../configuration.adoc#_default_trust_store_replaces[Supplying a default trust store REPLACES the
+  platform bundle]). The flag is global, so every other `http` issuer must then name no profile either.
 
 === Configuration
 
