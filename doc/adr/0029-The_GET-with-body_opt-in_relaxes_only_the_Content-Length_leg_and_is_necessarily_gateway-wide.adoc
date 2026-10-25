@@ -28,7 +28,7 @@ or trust header. Its class documentation lists the full set.
 The rejection of a body on a bodyless method is the one that meets legitimate traffic. `GET` is
 defined as bodyless, but some upstream APIs accept a body on it. A search API that takes a structured
 query document is the widely deployed case. A deployment in front of such an upstream sees a request
-its backend understands rejected at the gateway. Its only workarounds are worse: rewriting the client
+the upstream understands rejected at the gateway. Its only workarounds are worse: rewriting the client
 to another method, or disabling the framing defences wholesale.
 
 The record settles what the escape hatch for that traffic looks like. Two properties of the gate make
@@ -128,7 +128,7 @@ to. A key cannot be scoped to information its stage does not yet have.
   unreachable by configuration.
 * The motivating traffic is served exactly, at no cost to the constraint: a client that sends a query
   document on `GET` sends it `Content-Length`-framed.
-* The relaxation's stated blast radius is its enforced one, because each admitted and each refused
+* The relaxation's stated blast radius is its enforced one, because each admitted and each rejected
   shape is a separate branch.
 * A deployment that does not need the capability is unaffected without acting. A deployment that
   enables it is told in the configuration surface that it did so gateway-wide.
@@ -145,7 +145,7 @@ to. A key cannot be scoped to information its stage does not yet have.
 *Accepted failure modes.*
 
 * *A body that no header declares.* The gate decides on headers alone. On HTTP/2 a body can travel in
-  DATA frames with no `content-length`; the gate does not see it. The upstream dispatch refuses such a
+  DATA frames with no `content-length`; the gate does not see it. The upstream dispatch rejects such a
   body on its first byte, because it sends a bodyless method upstream with no body on every protocol
   (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060]).
 

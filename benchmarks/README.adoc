@@ -351,9 +351,10 @@ runs against a *dedicated second gateway instance*, `api-sheriff-passthrough-emp
 removed. On that instance the front listener is never created and the single terminated Quarkus
 HTTPS listener owns the public port directly, which is D1's zero-overhead default.
 +
-Everything else is held equal, because the comparison is only meaningful as a single-variable one
-(see <<comparison-lane-segregation>>): the *same* native image, the *same* `/proxy/static` route, the *same* `nginx-static`
-upstream the benchmark overlay repoints both instances at, the *same* mounted TLS material, and the
+Everything else is held equal, because the no-regression comparison is only meaningful as a
+single-variable one, with passthrough activation as the variable: the *same* native image, the
+*same* `/proxy/static` route, the *same* `nginx-static` upstream the benchmark overlay repoints both
+instances at, the *same* mounted TLS material, and the
 *same* CPU and memory limits (512M / 4.0 CPU). A difference on any of those folds its own cost into
 one side of the gate and is then read as passthrough overhead.
 +
@@ -528,6 +529,9 @@ Three other shapes were considered and rejected:
 * *Write comparison results into the baseline store and filter them later.* One results surface is
   simpler, but any gap in the filter lets a comparison run corrupt the published history.
   Segregation at write time is the only boundary that cannot leak.
+
+[[running-a-comparison]]
+=== Running a comparison
 
 First build the `grpc-echo` fixture jar on the host, from the repository root. The `grpc-echo` image
 build copies `integration-tests/target/quarkus-app` and fails when that directory is absent:

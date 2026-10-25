@@ -125,7 +125,7 @@ length:
 The residual exposure is enumerable. On a cookie-mode gateway a client may send a longer `Cookie`
 value, subject to every other content check and the transport limits. A value that is not a
 resolvable sealed session is "no session" to the binding. On every gateway a client may send a longer
-`Authorization` value, subject to the same checks, before bearer validation refuses an invalid token.
+`Authorization` value, subject to the same checks, before bearer validation rejects an invalid token.
 The configuration field contract is in
 link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route
 header-name carve-outs].
@@ -154,7 +154,7 @@ the header it applies to, or it is a removal.
 at this position: no anchor exists before route selection. Moving the header check after routing
 would route on unvalidated input, a worse exposure than the raised cap.
 
-*Reject the cookie-mode variant instead of relaxing anything.* Rejected because the stateless variant
+*Reject the cookie-mode variant instead of relaxing anything.* Rejected because the cookie-based BFF
 answers a real deployment need. The relaxation it requires is bounded and reviewable.
 
 *Leave bearer requests to fail the floor, or raise the route's `max_header_value_length` instead.*

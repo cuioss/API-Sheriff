@@ -29,11 +29,11 @@ Each admits a tempting per-deployment or per-route answer that fragments the sec
 * *Two session modes.* Tokens can be held server-side behind an opaque cookie, or sealed into the
   cookie itself. The modes differ in state and failure modes. They do not differ in what the login,
   the refresh, the CSRF defence or the reserved paths must do.
-* *Key material for the stateless mode.* Sealing needs a key. Requiring one blocks the simplest
+* *Key material for cookie mode.* Sealing needs a key. Requiring one blocks the simplest
   deployment. Generating one silently breaks a multi-replica deployment.
 * *Session identity without a store.* Per-session coordination, such as single-flight refresh, needs
-  a stable identity. A stateless mode must derive it, and a derived identity must be both stable
-  across re-seals and unique across sessions.
+  a stable identity. Cookie mode has no store and must derive it, and a derived identity must be
+  both stable across re-seals and unique across sessions.
 * *Writes that race a logout.* A refresh and a widening resolve the session, call the identity
   provider (IdP) and write back. A logout in between must not be undone.
 * *Lifetime.* A session that ends only at its absolute lifetime stays usable on an unattended
@@ -149,7 +149,7 @@ callback answers its terminal `403` and stores nothing. The refresh coordinator 
 session-ended and revokes, best-effort, the refresh token the exchange returned
 (link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
 
-*Cookie mode cannot observe a termination.* The stateless binding holds no server-side state. Its
+*Cookie mode cannot observe a termination.* `CookieSessionBinding` holds no server-side state. Its
 `destroy` removes nothing; a logout clears the browser's cookie. Its updating writes always re-seal
 and never report the session gone. This difference has no capability flag: the result of `persist`
 carries it. The residual is in the Consequences.
@@ -204,7 +204,7 @@ This holds in both modes.
 * `resolve` enforces both deadlines and extends neither. A caller that only reads a session, such as
   a reserved handler or the portal, does not keep it alive.
 * `recordAccess` is the only operation that moves the idle deadline. The session stage calls it once
-  for each request it lets through. A refused, challenged or redirected request is not an access.
+  for each request it lets through. A rejected, challenged or redirected request is not an access.
 * No access moves the absolute lifetime.
 
 A session past either deadline is no session. *Server mode* keeps the last access in the store beside
@@ -283,7 +283,7 @@ writer in flight. The store already serialises its own operations.
 per-session state that outlives the session and needs its own bound and expiry, to rebuild a fact the
 store has at the moment of the write: whether the record is there.
 
-*Give cookie mode a server-side list of logged-out sessions.* It would let the stateless binding
+*Give cookie mode a server-side list of logged-out sessions.* It would let `CookieSessionBinding`
 report a termination. Rejected because it is server-side session state in the variant that exists to
 have none, and it would have to be shared between instances to mean anything.
 
@@ -316,7 +316,7 @@ reasons. The field changes the sealed payload, which raises the format version a
 cookie-mode session at the upgrade. And every access becomes a re-seal of the whole session: a
 full-size `Set-Cookie` carrying the tokens, each one racing the refresh's own write.
 
-*No idle timeout in cookie mode.* It keeps the stateless variant at one cookie. Rejected because the
+*No idle timeout in cookie mode.* It keeps the cookie-based BFF at one cookie. Rejected because the
 two modes would then differ in a property operators read as one feature, the drift decision (iii)
 prevents. The capability is achievable without server-side state.
 
@@ -337,7 +337,7 @@ silent and shows only in the deployments least equipped to diagnose it.
 * A step-up or a widening changes the server-mode cookie value and nothing else about the session.
 * A session nobody uses ends at its idle deadline in both modes. A reader of a session does not keep
   it alive.
-* The stateless mode works without key management. The multi-replica case works with a configured
+* Cookie mode works without key management. The multi-replica case works with a configured
   key.
 * Single-flight refresh keys correctly in both modes, also for concurrent logins by one subject.
 

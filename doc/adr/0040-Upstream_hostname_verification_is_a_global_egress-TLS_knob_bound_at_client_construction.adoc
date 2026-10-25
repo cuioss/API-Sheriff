@@ -103,9 +103,11 @@ Three surface rules go with the principle:
 * *A named profile replaces the anchors; it does not add to them.* An operator who names a profile
   holding only a private CA stops trusting public certificate authorities on that leg.
 
-A relaxed posture is a boot WARN, never a boot refusal. A disabled hostname check and a named trust
-profile are legitimate deployments that must be visible in the log, like the broad-trusted-proxy and
-plain-HTTP-management warnings.
+A relaxed posture the gateway can honour is a boot WARN, not a boot refusal. A disabled hostname check
+and a named trust profile are legitimate deployments that must be visible in the log, like the
+broad-trusted-proxy and plain-HTTP-management warnings. A posture the gateway cannot honour is a boot
+refusal instead: the combination a leg's library refuses, under rule (3), and a trust profile the
+resolver fails closed on, below.
 
 === The proxy path binds at the three Vert.x construction sites
 
@@ -143,7 +145,7 @@ cuts in a known direction. Hostname verification is fail-safe there: the JDK cli
 Trust fails closed: a private-CA asset origin fails, and its anchors go into the JVM trust store.
 
 The full set of TLS-terminating egress legs, and which key governs each, is re-derived from source in
-link:../user/tls-edge.adoc#_outbound_tls[TLS Edge -- Outbound TLS]. `EgressTlsConfig` carries the same
+link:../user/tls-edge.adoc#_egress_tls[TLS Edge -- Egress TLS]. `EgressTlsConfig` carries the same
 enumeration in its documentation. Neither list holds the set closed; the fitness function does.
 
 *The scope claim is proven by a handshake.* The integration stack runs a matched pair of gateway
@@ -247,7 +249,7 @@ without that control.
 * link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- Re-assertion principle] -- the partial-binding failure class.
 * link:0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017 -- SNI split] -- the L4 relay no egress key can govern.
 * link:0033-Absence_in_the_production_type_model_is_a_Nullable_type_not_a_stored_Optional.adoc[ADR-0033 -- Absence model] -- what makes an omitted profile name distinguishable from any string.
-* link:../user/tls-edge.adoc#_outbound_tls[TLS Edge -- Outbound TLS] and link:../user/tls-scenarios.adoc[TLS Scenarios] -- the operator view: the leg table, the boot records, and the private-CA and relaxation scenarios.
+* link:../user/tls-edge.adoc#_egress_tls[TLS Edge -- Egress TLS] and link:../user/tls-scenarios.adoc[TLS Scenarios] -- the operator view: the leg table, the boot records, and the private-CA and relaxation scenarios.
 * link:../configuration.adoc#_egress_tls[Configuration Reference -- `egress_tls`] -- the field contracts.
 * link:../security-threat-model.adoc[Threat Model] -- GW-06, which requires upstream certificate verification by default and a behaviour test.
 * `EgressTlsConfig`, `EgressClients`, `EgressTrustProfileResolver` -- the implementation; `EgressTlsPostureArchTest`, `EgressTrustProfileResolverTest`, `EgressVerifyActivationWiringTest` -- the tests.

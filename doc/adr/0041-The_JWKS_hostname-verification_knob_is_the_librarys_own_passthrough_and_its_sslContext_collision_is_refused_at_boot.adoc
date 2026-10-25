@@ -73,10 +73,10 @@ library, the operator would see an `IllegalArgumentException` in terms of `sslCo
 `verifyHostname(false)`, two symbols that appear nowhere in `gateway.yaml`. That is principle (3) of
 ADR-0040.
 
-It is a refusal, not a warning, against ADR-0040's warn-never-refuse rule for relaxed postures. A
-relaxed hostname check is a legitimate deployment that must merely be visible. This combination is not
-a deployment at all: the library rejects it one layer down whatever the gateway does. The only choice is
-which error the operator sees.
+It is a refusal, not a warning, because ADR-0040 makes a posture the gateway cannot honour a boot
+refusal. A relaxed hostname check on its own is a legitimate deployment that must merely be visible,
+and ADR-0040 reports it as a boot WARN. This combination is not a deployment at all: the library rejects
+it one layer down whatever the gateway does. The only choice is which error the operator sees.
 
 === The two controls stay orthogonal
 

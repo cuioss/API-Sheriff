@@ -5,7 +5,7 @@
 
 An operator guide to the TLS edge: the *TLS policy keys* (protocol floor, cipher allowlist, ALPN),
 *SNI passthrough* (relay selected hostnames at L4 without terminating), *mTLS* (require and verify a
-client certificate on terminated connections), *outbound TLS* (the posture of every TLS connection the
+client certificate on terminated connections), *egress TLS* (the posture of every TLS connection the
 gateway dials), and the *management interface* (health and metrics on their own port). This topic
 describes how to *configure and operate* these keys; the authoritative
 field contract lives in the link:../configuration.adoc#_tls[Configuration Reference `tls` section],
@@ -258,11 +258,11 @@ Plan trust-root rotation as a coordinated event: stage the new client certificat
 compromised client where you cannot rotate the whole fleet immediately, the compensating control is
 network-level (drop the client at the perimeter), not certificate-level.
 
-[[_outbound_tls]]
-== Outbound TLS (`egress_tls`)
+[[_egress_tls]]
+== Egress TLS (`egress_tls`)
 
 Everything above governs connections *to* the gateway. The global `egress_tls` block governs the TLS
-connections the gateway *dials*. It holds a pair of keys per outbound leg -- one that relaxes hostname
+connections the gateway *dials*. It holds a pair of keys per egress leg -- one that relaxes hostname
 verification, one that names a trust profile -- and every key is optional:
 
 [source,yaml]
@@ -287,8 +287,8 @@ carry -- see link:tls-scenarios.adoc[TLS Scenarios].
 
 === Which key reaches which leg
 
-The gateway dials six TLS-terminating outbound legs. The table is re-derived from source; it is not
-what holds the set closed. `EgressTlsPostureArchTest` fails the build when any outbound TLS client is
+The gateway dials six TLS-terminating egress legs. The table is re-derived from source; it is not
+what holds the set closed. `EgressTlsPostureArchTest` fails the build when any egress TLS client is
 built without its posture, whether or not a list names it.
 
 [cols="1,2,2", options="header"]
@@ -329,7 +329,8 @@ with one name-mismatched upstream relaxes hostname verification for every proxie
 *The asset-origin fetch is outside the block, in a known direction.* Its JDK client always verifies
 hostnames, so turning `upstream_verify_hostname` off cannot weaken it. `upstream_tls_profile` does not
 reach it either, so an asset origin behind a private CA fails closed with a `502`. Put that anchor into
-the JVM default trust store instead (see the next section).
+the JVM default trust store instead (see
+<<_operator_consideration_outbound_trust_material_replaces_the_platform_bundle>>).
 
 === What a relaxation does and does not do
 
@@ -390,9 +391,11 @@ The full wording of each record is in link:../LogMessages.adoc[Log messages].
 leg -- the JWKS fetch, the BFF back channel and the asset-origin fetch -- whatever `egress_tls` says. It is
 a start-up flag, so no gateway key and no build check can see it. Do not set it.
 
+[[_operator_consideration_outbound_trust_material_replaces_the_platform_bundle]]
 == Operator Consideration: Outbound trust material replaces the platform bundle
 
-The section above is about the anchor the gateway *accepts clients against*. The mirror-image hazard
+The emergency trust-root replacement consideration earlier on this page is about the anchor the
+gateway *accepts clients against*. The mirror-image hazard
 sits on the outbound side, and it catches operators for the same reason: *supplying a default trust
 store substitutes for the platform trust bundle rather than adding to it.* A store holding only your
 private CA has not added an anchor -- it has removed every public root the platform shipped, and the
