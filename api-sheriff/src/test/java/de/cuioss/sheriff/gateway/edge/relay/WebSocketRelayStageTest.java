@@ -102,6 +102,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.ServerWebSocket;
 import io.vertx.core.http.UpgradeRejectedException;
@@ -488,7 +489,7 @@ class WebSocketRelayStageTest {
             try {
                 // Act — deliberately not awaited: the branch under test ends no response, so the
                 // send future never completes; the release callback is the observable outcome.
-                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(),
+                plainClient.request(HttpMethod.GET, relayServer.actualPort(),
                         LoopbackHost.ADDRESS, "/relay").compose(HttpClientRequest::send);
 
                 // Assert
@@ -1921,7 +1922,7 @@ class WebSocketRelayStageTest {
 
         private List<String> activityCookiesOfProxiedGet() throws Exception {
             return Awaits.connect(httpClient
-                    .request(io.vertx.core.http.HttpMethod.GET, sessionFront.actualPort(), LoopbackHost.ADDRESS,
+                    .request(HttpMethod.GET, sessionFront.actualPort(), LoopbackHost.ADDRESS,
                             "/http-session/page")
                     .compose(request -> request.putHeader("Cookie", sessionCookie).send())
                     .map(response -> {
