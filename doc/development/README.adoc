@@ -26,6 +26,11 @@ to *run* the finished gateway).
   component stays only with a recorded reason. The ADR lists the components that stay and why, and
   defines the one package rule still enforced, the pre-boot gate.
 
+| link:adr-writing.adoc[Writing an Architecture Decision Record]
+| What belongs in `doc/adr/` and what is developer documentation -- the keep / relocate / delete
+  rubric, the meta-block definition and the 500-line body ceiling `AdrRecordLengthContractTest`
+  enforces, the four-section skeleton, the writing rule and the term list a record uses.
+
 | link:sonar-quality-gate.adoc[SonarCloud Quality Gate -- Compliance Policy]
 | The rules around the authoritative, blocking SonarCloud gate -- zero new findings, never
   merging over a red or stale-green gate, PR-new-code vs post-merge project-gate auditability,

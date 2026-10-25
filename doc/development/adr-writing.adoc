@@ -1,0 +1,385 @@
+= API Sheriff -- Writing an Architecture Decision Record
+:toc:
+:toclevels: 2
+:sectnums:
+
+How to decide whether something belongs in `doc/adr/`, and how to write a record that does. The
+records themselves live in `doc/adr/`. The record template and numbering come from
+the `plan-marshall:manage-adr` skill; this page adds the project rules on top of it.
+
+[[_rubric]]
+== Rubric: What Is an ADR
+
+An ADR records *one decision between real alternatives whose consequences outlive the code*. A
+reader who finds the code changed years later must still learn from it why the other options lost.
+
+The following are not ADRs. They are developer documentation and belong under `doc/development/`
+or `doc/user/`:
+
+* *A scope statement* -- what the gateway does or does not do yet.
+* *A build convention* -- how a module is built, which BOM wins, which profile runs what.
+* *A process policy* -- how CI, releases or benchmarks are run.
+* *A testing convention* -- how a test starts a gateway, publishes a port or waits for readiness.
+
+Each record gets exactly one verdict:
+
+[cols="1,4", options="header"]
+|===
+| Verdict | Meaning
+
+| *keep*
+| The record is a decision. It stays and is brought to the skeleton and the writing rule below.
+
+| *relocate*
+| The record is developer documentation. Its content moves to a named destination page, the record
+  is removed, and every reference to it is repointed to the destination.
+
+| *delete*
+| The record says nothing that is not already stated elsewhere. It is removed, and every reference
+  to it is repointed to the record or page that states it.
+|===
+
+A *superseded* record is kept and marked: its status names the record that supersedes it. It is
+never edited into the history of the new decision.
+
+The status states the shipped state. A `Proposed` record whose decision the code implements is
+flipped to `Accepted`.
+
+[[_meta_block_and_ceiling]]
+== Meta Block and the Length Ceiling
+
+[[_meta_block]]
+=== The meta block
+
+The *meta block* is line 1 through the last line before the first level-2 heading (a line starting
+with `== `) that follows the `== Status` heading. It covers:
+
+* the title line,
+* the document attributes,
+* the `adr-metadata` comment block and any authoring-discipline comment block,
+* the `== Status` section.
+
+Every line after the meta block is *body*, to the end of the file. Blank lines count. Amendment
+sections are body.
+
+[[_ceiling]]
+=== The ceiling
+
+A record's body is *at most 500 lines*. `AdrRecordLengthContractTest` (in `api-sheriff`, beside
+`AdrOrdinalUniquenessContractTest`) enforces the ceiling with exactly the meta-block definition
+above. A record it cannot measure -- one with no `== Status` heading, or with no level-2 heading
+after it -- fails the test instead of being skipped.
+
+A record that cannot fit is *split*, never summarised. The split-off decision becomes a new record
+at the next free ordinal, and both records state the boundary between them. Summarising would drop
+the rejected alternatives, which are the part of a record nothing else preserves.
+
+[[_skeleton]]
+== Skeleton
+
+The meta block keeps the layout of the `manage-adr` template:
+
+[source,asciidoc]
+----
+= ADR-NNNN: <the decision, stated as a sentence>
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: <one-line statement of the decision>
+// tags: <comma-separated topic tags>
+// affects: <comma-separated modules>
+// supersedes: <comma-separated ordinals, or empty>
+// end-adr-metadata
+
+== Status
+
+Proposed
+----
+
+The body has four sections, in this order:
+
+[cols="1,4", options="header"]
+|===
+| Section | Content
+
+| `== Decision`
+| The question the record settles, in a few sentences, then the decision and the mechanism that
+  realises it. Name the code that implements it; do not restate it.
+
+| `== Alternatives rejected`
+| Every option that lost, each with the reason it lost. This is the part of a record that nothing
+  else in the repository keeps, so no edit removes it.
+
+| `== Consequences`
+| The properties of the resulting design, including the failure modes it deliberately accepts.
+
+| `== Links`
+| The records, pages, schemas and tests this record depends on or constrains.
+|===
+
+Content that fits none of the four sections moves out of the record:
+
+* operator how-to and configuration examples to `doc/user/` or `doc/configuration.adoc`,
+* implementation narrative to `doc/development/`,
+* reproduction evidence and attack analysis to `doc/security-threat-model.adoc`,
+* conformance statements to the status page they belong to, such as `doc/fapi_status.adoc`.
+
+The record then links to the page that received the content.
+
+[[_writing_rule]]
+== Writing Rule
+
+Records follow a writing rule in the spirit of ASD-STE100 (Simplified Technical English):
+
+* *Short sentences.* Keep a sentence under about 20 words.
+* *One idea per sentence.* Split a sentence that joins two claims with "and" or a semicolon.
+* *Active voice.* Name the actor: "the boot validator refuses", not "it is refused".
+* *One term per concept.* Use the preferred term from the term list below, every time.
+* *The derivable-content test.* Before you write a sentence, ask whether a reader could derive it
+  from the code, a schema, a test or a page under `doc/`. If so, link to that source instead of
+  restating it. A restated fact goes stale; a link does not.
+
+The rule shortens how a record says things. It never removes a "why not X" step: each rejected
+alternative keeps its reason, however long the reason is.
+
+[[_term_list]]
+== Term List
+
+One preferred term per concept. The rejected synonyms are the words a record must not use for that
+concept. The configuration keys come from the bundled `schema/gateway.schema.json` and
+`schema/endpoint.schema.json`; the field-level contract for every key is in the
+link:../configuration.adoc[Configuration Reference].
+
+[[_terms_configuration]]
+=== Configuration
+
+[cols="2,2,3", options="header"]
+|===
+| Concept | Preferred term | Rejected synonyms
+
+| The global document, `gateway.yaml`
+| gateway configuration
+| global config, main config
+
+| One `endpoints/*.yaml` file and its `endpoint` block
+| endpoint
+| service, endpoint file (for the block), backend
+
+| The name an endpoint's `base_url` declares
+| alias
+| service name, host key, upstream name
+
+| `topology.properties`, which binds each alias to a URL
+| topology
+| hosts file, environment file
+
+| A `${NAME}` or `${NAME:-default}` reference written in a configuration file
+| placeholder
+| variable, environment lookup
+
+| A namespace-scoped policy scope in `gateway.yaml` `anchors`
+| anchor
+| namespace, zone, surface
+
+| A block resolved per route by the nearest declared scope (`auth`, `allowed_methods`,
+  `upstream_defaults`, `security_filter`, `forward`, `cookies`, `security_headers`)
+| policy block
+| policy section, setting group
+
+| One of `gateway`, `anchor`, `endpoint`, `route` at which a policy block is declared
+| policy scope
+| scope (unqualified), level, layer
+
+| The value a route runs with after policy-block resolution
+| effective value
+| resolved value, final value, actual value
+
+| The boot step that stops on invalid configuration
+| boot refusal ("the boot refuses")
+| startup failure, rejection, validation error
+
+| A configuration problem the boot reports and still starts on
+| boot WARN
+| warning (unqualified), soft refusal
+
+| The check `--validate-config` runs without starting the gateway
+| offline validation
+| dry run, lint
+|===
+
+[[_terms_routing]]
+=== Routing and inbound validation
+
+[cols="2,2,3", options="header"]
+|===
+| Concept | Preferred term | Rejected synonyms
+
+| One entry of an endpoint's `routes[]`
+| route
+| rule, mapping, path
+
+| A route matched by `match.path`
+| exact route
+| fixed route, literal route
+
+| A route matched by `match.path_prefix`
+| prefix route
+| wildcard route, catch-all
+
+| The pre-dispatch step that picks one route from the route table
+| route selection
+| routing, matching, lookup
+
+| One entry of `match.headers`
+| header matcher
+| header condition, header rule
+
+| What a route does with a selected request: proxy, asset or redirect
+| terminal action
+| handler, target, route type
+
+| The backend a proxy route dispatches to
+| upstream
+| backend, origin, target
+
+| A request the gateway stops at runtime
+| rejection ("the gateway rejects")
+| refusal, block, deny (for a request)
+
+| `BasicChecksStage`, the non-skippable stage before route selection
+| pre-route floor
+| basic checks, first filter
+
+| `ThoroughChecksStage`, the stage after route selection
+| post-route stage
+| thorough checks, second filter
+
+| The value of `security_filter.profile` (`strict`, `paranoid`, `lenient`, `minimal`)
+| inbound-filter profile
+| filter mode, security level
+
+| `security_filter.max_body_bytes`
+| body cap
+| body limit, payload limit, size limit
+
+| The `forward` block's choice per dimension: positive-list, negative-list or forward-all
+| forward mode
+| filter mode, forward policy (for the mode)
+
+| The headers no configuration can forward or relay
+| gateway-owned header set
+| blocklist, protected headers
+|===
+
+[[_terms_bff]]
+=== BFF
+
+[cols="2,2,3", options="header"]
+|===
+| Concept | Preferred term | Rejected synonyms
+
+| Variant 2, `oidc.session.mode: server`
+| server-session BFF
+| stateful BFF, session BFF
+
+| Variant 3, `oidc.session.mode: cookie`
+| cookie-based BFF
+| stateless BFF, cookie BFF
+
+| The OpenID Connect provider the BFF and bearer validation trust
+| identity provider (IdP)
+| authorization server, OP, Keycloak (for the generic role)
+
+| An exact path the `oidc` or `portal` block names and the gateway answers ahead of the route table
+| reserved path
+| reserved endpoint, BFF endpoint, OIDC route
+
+| The gateway-to-IdP leg: discovery, pushed authorization request, code exchange, refresh,
+  revocation
+| back channel
+| server channel, direct channel
+
+| `oidc.back_channel_origin`, where the gateway dials the IdP
+| back-channel origin
+| IdP URL, internal issuer
+
+| The IdP-initiated logout call to `oidc.logout.backchannel_path`
+| back-channel logout
+| back channel (unqualified), logout callback
+
+| How the BFF proves its identity to the IdP: `private_key_jwt` or `client_secret_basic`
+| client authentication
+| client credentials, client login
+
+| The key `oidc.client_authentication.key_file` names
+| client-authentication key
+| signing key (unqualified), client key
+
+| The key `oidc.sender_constraint.key_file` names, which DPoP-binds every access token
+| DPoP key
+| proof key, sender key, binding key
+
+| The encrypted session cookie of the cookie-based BFF
+| sealed session cookie
+| encrypted cookie, token cookie
+
+| An OAuth scope-token in `oidc.scopes` or `endpoint.scopes`
+| OAuth scope
+| scope (unqualified), permission, role
+|===
+
+[[_terms_tls]]
+=== TLS
+
+[cols="2,2,3", options="header"]
+|===
+| Concept | Preferred term | Rejected synonyms
+
+| The listener that decrypts inbound TLS
+| terminated listener
+| HTTPS port, TLS listener (unqualified)
+
+| The `NetServer` that reads SNI and splits L4 from L7 at accept time
+| front listener
+| SNI proxy, edge listener
+
+| A hostname in `tls.passthrough_sni`, relayed at L4 without decryption
+| SNI passthrough
+| TLS passthrough, tunnel, L4 route
+
+| A TLS key in `gateway.yaml` that names what the gateway enforces
+| TLS policy
+| TLS config, TLS settings
+
+| Ports and certificate and key material the deployment supplies
+| deployment material
+| secrets, TLS config
+
+| TLS on a leg the gateway dials: upstream, JWKS, BFF back channel
+| egress TLS
+| outbound TLS, client TLS
+
+| A logical name (`tls_profile`, `upstream_tls_profile`, `oidc_tls_profile`) the deployment binds to
+  trust anchors
+| trust profile
+| truststore name, TLS bucket
+
+| The check that the peer certificate names the dialled host
+| hostname verification
+| hostname checking, SAN check
+
+| A required client certificate on the terminated listener, `tls.mtls`
+| inbound mTLS
+| client-cert TLS, mutual auth
+
+| Health and metrics on their own port, governed by `management.tls`
+| management interface
+| admin port, management endpoint
+|===
+
+When a record needs a concept the list does not name, add the row here in the same change rather
+than introducing the word in the record alone.
