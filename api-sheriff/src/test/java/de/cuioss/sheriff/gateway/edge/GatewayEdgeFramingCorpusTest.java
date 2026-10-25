@@ -476,9 +476,10 @@ class GatewayEdgeFramingCorpusTest {
     @Test
     @DisplayName("a client that disconnects mid-upload is reported once as INFO ApiSheriff-22, never as the security WARN")
     void clientDisconnectMidUploadIsNotASecurityWarning() throws Exception {
-        // Act — two uploads on the same route, each abandoned by its client after dispatch began
-        abandonUploadAfterDispatch(1);
-        abandonUploadAfterDispatch(2);
+        // Act — two uploads on the same route, each abandoned by its client after dispatch began: one
+        // the upstream would answer once its body ended, and one the upstream holds without answering
+        abandonUploadAfterDispatch("/abandoned", 1);
+        abandonUploadAfterDispatch(HELD + "-abandoned", 2);
 
         // Assert
         assertAll("an abandoned upload",
@@ -495,12 +496,11 @@ class GatewayEdgeFramingCorpusTest {
     }
 
     /**
-     * Starts a chunked upload over a raw socket, waits until the edge has dispatched it and the
-     * upstream has seen its head, then closes the client connection and waits until the edge has
-     * accounted for the {@code occurrence}-th aborted inbound body.
+     * Starts a chunked upload to the upstream path {@code path} over a raw socket, waits until the edge
+     * has dispatched it and the upstream has seen its head, then closes the client connection and waits
+     * until the edge has accounted for the {@code occurrence}-th aborted inbound body.
      */
-    private void abandonUploadAfterDispatch(int occurrence) throws Exception {
-        String path = "/abandoned-" + occurrence;
+    private void abandonUploadAfterDispatch(String path, int occurrence) throws Exception {
         NetSocket socket = Awaits.connect(netClient.connect(frontPort, LoopbackHost.ADDRESS),
                 "the raw TCP client to connect to the edge");
         socket.write("POST /echo" + path + " HTTP/1.1" + CRLF + host()

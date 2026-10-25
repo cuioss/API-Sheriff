@@ -115,7 +115,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  * <p>
  * <strong>Abort attribution.</strong> The gateway's own reset is never a client abort: it is neither
  * metered nor logged as {@code INBOUND_BODY_ABORTED}, while a client dropping its connection mid-body
- * still is.
+ * still is metered ({@link #droppedUploadUpstreamConnectionIsClosedByReset}); its {@code INFO} record is
+ * pinned by {@code GatewayEdgeFramingCorpusTest.clientDisconnectMidUploadIsNotASecurityWarning}.
  * <p>
  * <strong>Credit a stream holds is given back.</strong> A body the gateway does not read returns no
  * flow-control window, so a stream that ends without its body being read must hand that window back to
@@ -612,15 +613,15 @@ class GatewayEdgeEarlyResponseResetTest {
     }
 
     /**
-     * Answers the gateway writes itself to an upload whose body is still open — the framing rejection
-     * among them — each reset because the body is still open.
+     * Answers the gateway writes itself to an upload whose body is still open, each reset because the
+     * body is still open. The framing rejection ends the same way; that case, with a sibling stream on
+     * the connection, is {@code GatewayEdgeFramingCorpusTest.gateRejectionOnHttp2EndsOnlyTheOffendingStream}.
      */
     enum GatewayAnswer {
         UNROUTED_PROBLEM("POST", "/unrouted/upload", 404, Map.of()),
         REDIRECT("POST", "/moved/upload", 308, Map.of()),
         PREFLIGHT_SHORT_CIRCUIT("OPTIONS", "/up/upload", 204,
-                Map.of("Origin", ORIGIN, "Access-Control-Request-Method", "POST")),
-        FRAMING_REJECTION("GET", "/up/get-body", 400, Map.of(CONTENT_LENGTH, "4096"));
+                Map.of("Origin", ORIGIN, "Access-Control-Request-Method", "POST"));
 
         private final String method;
         private final String path;
@@ -817,21 +818,6 @@ class GatewayEdgeEarlyResponseResetTest {
                 () -> assertFalse(upload.streamEnd().isDone(),
                         () -> "an HTTP/1.1 request is never reset: " + upload.streamEnd().getNow(null)),
                 () -> assertEquals(List.of(), upstreamAborted, "the upstream received the upload whole"));
-    }
-
-    @Test
-    @DisplayName("a client dropping its connection mid-body before the response is still metered and logged")
-    void clientDropBeforeTheResponseIsStillAnAbortedInboundBody() throws Exception {
-        NetSocket socket = startRawUpload(HELD + "-drop");
-
-        Awaits.connect(socket.close(), "the client to drop its connection mid-upload");
-        Awaits.until(() -> errorCount(INBOUND_BODY_ABORTED) == 1.0,
-                "the edge to account for the abandoned upload", Awaits.CONNECT_CEILING_SECONDS);
-
-        assertAll("a client drop before the response",
-                () -> assertEquals(1.0, errorCount(INBOUND_BODY_ABORTED)),
-                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
-                        INBOUND_BODY_ABORTED_RECORD));
     }
 
     /**

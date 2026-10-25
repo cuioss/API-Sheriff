@@ -192,16 +192,26 @@ class GatewayEdgeRouteTest {
     @Test
     @DisplayName("registers the catch-all data-plane route so management routes keep priority")
     void registersCatchAllRoute() {
-        // Arrange
+        // Arrange — the same empty table without and with an active server-mode BFF runtime
         GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()));
+        GatewayEdgeRoute bffEdge = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(new RouteTable(List.of()))
+                .runtime(GatewayEdgeRouteBffWiringTest.activeRuntime(
+                        GatewayEdgeRouteBffWiringTest.serverBinding(GatewayEdgeRouteBffWiringTest.newStore())))
+                .build();
         Router router = Router.router(vertx);
+        Router bffRouter = Router.router(vertx);
 
         // Act
         edge.registerRoutes(router);
+        bffEdge.registerRoutes(bffRouter);
 
         // Assert — exactly one catch-all route is registered; it is added last so management /
-        // health routes registered earlier keep priority.
-        assertEquals(1, router.getRoutes().size(), "The edge registers a single catch-all route");
+        // health routes registered earlier keep priority. An active runtime adds no route of its own:
+        // its reserved paths are dispatched from inside that one catch-all.
+        assertAll("the catch-all registration",
+                () -> assertEquals(1, router.getRoutes().size(), "The edge registers a single catch-all route"),
+                () -> assertEquals(1, bffRouter.getRoutes().size(),
+                        "An edge with an active BFF runtime still registers a single catch-all route"));
     }
 
     @Test

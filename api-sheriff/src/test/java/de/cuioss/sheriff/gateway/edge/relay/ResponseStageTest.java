@@ -54,6 +54,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("ResponseStage — stage 7 streamed response header policy")
@@ -107,22 +108,6 @@ class ResponseStageTest {
 
         @ParameterizedTest
         @ValueSource(strings = {"ETag", "Last-Modified"})
-        @DisplayName("relays validators untouched when the route enables not_modified")
-        void relaysValidatorsWhenEnabled(String header) {
-            assertTrue(ResponseStage.isForwardableResponseHeader(header, true),
-                    header + " must relay on a not_modified-enabled route (304 pass-through)");
-        }
-
-        @ParameterizedTest
-        @ValueSource(strings = {"ETag", "Last-Modified"})
-        @DisplayName("strips validators when the route disables not_modified")
-        void stripsValidatorsWhenDisabled(String header) {
-            assertFalse(ResponseStage.isForwardableResponseHeader(header, false),
-                    header + " must be stripped on a not_modified-disabled route");
-        }
-
-        @ParameterizedTest
-        @ValueSource(strings = {"ETag", "Last-Modified"})
         @DisplayName("the validator flips with the toggle — this half is one direction of a two-directional contract")
         void validatorFlipsWithTheToggle(String header) {
             // The response half of the not_modified contract. Its counterpart is the request half in
@@ -170,22 +155,16 @@ class ResponseStageTest {
                     header + " must be mapped onto the route's match key on an opted-in route");
         }
 
-        @Test
-        @DisplayName("relays an upstream Location unchanged when the route does not opt in")
-        void relaysLocationUnchangedWhenDisabled() {
-            String location = "https://backend:8443/svc/v1/items?id=7";
-
+        @ParameterizedTest
+        @CsvSource({
+                "/svc/v1/login, /api/login",
+                "https://backend:8443/svc/v1/items?id=7, /api/items?id=7"})
+        @DisplayName("the rewrite flips with the toggle for the same header value, path or absolute URL")
+        void rewriteFlipsWithTheToggle(String location, String rewritten) {
+            assertEquals(rewritten, ResponseStage.relayedHeaderValue("Location", location, rewriter),
+                    "an opted-in route maps the upstream Location onto its match key");
             assertEquals(location, ResponseStage.relayedHeaderValue("Location", location, null),
                     "a route without rewrite_location carries no rewriter and relays Location verbatim");
-        }
-
-        @Test
-        @DisplayName("the rewrite flips with the toggle for the same header value")
-        void rewriteFlipsWithTheToggle() {
-            String location = "/svc/v1/login";
-
-            assertEquals("/api/login", ResponseStage.relayedHeaderValue("Location", location, rewriter));
-            assertEquals(location, ResponseStage.relayedHeaderValue("Location", location, null));
         }
 
         @Test

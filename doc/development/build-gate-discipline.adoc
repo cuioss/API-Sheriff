@@ -297,7 +297,9 @@ on the same test -- six distinct tests across those runs, all of them in
 `de.cuioss.sheriff.gateway.edge` or one of its sub-packages (`WebSocketRelayStageTest` and
 `GrpcStatusMapperTest` now live in `edge.relay`), the only package tree that drives live servers:
 
-* `WebSocketRelayStageTest.mapsUnreachableUpstreamTo502` -- `TimeoutException`
+* `WebSocketRelayStageTest.mapsUnreachableUpstreamTo502` -- `TimeoutException` (since removed as a
+  duplicate: `preservesSecurityHeadersOnHandshakeFailure` drives the same unreachable-upstream handshake
+  and asserts the same `502`)
 * `WebSocketRelayStageTest.releasesOnceOnEstablishedRelayTeardown`
 * `GatewayEdgePipelineTest.rejectsUnmodelledVerb` -- `TimeoutException` on a 15s *localhost* call
 * `GatewayEdgePipelineTest.minimalRouteIsStillGovernedByThePreRouteFloor` -- `InvalidLineSeparatorException`

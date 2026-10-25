@@ -18,10 +18,6 @@ package de.cuioss.sheriff.gateway.edge.upstream;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,7 +25,6 @@ import java.lang.reflect.Proxy;
 import java.net.ConnectException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
@@ -39,11 +34,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
-import de.cuioss.http.security.config.SecurityConfiguration;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -52,15 +45,8 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
-import de.cuioss.sheriff.gateway.edge.assembly.AssetSourceFactory;
-import de.cuioss.sheriff.gateway.edge.assembly.ResilienceGuardFactory;
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
-import de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler;
-import de.cuioss.sheriff.gateway.edge.assembly.SecurityConfigurationFactory;
-import de.cuioss.sheriff.gateway.edge.assembly.SecurityPosture;
-import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClientFactory;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
@@ -71,9 +57,7 @@ import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
-import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
-import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.smallrye.faulttolerance.api.Guard;
@@ -103,13 +87,17 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * Contract of the {@code protocol: grpc} dispatch path (deliverable 6): the forced-HTTP/2 upstream
- * client wiring (a gRPC route holds a client distinct from an HTTP/1.1 route to the same host:port),
- * the h2-negotiation-failure → gRPC {@code UNAVAILABLE} mapping, the response-trailer relay carrying
- * {@code grpc-status} / {@code grpc-message} to the client, and the shared inbound-transport GW-08
- * abuse bounds that hold on the gRPC path without a per-protocol relaxation.
+ * Contract of the {@code protocol: grpc} dispatch path (deliverable 6): the constructor contract, the
+ * h2-negotiation-failure → gRPC {@code UNAVAILABLE} mapping, the response-trailer relay carrying
+ * {@code grpc-status} / {@code grpc-message} to the client, and the stream bounds of a call over a live
+ * forced-h2 upstream.
+ * <p>
+ * Two neighbouring contracts are pinned where their production class is tested: the forced-HTTP/2
+ * client wiring (a gRPC route holds a client distinct from an HTTP/1.1 route to the same host:port, and
+ * gRPC routes to one host:port share it) by {@code RouteAssemblerTest}, and the shared GW-08 body byte
+ * cap the gRPC frame stream rides by {@code DispatchStageTest.ByteCap}.
  */
-@DisplayName("GrpcDispatchStage — forced-h2 wiring, UNAVAILABLE mapping, trailer relay, GW-08 bounds")
+@DisplayName("GrpcDispatchStage — UNAVAILABLE mapping, trailer relay, stream bounds")
 @Tag("isolated-fork")
 class GrpcDispatchStageTest {
 
@@ -153,92 +141,6 @@ class GrpcDispatchStageTest {
                     new Class<?>[]{HttpClient.class}, (_, method, _) -> {
                         throw new AssertionError("the refused dispatch must not touch the client: " + method.getName());
                     });
-        }
-    }
-
-    @Nested
-    @DisplayName("forced-h2 upstream client wiring")
-    class ForcedH2ClientWiring {
-
-        private Vertx vertx;
-        private RouteAssembler assembler;
-        private final List<UpstreamTarget> capturedTargets = new ArrayList<>();
-        private UpstreamClientFactory clientFactory;
-        private SecurityConfigurationFactory securityConfigFactory;
-        private ResilienceGuardFactory guardFactory;
-        private AssetSourceFactory assetSourceFactory;
-
-        @BeforeEach
-        void setUp() {
-            vertx = Vertx.vertx();
-            assembler = new RouteAssembler(new ProtocolProcessorRegistry());
-            clientFactory = target -> {
-                capturedTargets.add(target);
-                return vertx.createHttpClient();
-            };
-            // A fixed neutral posture: this test's subject is forced-h2 client-tuple splitting, which
-            // is orthogonal to the inbound security posture.
-            securityConfigFactory = _ -> new SecurityPosture(SecurityProfile.STRICT,
-                    SecurityConfiguration.builder().build());
-            guardFactory = shape -> new StoredOnlyGuard();
-            assetSourceFactory = asset -> {
-                throw new UnsupportedOperationException("no asset route in this test");
-            };
-        }
-
-        @AfterEach
-        void tearDown() {
-            vertx.close();
-        }
-
-        @Test
-        @DisplayName("gives a gRPC route a forced-h2 client distinct from an HTTP/1.1 route to the same host:port")
-        void splitsForcedH2ClientFromHttp1Client() {
-            // Arrange — a gRPC route and an HTTP route to the SAME upstream host:port
-            RouteTable table = new RouteTable(List.of(
-                    route("g", Protocol.GRPC, upstream("svc.internal")),
-                    route("h", Protocol.HTTP, upstream("svc.internal"))));
-
-            // Act
-            RouteAssembler.AssembledRoutes assembled = assembler.assemble(table, securityConfigFactory, clientFactory,
-                    guardFactory, assetSourceFactory);
-
-            // Assert — the forced-h2 flag splits the client-sharing tuple, so the two routes are served by
-            // distinct clients even though the host:port is identical.
-            assertEquals(2, capturedTargets.size(), "two distinct upstream tuples build two clients");
-            assertTrue(capturedTargets.getFirst().forcedHttp2(), "the gRPC route's upstream target is forced to HTTP/2");
-            assertFalse(capturedTargets.get(1).forcedHttp2(), "the HTTP route's upstream target is not forced to HTTP/2");
-            assertEquals(capturedTargets.getFirst().host(), capturedTargets.get(1).host(),
-                    "both targets address the same host");
-            assertEquals(capturedTargets.getFirst().port(), capturedTargets.get(1).port(),
-                    "both targets address the same port");
-            assertNotSame(clientOf(assembled, 0), clientOf(assembled, 1),
-                    "a gRPC route gets a forced-h2 client distinct from the HTTP/1.1 client to the same host:port");
-        }
-
-        @Test
-        @DisplayName("shares one forced-h2 client across two gRPC routes to the same host:port")
-        void sharesForcedH2ClientAcrossGrpcRoutes() {
-            // Arrange — two gRPC routes to the same upstream
-            RouteTable table = new RouteTable(List.of(
-                    route("g1", Protocol.GRPC, upstream("svc.internal")),
-                    route("g2", Protocol.GRPC, upstream("svc.internal"))));
-
-            // Act
-            RouteAssembler.AssembledRoutes assembled = assembler.assemble(table, securityConfigFactory, clientFactory,
-                    guardFactory, assetSourceFactory);
-
-            // Assert — one forced-h2 tuple, one shared client
-            assertEquals(1, capturedTargets.size(), "two gRPC routes to one host:port share a single forced-h2 tuple");
-            assertTrue(capturedTargets.getFirst().forcedHttp2(), "the shared tuple is forced to HTTP/2");
-            assertSame(clientOf(assembled, 0), clientOf(assembled, 1),
-                    "gRPC routes sharing a host:port reuse one forced-h2 client");
-        }
-
-        /** The shared client the upstream lookup serves the {@code index}-th assembled route with. */
-        private HttpClient clientOf(RouteAssembler.AssembledRoutes assembled, int index) {
-            Route route = assembled.routes().get(index);
-            return assembled.upstreamClients().client(UpstreamTarget.of(route)).orElseThrow();
         }
     }
 
@@ -386,63 +288,6 @@ class GrpcDispatchStageTest {
                     "the default-mode gateway policy fills the header the origin did not send");
             assertEquals("0", trailers.get("grpc-status"),
                     "the default-mode header handling leaves the gRPC status trailer untouched");
-        }
-    }
-
-    @Nested
-    @DisplayName("legitimate multi-frame streaming under the shared body byte cap (GW-08 on the gRPC path)")
-    class SharedBodyCap {
-
-        @Test
-        @DisplayName("streams legitimate multi-frame gRPC traffic under the cap without misfiring")
-        void streamsMultiFrameUnderCapWithoutMisfire() {
-            // Arrange — the opaque length-prefixed frames the gRPC dispatch streams ride the SAME
-            // byte-capped body stream as the HTTP path (DispatchStage.ByteCappedBodyStream); a
-            // legitimate multi-frame body under the cap must never be misfired as abuse.
-            TestReadStream source = new TestReadStream();
-            List<Buffer> forwarded = new ArrayList<>();
-            AtomicReference<Throwable> failure = new AtomicReference<>();
-            AtomicBoolean aborted = new AtomicBoolean();
-            DispatchStage.ByteCappedBodyStream capped =
-                    new DispatchStage.ByteCappedBodyStream(source, 20L, () -> aborted.set(true));
-            capped.handler(forwarded::add);
-            capped.exceptionHandler(failure::set);
-
-            // Act — three 5-byte opaque frames = 15 bytes, all under the 20-byte cap
-            source.emit(Buffer.buffer("frame"));
-            source.emit(Buffer.buffer("frame"));
-            source.emit(Buffer.buffer("frame"));
-
-            // Assert — every in-cap frame streams through and nothing is aborted
-            assertEquals(3, forwarded.size(), "legitimate multi-frame gRPC traffic under the cap streams through");
-            assertNull(failure.get(), "no failure is raised while under the cap");
-            assertFalse(aborted.get(), "legitimate multi-frame traffic is not misfired as abuse");
-        }
-
-        @Test
-        @DisplayName("aborts the gRPC dispatch with CONTENT_TOO_LARGE when the body cap is breached")
-        void abortsOnBodyCapBreach() {
-            // Arrange — the shared body-abuse bound also applies to the opaque gRPC frame stream
-            TestReadStream source = new TestReadStream();
-            List<Buffer> forwarded = new ArrayList<>();
-            AtomicReference<Throwable> failure = new AtomicReference<>();
-            AtomicBoolean aborted = new AtomicBoolean();
-            DispatchStage.ByteCappedBodyStream capped =
-                    new DispatchStage.ByteCappedBodyStream(source, 8L, () -> aborted.set(true));
-            capped.handler(forwarded::add);
-            capped.exceptionHandler(failure::set);
-
-            // Act — 5 bytes (ok) then 5 more crossing the 8-byte cap
-            source.emit(Buffer.buffer("frame"));
-            source.emit(Buffer.buffer("flood"));
-
-            // Assert — the breaching frame is dropped, the dispatch is aborted, and a 413 is raised
-            assertEquals(1, forwarded.size(), "the breaching frame must never cross to the upstream");
-            assertTrue(aborted.get(), "a body-cap breach aborts the in-flight gRPC dispatch");
-            GatewayException raised = assertInstanceOf(GatewayException.class, failure.get(),
-                    "the breach raises a GatewayException");
-            assertEquals(EventType.CONTENT_TOO_LARGE, raised.getEventType(),
-                    "the shared body-abuse bound raises CONTENT_TOO_LARGE on the gRPC path");
         }
     }
 
@@ -894,23 +739,11 @@ class GrpcDispatchStageTest {
         return new ResolvedUpstream("https", host, 443, "");
     }
 
-    /**
-     * A minimal {@link io.vertx.core.streams.ReadStream} fake mirroring {@code DispatchStageTest}:
-     * captures the handler the byte-cap decorator installs and lets a test push buffers synchronously.
-     */
+    /** An inert {@link io.vertx.core.streams.ReadStream}: the request body of a dispatch that never reads it. */
     private static final class TestReadStream implements ReadStream<Buffer> {
-
-        private Handler<Buffer> handler;
-
-        void emit(Buffer buffer) {
-            if (handler != null) {
-                handler.handle(buffer);
-            }
-        }
 
         @Override
         public ReadStream<Buffer> handler(Handler<Buffer> handler) {
-            this.handler = handler;
             return this;
         }
 
@@ -969,30 +802,4 @@ class GrpcDispatchStageTest {
         }
     }
 
-    /**
-     * A {@link Guard} test double that is only ever held in the {@link UpstreamClients}
-     * lookup and never invoked during assembly, so its guard methods reject execution.
-     */
-    private static final class StoredOnlyGuard implements Guard {
-
-        @Override
-        public <T> T call(Callable<T> action, Class<T> asType) {
-            throw new UnsupportedOperationException("stored-only test guard");
-        }
-
-        @Override
-        public <T> T call(Callable<T> action, TypeLiteral<T> asType) {
-            throw new UnsupportedOperationException("stored-only test guard");
-        }
-
-        @Override
-        public <T> T get(Supplier<T> action, Class<T> asType) {
-            throw new UnsupportedOperationException("stored-only test guard");
-        }
-
-        @Override
-        public <T> T get(Supplier<T> action, TypeLiteral<T> asType) {
-            throw new UnsupportedOperationException("stored-only test guard");
-        }
-    }
 }

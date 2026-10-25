@@ -358,19 +358,7 @@ class WebSocketRelayStageTest {
     }
 
     @Test
-    @DisplayName("maps an unreachable upstream to 502 before the 101 upgrade")
-    void mapsUnreachableUpstreamTo502() {
-        // Act
-        ExecutionException failure = assertThrows(ExecutionException.class,
-                () -> connect("/ws-dead/room", ALLOWED_ORIGIN));
-
-        // Assert
-        UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
-        assertEquals(502, rejected.getStatus(), () -> rejectionReport(failure));
-    }
-
-    @Test
-    @DisplayName("preserves the route's security headers on a WebSocket handshake failure")
+    @DisplayName("maps an unreachable upstream to 502 before the 101 upgrade, keeping the route's security headers")
     void preservesSecurityHeadersOnHandshakeFailure() {
         // Act — the /ws-dead route's upstream is unreachable, so the handshake fails 502 before the 101
         ExecutionException failure = assertThrows(ExecutionException.class,

@@ -304,7 +304,9 @@ class GatewayEdgeCookiePolicyTest {
     /**
      * HTTP/2 lets a client send its cookies as several {@code cookie} header fields (RFC 9113 section
      * 8.2.3). The frames are written by hand, every field an HPACK literal, because an HTTP client
-     * library is free to join the fields before they leave.
+     * library is free to join the fields before they leave. The control that the Vert.x HTTP server
+     * joins such fields into one value before application code reads it is
+     * {@code GatewayEdgeGatewayCookieTest.SplitCookieHeaderFields.serverJoinsTheTwoFields}.
      */
     @Nested
     @DisplayName("HTTP/2 — cookies split over several Cookie fields are all judged by the policy")
@@ -322,27 +324,12 @@ class GatewayEdgeCookiePolicyTest {
                             + " them — the regression a transport that stopped joining the fields would cause");
         }
 
-        @Test
-        @DisplayName("control: the HTTP/2 server hands the split fields to the edge as one joined value")
-        void serverJoinsTheSplitFields() throws Exception {
-            List<String> fields = List.of(THEME, APP);
-
-            exchangeWith(upstream.actualPort(), "/direct", fields);
-
-            assertEquals(List.of(List.of(THEME + "; " + APP)), List.copyOf(upstreamCookieFields),
-                    "the Vert.x HTTP server joins the cookie fields with a semicolon and a space; stage 5"
-                            + " reads that one value, which is why its first-value rule loses no cookie");
-        }
-
-        private void exchange(String path, List<String> cookieFields) throws Exception {
-            exchangeWith(requireFront().actualPort(), path, cookieFields);
-        }
-
         /**
-         * Sends one HTTP/2 GET over a raw connection, each of {@code cookieFields} as a {@code cookie}
-         * header field of its own, and returns once the response headers have arrived.
+         * Sends one HTTP/2 GET to the edge over a raw connection, each of {@code cookieFields} as a
+         * {@code cookie} header field of its own, and returns once the response headers have arrived.
          */
-        private void exchangeWith(int port, String path, List<String> cookieFields) throws Exception {
+        private void exchange(String path, List<String> cookieFields) throws Exception {
+            int port = requireFront().actualPort();
             Buffer block = Buffer.buffer();
             block.appendByte((byte) 0x82);
             block.appendByte((byte) 0x86);

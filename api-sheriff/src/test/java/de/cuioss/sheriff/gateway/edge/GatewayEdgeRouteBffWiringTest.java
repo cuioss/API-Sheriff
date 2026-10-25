@@ -123,7 +123,6 @@ import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.ext.web.Router;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -283,15 +282,6 @@ public class GatewayEdgeRouteBffWiringTest {
                 Awaits.teardown(client.close(), "the HTTP client to close");
                 Awaits.teardown(front.close(), "the edge front server to close");
             }
-        }
-
-        @Test
-        @DisplayName("Should still register a single catch-all route with an active runtime")
-        void shouldRegisterCatchAll() {
-            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(serverBinding(newStore())));
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            assertEquals(1, router.getRoutes().size());
         }
 
         private GatewayEdgeRoute newEdge(RouteTable table, BffRuntime runtime) {
