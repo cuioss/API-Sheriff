@@ -1222,9 +1222,11 @@ fetch against an already-ready Keycloak. It is not re-measured here and no figur
 What keeps layer 2's single shot sound is the ordering rather than a zero delta: Keycloak is ready
 before any gateway starts, and the baked health check first reports healthy only after its
 `--interval` of ten seconds, which a fetch against a ready IdP -- or a first fetch that failed and was
-retried on the one-second-doubling backoff -- does not approach. A stack that broke that ordering
-would need a bounded readiness *wait* in layer 2 rather than a single shot (see
-<<readiness-gate-rules>>).
+retried on the one-second-doubling backoff -- does not approach. The single shot still races the
+key-set fetch; the stack, not the probe, bounds that race. A stack that starts a gateway before
+its identity provider is serving, or that shortens the health check's `--interval`, turns a key set
+that is merely late into a spurious layer-2 failure. Such a stack needs a bounded readiness *wait* in
+layer 2 rather than a single shot (see <<readiness-gate-rules>>).
 
 *The bound is `--wait-timeout 180`, and the image's `--start-period` is 20s -- both retained on that
 evidence.* The headroom is stated as a factor against the worst observed figure: the worst
