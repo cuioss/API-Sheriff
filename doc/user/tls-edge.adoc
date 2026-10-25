@@ -289,7 +289,11 @@ carry -- see link:tls-scenarios.adoc[TLS Scenarios].
 
 === Which key reaches which leg
 
-The gateway dials six TLS-terminating egress legs. The table is maintained by hand from the
+The gateway has six egress legs that can dial over TLS. The keys below act only on a leg's TLS dial,
+and every leg also has a form that dials no TLS at all, which no key of the block reaches: an `http`
+or `ws` upstream and a gRPC upstream over prior-knowledge h2c speak cleartext, a JWKS read from a file
+makes no connection, and the BFF back channel speaks cleartext under the explicit
+`oidc.back_channel_allow_insecure_http` opt-in. The table is maintained by hand from the
 client-construction sites; it is not what holds the set closed. `EgressTlsPostureArchTest` fails the build when any egress TLS client is
 built without its posture, whether or not a list names it.
 
@@ -324,8 +328,10 @@ built without its posture, whether or not a list names it.
 
 The L4 passthrough relay and the loopback health probe negotiate no TLS and are not legs here.
 
-*Every key is gateway-wide.* There is no per-route, per-endpoint or per-issuer override: the runtime
-fixes the setting when each client is built, and the WebSocket client serves the whole edge. A gateway
+*Every `egress_tls` key is gateway-wide.* No key of the block has a per-route, per-endpoint or
+per-issuer override: the runtime fixes the setting when each client is built, and the WebSocket client
+serves the whole edge. The one per-issuer key in the table, `jwks.tls_profile`, is not part of the
+block; it stays per issuer. A gateway
 with one name-mismatched upstream relaxes hostname verification for every proxied upstream or for none.
 
 *The asset-origin fetch is outside the block, in a known direction.* Its JDK client verifies

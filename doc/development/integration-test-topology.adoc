@@ -665,8 +665,8 @@ either.
 considered:
 
 * *Both ports on loopback.* It would keep a test gateway off the host's network entirely. It is
-  exactly the first dead-port shape above: every container removed leaves both of its numbers dead,
-  so the harness would use up host port numbers faster than any allocation could hand them out, and a
+  exactly the first dead-port shape above. On Rancher Desktop under WSL 2, the one host and runtime
+  that shape was measured on, every container removed leaves both of its numbers dead, so the harness would use up host port numbers faster than any allocation could hand them out, and a
   dead number fails a run in a way that reads as a gateway defect.
 * *The gateways as Compose instances.* A Compose service is reached the same way and needs no
   harness. It cannot carry what these gateways exist for. The stack's readiness gate refuses an

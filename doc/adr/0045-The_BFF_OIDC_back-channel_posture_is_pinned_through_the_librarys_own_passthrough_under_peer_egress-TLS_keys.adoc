@@ -20,8 +20,12 @@ Accepted
 
 A gateway in BFF mode talks to its identity provider (IdP) directly over the back channel: discovery,
 the pushed authorization request, the authorization-code exchange, refresh and refresh-token
-revocation. Every one of those calls leaves the gateway over TLS. All but discovery present the client
-authentication credential, and the code exchange returns the material the gateway builds sessions from.
+revocation. Those calls leave the gateway over HTTPS unless the explicit cleartext opt-in
+`oidc.back_channel_allow_insecure_http` is set. Boot validation admits that opt-in only together with an
+`http` `oidc.back_channel_origin`; it then lets the whole OIDC client use cleartext, and it is reported
+at boot as a WARN. The keys of this record act only on the HTTPS dial. All but discovery present the
+client authentication credential, and the code exchange returns the material the gateway builds
+sessions from.
 The back channel is an egress leg in the sense of
 link:0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040],
 and this record applies ADR-0040's
