@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.edge;
+package de.cuioss.sheriff.gateway.edge.reserved;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -24,9 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
-import java.util.Iterator;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -37,20 +34,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.edge.EdgeFixtures;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
-import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
-import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -66,9 +57,6 @@ import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -103,7 +91,7 @@ import org.junit.jupiter.api.Test;
  * {@code NO_ERROR} reset while a sibling stream and a later stream complete on the same connection.
  */
 @EnableGeneratorController
-@DisplayName("GatewayEdgeRoute — reserved-path request-body byte ceiling")
+@DisplayName("ReservedBodyReader — reserved-path request-body byte ceiling")
 @Tag("isolated-fork")
 class ReservedBodyCeilingTest {
 
@@ -132,31 +120,17 @@ class ReservedBodyCeilingTest {
         vertx = Vertx.vertx();
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-        GatewayConfig gatewayConfig = GatewayConfig.builder()
-                .version(1)
-                .oidc(OidcConfig.builder()
-                        .redirectUri("https://localhost" + CALLBACK_PATH)
-                        .logout(OidcConfig.Logout.builder()
-                                .backchannelPath(BACKCHANNEL_LOGOUT_PATH)
-                                .build())
-                        .build())
+        OidcConfig oidc = OidcConfig.builder()
+                .redirectUri("https://localhost" + CALLBACK_PATH)
+                .logout(OidcConfig.Logout.builder().backchannelPath(BACKCHANNEL_LOGOUT_PATH).build())
                 .build();
         EdgeHardeningOptions hardening = new EdgeHardeningOptions();
         ceiling = hardening.reservedBodyMaxBytes();
 
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
-                new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
-                new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                GatewayEdgeRouteBffWiringTest.gatewayJson());
-
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        frontServer = Awaits.connect(
-                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        frontServer = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                .gatewayConfig(ConfigFixtures.gateway().oidc(oidc).build())
+                .hardening(hardening)
+                .serve();
         frontPort = frontServer.actualPort();
 
         client = vertx.createHttpClient();
@@ -532,68 +506,5 @@ class ReservedBodyCeilingTest {
                 statusLine.completeExceptionally(new IllegalStateException("connection closed with no response"));
             }
         });
-    }
-
-    /**
-     * Minimal {@link Instance} test double resolving to a single supplied validator; no reserved-path
-     * test reaches a {@code require: bearer} route, so the remaining CDI accessors are unused and throw.
-     */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

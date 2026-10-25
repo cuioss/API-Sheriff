@@ -22,10 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -38,27 +36,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
-import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-import de.cuioss.sheriff.gateway.config.model.Protocol;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
-import de.cuioss.sheriff.gateway.routing.Route;
-import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -81,9 +68,6 @@ import io.vertx.core.http.PoolOptions;
 import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -831,35 +815,17 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
      * and starts a front server for it.
      */
     private HttpServer startEdge() throws Exception {
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         ResolvedUpstream upstream = new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), "");
-        RouteTable routes = new RouteTable(List.of(Route.builder()
-                .id(ROUTE)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/" + ROUTE).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
-                .upstream(upstream)
-                .build(), Route.builder()
-                .id(TRICKLE_ROUTE)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/" + TRICKLE_ROUTE).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.POST))
-                .retryEnabled(true)
-                .upstream(upstream)
-                .build()));
         EdgeHardeningOptions hardening = new EdgeHardeningOptions(EdgeHardeningConfig.defaults(), IDLE_TIMEOUT_MILLIS,
                 BODY_DEADLINE_MILLIS);
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, GatewayConfig.builder().version(1).build(),
-                new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
-                new SheriffMetrics(meterRegistry), BffRuntime.inert(), EgressTrustProfiles.unconsulted(),
-                PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        return EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                .routes(ConfigFixtures.route(ROUTE, "/" + ROUTE)
+                                .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST)).upstream(upstream).build(),
+                        ConfigFixtures.route(TRICKLE_ROUTE, "/" + TRICKLE_ROUTE)
+                                .effectiveAllowedMethods(Set.of(HttpMethod.POST)).retryEnabled(true).upstream(upstream)
+                                .build())
+                .hardening(hardening).metrics(new SheriffMetrics(meterRegistry))
+                .serve();
     }
 
     /** Sends a well-framed GET on {@code client}'s connection and returns its answer. */
@@ -949,65 +915,5 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
 
     /** The response to one client request, its body read whole, and the connection it was sent on. */
     private record Answer(HttpClientResponse response, String body, HttpConnection connection) {
-    }
-
-    /** Minimal {@link Instance} double resolving to one supplied validator; unused accessors throw. */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

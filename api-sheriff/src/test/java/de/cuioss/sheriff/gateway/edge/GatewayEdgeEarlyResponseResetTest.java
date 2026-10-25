@@ -24,9 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.lang.annotation.Annotation;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,28 +40,18 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 
-import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
-import de.cuioss.sheriff.gateway.routing.Route;
-import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -89,8 +77,6 @@ import io.vertx.core.impl.logging.LoggerFactory;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -892,26 +878,8 @@ class GatewayEdgeEarlyResponseResetTest {
      * @return the port the edge listens on
      */
     private int startEdge(EdgeHardeningOptions hardening, HttpServerOptions serverOptions) throws Exception {
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-        RouteTable routes = new RouteTable(List.of(
-                Route.builder()
-                        .id(ROUTE)
-                        .protocol(Protocol.HTTP)
-                        .match(MatchConfig.builder().pathPrefix("/" + ROUTE).build())
-                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
-                        .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
-                        .build(),
-                Route.builder()
-                        .id("moved")
-                        .protocol(Protocol.HTTP)
-                        .match(MatchConfig.builder().pathPrefix("/moved").build())
-                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
-                        .redirect(RedirectConfig.builder().location("/" + ROUTE + "/new-home").status(308).build())
-                        .build()));
-        GatewayConfig gatewayConfig = GatewayConfig.builder().version(1)
+        Set<HttpMethod> getAndPost = Set.of(HttpMethod.GET, HttpMethod.POST);
+        GatewayConfig gatewayConfig = ConfigFixtures.gateway()
                 .securityHeaders(SecurityHeadersConfig.builder()
                         .cors(SecurityHeadersConfig.Cors.builder()
                                 .enabled(Boolean.TRUE)
@@ -920,9 +888,15 @@ class GatewayEdgeEarlyResponseResetTest {
                                 .build())
                         .build())
                 .build();
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),
-                vertx, virtualThreadExecutor, hardening, new SheriffMetrics(meterRegistry), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
+        GatewayEdgeRoute edge = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                .routes(ConfigFixtures.route(ROUTE, "/" + ROUTE).effectiveAllowedMethods(getAndPost)
+                                .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
+                                .build(),
+                        ConfigFixtures.route("moved", "/moved").effectiveAllowedMethods(getAndPost)
+                                .redirect(RedirectConfig.builder().location("/" + ROUTE + "/new-home").status(308).build())
+                                .build())
+                .gatewayConfig(gatewayConfig).hardening(hardening).metrics(new SheriffMetrics(meterRegistry))
+                .build();
         Router router = Router.router(vertx);
         edge.registerRoutes(router);
         HttpServer frontServer = Awaits.connect(
@@ -1207,65 +1181,5 @@ class GatewayEdgeEarlyResponseResetTest {
 
     /** The response to one client request, its body read whole, and the connection it was sent on. */
     private record Answer(HttpClientResponse response, String body, HttpConnection connection) {
-    }
-
-    /** Minimal {@link Instance} double resolving to one supplied validator; unused accessors throw. */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

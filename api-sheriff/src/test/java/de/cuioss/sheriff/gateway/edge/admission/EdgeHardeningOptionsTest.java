@@ -33,7 +33,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("EdgeHardeningOptions — inbound transport bounds and admission/drain limits")
-class EdgeHardeningTest {
+class EdgeHardeningOptionsTest {
 
     private static final int MAX_HEADER_SIZE_BYTES = 16 * 1024;
     private static final int MAX_INITIAL_LINE_LENGTH_BYTES = 8 * 1024;
