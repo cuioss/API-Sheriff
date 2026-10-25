@@ -38,13 +38,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-import de.cuioss.sheriff.gateway.config.model.Protocol;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
@@ -71,6 +67,7 @@ import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.smallrye.faulttolerance.api.Guard;
@@ -298,11 +295,7 @@ class TerminalDispatchLateBodyTimeoutTest {
                     .requestHandler(this::answerAtOnce)
                     .listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
             upstreamClient = vertx.createHttpClient(new HttpClientOptions());
-            route = Route.builder()
-                    .id(ROUTE_ID)
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/" + ROUTE_ID).build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+            route = ConfigFixtures.route(ROUTE_ID, "/" + ROUTE_ID)
                     .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
                     .build();
