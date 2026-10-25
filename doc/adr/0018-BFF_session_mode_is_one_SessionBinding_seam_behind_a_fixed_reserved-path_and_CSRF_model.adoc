@@ -24,8 +24,8 @@ Each admits a tempting per-deployment or per-route answer that fragments the sec
 * *Gateway-owned paths beside proxied traffic.* The BFF serves its own OIDC endpoints on the host
   that also carries proxied routes. If the route table resolves them, a broad prefix route captures
   the callback, and the login fails silently.
-* *CSRF as a setting.* A cookie-authenticated session is exposed to cross-site request forgery. A
-  defence that can be switched off will be switched off where the exposure is least understood.
+* *CSRF as a setting.* A cookie-authenticated session is exposed to cross-site request forgery, and
+  a defence for it could be made a setting.
 * *Two session modes.* Tokens can be held server-side behind an opaque cookie, or sealed into the
   cookie itself. The modes differ in state and failure modes. They do not differ in what the login,
   the refresh, the CSRF defence or the reserved paths must do.
