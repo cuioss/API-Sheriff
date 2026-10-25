@@ -68,8 +68,6 @@ import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -116,6 +114,7 @@ import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.PoolOptions;
@@ -350,7 +349,7 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient();
             try {
                 // Act
-                client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS,
+                client.request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS,
                         "/nothing")
                         .compose(HttpClientRequest::send);
 
@@ -485,11 +484,11 @@ class GatewayEdgeRouteTest {
             HttpClient upstreamClient = vertx.createHttpClient();
             Router router = Router.router(vertx);
             router.route().handler(ctx -> upstreamClient
-                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
                     .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(
-                            GatewayCookies.of(GatewayConfig.builder().version(1).build()))
+                            GatewayCookies.of(ConfigFixtures.gateway().build()))
                             .relay(ended, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(), end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -497,7 +496,7 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient();
             try {
                 String answer = Awaits.connect(client
-                                .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
                                 .compose(HttpClientRequest::send)
                                 .compose(response -> response.body()
                                         .map(body -> response.statusCode() + " [" + body + "]")),
@@ -540,7 +539,7 @@ class GatewayEdgeRouteTest {
             AtomicReference<@Nullable HttpClientResponse> pausedUpstream = new AtomicReference<>();
             Router router = Router.router(vertx);
             router.route().handler(ctx -> upstreamClient
-                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, LARGE_PATH)
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, LARGE_PATH)
                     .compose(request -> request.send().map(received -> {
                         received.pause();
                         return received;
@@ -558,7 +557,7 @@ class GatewayEdgeRouteTest {
             try {
                 // Act
                 String answer = Awaits.connect(client
-                                .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
                                 .compose(HttpClientRequest::send)
                                 .compose(response -> response.body()
                                         .map(body -> response.statusCode() + " [" + body + "]")),
@@ -567,7 +566,7 @@ class GatewayEdgeRouteTest {
                         "the upstream to see the connection of the unrelayed response closed",
                         Awaits.CONNECT_CEILING_SECONDS);
                 String next = Awaits.connect(upstreamClient
-                                .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS,
+                                .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS,
                                         ANSWERING_PATH)
                                 .compose(HttpClientRequest::send)
                                 .compose(response -> response.body().map(body -> response.statusCode() + " " + body)),
@@ -612,13 +611,13 @@ class GatewayEdgeRouteTest {
             CompletableFuture<Boolean> bodyOpenWhenRelayed = new CompletableFuture<>();
             Router router = Router.router(vertx);
             router.route().handler(ctx -> upstreamClient
-                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(request -> request.send().map(received -> {
                         received.pause();
                         return received;
                     }))
                     .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
-                            end -> new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()))
+                            end -> new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build()))
                                     .relay(received, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(),
                                             end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
@@ -628,7 +627,7 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient(new HttpClientOptions()
                     .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
             try {
-                HttpClientRequest upload = Awaits.connect(client.request(io.vertx.core.http.HttpMethod.POST,
+                HttpClientRequest upload = Awaits.connect(client.request(HttpMethod.POST,
                         front.actualPort(), LoopbackHost.ADDRESS, "/upload"), "the upload stream to open");
                 CompletableFuture<Throwable> streamEnded = new CompletableFuture<>();
                 upload.exceptionHandler(streamEnded::complete);
@@ -997,7 +996,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration carveOut = SecurityPostures.authorizationHeaderConfigurationFor(
-                    GatewayConfig.builder().version(1).build(), baseline);
+                    ConfigFixtures.gateway().build(), baseline);
 
             // Assert
             assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
@@ -1034,7 +1033,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration blockPresent = SecurityPostures.authorizationHeaderConfigurationFor(
                     gatewayWithAuthorizationCap(null), SecurityProfile.STRICT.preset());
             SecurityConfiguration blockAbsent = SecurityPostures.authorizationHeaderConfigurationFor(
-                    GatewayConfig.builder().version(1).build(), SecurityProfile.STRICT.preset());
+                    ConfigFixtures.gateway().build(), SecurityProfile.STRICT.preset());
 
             // Assert
             assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
@@ -1056,7 +1055,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration inertRuntime = SecurityPostures.cookieHeaderConfigurationFor(
                     cookieModeGateway(), BffRuntime.inert(), SecurityProfile.STRICT.preset());
             SecurityConfiguration sessionAbsent = SecurityPostures.cookieHeaderConfigurationFor(
-                    GatewayConfig.builder().version(1).build(), activeCookieRuntime(),
+                    ConfigFixtures.gateway().build(), activeCookieRuntime(),
                     SecurityProfile.STRICT.preset());
             SecurityConfiguration serverMode = SecurityPostures.cookieHeaderConfigurationFor(
                     sessionModeGateway(OidcConfig.Session.MODE_SERVER), activeCookieRuntime(),
@@ -1185,7 +1184,7 @@ class GatewayEdgeRouteTest {
         }
 
         private GatewayConfig gatewayWithAuthorizationCap(@Nullable Integer cap) {
-            return GatewayConfig.builder().version(1)
+            return ConfigFixtures.gateway()
                     .securityDefaults(SecurityDefaultsConfig.builder().profile("strict").maxAuthorizationHeaderValueLength(cap).build())
                     .build();
         }
@@ -1201,7 +1200,7 @@ class GatewayEdgeRouteTest {
          * {@code oidc} block is answered by the {@code orElse(false)} before the predicate is invoked.
          */
         private GatewayConfig sessionModeGateway(String mode) {
-            return GatewayConfig.builder().version(1)
+            return ConfigFixtures.gateway()
                     .oidc(OidcConfig.builder()
                             .session(OidcConfig.Session.builder()
                                     .mode(mode)
@@ -1317,7 +1316,7 @@ class GatewayEdgeRouteTest {
                     .gatewayConfig(loaded).serve();
             HttpClient client = vertx.createHttpClient();
             try {
-                Awaits.connect(client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(),
+                Awaits.connect(client.request(HttpMethod.GET, front.actualPort(),
                                 LOOPBACK, "/t/resource")
                                 .compose(request -> request.putHeader(FORWARDED_FOR, SPOOFED_CLIENT).send()),
                         "the edge response to the proxied GET");
@@ -1330,12 +1329,7 @@ class GatewayEdgeRouteTest {
         }
 
         private Route proxyRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("t")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/t").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("t", "/t")
                     .upstream(new ResolvedUpstream("http", LOOPBACK, upstreamPort, ""))
                     .build();
         }
@@ -1566,7 +1560,7 @@ class GatewayEdgeRouteTest {
                         gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
 
                 // Act
-                Answer answer = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS, PORTAL_PATH);
+                Answer answer = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS, PORTAL_PATH);
 
                 // Assert
                 assertAll(
@@ -1591,9 +1585,9 @@ class GatewayEdgeRouteTest {
                         gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
 
                 // Act
-                Answer sibling = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS, "/apps/other");
+                Answer sibling = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS, "/apps/other");
                 boolean siblingReached = upstreamReached.getAndSet(false);
-                Answer trailing = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS,
+                Answer trailing = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS,
                         PORTAL_PATH + "/");
 
                 // Assert — the stub upstream answers 204, which the portal never does
@@ -1620,8 +1614,8 @@ class GatewayEdgeRouteTest {
                         gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
 
                 // Act
-                Answer post = serve(edge, io.vertx.core.http.HttpMethod.POST, LoopbackHost.ADDRESS, PORTAL_PATH);
-                Answer head = serve(edge, io.vertx.core.http.HttpMethod.HEAD, LoopbackHost.ADDRESS, PORTAL_PATH);
+                Answer post = serve(edge, HttpMethod.POST, LoopbackHost.ADDRESS, PORTAL_PATH);
+                Answer head = serve(edge, HttpMethod.HEAD, LoopbackHost.ADDRESS, PORTAL_PATH);
 
                 // Assert
                 assertAll(
@@ -1640,15 +1634,15 @@ class GatewayEdgeRouteTest {
         void oidcReservedPathWinsOverPortal() throws Exception {
             // Arrange — the portal path deliberately coincides with the user-info reserved path (boot
             // validation refuses this; the edge ordering is what is pinned here)
-            GatewayConfig withOidc = GatewayConfig.builder().version(1).oidc(oidc()).build();
+            GatewayConfig withOidc = ConfigFixtures.gateway().oidc(oidc()).build();
             GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), withOidc,
                     GatewayEdgeRouteBffWiringTest.activeRuntime(
                             GatewayEdgeRouteBffWiringTest.serverBinding(GatewayEdgeRouteBffWiringTest.newStore())),
                     portal(USER_INFO_PATH));
 
             // Act
-            Answer onOidcHost = serve(edge, io.vertx.core.http.HttpMethod.GET, OIDC_HOST, USER_INFO_PATH);
-            Answer onOtherHost = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS,
+            Answer onOidcHost = serve(edge, HttpMethod.GET, OIDC_HOST, USER_INFO_PATH);
+            Answer onOtherHost = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS,
                     USER_INFO_PATH);
 
             // Assert — 401 is the user-info handler's own no-session answer; the control proves the
@@ -1686,12 +1680,7 @@ class GatewayEdgeRouteTest {
         }
 
         private Route appsRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("apps")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/apps").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("apps", "/apps")
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
         }
@@ -1755,7 +1744,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of());
 
                 assertRoutingProblem(404, rejection);
@@ -1772,7 +1761,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.DELETE,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.DELETE,
                         LoopbackHost.ADDRESS, "/" + ROUTE_ID + "/resource", Map.of());
 
                 assertRoutingProblem(405, rejection);
@@ -1789,7 +1778,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, UNROUTED_PATH, Map.of());
 
                 assertRoutingProblem(404, rejection);
@@ -1806,9 +1795,9 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection unrouted = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection unrouted = send(client, front.actualPort(), HttpMethod.GET,
                         LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of());
-                Rejection smuggled = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection smuggled = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, UNROUTED_PATH, Map.of());
 
                 assertAll("the two 404s cannot be told apart by a client",
@@ -1837,9 +1826,9 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI, errorPagePortal());
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection unrouted = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection unrouted = send(client, front.actualPort(), HttpMethod.GET,
                         LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of("Accept", accept));
-                Rejection reserved = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection reserved = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, UNROUTED_PATH, Map.of("Accept", accept));
 
                 assertAll("the two 404s on an unrouted address for Accept: " + accept,
@@ -1863,7 +1852,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, "/" + ROUTE_ID + "/resource", Map.of());
 
                 assertRoutingProblem(404, rejection);
@@ -1891,7 +1880,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(markedSni);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         markedSni, "/" + pathMarker, Map.of("X-Probe", headerMarker));
 
                 assertEquals(404, rejection.status());
@@ -1995,7 +1984,7 @@ class GatewayEdgeRouteTest {
 
     private static int statusOf(HttpClient client, int port) throws Exception {
         return Awaits.connect(
-                client.request(io.vertx.core.http.HttpMethod.GET, port, LoopbackHost.ADDRESS, "/unmatched")
+                client.request(HttpMethod.GET, port, LoopbackHost.ADDRESS, "/unmatched")
                         .compose(HttpClientRequest::send),
                 "the edge response to GET /unmatched").statusCode();
     }
@@ -2005,12 +1994,8 @@ class GatewayEdgeRouteTest {
     }
 
     private static Route webSocketRoute(int upstreamPort) {
-        return Route.builder()
-                .id("w")
+        return ConfigFixtures.route("w", "/w")
                 .protocol(Protocol.WEBSOCKET)
-                .match(MatchConfig.builder().pathPrefix("/w").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
@@ -2131,12 +2116,9 @@ class GatewayEdgeRouteTest {
     }
 
     private static Route route(String id, Protocol protocol, Require require) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, "/" + id)
                 .protocol(protocol)
-                .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", id + ".example", 443, ""))
                 .build();
     }

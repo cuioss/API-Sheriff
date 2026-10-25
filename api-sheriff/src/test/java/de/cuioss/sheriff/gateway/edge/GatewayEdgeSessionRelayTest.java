@@ -51,8 +51,6 @@ import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
-import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -69,6 +67,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.http.UpgradeRejectedException;
@@ -612,12 +611,9 @@ class GatewayEdgeSessionRelayTest {
     }
 
     private static Route wsRoute(String id, String pathPrefix, Require require, int upstreamPort) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.WEBSOCKET)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .effectiveAllowedOrigins(Set.of(ORIGIN))
                 .effectiveForward(ForwardConfig.builder().headersAllow(List.of()).build())
@@ -663,7 +659,7 @@ class GatewayEdgeSessionRelayTest {
         return new RequestOptions()
                 .setServer(SocketAddress.inetSocketAddress(requireFront().actualPort(), LoopbackHost.ADDRESS))
                 .setHost(OIDC_HOST).setPort(requireFront().actualPort())
-                .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
+                .setMethod(HttpMethod.GET).setURI(uri);
     }
 
     private int logout(String cookie) throws Exception {

@@ -82,7 +82,6 @@ import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -363,12 +362,7 @@ public class GatewayEdgeRouteBffWiringTest {
         private static Route rejectEverythingRoute() {
             SecurityFilterConfig filter = SecurityFilterConfig.builder()
                     .allowedPaths(List.of("/auth/never-matches")).build();
-            return Route.builder()
-                    .id("auth-proxy")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/auth").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("auth-proxy", "/auth")
                     // The allowed_paths whitelist is read off this filter by the route itself.
                     .effectiveSecurityFilter(filter)
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, 1, ""))
@@ -1066,11 +1060,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** A credential-free proxy route claiming the whole {@code /bff} prefix on every host. */
         private static Route bffPrefixRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("bff-proxy")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/bff").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+            return ConfigFixtures.route("bff-proxy", "/bff")
                     .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
@@ -1250,12 +1240,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** A credential-free proxy route claiming the whole {@code /keys} prefix on every host. */
         private static Route keysPrefixRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("keys-proxy")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/keys").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("keys-proxy", "/keys")
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
         }
@@ -1441,10 +1426,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         private static Route bearerRoute(String id, String pathPrefix, @Nullable Boolean sessionFallback,
                 int upstreamPort) {
-            return Route.builder()
-                    .id(id)
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+            return ConfigFixtures.route(id, pathPrefix)
                     .effectiveAuth(AuthConfig.builder().require(Require.BEARER).sessionFallback(sessionFallback).build())
                     .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
@@ -1492,12 +1474,8 @@ public class GatewayEdgeRouteBffWiringTest {
             underScopedCookie = createSession(store, Set.of());
             coveringCookie = createSession(store, Set.of(NEEDED_SCOPE));
 
-            Route scopedRoute = Route.builder()
-                    .id("scoped")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/scoped").build())
+            Route scopedRoute = ConfigFixtures.route("scoped", "/scoped")
                     .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                     .neededScopes(Set.of(NEEDED_SCOPE))
                     .build();
@@ -1648,18 +1626,12 @@ public class GatewayEdgeRouteBffWiringTest {
                             new SecretKeySpec(activityKey, "AES"), (byte) 2),
                     IDLE_TIMEOUT);
 
-            Route sessionRoute = Route.builder()
-                    .id("cookie-session")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/app").build())
+            Route sessionRoute = ConfigFixtures.route("cookie-session", "/app")
                     .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                     .build();
-            Route grpcSessionRoute = Route.builder()
-                    .id("cookie-session-grpc")
+            Route grpcSessionRoute = ConfigFixtures.route("cookie-session-grpc", GRPC_PREFIX)
                     .protocol(Protocol.GRPC)
-                    .match(MatchConfig.builder().pathPrefix(GRPC_PREFIX).build())
                     .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                     .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
@@ -1978,12 +1950,8 @@ public class GatewayEdgeRouteBffWiringTest {
     }
 
     private static Route sessionRoute() {
-        return Route.builder()
-                .id("s")
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/s").build())
+        return ConfigFixtures.route("s", "/s")
                 .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", "s.example", 443, ""))
                 .build();
     }

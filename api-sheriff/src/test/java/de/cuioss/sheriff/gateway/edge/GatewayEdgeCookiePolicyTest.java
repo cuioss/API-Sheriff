@@ -33,20 +33,18 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -563,11 +561,8 @@ class GatewayEdgeCookiePolicyTest {
 
     private Route route(String id, Protocol protocol, String pathPrefix, Set<HttpMethod> methods,
             CookiesConfig cookies) {
-        Route.RouteBuilder builder = Route.builder()
-                .id(id)
+        Route.RouteBuilder builder = ConfigFixtures.route(id, pathPrefix)
                 .protocol(protocol)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(methods)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                 .effectiveCookies(cookies)

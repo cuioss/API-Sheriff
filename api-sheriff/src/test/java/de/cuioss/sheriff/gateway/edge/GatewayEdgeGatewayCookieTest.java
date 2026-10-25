@@ -46,7 +46,6 @@ import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -54,6 +53,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
@@ -195,7 +195,7 @@ class GatewayEdgeGatewayCookieTest {
                     .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE).build())
                     .build();
             startFront(GatewayEdgeRouteBffWiringTest.activeRuntime(binding),
-                    GatewayConfig.builder().version(1).oidc(oidc).build(), allRoutes());
+                    ConfigFixtures.gateway().oidc(oidc).build(), allRoutes());
         }
 
         /** Binds a session whose login lies {@code secondsAgo} in the past and returns its request cookie. */
@@ -328,7 +328,7 @@ class GatewayEdgeGatewayCookieTest {
                             .backchannelPath(BACKCHANNEL_PATH).build())
                     .build();
             startFront(GatewayEdgeRouteBffWiringTest.activeRuntime(GatewayEdgeRouteBffWiringTest.serverBinding(store)),
-                    GatewayConfig.builder().version(1).oidc(oidc).build(), allRoutes());
+                    ConfigFixtures.gateway().oidc(oidc).build(), allRoutes());
         }
 
         private String login(String idToken) {
@@ -441,7 +441,7 @@ class GatewayEdgeGatewayCookieTest {
         @Test
         @DisplayName("allow: all — the session, login-binding and logout-state cookies are dropped; the upstream's own arrive on their own lines and in order")
         void dropsReservedCookiesAndRelaysTheRest() throws Exception {
-            startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
+            startFront(BffRuntime.inert(), ConfigFixtures.gateway().build(),
                     List.of(httpRoute("open", OPEN_ROUTE, Require.NONE, ALLOW_ALL)));
             upstreamSetsReservedCookiesAndItsOwn();
 
@@ -457,7 +457,7 @@ class GatewayEdgeGatewayCookieTest {
         @Test
         @DisplayName("default none — a route declaring no cookies block relays no upstream Set-Cookie line at all")
         void defaultNoneDropsEveryLine() throws Exception {
-            startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
+            startFront(BffRuntime.inert(), ConfigFixtures.gateway().build(),
                     List.of(httpRoute("open", OPEN_ROUTE, Require.NONE, null)));
             upstreamSetsReservedCookiesAndItsOwn();
 
@@ -488,7 +488,7 @@ class GatewayEdgeGatewayCookieTest {
             store = GatewayEdgeRouteBffWiringTest.newStore();
             OidcConfig oidc = OidcConfig.builder().redirectUri(ORIGIN + "/auth/callback").build();
             startFront(GatewayEdgeRouteBffWiringTest.activeRuntime(GatewayEdgeRouteBffWiringTest.serverBinding(store)),
-                    GatewayConfig.builder().version(1).oidc(oidc).build(), allRoutes());
+                    ConfigFixtures.gateway().oidc(oidc).build(), allRoutes());
         }
 
         private String login() {
@@ -734,10 +734,8 @@ class GatewayEdgeGatewayCookieTest {
         return List.of(
                 httpRoute("session", SESSION_ROUTE, Require.SESSION, ALLOW_ALL),
                 httpRoute("open", OPEN_ROUTE, Require.NONE, ALLOW_ALL),
-                Route.builder()
-                        .id("session-grpc")
+                ConfigFixtures.route("session-grpc", GRPC_ROUTE)
                         .protocol(Protocol.GRPC)
-                        .match(MatchConfig.builder().pathPrefix(GRPC_ROUTE).build())
                         .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                         .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                         .effectiveCookies(ALLOW_ALL)
@@ -750,12 +748,8 @@ class GatewayEdgeGatewayCookieTest {
      *                which resolves the default {@code allow: none}
      */
     private Route httpRoute(String id, String pathPrefix, Require require, @Nullable CookiesConfig cookies) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+        return ConfigFixtures.route(id, pathPrefix)
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .effectiveCookies(cookies)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                 .build();

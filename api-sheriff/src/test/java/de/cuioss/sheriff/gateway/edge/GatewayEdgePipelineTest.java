@@ -40,7 +40,6 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -402,8 +401,7 @@ class GatewayEdgePipelineTest {
         // baseline rejects the value at the pre-route floor, before route selection, which is why the
         // key is gateway-wide: a per-route relaxation could never reach this check.
         Map<String, String> nonAsciiHeader = Map.of("X-Display-Name", "José");
-        HttpServer optedInFront = startFront(GatewayConfig.builder()
-                .version(1)
+        HttpServer optedInFront = startFront(ConfigFixtures.gateway()
                 .securityHeaders(globalHeaders())
                 .securityDefaults(SecurityDefaultsConfig.builder().allowExtendedAscii(true).build())
                 .build());
@@ -729,13 +727,9 @@ class GatewayEdgePipelineTest {
     }
 
     private static Route anchoredRoute(String id, String pathPrefix, Require require, int upstreamPort) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
+        return ConfigFixtures.route(id, pathPrefix)
                 .anchor(FRONTEND_ANCHOR)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(anchorHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
@@ -748,13 +742,8 @@ class GatewayEdgePipelineTest {
 
     /** A public directory asset route serving {@value #ASSET_FILE} from the fixture's temporary directory. */
     private Route assetRoute(String id, String pathPrefix, @Nullable String anchor) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
+        return ConfigFixtures.route(id, pathPrefix)
                 .anchor(anchor)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(resolvedHeaders(anchor))
                 .asset(ResolvedAsset.directory(assetDirectory.toString(), AccessLevel.PUBLIC, null, null))
                 .build();
@@ -765,11 +754,9 @@ class GatewayEdgePipelineTest {
      * trailers-only gRPC status, so it never dials the (HTTP/1.1) stub upstream.
      */
     private static Route grpcRoute(String id, String pathPrefix, int upstreamPort, @Nullable String anchor) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.GRPC)
                 .anchor(anchor)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
                 .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                 .securityHeaders(resolvedHeaders(anchor))
@@ -783,13 +770,9 @@ class GatewayEdgePipelineTest {
      */
     private static Route webSocketRoute(String id, String pathPrefix, int upstreamPort,
             @Nullable String anchor) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.WEBSOCKET)
                 .anchor(anchor)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(resolvedHeaders(anchor))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
@@ -806,11 +789,7 @@ class GatewayEdgePipelineTest {
                 .allowedPaths(List.of("/open/allowed"))
                 .maxBodyBytes(MINIMAL_ROUTE_BODY_CAP)
                 .build();
-        return Route.builder()
-                .id("open")
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/open").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+        return ConfigFixtures.route("open", "/open")
                 .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                 // The allowed_paths whitelist is read off this filter by the route itself.
                 .effectiveSecurityFilter(filter)
@@ -830,12 +809,8 @@ class GatewayEdgePipelineTest {
      * {@code keep_query} on; it resolves no upstream, so any upstream contact is a defect.
      */
     private static Route redirectRoute(String id, String pathPrefix, Require require) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+        return ConfigFixtures.route(id, pathPrefix)
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(globalHeaders())
                 .redirect(RedirectConfig.builder()
                         .location(REDIRECT_LOCATION)
@@ -847,10 +822,7 @@ class GatewayEdgePipelineTest {
 
     private static Route route(String id, String pathPrefix, Require require, int upstreamPort,
             HttpMethod... methods) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+        return ConfigFixtures.route(id, pathPrefix)
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(Set.of(methods))
                 .securityHeaders(globalHeaders())
