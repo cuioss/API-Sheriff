@@ -189,7 +189,8 @@ services:
     # Declares WHAT this instance's MANAGEMENT interface speaks and WHERE it serves. scripts/
     # start-sample.sh derives its entire probe URL from these two labels plus the host port published
     # against container port 9000 — so the readiness gate restates neither scheme, nor root path, nor
-    # port, and renumbering the published port below needs no script edit (ADR-0031).
+    # port, and renumbering the published port below needs no script edit (the readiness-gate rules in
+    # doc/development/integration-test-topology.adoc).
     #
     # management-root-path is the deployment-visible copy of the gateway's own management context
     # path. It is the SAME kind of fact as the scheme: fixed in the image at build time, movable by a

@@ -22,8 +22,9 @@
 #      so this layer polls with a fixed budget instead — and a target still not UP when the budget is
 #      spent IS the defect, reported with the same diagnostics as layer 1.
 #
-# The readiness contract itself is still derived, never restated (ADR-0031): WHICH services to probe
-# comes from the de.cuioss.sheriff.management-scheme label, WHICH scheme from that label's value,
+# The readiness contract itself is still derived, never restated (the readiness-gate rules in
+# doc/development/integration-test-topology.adoc): WHICH services to probe comes from the
+# de.cuioss.sheriff.management-scheme label, WHICH scheme from that label's value,
 # WHICH root path the management endpoints sit beneath from the de.cuioss.sheriff.management-root-path
 # label, and WHICH host port from the port published against the container-port selector 9000. Only
 # that container-side selector is a literal, and deliberately so — it is a stable platform-level fact
@@ -37,8 +38,8 @@
 # itself. `--plain-http` layers docker-compose.plain-http.yml on top, which takes that termination
 # away and puts a TLS-terminating nginx hop in front of the gateway instead — the ingress / sidecar
 # deployment shape. The variant changes WHICH files compose reads and nothing else about this script:
-# the readiness contract below is still derived from the resolved model (ADR-0031), so it follows the
-# merged model automatically rather than needing a per-variant branch.
+# the readiness contract below is still derived from the resolved model (the readiness-gate rules),
+# so it follows the merged model automatically rather than needing a per-variant branch.
 #
 # Invoked by the deployment module's opt-in `compose-sample` Maven profile at pre-integration-test,
 # and directly by an operator following doc/user/compose-sample.adoc. Both paths are the same path.
@@ -236,7 +237,7 @@ fi
 # default lives once in .env; an exported API_SHERIFF_IMAGE overrides it. Compose has already
 # applied that precedence by the time it answers `config`, so reading the answer back is the only
 # way this preflight and the stack that actually starts cannot disagree — the same
-# derive-don't-restate rule step 2 below follows for the readiness probe (ADR-0031).
+# derive-don't-restate rule step 2 below follows for the readiness probe.
 #
 # This must sit AFTER the COMPOSE_CMD block above: it dereferences that array.
 if ! IMAGE_REF="$("${COMPOSE_CMD[@]}" config --format json | python3 -c '

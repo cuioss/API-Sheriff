@@ -1068,7 +1068,8 @@ services:
     <<: *gateway-hardening
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
-    # Identical to the primary instance's budget, per ADR-0012: the empty-mode arm is compared
+    # Identical to the primary instance's budget, per the equal-budget rule of the benchmark
+    # methodology (benchmarks/README.adoc): the empty-mode arm is compared
     # against the primary's proxiedStatic baseline, so a different CPU or memory limit here would
     # make the comparison measure the budget difference rather than the passthrough configuration.
     deploy:
@@ -1186,8 +1187,9 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=100m
     # 256M rather than the suite-serving instances' 512M: this instance serves four assertions against
-    # one static asset and its own log, never the IT suite, and it is never benchmarked — so ADR-0012's
-    # equal-budget rule, which binds the benchmark-compared instances, does not reach it.
+    # one static asset and its own log, never the IT suite, and it is never benchmarked — so the
+    # benchmark methodology's equal-budget rule (benchmarks/README.adoc), which binds the
+    # benchmark-compared instances, does not reach it.
     deploy:
       resources:
         limits:
@@ -1226,8 +1228,8 @@ services:
   #
   # The memory limit is 256M rather than the 512M the suite-serving instances carry. These two serve
   # exactly one assertion each against a fixed 200-byte upstream response, never the IT suite, so the
-  # larger budget would only reserve host memory the pair cannot use. ADR-0012's equal-budget rule
-  # binds the benchmark-compared instances (the primary and passthrough-empty arms); it does not reach
+  # larger budget would only reserve host memory the pair cannot use. The benchmark methodology's
+  # equal-budget rule (benchmarks/README.adoc) binds the benchmark-compared instances (the primary and passthrough-empty arms); it does not reach
   # a pair that is never benchmarked and is compared only against each other, on equal budgets.
   api-sheriff-egress-verify-on:
     image: "api-sheriff:distroless"

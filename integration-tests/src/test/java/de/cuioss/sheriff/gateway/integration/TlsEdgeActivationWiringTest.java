@@ -266,9 +266,10 @@ class TlsEdgeActivationWiringTest {
         String primaryUpstream = environmentEntries(services, PRIMARY_SERVICE).get(UPSTREAM_KEY);
         String emptyUpstream = environmentEntries(services, EMPTY_PASSTHROUGH_SERVICE).get(UPSTREAM_KEY);
 
-        // Assert — the ADR-0012 "identical upstreams" parity precondition, asserted as an EQUALITY
-        // between the two declared values rather than against a hard-coded literal, so repointing the
-        // benchmark at a different backend keeps the two arms in lockstep instead of breaking here.
+        // Assert — the "identical upstreams" fairness parity precondition of the comparison lane
+        // (benchmarks/README.adoc), asserted as an EQUALITY between the two declared values rather
+        // than against a hard-coded literal, so repointing the benchmark at a different backend keeps
+        // the two arms in lockstep instead of breaking here.
         assertNotNull(primaryUpstream,
                 "the '" + PRIMARY_SERVICE + "' service must declare " + UPSTREAM_KEY
                         + " in docker-compose.benchmark.yml");
