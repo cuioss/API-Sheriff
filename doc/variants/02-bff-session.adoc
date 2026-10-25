@@ -253,6 +253,7 @@ This holds only for *same-site* origins (same registrable domain, e.g. `app.exam
 gets it attached at all -- host the app under the gateway's site. Same-origin deployments need
 neither entry.
 
+[[_logout]]
 == Logout
 
 Logout follows `CLIENT-13` (RP-initiated logout) with the browser-facing parts owned by the

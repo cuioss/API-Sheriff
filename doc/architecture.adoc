@@ -963,7 +963,9 @@ link:adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the
   paths additionally require the request host to be the OIDC host. The other two -- back-channel
   logout and the client JWKS endpoint -- are matched on every host, because the identity provider dials
   them server-to-server by whatever address the relying party registered — routinely an internal
-  service name rather than the browser-facing one (ADR-0018, back-channel-host amendment; ADR-0058).
+  service name rather than the browser-facing one
+  (link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#backchannel-host[ADR-0018];
+  ADR-0058).
   The client JWKS path is the one reserved path that needs no declaration: an `oidc` block with a
   `redirect_uri` that names none reserves the default `/bff/jwks`. It is reserved in both client-authentication modes.
   In key mode it answers the client-authentication public key to a `GET`; in client-secret mode it
@@ -1008,9 +1010,9 @@ mapper changes these bodies.
 ==== Session store, writes and lifetime
 
 The session contract is the `SessionBinding` seam; what follows is how the two bindings meet it
-(ADR-0018, with its amendments on
+(ADR-0018, on
 link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[the
-updating write],
+updating writes],
 link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#cookie-reissue[the
 re-issue of the browser's handle] and
 link:adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#idle-deadline[the

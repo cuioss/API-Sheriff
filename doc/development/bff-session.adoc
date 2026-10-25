@@ -86,8 +86,8 @@ before the proxy route table and dispatches a matched reserved path through
 
 `SessionBinding` is the contract; `ServerSessionBinding` implements it over a `SessionStore`. The
 decisions are in
-link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
-and its amendments. The store is hand-written because no platform session mechanism has what the
+link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
+The store is hand-written because no platform session mechanism has what the
 contract needs (ADR-0062), and the producer builds it, not the container, because a bearer-only
 gateway must not have one.
 
@@ -133,7 +133,9 @@ Three rules follow for code that touches sessions:
   session identity, never on the handle. The handle changes; the identity does not.
 * A request that still carries the previous handle resolves nothing. Answer it as "no session for
   this request" (`TokenRefreshCoordinator`'s `NO_SESSION`, the stage's `RefreshResult.NoSession`)
-  and send *no* clearing cookie: the browser may already hold the re-issued one.
+  and send *no* clearing cookie: the browser may already hold the re-issued one. The same single
+  answer reaches a request that already carries the new handle but was coalesced behind a refresh
+  whose leading request carried the previous one. The next attempt of either succeeds.
 
 === Why every operation is one monitor-guarded method
 
@@ -224,6 +226,13 @@ private member.
 `CLIENT_JWKS` is one of the two kinds matched on every host, and it is registered last, after the
 step-up path, so that boot validation sees a `jwks_path` another key also names as a collision. If you add a reserved kind the identity
 provider dials server-to-server, add it to that set and say why in `match(...)`.
+
+`BACKCHANNEL_LOGOUT` is the other kind, and `BffBackchannelLogoutIT` is the test that shows why. Its
+Keycloak realm names the gateway by its compose service name, while the OIDC host is the public name.
+With an OIDC-host gate on the receiver, the logout token reached the route table, was answered `404`,
+and the session survived the IdP-initiated logout. Nothing logged an error on either side: the IdP
+recorded a failed delivery, the gateway an unrouted path
+(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#backchannel-host[ADR-0018]).
 
 === The PAR adapter
 

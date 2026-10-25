@@ -83,7 +83,7 @@ destroyed the session after the caller resolved it. `CookieSessionBinding` holds
 could have removed, so it always re-seals and never returns empty -- a refresh or a widening that
 was in flight during a logout still produces a session cookie. Callers must handle the empty result
 (`TokenRefreshCoordinator` ends the request as session-ended, `CallbackEndpoint` answers `403`);
-`bind` stays the only creating write. See the updating-write amendment of
+`bind` stays the only creating write. See the updating writes in
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
 
 The updating write has a second variant, `persistReissuingCookie`, which a widening merge uses. In
@@ -496,6 +496,6 @@ that literal in the same change.
 
 * link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the design.
 * link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF architecture] -- the decision record.
-* link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- BFF security relaxations] -- the accepted trade-offs.
+* link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc#header-carve-outs[ADR-0019 -- BFF security relaxations] -- the cookie-header carve-out the sealed-cookie budget drives.
 * link:../user/bff-cookie.adoc[Operator setup -- cookie-based BFF] -- how it is configured and run.
 * link:bff-session.adoc[Contributor guide -- server-session BFF] -- the shared package map.
