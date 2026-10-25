@@ -352,7 +352,7 @@ removed. On that instance the front listener is never created and the single ter
 HTTPS listener owns the public port directly, which is D1's zero-overhead default.
 +
 Everything else is held equal, because the comparison is only meaningful as a single-variable one
-(ADR-0012): the *same* native image, the *same* `/proxy/static` route, the *same* `nginx-static`
+(see <<comparison-lane-segregation>>): the *same* native image, the *same* `/proxy/static` route, the *same* `nginx-static`
 upstream the benchmark overlay repoints both instances at, the *same* mounted TLS material, and the
 *same* CPU and memory limits (512M / 4.0 CPU). A difference on any of those folds its own cost into
 one side of the gate and is then read as passthrough overhead.
@@ -488,6 +488,47 @@ Comparison runs are *on-demand only* and are wired into no workflow and no Maven
 invokes. Running them in CI would multiply benchmark wall time by the number of targets and would
 publish comparison numbers into the baseline trend series.
 
+[[comparison-lane-segregation]]
+=== Why the comparison lane is segregated from the CI baseline
+
+The CI baseline and a comparison run have different trust levels. The baseline is the published,
+regression-tracked record of API Sheriff's own performance. A comparison run is an on-demand,
+environment-sensitive snapshot, and its numbers mean something only relative to the other gateway in
+the same run. If the two lanes shared a results surface or a trigger, a comparison run could
+contaminate the published baseline, or a heavyweight comparison could burden every CI run. The lane
+is therefore built on three rules:
+
+* *One target-neutral harness.* One target parameter selects the gateway the whole aspect matrix
+  runs against. It defaults to API Sheriff, and the chosen target is recorded in every result's
+  metadata. One script body drives either gateway, so the gateway under test is the only intended
+  variable between a comparison and the baseline.
+* *On-demand only, with results segregated at write time.* The entry point is wired into no CI
+  workflow. It writes to a results directory outside the published baseline and pages tree (see
+  <<where-results-land>>), so a comparison run can never mutate the baseline.
+* *Fairness parity is a precondition.* A comparison runs only when both gateways face identical
+  upstreams, the same auth realm and tokens, the same TLS material and matched container resource
+  limits. The _Methodology_ section above lists each condition. Cross-gateway numbers are relative,
+  not absolute.
+
+The costs are accepted. The comparison lane is not exercised continuously, so its wiring can rot
+undetected between on-demand runs. Fairness parity is enforced by review and by this document, not
+by an automated gate, so an unfair environment silently produces misleading numbers. The only parity a
+test asserts is that of the passthrough `empty` arm, held by `TlsEdgeActivationWiringTest`, and that
+arm compares two API Sheriff instances rather than two gateways.
+
+Three other shapes were considered and rejected:
+
+* *Run the comparison in CI beside the baseline.* It would yield continuous comparison data. It is
+  rejected because it couples a heavyweight, environment-sensitive run to every CI build, and its
+  results could bleed into the published baseline surface.
+* *Launch the comparison stack as its own Compose project.* The isolation looks cleaner, but that
+  project cannot reach the shared upstreams, auth realm and TLS material without duplicating them,
+  which breaks fairness parity. Sharing them means composing into the same project anyway, which is
+  why the APISIX overlay is merged into the integration stack.
+* *Write comparison results into the baseline store and filter them later.* One results surface is
+  simpler, but any gap in the filter lets a comparison run corrupt the published history.
+  Segregation at write time is the only boundary that cannot leak.
+
 First build the `grpc-echo` fixture jar on the host, from the repository root. The `grpc-echo` image
 build copies `integration-tests/target/quarkus-app` and fails when that directory is absent:
 
@@ -551,6 +592,7 @@ scripts/run-comparison.sh --target apisix
 |Skip the supplementary HTML report (see below).
 |===
 
+[[where-results-land]]
 === Where results land
 
 [source,text]

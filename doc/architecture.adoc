@@ -370,7 +370,8 @@ unnecessary.
 Configuration is loaded once at startup from static files (see link:configuration.adoc[Configuration Model]),
 validated in full, and then frozen into immutable value objects. The gateway *refuses to
 start* on invalid configuration -- it never serves traffic against a partially valid route
-table. Only *Static mode* is supported initially (link:adr/0002-initial-scope.adoc[ADR-0002]);
+table. Only *Static mode* is supported initially
+(link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial Scope]);
 the manifest's dynamic `/api/gateway-config.json` discovery pattern is deferred.
 
 Configuration is layered: a global `gateway.yaml` (including the namespace-scoped `anchors`
@@ -1927,7 +1928,8 @@ routes and need an explicit `auth: { require: none }`.
 [[_protocol_support]]
 == Protocol Support
 
-The following are supported *from the start* (link:adr/0002-initial-scope.adoc[ADR-0002]);
+The following are supported *from the start*
+(link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial Scope]);
 HTTP/3 / QUIC is deferred.
 
 [cols="1,3"]

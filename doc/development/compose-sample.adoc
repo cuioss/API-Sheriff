@@ -188,7 +188,8 @@ still start while the realm imports, miss its first key-set fetch and sit out a 
 residual is why layer 2 below polls instead of asking once.
 
 `scripts/start-sample.sh` is the actual readiness gate, and it is bound by
-link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031].
+link:integration-test-topology.adoc#readiness-gate-rules[the rules every host-side readiness gate
+follows].
 It gates in two layers, and they are not redundant -- each answers a question the other cannot.
 
 *Layer 1 -- waiting.* `docker compose up -d --wait --wait-timeout 120` blocks until every service is
@@ -207,7 +208,7 @@ exactly that gap. It is a *bounded wait* here rather than the integration stack'
 the difference is the stack, not the rule: readiness also waits for the issuer's JWKS key set, and
 this sample orders its gateway only behind an accept-level Keycloak probe, so the first key-set fetch
 can land during the realm import and be retried on the gateway's backoff (one second doubling, capped
-at 30 s). ADR-0031 names exactly this case and prescribes this remedy. The budget, 90 one-second
+at 30 s). The readiness-gate rules name exactly this case and prescribe this remedy. The budget, 90 one-second
 attempts, outlasts that backoff's 61 s climb to the cap (1 + 2 + 4 + 8 + 16 + 30 s); a target still
 not `UP` when it is spent is a real defect and fails the gate with the same diagnostics as layer 1.
 
@@ -252,7 +253,7 @@ deployment-bound values. Renumbering the published port, moving the gateway's ma
 (link:../user/context-path.adoc[The Context Path]), or adding a second gateway instance therefore
 needs no edit to the script.
 
-ADR-0031's negative list is binding here, and each item is a real failure mode:
+The readiness-gate rules' negative list is binding here, and each item is a real failure mode:
 
 * *No restated host port, no restated scheme and no restated root path.* A list in the script
   mirroring the compose file becomes a defect the moment any of them changes.

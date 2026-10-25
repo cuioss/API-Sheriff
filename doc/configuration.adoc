@@ -124,7 +124,8 @@ subdirectories, are ignored.
 [[_distributed_configuration]]
 === Configuration Mode -- Static Only (initial scope)
 
-*API Sheriff supports only Static mode initially* -- see link:adr/0002-initial-scope.adoc[ADR-0002].
+*API Sheriff supports only Static mode initially* -- see
+link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial Scope].
 The manifest's dynamic `/api/gateway-config.json` discovery is deferred; `metadata.config_version`
 is retained now only as an audit stamp.
 
@@ -1676,7 +1677,8 @@ declaration, and that stack's BFF login suites exercise the leg through it.
 === `protocol`
 
 Each route declares the protocol it serves: `http` (the default), `graphql`, `grpc`, or
-`websocket`. All four are supported *from the start* (link:adr/0002-initial-scope.adoc[ADR-0002]);
+`websocket`. All four are supported *from the start*
+(link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial Scope]);
 HTTP/3 is deferred. The value selects handshake/streaming behaviour only (WebSocket upgrade,
 gRPC streaming); the semantics of each protocol -- and what the security filter does and does
 not inspect -- are defined once in
@@ -4255,7 +4257,8 @@ and no `429` is ever produced.
 
 `config_version` is an audit stamp only -- logged at boot, exposed for operational
 traceability, no runtime behaviour. Retained so the model need not change if dynamic
-discovery is added later (link:adr/0002-initial-scope.adoc[ADR-0002]).
+discovery is added later (link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial
+Scope]).
 
 [[_security_headers]]
 === `security_headers`

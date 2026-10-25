@@ -137,7 +137,7 @@ set of things well, with zero mandatory external dependencies.
   link:architecture.adoc#_downstream_client[Architecture -- Downstream Client].
 
 | *WebSocket + HTTP/2 + gRPC + GraphQL in OSS, from the start*
-| Required from day one (link:adr/0002-initial-scope.adoc[ADR-0002]). gRPC rides on HTTP/2 and
+| Required from day one (<<_initial_scope,Initial Scope>>). gRPC rides on HTTP/2 and
   GraphQL on standard HTTP, so both are largely covered by the core HTTP path; WebSocket is a
   differentiator because it is enterprise-only in KrakenD, and full gRPC + WebSocket in OSS is
   a differentiator against KrakenD CE. HTTP/3 remains deferred (see below).
@@ -200,7 +200,7 @@ set of things well, with zero mandatory external dependencies.
 | *HTTP/3 / QUIC (initially)*
 | Only Traefik ships it production-ready; APISIX's is experimental with known CVEs. JVM
   HTTP/3 support is still thin. Revisit once Quarkus/JDK HTTP/3 matures. HTTP/1.1, HTTP/2,
-  WebSocket, gRPC, and GraphQL all ship now (link:adr/0002-initial-scope.adoc[ADR-0002]).
+  WebSocket, gRPC, and GraphQL all ship now (<<_initial_scope,Initial Scope>>).
 |===
 
 [[_differentiators]]
@@ -275,7 +275,7 @@ link:fapi_next_steps.adoc[FAPI 2.0 Next Steps] for what remains open.
   immutable config document from a well-known endpoint (`/api/gateway-config.json`) at startup,
   validates it, and boots against that snapshot -- multi-node coherence *without* Redis or Mongo.
   *Out of initial scope*: API Sheriff ships with *Static mode only*
-  (link:adr/0002-initial-scope.adoc[ADR-0002]); this remains the differentiating direction to
+  (<<_initial_scope,Initial Scope>>); this remains the differentiating direction to
   revisit later.
 |===
 
@@ -285,6 +285,42 @@ Secondary differentiators worth claiming:
 * *WebSocket in OSS* -- enterprise-only in KrakenD.
 * *First-class in-process security event system* feeding metrics/audit with no Elasticsearch
   dependency (see link:architecture.adoc#_event_system[Event System]).
+
+[[_initial_scope]]
+== Initial Scope
+
+The first release ships a fixed set of protocols and one configuration mode. This section is that
+scope statement. The per-protocol handling is in
+link:architecture.adoc#_protocol_support[Architecture -- Protocol Support], and the per-route
+`protocol` field is in link:configuration.adoc#_protocols[Configuration -- Protocols].
+
+=== Protocols
+
+* HTTP/1.1, HTTP/2, WebSocket, gRPC (gRPCS included) and GraphQL ship from the first release. The
+  original project manifest listed gRPC and HTTP/3 as optional. Product direction then made gRPC and
+  GraphQL required from day one.
+* gRPC rides on HTTP/2 and GraphQL on a standard HTTP `POST`, so the core HTTP transport covers most
+  of both. Only the handshake and streaming specifics need protocol-aware handling: the WebSocket
+  upgrade and gRPC streaming. No separate proxy engine exists.
+* HTTP/3 and QUIC are deferred. Production JVM support is thin, and among the evaluated gateways only
+  Traefik ships HTTP/3 production-ready. Revisit when Quarkus and JDK support matures.
+* The basic security filter reads HTTP metadata only. It inspects no protobuf frame and parses no
+  GraphQL query AST, so it enforces no query depth or cost limit. This is the "not a WAF" boundary.
+
+=== Configuration
+
+* The gateway ships Static mode only. Routes and rules are defined in local YAML, validated at
+  startup and frozen immutable. There is no discovery client, no polling and no well-known endpoint
+  to secure.
+* The manifest's Dynamic discovery mode (`/api/gateway-config.json`) is deferred. The
+  `metadata.config_version` field is kept as an audit stamp, so the model need not change when
+  discovery is added. It is logged at boot and exposed for traceability; no routing or security
+  behaviour reads it. Discovery stays a <<_differentiators,differentiator>> to revisit.
+
+Deferring HTTP/3 and dynamic configuration keeps the initial security-review surface small, in line
+with the lightweight posture this analysis argues for. The scope statement does not change BFF
+behaviour: for every BFF concern `TokenSheriff/doc/client` is the authority over the manifest (see
+link:variants/README.adoc[Variants] and link:architecture.adoc#_authentication_layer[Architecture]).
 
 == Summary Matrix
 

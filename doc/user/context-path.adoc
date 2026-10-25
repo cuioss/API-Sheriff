@@ -724,9 +724,9 @@ labels:
 ----
 
 This extends the derivation rule of
-link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031]
-rather than departing from it -- that ADR already requires the scheme to come from an explicit
-per-service label rather than from an inference, and the root path is the same kind of fact carried
+link:../development/integration-test-topology.adoc#readiness-gate-rules[the host-side readiness
+gates] rather than departing from it -- that rule already requires the scheme to come from an
+explicit per-service label rather than from an inference, and the root path is the same kind of fact carried
 the same way. The endpoint names *beneath* the derived root path (`/health`, `/health/ready`,
 `/health/live`, `/metrics`) are Quarkus' own fixed suffixes rather than deployment-bound values,
 which is why they alone stay spelled out in the consuming scripts.
