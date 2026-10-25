@@ -600,12 +600,6 @@ class GrpcDispatchStageTest {
         }
 
         /**
-         * Opens a call to the front server and records what comes back.
-         *
-         * @param path the gRPC method path the stub upstream answers by
-         * @return the open call; its request headers are sent with its first frame
-         */
-        /**
          * Pins that the stage enforces the route's request-body cap on a streamed body: a frame that
          * carries the running byte count past {@value #BODY_CAP_BYTES} bytes refuses the dispatch as
          * {@code CONTENT_TOO_LARGE} and is never forwarded, while the frame before it was. The call is
@@ -641,6 +635,12 @@ class GrpcDispatchStageTest {
                     () -> assertFalse(upstreamEnded.isDone(), "the request stream never ended at the upstream"));
         }
 
+        /**
+         * Opens a call to the front server and records what comes back.
+         *
+         * @param path the gRPC method path the stub upstream answers by
+         * @return the open call; its request headers are sent with its first frame
+         */
         private ClientCall open(String path) throws Exception {
             HttpClientRequest request = Awaits.connect(edgeClient.request(io.vertx.core.http.HttpMethod.POST,
                     frontServer.actualPort(), LoopbackHost.ADDRESS, path), "a call to the front server to open");
