@@ -521,11 +521,15 @@ abortively.* HTTP/1.1 cannot cancel one message, so resetting the upstream reque
 connection instead of returning it to the pool, and the next request to that upstream opens a new
 one. The gateway's HTTP/1.1 upstream client closes its connections with `SO_LINGER 0`: the close is a
 TCP reset, and the gateway's local port is free at once instead of being held in `TIME_WAIT` for a
-minute (see <<_downstream_client,Downstream Client>>). This reset is not a breaker failure. It happens
+minute (see <<_downstream_client,Downstream Client>>). The same abortive close ends the upstream
+connection on each of the four triggers a client can drive at rate: the early upstream answer, the
+client abort (<<_aborted_inbound_body>>), the request-body idle timeout of a partly sent body
+(<<_request_body_idle_timeout>>) and the request-body deadline (<<_request_body_deadline>>). This reset
+is not a breaker failure. It happens
 after the guarded dispatch call has returned, so the route's circuit breaker never sees it, and the
 `StreamResetException` it hands to the upstream request is dropped rather than logged at `ERROR`
-(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#amendment-a1[ADR-0066
-Amendment A1]).
+(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#abortive-upstream-close[ADR-0066
+-- the abortive upstream close]).
 
 [[_http2_connection_window]]
 *The inbound HTTP/2 connection window has room for every stream the listener admits at once.* An
@@ -678,8 +682,8 @@ circuit breaker skips it and the retry predicate refuses it. `INFO` `ApiSheriff-
 latched per route, and `sheriff_errors_total` counts every occurrence under
 `event="REQUEST_BODY_TIMEOUT"`. The 10 s value is a gateway constant, below the upstream guard's 30 s
 timeout, which bounds the dispatch until its response head arrives
-(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a1[ADR-0060
-Amendment A1]). A body that keeps arriving is bounded by the request-body deadline below.
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-idle-timeout[ADR-0060
+-- request-body idle timeout]). A body that keeps arriving is bounded by the request-body deadline below.
 
 [[_request_body_deadline]]
 *A request body that has not ended 25 s after its upstream attempt started is ended there.* A body
@@ -721,8 +725,8 @@ request again. A bodyless request and a route with `protocol: grpc` never arm it
 records it, latched per route, and `sheriff_errors_total` counts it under
 `event="REQUEST_BODY_TIMEOUT"`, the event the idle timeout carries. The 25 s value is a gateway
 constant with no configuration key or system property
-(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[ADR-0060
-Amendment A2]).
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[ADR-0060
+-- request-body deadline]).
 
 [[_grpc_stream_idle_bound]]
 *A gRPC call that carries no frame in either direction for five minutes is ended with
@@ -741,8 +745,8 @@ the client response is ended through the one end rule with the trailers `grpc-st
 `ApiSheriff-25` records it, latched per route; no error counter counts it. The call's `grpc-timeout`
 header is not honoured, and the value is a gateway constant with no configuration key or system
 property
-(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[ADR-0060
-Amendment A2]).
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-stream-idle-bound[ADR-0060
+-- gRPC stream-idle bound]).
 
 [[_http2_unread_upload_release]]
 *An HTTP/2 upload the gateway does not read returns its credit when its stream ends.* A body the
@@ -757,8 +761,9 @@ admission permit comes back at once, while every pooled connection is still held
 refusal is reset with `NO_ERROR`, never `REFUSED_STREAM`: the one end rule resets every answered
 stream whose body is still open with `NO_ERROR`, and a stream already answered with a written `503`
 has been answered
-(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[ADR-0060
-Amendment A2]).
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#unread-upload-bodies[ADR-0060
+-- unread upload bodies],
+link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
 
 [[_routing_matching]]
 === Routing / Matching
