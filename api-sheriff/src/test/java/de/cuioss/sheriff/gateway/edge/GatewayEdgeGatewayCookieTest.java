@@ -20,12 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,24 +46,17 @@ import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
-import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -76,9 +67,6 @@ import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -207,7 +195,7 @@ class GatewayEdgeGatewayCookieTest {
                     .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE).build())
                     .build();
             startFront(GatewayEdgeRouteBffWiringTest.activeRuntime(binding),
-                    GatewayConfig.builder().version(1).oidc(oidc).build(), allRoutes());
+                    ConfigFixtures.gateway().oidc(oidc).build(), allRoutes());
         }
 
         /** Binds a session whose login lies {@code secondsAgo} in the past and returns its request cookie. */
@@ -340,7 +328,7 @@ class GatewayEdgeGatewayCookieTest {
                             .backchannelPath(BACKCHANNEL_PATH).build())
                     .build();
             startFront(GatewayEdgeRouteBffWiringTest.activeRuntime(GatewayEdgeRouteBffWiringTest.serverBinding(store)),
-                    GatewayConfig.builder().version(1).oidc(oidc).build(), allRoutes());
+                    ConfigFixtures.gateway().oidc(oidc).build(), allRoutes());
         }
 
         private String login(String idToken) {
@@ -453,7 +441,7 @@ class GatewayEdgeGatewayCookieTest {
         @Test
         @DisplayName("allow: all — the session, login-binding and logout-state cookies are dropped; the upstream's own arrive on their own lines and in order")
         void dropsReservedCookiesAndRelaysTheRest() throws Exception {
-            startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
+            startFront(BffRuntime.inert(), ConfigFixtures.gateway().build(),
                     List.of(httpRoute("open", OPEN_ROUTE, Require.NONE, ALLOW_ALL)));
             upstreamSetsReservedCookiesAndItsOwn();
 
@@ -469,7 +457,7 @@ class GatewayEdgeGatewayCookieTest {
         @Test
         @DisplayName("default none — a route declaring no cookies block relays no upstream Set-Cookie line at all")
         void defaultNoneDropsEveryLine() throws Exception {
-            startFront(BffRuntime.inert(), GatewayConfig.builder().version(1).build(),
+            startFront(BffRuntime.inert(), ConfigFixtures.gateway().build(),
                     List.of(httpRoute("open", OPEN_ROUTE, Require.NONE, null)));
             upstreamSetsReservedCookiesAndItsOwn();
 
@@ -500,7 +488,7 @@ class GatewayEdgeGatewayCookieTest {
             store = GatewayEdgeRouteBffWiringTest.newStore();
             OidcConfig oidc = OidcConfig.builder().redirectUri(ORIGIN + "/auth/callback").build();
             startFront(GatewayEdgeRouteBffWiringTest.activeRuntime(GatewayEdgeRouteBffWiringTest.serverBinding(store)),
-                    GatewayConfig.builder().version(1).oidc(oidc).build(), allRoutes());
+                    ConfigFixtures.gateway().oidc(oidc).build(), allRoutes());
         }
 
         private String login() {
@@ -746,10 +734,8 @@ class GatewayEdgeGatewayCookieTest {
         return List.of(
                 httpRoute("session", SESSION_ROUTE, Require.SESSION, ALLOW_ALL),
                 httpRoute("open", OPEN_ROUTE, Require.NONE, ALLOW_ALL),
-                Route.builder()
-                        .id("session-grpc")
+                ConfigFixtures.route("session-grpc", GRPC_ROUTE)
                         .protocol(Protocol.GRPC)
-                        .match(MatchConfig.builder().pathPrefix(GRPC_ROUTE).build())
                         .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                         .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                         .effectiveCookies(ALLOW_ALL)
@@ -762,12 +748,8 @@ class GatewayEdgeGatewayCookieTest {
      *                which resolves the default {@code allow: none}
      */
     private Route httpRoute(String id, String pathPrefix, Require require, @Nullable CookiesConfig cookies) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+        return ConfigFixtures.route(id, pathPrefix)
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .effectiveCookies(cookies)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                 .build();
@@ -775,16 +757,8 @@ class GatewayEdgeGatewayCookieTest {
 
     private void startFront(BffRuntime runtime, GatewayConfig gatewayConfig, List<Route> routes)
             throws Exception {
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(routes), gatewayConfig,
-                new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
-                new SheriffMetrics(new SimpleMeterRegistry()), runtime, EgressTrustProfiles.unconsulted(),
-                PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(new RouteTable(routes))
+                .gatewayConfig(gatewayConfig).runtime(runtime).serve();
     }
 
     private HttpServer requireFront() {
@@ -847,65 +821,5 @@ class GatewayEdgeGatewayCookieTest {
     /** What the client saw of one edge response. */
     private record Answer(int status, List<String> cacheControl, List<String> setCookies,
     List<String> referrerPolicy, @Nullable String location, String body) {
-    }
-
-    /** Minimal {@link Instance} double resolving to one bean; the routes here never read it. */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

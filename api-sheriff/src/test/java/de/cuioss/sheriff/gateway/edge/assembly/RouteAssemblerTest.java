@@ -55,6 +55,7 @@ import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -136,14 +137,11 @@ class RouteAssemblerTest {
     }
 
     @Test
-    @DisplayName("Should reuse one client and one guard for routes sharing an upstream tuple and split by tuple")
+    @DisplayName("Should reuse one client and one guard for routes sharing an upstream tuple and split by tuple, the forced-h2 flag included")
     void shouldReuseClientForSharedUpstreamTuple() {
-        var clientInvocations = new AtomicInteger();
+        List<UpstreamTarget> requestedClients = new ArrayList<>();
         var guardInvocations = new AtomicInteger();
-        clientFactory = _ -> {
-            clientInvocations.incrementAndGet();
-            return vertx.createHttpClient();
-        };
+        clientFactory = capturingClientFactory(requestedClients);
         guardFactory = _ -> {
             guardInvocations.incrementAndGet();
             return new StoredOnlyGuard();
@@ -151,13 +149,18 @@ class RouteAssemblerTest {
         Route r1 = route("r1", Protocol.HTTP, Require.NONE, null, upstream("a.example"));
         Route r2 = route("r2", Protocol.HTTP, Require.NONE, null, upstream("a.example"));
         Route r3 = route("r3", Protocol.HTTP, Require.NONE, null, upstream("b.example"));
+        Route g1 = route("g1", Protocol.GRPC, Require.NONE, null, upstream("a.example"));
+        Route g2 = route("g2", Protocol.GRPC, Require.NONE, null, upstream("a.example"));
 
-        UpstreamClients clients = assemble(new RouteTable(List.of(r1, r2, r3))).upstreamClients();
+        UpstreamClients clients = assemble(new RouteTable(List.of(r1, r2, r3, g1, g2))).upstreamClients();
 
         HttpClient shared = clients.client(UpstreamTarget.of(r1)).orElseThrow();
+        HttpClient forcedH2 = clients.client(UpstreamTarget.of(g1)).orElseThrow();
+        UpstreamTarget plainTarget = UpstreamTarget.of(r1);
+        UpstreamTarget forcedTarget = UpstreamTarget.of(g1);
         assertAll("one client per upstream tuple and one guard per resilience shape",
-                () -> assertEquals(2, clientInvocations.get(), "Three routes over two tuples build two clients"),
-                () -> assertEquals(2, guardInvocations.get(), "Three routes over two shapes build two guards"),
+                () -> assertEquals(3, requestedClients.size(), "Five routes over three tuples build three clients"),
+                () -> assertEquals(3, guardInvocations.get(), "Five routes over three shapes build three guards"),
                 () -> assertSame(shared, clients.client(UpstreamTarget.of(r2)).orElseThrow(),
                         "Routes sharing an upstream tuple reuse one client"),
                 () -> assertNotSame(shared, clients.client(UpstreamTarget.of(r3)).orElseThrow(),
@@ -167,7 +170,17 @@ class RouteAssemblerTest {
                         "Routes sharing a resilience shape reuse one guard"),
                 () -> assertNotSame(clients.guard(ResilienceShape.of(r1)).orElseThrow(),
                         clients.guard(ResilienceShape.of(r3)).orElseThrow(),
-                        "A different resilience shape gets a distinct guard"));
+                        "A different resilience shape gets a distinct guard"),
+                () -> assertTrue(requestedClients.containsAll(List.of(plainTarget, forcedTarget)),
+                        "the client factory is asked for the plain and the forced-h2 tuple of the same upstream"),
+                () -> assertEquals(plainTarget.host(), forcedTarget.host(), "both tuples address the same host"),
+                () -> assertEquals(plainTarget.port(), forcedTarget.port(), "both tuples address the same port"),
+                () -> assertTrue(forcedTarget.forcedHttp2(), "the gRPC route's tuple is forced to HTTP/2"),
+                () -> assertFalse(plainTarget.forcedHttp2(), "the HTTP route's tuple is not forced to HTTP/2"),
+                () -> assertNotSame(shared, forcedH2,
+                        "a gRPC route gets a forced-h2 client distinct from the HTTP/1.1 client to the same host:port"),
+                () -> assertSame(forcedH2, clients.client(UpstreamTarget.of(g2)).orElseThrow(),
+                        "gRPC routes sharing a host:port reuse one forced-h2 client"));
     }
 
     @Test
@@ -193,86 +206,21 @@ class RouteAssemblerTest {
                 .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html"))
                 .build();
-        RouteTable table = new RouteTable(List.of(proxy, asset));
+        // A require:session route assembles like any other: its stage-4 runtime is the
+        // SessionAuthenticationStage, so boot keeps its posture for that runtime to dispatch on.
+        Route session = route("session", Protocol.HTTP, Require.SESSION, null, upstream("a.example"));
+        RouteTable table = new RouteTable(List.of(proxy, asset, session));
 
         List<Route> routes = assemble(table).routes();
 
         assertAll("only the boot-attached components differ from the table route",
                 () -> assertEquals(proxy, detachBootComponents(routes.getFirst()), "proxy route"),
                 () -> assertEquals(asset, detachBootComponents(routes.get(1)), "asset route"),
+                () -> assertEquals(session, detachBootComponents(routes.get(2)),
+                        "require:session route, its posture included"),
                 () -> assertNotNull(routes.getFirst().protocolProcessor(), "the processor is attached"),
                 () -> assertNotNull(routes.getFirst().securityConfiguration(), "the posture is attached"),
                 () -> assertNotNull(routes.get(1).assetSource(), "the asset source is attached"));
-    }
-
-    @Test
-    @DisplayName("Should assemble a require:session route now the boot-time rejection is removed (D4)")
-    void shouldAssembleSessionRoutes() {
-        // A require:session route now assembles like any other route — its stage-4 runtime is the
-        // SessionAuthenticationStage (D4), which replaced the boot-time CONFIG_INVALID rejection.
-        RouteTable sessionTable = new RouteTable(List.of(
-                route("s", Protocol.HTTP, Require.SESSION, null, upstream("a.example"))));
-        RouteAssembler.AssembledRoutes sessionRoutes = assertDoesNotThrow(
-                () -> assemble(sessionTable),
-                "a require:session route assembles now the boot-time rejection is removed");
-        assertEquals(Require.SESSION, sessionRoutes.routes().getFirst().effectiveAuth().require(),
-                "the assembled route keeps its require:session posture for the stage-4 runtime to dispatch on");
-
-        // A session-auth WebSocket route likewise assembles — session auth no longer gates boot, so
-        // it is treated exactly like any other WebSocket route. Each remaining leg asserts on the
-        // route it produced rather than on the absence of a throw: an assemble() that quietly
-        // dropped the route would return an empty list and satisfy a bare no-throw assertion.
-        RouteTable webSocketSessionTable = new RouteTable(List.of(
-                route("sw", Protocol.WEBSOCKET, Require.SESSION, null, upstream("a.example"))));
-        Route webSocketSession = assemble(webSocketSessionTable).routes().getFirst();
-        assertEquals("sw", webSocketSession.id(),
-                "the session-auth WebSocket route reaches the assembled table");
-        assertEquals(Require.SESSION, webSocketSession.effectiveAuth().require(),
-                "and keeps its require:session posture for the stage-4 runtime to dispatch on");
-
-        // A gRPC route with non-session auth assembles cleanly — and asks for a forced-h2 upstream
-        // client. The observable that proves the gRPC branch ran is the UpstreamTarget handed to the
-        // client factory, whose forcedHttp2 flag the assembler sets exactly for Protocol.GRPC.
-        // Capturing it is what makes this leg discriminating: the shared clientFactory discards its
-        // target and never returns null, so asserting only that a client came back would hold whether
-        // or not forced-h2 was ever requested.
-        List<UpstreamTarget> grpcTargets = new ArrayList<>();
-        RouteTable grpcTable = new RouteTable(List.of(
-                route("g", Protocol.GRPC, Require.NONE, null, upstream("a.example"))));
-        RouteAssembler.AssembledRoutes grpcAssembly = assembler.assemble(grpcTable, securityConfigFactory,
-                capturingClientFactory(grpcTargets), guardFactory, assetSourceFactory);
-        Route grpc = grpcAssembly.routes().getFirst();
-        assertEquals("g", grpc.id(), "the gRPC route reaches the assembled table");
-        assertTrue(grpcAssembly.upstreamClients().client(UpstreamTarget.of(grpc)).isPresent(),
-                "a gRPC route is served by the forced-h2 upstream client");
-        assertEquals(1, grpcTargets.size(), "the gRPC route resolves exactly one upstream client");
-        assertTrue(grpcTargets.getFirst().forcedHttp2(),
-                "the gRPC route asks the client factory for a forced-h2 client");
-
-        // An HTTP route is the matched negative control for the forced-h2 assertion above: the
-        // identical capture over a non-gRPC dispatched route must report forcedHttp2() == false, so
-        // that assertion is pinned to the protocol rather than passing for every route the assembler
-        // builds a client for.
-        List<UpstreamTarget> httpTargets = new ArrayList<>();
-        RouteTable httpTable = new RouteTable(List.of(
-                route("h", Protocol.HTTP, Require.NONE, null, upstream("a.example"))));
-        assembler.assemble(httpTable, securityConfigFactory, capturingClientFactory(httpTargets), guardFactory,
-                assetSourceFactory);
-        assertEquals(1, httpTargets.size(), "the HTTP route resolves exactly one upstream client");
-        assertFalse(httpTargets.getFirst().forcedHttp2(),
-                "a non-gRPC route asks for a plain client, never a forced-h2 one");
-
-        // A WebSocket route with non-session auth likewise assembles cleanly — and, being dialed by the
-        // edge-wide WebSocket client, asks the client factory for nothing at all (Defect 12).
-        List<UpstreamTarget> webSocketTargets = new ArrayList<>();
-        RouteTable webSocketNoneTable = new RouteTable(List.of(
-                route("w", Protocol.WEBSOCKET, Require.NONE, null, upstream("a.example"))));
-        Route webSocketNone = assembler.assemble(webSocketNoneTable, securityConfigFactory,
-                capturingClientFactory(webSocketTargets), guardFactory, assetSourceFactory).routes().getFirst();
-        assertEquals("w", webSocketNone.id(), "the WebSocket route reaches the assembled table");
-        assertEquals(Require.NONE, webSocketNone.effectiveAuth().require(),
-                "and carries its declared require:none posture");
-        assertTrue(webSocketTargets.isEmpty(), "the WebSocket route requests no upstream client");
     }
 
     @Test
@@ -296,7 +244,12 @@ class RouteAssemblerTest {
 
         UpstreamClients clients = assembled.upstreamClients();
         assertAll("the WebSocket relay dials through the edge-wide WebSocket client",
-                () -> assertEquals(2, assembled.routes().size(), "both WebSocket routes are assembled"),
+                () -> assertEquals(List.of("ws", "ws-session"), assembled.routes().stream().map(Route::id).toList(),
+                        "both WebSocket routes are assembled"),
+                () -> assertEquals(Require.NONE, assembled.routes().getFirst().effectiveAuth().require(),
+                        "the WebSocket route carries its declared require:none posture"),
+                () -> assertEquals(Require.SESSION, assembled.routes().get(1).effectiveAuth().require(),
+                        "the session-auth WebSocket route keeps its require:session posture for the stage-4 runtime"),
                 () -> assertTrue(clients.clients().isEmpty(), "no upstream client is held for a WebSocket route"),
                 () -> assertTrue(clients.guards().isEmpty(), "no resilience guard is held for a WebSocket route"),
                 () -> assertTrue(clients.client(UpstreamTarget.of(webSocket)).isEmpty(),
@@ -338,9 +291,15 @@ class RouteAssemblerTest {
                 securityConfigFactory, capturingClientFactory(requestedClients), guardFactory, assetSourceFactory);
 
         boolean needsClient = DispatchPath.of(protocol).usesDispatchStage();
+        // The forced-h2 flag on the requested tuple is the observable that proves the gRPC branch ran:
+        // the factory discards its target and never returns null, so a client coming back alone would
+        // hold whether or not forced-h2 was ever requested. Every other protocol is its negative control.
         assertAll("the assembler and the dispatch switch read the same split for " + protocol,
-                () -> assertEquals(needsClient, !requestedClients.isEmpty(),
-                        "a client is requested exactly for a DispatchStage path"),
+                () -> assertEquals(needsClient ? 1 : 0, requestedClients.size(),
+                        "exactly one client is requested for a DispatchStage path, none otherwise"),
+                () -> assertEquals(protocol == Protocol.GRPC,
+                        requestedClients.stream().anyMatch(UpstreamTarget::forcedHttp2),
+                        "a forced-h2 client is requested exactly for a gRPC route"),
                 () -> assertEquals(needsClient,
                         assembled.upstreamClients().guard(ResilienceShape.of(proxy)).isPresent(),
                         "a guard is held exactly for a DispatchStage path"));
@@ -363,9 +322,8 @@ class RouteAssemblerTest {
     @DisplayName("Should carry the needed scopes from the resolved route")
     void shouldCarryNeededScopes() {
         AuthConfig auth = AuthConfig.builder().require(Require.BEARER).build();
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("scoped").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/s").build())
-                .effectiveAuth(auth).effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("scoped", "/s")
+                .effectiveAuth(auth)
                 .neededScopes(Set.of("openid", "read", "write"))
                 .upstream(upstream("a.example")).build()));
 
@@ -378,10 +336,8 @@ class RouteAssemblerTest {
     @Test
     @DisplayName("Should carry an empty needed-scope set for a route needing no scope")
     void shouldCarryEmptyNeededScopes() {
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("open").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/o").build())
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("open", "/o")
                 .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(upstream("a.example")).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -394,10 +350,7 @@ class RouteAssemblerTest {
     void shouldCarryEffectiveForward() {
         ForwardConfig forward = ForwardConfig.builder().headersAllow(List.of("Accept"))
                 .queryAllow(List.of("page")).setHeaders(Map.of("X-Gateway", "api-sheriff")).build();
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("fwd", "/f")
                 .upstream(upstream("a.example")).effectiveForward(forward).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -411,10 +364,7 @@ class RouteAssemblerTest {
     void shouldCarryEffectiveForwardDenyLists() {
         ForwardConfig forward = ForwardConfig.builder().headersDeny(List.of("X-Internal"))
                 .queryDeny(List.of("debug")).setHeaders(Map.of()).build();
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("deny").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/d").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("deny", "/d")
                 .upstream(upstream("a.example")).effectiveForward(forward).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -444,16 +394,10 @@ class RouteAssemblerTest {
     void shouldCarryResolvedSecurityHeaders() {
         SecurityHeadersConfig anchorBlock = SecurityHeadersConfig.builder()
                 .frameDeny(true).contentSecurityPolicy("default-src 'self'").build();
-        Route proxy = Route.builder()
-                .id("proxy").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/p").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        Route proxy = ConfigFixtures.route("proxy", "/p")
                 .securityHeaders(anchorBlock)
                 .upstream(upstream("a.example")).build();
-        Route asset = Route.builder()
-                .id("asset").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/a").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        Route asset = ConfigFixtures.route("asset", "/a")
                 .securityHeaders(anchorBlock)
                 .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html")).build();
         Route redirect = Route.builder()
@@ -481,18 +425,10 @@ class RouteAssemblerTest {
         ResolvedUpstream effectiveUpstream = new ResolvedUpstream("https", "a.example", 443, "/svc/v1");
         LocationRewriter rewriter = new LocationRewriter(effectiveUpstream, "/api", false);
         RouteTable table = new RouteTable(List.of(
-                Route.builder()
-                        .id("rewritten").protocol(Protocol.HTTP)
-                        .match(MatchConfig.builder().pathPrefix("/api").build())
-                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                ConfigFixtures.route("rewritten", "/api")
                         .locationRewriter(rewriter)
                         .upstream(effectiveUpstream).build(),
-                Route.builder()
-                        .id("verbatim").protocol(Protocol.HTTP)
-                        .match(MatchConfig.builder().pathPrefix("/other").build())
-                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                ConfigFixtures.route("verbatim", "/other")
                         .upstream(effectiveUpstream).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -512,11 +448,7 @@ class RouteAssemblerTest {
     @Test
     @DisplayName("Should assemble an asset route with a live source and no client or guard")
     void shouldAssembleAssetRouteWithoutClientOrGuard() {
-        Route assetRoute = Route.builder()
-                .id("bundle").protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/assets").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        Route assetRoute = ConfigFixtures.route("bundle", "/assets")
                 .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html"))
                 .build();
         RouteTable table = new RouteTable(List.of(assetRoute));
@@ -681,12 +613,9 @@ class RouteAssemblerTest {
 
     private static Route route(String id, Protocol protocol, Require require,
             @Nullable SecurityFilterConfig filter, ResolvedUpstream upstream) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, "/" + id)
                 .protocol(protocol)
-                .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .effectiveSecurityFilter(filter)
                 .upstream(upstream)
                 .build();

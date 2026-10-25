@@ -289,7 +289,7 @@ page for a navigation and as a problem document for JSON.
 `HtmlErrorPageIT.unreachableUpstream` now asserts `502` alone, where it accepted any of three
 statuses. The open-circuit leg found the `Retry-After` header the architecture document promises
 missing from the answer. By operator decision the gateway was corrected to send it, and
-`GatewayEdgeRouteRetryAfterTest` holds that at unit level.
+`ErrorResponseWriterTest` holds that at unit level.
 
 |M-52
 |With both relaxations, a full login, a mediated call and a refresh succeed against an identity

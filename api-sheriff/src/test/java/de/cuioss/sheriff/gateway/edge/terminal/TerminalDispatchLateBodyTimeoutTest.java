@@ -20,27 +20,81 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
+import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
+import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
+import de.cuioss.sheriff.gateway.edge.assembly.UpstreamTarget;
 import de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement;
+import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
+import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
+import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
+import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
+import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
+import de.cuioss.sheriff.gateway.edge.relay.WebSocketRelayStage;
+import de.cuioss.sheriff.gateway.edge.upstream.DispatchStage;
+import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
 import de.cuioss.sheriff.gateway.events.EventType;
+import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
+import de.cuioss.sheriff.gateway.forward.ForwardPolicyStage;
+import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.FramingGate;
+import de.cuioss.sheriff.gateway.pipeline.OriginValidationStage;
+import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
+import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
+import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
+import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpConnection;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
+import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetSocket;
+import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -60,10 +114,13 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The retirement of the connection after such a timeout is recorded from the upstream request's event
  * loop, so it touches only the synchronized retired set; the failed relay's end learns of it from the
- * late refusal's event, and neither side reads or writes the request's context data for it. The fake
- * routing context counts every context-data access, so a case sees whether the map was touched.
+ * late refusal's event, and neither side writes the request's context data from an event loop or reads
+ * a retirement mark from it. {@link ThroughTheDispatchPath} drives that through the dispatch path
+ * itself, over a live stub upstream and an observed routing context; the HTTP/2 counterparts and the
+ * marked-request case drive the retirement calls against fakes.
  */
 @DisplayName("TerminalDispatch — the connection close and the answer after a request body outlived its deadline")
+@Tag("isolated-fork")
 class TerminalDispatchLateBodyTimeoutTest {
 
     private static final String CONTENT_LENGTH = "Content-Length";
@@ -143,19 +200,6 @@ class TerminalDispatchLateBodyTimeoutTest {
     }
 
     @Test
-    @DisplayName("HTTP/1.x — a late request-body timeout is recorded in the retired set without writing the request's context data")
-    void lateTimeoutRetirementLeavesTheContextDataAlone() {
-        RetiringExchange exchange = new RetiringExchange(HttpVersion.HTTP_1_1, false);
-        ConnectionRetirement retirement = new ConnectionRetirement(new FramingGate(false));
-
-        retirement.recordRetirement(exchange.routingContext());
-
-        assertAll("the retirement a foreign event loop records",
-                () -> assertTrue(retirement.isRetired(exchange.connection()), "the connection is retired"),
-                () -> assertEquals(0, exchange.contextWrites.get(), "the context data map is not written"));
-    }
-
-    @Test
     @DisplayName("HTTP/2 — a late request-body timeout retires no connection: only the stream ends")
     void lateTimeoutOnHttp2RetiresNothing() {
         RetiringExchange exchange = new RetiringExchange(HttpVersion.HTTP_2, false);
@@ -164,38 +208,6 @@ class TerminalDispatchLateBodyTimeoutTest {
         retirement.recordRetirement(exchange.routingContext());
 
         assertFalse(retirement.isRetired(exchange.connection()), "an HTTP/2 connection is never retired");
-    }
-
-    @Test
-    @DisplayName("HTTP/1.x — the failed relay's answer after a late request-body timeout carries Connection: close and closes the connection")
-    void failedRelayAfterLateTimeoutClosesTheConnection() {
-        RetiringExchange exchange = new RetiringExchange(HttpVersion.HTTP_1_1, false);
-
-        TerminalDispatch.retireFailedRelayConnection(exchange.routingContext(), EventType.REQUEST_BODY_TIMEOUT);
-        int closedBeforeTheEnd = exchange.closes.get();
-        exchange.endHandlers.forEach(handler -> handler.handle(null));
-
-        assertAll("a late request-body timeout on an HTTP/1.x relay",
-                () -> assertEquals(List.of("close"), exchange.connectionHeaders,
-                        "the unwritten head advertises Connection: close"),
-                () -> assertEquals(1, exchange.endHandlers.size(), "the close is tied to the end of the response"),
-                () -> assertEquals(0, closedBeforeTheEnd, "nothing is closed before the response has been written"),
-                () -> assertEquals(1, exchange.closes.get(), "the connection is closed once the response has ended"),
-                () -> assertEquals(0, exchange.contextReads.get(),
-                        "the late timeout is told by its event, not by a mark in the context data"));
-    }
-
-    @Test
-    @DisplayName("HTTP/1.x — a late request-body timeout on a response whose head is written: the connection is still closed at the end")
-    void failedRelayAfterLateTimeoutWithWrittenHeadStillCloses() {
-        RetiringExchange exchange = new RetiringExchange(HttpVersion.HTTP_1_1, true);
-
-        TerminalDispatch.retireFailedRelayConnection(exchange.routingContext(), EventType.REQUEST_BODY_TIMEOUT);
-        exchange.endHandlers.forEach(handler -> handler.handle(null));
-
-        assertAll("a late request-body timeout after the head went out",
-                () -> assertEquals(List.of(), exchange.connectionHeaders, "a written head is not changed"),
-                () -> assertEquals(1, exchange.closes.get(), "the connection is closed once the response has ended"));
     }
 
     @Test
@@ -228,18 +240,285 @@ class TerminalDispatchLateBodyTimeoutTest {
     }
 
     /**
+     * The late request-body timeout of a proxied HTTP/1.1 upload, run through
+     * {@link TerminalDispatch#dispatchAndRelay} against a live stub upstream that answers at once, with a
+     * request body that trickles past a short request-body deadline: the late refusal, the retirement it
+     * records and the failed relay that follows are the dispatch path's own, not called by the cases.
+     * <p>
+     * The routing context the dispatch is handed delegates to the real one and observes it: every
+     * context-data write made from an event-loop thread — the late callback runs on the upstream
+     * request's loop, the failed relay on the client connection's — every lookup of a key nothing had
+     * stashed, which is how a retirement mark an earlier rejection leaves would be read, and every end
+     * handler registered on it.
+     * <p>
+     * The dispatch runs under the test-only {@link EdgeHardeningOptions} constructor with a
+     * {@value #IDLE_TIMEOUT_MILLIS} ms idle timeout and a {@value #BODY_DEADLINE_MILLIS} ms request-body
+     * deadline in place of the fixed 10 s and 25 s; the body trickles faster than the idle timeout, so only
+     * the deadline ends it.
+     */
+    @Nested
+    @DisplayName("HTTP/1.x — a late request-body timeout through the dispatch path")
+    class ThroughTheDispatchPath {
+
+        private static final long IDLE_TIMEOUT_MILLIS = 300L;
+        private static final long BODY_DEADLINE_MILLIS = 2 * IDLE_TIMEOUT_MILLIS;
+        private static final long TRICKLE_INTERVAL_MILLIS = IDLE_TIMEOUT_MILLIS / 3;
+        /** How long the body trickles before it is ended: far past the deadline. */
+        private static final long TRICKLE_MILLIS = 10 * BODY_DEADLINE_MILLIS;
+        /** The upstream path the stub answers at once with its head alone. */
+        private static final String HEAD_ONLY = "/head-only";
+        /** The upstream path the stub answers at once with its head and a first chunk. */
+        private static final String STREAMING = "/streaming";
+        private static final String ROUTE_ID = "up";
+        private static final String ANSWER = "ok";
+        private static final String CRLF = "\r\n";
+        private static final String CONNECTION_CLOSE = CRLF + "connection: close";
+        /** The timeout of the stand-in guard: longer than any case, so no case is ended by the guard. */
+        private static final long GUARD_SECONDS = 30L;
+
+        private final AtomicReference<HttpConnection> clientConnection = new AtomicReference<>();
+        private final AtomicReference<ObservedContext> observed = new AtomicReference<>();
+        private Vertx vertx;
+        private HttpServer upstreamServer;
+        private HttpServer frontServer;
+        private HttpClient upstreamClient;
+        private NetClient netClient;
+        private ConnectionRetirement connectionRetirement;
+        private TerminalDispatch terminalDispatch;
+        private Route route;
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            upstreamServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions().setHttp2ClearTextEnabled(false))
+                    .requestHandler(this::answerAtOnce)
+                    .listen(0, LoopbackHost.ADDRESS), "the stub upstream to start listening");
+            upstreamClient = vertx.createHttpClient(new HttpClientOptions());
+            route = ConfigFixtures.route(ROUTE_ID, "/" + ROUTE_ID)
+                    .effectiveAllowedMethods(Set.of(HttpMethod.POST))
+                    .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
+                    .build();
+            connectionRetirement = new ConnectionRetirement(new FramingGate(false));
+            terminalDispatch = terminalDispatch();
+            Router front = Router.router(vertx);
+            front.route().handler(this::dispatchThroughTheEdge);
+            frontServer = Awaits.connect(vertx.createHttpServer(new HttpServerOptions())
+                    .requestHandler(front)
+                    .listen(0, LoopbackHost.ADDRESS), "the front server to start listening");
+            netClient = vertx.createNetClient();
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(netClient.close(), "the raw TCP client to close");
+            Awaits.teardown(upstreamClient.close(), "the upstream client to close");
+            Awaits.teardown(frontServer.close(), "the front server to close");
+            Awaits.teardown(upstreamServer.close(), "the stub upstream to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        @Test
+        @DisplayName("a late request-body timeout is recorded in the retired set without writing the request's context data from an event loop")
+        void lateTimeoutRetirementLeavesTheContextDataAlone() throws Exception {
+            String exchange = trickleUntilClosed(HEAD_ONLY);
+            ObservedContext context = observed.get();
+
+            assertAll("the retirement the late request-body timeout records",
+                    () -> assertTrue(exchange.startsWith("HTTP/1.1 200 "),
+                            () -> "the status the upstream sent stands: " + exchange),
+                    () -> assertTrue(connectionRetirement.isRetired(clientConnection.get()), "the connection is retired"),
+                    () -> assertEquals(0, context.writesOnAnEventLoop.get(),
+                            "the context data map is not written from an event loop"));
+        }
+
+        @Test
+        @DisplayName("the failed relay's answer after a late request-body timeout carries Connection: close and closes the connection")
+        void failedRelayAfterLateTimeoutClosesTheConnection() throws Exception {
+            String exchange = trickleUntilClosed(HEAD_ONLY);
+            ObservedContext context = observed.get();
+            String head = headOf(exchange);
+
+            assertAll("a late request-body timeout on an HTTP/1.x relay whose head was not written",
+                    () -> assertTrue(exchange.startsWith("HTTP/1.1 200 "),
+                            () -> "the status the upstream sent stands: " + exchange),
+                    () -> assertEquals(1, head.split(CONNECTION_CLOSE, -1).length - 1,
+                            () -> "the unwritten head advertises Connection: close once: " + exchange),
+                    () -> assertTrue(exchange.endsWith("0" + CRLF + CRLF),
+                            () -> "the answer is written whole before the connection closes: " + exchange),
+                    () -> assertEquals(1, context.endHandlers.get(), "the close is tied to the end of the response"),
+                    () -> assertEquals(0, context.absentLookups.get(),
+                            "the late timeout is told by its event, not by a mark in the context data"));
+        }
+
+        @Test
+        @DisplayName("a late request-body timeout on a response whose head is written: the connection is still closed at the end")
+        void failedRelayAfterLateTimeoutWithWrittenHeadStillCloses() throws Exception {
+            String exchange = trickleUntilClosed(STREAMING);
+            String head = headOf(exchange);
+
+            assertAll("a late request-body timeout after the head went out",
+                    () -> assertTrue(exchange.startsWith("HTTP/1.1 200 "),
+                            () -> "the head the upstream sent stands: " + exchange),
+                    () -> assertFalse(head.contains(CONNECTION_CLOSE),
+                            () -> "a written head is not changed: " + exchange),
+                    () -> assertTrue(exchange.contains(ANSWER),
+                            () -> "what the upstream sent before the deadline is relayed: " + exchange));
+        }
+
+        /**
+         * Answers every request at once — with its head alone under {@value #HEAD_ONLY}, with its head and
+         * a first chunk otherwise — and ends the answer only when the request body has ended.
+         */
+        private void answerAtOnce(HttpServerRequest request) {
+            HttpServerResponse response = request.response().setChunked(true);
+            request.handler(chunk -> {
+                // Read and discard: the body is observed only by whether it ends.
+            });
+            request.exceptionHandler(failure -> {
+                // The gateway resets the upstream request at the deadline.
+            });
+            request.endHandler(end -> response.end());
+            if (request.path().startsWith(HEAD_ONLY)) {
+                response.writeHead();
+            } else {
+                response.write(ANSWER);
+            }
+        }
+
+        /**
+         * The front server's handler: arms the request body and captures the client connection's context
+         * as the edge root does, then dispatches the upload through {@link TerminalDispatch#dispatchAndRelay}
+         * on a virtual thread, handing it an observed routing context.
+         */
+        private void dispatchThroughTheEdge(RoutingContext ctx) {
+            ctx.request().pause();
+            ctx.put(ResponseEnds.INBOUND_BODY_KEY, DispatchStage.InboundBody.arm(ctx.request()));
+            ctx.put(TerminalDispatch.CLIENT_CONTEXT_KEY, vertx.getOrCreateContext());
+            ctx.put(RejectionReporter.ROUTE_KEY, ROUTE_ID);
+            clientConnection.set(ctx.request().connection());
+            ObservedContext context = new ObservedContext(ctx);
+            observed.set(context);
+            String path = ctx.request().path();
+            PipelineRequest request = PipelineRequest.builder().method(HttpMethod.POST).requestPath(path)
+                    .declaredContentLength(-1L).bodyPresent(true).build();
+            request.canonicalPath(path);
+            ForwardPolicyStage.Result forward = new ForwardPolicyStage.Result(Map.of(), List.of());
+            Thread.ofVirtual().start(() -> terminalDispatch.dispatchAndRelay(context.proxy(), request, route, forward));
+        }
+
+        /**
+         * Sends a chunked upload to {@code upstreamPath} on route {@value #ROUTE_ID}, one chunk every
+         * {@value #TRICKLE_INTERVAL_MILLIS} ms, until the edge closes the connection.
+         *
+         * @return every byte the client received before the close
+         */
+        private String trickleUntilClosed(String upstreamPath) throws Exception {
+            NetSocket socket = Awaits.connect(netClient.connect(frontServer.actualPort(), LoopbackHost.ADDRESS),
+                    "the raw TCP client to connect to the front server");
+            Buffer received = Buffer.buffer();
+            CompletableFuture<String> closed = new CompletableFuture<>();
+            socket.handler(received::appendBuffer);
+            socket.closeHandler(end -> closed.complete(received.toString()));
+            socket.write("POST /" + ROUTE_ID + upstreamPath + " HTTP/1.1" + CRLF + "Host: localhost:"
+                    + frontServer.actualPort() + CRLF + "Transfer-Encoding: chunked" + CRLF + CRLF);
+            long startNanos = System.nanoTime();
+            vertx.setPeriodic(TRICKLE_INTERVAL_MILLIS, timer -> {
+                if (closed.isDone()) {
+                    vertx.cancelTimer(timer);
+                } else if (System.nanoTime() - startNanos >= TimeUnit.MILLISECONDS.toNanos(TRICKLE_MILLIS)) {
+                    vertx.cancelTimer(timer);
+                    socket.write("0" + CRLF + CRLF);
+                } else {
+                    socket.write("1" + CRLF + "x" + CRLF);
+                }
+            });
+            return Awaits.connect(closed, "the edge to close the connection of the trickling upload");
+        }
+
+        /** The terminal actions over the fixture's short request-body bounds and the stub upstream. */
+        private TerminalDispatch terminalDispatch() {
+            GatewayEventCounter eventCounter = new GatewayEventCounter();
+            UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(eventCounter);
+            EdgeHardeningOptions hardening = new EdgeHardeningOptions(EdgeHardeningConfig.defaults(),
+                    IDLE_TIMEOUT_MILLIS, BODY_DEADLINE_MILLIS);
+            SheriffMetrics metrics = new SheriffMetrics(new SimpleMeterRegistry());
+            RejectionReporter rejectionReporter = new RejectionReporter(eventCounter, metrics,
+                    hardening.requestBodyIdleTimeoutMillis(), hardening.requestBodyDeadlineMillis());
+            UpstreamTarget target = UpstreamTarget.of(route);
+            Guard guard = Guard.create().withTimeout().duration(GUARD_SECONDS, ChronoUnit.SECONDS).done().build();
+            UpstreamClients clients = new UpstreamClients(Map.of(target, upstreamClient),
+                    Map.of(new ResilienceShape(target, route.retryEnabled()), guard));
+            return new TerminalDispatch(clients, 1024L * 1024L, hardening, failureMapper, metrics, eventCounter,
+                    BffRuntime.inert(), new EdgeAdmission(hardening), connectionRetirement, rejectionReporter,
+                    new ErrorResponseWriter(PortalEndpoint.inert(), new GatewayJson(new ObjectMapper()),
+                            new GrpcStatusMapper(), rejectionReporter),
+                    new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build())),
+                    new OriginValidationStage(),
+                    new WebSocketRelayStage(vertx.createWebSocketClient(), failureMapper, eventCounter,
+                            WebSocketRelayStage.RelayObserver.NO_OP));
+        }
+
+        /** The response head of a raw exchange, lower-cased, without the blank line that ends it. */
+        private static String headOf(String exchange) {
+            return exchange.substring(0, Math.max(0, exchange.indexOf(CRLF + CRLF))).toLowerCase(Locale.ROOT);
+        }
+    }
+
+    /**
+     * A routing context that delegates every call to a real one and observes it: the context-data writes
+     * made from an event-loop thread, the lookups of a key the context holds no value for, and the end
+     * handlers registered on it.
+     */
+    private static final class ObservedContext {
+
+        private final RoutingContext delegate;
+        private final RoutingContext proxy;
+        private final AtomicInteger writesOnAnEventLoop = new AtomicInteger();
+        private final AtomicInteger absentLookups = new AtomicInteger();
+        private final AtomicInteger endHandlers = new AtomicInteger();
+
+        ObservedContext(RoutingContext delegate) {
+            this.delegate = delegate;
+            this.proxy = RoutingContext.class.cast(Proxy.newProxyInstance(RoutingContext.class.getClassLoader(),
+                    new Class<?>[]{RoutingContext.class}, this::observe));
+        }
+
+        RoutingContext proxy() {
+            return proxy;
+        }
+
+        private @Nullable Object observe(Object self, Method method, Object @Nullable [] args) throws Throwable {
+            String name = method.getName();
+            if ("put".equals(name) && Context.isOnEventLoopThread()) {
+                writesOnAnEventLoop.incrementAndGet();
+            } else if ("addEndHandler".equals(name)) {
+                endHandlers.incrementAndGet();
+            }
+            Object result;
+            try {
+                result = method.invoke(delegate, args);
+            } catch (InvocationTargetException failure) {
+                throw failure.getCause();
+            }
+            if ("get".equals(name) && result == null) {
+                absentLookups.incrementAndGet();
+            }
+            // put returns the context itself; hand back the observed one so chained calls stay observed.
+            return result == delegate ? self : result;
+        }
+    }
+
+    /**
      * A request on a fake connection and its routing context: the HTTP version, whether the response head
-     * has been written, the {@code Connection} headers put on it, the handlers registered for its end, the
-     * closes of the connection, and how often the context data map is written or read. A context datum
-     * reads as the retirement mark exactly when {@link #markedForRetirement} is set.
+     * has been written, the {@code Connection} headers put on it, the handlers registered for its end and
+     * the closes of the connection. A context datum reads as the retirement mark exactly when
+     * {@link #markedForRetirement} is set; a write to the context data fails the case.
      */
     private static final class RetiringExchange {
 
         private final HttpVersion version;
         private final boolean headWritten;
         private final AtomicInteger closes = new AtomicInteger();
-        private final AtomicInteger contextWrites = new AtomicInteger();
-        private final AtomicInteger contextReads = new AtomicInteger();
         private final List<String> connectionHeaders = new ArrayList<>();
         private final List<Handler<AsyncResult<Void>>> endHandlers = new ArrayList<>();
         private boolean markedForRetirement;
@@ -277,14 +556,7 @@ class TerminalDispatchLateBodyTimeoutTest {
             return fake(RoutingContext.class, (name, args) -> switch (name) {
                 case "request" -> request;
                 case "response" -> response;
-                case "put" -> {
-                    contextWrites.incrementAndGet();
-                    yield null;
-                }
-                case "get" -> {
-                    contextReads.incrementAndGet();
-                    yield markedForRetirement ? Boolean.TRUE : null;
-                }
+                case "get" -> markedForRetirement ? Boolean.TRUE : null;
                 case "addEndHandler" -> {
                     @SuppressWarnings("unchecked") // the fake hands back what the caller registered
                     Handler<AsyncResult<Void>> handler = (Handler<AsyncResult<Void>>) args[0];

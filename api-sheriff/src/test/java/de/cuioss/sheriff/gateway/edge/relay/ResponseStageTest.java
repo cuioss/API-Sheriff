@@ -29,13 +29,13 @@ import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
@@ -54,6 +54,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("ResponseStage — stage 7 streamed response header policy")
@@ -61,7 +62,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ResponseStageTest {
 
     /** The gateway cookies of a gateway without an {@code oidc} block: the reserved prefix alone. */
-    private static final GatewayCookies RESERVED_ONLY = GatewayCookies.of(GatewayConfig.builder().version(1).build());
+    private static final GatewayCookies RESERVED_ONLY = GatewayCookies.of(ConfigFixtures.gateway().build());
 
     @ParameterizedTest
     @ValueSource(longs = {0L, -1L})
@@ -104,22 +105,6 @@ class ResponseStageTest {
     @Nested
     @DisplayName("conditional-response headers gated by not_modified")
     class ConditionalHeaders {
-
-        @ParameterizedTest
-        @ValueSource(strings = {"ETag", "Last-Modified"})
-        @DisplayName("relays validators untouched when the route enables not_modified")
-        void relaysValidatorsWhenEnabled(String header) {
-            assertTrue(ResponseStage.isForwardableResponseHeader(header, true),
-                    header + " must relay on a not_modified-enabled route (304 pass-through)");
-        }
-
-        @ParameterizedTest
-        @ValueSource(strings = {"ETag", "Last-Modified"})
-        @DisplayName("strips validators when the route disables not_modified")
-        void stripsValidatorsWhenDisabled(String header) {
-            assertFalse(ResponseStage.isForwardableResponseHeader(header, false),
-                    header + " must be stripped on a not_modified-disabled route");
-        }
 
         @ParameterizedTest
         @ValueSource(strings = {"ETag", "Last-Modified"})
@@ -170,22 +155,16 @@ class ResponseStageTest {
                     header + " must be mapped onto the route's match key on an opted-in route");
         }
 
-        @Test
-        @DisplayName("relays an upstream Location unchanged when the route does not opt in")
-        void relaysLocationUnchangedWhenDisabled() {
-            String location = "https://backend:8443/svc/v1/items?id=7";
-
+        @ParameterizedTest
+        @CsvSource({
+                "/svc/v1/login, /api/login",
+                "https://backend:8443/svc/v1/items?id=7, /api/items?id=7"})
+        @DisplayName("the rewrite flips with the toggle for the same header value, path or absolute URL")
+        void rewriteFlipsWithTheToggle(String location, String rewritten) {
+            assertEquals(rewritten, ResponseStage.relayedHeaderValue("Location", location, rewriter),
+                    "an opted-in route maps the upstream Location onto its match key");
             assertEquals(location, ResponseStage.relayedHeaderValue("Location", location, null),
                     "a route without rewrite_location carries no rewriter and relays Location verbatim");
-        }
-
-        @Test
-        @DisplayName("the rewrite flips with the toggle for the same header value")
-        void rewriteFlipsWithTheToggle() {
-            String location = "/svc/v1/login";
-
-            assertEquals("/api/login", ResponseStage.relayedHeaderValue("Location", location, rewriter));
-            assertEquals(location, ResponseStage.relayedHeaderValue("Location", location, null));
         }
 
         @Test
@@ -404,7 +383,7 @@ class ResponseStageTest {
             }).listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
             int upstreamPort = upstream.actualPort();
 
-            ResponseStage owning = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1)
+            ResponseStage owning = new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway()
                     .oidc(OidcConfig.builder().redirectUri("https://gw.example.com/auth/callback")
                             .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER)
                                     .cookieName(OWNED_NAME).build())

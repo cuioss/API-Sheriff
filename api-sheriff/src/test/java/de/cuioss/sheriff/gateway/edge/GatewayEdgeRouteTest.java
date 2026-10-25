@@ -28,7 +28,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.lang.reflect.RecordComponent;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,7 +36,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -70,8 +68,6 @@ import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -99,12 +95,11 @@ import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.tls.EgressTrustProfileResolver;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -119,6 +114,7 @@ import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpClientResponse;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.PoolOptions;
@@ -133,8 +129,6 @@ import io.vertx.core.net.PemTrustOptions;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.core.net.TrustOptions;
 import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import lombok.experimental.Delegate;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -165,17 +159,12 @@ class GatewayEdgeRouteTest {
     private Vertx vertx;
     private ExecutorService virtualThreadExecutor;
     private GatewayConfig gatewayConfig;
-    private TokenValidator tokenValidator;
-    private EdgeHardeningOptions hardening;
 
     @BeforeEach
     void setUp() {
         vertx = Vertx.vertx();
         virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-        gatewayConfig = GatewayConfig.builder().version(1).build();
-        tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-        hardening = new EdgeHardeningOptions();
+        gatewayConfig = ConfigFixtures.gateway().build();
     }
 
     @AfterEach
@@ -202,16 +191,26 @@ class GatewayEdgeRouteTest {
     @Test
     @DisplayName("registers the catch-all data-plane route so management routes keep priority")
     void registersCatchAllRoute() {
-        // Arrange
+        // Arrange — the same empty table without and with an active server-mode BFF runtime
         GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()));
+        GatewayEdgeRoute bffEdge = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(new RouteTable(List.of()))
+                .runtime(GatewayEdgeRouteBffWiringTest.activeRuntime(
+                        GatewayEdgeRouteBffWiringTest.serverBinding(GatewayEdgeRouteBffWiringTest.newStore())))
+                .build();
         Router router = Router.router(vertx);
+        Router bffRouter = Router.router(vertx);
 
         // Act
         edge.registerRoutes(router);
+        bffEdge.registerRoutes(bffRouter);
 
         // Assert — exactly one catch-all route is registered; it is added last so management /
-        // health routes registered earlier keep priority.
-        assertEquals(1, router.getRoutes().size(), "The edge registers a single catch-all route");
+        // health routes registered earlier keep priority. An active runtime adds no route of its own:
+        // its reserved paths are dispatched from inside that one catch-all.
+        assertAll("the catch-all registration",
+                () -> assertEquals(1, router.getRoutes().size(), "The edge registers a single catch-all route"),
+                () -> assertEquals(1, bffRouter.getRoutes().size(),
+                        "An edge with an active BFF runtime still registers a single catch-all route"));
     }
 
     @Test
@@ -350,7 +349,7 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient();
             try {
                 // Act
-                client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS,
+                client.request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS,
                         "/nothing")
                         .compose(HttpClientRequest::send);
 
@@ -406,16 +405,10 @@ class GatewayEdgeRouteTest {
                             .webSocketHandler(ws -> ws.textMessageHandler(ws::writeTextMessage))
                             .listen(0, LoopbackHost.ADDRESS),
                     "the stub upstream WebSocket server to start listening");
-            Router router = Router.router(vertx);
-            new GatewayEdgeRoute(new RouteTable(List.of(webSocketRoute(upstream.actualPort()))), gatewayConfig,
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)),
-                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                    unconsultedTrustProfileResolver(), PortalEndpoint.inert(),
-                    GatewayEdgeRouteBffWiringTest.gatewayJson()).registerRoutes(router);
-            HttpServer front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            HttpServer front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .routes(webSocketRoute(upstream.actualPort())).gatewayConfig(gatewayConfig)
+                    .hardening(new EdgeHardeningOptions(new EdgeHardeningConfig(2, 1)))
+                    .serve();
             WebSocketClient wsClient = vertx.createWebSocketClient();
             HttpClient httpClient = vertx.createHttpClient();
             try {
@@ -491,11 +484,11 @@ class GatewayEdgeRouteTest {
             HttpClient upstreamClient = vertx.createHttpClient();
             Router router = Router.router(vertx);
             router.route().handler(ctx -> upstreamClient
-                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(HttpClientRequest::send)
                     .compose(response -> response.end().map(response))
                     .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(
-                            GatewayCookies.of(GatewayConfig.builder().version(1).build()))
+                            GatewayCookies.of(ConfigFixtures.gateway().build()))
                             .relay(ended, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(), end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
@@ -503,7 +496,7 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient();
             try {
                 String answer = Awaits.connect(client
-                                .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
                                 .compose(HttpClientRequest::send)
                                 .compose(response -> response.body()
                                         .map(body -> response.statusCode() + " [" + body + "]")),
@@ -546,7 +539,7 @@ class GatewayEdgeRouteTest {
             AtomicReference<@Nullable HttpClientResponse> pausedUpstream = new AtomicReference<>();
             Router router = Router.router(vertx);
             router.route().handler(ctx -> upstreamClient
-                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, LARGE_PATH)
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, LARGE_PATH)
                     .compose(request -> request.send().map(received -> {
                         received.pause();
                         return received;
@@ -564,7 +557,7 @@ class GatewayEdgeRouteTest {
             try {
                 // Act
                 String answer = Awaits.connect(client
-                                .request(io.vertx.core.http.HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
+                                .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, "/")
                                 .compose(HttpClientRequest::send)
                                 .compose(response -> response.body()
                                         .map(body -> response.statusCode() + " [" + body + "]")),
@@ -573,7 +566,7 @@ class GatewayEdgeRouteTest {
                         "the upstream to see the connection of the unrelayed response closed",
                         Awaits.CONNECT_CEILING_SECONDS);
                 String next = Awaits.connect(upstreamClient
-                                .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS,
+                                .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS,
                                         ANSWERING_PATH)
                                 .compose(HttpClientRequest::send)
                                 .compose(response -> response.body().map(body -> response.statusCode() + " " + body)),
@@ -618,13 +611,13 @@ class GatewayEdgeRouteTest {
             CompletableFuture<Boolean> bodyOpenWhenRelayed = new CompletableFuture<>();
             Router router = Router.router(vertx);
             router.route().handler(ctx -> upstreamClient
-                    .request(io.vertx.core.http.HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
+                    .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, "/")
                     .compose(request -> request.send().map(received -> {
                         received.pause();
                         return received;
                     }))
                     .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
-                            end -> new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()))
+                            end -> new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build()))
                                     .relay(received, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(),
                                             end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
@@ -634,7 +627,7 @@ class GatewayEdgeRouteTest {
             HttpClient client = vertx.createHttpClient(new HttpClientOptions()
                     .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
             try {
-                HttpClientRequest upload = Awaits.connect(client.request(io.vertx.core.http.HttpMethod.POST,
+                HttpClientRequest upload = Awaits.connect(client.request(HttpMethod.POST,
                         front.actualPort(), LoopbackHost.ADDRESS, "/upload"), "the upload stream to open");
                 CompletableFuture<Throwable> streamEnded = new CompletableFuture<>();
                 upload.exceptionHandler(streamEnded::complete);
@@ -1003,7 +996,7 @@ class GatewayEdgeRouteTest {
 
             // Act
             SecurityConfiguration carveOut = SecurityPostures.authorizationHeaderConfigurationFor(
-                    GatewayConfig.builder().version(1).build(), baseline);
+                    ConfigFixtures.gateway().build(), baseline);
 
             // Assert
             assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
@@ -1040,7 +1033,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration blockPresent = SecurityPostures.authorizationHeaderConfigurationFor(
                     gatewayWithAuthorizationCap(null), SecurityProfile.STRICT.preset());
             SecurityConfiguration blockAbsent = SecurityPostures.authorizationHeaderConfigurationFor(
-                    GatewayConfig.builder().version(1).build(), SecurityProfile.STRICT.preset());
+                    ConfigFixtures.gateway().build(), SecurityProfile.STRICT.preset());
 
             // Assert
             assertEquals(SecurityDefaultsConfig.DEFAULT_MAX_AUTHORIZATION_HEADER_VALUE_LENGTH,
@@ -1062,7 +1055,7 @@ class GatewayEdgeRouteTest {
             SecurityConfiguration inertRuntime = SecurityPostures.cookieHeaderConfigurationFor(
                     cookieModeGateway(), BffRuntime.inert(), SecurityProfile.STRICT.preset());
             SecurityConfiguration sessionAbsent = SecurityPostures.cookieHeaderConfigurationFor(
-                    GatewayConfig.builder().version(1).build(), activeCookieRuntime(),
+                    ConfigFixtures.gateway().build(), activeCookieRuntime(),
                     SecurityProfile.STRICT.preset());
             SecurityConfiguration serverMode = SecurityPostures.cookieHeaderConfigurationFor(
                     sessionModeGateway(OidcConfig.Session.MODE_SERVER), activeCookieRuntime(),
@@ -1191,7 +1184,7 @@ class GatewayEdgeRouteTest {
         }
 
         private GatewayConfig gatewayWithAuthorizationCap(@Nullable Integer cap) {
-            return GatewayConfig.builder().version(1)
+            return ConfigFixtures.gateway()
                     .securityDefaults(SecurityDefaultsConfig.builder().profile("strict").maxAuthorizationHeaderValueLength(cap).build())
                     .build();
         }
@@ -1207,7 +1200,7 @@ class GatewayEdgeRouteTest {
          * {@code oidc} block is answered by the {@code orElse(false)} before the predicate is invoked.
          */
         private GatewayConfig sessionModeGateway(String mode) {
-            return GatewayConfig.builder().version(1)
+            return ConfigFixtures.gateway()
                     .oidc(OidcConfig.builder()
                             .session(OidcConfig.Session.builder()
                                     .mode(mode)
@@ -1319,18 +1312,11 @@ class GatewayEdgeRouteTest {
                 reached.set(true);
                 request.response().end();
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
-            Router router = Router.router(vertx);
-            new GatewayEdgeRoute(new RouteTable(List.of(proxyRoute(upstream.actualPort()))), loaded,
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
-                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                    unconsultedTrustProfileResolver(), PortalEndpoint.inert(),
-                    GatewayEdgeRouteBffWiringTest.gatewayJson()).registerRoutes(router);
-            HttpServer front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            HttpServer front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(proxyRoute(upstream.actualPort()))
+                    .gatewayConfig(loaded).serve();
             HttpClient client = vertx.createHttpClient();
             try {
-                Awaits.connect(client.request(io.vertx.core.http.HttpMethod.GET, front.actualPort(),
+                Awaits.connect(client.request(HttpMethod.GET, front.actualPort(),
                                 LOOPBACK, "/t/resource")
                                 .compose(request -> request.putHeader(FORWARDED_FOR, SPOOFED_CLIENT).send()),
                         "the edge response to the proxied GET");
@@ -1343,12 +1329,7 @@ class GatewayEdgeRouteTest {
         }
 
         private Route proxyRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("t")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/t").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("t", "/t")
                     .upstream(new ResolvedUpstream("http", LOOPBACK, upstreamPort, ""))
                     .build();
         }
@@ -1539,13 +1520,10 @@ class GatewayEdgeRouteTest {
         private CapturingVertx bootWith(@Nullable EgressTlsConfig egressTls,
                 EgressTrustProfileResolver resolver) {
             CapturingVertx capturing = new CapturingVertx(vertx);
-            RouteTable table = new RouteTable(List.of(
-                    route("h", Protocol.HTTP, Require.NONE),
-                    route("g", Protocol.GRPC, Require.NONE)));
-            new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).egressTls(egressTls).build(),
-                    new SingletonInstance<>(tokenValidator), capturing, virtualThreadExecutor, hardening,
-                    new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), resolver,
-                    PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
+            EdgeFixtures.edge(capturing, virtualThreadExecutor)
+                    .routes(route("h", Protocol.HTTP, Require.NONE), route("g", Protocol.GRPC, Require.NONE))
+                    .gatewayConfig(ConfigFixtures.gateway().egressTls(egressTls).build()).egressTrust(resolver)
+                    .build();
             return capturing;
         }
     }
@@ -1582,7 +1560,7 @@ class GatewayEdgeRouteTest {
                         gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
 
                 // Act
-                Answer answer = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS, PORTAL_PATH);
+                Answer answer = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS, PORTAL_PATH);
 
                 // Assert
                 assertAll(
@@ -1607,9 +1585,9 @@ class GatewayEdgeRouteTest {
                         gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
 
                 // Act
-                Answer sibling = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS, "/apps/other");
+                Answer sibling = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS, "/apps/other");
                 boolean siblingReached = upstreamReached.getAndSet(false);
-                Answer trailing = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS,
+                Answer trailing = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS,
                         PORTAL_PATH + "/");
 
                 // Assert — the stub upstream answers 204, which the portal never does
@@ -1636,8 +1614,8 @@ class GatewayEdgeRouteTest {
                         gatewayConfig, BffRuntime.inert(), portal(PORTAL_PATH));
 
                 // Act
-                Answer post = serve(edge, io.vertx.core.http.HttpMethod.POST, LoopbackHost.ADDRESS, PORTAL_PATH);
-                Answer head = serve(edge, io.vertx.core.http.HttpMethod.HEAD, LoopbackHost.ADDRESS, PORTAL_PATH);
+                Answer post = serve(edge, HttpMethod.POST, LoopbackHost.ADDRESS, PORTAL_PATH);
+                Answer head = serve(edge, HttpMethod.HEAD, LoopbackHost.ADDRESS, PORTAL_PATH);
 
                 // Assert
                 assertAll(
@@ -1656,15 +1634,15 @@ class GatewayEdgeRouteTest {
         void oidcReservedPathWinsOverPortal() throws Exception {
             // Arrange — the portal path deliberately coincides with the user-info reserved path (boot
             // validation refuses this; the edge ordering is what is pinned here)
-            GatewayConfig withOidc = GatewayConfig.builder().version(1).oidc(oidc()).build();
+            GatewayConfig withOidc = ConfigFixtures.gateway().oidc(oidc()).build();
             GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), withOidc,
                     GatewayEdgeRouteBffWiringTest.activeRuntime(
                             GatewayEdgeRouteBffWiringTest.serverBinding(GatewayEdgeRouteBffWiringTest.newStore())),
                     portal(USER_INFO_PATH));
 
             // Act
-            Answer onOidcHost = serve(edge, io.vertx.core.http.HttpMethod.GET, OIDC_HOST, USER_INFO_PATH);
-            Answer onOtherHost = serve(edge, io.vertx.core.http.HttpMethod.GET, LoopbackHost.ADDRESS,
+            Answer onOidcHost = serve(edge, HttpMethod.GET, OIDC_HOST, USER_INFO_PATH);
+            Answer onOtherHost = serve(edge, HttpMethod.GET, LoopbackHost.ADDRESS,
                     USER_INFO_PATH);
 
             // Assert — 401 is the user-info handler's own no-session answer; the control proves the
@@ -1702,17 +1680,12 @@ class GatewayEdgeRouteTest {
         }
 
         private Route appsRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("apps")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/apps").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("apps", "/apps")
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
         }
 
-        private Answer serve(GatewayEdgeRoute edge, io.vertx.core.http.HttpMethod method, String host, String uri)
+        private Answer serve(GatewayEdgeRoute edge, HttpMethod method, String host, String uri)
                 throws Exception {
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
@@ -1771,7 +1744,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of());
 
                 assertRoutingProblem(404, rejection);
@@ -1788,7 +1761,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.DELETE,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.DELETE,
                         LoopbackHost.ADDRESS, "/" + ROUTE_ID + "/resource", Map.of());
 
                 assertRoutingProblem(405, rejection);
@@ -1805,7 +1778,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, UNROUTED_PATH, Map.of());
 
                 assertRoutingProblem(404, rejection);
@@ -1822,9 +1795,9 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection unrouted = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection unrouted = send(client, front.actualPort(), HttpMethod.GET,
                         LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of());
-                Rejection smuggled = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection smuggled = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, UNROUTED_PATH, Map.of());
 
                 assertAll("the two 404s cannot be told apart by a client",
@@ -1853,9 +1826,9 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI, errorPagePortal());
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection unrouted = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection unrouted = send(client, front.actualPort(), HttpMethod.GET,
                         LoopbackHost.ADDRESS, UNROUTED_PATH, Map.of("Accept", accept));
-                Rejection reserved = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection reserved = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, UNROUTED_PATH, Map.of("Accept", accept));
 
                 assertAll("the two 404s on an unrouted address for Accept: " + accept,
@@ -1879,7 +1852,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(PASSTHROUGH_SNI);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         PASSTHROUGH_SNI, "/" + ROUTE_ID + "/resource", Map.of());
 
                 assertRoutingProblem(404, rejection);
@@ -1907,7 +1880,7 @@ class GatewayEdgeRouteTest {
             HttpServer front = startFront(markedSni);
             HttpClient client = vertx.createHttpClient();
             try {
-                Rejection rejection = send(client, front.actualPort(), io.vertx.core.http.HttpMethod.GET,
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.GET,
                         markedSni, "/" + pathMarker, Map.of("X-Probe", headerMarker));
 
                 assertEquals(404, rejection.status());
@@ -1956,20 +1929,14 @@ class GatewayEdgeRouteTest {
 
         /** As {@link #startFront(String)}, with {@code portal} answering the gateway's error pages. */
         private HttpServer startFront(String passthroughSni, PortalEndpoint portal) throws Exception {
-            GatewayConfig config = GatewayConfig.builder().version(1)
+            GatewayConfig config = ConfigFixtures.gateway()
                     .tls(TlsConfig.builder().passthroughSni(Map.of(passthroughSni, "backend")).build())
                     .build();
-            Router router = Router.router(vertx);
-            new GatewayEdgeRoute(new RouteTable(List.of(route(ROUTE_ID, Protocol.HTTP, Require.NONE))), config,
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
-                    new SheriffMetrics(registry), BffRuntime.inert(), unconsultedTrustProfileResolver(),
-                    portal, GatewayEdgeRouteBffWiringTest.gatewayJson()).registerRoutes(router);
-            return Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(route(ROUTE_ID, Protocol.HTTP, Require.NONE))
+                    .gatewayConfig(config).metrics(new SheriffMetrics(registry)).portal(portal).serve();
         }
 
-        private Rejection send(HttpClient client, int port, io.vertx.core.http.HttpMethod method, String host,
+        private Rejection send(HttpClient client, int port, HttpMethod method, String host,
                 String uri, Map<String, String> headers) throws Exception {
             RequestOptions options = new RequestOptions()
                     .setServer(SocketAddress.inetSocketAddress(port, LoopbackHost.ADDRESS))
@@ -2017,7 +1984,7 @@ class GatewayEdgeRouteTest {
 
     private static int statusOf(HttpClient client, int port) throws Exception {
         return Awaits.connect(
-                client.request(io.vertx.core.http.HttpMethod.GET, port, LoopbackHost.ADDRESS, "/unmatched")
+                client.request(HttpMethod.GET, port, LoopbackHost.ADDRESS, "/unmatched")
                         .compose(HttpClientRequest::send),
                 "the edge response to GET /unmatched").statusCode();
     }
@@ -2027,12 +1994,8 @@ class GatewayEdgeRouteTest {
     }
 
     private static Route webSocketRoute(int upstreamPort) {
-        return Route.builder()
-                .id("w")
+        return ConfigFixtures.route("w", "/w")
                 .protocol(Protocol.WEBSOCKET)
-                .match(MatchConfig.builder().pathPrefix("/w").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
     }
@@ -2043,9 +2006,8 @@ class GatewayEdgeRouteTest {
 
     private GatewayEdgeRoute newEdge(RouteTable table, GatewayConfig config, BffRuntime runtime,
             PortalEndpoint portal) {
-        return new GatewayEdgeRoute(table, config, new SingletonInstance<>(tokenValidator), vertx,
-                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), runtime,
-                unconsultedTrustProfileResolver(), portal, GatewayEdgeRouteBffWiringTest.gatewayJson());
+        return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(table).gatewayConfig(config).runtime(runtime)
+                .portal(portal).build();
     }
 
     private static EgressTrustProfileResolver unconsultedTrustProfileResolver() {
@@ -2068,74 +2030,8 @@ class GatewayEdgeRouteTest {
     /** Boots a real edge over {@code table} and reports the clients it built doing so. */
     private ClientWiring clientWiringOf(RouteTable table) {
         CapturingVertx capturing = new CapturingVertx(vertx);
-        new GatewayEdgeRoute(table, gatewayConfig, new SingletonInstance<>(tokenValidator), capturing,
-                virtualThreadExecutor, hardening, new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
-                unconsultedTrustProfileResolver(), PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
+        EdgeFixtures.edge(capturing, virtualThreadExecutor).routes(table).gatewayConfig(gatewayConfig).build();
         return capturing.wiring();
-    }
-
-    /**
-     * Minimal {@link Instance} test double resolving to a single supplied bean. These boot / drain
-     * tests exercise only {@link #get()} (and none of them reaches a {@code require: bearer} route, so
-     * even that is not resolved); the remaining CDI accessors are unused and throw.
-     */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 
     /**
@@ -2220,12 +2116,9 @@ class GatewayEdgeRouteTest {
     }
 
     private static Route route(String id, Protocol protocol, Require require) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, "/" + id)
                 .protocol(protocol)
-                .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", id + ".example", 443, ""))
                 .build();
     }

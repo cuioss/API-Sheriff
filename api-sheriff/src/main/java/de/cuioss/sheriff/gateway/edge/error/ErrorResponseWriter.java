@@ -218,8 +218,7 @@ public final class ErrorResponseWriter {
      * header that needs no clock (RFC 9110 §10.2.3). It is a constant of the gateway and carries nothing
      * of the request or of the upstream.
      * <p>
-     * Public so the header is asserted directly by {@code GatewayEdgeRouteRetryAfterTest}, matching
-     * the precedent {@link #problemBody} sets.
+     * Public like {@link #problemBody}; the header is asserted directly by {@code ErrorResponseWriterTest}.
      *
      * @param request   the rejected request, {@code null} for a rejection answered before one was
      *                  built — such a rejection is never an open circuit and gets no header

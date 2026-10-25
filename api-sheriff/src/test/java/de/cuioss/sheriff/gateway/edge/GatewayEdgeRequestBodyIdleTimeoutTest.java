@@ -22,10 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -38,26 +36,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
-import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-import de.cuioss.sheriff.gateway.config.model.Protocol;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
-import de.cuioss.sheriff.gateway.routing.Route;
-import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
@@ -80,9 +68,6 @@ import io.vertx.core.http.PoolOptions;
 import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -146,7 +131,7 @@ import org.junit.jupiter.api.Test;
  * trickling upload is planned to outlast it.
  */
 @EnableGeneratorController
-@EnableTestLogger
+@EnableTestLogger(debug = RejectionReporter.class)
 @DisplayName("GatewayEdgeRoute — a request body that stops arriving or arrives too slowly is ended as the request's")
 @Tag("isolated-fork")
 class GatewayEdgeRequestBodyIdleTimeoutTest {
@@ -491,6 +476,56 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
     }
 
     /**
+     * Three uploads trickle at once to an upstream that answered at once: two on route
+     * {@value #TRICKLE_ROUTE}, one on route {@value #ROUTE}. Each is ended at the deadline. Whichever of
+     * the two {@value #TRICKLE_ROUTE} ends comes first is recorded at {@code INFO} as
+     * {@value #REQUEST_BODY_DEADLINE_RECORD} and the other stays at {@code DEBUG}; the end on
+     * {@value #ROUTE} is that route's first, so it is recorded at {@code INFO} again. Every end is metered.
+     */
+    @Test
+    @DisplayName("a repeated deadline end on a route stays at DEBUG; a first one on another route is recorded at INFO")
+    void deadlineRecordIsLatchedPerRoute() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        List<String> paths = List.of("/" + TRICKLE_ROUTE + STREAMING + "-1", "/" + TRICKLE_ROUTE + STREAMING + "-2",
+                "/" + ROUTE + STREAMING + "-3");
+        List<Future<Answer>> answers = new ArrayList<>();
+        List<CompletableFuture<Throwable>> streamEnds = new ArrayList<>();
+        for (String path : paths) {
+            HttpClientRequest upload = open(http2Client, "POST", path);
+            CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+            upload.exceptionHandler(streamEnd::complete);
+            answers.add(answerOf(upload));
+            streamEnds.add(streamEnd);
+            Awaits.connect(upload.setChunked(true).sendHead(), "the head of the trickling upload " + path + " to be sent");
+            trickle(streamEnd::isDone, () -> upload.write(TRICKLE_CHUNK), upload::end);
+        }
+        List<Integer> statuses = new ArrayList<>();
+        for (Future<Answer> answered : answers) {
+            statuses.add(Awaits.connect(answered, "a relayed answer to a trickling upload to end").response()
+                    .statusCode());
+        }
+        for (CompletableFuture<Throwable> streamEnd : streamEnds) {
+            Awaits.connect(streamEnd, "the edge to reset a trickling upload stream");
+        }
+
+        assertAll("three uploads ended at the deadline on two routes",
+                () -> assertEquals(List.of(200, 200, 200), statuses, "every head the upstream sent stands"),
+                () -> assertEquals(2.0, errorCount(TRICKLE_ROUTE, REQUEST_BODY_TIMEOUT), "both ends are metered"),
+                () -> assertEquals(1.0, errorCount(ROUTE, REQUEST_BODY_TIMEOUT), "the other route's end is metered"),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO,
+                        deadlineRecord(TRICKLE_ROUTE)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.DEBUG,
+                        deadlineRecord(TRICKLE_ROUTE)),
+                () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.INFO, deadlineRecord(ROUTE)),
+                () -> LogAsserts.assertNoLogMessagePresent(TestLogLevel.DEBUG, deadlineRecord(ROUTE)));
+    }
+
+    /** The text the deadline record of {@code route} carries, at either level. */
+    private static String deadlineRecord(String route) {
+        return "Request body on route '" + route + "' did not end within";
+    }
+
+    /**
      * Shape (b) on HTTP/1.1: the relayed answer's head is already written when the deadline passes, so
      * the answer cannot carry {@code Connection: close}. Its end closes the connection instead — the body
      * behind it was not read and cannot frame a following request.
@@ -780,35 +815,17 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
      * and starts a front server for it.
      */
     private HttpServer startEdge() throws Exception {
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         ResolvedUpstream upstream = new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), "");
-        RouteTable routes = new RouteTable(List.of(Route.builder()
-                .id(ROUTE)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/" + ROUTE).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
-                .upstream(upstream)
-                .build(), Route.builder()
-                .id(TRICKLE_ROUTE)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/" + TRICKLE_ROUTE).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.POST))
-                .retryEnabled(true)
-                .upstream(upstream)
-                .build()));
         EdgeHardeningOptions hardening = new EdgeHardeningOptions(EdgeHardeningConfig.defaults(), IDLE_TIMEOUT_MILLIS,
                 BODY_DEADLINE_MILLIS);
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, GatewayConfig.builder().version(1).build(),
-                new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, hardening,
-                new SheriffMetrics(meterRegistry), BffRuntime.inert(), EgressTrustProfiles.unconsulted(),
-                PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        return EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                .routes(ConfigFixtures.route(ROUTE, "/" + ROUTE)
+                                .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST)).upstream(upstream).build(),
+                        ConfigFixtures.route(TRICKLE_ROUTE, "/" + TRICKLE_ROUTE)
+                                .effectiveAllowedMethods(Set.of(HttpMethod.POST)).retryEnabled(true).upstream(upstream)
+                                .build())
+                .hardening(hardening).metrics(new SheriffMetrics(meterRegistry))
+                .serve();
     }
 
     /** Sends a well-framed GET on {@code client}'s connection and returns its answer. */
@@ -898,65 +915,5 @@ class GatewayEdgeRequestBodyIdleTimeoutTest {
 
     /** The response to one client request, its body read whole, and the connection it was sent on. */
     private record Answer(HttpClientResponse response, String body, HttpConnection connection) {
-    }
-
-    /** Minimal {@link Instance} double resolving to one supplied validator; unused accessors throw. */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

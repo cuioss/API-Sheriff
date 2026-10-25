@@ -21,19 +21,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import io.vertx.core.http.Http2Settings;
 import io.vertx.core.http.HttpServerOptions;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("EdgeHardeningOptions — inbound transport bounds and admission/drain limits")
-class EdgeHardeningTest {
+class EdgeHardeningOptionsTest {
 
     private static final int MAX_HEADER_SIZE_BYTES = 16 * 1024;
     private static final int MAX_INITIAL_LINE_LENGTH_BYTES = 8 * 1024;
@@ -306,9 +310,22 @@ class EdgeHardeningTest {
         /** 100 concurrent streams of the default 65,535-byte stream window each. */
         private static final int BOUNDED_CONNECTION_WINDOW_BYTES = 6_553_500;
 
-        private HttpServerOptions listenerAnnouncing(long maxConcurrentStreams) {
+        private static HttpServerOptions listenerAnnouncing(long maxConcurrentStreams) {
             return new HttpServerOptions()
                     .setInitialSettings(new Http2Settings().setMaxConcurrentStreams(maxConcurrentStreams));
+        }
+
+        /**
+         * Listeners announcing a stream limit at or below the bound, each with the limit it must keep:
+         * two explicit values and a listener left at the Vert.x defaults of 100 streams of 65,535 bytes.
+         */
+        static Stream<Arguments> listenersAtOrBelowTheBound() {
+            return Stream.of(
+                    Arguments.of(Named.of("7 streams", listenerAnnouncing(7L)), 7L),
+                    Arguments.of(Named.of("100 streams", listenerAnnouncing(MAX_CONCURRENT_STREAMS)),
+                            MAX_CONCURRENT_STREAMS),
+                    Arguments.of(Named.of("the Vert.x default listener", new HttpServerOptions()),
+                            new HttpServerOptions().getInitialSettings().getMaxConcurrentStreams()));
         }
 
         @ParameterizedTest(name = "{0} streams")
@@ -326,33 +343,35 @@ class EdgeHardeningTest {
                             "The connection window is derived from the bounded 100 streams x 65,535 bytes"));
         }
 
-        @ParameterizedTest(name = "{0} streams")
-        @ValueSource(longs = {7L, 100L})
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("listenersAtOrBelowTheBound")
         @DisplayName("keeps a listener's stream limit at or below 100, and the connection window follows it")
-        void keepsAValueAtOrBelowTheBound(long maxConcurrentStreams) {
-            HttpServerOptions options = listenerAnnouncing(maxConcurrentStreams);
-
+        void keepsAValueAtOrBelowTheBound(HttpServerOptions options, long keptStreams) {
             new EdgeHardeningOptions().customizeHttpServer(options);
 
-            assertAll("a listener announcing " + maxConcurrentStreams + " streams",
-                    () -> assertEquals(maxConcurrentStreams, options.getInitialSettings().getMaxConcurrentStreams(),
+            assertAll("a listener keeping " + keptStreams + " streams",
+                    () -> assertEquals(keptStreams, options.getInitialSettings().getMaxConcurrentStreams(),
                             "A value at or below the bound is kept"),
-                    () -> assertEquals(maxConcurrentStreams * 65_535, options.getHttp2ConnectionWindowSize(),
+                    () -> assertEquals(keptStreams * 65_535, options.getHttp2ConnectionWindowSize(),
                             "The connection window is the kept stream count x 65,535 bytes"));
         }
 
         @Test
         @DisplayName("bounds the TLS listener's streams and window exactly as the plaintext listener's")
         void boundsTheTlsListenerIdentically() {
-            HttpServerOptions options = listenerAnnouncing(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS);
+            HttpServerOptions unbounded = listenerAnnouncing(Http2Settings.DEFAULT_MAX_CONCURRENT_STREAMS);
+            HttpServerOptions vertxDefault = new HttpServerOptions();
 
-            new EdgeHardeningOptions().customizeHttpsServer(options);
+            new EdgeHardeningOptions().customizeHttpsServer(unbounded);
+            new EdgeHardeningOptions().customizeHttpsServer(vertxDefault);
 
-            assertAll("an unbounded TLS listener",
-                    () -> assertEquals(MAX_CONCURRENT_STREAMS, options.getInitialSettings().getMaxConcurrentStreams(),
+            assertAll("an unbounded and a default TLS listener",
+                    () -> assertEquals(MAX_CONCURRENT_STREAMS, unbounded.getInitialSettings().getMaxConcurrentStreams(),
                             "The TLS listener is lowered to 100 concurrent streams identically"),
-                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
-                            "The TLS listener sizes its connection window identically"));
+                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, unbounded.getHttp2ConnectionWindowSize(),
+                            "The TLS listener sizes its connection window identically"),
+                    () -> assertEquals(BOUNDED_CONNECTION_WINDOW_BYTES, vertxDefault.getHttp2ConnectionWindowSize(),
+                            "A TLS listener left at the Vert.x defaults sizes its window to every stream's window"));
         }
     }
 
@@ -363,24 +382,6 @@ class EdgeHardeningTest {
     @Nested
     @DisplayName("inbound HTTP/2 connection window")
     class ConnectionWindow {
-
-        /** Vert.x's default listener settings: 100 concurrent streams of 65,535 bytes each. */
-        private static final int DEFAULT_CONNECTION_WINDOW_BYTES = 6_553_500;
-
-        @Test
-        @DisplayName("sizes the window of a default listener to every concurrent stream's window")
-        void sizesDefaultListenerWindowToEveryStreamsWindow() {
-            Http2Settings defaults = new HttpServerOptions().getInitialSettings();
-            HttpServerOptions options = new HttpServerOptions();
-
-            new EdgeHardeningOptions().customizeHttpServer(options);
-
-            assertEquals(defaults.getMaxConcurrentStreams() * defaults.getInitialWindowSize(),
-                    options.getHttp2ConnectionWindowSize(),
-                    "The connection window is the maximum concurrent streams times the initial stream window");
-            assertEquals(DEFAULT_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
-                    "At the Vert.x defaults of 100 streams x 65,535 bytes the window is 6,553,500 bytes");
-        }
 
         @Test
         @DisplayName("follows the stream settings the listener actually announces")
@@ -418,17 +419,6 @@ class EdgeHardeningTest {
 
             assertEquals(1_000, options.getHttp2ConnectionWindowSize(),
                     "A listener admitting no concurrent stream still keeps one stream window for the connection");
-        }
-
-        @Test
-        @DisplayName("sizes the TLS listener's window exactly as the plaintext listener's")
-        void sizesTheTlsListenerWindowIdentically() {
-            HttpServerOptions options = new HttpServerOptions();
-
-            new EdgeHardeningOptions().customizeHttpsServer(options);
-
-            assertEquals(DEFAULT_CONNECTION_WINDOW_BYTES, options.getHttp2ConnectionWindowSize(),
-                    "The TLS listener sizes its connection window identically");
         }
     }
 }

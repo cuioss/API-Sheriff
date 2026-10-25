@@ -20,11 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -38,12 +36,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
-import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
@@ -53,13 +49,11 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
-import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
@@ -72,9 +66,6 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -193,12 +184,7 @@ class GatewayEdgePipelineTest {
                 grpcRoute("frontend-grpc", "/frontend-grpc", upstreamPort, FRONTEND_ANCHOR),
                 webSocketRoute("frontend-ws", "/frontend-ws", upstreamPort, FRONTEND_ANCHOR)));
 
-        GatewayConfig gatewayConfig = GatewayConfig.builder()
-                .version(1)
-                .securityHeaders(globalHeaders())
-                .build();
-
-        frontServer = startFront(gatewayConfig);
+        frontServer = startFront(ConfigFixtures.gateway().securityHeaders(globalHeaders()).build());
         frontPort = frontServer.actualPort();
 
         client = vertx.createHttpClient();
@@ -206,17 +192,8 @@ class GatewayEdgePipelineTest {
 
     /** Boots a real edge over the shared route table for {@code gatewayConfig} on its own front server. */
     private HttpServer startFront(GatewayConfig gatewayConfig) throws Exception {
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
-                new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry), BffRuntime.inert(),
-                EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                GatewayEdgeRouteBffWiringTest.gatewayJson());
-
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        return Awaits.connect(
-                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(routeTable).gatewayConfig(gatewayConfig)
+                .tokenValidator(tokenValidator).metrics(new SheriffMetrics(meterRegistry)).serve();
     }
 
     @AfterEach
@@ -418,35 +395,13 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("profile: minimal disables only the url-parameter validation — the strict route still rejects it")
-    void minimalRouteAcceptsParameterValueTheStrictRouteRejects() throws Exception {
-        // Arrange — a double-encoded slash (%252F) in a raw parameter value is refused by the
-        // url-parameter pipeline, which sees the wire form and detects the double encoding. A decoded
-        // '<' no longer separates the two routes: once the raw value is handed over it is judged by
-        // meaning, not by spelling (ADR-0047).
-        String query = "?return_to=%252F";
-
-        // Act
-        Response onStrictRoute = send(io.vertx.core.http.HttpMethod.GET, "/echo/orders" + query, Map.of(), null);
-        Response onMinimalRoute = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed" + query, Map.of(), null);
-
-        // Assert
-        assertEquals(400, onStrictRoute.status(), "the strict-baseline route rejects the parameter value");
-        assertEquals(200, onMinimalRoute.status(),
-                "the minimal-mode route accepts it — that is what 'minimal' turns off");
-        assertTrue(onMinimalRoute.body().contains(query),
-                "the minimal route forwards the raw pair verbatim, never re-encoded: " + onMinimalRoute.body());
-    }
-
-    @Test
     @DisplayName("security_defaults.allow_extended_ascii admits a non-ASCII header value the strict baseline rejects")
     void extendedAsciiOptInAdmitsHeaderValueTheStrictBaselineRejects() throws Exception {
         // Arrange — two edges over the same routes, differing in the declared key alone. The strict
         // baseline rejects the value at the pre-route floor, before route selection, which is why the
         // key is gateway-wide: a per-route relaxation could never reach this check.
         Map<String, String> nonAsciiHeader = Map.of("X-Display-Name", "José");
-        HttpServer optedInFront = startFront(GatewayConfig.builder()
-                .version(1)
+        HttpServer optedInFront = startFront(ConfigFixtures.gateway()
                 .securityHeaders(globalHeaders())
                 .securityDefaults(SecurityDefaultsConfig.builder().allowExtendedAscii(true).build())
                 .build());
@@ -772,13 +727,9 @@ class GatewayEdgePipelineTest {
     }
 
     private static Route anchoredRoute(String id, String pathPrefix, Require require, int upstreamPort) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
+        return ConfigFixtures.route(id, pathPrefix)
                 .anchor(FRONTEND_ANCHOR)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(anchorHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
@@ -791,13 +742,8 @@ class GatewayEdgePipelineTest {
 
     /** A public directory asset route serving {@value #ASSET_FILE} from the fixture's temporary directory. */
     private Route assetRoute(String id, String pathPrefix, @Nullable String anchor) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
+        return ConfigFixtures.route(id, pathPrefix)
                 .anchor(anchor)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(resolvedHeaders(anchor))
                 .asset(ResolvedAsset.directory(assetDirectory.toString(), AccessLevel.PUBLIC, null, null))
                 .build();
@@ -808,11 +754,9 @@ class GatewayEdgePipelineTest {
      * trailers-only gRPC status, so it never dials the (HTTP/1.1) stub upstream.
      */
     private static Route grpcRoute(String id, String pathPrefix, int upstreamPort, @Nullable String anchor) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.GRPC)
                 .anchor(anchor)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
                 .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                 .securityHeaders(resolvedHeaders(anchor))
@@ -826,13 +770,9 @@ class GatewayEdgePipelineTest {
      */
     private static Route webSocketRoute(String id, String pathPrefix, int upstreamPort,
             @Nullable String anchor) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.WEBSOCKET)
                 .anchor(anchor)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(resolvedHeaders(anchor))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                 .build();
@@ -849,11 +789,7 @@ class GatewayEdgePipelineTest {
                 .allowedPaths(List.of("/open/allowed"))
                 .maxBodyBytes(MINIMAL_ROUTE_BODY_CAP)
                 .build();
-        return Route.builder()
-                .id("open")
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/open").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+        return ConfigFixtures.route("open", "/open")
                 .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                 // The allowed_paths whitelist is read off this filter by the route itself.
                 .effectiveSecurityFilter(filter)
@@ -873,12 +809,8 @@ class GatewayEdgePipelineTest {
      * {@code keep_query} on; it resolves no upstream, so any upstream contact is a defect.
      */
     private static Route redirectRoute(String id, String pathPrefix, Require require) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+        return ConfigFixtures.route(id, pathPrefix)
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .securityHeaders(globalHeaders())
                 .redirect(RedirectConfig.builder()
                         .location(REDIRECT_LOCATION)
@@ -890,10 +822,7 @@ class GatewayEdgePipelineTest {
 
     private static Route route(String id, String pathPrefix, Require require, int upstreamPort,
             HttpMethod... methods) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+        return ConfigFixtures.route(id, pathPrefix)
                 .effectiveAuth(AuthConfig.builder().require(require).build())
                 .effectiveAllowedMethods(Set.of(methods))
                 .securityHeaders(globalHeaders())
@@ -903,69 +832,5 @@ class GatewayEdgePipelineTest {
 
     /** A record capturing the terminal response for assertions after the streamed body completes. */
     private record Response(int status, Map<String, String> headers, String body) {
-    }
-
-    /**
-     * Minimal {@link Instance} test double resolving to a single supplied validator; only
-     * {@link #get()} and {@link #iterator()} are exercised by the pipeline, the remaining CDI
-     * accessors are unused and throw.
-     */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

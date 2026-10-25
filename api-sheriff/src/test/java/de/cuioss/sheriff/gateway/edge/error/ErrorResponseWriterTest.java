@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package de.cuioss.sheriff.gateway.edge;
+package de.cuioss.sheriff.gateway.edge.error;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -23,7 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.Map;
 
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -40,8 +39,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  * event and no other, with the window the breaker itself applies ({@link UpstreamGuards#BREAKER_RESET_SECONDS}).
  */
 @EnableGeneratorController
-@DisplayName("GatewayEdgeRoute — Retry-After on the 503 of an open circuit")
-class GatewayEdgeRouteRetryAfterTest {
+@DisplayName("ErrorResponseWriter — Retry-After on the 503 of an open circuit")
+class ErrorResponseWriterTest {
 
     @Test
     @DisplayName("an open circuit is given Retry-After: 5, the seconds the breaker stays open")

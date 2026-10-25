@@ -26,7 +26,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
-import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -40,7 +39,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -71,13 +69,12 @@ import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
-import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.edge.EdgeFixtures;
 import de.cuioss.sheriff.gateway.edge.GatewayEdgeRoute;
 import de.cuioss.sheriff.gateway.edge.GatewayEdgeRouteBffWiringTest;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
@@ -90,11 +87,10 @@ import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -106,6 +102,7 @@ import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.ServerWebSocket;
 import io.vertx.core.http.UpgradeRejectedException;
@@ -118,8 +115,6 @@ import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetServer;
 import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -215,9 +210,6 @@ class WebSocketRelayStageTest {
         // neither the front server bound below nor a relay-only server can ever be handed it.
         deadPort = UnreachablePort.pick();
 
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-
         RouteTable routeTable = new RouteTable(List.of(
                 wsRoute("wsopen", "/ws-open", Require.NONE, upstreamPort, Set.of(), null, positiveListNamingNothing()),
                 wsRoute("wsforwardall", "/ws-forward-all", Require.NONE, upstreamPort, Set.of(), null, null),
@@ -228,23 +220,16 @@ class WebSocketRelayStageTest {
                 wsRoute("wsidle", "/ws-idle", Require.NONE, upstreamPort, Set.of(), 1, positiveListNamingNothing()),
                 wsRoute("wsdead", "/ws-dead", Require.NONE, deadPort, Set.of(), null, positiveListNamingNothing())));
 
-        GatewayConfig gatewayConfig = GatewayConfig.builder()
-                .version(1)
-                .securityHeaders(securityHeaders())
-                .build();
         // Built through the test-only constructor so every relay this edge establishes reports its
         // wiring-versus-frame timeline into the recorder the relay awaits read on timeout.
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable, gatewayConfig,
-                new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+        GatewayEdgeRoute edge = new GatewayEdgeRoute(routeTable,
+                ConfigFixtures.gateway().securityHeaders(securityHeaders()).build(),
+                EdgeFixtures.singleton(EdgeFixtures.tokenValidator()), vertx, virtualThreadExecutor,
                 new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(),
                 EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson(),
                 relayTimeline.observer(RelayObserver.NO_OP));
 
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        frontServer = Awaits.connect(
-                vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        frontServer = EdgeFixtures.serve(vertx, edge);
         frontPort = frontServer.actualPort();
 
         wsClient = vertx.createWebSocketClient();
@@ -358,19 +343,7 @@ class WebSocketRelayStageTest {
     }
 
     @Test
-    @DisplayName("maps an unreachable upstream to 502 before the 101 upgrade")
-    void mapsUnreachableUpstreamTo502() {
-        // Act
-        ExecutionException failure = assertThrows(ExecutionException.class,
-                () -> connect("/ws-dead/room", ALLOWED_ORIGIN));
-
-        // Assert
-        UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
-        assertEquals(502, rejected.getStatus(), () -> rejectionReport(failure));
-    }
-
-    @Test
-    @DisplayName("preserves the route's security headers on a WebSocket handshake failure")
+    @DisplayName("maps an unreachable upstream to 502 before the 101 upgrade, keeping the route's security headers")
     void preservesSecurityHeadersOnHandshakeFailure() {
         // Act — the /ws-dead route's upstream is unreachable, so the handshake fails 502 before the 101
         ExecutionException failure = assertThrows(ExecutionException.class,
@@ -516,7 +489,7 @@ class WebSocketRelayStageTest {
             try {
                 // Act — deliberately not awaited: the branch under test ends no response, so the
                 // send future never completes; the release callback is the observable outcome.
-                plainClient.request(io.vertx.core.http.HttpMethod.GET, relayServer.actualPort(),
+                plainClient.request(HttpMethod.GET, relayServer.actualPort(),
                         LoopbackHost.ADDRESS, "/relay").compose(HttpClientRequest::send);
 
                 // Assert
@@ -1918,29 +1891,19 @@ class WebSocketRelayStageTest {
             RouteTable table = new RouteTable(List.of(
                     wsRoute("wssession", "/ws-session", Require.SESSION, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
                             positiveListNamingNothing()),
-                    Route.builder()
-                            .id("httpsession")
-                            .protocol(Protocol.HTTP)
-                            .match(MatchConfig.builder().pathPrefix("/http-session").build())
+                    ConfigFixtures.route("httpsession", "/http-session")
                             .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                            .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                             .securityHeaders(securityHeaders())
                             .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, httpUpstream.actualPort(), ""))
                             .build()));
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
             GatewayEdgeRoute edge = new GatewayEdgeRoute(table,
-                    GatewayConfig.builder().version(1).securityHeaders(securityHeaders()).build(),
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
+                    ConfigFixtures.gateway().securityHeaders(securityHeaders()).build(),
+                    EdgeFixtures.singleton(EdgeFixtures.tokenValidator()), vertx, virtualThreadExecutor,
                     new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
                     GatewayEdgeRouteBffWiringTest.activeRuntime(binding), EgressTrustProfiles.unconsulted(),
                     PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson(),
                     relayTimeline.observer(RelayObserver.NO_OP));
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            sessionFront = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the session edge front server to start listening");
+            sessionFront = EdgeFixtures.serve(vertx, edge);
             httpClient = vertx.createHttpClient();
         }
 
@@ -1959,7 +1922,7 @@ class WebSocketRelayStageTest {
 
         private List<String> activityCookiesOfProxiedGet() throws Exception {
             return Awaits.connect(httpClient
-                    .request(io.vertx.core.http.HttpMethod.GET, sessionFront.actualPort(), LoopbackHost.ADDRESS,
+                    .request(HttpMethod.GET, sessionFront.actualPort(), LoopbackHost.ADDRESS,
                             "/http-session/page")
                     .compose(request -> request.putHeader("Cookie", sessionCookie).send())
                     .map(response -> {
@@ -2098,12 +2061,9 @@ class WebSocketRelayStageTest {
      */
     private static Route wsRoute(String id, String pathPrefix, Require require, int upstreamPort,
             Set<String> allowedOrigins, @Nullable Integer idleTimeoutSeconds, @Nullable ForwardConfig forward) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, pathPrefix)
                 .protocol(Protocol.WEBSOCKET)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 // Every route here is unanchored, so it resolves the gateway block — exactly what
                 // RouteTableBuilder materializes. Stage 2a applies the ROUTE's block after route
                 // selection (ADR-0007 Amendment A1), so a fixture route carrying none would strip them.
@@ -2122,68 +2082,5 @@ class WebSocketRelayStageTest {
      */
     private static ForwardConfig positiveListNamingNothing() {
         return ForwardConfig.builder().headersAllow(List.of()).build();
-    }
-
-    /**
-     * Minimal {@link Instance} test double resolving to a single supplied validator; only
-     * {@link #get()} and {@link #iterator()} are exercised, the remaining CDI accessors throw.
-     */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

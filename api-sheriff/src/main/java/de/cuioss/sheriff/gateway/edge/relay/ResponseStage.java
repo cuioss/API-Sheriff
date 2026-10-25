@@ -449,6 +449,18 @@ public final class ResponseStage {
         }
 
         /**
+         * The timeout this bound ends a call after: {@link #STREAM_IDLE_TIMEOUT_MILLIS} for a bound built
+         * by {@link #on}. Public so a test outside this package can assert the bound the gRPC dispatch
+         * builds.
+         *
+         * @return the stream-idle timeout in milliseconds
+         * @since 1.0
+         */
+        public long timeoutMillis() {
+            return timeoutMillis;
+        }
+
+        /**
          * Watches the call's request stream: every frame it delivers counts as activity.
          *
          * @param inbound the request body stream to be dispatched upstream

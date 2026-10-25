@@ -21,9 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.nio.file.Path;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,7 +35,6 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -47,33 +44,27 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
-import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.pipeline.SecurityHeadersStage;
 import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.portal.PortalRenderer;
-import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.token.validation.TokenValidator;
 import de.cuioss.sheriff.token.validation.test.TestTokenHolder;
 import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -178,10 +169,7 @@ class GatewayEdgeErrorPageTest {
                 proxyRoute("grpc", "/grpc", upstreamServer.actualPort()).protocol(Protocol.GRPC)
                         .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
                         .effectiveAllowedMethods(Set.of(HttpMethod.POST)).build(),
-                Route.builder().id("assets").protocol(Protocol.HTTP)
-                        .match(MatchConfig.builder().pathPrefix("/assets").build())
-                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                ConfigFixtures.route("assets", "/assets")
                         .securityHeaders(globalHeaders())
                         .asset(ResolvedAsset.directory(assetDirectory.toString(), AccessLevel.PUBLIC, null, null))
                         .build()));
@@ -446,7 +434,7 @@ class GatewayEdgeErrorPageTest {
             throws Exception {
         OidcConfig oidc = OidcConfig.builder().redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
                 .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build()).build();
-        GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).securityHeaders(globalHeaders()).oidc(oidc)
+        GatewayConfig gatewayConfig = ConfigFixtures.gateway().securityHeaders(globalHeaders()).oidc(oidc)
                 .tls(TlsConfig.builder().passthroughSni(Map.of(PASSTHROUGH_SNI, "backend")).build())
                 .build();
         PortalConfig portal = PortalConfig.builder().path("/portal").title("Portal").errorPages(errorPages).build();
@@ -454,14 +442,8 @@ class GatewayEdgeErrorPageTest {
                 GatewayEdgeRouteBffWiringTest.serverBinding(GatewayEdgeRouteBffWiringTest.newStore()));
         PortalEndpoint portalEndpoint = PortalEndpoint.of(portal, new PortalCatalog(List.of()),
                 PortalRenderer.builtIn(), runtime::sessionIdentity, oidc, true, "/");
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(routes, gatewayConfig, new SingletonInstance<>(tokenValidator),
-                vertx, virtualThreadExecutor, new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                runtime, EgressTrustProfiles.unconsulted(), portalEndpoint,
-                GatewayEdgeRouteBffWiringTest.gatewayJson());
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(routes).gatewayConfig(gatewayConfig)
+                .tokenValidator(tokenValidator).runtime(runtime).portal(portalEndpoint).serve();
     }
 
     private Response send(HttpServer front, io.vertx.core.http.HttpMethod method, String uri,
@@ -490,77 +472,12 @@ class GatewayEdgeErrorPageTest {
     }
 
     private static Route.RouteBuilder proxyRoute(String id, String pathPrefix, int upstreamPort) {
-        return Route.builder()
-                .id(id)
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        return ConfigFixtures.route(id, pathPrefix)
                 .securityHeaders(globalHeaders())
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""));
     }
 
     /** The terminal response, captured once its body has fully arrived. */
     private record Response(int status, Map<String, String> headers, String body) {
-    }
-
-    /** Minimal {@link Instance} double resolving to one supplied validator; unused accessors throw. */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

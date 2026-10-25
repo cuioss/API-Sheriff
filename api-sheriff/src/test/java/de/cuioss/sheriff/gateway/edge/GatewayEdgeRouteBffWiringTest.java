@@ -21,14 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -84,20 +82,17 @@ import de.cuioss.sheriff.gateway.bff.session.SessionStore;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
-import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.token.client.flow.AuthorizationCodeFlow;
 import de.cuioss.sheriff.token.client.flow.FlowContext;
@@ -127,9 +122,6 @@ import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -232,14 +224,11 @@ public class GatewayEdgeRouteBffWiringTest {
 
         private Vertx vertx;
         private ExecutorService virtualThreadExecutor;
-        private TokenValidator tokenValidator;
 
         @BeforeEach
         void setUp() {
             vertx = Vertx.vertx();
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-            tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
         }
 
         @AfterEach
@@ -277,12 +266,7 @@ public class GatewayEdgeRouteBffWiringTest {
          */
         private HttpClientResponse serveUnauthenticatedNavigation(RouteTable table, BffRuntime runtime)
                 throws Exception {
-            GatewayEdgeRoute edge = newEdge(table, runtime);
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            HttpServer front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            HttpServer front = EdgeFixtures.serve(vertx, newEdge(table, runtime));
             HttpClient client = vertx.createHttpClient();
             try {
                 RequestOptions options = new RequestOptions()
@@ -299,21 +283,8 @@ public class GatewayEdgeRouteBffWiringTest {
             }
         }
 
-        @Test
-        @DisplayName("Should still register a single catch-all route with an active runtime")
-        void shouldRegisterCatchAll() {
-            GatewayEdgeRoute edge = newEdge(new RouteTable(List.of()), activeRuntime(serverBinding(newStore())));
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            assertEquals(1, router.getRoutes().size());
-        }
-
         private GatewayEdgeRoute newEdge(RouteTable table, BffRuntime runtime) {
-            return new GatewayEdgeRoute(table, GatewayConfig.builder().version(1).build(),
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
-                    new SheriffMetrics(new SimpleMeterRegistry()), runtime, EgressTrustProfiles.unconsulted(),
-                    PortalEndpoint.inert(),
-                    gatewayJson());
+            return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(table).runtime(runtime).build();
         }
     }
 
@@ -339,20 +310,9 @@ public class GatewayEdgeRouteBffWiringTest {
         void setUp() throws Exception {
             vertx = Vertx.vertx();
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(rejectEverythingRoute())),
-                    gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(newStore())), EgressTrustProfiles.unconsulted(),
-                    PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(rejectEverythingRoute())
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(activeRuntime(serverBinding(newStore()))).serve();
             client = vertx.createHttpClient();
         }
 
@@ -402,12 +362,7 @@ public class GatewayEdgeRouteBffWiringTest {
         private static Route rejectEverythingRoute() {
             SecurityFilterConfig filter = SecurityFilterConfig.builder()
                     .allowedPaths(List.of("/auth/never-matches")).build();
-            return Route.builder()
-                    .id("auth-proxy")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/auth").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("auth-proxy", "/auth")
                     // The allowed_paths whitelist is read off this filter by the route itself.
                     .effectiveSecurityFilter(filter)
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, 1, ""))
@@ -449,8 +404,6 @@ public class GatewayEdgeRouteBffWiringTest {
         void setUp() throws Exception {
             vertx = Vertx.vertx();
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
             // A live session makes login initiation take the already-authenticated short-circuit, whose
             // redirect Location IS the return URL the edge extracted — the cleanest observable for the
@@ -462,17 +415,9 @@ public class GatewayEdgeRouteBffWiringTest {
                     .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), cookieHandle, Instant.now());
             sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
-            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(activeRuntime(serverBinding(store))).serve();
             client = vertx.createHttpClient();
         }
 
@@ -551,8 +496,6 @@ public class GatewayEdgeRouteBffWiringTest {
         void setUp() throws Exception {
             vertx = Vertx.vertx();
             virtualThreadExecutor = Executors.newVirtualThreadPerTaskExecutor();
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
             SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
@@ -561,17 +504,9 @@ public class GatewayEdgeRouteBffWiringTest {
                     .expiresAt(Instant.now().plus(Duration.ofHours(1))).build(), cookieHandle, Instant.now());
             sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
-            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(fullOidc()).build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of()), gatewayConfig,
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(activeRuntime(serverBinding(store))).serve();
             client = vertx.createHttpClient();
         }
 
@@ -1089,20 +1024,9 @@ public class GatewayEdgeRouteBffWiringTest {
         }
 
         private HttpServer startEdge(ClientJwksEndpoint jwksEndpoint) throws Exception {
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(bffPrefixRoute(upstream.actualPort()))),
-                    GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(newStore()), jwksEndpoint),
-                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            return Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(bffPrefixRoute(upstream.actualPort()))
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(activeRuntime(serverBinding(newStore()), jwksEndpoint)).serve();
         }
 
         private EdgeAnswer get(HttpServer front, String host, String uri) throws Exception {
@@ -1136,11 +1060,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** A credential-free proxy route claiming the whole {@code /bff} prefix on every host. */
         private static Route bffPrefixRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("bff-proxy")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/bff").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+            return ConfigFixtures.route("bff-proxy", "/bff")
                     .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
@@ -1278,26 +1198,16 @@ public class GatewayEdgeRouteBffWiringTest {
          * proxy route. The block is handed to the edge without passing the configuration validator.
          */
         private HttpServer startEdge(String profile, String jwksPath) throws Exception {
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
             OidcConfig oidc = OidcConfig.builder()
                     .redirectUri(ORIGIN + CALLBACK_PATH)
                     .clientAuthentication(OidcConfig.ClientAuthenticationSettings.builder().jwksPath(jwksPath).build())
                     .build();
-            GatewayConfig gatewayConfig = GatewayConfig.builder().version(1).oidc(oidc)
+            GatewayConfig gatewayConfig = ConfigFixtures.gateway().oidc(oidc)
                     .securityDefaults(SecurityDefaultsConfig.builder().profile(profile).build()).build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(keysPrefixRoute(upstream.actualPort()))),
-                    gatewayConfig, new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(newStore()),
-                            new ClientJwksEndpoint(signingKey.publicJwk())),
-                    EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            HttpServer front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            HttpServer front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .routes(keysPrefixRoute(upstream.actualPort())).gatewayConfig(gatewayConfig)
+                    .runtime(activeRuntime(serverBinding(newStore()), new ClientJwksEndpoint(signingKey.publicJwk())))
+                    .serve();
             fronts.add(front);
             return front;
         }
@@ -1330,12 +1240,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         /** A credential-free proxy route claiming the whole {@code /keys} prefix on every host. */
         private static Route keysPrefixRoute(int upstreamPort) {
-            return Route.builder()
-                    .id("keys-proxy")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/keys").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+            return ConfigFixtures.route("keys-proxy", "/keys")
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
                     .build();
         }
@@ -1391,8 +1296,6 @@ public class GatewayEdgeRouteBffWiringTest {
 
             TestTokenHolder tokenHolder = TestTokenGenerators.accessTokens().next();
             validBearerToken = tokenHolder.getRawToken();
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(tokenHolder.getIssuerConfig()).build();
 
             SessionStore store = newStore();
             String sessionId = SessionRecord.newSessionId();
@@ -1402,20 +1305,13 @@ public class GatewayEdgeRouteBffWiringTest {
             sessionCookie = SessionCookieCodec.DEFAULT_COOKIE_NAME + "=" + cookieHandle;
 
             int upstreamPort = upstream.actualPort();
-            RouteTable table = new RouteTable(List.of(
-                    bearerRoute(FALLBACK_ROUTE, "/fallback", Boolean.TRUE, upstreamPort),
-                    bearerRoute(PLAIN_BEARER_ROUTE, "/plain", null, upstreamPort)));
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(table,
-                    GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(meterRegistry),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .routes(bearerRoute(FALLBACK_ROUTE, "/fallback", Boolean.TRUE, upstreamPort),
+                            bearerRoute(PLAIN_BEARER_ROUTE, "/plain", null, upstreamPort))
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .tokenValidator(TokenValidator.builder().issuerConfig(tokenHolder.getIssuerConfig()).build())
+                    .metrics(new SheriffMetrics(meterRegistry)).runtime(activeRuntime(serverBinding(store)))
+                    .serve();
             client = vertx.createHttpClient();
         }
 
@@ -1530,10 +1426,7 @@ public class GatewayEdgeRouteBffWiringTest {
 
         private static Route bearerRoute(String id, String pathPrefix, @Nullable Boolean sessionFallback,
                 int upstreamPort) {
-            return Route.builder()
-                    .id(id)
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
+            return ConfigFixtures.route(id, pathPrefix)
                     .effectiveAuth(AuthConfig.builder().require(Require.BEARER).sessionFallback(sessionFallback).build())
                     .effectiveAllowedMethods(Set.of(HttpMethod.GET, HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamPort, ""))
@@ -1576,33 +1469,19 @@ public class GatewayEdgeRouteBffWiringTest {
                         upstreamHits.incrementAndGet();
                         request.response().end("upstream");
                     })).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
             SessionStore store = newStore();
             underScopedCookie = createSession(store, Set.of());
             coveringCookie = createSession(store, Set.of(NEEDED_SCOPE));
 
-            Route scopedRoute = Route.builder()
-                    .id("scoped")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/scoped").build())
+            Route scopedRoute = ConfigFixtures.route("scoped", "/scoped")
                     .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                     .neededScopes(Set.of(NEEDED_SCOPE))
                     .build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(scopedRoute)),
-                    GatewayConfig.builder().version(1).oidc(fullOidc()).build(),
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(serverBinding(store)), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(scopedRoute)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
+                    .runtime(activeRuntime(serverBinding(store))).serve();
             client = vertx.createHttpClient();
         }
 
@@ -1731,8 +1610,6 @@ public class GatewayEdgeRouteBffWiringTest {
                 releaseUpstreamBody.whenComplete((released, failure) ->
                         connectionContext.runOnContext(ignored -> request.response().end("second")));
             }).listen(0, LoopbackHost.ADDRESS), "the stub upstream server to start listening");
-            TokenValidator tokenValidator = TokenValidator.builder()
-                    .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
 
             byte[] key = new byte[32];
             Arrays.fill(key, (byte) 0x11);
@@ -1749,18 +1626,12 @@ public class GatewayEdgeRouteBffWiringTest {
                             new SecretKeySpec(activityKey, "AES"), (byte) 2),
                     IDLE_TIMEOUT);
 
-            Route sessionRoute = Route.builder()
-                    .id("cookie-session")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/app").build())
+            Route sessionRoute = ConfigFixtures.route("cookie-session", "/app")
                     .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                    .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                     .build();
-            Route grpcSessionRoute = Route.builder()
-                    .id("cookie-session-grpc")
+            Route grpcSessionRoute = ConfigFixtures.route("cookie-session-grpc", GRPC_PREFIX)
                     .protocol(Protocol.GRPC)
-                    .match(MatchConfig.builder().pathPrefix(GRPC_PREFIX).build())
                     .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                     .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
@@ -1769,17 +1640,9 @@ public class GatewayEdgeRouteBffWiringTest {
                     .redirectUri(ORIGIN + CALLBACK_PATH)
                     .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE).build())
                     .build();
-            GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(List.of(sessionRoute, grpcSessionRoute)),
-                    GatewayConfig.builder().version(1).oidc(cookieModeOidc).build(),
-                    new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor,
-                    new EdgeHardeningOptions(), new SheriffMetrics(new SimpleMeterRegistry()),
-                    activeRuntime(binding), EgressTrustProfiles.unconsulted(), PortalEndpoint.inert(),
-                    gatewayJson());
-            Router router = Router.router(vertx);
-            edge.registerRoutes(router);
-            front = Awaits.connect(
-                    vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                    "the edge front server to start listening");
+            front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(sessionRoute, grpcSessionRoute)
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(cookieModeOidc).build())
+                    .runtime(activeRuntime(binding)).serve();
             client = vertx.createHttpClient();
         }
 
@@ -2087,78 +1950,9 @@ public class GatewayEdgeRouteBffWiringTest {
     }
 
     private static Route sessionRoute() {
-        return Route.builder()
-                .id("s")
-                .protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/s").build())
+        return ConfigFixtures.route("s", "/s")
                 .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(new ResolvedUpstream("https", "s.example", 443, ""))
                 .build();
-    }
-
-    /**
-     * Minimal {@link Instance} test double resolving to a single supplied bean. {@link #get()} is
-     * reached only by a request that validates a bearer token (the {@code session_fallback} bearer
-     * branch and the plain {@code require: bearer} route); the remaining accessors are never used by
-     * the edge and throw.
-     */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }

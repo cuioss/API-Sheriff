@@ -20,11 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.annotation.Annotation;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -35,30 +33,19 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import de.cuioss.sheriff.gateway.bff.csrf.CsrfDefence;
-import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
-import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
-import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
-import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.EgressTrustProfiles;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
-import de.cuioss.sheriff.token.validation.TokenValidator;
-import de.cuioss.sheriff.token.validation.test.generator.TestTokenGenerators;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -73,9 +60,6 @@ import io.vertx.core.http.WebSocketConnectOptions;
 import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetSocket;
 import io.vertx.core.net.SocketAddress;
-import io.vertx.ext.web.Router;
-import jakarta.enterprise.inject.Instance;
-import jakarta.enterprise.util.TypeLiteral;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -318,7 +302,9 @@ class GatewayEdgeCookiePolicyTest {
     /**
      * HTTP/2 lets a client send its cookies as several {@code cookie} header fields (RFC 9113 section
      * 8.2.3). The frames are written by hand, every field an HPACK literal, because an HTTP client
-     * library is free to join the fields before they leave.
+     * library is free to join the fields before they leave. The control that the Vert.x HTTP server
+     * joins such fields into one value before application code reads it is
+     * {@code GatewayEdgeGatewayCookieTest.SplitCookieHeaderFields.serverJoinsTheTwoFields}.
      */
     @Nested
     @DisplayName("HTTP/2 — cookies split over several Cookie fields are all judged by the policy")
@@ -336,27 +322,12 @@ class GatewayEdgeCookiePolicyTest {
                             + " them — the regression a transport that stopped joining the fields would cause");
         }
 
-        @Test
-        @DisplayName("control: the HTTP/2 server hands the split fields to the edge as one joined value")
-        void serverJoinsTheSplitFields() throws Exception {
-            List<String> fields = List.of(THEME, APP);
-
-            exchangeWith(upstream.actualPort(), "/direct", fields);
-
-            assertEquals(List.of(List.of(THEME + "; " + APP)), List.copyOf(upstreamCookieFields),
-                    "the Vert.x HTTP server joins the cookie fields with a semicolon and a space; stage 5"
-                            + " reads that one value, which is why its first-value rule loses no cookie");
-        }
-
-        private void exchange(String path, List<String> cookieFields) throws Exception {
-            exchangeWith(requireFront().actualPort(), path, cookieFields);
-        }
-
         /**
-         * Sends one HTTP/2 GET over a raw connection, each of {@code cookieFields} as a {@code cookie}
-         * header field of its own, and returns once the response headers have arrived.
+         * Sends one HTTP/2 GET to the edge over a raw connection, each of {@code cookieFields} as a
+         * {@code cookie} header field of its own, and returns once the response headers have arrived.
          */
-        private void exchangeWith(int port, String path, List<String> cookieFields) throws Exception {
+        private void exchange(String path, List<String> cookieFields) throws Exception {
+            int port = requireFront().actualPort();
             Buffer block = Buffer.buffer();
             block.appendByte((byte) 0x82);
             block.appendByte((byte) 0x86);
@@ -590,11 +561,8 @@ class GatewayEdgeCookiePolicyTest {
 
     private Route route(String id, Protocol protocol, String pathPrefix, Set<HttpMethod> methods,
             CookiesConfig cookies) {
-        Route.RouteBuilder builder = Route.builder()
-                .id(id)
+        Route.RouteBuilder builder = ConfigFixtures.route(id, pathPrefix)
                 .protocol(protocol)
-                .match(MatchConfig.builder().pathPrefix(pathPrefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(methods)
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                 .effectiveCookies(cookies)
@@ -609,16 +577,7 @@ class GatewayEdgeCookiePolicyTest {
     }
 
     private void startFront() throws Exception {
-        TokenValidator tokenValidator = TokenValidator.builder()
-                .issuerConfig(TestTokenGenerators.accessTokens().next().getIssuerConfig()).build();
-        GatewayEdgeRoute edge = new GatewayEdgeRoute(new RouteTable(routes()), GatewayConfig.builder().version(1).build(),
-                new SingletonInstance<>(tokenValidator), vertx, virtualThreadExecutor, new EdgeHardeningOptions(),
-                new SheriffMetrics(new SimpleMeterRegistry()), BffRuntime.inert(), EgressTrustProfiles.unconsulted(),
-                PortalEndpoint.inert(), GatewayEdgeRouteBffWiringTest.gatewayJson());
-        Router router = Router.router(vertx);
-        edge.registerRoutes(router);
-        front = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
-                "the edge front server to start listening");
+        front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(new RouteTable(routes())).serve();
     }
 
     private HttpServer requireFront() {
@@ -688,65 +647,5 @@ class GatewayEdgeCookiePolicyTest {
      */
     private record Answer(int status, List<String> setCookies, List<String> trailerSetCookies,
     @Nullable String grpcStatus, @Nullable String headerGrpcStatus) {
-    }
-
-    /** Minimal {@link Instance} double resolving to one bean; the routes here never read it. */
-    private static final class SingletonInstance<T> implements Instance<T> {
-
-        private final T value;
-
-        SingletonInstance(T value) {
-            this.value = value;
-        }
-
-        @Override
-        public T get() {
-            return value;
-        }
-
-        @Override
-        public Instance<T> select(Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(Class<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <U extends T> Instance<U> select(TypeLiteral<U> subtype, Annotation... qualifiers) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isUnsatisfied() {
-            return false;
-        }
-
-        @Override
-        public boolean isAmbiguous() {
-            return false;
-        }
-
-        @Override
-        public void destroy(T instance) {
-            // no-op: the test double owns no lifecycle
-        }
-
-        @Override
-        public Handle<T> getHandle() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterable<? extends Handle<T>> handles() {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Iterator<T> iterator() {
-            return List.of(value).iterator();
-        }
     }
 }
