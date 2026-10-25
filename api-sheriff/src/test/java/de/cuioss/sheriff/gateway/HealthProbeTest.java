@@ -15,11 +15,15 @@
  */
 package de.cuioss.sheriff.gateway;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
@@ -44,9 +48,10 @@ import org.junit.jupiter.params.provider.MethodSource;
  * about the accept-versus-refuse distinction the exit code encodes. Neither case needs a fixed port
  * to be free, so neither depends on what else runs on the host.
  * <p>
- * The no-arg {@link HealthProbe#probe()} the entry point calls probes the compiled-in management port;
- * that port is pinned as a literal (ADR-0039), so a change to it has to be made deliberately in both
- * places.
+ * The no-arg {@link HealthProbe#probe()} the entry point calls probes the compiled-in management port.
+ * That port is pinned as a literal (ADR-0039), so a change to it has to be made deliberately in both
+ * places, and the no-arg path itself is executed and checked against {@code probe(9000)} and its own
+ * diagnostic line — without binding {@code 9000}, so the check holds whatever the host runs there.
  * <p>
  * {@link HealthProbe#isProbe(String[])} matches one exact token. The command lines below
  * are spelled as literals because the accepted spelling <em>is</em> the contract — the image's
@@ -66,7 +71,7 @@ class HealthProbeTest {
     private static final String LOOPBACK = "127.0.0.1";
 
     @Nested
-    @DisplayName("probe(port) reports what the probed port did")
+    @DisplayName("probe() and probe(port) report what the probed port did")
     class ProbeExitCode {
 
         @Test
@@ -97,6 +102,48 @@ class HealthProbeTest {
         void shouldProbeTheCompiledInManagementPort() {
             assertEquals(MANAGEMENT_PORT, HealthProbe.PROBE_PORT,
                     "The baked HEALTHCHECK measures the Quarkus management-port default (ADR-0039)");
+        }
+
+        /**
+         * Executes the no-arg {@link HealthProbe#probe()} — the path the entry point and the baked
+         * {@code HEALTHCHECK} take — and checks that it measured the management port rather than
+         * some other port or none at all.
+         * <p>
+         * The test binds nothing, so what {@code 127.0.0.1:9000} does is up to the host. Two
+         * host-independent observations carry the assertion: the no-arg result has to agree with
+         * {@code probe(9000)}, and its diagnostic line has to name {@code 127.0.0.1:9000} exactly
+         * when it reports a refusal. A delegate that probes another port is caught by the
+         * diagnostic when both ports refuse and by the disagreement when only one of them accepts;
+         * a delegate that skips the dial and reports healthy is caught by the disagreement whenever
+         * {@code 9000} refuses. On a host where {@code 9000} accepts, that second delegate is
+         * indistinguishable from the real one without binding the port, which this test
+         * deliberately does not do.
+         */
+        @Test
+        @DisplayName("Should measure the management port when called without a port")
+        void shouldMeasureTheManagementPortOnTheNoArgPath() {
+            var diagnostic = new ByteArrayOutputStream();
+            PrintStream originalErr = System.err;
+            int noArgExitCode;
+            System.setErr(new PrintStream(diagnostic, true, StandardCharsets.UTF_8));
+            try {
+                noArgExitCode = HealthProbe.probe();
+            } finally {
+                System.setErr(originalErr);
+            }
+            String diagnosticText = diagnostic.toString(StandardCharsets.UTF_8);
+
+            int managementPortExitCode = HealthProbe.probe(MANAGEMENT_PORT);
+
+            assertAll("no-arg probe",
+                    () -> assertEquals(managementPortExitCode, noArgExitCode,
+                            "The no-arg probe should report what 127.0.0.1:" + MANAGEMENT_PORT + " did"),
+                    () -> assertEquals(noArgExitCode == 1,
+                            diagnosticText.startsWith(
+                                    "health-probe: " + LOOPBACK + ":" + MANAGEMENT_PORT + " not accepting: "),
+                            () -> "A refusal should be reported against " + LOOPBACK + ":" + MANAGEMENT_PORT
+                                    + " and success should write nothing, but exit code " + noArgExitCode
+                                    + " came with diagnostic '" + diagnosticText.strip() + "'"));
         }
     }
 
