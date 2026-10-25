@@ -1685,7 +1685,7 @@ class GatewayEdgeRouteTest {
                     .build();
         }
 
-        private Answer serve(GatewayEdgeRoute edge, io.vertx.core.http.HttpMethod method, String host, String uri)
+        private Answer serve(GatewayEdgeRoute edge, HttpMethod method, String host, String uri)
                 throws Exception {
             Router router = Router.router(vertx);
             edge.registerRoutes(router);
@@ -1936,7 +1936,7 @@ class GatewayEdgeRouteTest {
                     .gatewayConfig(config).metrics(new SheriffMetrics(registry)).portal(portal).serve();
         }
 
-        private Rejection send(HttpClient client, int port, io.vertx.core.http.HttpMethod method, String host,
+        private Rejection send(HttpClient client, int port, HttpMethod method, String host,
                 String uri, Map<String, String> headers) throws Exception {
             RequestOptions options = new RequestOptions()
                     .setServer(SocketAddress.inetSocketAddress(port, LoopbackHost.ADDRESS))
