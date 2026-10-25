@@ -2203,19 +2203,21 @@ to revisit this, and nothing else is.
 [[after-the-passes]]
 == Classified Rows Changed After the Passes
 
-The three passes record verdicts against the commits they read. Eight of the rows they classified
-have changed since, and each is named here so that a verdict above is never read as a description of
-a method that no longer has that body. The passes' own totals are unchanged: they count verdicts,
-and later work does not rewrite a verdict.
+The three passes record verdicts against the commits they read. Eight of the methods they classified
+have changed since -- thirteen classification rows between them, because the first pass and
+<<unit-lane-audit>> each classified the five `edge/GatewayEdgeRouteTest` methods -- and each method is
+named here so that a verdict above is never read as a description of a method that no longer has that
+body. The passes' own totals are unchanged: they count verdicts, and later work does not rewrite a
+verdict.
 
-=== Six `keep` rows strengthened
+=== Six `keep` methods strengthened
 
 All six were `keep` under shape (a): the first pass classified the five `edge/GatewayEdgeRouteTest`
-rows, and <<unit-lane-audit>> classified the same five again together with
+methods, and <<unit-lane-audit>> classified the same five again together with
 `edge/upstream/GrpcDispatchStageTest.buildsWithFailureMapper`. Each was a constructor call inside
 `assertDoesNotThrow`. Each still constructs, and now asserts something about what was constructed.
 
-An assembled edge exposes no view of its compiled routes, so the five edge rows read what the boot
+An assembled edge exposes no view of its compiled routes, so the five edge methods read what the boot
 leaves observable instead: the clients the edge asked Vert.x for while it was assembled, counted as
 default upstream HTTP clients, forced-HTTP/2 upstream clients and WebSocket clients.
 
@@ -2249,7 +2251,7 @@ default upstream HTTP clients, forced-HTTP/2 upstream clients and WebSocket clie
 *These six are not among the thirty-two this note opens with.* No inversion audit was run for them,
 so the thirty-two remain the set whose strengthening rests on an observed RED.
 
-=== Two `strengthen` rows removed
+=== Two `strengthen` methods removed
 
 `BffSessionLoginIT.loginEstablishesUsableSession`, one of the fourteen `strengthen` verdicts of
 <<pro-forma-audit>>, no longer exists. It repeated

@@ -82,7 +82,10 @@ public final class EdgeFixtures {
 
     /**
      * An {@link Instance} that resolves to {@code value}. The edge calls only {@link Instance#get()},
-     * and only when a {@code require: bearer} route validates a token; the other accessors throw.
+     * and only when a {@code require: bearer} route validates a token. The three {@code select}
+     * overloads, {@code getHandle} and {@code handles} throw {@link UnsupportedOperationException};
+     * {@code isUnsatisfied} and {@code isAmbiguous} answer {@code false}, {@code iterator} yields the one
+     * value, and {@code destroy} does nothing.
      *
      * @param value the bean the instance resolves to
      * @param <T>   the bean type

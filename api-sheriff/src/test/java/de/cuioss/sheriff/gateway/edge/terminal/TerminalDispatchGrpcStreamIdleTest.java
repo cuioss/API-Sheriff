@@ -90,8 +90,9 @@ import org.junit.jupiter.api.Test;
  * the fixed five-minute bound — against a live prior-knowledge h2c stub upstream: the dispatch function
  * is the edge's own, so the dispatch is handed the request stream the bound watches, the relay is given
  * the bound, and an expiry is recorded as {@code ApiSheriff-25}, latched per route. Only the bound itself
- * is built with the test-only {@value #IDLE_BOUND_MILLIS} ms timeout in place of the fixed five minutes;
- * the bound the public path builds is asserted to carry exactly those five minutes.
+ * is built with the test-only {@value #IDLE_BOUND_MILLIS} ms timeout in place of the fixed five minutes.
+ * The factory the public path builds its bound with, {@code GrpcStreamIdleBound.on}, is asserted to carry
+ * exactly those five minutes; the public path's hand-over of that bound to the overload is not observed.
  * <p>
  * <strong>What the stub upstream does.</strong> A call is answered at once with its headers and a first
  * frame {@code head}; its answer ends with a {@code grpc-status: 0} trailer when the request stream has
@@ -218,8 +219,8 @@ class TerminalDispatchGrpcStreamIdleTest {
     }
 
     @Test
-    @DisplayName("the bound the public dispatchGrpc builds ends a call after exactly five minutes")
-    void publicPathBoundIsTheFixedFiveMinutes() {
+    @DisplayName("GrpcStreamIdleBound.on, the factory the public dispatchGrpc builds its bound with, carries exactly five minutes")
+    void onBuildsTheFixedFiveMinuteBound() {
         ResponseStage.GrpcStreamIdleBound bound = ResponseStage.GrpcStreamIdleBound.on(vertx);
 
         assertEquals(TimeUnit.MINUTES.toMillis(5), bound.timeoutMillis(),

@@ -89,10 +89,13 @@ import org.junit.jupiter.api.Test;
  * {@code grpc-status} / {@code grpc-message} to the client, and the stream bounds of a call over a live
  * forced-h2 upstream.
  * <p>
- * Two neighbouring contracts are pinned where their production class is tested: the forced-HTTP/2
+ * Two neighbouring contracts are pinned where their production class is tested. The forced-HTTP/2
  * client wiring (a gRPC route holds a client distinct from an HTTP/1.1 route to the same host:port, and
- * gRPC routes to one host:port share it) by {@code RouteAssemblerTest}, and the shared GW-08 body byte
- * cap the gRPC frame stream rides by {@code DispatchStageTest.ByteCap}.
+ * gRPC routes to one host:port share it) is pinned by {@code RouteAssemblerTest}. The GW-07 request-body
+ * byte cap is pinned by {@code DispatchStageTest.ByteCap}, which tests
+ * {@code DispatchStage.ByteCappedBodyStream} on its own. This stage's whole part in the cap is handing
+ * its {@code max_body_bytes} to the {@link DispatchStage} it delegates to; no test drives a body past
+ * the cap through {@link GrpcDispatchStage#dispatch}.
  */
 @DisplayName("GrpcDispatchStage — UNAVAILABLE mapping, trailer relay, stream bounds")
 @Tag("isolated-fork")

@@ -55,8 +55,14 @@ public class ConfigFixtures {
     }
 
     /**
-     * A route as route-table assembly resolves the simplest declaration: an HTTP route under a path
-     * prefix that requires no authentication and admits {@code GET}.
+     * A seed route: an HTTP route under a path prefix that requires no authentication and admits only
+     * {@code GET}.
+     * <p>
+     * The seed is not what route-table assembly resolves for a route that declares neither field; it
+     * differs in two ways. A route no scope declares {@code allowed_methods} for resolves to every
+     * standard HTTP method, not to {@code GET} alone ({@code PolicyBlock.ALLOWED_METHODS}). A route no
+     * scope gives an {@code auth} block is refused at boot, not resolved to {@code require: none}
+     * ({@code PolicyBlock.AUTH}).
      * <p>
      * The caller adds what the case is about — typically the upstream, and any other method, posture
      * or block — and may override every seeded field.
