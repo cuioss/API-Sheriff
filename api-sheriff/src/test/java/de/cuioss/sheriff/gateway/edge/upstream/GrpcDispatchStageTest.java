@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge.upstream;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,6 +33,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -87,15 +89,16 @@ import org.junit.jupiter.api.Test;
  * Contract of the {@code protocol: grpc} dispatch path (deliverable 6): the constructor contract, the
  * h2-negotiation-failure → gRPC {@code UNAVAILABLE} mapping, the response-trailer relay carrying
  * {@code grpc-status} / {@code grpc-message} to the client, and the stream bounds of a call over a live
- * forced-h2 upstream.
+ * forced-h2 upstream, the request-body cap among them.
  * <p>
- * Two neighbouring contracts are pinned where their production class is tested. The forced-HTTP/2
- * client wiring (a gRPC route holds a client distinct from an HTTP/1.1 route to the same host:port, and
- * gRPC routes to one host:port share it) is pinned by {@code RouteAssemblerTest}. The GW-07 request-body
- * byte cap is pinned by {@code DispatchStageTest.ByteCap}, which tests
- * {@code DispatchStage.ByteCappedBodyStream} on its own. This stage's whole part in the cap is handing
- * its {@code max_body_bytes} to the {@link DispatchStage} it delegates to; no test drives a body past
- * the cap through {@link GrpcDispatchStage#dispatch}.
+ * The forced-HTTP/2 client wiring (a gRPC route holds a client distinct from an HTTP/1.1 route to the
+ * same host:port, and gRPC routes to one host:port share it) is pinned where its production class is
+ * tested, by {@code RouteAssemblerTest}. The GW-07 request-body byte cap is pinned twice.
+ * {@code DispatchStageTest.ByteCap} tests {@code DispatchStage.ByteCappedBodyStream} on its own. This
+ * stage's whole part in the cap is handing its {@code max_body_bytes} to the {@link DispatchStage} it
+ * delegates to, and {@code StreamBounds#bodyPastTheCapIsRefusedAndItsBreachingFrameNeverForwarded}
+ * streams a body past a small cap through {@link GrpcDispatchStage#dispatch}: the dispatch is refused
+ * as {@code CONTENT_TOO_LARGE} and the frame that crosses the cap never reaches the upstream.
  */
 @DisplayName("GrpcDispatchStage — UNAVAILABLE mapping, trailer relay, stream bounds")
 @Tag("isolated-fork")
@@ -301,7 +304,8 @@ class GrpcDispatchStageTest {
      * bounds the call. Once the headers have arrived the guarded call has returned and the guard no
      * longer bounds the call; its stream-idle bound does. That bound ends a call that carried no frame in
      * either direction for its timeout, and only such a call: traffic in either direction alone keeps the
-     * call open.
+     * call open. What the call may send is bounded by the route's request-body cap, which the gRPC
+     * dispatch enforces on the streamed body like any other dispatch.
      * <p>
      * <strong>How the stream-idle bound is driven.</strong> The cases on it run the call through a front
      * HTTP/2 server that composes the production pieces the way {@code TerminalDispatch#dispatchGrpc}
@@ -349,6 +353,14 @@ class GrpcDispatchStageTest {
         private static final String GRPC_STATUS = "grpc-status";
         private static final String GRPC_MESSAGE = "grpc-message";
         private static final String GRPC_OK = "0";
+        /** The request-body cap of every case but the cap case: far above anything a case sends. */
+        private static final long ROOMY_CAP_BYTES = 1024L * 1024L;
+        /** The request-body cap of the cap case: the two frames it sends cross it only together. */
+        private static final long BODY_CAP_BYTES = 8L;
+        /** The first frame of the cap case: five bytes, under the cap. */
+        private static final String UNDER_CAP_FRAME = "first";
+        /** The second frame of the cap case: six bytes, which carry the running count to eleven. */
+        private static final String BREACHING_FRAME = "second";
 
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
         private final ResponseStage responseStage =
@@ -593,6 +605,42 @@ class GrpcDispatchStageTest {
          * @param path the gRPC method path the stub upstream answers by
          * @return the open call; its request headers are sent with its first frame
          */
+        /**
+         * Pins that the stage enforces the route's request-body cap on a streamed body: a frame that
+         * carries the running byte count past {@value #BODY_CAP_BYTES} bytes refuses the dispatch as
+         * {@code CONTENT_TOO_LARGE} and is never forwarded, while the frame before it was. The call is
+         * client-streaming, so the upstream has not answered when the cap is crossed and the refusal is
+         * the dispatch's own failure.
+         */
+        @Test
+        @DisplayName("a request body streamed past the route's cap is refused as CONTENT_TOO_LARGE and its breaching frame never reaches the upstream")
+        void bodyPastTheCapIsRefusedAndItsBreachingFrameNeverForwarded() throws Exception {
+            Route route = grpcRoute();
+            GrpcDispatchStage stage = stage(route, longGuard(), BODY_CAP_BYTES);
+            PushedBody body = new PushedBody();
+
+            body.push(UNDER_CAP_FRAME);
+            CompletableFuture<HttpClientResponse> answered = CompletableFuture.supplyAsync(
+                    () -> stage.dispatch(route, HttpMethod.POST, CLIENT_STREAMING, Map.of(), body, -1L));
+            Awaits.until(() -> upstreamFrames.contains(UNDER_CAP_FRAME), "the frame under the cap to reach the upstream",
+                    Awaits.CONNECT_CEILING_SECONDS);
+            body.push(BREACHING_FRAME);
+            body.end();
+            ExecutionException refused = assertThrows(ExecutionException.class,
+                    () -> Awaits.connect(answered, "the dispatch of a body past the cap to end"),
+                    "a body past the cap fails the dispatch instead of being answered");
+            Awaits.connect(upstreamFailed, "the upstream call to be reset");
+
+            assertAll("a request body streamed past the route's cap",
+                    () -> assertEquals(EventType.CONTENT_TOO_LARGE,
+                            assertInstanceOf(GatewayException.class, refused.getCause(),
+                                    "the dispatch fails with the gateway's own refusal").getEventType(),
+                            "the refusal is the request-body cap's"),
+                    () -> assertEquals(List.of(UNDER_CAP_FRAME), upstreamFrames,
+                            "the frame under the cap reached the upstream and the breaching frame did not"),
+                    () -> assertFalse(upstreamEnded.isDone(), "the request stream never ended at the upstream"));
+        }
+
         private ClientCall open(String path) throws Exception {
             HttpClientRequest request = Awaits.connect(edgeClient.request(io.vertx.core.http.HttpMethod.POST,
                     frontServer.actualPort(), LoopbackHost.ADDRESS, path), "a call to the front server to open");
@@ -617,10 +665,14 @@ class GrpcDispatchStageTest {
         }
 
         private GrpcDispatchStage stage(Route route, Guard guard) {
+            return stage(route, guard, ROOMY_CAP_BYTES);
+        }
+
+        private GrpcDispatchStage stage(Route route, Guard guard, long maxBodyBytes) {
             UpstreamTarget target = UpstreamTarget.of(route);
             UpstreamClients clients = new UpstreamClients(Map.of(target, forcedH2),
                     Map.of(new ResilienceShape(target, route.retryEnabled()), guard));
-            return new GrpcDispatchStage(clients, 1024L * 1024L, failureMapper);
+            return new GrpcDispatchStage(clients, maxBodyBytes, failureMapper);
         }
 
         /** The stand-in guard of {@value #LONG_GUARD_SECONDS} s every case but the post-header one runs under. */
