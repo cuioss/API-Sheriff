@@ -67,7 +67,10 @@ would be a claim about the caller's inputs. As separate legs, it is a property o
 === The gate re-asserts its own bound
 
 The residual leg matters even where the calling stage makes it unreachable. The gate re-checks the
-body-present signal itself, so its stated bound holds under any input. This applies the principle of
+body-present signal itself, so its stated bound holds whatever the calling stage passes. That signal is
+derived from the `Content-Length` and `Transfer-Encoding` headers, so the bound covers every body a
+header announces. A body that no header announces is the accepted failure mode below. This applies the
+principle of
 link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026];
 this record does not restate it.
 

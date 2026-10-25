@@ -152,9 +152,9 @@ An unauthenticated client can drive each of them at rate on a public upload rout
   dispatch ends as `REQUEST_BODY_TIMEOUT`
   (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[ADR-0060]).
 
-The idle timeout closes the connection only when a body chunk had been forwarded. `DispatchStage`
-sends the request head together with the first chunk, so a reset before it leaves the connection
-reusable. The other resets of the dispatch close the connection the same way: a body over the route
+The idle timeout and the deadline close the connection only when a body chunk had been forwarded.
+`DispatchStage` sends the request head together with the first chunk, so a reset before that chunk
+leaves the connection reusable. The other resets of the dispatch close the connection the same way: a body over the route
 cap, a body beyond its declared length, a body on a bodyless method, an abandoned attempt and a relay
 that fails to start.
 

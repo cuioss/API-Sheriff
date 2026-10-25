@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: Egress TLS posture lives in one global egress_tls block with a peer key pair per leg, and every leg follows one principle stated here: a hostname relaxation never relaxes chain trust and ships with a trust key, a library's own passthrough is preferred over a locally built trust manager, the one combination a library refuses is a boot refusal first, and every TLS-client construction site declares its posture explicitly (guarded by EgressTlsPostureArchTest). For the proxy path, upstream_verify_hostname and upstream_tls_profile bind at the three Vert.x client-construction sites (default HTTP, forced-HTTP/2, edge-wide WebSocket) because the runtime fixes the setting at client construction; an omitted flag resolves to true; a named profile replaces the anchors; the asset-origin JDK client is deliberately not governed. ADR-0041 (JWKS) and ADR-0045 (BFF back channel) apply the principle to their legs
+// summary: Egress TLS posture lives in one global egress_tls block with prefixed keys per governed leg (the JWKS leg has only its hostname key; its trust stays per issuer in jwks.tls_profile), and every leg follows one principle stated here: a hostname relaxation never relaxes chain trust and ships with a trust key, a library's own passthrough is preferred over a locally built trust manager, the one combination a library refuses is a boot refusal first, and every TLS-client construction site declares its posture explicitly (guarded by EgressTlsPostureArchTest). For the proxy path, upstream_verify_hostname and upstream_tls_profile bind at the three Vert.x client-construction sites (default HTTP, forced-HTTP/2, edge-wide WebSocket) because the runtime fixes the setting at client construction; an omitted flag resolves to true; a named profile replaces the anchors; the asset-origin JDK client is deliberately not governed. ADR-0041 (JWKS) and ADR-0045 (BFF back channel) apply the principle to their legs
 // tags: tls, egress, configuration-surface, secure-by-default, partial-relaxation, tls-trust, deployment-binding, blast-radius, fitness-function
 // affects: api-sheriff, integration-tests
 // supersedes:
@@ -91,8 +91,9 @@ to the BFF back channel.
 
 Three surface rules go with the principle:
 
-* *One block, a peer key pair per leg.* Every key carries the prefix of the leg it governs:
-  `upstream_`, `jwks_`, `oidc_`. A bare `verify_hostname` beside a prefixed one would read as "the
+* *One block, prefixed keys per governed leg.* Every key carries the prefix of the leg it governs:
+  `upstream_`, `jwks_`, `oidc_`. The JWKS leg has only `jwks_verify_hostname`; its trust stays per
+  issuer in `jwks.tls_profile`. The asset-origin fetch has no key in this block. A bare `verify_hostname` beside a prefixed one would read as "the
   general rule plus an exception", which is the wrong model. `upstream_tls_profile` is not
   `tls_profile`, because a per-issuer `jwks.tls_profile` already exists and an unprefixed name would
   invite the reading that it covers the JWKS leg too.

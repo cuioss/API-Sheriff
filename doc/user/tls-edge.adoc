@@ -262,8 +262,10 @@ network-level (drop the client at the perimeter), not certificate-level.
 == Egress TLS (`egress_tls`)
 
 Everything above governs connections *to* the gateway. The global `egress_tls` block governs the TLS
-connections the gateway *dials*. It holds a pair of keys per egress leg -- one that relaxes hostname
-verification, one that names a trust profile -- and every key is optional:
+connections the gateway *dials*. It holds a hostname-verification key for the proxied upstreams, the
+JWKS fetch and the BFF back channel, and a trust-profile key for the proxied upstreams and the BFF
+back channel. The JWKS leg takes its trust per issuer from `jwks.tls_profile`, and the asset-origin
+fetch reads no key of this block. Every key is optional:
 
 [source,yaml]
 ----

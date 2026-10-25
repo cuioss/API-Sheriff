@@ -300,8 +300,8 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
 |===
 
 NOTE: This index is *not exhaustive* -- most records in link:adr/[`doc/adr/`] have no row here.
-Treat the directory as the authoritative list and this table as a curated entry point; a missing row
-is index drift, never a withdrawn decision. Ordinals are never reused, so a gap in the numbering is a
+Treat the directory as the authoritative list and this table as a curated entry point; a record without a
+row is not a withdrawn decision. Ordinals are never reused, so a gap in the numbering is a
 record that was moved into developer documentation or merged into another record.
 
 == Reading Order

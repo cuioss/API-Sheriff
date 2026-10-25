@@ -524,10 +524,9 @@ one. The gateway's HTTP/1.1 upstream client closes its connections with `SO_LING
 TCP reset, and the gateway's local port is free at once instead of being held in `TIME_WAIT` for a
 minute (see <<_downstream_client,Downstream Client>>). The same abortive close ends the upstream
 connection on each of the four triggers a client can drive at rate: the early upstream answer, the
-client abort (<<_aborted_inbound_body>>), the request-body idle timeout of a partly sent body
-(<<_request_body_idle_timeout>>) and the request-body deadline (<<_request_body_deadline>>). This reset
-is not a breaker failure. It happens
-after the guarded dispatch call has returned, so the route's circuit breaker never sees it, and the
+client abort (<<_aborted_inbound_body>>), and, once a body chunk was forwarded, the request-body idle
+timeout (<<_request_body_idle_timeout>>) and the request-body deadline (<<_request_body_deadline>>).
+This reset is not a breaker failure. It happens after the guarded dispatch call has returned, so the route's circuit breaker never sees it, and the
 `StreamResetException` it hands to the upstream request is dropped rather than logged at `ERROR`
 (link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#abortive-upstream-close[ADR-0066
 -- the abortive upstream close]).

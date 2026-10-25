@@ -65,8 +65,9 @@ re-checks the condition itself, so its stated bound is true of the gate under an
 
 Where several stages derive the same policy from different configurations, the derivation is written
 once and takes the configuration as a parameter. The shared seam,
-`SecurityConfigurations.builderSeededFrom`, takes a stage's resolved configuration and applies the
-exception to it. Each stage's answer then differs in exactly the way the stages differ, the
+`SecurityConfigurations.builderSeededFrom`, copies every component of a stage's resolved configuration
+into a builder. The caller then overrides only the dimension its exception changes: `SecurityPostures`
+before route selection, `ThoroughChecksStage` after it. Each stage's answer then differs in exactly the way the stages differ, the
 configuration it was handed, and in no other way. That is what makes a bound like "only the length cap
 changes" structurally true rather than asserted in a comment. A seeding that carries every component
 forward cannot drop one. A per-stage copy of a component list must be maintained twice, and will not

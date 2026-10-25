@@ -274,8 +274,9 @@ not consulted — crossing without being named is the set's entire purpose — s
 only way to withhold one is to say so.
 
 **The set is disjoint from the request-direction never-forward set**, and that
-disjointness is load-bearing. The protocol set reads the raw client request after
-the strip, so it bypasses the strip; that is safe only while the two sets share no
+disjointness is load-bearing. The protocol set is applied after the strip but
+copies its names from the raw client request, not from the stripped header map,
+so the strip does not filter it. That is safe only while the two sets share no
 name. A test asserts the disjointness directly (see the first risk below).
 
 === The `not_modified` decision

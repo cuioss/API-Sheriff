@@ -224,14 +224,17 @@ under a key-set URL the identity provider may hold. The constructor refuses a JW
 private member.
 
 `CLIENT_JWKS` is one of the two kinds matched on every host, and it is registered last, after the
-step-up path, so that boot validation sees a `jwks_path` another key also names as a collision. If you add a reserved kind the identity
-provider dials server-to-server, add it to that set and say why in `match(...)`.
+step-up path, so that boot validation sees a `jwks_path` another key also names as a collision. If
+you add a reserved kind the identity provider dials server-to-server, add it to that set and say why
+in `match(...)`.
 
-`BACKCHANNEL_LOGOUT` is the other kind, and `BffBackchannelLogoutIT` is the test that shows why. Its
-Keycloak realm names the gateway by its compose service name, while the OIDC host is the public name.
-With an OIDC-host gate on the receiver, the logout token reached the route table, was answered `404`,
-and the session survived the IdP-initiated logout. Nothing logged an error on either side: the IdP
-recorded a failed delivery, the gateway an unrouted path
+`BACKCHANNEL_LOGOUT` is the other kind, and `BffBackchannelLogoutIT` depends on it. The test's
+Keycloak realm names the gateway by its compose service name, while the OIDC host is the public name,
+and the test asserts that an IdP-initiated logout ends the session. With an OIDC-host gate on the
+receiver, the logout token reaches the route table, is answered `404`, and the session survives, and
+neither side logs an error: the IdP records a failed delivery, the gateway an unrouted path. That is
+how the suite's first CI run failed. The IT does not reproduce it, and `ReservedPathRegistryTest`
+pins the exemption with both arms
 (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#backchannel-host[ADR-0018]).
 
 === The PAR adapter

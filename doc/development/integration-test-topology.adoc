@@ -1289,11 +1289,13 @@ Three bring-up scripts gate a stack before it is driven: `start-integration-cont
 `deployment/compose-sample/scripts/start-sample.sh` for the operator sample (see
 link:compose-sample.adoc[the Compose sample guide]) and `demo-client/scripts/start-dev-environment.sh`.
 A gate built carelessly fails quietly in two ways: it waits on the wrong signal, or it restates a fact
-the Compose model owns. The rules below close both, and each script is bound by them.
+the Compose model owns. The rules below close both. Each script is bound by them, with the one
+departure the named-constant rule records.
 
 * *Gate on readiness, not liveness, and fail closed.* The final assertion hits the readiness
-  endpoint, and the HTTP client treats a non-2xx answer as a failure (`curl -f`). A service that
-  answers "not ready" while it starts therefore does not clear the gate when its port accepts.
+  endpoint, and the HTTP client treats an error status (`4xx` or `5xx`) as a failure (`curl -f`; a
+  `3xx` is not followed and does not fail). A service that answers "not ready" while it starts
+  therefore does not clear the gate when its port accepts.
   Delegating the *waiting* to the image's health check changes where the waiting happens, never what
   is finally asserted.
 * *Derive the whole probe target from the resolved Compose model.* The service set, each service's
@@ -1322,15 +1324,16 @@ the Compose model owns. The rules below close both, and each script is bound by 
   recorded origin. A bound never widens what counts as ready. No budget turns a key set that can
   never load into a ready gateway: an issuer whose JWKS the gateway cannot fetch or cannot trust
   needs its trust fixed, not a longer wait.
-* *Every wait that still polls takes its attempt count from one named constant.* Some waits have no
-  baked health check to delegate to: this stack's Keycloak and backend gates, the operator sample's
-  readiness wait and demo-client's waits. Each takes its count from one constant declared once in its
-  script -- `KEYCLOAK_WAIT_ATTEMPTS` and `BACKEND_WAIT_ATTEMPTS` in `start-integration-container.sh`,
-  both handed to its one `wait_for_url` helper, and `READY_ATTEMPTS` in `start-sample.sh`. The count
-  is never restated as a literal in the loop bound, the exhaustion check and the progress message,
-  where the copies could be re-tuned apart. `start-dev-environment.sh` declares its gateway budget once,
-  as `GATEWAY_READY_ATTEMPTS`, but its Keycloak gate departs from the rule: it restates its
-  120-attempt budget as literals in the loop range, the exhaustion check and the progress message.
+* *A wait that still polls takes its attempt count from one named constant, with one recorded
+  departure.* Some waits have no baked health check to delegate to: this stack's Keycloak and backend
+  gates, the operator sample's readiness wait and demo-client's waits. `KEYCLOAK_WAIT_ATTEMPTS` and
+  `BACKEND_WAIT_ATTEMPTS` in `start-integration-container.sh`, both handed to its one `wait_for_url`
+  helper, `READY_ATTEMPTS` in `start-sample.sh` and `GATEWAY_READY_ATTEMPTS` in
+  `start-dev-environment.sh` are each declared once in their script, and the count is never restated
+  as a literal in the loop bound, the exhaustion check and the progress message, where the copies
+  could be re-tuned apart. The departure is the Keycloak gate of `start-dev-environment.sh`: it
+  restates its 120-attempt budget as literals in the loop range, the exhaustion check and the
+  progress message.
 
 *The shapes the rules reject.* Each keeps in the gate a fact the model already owns, or a number
 whose origin cannot be reconstructed:

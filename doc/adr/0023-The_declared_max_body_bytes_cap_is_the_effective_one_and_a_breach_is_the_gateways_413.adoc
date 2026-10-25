@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: A declared security_filter.max_body_bytes body cap is the cap in force; the boot refuses any declared cap above the framework body limit quarkus.http.limits.max-body-size, so the framework never clips a declared cap silently, and the gateway renders a breach as its own RFC 9457 413 (CONTENT_TOO_LARGE, INPUT_VALIDATION), mapped to RESOURCE_EXHAUSTED on gRPC
+// summary: A declared security_filter.max_body_bytes body cap is the cap in force; the boot refuses any declared cap above the framework body limit quarkus.http.limits.max-body-size, so the framework never clips a declared cap silently, and the gateway renders a breach it observes as its own RFC 9457 413 (CONTENT_TOO_LARGE, INPUT_VALIDATION), mapped to RESOURCE_EXHAUSTED on gRPC
 // tags: body-limits, error-contract, fail-closed, configuration, edge
 // affects: api-sheriff/src/main/resources/application.properties, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/boot/ConfigBootPipeline.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigProducer.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/ThoroughChecksStage.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/GrpcStatusMapper.java, doc/configuration.adoc, doc/architecture.adoc
 // supersedes:

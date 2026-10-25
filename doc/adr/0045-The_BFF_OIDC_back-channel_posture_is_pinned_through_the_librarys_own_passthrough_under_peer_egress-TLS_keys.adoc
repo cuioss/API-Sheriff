@@ -55,8 +55,8 @@ boot refusal first, in the gateway's own vocabulary.*
 === Peer keys, following ADR-0040's surface rule
 
 The keys sit beside `upstream_verify_hostname` and `jwks_verify_hostname` as peers. No bare
-`verify_hostname` or `tls_profile` is introduced. Every egress TLS posture key lives in one block, named
-for its leg.
+`verify_hostname` or `tls_profile` is introduced. Every key of the `egress_tls` block is named for its
+leg. The JWKS leg's trust key stays per issuer in `jwks.tls_profile`.
 
 The relaxation and the trust key ship together, per principle (1) of ADR-0040. The argument weighs most
 on this leg: an operator who turns off hostname verification to fix a chain-trust failure has disabled a
