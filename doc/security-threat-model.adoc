@@ -1519,9 +1519,10 @@ response head and no body byte (`http2TrickleToAHeadOnlyUpstreamKeepsTheUpstream
 `http1TrickleToAHeadOnlyUpstreamKeepsTheUpstreamStatus`): the client still receives the upstream's
 status at the deadline; both were red, answered `502`, before the relay failure kept that status.
 `TerminalDispatchLateBodyTimeoutTest` asserts the same decision on the unwritten head directly,
-including a relay that had not set the upstream status yet, and drives the late timeout's retirement
-and the failed relay that follows it through their production callers, never through the retirement
-calls themselves. `GatewayEdgeRequestBodyIdleTimeoutTest` also asserts that an upload queued for a pooled
+including a relay that had not set the upstream status yet. On HTTP/1.x it drives the late timeout's
+retirement and the failed relay that follows it through their production callers, not through the
+retirement calls themselves; its HTTP/2 counterparts and the marked-request case still call those
+retirement methods directly, against fakes. `GatewayEdgeRequestBodyIdleTimeoutTest` also asserts that an upload queued for a pooled
 connection longer than the idle timeout but within its deadline is served `200`
 (`uploadQueuedForAPooledConnectionIsServed`), and that one which obtains its connection only after its
 deadline is answered `408` as soon as its body is read (`uploadQueuedPastItsDeadlineIsAnswered408`).
