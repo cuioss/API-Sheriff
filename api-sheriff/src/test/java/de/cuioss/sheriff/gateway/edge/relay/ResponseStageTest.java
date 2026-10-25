@@ -29,13 +29,13 @@ import java.util.function.Supplier;
 
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.vertx.core.Future;
 import io.vertx.core.MultiMap;
@@ -62,7 +62,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 class ResponseStageTest {
 
     /** The gateway cookies of a gateway without an {@code oidc} block: the reserved prefix alone. */
-    private static final GatewayCookies RESERVED_ONLY = GatewayCookies.of(GatewayConfig.builder().version(1).build());
+    private static final GatewayCookies RESERVED_ONLY = GatewayCookies.of(ConfigFixtures.gateway().build());
 
     @ParameterizedTest
     @ValueSource(longs = {0L, -1L})
@@ -383,7 +383,7 @@ class ResponseStageTest {
             }).listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
             int upstreamPort = upstream.actualPort();
 
-            ResponseStage owning = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1)
+            ResponseStage owning = new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway()
                     .oidc(OidcConfig.builder().redirectUri("https://gw.example.com/auth/callback")
                             .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER)
                                     .cookieName(OWNED_NAME).build())

@@ -24,9 +24,9 @@ import java.util.List;
 
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -59,7 +59,7 @@ class UpstreamSetCookieFilterTest {
             new CookieAllow.Named(List.of("theme", "JSESSIONID")), null, null);
 
     private final UpstreamSetCookieFilter filter = new UpstreamSetCookieFilter(GatewayCookies.of(
-            GatewayConfig.builder().version(1).oidc(OidcConfig.builder()
+            ConfigFixtures.gateway().oidc(OidcConfig.builder()
                     .redirectUri("https://gw.example.com/auth/callback")
                     .session(OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_SERVER)
                             .cookieName(CONFIGURED).build())
@@ -287,7 +287,7 @@ class UpstreamSetCookieFilterTest {
         @DisplayName("Should drop a line under the reserved prefix on a gateway without an oidc block")
         void shouldDropReservedNamesWithoutOidc() {
             UpstreamSetCookieFilter bearerOnly = new UpstreamSetCookieFilter(
-                    GatewayCookies.of(GatewayConfig.builder().version(1).build()));
+                    GatewayCookies.of(ConfigFixtures.gateway().build()));
 
             assertAll("the reserved names are the gateway's with or without a BFF",
                     () -> assertNull(bearerOnly.relayedValue(SET_COOKIE, "__Host-sheriff-x=1", ALL)),

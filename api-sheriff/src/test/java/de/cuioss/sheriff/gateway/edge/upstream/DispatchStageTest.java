@@ -65,10 +65,8 @@ import de.cuioss.sheriff.gateway.asset.UpstreamAssetSource;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
-import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -87,6 +85,7 @@ import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.test.generator.Generators;
@@ -1935,11 +1934,7 @@ class DispatchStageTest {
                     .onStateChange(breakerTransitions::add)
                     .done()
                     .build();
-            RouteTable table = new RouteTable(List.of(Route.builder()
-                    .id("upload")
-                    .protocol(Protocol.HTTP)
-                    .match(MatchConfig.builder().pathPrefix("/upload").build())
-                    .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
+            RouteTable table = new RouteTable(List.of(ConfigFixtures.route("upload", "/upload")
                     .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                     .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstream.actualPort(), ""))
                     .build()));
@@ -2661,7 +2656,7 @@ class DispatchStageTest {
                             .whenException(DispatchStage::allowsRetryAfter).done()
                             .build(),
                     DispatchStage.NO_BODY_IDLE_TIMEOUT, new UpstreamFailureMapper(new GatewayEventCounter()));
-            ResponseStage responseStage = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()));
+            ResponseStage responseStage = new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build()));
             front = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
                 // As GatewayEdgeRoute does: pause the inbound request on its event loop, capture that
                 // loop's context, and run the dispatch on a virtual thread.

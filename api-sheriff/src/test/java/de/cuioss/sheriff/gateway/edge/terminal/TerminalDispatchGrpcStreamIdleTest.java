@@ -32,12 +32,8 @@ import java.util.concurrent.TimeUnit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
@@ -63,6 +59,7 @@ import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
@@ -169,7 +166,7 @@ class TerminalDispatchGrpcStreamIdleTest {
     @Test
     @DisplayName("a call carrying no frame in either direction ends with DEADLINE_EXCEEDED and is recorded as ApiSheriff-25")
     void idleCallIsEndedAndRecorded() throws Exception {
-        ClientCall call = open();
+        ClientCall call = open(CALL_PATH);
 
         Awaits.connect(call.request().write("first"), "the first frame to be sent");
         Awaits.until(() -> call.frames().contains("head") && upstreamFrames.contains("first"),
@@ -196,7 +193,7 @@ class TerminalDispatchGrpcStreamIdleTest {
     @Test
     @DisplayName("a client that keeps sending keeps the call open while the upstream is silent past the stream-idle bound")
     void clientTrafficKeepsTheCallOpen() throws Exception {
-        ClientCall call = open();
+        ClientCall call = open(CALL_PATH);
         int pings = (int) (SILENCE_MILLIS / TICK_MILLIS);
 
         Awaits.connect(call.request().write("first"), "the first frame to be sent");
@@ -305,11 +302,8 @@ class TerminalDispatchGrpcStreamIdleTest {
 
     /** A {@code protocol: grpc} route under {@code prefix} to the stub upstream. */
     private Route grpcRoute(String id, String prefix) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, prefix)
                 .protocol(Protocol.GRPC)
-                .match(MatchConfig.builder().pathPrefix(prefix).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                 .upstream(new ResolvedUpstream("http", LoopbackHost.ADDRESS, upstreamServer.actualPort(), ""))
                 .build();
@@ -335,19 +329,10 @@ class TerminalDispatchGrpcStreamIdleTest {
                 BffRuntime.inert(), new EdgeAdmission(hardening), new ConnectionRetirement(new FramingGate(false)),
                 rejectionReporter, new ErrorResponseWriter(PortalEndpoint.inert(), new GatewayJson(new ObjectMapper()),
                         new GrpcStatusMapper(), rejectionReporter),
-                new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build())),
+                new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build())),
                 new OriginValidationStage(),
                 new WebSocketRelayStage(vertx.createWebSocketClient(), failureMapper, eventCounter,
                         WebSocketRelayStage.RelayObserver.NO_OP));
-    }
-
-    /**
-     * Opens a call on route {@value #ROUTE_ID} and records what comes back.
-     *
-     * @return the open call; its request headers are sent with its first frame
-     */
-    private ClientCall open() throws Exception {
-        return open(CALL_PATH);
     }
 
     /**

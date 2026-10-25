@@ -55,6 +55,7 @@ import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import de.cuioss.sheriff.gateway.routing.ProtocolProcessorRegistry;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
@@ -321,9 +322,8 @@ class RouteAssemblerTest {
     @DisplayName("Should carry the needed scopes from the resolved route")
     void shouldCarryNeededScopes() {
         AuthConfig auth = AuthConfig.builder().require(Require.BEARER).build();
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("scoped").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/s").build())
-                .effectiveAuth(auth).effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("scoped", "/s")
+                .effectiveAuth(auth)
                 .neededScopes(Set.of("openid", "read", "write"))
                 .upstream(upstream("a.example")).build()));
 
@@ -336,10 +336,8 @@ class RouteAssemblerTest {
     @Test
     @DisplayName("Should carry an empty needed-scope set for a route needing no scope")
     void shouldCarryEmptyNeededScopes() {
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("open").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/o").build())
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("open", "/o")
                 .effectiveAuth(AuthConfig.builder().require(Require.BEARER).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .upstream(upstream("a.example")).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -352,10 +350,7 @@ class RouteAssemblerTest {
     void shouldCarryEffectiveForward() {
         ForwardConfig forward = ForwardConfig.builder().headersAllow(List.of("Accept"))
                 .queryAllow(List.of("page")).setHeaders(Map.of("X-Gateway", "api-sheriff")).build();
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("fwd").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/f").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("fwd", "/f")
                 .upstream(upstream("a.example")).effectiveForward(forward).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -369,10 +364,7 @@ class RouteAssemblerTest {
     void shouldCarryEffectiveForwardDenyLists() {
         ForwardConfig forward = ForwardConfig.builder().headersDeny(List.of("X-Internal"))
                 .queryDeny(List.of("debug")).setHeaders(Map.of()).build();
-        RouteTable table = new RouteTable(List.of(Route.builder()
-                .id("deny").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/d").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        RouteTable table = new RouteTable(List.of(ConfigFixtures.route("deny", "/d")
                 .upstream(upstream("a.example")).effectiveForward(forward).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -402,16 +394,10 @@ class RouteAssemblerTest {
     void shouldCarryResolvedSecurityHeaders() {
         SecurityHeadersConfig anchorBlock = SecurityHeadersConfig.builder()
                 .frameDeny(true).contentSecurityPolicy("default-src 'self'").build();
-        Route proxy = Route.builder()
-                .id("proxy").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/p").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        Route proxy = ConfigFixtures.route("proxy", "/p")
                 .securityHeaders(anchorBlock)
                 .upstream(upstream("a.example")).build();
-        Route asset = Route.builder()
-                .id("asset").protocol(Protocol.HTTP).match(MatchConfig.builder().pathPrefix("/a").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        Route asset = ConfigFixtures.route("asset", "/a")
                 .securityHeaders(anchorBlock)
                 .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html")).build();
         Route redirect = Route.builder()
@@ -439,18 +425,10 @@ class RouteAssemblerTest {
         ResolvedUpstream effectiveUpstream = new ResolvedUpstream("https", "a.example", 443, "/svc/v1");
         LocationRewriter rewriter = new LocationRewriter(effectiveUpstream, "/api", false);
         RouteTable table = new RouteTable(List.of(
-                Route.builder()
-                        .id("rewritten").protocol(Protocol.HTTP)
-                        .match(MatchConfig.builder().pathPrefix("/api").build())
-                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                ConfigFixtures.route("rewritten", "/api")
                         .locationRewriter(rewriter)
                         .upstream(effectiveUpstream).build(),
-                Route.builder()
-                        .id("verbatim").protocol(Protocol.HTTP)
-                        .match(MatchConfig.builder().pathPrefix("/other").build())
-                        .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                        .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+                ConfigFixtures.route("verbatim", "/other")
                         .upstream(effectiveUpstream).build()));
 
         List<Route> routes = assemble(table).routes();
@@ -470,11 +448,7 @@ class RouteAssemblerTest {
     @Test
     @DisplayName("Should assemble an asset route with a live source and no client or guard")
     void shouldAssembleAssetRouteWithoutClientOrGuard() {
-        Route assetRoute = Route.builder()
-                .id("bundle").protocol(Protocol.HTTP)
-                .match(MatchConfig.builder().pathPrefix("/assets").build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
+        Route assetRoute = ConfigFixtures.route("bundle", "/assets")
                 .asset(ResolvedAsset.directory("/srv/assets", AccessLevel.PUBLIC, "index.html", "index.html"))
                 .build();
         RouteTable table = new RouteTable(List.of(assetRoute));
@@ -639,12 +613,9 @@ class RouteAssemblerTest {
 
     private static Route route(String id, Protocol protocol, Require require,
             @Nullable SecurityFilterConfig filter, ResolvedUpstream upstream) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, "/" + id)
                 .protocol(protocol)
-                .match(MatchConfig.builder().pathPrefix("/" + id).build())
                 .effectiveAuth(AuthConfig.builder().require(require).build())
-                .effectiveAllowedMethods(Set.of(HttpMethod.GET))
                 .effectiveSecurityFilter(filter)
                 .upstream(upstream)
                 .build();

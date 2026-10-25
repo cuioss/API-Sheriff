@@ -39,7 +39,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
@@ -453,7 +452,7 @@ class TerminalDispatchLateBodyTimeoutTest {
                     BffRuntime.inert(), new EdgeAdmission(hardening), connectionRetirement, rejectionReporter,
                     new ErrorResponseWriter(PortalEndpoint.inert(), new GatewayJson(new ObjectMapper()),
                             new GrpcStatusMapper(), rejectionReporter),
-                    new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build())),
+                    new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build())),
                     new OriginValidationStage(),
                     new WebSocketRelayStage(vertx.createWebSocketClient(), failureMapper, eventCounter,
                             WebSocketRelayStage.RelayObserver.NO_OP));

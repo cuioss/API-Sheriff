@@ -37,13 +37,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
-import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
-import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
-import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
 import de.cuioss.sheriff.gateway.edge.assembly.ResilienceShape;
@@ -59,6 +55,7 @@ import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.ConfigFixtures;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
@@ -219,7 +216,7 @@ class GrpcDispatchStageTest {
             // Front server: relays the upstream response WITH its trailers exactly as the gRPC dispatch
             // path does (ResponseStage#relayWithTrailers), with X-Frame-Options and
             // Content-Security-Policy both in default mode.
-            ResponseStage responseStage = new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()));
+            ResponseStage responseStage = new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build()));
             front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> client
                     .request(io.vertx.core.http.HttpMethod.POST, upstreamPort, LoopbackHost.ADDRESS,
                             "/svc.Service/Method")
@@ -352,7 +349,7 @@ class GrpcDispatchStageTest {
 
         private final UpstreamFailureMapper failureMapper = new UpstreamFailureMapper(new GatewayEventCounter());
         private final ResponseStage responseStage =
-                new ResponseStage(GatewayCookies.of(GatewayConfig.builder().version(1).build()));
+                new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build()));
         private final List<String> upstreamFrames = new CopyOnWriteArrayList<>();
         private final CompletableFuture<Void> upstreamEnded = new CompletableFuture<>();
         private final CompletableFuture<Throwable> upstreamFailed = new CompletableFuture<>();
@@ -725,11 +722,8 @@ class GrpcDispatchStageTest {
     }
 
     private static Route route(String id, Protocol protocol, ResolvedUpstream upstream) {
-        return Route.builder()
-                .id(id)
+        return ConfigFixtures.route(id, "/" + id)
                 .protocol(protocol)
-                .match(MatchConfig.builder().pathPrefix("/" + id).build())
-                .effectiveAuth(AuthConfig.builder().require(Require.NONE).build())
                 .effectiveAllowedMethods(Set.of(HttpMethod.POST))
                 .upstream(upstream)
                 .build();
