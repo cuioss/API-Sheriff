@@ -111,7 +111,7 @@ class AdrRecordLengthContractTest {
 
     @Test
     @DisplayName("No decision record in doc/adr has a body longer than the ceiling")
-    void noDecisionRecordExceedsTheBodyCeiling() throws IOException {
+    void noDecisionRecordExceedsTheBodyCeiling() throws Exception {
         Path adrDirectory = repoRoot().resolve(ADR_DIRECTORY);
 
         BodyMeasures measures = bodyMeasures(adrDirectory);
@@ -140,11 +140,11 @@ class AdrRecordLengthContractTest {
      * fails one of the two assertions.
      *
      * @param fixture a temporary directory, so no fixture file is ever written under {@code doc/adr}
-     * @throws IOException when a fixture file cannot be written or the directory cannot be listed
+     * @throws Exception when a fixture file cannot be written or the directory cannot be listed
      */
     @Test
     @DisplayName("The detector flags a body one line over the ceiling and not one exactly at it")
-    void detectorFlagsAnOversizedRecordAndNotOneAtTheCeiling(@TempDir Path fixture) throws IOException {
+    void detectorFlagsAnOversizedRecordAndNotOneAtTheCeiling(@TempDir Path fixture) throws Exception {
         Files.write(fixture.resolve(CONTROL_OVERSIZED), recordWithBody(MAX_BODY_LINES + 1), StandardCharsets.UTF_8);
         Files.write(fixture.resolve(CONTROL_AT_CEILING), recordWithBody(MAX_BODY_LINES), StandardCharsets.UTF_8);
 
@@ -168,11 +168,11 @@ class AdrRecordLengthContractTest {
      * escape the ceiling.
      *
      * @param fixture a temporary directory, so no fixture file is ever written under {@code doc/adr}
-     * @throws IOException when a fixture file cannot be written or the directory cannot be listed
+     * @throws Exception when a fixture file cannot be written or the directory cannot be listed
      */
     @Test
     @DisplayName("The detector reports a record whose meta block it cannot delimit as unmeasurable")
-    void detectorReportsARecordItCannotMeasure(@TempDir Path fixture) throws IOException {
+    void detectorReportsARecordItCannotMeasure(@TempDir Path fixture) throws Exception {
         Files.write(fixture.resolve(CONTROL_NO_STATUS),
                 List.of("= ADR-0003: No status heading", "", "== Context", "", "Body line."),
                 StandardCharsets.UTF_8);
