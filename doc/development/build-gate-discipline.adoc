@@ -870,7 +870,7 @@ carries the load: the build step that augments `@ConfigMapping` interfaces is co
 specific smallrye-config API. A subordinate BOM built against another Quarkus release declares its own
 versions for the same coordinates. If it wins one, the reactor can resolve two smallrye-config
 versions, and config-mapping augmentation then fails at build time with an error that names neither
-BOM. A one-line reorder, or a new import in the wrong position, causes it.
+BOM. A new import placed ahead of `quarkus-bom` that pins one of those coordinates causes it.
 
 *The rule.* `quarkus-bom` is declared first in `<dependencyManagement>` and owns the Quarkus and
 `io.smallrye.config` version line for the whole reactor. Every other BOM import comes after it and

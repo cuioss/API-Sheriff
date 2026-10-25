@@ -287,8 +287,8 @@ carry -- see link:tls-scenarios.adoc[TLS Scenarios].
 
 === Which key reaches which leg
 
-The gateway dials six TLS-terminating egress legs. The table is re-derived from source; it is not
-what holds the set closed. `EgressTlsPostureArchTest` fails the build when any egress TLS client is
+The gateway dials six TLS-terminating egress legs. The table is maintained by hand from the
+client-construction sites; it is not what holds the set closed. `EgressTlsPostureArchTest` fails the build when any egress TLS client is
 built without its posture, whether or not a list names it.
 
 [cols="1,2,2", options="header"]
@@ -326,8 +326,9 @@ The L4 passthrough relay and the loopback health probe negotiate no TLS and are 
 fixes the setting when each client is built, and the WebSocket client serves the whole edge. A gateway
 with one name-mismatched upstream relaxes hostname verification for every proxied upstream or for none.
 
-*The asset-origin fetch is outside the block, in a known direction.* Its JDK client always verifies
-hostnames, so turning `upstream_verify_hostname` off cannot weaken it. `upstream_tls_profile` does not
+*The asset-origin fetch is outside the block, in a known direction.* Its JDK client verifies
+hostnames unless the JDK switch described in <<_jdk_hostname_verification_switch>> is set, so turning
+`upstream_verify_hostname` off cannot weaken it. `upstream_tls_profile` does not
 reach it either, so an asset origin behind a private CA fails closed with a `502`. Put that anchor into
 the JVM default trust store instead (see
 <<_operator_consideration_outbound_trust_material_replaces_the_platform_bundle>>).
@@ -359,7 +360,8 @@ profile on that leg.
 
 === What you see at boot
 
-Each relaxed or re-anchored posture is reported once, as a `WARN`, and the gateway still starts:
+Each relaxed or re-anchored posture outside the two refused combinations above is reported once, as a
+`WARN`, and the gateway still starts:
 
 [cols="1,3", options="header"]
 |===
@@ -384,8 +386,12 @@ Each relaxed or re-anchored posture is reported once, as a `WARN`, and the gatew
   anchor.
 |===
 
+A refused combination does not start the gateway. The refused JWKS pair still logs `ApiSheriff-120`,
+because that record is written at bean construction, before the per-issuer refusal.
+
 The full wording of each record is in link:../LogMessages.adoc[Log messages].
 
+[[_jdk_hostname_verification_switch]]
 *One switch sits below every key.* The JDK system property
 `jdk.internal.httpclient.disableHostnameVerification` turns off hostname verification on every JDK-client
 leg -- the JWKS fetch, the BFF back channel and the asset-origin fetch -- whatever `egress_tls` says. It is

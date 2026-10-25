@@ -67,8 +67,8 @@ principle (4) of ADR-0040.
 
 === The collision is refused in the gateway's own vocabulary
 
-An issuer that names `jwks.tls_profile` while `egress_tls.jwks_verify_hostname` is `false` is a boot
-refusal. `TokenValidatorProducer` checks the combination before it touches the builder. Left to the
+An `http`-sourced issuer that names `jwks.tls_profile` while `egress_tls.jwks_verify_hostname` is
+`false` is a boot refusal. `TokenValidatorProducer` checks the combination before it touches the builder. Left to the
 library, the operator would see an `IllegalArgumentException` in terms of `sslContext(...)` and
 `verifyHostname(false)`, two symbols that appear nowhere in `gateway.yaml`. That is principle (3) of
 ADR-0040.

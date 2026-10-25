@@ -867,11 +867,12 @@ environment:
 
 === Failure mode
 
-* *Every boot with `oidc_verify_hostname: false`.* The BFF runtime logs `WARN ApiSheriff-125` once,
-  stating the scope: this leg only, chain trust untouched. That is the expected record.
-* *Every boot with a named `oidc_tls_profile`.* The BFF runtime logs `WARN ApiSheriff-126` once with
-  the logical profile name, restating that its anchors replace the JVM default trust store on this
-  leg. That is the expected record.
+* *Every boot with `oidc_verify_hostname: false` and no `oidc_tls_profile`.* The BFF runtime logs
+  `WARN ApiSheriff-125` once, stating the scope: this leg only, chain trust untouched. That is the
+  expected record.
+* *Every boot with a named `oidc_tls_profile` while `oidc_verify_hostname` stays `true`.* The BFF
+  runtime logs `WARN ApiSheriff-126` once with the logical profile name, restating that its anchors
+  replace the JVM default trust store on this leg. That is the expected record.
 * *Both keys set.* The boot fails with a configuration error naming `egress_tls.oidc_verify_hostname`
   and `egress_tls.oidc_tls_profile`, before the identity-provider client is built.
 * *The profile is not bound, carries no anchors, sets `trust-all`, or its material cannot be loaded.*

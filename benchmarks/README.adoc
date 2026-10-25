@@ -358,15 +358,19 @@ instances at, the *same* mounted TLS material, and the
 *same* CPU and memory limits (512M / 4.0 CPU). A difference on any of those folds its own cost into
 one side of the gate and is then read as passthrough overhead.
 +
-Those parity conditions are enforced structurally rather than by review convention, by four
-assertions in `TlsEdgeActivationWiringTest`: `emptyPassthroughOverlayDeclaresNoPassthroughSni` (the
+Part of that parity is asserted, by four tests in `TlsEdgeActivationWiringTest`; they cover the
+`empty` arm's descriptor, its internal-port wiring and its upstream:
+`emptyPassthroughOverlayDeclaresNoPassthroughSni` (the
 arm's side really declares none), `emptyPassthroughInstanceSetsNoInternalSslPort` (no internal-port
 split, since there is no front listener to free the public port for),
 `emptyPassthroughOverlayDiffersFromTheBaseOnlyByPassthroughSni` (the single-variable property, as a
-parsed-structure equality against the base descriptor once `passthrough_sni` is removed) and
+parsed-structure equality against the base descriptor once `passthrough_sni` is removed, which also
+holds the `/proxy/static` route equal) and
 `emptyPassthroughInstanceSharesThePrimaryBenchmarkUpstream` (the same-upstream property, asserted as
 an equality between the two declared `TOPOLOGY_UPSTREAM` values rather than against a hard-coded
-literal, so repointing the benchmark moves both arms together).
+literal, so repointing the benchmark moves both arms together). No test compares the two Compose
+services' image, mounted TLS material or CPU and memory limits: those are held by the Compose
+definition and by review, not by an assertion.
 +
 `PassthroughBaselineComparator` reads the empty-mode summary against the primary instance's stored
 `proxiedStatic` baseline and fails the run if throughput dropped, or either latency percentile rose,
@@ -504,8 +508,9 @@ is therefore built on three rules:
   metadata. One script body drives either gateway, so the gateway under test is the only intended
   variable between a comparison and the baseline.
 * *On-demand only, with results segregated at write time.* The entry point is wired into no CI
-  workflow. It writes to a results directory outside the published baseline and pages tree (see
-  <<where-results-land>>), so a comparison run can never mutate the baseline.
+  workflow. By default it writes to `benchmarks/target/comparison-results`, outside the published
+  baseline and pages tree (see <<where-results-land>>). An explicit `--output` replaces that root
+  without a check, so the separation holds for the default path, not for every invocation.
 * *Fairness parity is a precondition.* A comparison runs only when both gateways face identical
   upstreams, the same auth realm and tokens, the same TLS material and matched container resource
   limits. The _Methodology_ section above lists each condition. Cross-gateway numbers are relative,
@@ -514,8 +519,9 @@ is therefore built on three rules:
 The costs are accepted. The comparison lane is not exercised continuously, so its wiring can rot
 undetected between on-demand runs. Fairness parity is enforced by review and by this document, not
 by an automated gate, so an unfair environment silently produces misleading numbers. The only parity a
-test asserts is that of the passthrough `empty` arm, held by `TlsEdgeActivationWiringTest`, and that
-arm compares two API Sheriff instances rather than two gateways.
+test asserts is part of the passthrough `empty` arm's, its descriptor and its upstream, held by
+`TlsEdgeActivationWiringTest`, and that arm compares two API Sheriff instances rather than two
+gateways.
 
 Three other shapes were considered and rejected:
 
@@ -609,9 +615,9 @@ target/comparison-results/
   comparison-summary.md
 ----
 
-This directory is segregated from both the CI baseline results and the gh-pages deployment tree, so
-a comparison run can never overwrite a baseline artifact or leak into the published history/trend
-series.
+This default directory is segregated from both the CI baseline results and the gh-pages deployment
+tree, so a comparison run that keeps the default root cannot overwrite a baseline artifact or leak
+into the published history/trend series. An explicit `--output` replaces the root without a check.
 
 Render the side-by-side table:
 

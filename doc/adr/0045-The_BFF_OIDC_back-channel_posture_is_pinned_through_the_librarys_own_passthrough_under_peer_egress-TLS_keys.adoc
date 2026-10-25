@@ -93,8 +93,9 @@ keys sit at the same scope.
 
 === Neither posture is silent
 
-Each departure from the default is a boot WARN, logged once from the single build and only on the active
-BFF path. A bearer-only gateway builds no IdP client. `ApiSheriff-125` reports a relaxed hostname check;
+Each departure from the default that boots is a boot WARN, logged once from the single build and only on
+the active BFF path. The refused pair above reports no WARN, because the refusal runs first. A
+bearer-only gateway builds no IdP client. `ApiSheriff-125` reports a relaxed hostname check;
 `ApiSheriff-126` reports a trust profile in effect and never carries a store path, password or anchor.
 The wording of both is in link:../LogMessages.adoc[Log messages].
 
