@@ -405,7 +405,7 @@ class TerminalActionRulesTest {
             assertAll("exactly one refusal naming the route and why the key would be ignored",
                     () -> assertHasError(errors, "/endpoint/routes", REFUSAL + reason),
                     () -> assertEquals(1, errors.stream()
-                            .filter(error -> error.message().contains("keep_identity_headers")).count(),
+                                    .filter(error -> error.message().contains("keep_identity_headers")).count(),
                             () -> "expected one keep_identity_headers refusal, got: " + errors));
         }
 

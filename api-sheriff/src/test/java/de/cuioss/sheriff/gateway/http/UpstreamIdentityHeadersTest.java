@@ -41,7 +41,7 @@ class UpstreamIdentityHeadersTest {
     @Test
     @DisplayName("Should declare exactly server and x-powered-by, in lower case")
     void shouldPinExactMembership() {
-        assertEquals(Set.of("server", "x-powered-by"), UpstreamIdentityHeaders.NAMES,
+        assertEquals(UpstreamIdentityHeaders.NAMES, Set.of("server", "x-powered-by"),
                 "A membership change must be a deliberate edit of this assertion, never a drift");
     }
 
