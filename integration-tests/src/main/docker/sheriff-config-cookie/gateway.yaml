@@ -168,9 +168,9 @@ oidc:
     # guarantees, once the name, the __Host- prefix and the attributes are counted (a further 77
     # bytes for this cookie under the default name and TTL). Raising it does not buy headroom, it
     # only moves the failure into the browser, which drops an oversized Set-Cookie silently.
-    # A cookie-mode session that ALSO refreshes now fits: the version-3 packaging seals access +
-    # id + refresh to 2700 bytes, leaving 32.8 % of the budget spare. That is exercised on the
-    # separate api-sheriff-cookie-refresh instance, not here.
+    # A refreshing cookie-mode session fits: with the DPoP cnf claim it seals to 2572-2580 bytes
+    # (ApiSheriff-15, measured 2026-10-26), leaving 1439 bytes / 35.8 % of the budget spare. That
+    # is exercised on the separate api-sheriff-cookie-refresh instance, not here.
     refresh:
       # OFF so this instance covers the access + id cookie variant. It is off to keep the variants
       # separated, NOT because a refreshing cookie session cannot fit — see the budget note above,

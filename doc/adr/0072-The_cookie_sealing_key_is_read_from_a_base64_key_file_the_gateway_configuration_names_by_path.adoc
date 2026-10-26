@@ -76,9 +76,10 @@ The gateway reads the file once, at boot, and reads at most 256 bytes. A 32-byte
 line of 44 characters, so the bound leaves ample room for surrounding whitespace. The gateway refuses
 a larger file before it decodes anything.
 
-`CookieKeyMaterial` turns the bytes into text as ISO-8859-1, so a byte outside ASCII becomes a
-character outside the base64 alphabet. It strips the surrounding whitespace. It decodes the rest with
-the strict base64 decoder of the JDK, which refuses any whitespace or line break inside the token.
+`CookieKeyMaterial` decodes the bytes directly and never turns them into a `String`, so every buffer
+holding key material can be zeroed once the key is built. It strips the surrounding whitespace and
+decodes the rest with the strict base64 decoder of the JDK, which refuses a byte outside the alphabet
+and any whitespace or line break inside the token.
 
 Each of the following is a boot refusal with `CONFIG_INVALID`:
 

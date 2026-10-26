@@ -187,8 +187,8 @@ oidc:
     # other, so a cookie sealed here unseals nowhere else.
     key_file: /app/signing-keys/cookie-refresh-sealing.key
     ttl_seconds: 3600
-    # No max_cookie_size override — see the header. This instance runs on the lowered 4019-byte
-    # browser-safe default deliberately, because the size question is what it exists to answer.
+    # No max_cookie_size override — see the header. On the 4019-byte default the session sealed to
+    # 2572-2580 bytes with DPoP cnf (ApiSheriff-15, 2026-10-26): 1439 bytes / 35.8 % spare.
     refresh:
       # Difference 2 of 4. ON here, where the sibling cookie instance holds it OFF: with refresh on,
       # the re-sealed cookie carries access + id + refresh, which is precisely the combination whose
