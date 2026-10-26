@@ -36,6 +36,7 @@ import de.cuioss.http.forwarded.ResolvedForwarding;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -57,6 +58,12 @@ import org.jspecify.annotations.Nullable;
  *       declared. A declared-empty list is not the same as an absent one: {@code query_allow: []}
  *       is a positive-list admitting nothing, while an absent {@code query_allow} is forward-all.
  *       Declaring both lists for one dimension is refused at boot.</li>
+ *   <li><strong>{@code headers_deny} matches every spelling of a name.</strong> A deny entry and a
+ *       client-sent name are compared {@linkplain ConnectionHeaders#separatorFolded separator-folded}
+ *       — lower case, {@code _} read as {@code -} — so {@code headers_deny: [X-Debug]} withholds
+ *       {@code X_Debug} and {@code x_debug} as well: a CGI-folding backend reads all of them as one
+ *       {@code HTTP_X_DEBUG}. The same comparison decides whether a deny entry beats the protocol
+ *       set.</li>
  *   <li><strong>Query lists match the decoded name; the raw pair crosses.</strong> The query
  *       arrives in its raw, still-percent-encoded wire form and crosses byte-for-byte as the security
  *       filter validated it (ADR-0047), but {@code query_allow} / {@code query_deny} compare the
@@ -106,22 +113,26 @@ import org.jspecify.annotations.Nullable;
  *       none.</li>
  *   <li><strong>Conditional requests.</strong> The two {@link #CONDITIONAL_HEADERS} validators whose
  *       answer is a {@code 304} — {@code If-None-Match} and {@code If-Modified-Since} — are the
- *       protocol set's gated tier: they cross only when the route enables {@code not_modified},
- *       which is the same flag the response direction reads before relaying {@code ETag} /
- *       {@code Last-Modified}. The gate holds in <em>every</em> forward mode: with the flag off a
- *       validator is withheld under forward-all, under a negative-list that does not name it, and
+ *       protocol set's gated tier. On the {@link #NOT_MODIFIED_METHODS} ({@code GET} and
+ *       {@code HEAD}) they cross only when the route enables {@code not_modified}, which is the same
+ *       flag the response direction reads before relaying {@code ETag} / {@code Last-Modified}. The
+ *       gate holds in <em>every</em> forward mode: with the flag off a validator on a {@code GET} or
+ *       {@code HEAD} is withheld under forward-all, under a negative-list that does not name it, and
  *       under a positive-list that names it in {@code headers_allow}. Gating both halves on one
  *       flag, in every mode, is what stops the gateway asking a question whose answer it then
- *       discards. The other three RFC 9110 §13 validators — {@code If-Match},
- *       {@code If-Unmodified-Since} and {@code If-Range} — are not gated: withholding them would not
- *       discard an answer but change what the request means, so they cross with the unconditional
- *       tier. {@code set_headers} is operator configuration rather than client input and is not
- *       gated.</li>
+ *       discards. On every other method the two are write preconditions answered with {@code 412},
+ *       never {@code 304}, so they cross with the unconditional tier whatever the flag says — a
+ *       create-only {@code PUT} carrying {@code If-None-Match: *} keeps its guard. The other three
+ *       RFC 9110 §13 validators — {@code If-Match}, {@code If-Unmodified-Since} and
+ *       {@code If-Range} — are not gated on any method: withholding them would not discard an
+ *       answer but change what the request means. {@code set_headers} is operator configuration
+ *       rather than client input and is not gated.</li>
  * </ul>
  * <p>
  * <strong>The application order is pinned, and it encodes a precedence rule.</strong>
- * {@link #process} runs: the mode copy, the never-forward strip and — when {@code not_modified} is
- * off — the withholding of the conditional validators, then the rebuilt {@code Cookie},
+ * {@link #process} runs: the mode copy, the never-forward strip and — on a {@code GET} or
+ * {@code HEAD} when {@code not_modified} is off — the withholding of the conditional validators,
+ * then the rebuilt {@code Cookie},
  * then the protocol set, then {@code set_headers}, then the regenerated forwarding headers, then the
  * mediated bearer. Two sentences explain every step of it — <em>operator configuration beats client input</em>, so
  * {@code set_headers} is merged after everything sourced from the request; and <em>gateway-owned
@@ -194,10 +205,17 @@ public final class ForwardPolicyStage {
      * answer to.
      * <p>
      * The request half and the response half are one decision in every forward mode. With the toggle
-     * off the validators are withheld from the client copy whatever the mode — forward-all, a
-     * negative-list, or a positive-list that names one in {@code headers_allow} — so the request
-     * direction can never carry a validator the response direction would then answer without its
-     * {@code ETag} / {@code Last-Modified}.
+     * off the validators on a {@link #NOT_MODIFIED_METHODS} request are withheld from the client
+     * copy whatever the mode — forward-all, a negative-list, or a positive-list that names one in
+     * {@code headers_allow} — so the request direction can never carry a validator the response
+     * direction would then answer without its {@code ETag} / {@code Last-Modified}.
+     * <p>
+     * <strong>The gate is method-aware.</strong> RFC 9110 §13.1.2 and §13.1.3 give these two a
+     * {@code 304} answer only on {@code GET} and {@code HEAD}; on any other method a failed
+     * {@code If-None-Match} or {@code If-Modified-Since} is answered {@code 412}, because there it is
+     * a write precondition — {@code If-None-Match: *} is how a {@code PUT} says "create, never
+     * overwrite". No {@code 304} can come back from such a request, so there is no discarded answer
+     * to prevent; the validators cross on those methods exactly as the unconditional tier does.
      * <p>
      * The other three RFC 9110 §13 validators are deliberately <em>not</em> in this tier; they sit in
      * the unconditional tier and cross whatever the toggle says, because withholding them would not
@@ -208,6 +226,14 @@ public final class ForwardPolicyStage {
      * download with a {@code 206} slice of the newer version instead of the full {@code 200}.
      */
     static final List<String> CONDITIONAL_HEADERS = List.of("If-None-Match", "If-Modified-Since");
+
+    /**
+     * The methods on which a failed {@link #CONDITIONAL_HEADERS} validator is answered
+     * {@code 304 Not Modified} (RFC 9110 §13.1.2, §13.1.3) — the only methods whose validators the
+     * {@code not_modified} gate withholds. On every other method the validators are write
+     * preconditions and cross whatever the toggle says.
+     */
+    static final Set<HttpMethod> NOT_MODIFIED_METHODS = Set.of(HttpMethod.GET, HttpMethod.HEAD);
 
     /**
      * The gateway-understood protocol headers, both tiers together — the names that cross without an
@@ -264,7 +290,9 @@ public final class ForwardPolicyStage {
      * @param request            the in-flight request context
      * @param forwardConfig      the selected route's {@code forward} block
      * @param cookies            the selected route's resolved {@code cookies} block
-     * @param notModifiedEnabled whether the route honours conditional requests
+     * @param notModifiedEnabled whether the route honours conditional requests; decides whether the
+     *                           {@link #CONDITIONAL_HEADERS} cross on a {@link #NOT_MODIFIED_METHODS}
+     *                           request
      * @return the forwarded headers and query parameters that cross to the upstream
      */
     public Result process(PipelineRequest request, ForwardConfig forwardConfig, CookiesConfig cookies,
@@ -273,14 +301,16 @@ public final class ForwardPolicyStage {
         Objects.requireNonNull(forwardConfig, "forwardConfig");
         Objects.requireNonNull(cookies, "cookies");
 
+        Set<String> denied = separatorFoldedDenyList(forwardConfig.headersDeny());
+        boolean validatorsCross = notModifiedEnabled || !NOT_MODIFIED_METHODS.contains(request.method());
         Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-        copyHeadersByMode(request, forwardConfig, headers);
+        copyHeadersByMode(request, forwardConfig, denied, headers);
         applyRequestStrip(forwardConfig, headers);
-        if (!notModifiedEnabled) {
+        if (!validatorsCross) {
             withholdConditionalHeaders(headers);
         }
         applyCookiePolicy(request, cookies, headers);
-        applyProtocolHeaders(request, forwardConfig, notModifiedEnabled, headers);
+        applyProtocolHeaders(request, denied, validatorsCross, headers);
         headers.putAll(forwardConfig.setHeaders());
         applyRegeneratedForwarding(request, headers);
         applyMediatedBearer(request, headers);
@@ -306,7 +336,8 @@ public final class ForwardPolicyStage {
      * Copies the client request headers according to the route's header forward mode: a declared
      * {@code headers_allow} selects the positive-list, otherwise the copy iterates the inbound
      * headers and withholds the {@code headers_deny} names (an absent deny list denying nothing —
-     * the forward-all baseline).
+     * the forward-all baseline), compared separator-folded so every {@code -}/{@code _} spelling of a
+     * denied name is withheld.
      * <p>
      * The {@link #FORWARDING_HEADERS} skip is applied on every mode, and on the
      * {@linkplain #isRegeneratedForwardingName separator-folded} name: a regenerated header must
@@ -316,13 +347,13 @@ public final class ForwardPolicyStage {
      * copy of the client's header would bypass that block.
      */
     private static void copyHeadersByMode(PipelineRequest request, ForwardConfig forwardConfig,
-            Map<String, String> headers) {
+            Set<String> denied, Map<String, String> headers) {
         List<String> allow = forwardConfig.headersAllow();
         if (allow != null) {
             copyPositiveListHeaders(request, allow, headers);
             return;
         }
-        copyInboundHeadersExcept(request, lowerCased(forwardConfig.headersDeny()), headers);
+        copyInboundHeadersExcept(request, denied, headers);
     }
 
     private static void copyPositiveListHeaders(PipelineRequest request, List<String> allow,
@@ -337,16 +368,17 @@ public final class ForwardPolicyStage {
 
     /**
      * The negative-list and forward-all copy — one implementation, because forward-all is exactly a
-     * negative-list denying nothing. The inbound names arrive already lower-cased by
-     * {@link PipelineRequest}, so the denied names are lower-cased once here and membership is the
-     * case-insensitive comparison RFC 9110 field names require.
+     * negative-list denying nothing. Each inbound name is tested
+     * {@linkplain ConnectionHeaders#separatorFolded separator-folded} against the already-folded
+     * {@code denied} set, so membership is the case-insensitive comparison RFC 9110 field names
+     * require <em>and</em> closes the {@code -}/{@code _} spellings a CGI-folding backend merges.
      */
     private static void copyInboundHeadersExcept(PipelineRequest request, Set<String> denied,
             Map<String, String> headers) {
         for (Map.Entry<String, List<String>> entry : request.headers().entrySet()) {
             String name = entry.getKey();
             List<String> values = entry.getValue();
-            if (values.isEmpty() || isSkippedByModeCopy(name) || denied.contains(name)) {
+            if (values.isEmpty() || isSkippedByModeCopy(name) || isDenied(name, denied)) {
                 continue;
             }
             headers.put(name, values.getFirst());
@@ -488,8 +520,10 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * Withholds the {@link #CONDITIONAL_HEADERS} validators from the copied client headers on a route
-     * that does not enable {@code not_modified}. Applied on <em>every</em> mode, after the mode copy
+     * Withholds the {@link #CONDITIONAL_HEADERS} validators from the copied client headers of a
+     * {@link #NOT_MODIFIED_METHODS} request on a route that does not enable {@code not_modified}; on
+     * any other method {@link #process} does not call it, so the validators cross there as the write
+     * preconditions they are. Applied on <em>every</em> mode, after the mode copy
      * and the never-forward strip: forward-all copies them, a negative-list that does not name them
      * copies them, and a positive-list that names them in {@code headers_allow} copies them — none of
      * those copies survives this step.
@@ -524,28 +558,46 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * The declared names lower-cased for case-insensitive header membership, or the empty set when
-     * the list is absent — the forward-all baseline, which denies nothing.
+     * The declared {@code headers_deny} names in their
+     * {@linkplain ConnectionHeaders#separatorFolded separator-folded} spelling, or the empty set when
+     * the list is absent — the forward-all baseline, which denies nothing. Folding the entries as
+     * well as the inbound names makes the comparison symmetric: {@code X_Debug} in the list withholds
+     * {@code X-Debug} exactly as {@code X-Debug} in the list withholds {@code X_Debug}.
+     * <p>
+     * Computed once per request and shared by every consumer of the deny list in {@link #process} —
+     * the mode copy and the protocol set — so the two always judge a name against the same set.
      */
-    private static Set<String> lowerCased(@Nullable List<String> names) {
+    private static Set<String> separatorFoldedDenyList(@Nullable List<String> names) {
         if (names == null || names.isEmpty()) {
             return Set.of();
         }
-        Set<String> lowered = new LinkedHashSet<>();
+        Set<String> folded = new LinkedHashSet<>();
         for (String name : names) {
-            lowered.add(name.toLowerCase(Locale.ROOT));
+            folded.add(ConnectionHeaders.separatorFolded(name));
         }
-        return lowered;
+        return folded;
+    }
+
+    /**
+     * Whether {@code name} is a spelling of a {@code headers_deny} entry.
+     *
+     * @param name   the header name as the client or the protocol set spells it
+     * @param denied the {@linkplain #separatorFoldedDenyList separator-folded} deny set
+     */
+    private static boolean isDenied(String name, Set<String> denied) {
+        return !denied.isEmpty() && denied.contains(ConnectionHeaders.separatorFolded(name));
     }
 
     /**
      * Admits the {@link #PROTOCOL_HEADERS} the client actually sent, so a route never has to
      * enumerate HTTP mechanics to work. The unconditional tier always applies; the
-     * {@link #CONDITIONAL_HEADERS} tier applies only when the route enables {@code not_modified}.
+     * {@link #CONDITIONAL_HEADERS} tier applies when {@code validatorsCross} — the route enables
+     * {@code not_modified}, or the method is not one of the {@link #NOT_MODIFIED_METHODS}.
      * <p>
      * <strong>A negative-list entry beats the set.</strong> The set is applied only to names the mode
-     * copy did not already refuse, so a route that denies {@code Content-Type} by name gets it
-     * withheld rather than re-admitted here. A <em>positive</em>-list is deliberately not consulted:
+     * copy did not already refuse — compared separator-folded, the same test the mode copy applies —
+     * so a route that denies {@code Content-Type} by name gets it withheld rather than re-admitted
+     * here. A <em>positive</em>-list is deliberately not consulted:
      * crossing without being named is the whole point of the set, and a route that wants one of these
      * withheld says so with a deny entry.
      * <p>
@@ -554,11 +606,10 @@ public final class ForwardPolicyStage {
      * {@link #applyRequestStrip}, which is safe only because the two sets are disjoint — see
      * {@link #PROTOCOL_HEADERS}.
      */
-    private static void applyProtocolHeaders(PipelineRequest request, ForwardConfig forwardConfig,
-            boolean notModifiedEnabled, Map<String, String> headers) {
-        Set<String> denied = lowerCased(forwardConfig.headersDeny());
+    private static void applyProtocolHeaders(PipelineRequest request, Set<String> denied,
+            boolean validatorsCross, Map<String, String> headers) {
         admitProtocolTier(request, denied, UNCONDITIONAL_PROTOCOL_HEADERS, headers);
-        if (notModifiedEnabled) {
+        if (validatorsCross) {
             admitProtocolTier(request, denied, CONDITIONAL_HEADERS, headers);
         }
     }
@@ -566,7 +617,7 @@ public final class ForwardPolicyStage {
     private static void admitProtocolTier(PipelineRequest request, Set<String> denied, List<String> tier,
             Map<String, String> headers) {
         for (String name : tier) {
-            if (denied.contains(name.toLowerCase(Locale.ROOT))) {
+            if (isDenied(name, denied)) {
                 continue;
             }
             request.firstHeader(name).ifPresent(value -> headers.put(name, value));

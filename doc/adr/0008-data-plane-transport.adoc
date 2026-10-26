@@ -64,7 +64,8 @@ are native to the Vert.x client that already runs the gateway's edge.
    the upstream, and upstream `304` responses plus the validator response headers (`ETag`,
    `Last-Modified`) relay untouched. `304` carries no body -- fully streaming-compatible, zero
    gateway state.
-** *disabled* -- those two validators are withheld and the response-direction `ETag` /
+** *disabled* -- those two validators are withheld from `GET` and `HEAD` (on every other
+   method they are `412` write preconditions and cross) and the response-direction `ETag` /
    `Last-Modified` are stripped, deliberately forcing full `200` exchanges -- the hardening
    knob for upstreams whose ETags are inconsistent across nodes or leak inode/version
    information.
@@ -114,9 +115,11 @@ description needs two corrections:
   decides whether that tier is admitted at all.
 
 *The toggle withholds the validators under every forward mode.* With the flag *off*, the
-gateway removes the two `304` validators from the client's headers after the mode copy. A
-forward-all, negative-list or positive-list route therefore carries none of them upstream, and
-no route forwards a client-supplied precondition whose answering `ETag` the response half strips.
+gateway removes the two `304` validators from the client's headers of a `GET` or `HEAD` after
+the mode copy. A forward-all, negative-list or positive-list route therefore carries none of
+them upstream there, and no route forwards a validator whose answering `ETag` the response half
+strips. Only `GET` and `HEAD` are answered `304` (RFC 9110 §13.1.2, §13.1.3); on every other
+method the two are write preconditions answered `412`, so they cross in either state.
 The two halves are one decision in every mode, so `headers_deny` is no longer needed to withhold
 the validators under a permissive posture. `set_headers` is operator configuration and stays
 ungated. ADR-0037 records why narrowing forward-all for this class of client headers is deliberate.
