@@ -189,7 +189,7 @@ public final class ForwardPolicyStage {
      * direction can never carry a validator the response direction would then answer without its
      * {@code ETag} / {@code Last-Modified}.
      */
-    private static final List<String> CONDITIONAL_HEADERS = List.of(
+    static final List<String> CONDITIONAL_HEADERS = List.of(
             "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range");
 
     /**

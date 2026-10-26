@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.http.forwarded.ForwardedResolverConfig;
@@ -45,6 +46,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 @DisplayName("ForwardPolicyStage — stage 5 zero-trust forward policy (three modes per dimension)")
@@ -576,6 +578,29 @@ class ForwardPolicyStageTest {
     @DisplayName("the gateway-understood protocol set (crosses without an operator entry)")
     class ProtocolHeaderSet {
 
+        /**
+         * The conditional validators every not_modified case runs over, streamed from the production
+         * list itself — so a validator added to {@link ForwardPolicyStage#CONDITIONAL_HEADERS} is
+         * exercised by every mode test without anyone remembering to extend a literal here.
+         */
+        static Stream<String> conditionalHeaders() {
+            return ForwardPolicyStage.CONDITIONAL_HEADERS.stream();
+        }
+
+        @Test
+        @DisplayName("the conditional tier is exactly the five RFC 9110 §13 validators")
+        void conditionalHeadersAreTheFiveRfc9110Validators() {
+            List<String> expected = List.of(
+                    "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range");
+
+            List<String> actual = ForwardPolicyStage.CONDITIONAL_HEADERS;
+
+            assertEquals(expected, actual,
+                    "the parameterized not_modified tests derive their cases from CONDITIONAL_HEADERS,"
+                            + " so the five-name contract is pinned here on its own: a list that lost a"
+                            + " validator would otherwise shrink those tests along with it and stay green");
+        }
+
         @ParameterizedTest
         @ValueSource(strings = {"Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Range"})
         @DisplayName("an unconditional protocol header crosses a route that never names it, either way of the toggle")
@@ -603,7 +628,7 @@ class ForwardPolicyStageTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @MethodSource("conditionalHeaders")
         @DisplayName("a conditional validator crosses only when the route enables not_modified")
         void conditionalValidatorGatedByNotModified(String name) {
             // Arrange — all five RFC 9110 §13 validators ride the one toggle, because the response
@@ -692,7 +717,7 @@ class ForwardPolicyStageTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @MethodSource("conditionalHeaders")
         @DisplayName("one flag gates both directions: no validator crosses either way while not_modified is off")
         void notModifiedGatesBothDirectionsTogether(String requestValidator) {
             // Arrange — the coupling the toggle exists to preserve, asserted across the two stages that
@@ -733,7 +758,7 @@ class ForwardPolicyStageTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @MethodSource("conditionalHeaders")
         @DisplayName("under forward-all a validator is withheld while not_modified is off, and crosses once it is on")
         void forwardAllWithholdsValidatorsWhenToggleOff(String requestValidator) {
             // Arrange — ADR-0037 recorded this boundary as open: the mode copy used to carry a
@@ -765,7 +790,7 @@ class ForwardPolicyStageTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @MethodSource("conditionalHeaders")
         @DisplayName("under a negative-list that does not name it a validator is withheld while not_modified is off")
         void negativeListWithholdsUnnamedValidatorWhenToggleOff(String requestValidator) {
             // Arrange — the deny list names something else, so only the toggle can withhold the validator
@@ -793,7 +818,7 @@ class ForwardPolicyStageTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @MethodSource("conditionalHeaders")
         @DisplayName("a positive-list naming a validator in headers_allow does not carry it while not_modified is off")
         void positiveListNamingValidatorWithholdsItWhenToggleOff(String requestValidator) {
             // Arrange — the operator names the validator explicitly, once canonically and once in the
