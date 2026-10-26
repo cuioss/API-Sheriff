@@ -52,7 +52,9 @@ import org.junit.jupiter.api.Test;
  * Both threads of a round are released from a spin barrier, so both are already running when the
  * round starts. A latch wakes its waiters one at a time, and on a loaded runner the drain's single
  * flag write then won every round, which left the control with nothing admitted. The race also keeps
- * running rounds until enough of them admitted, up to a cap, instead of a fixed number of rounds.
+ * running rounds until enough of them admitted, up to a cap, instead of a fixed number of rounds, and
+ * fails when the cap is reached first. A round whose threads were not both running when it was
+ * released counts as unsettled.
  */
 @DisplayName("EdgeAdmission — admission against the shutdown drain")
 class EdgeAdmissionTest {
@@ -145,12 +147,14 @@ class EdgeAdmissionTest {
 
         int admitted = admittedRounds;
         assertAll("%d rounds of tryAdmit() against drain(), %d of them admitted".formatted(rounds, admitted),
-                () -> assertTrue(admitted > 0,
-                        "control: at least one round must admit, or the race never ran the case it pins"),
+                () -> assertTrue(admitted >= ADMITTED_ROUNDS_WANTED,
+                        "control: %d rounds must admit within %d, or the race did not sample the case it pins"
+                                .formatted(ADMITTED_ROUNDS_WANTED, MAX_RACE_ROUNDS)),
                 () -> assertEquals(List.of(), admittedAfterTheDrain,
                         "an admission that succeeds must be one the drain waits for"),
                 () -> assertEquals(List.of(), unsettled,
-                        "every round's admission and drain must finish once the admitted request is released"));
+                        "every round's threads must both run before its release, "
+                                + "and finish once the admitted request is released"));
     }
 
     /**
@@ -179,11 +183,12 @@ class EdgeAdmissionTest {
                 racing.releaseAdmission(routingContext(), new AtomicBoolean());
             }
         });
-        release(running, go);
+        boolean bothRunning = release(running, go);
         boolean admitSettled = admit.join(PROMPT);
         boolean drainSettled = drain.join(PROMPT);
 
-        return new RaceOutcome(admitted.get(), admittedAfterTheDrainReturned.get(), admitSettled && drainSettled);
+        return new RaceOutcome(admitted.get(), admittedAfterTheDrainReturned.get(),
+                bothRunning && admitSettled && drainSettled);
     }
 
     /** Announces the thread as running, then spins until the round is released. */
@@ -196,14 +201,19 @@ class EdgeAdmissionTest {
 
     /**
      * Releases the round once both threads are running, or after {@link #PROMPT} when one never
-     * starts; the round then settles or reports itself unsettled.
+     * starts, so no thread spins forever.
+     *
+     * @return whether both threads were running at the release; a round released without them did
+     *         not race and is reported unsettled
      */
-    private static void release(AtomicInteger running, AtomicBoolean go) {
+    private static boolean release(AtomicInteger running, AtomicBoolean go) {
         long deadline = System.nanoTime() + PROMPT.toNanos();
         while (running.get() < 2 && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
+        boolean bothRunning = running.get() == 2;
         go.set(true);
+        return bothRunning;
     }
 
     /**
@@ -228,7 +238,8 @@ class EdgeAdmissionTest {
      *
      * @param admitted                      whether the racing admission succeeded
      * @param admittedAfterTheDrainReturned whether it succeeded after the drain had already returned
-     * @param settled                       whether both threads finished within {@link #PROMPT}
+     * @param settled                       whether both threads were running at the release and finished
+     *                                      within {@link #PROMPT}
      */
     private record RaceOutcome(boolean admitted, boolean admittedAfterTheDrainReturned, boolean settled) {
     }
