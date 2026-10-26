@@ -708,8 +708,9 @@ directory gives you a working starting point. From there the usual first four ch
   link:../configuration.adoc#_never_forward_set[never-forward set] (an inbound `Authorization` on
   any route declaring no positive-list naming it, and the hop-by-hop and framing names), and the
   HTTP mechanics -- `Accept`, `Accept-Encoding`, `Accept-Language`,
-  `Content-Type` and `Range` -- cross without being listed, joined by the five conditional
-  validators when the route's `not_modified` toggle is enabled. Add a `forward` block only to
+  `Content-Type`, `Range`, `If-Range`, `If-Match` and `If-Unmodified-Since` -- cross without being
+  listed, joined by the two `304` validators `If-None-Match` and `If-Modified-Since` when the
+  route's `not_modified` toggle is enabled. Add a `forward` block only to
   *narrow* that: `headers_deny` / `query_deny` to withhold specific names, or
   `headers_allow` / `query_allow` for a strict positive-list. See
   link:../configuration.adoc#_forward[the `forward` reference]. The browser `Cookie` is not

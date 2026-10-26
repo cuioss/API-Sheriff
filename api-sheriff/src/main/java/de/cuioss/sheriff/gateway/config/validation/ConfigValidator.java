@@ -165,7 +165,8 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * {@code location} for open-redirect spellings at boot — a redirect is written verbatim at request
  * time, so this review is the only place its target is ever judged — and refuses
  * {@code keep_query} together with {@code allow_external}, the pair that would hand the inbound
- * query to a foreign origin. A second rule of the same owner refuses {@code keep_identity_headers}
+ * query to a foreign origin. A third rule of the same owner (its second is the asset file-name rule)
+ * refuses {@code keep_identity_headers}
  * on a redirect, a directory-asset and a WebSocket route, none of which relays an upstream response
  * header the key could govern.
  * <p>

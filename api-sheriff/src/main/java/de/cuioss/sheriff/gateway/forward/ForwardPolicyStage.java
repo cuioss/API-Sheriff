@@ -104,14 +104,18 @@ import org.jspecify.annotations.Nullable;
  *       any inbound {@code Authorization} a mode happened to forward and over a static
  *       {@code Authorization} in {@code set_headers}. A plain {@code require: bearer} route resolves
  *       none.</li>
- *   <li><strong>Conditional requests.</strong> The five {@link #CONDITIONAL_HEADERS} validators are
- *       the protocol set's gated tier: they cross only when the route enables {@code not_modified},
+ *   <li><strong>Conditional requests.</strong> The two {@link #CONDITIONAL_HEADERS} validators whose
+ *       answer is a {@code 304} — {@code If-None-Match} and {@code If-Modified-Since} — are the
+ *       protocol set's gated tier: they cross only when the route enables {@code not_modified},
  *       which is the same flag the response direction reads before relaying {@code ETag} /
  *       {@code Last-Modified}. The gate holds in <em>every</em> forward mode: with the flag off a
  *       validator is withheld under forward-all, under a negative-list that does not name it, and
  *       under a positive-list that names it in {@code headers_allow}. Gating both halves on one
  *       flag, in every mode, is what stops the gateway asking a question whose answer it then
- *       discards. {@code set_headers} is operator configuration rather than client input and is not
+ *       discards. The other three RFC 9110 §13 validators — {@code If-Match},
+ *       {@code If-Unmodified-Since} and {@code If-Range} — are not gated: withholding them would not
+ *       discard an answer but change what the request means, so they cross with the unconditional
+ *       tier. {@code set_headers} is operator configuration rather than client input and is not
  *       gated.</li>
  * </ul>
  * <p>
@@ -170,27 +174,40 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * The protocol-set tier that crosses whatever the route configures — content negotiation and
-     * range requests, the mechanics every backend speaks and no operator should have to enumerate.
+     * The protocol-set tier that crosses whatever the route configures — content negotiation, range
+     * requests, and the three RFC 9110 §13 preconditions whose meaning the gateway must not change:
+     * {@code If-Match} and {@code If-Unmodified-Since}, which make a write conditional, and
+     * {@code If-Range}, which travels with {@code Range}. These are the mechanics every backend speaks
+     * and no operator should have to enumerate. Why the three preconditions sit here rather than in
+     * the gated tier is explained on {@link #CONDITIONAL_HEADERS}.
      */
     private static final List<String> UNCONDITIONAL_PROTOCOL_HEADERS = List.of(
-            "Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Range");
+            "Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Range", "If-Range",
+            "If-Match", "If-Unmodified-Since");
 
     /**
-     * The protocol-set tier gated by {@code not_modified} — the five conditional-request validators
-     * RFC 9110 §13 defines. They ride the toggle because their answers ({@code ETag} /
-     * {@code Last-Modified}, and a {@code 304} or {@code 206}) are gated by the same flag in the
-     * response direction: forwarding a validator whose response counterpart is then stripped would
-     * make the gateway ask a question it discards the answer to.
+     * The protocol-set tier gated by {@code not_modified} — the two RFC 9110 §13 validators whose
+     * answer is a {@code 304 Not Modified}: {@code If-None-Match} and {@code If-Modified-Since}. They
+     * ride the toggle because their answers ({@code ETag} / {@code Last-Modified}, and the
+     * {@code 304}) are gated by the same flag in the response direction: forwarding a validator whose
+     * response counterpart is then stripped would make the gateway ask a question it discards the
+     * answer to.
      * <p>
      * The request half and the response half are one decision in every forward mode. With the toggle
      * off the validators are withheld from the client copy whatever the mode — forward-all, a
      * negative-list, or a positive-list that names one in {@code headers_allow} — so the request
      * direction can never carry a validator the response direction would then answer without its
      * {@code ETag} / {@code Last-Modified}.
+     * <p>
+     * The other three RFC 9110 §13 validators are deliberately <em>not</em> in this tier; they sit in
+     * the unconditional tier and cross whatever the toggle says, because withholding them would not
+     * discard an answer — it would change what the request means. A withheld {@code If-Match} or
+     * {@code If-Unmodified-Since} turns a conditional write into an unconditional one, so the
+     * {@code 412} that guards against a lost update never fires. A withheld {@code If-Range} leaves
+     * {@code Range} on its own, so an origin whose representation has changed answers a resumed
+     * download with a {@code 206} slice of the newer version instead of the full {@code 200}.
      */
-    static final List<String> CONDITIONAL_HEADERS = List.of(
-            "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range");
+    static final List<String> CONDITIONAL_HEADERS = List.of("If-None-Match", "If-Modified-Since");
 
     /**
      * The gateway-understood protocol headers, both tiers together — the names that cross without an
@@ -471,11 +488,13 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * Withholds the five {@link #CONDITIONAL_HEADERS} validators from the copied client headers on a
-     * route that does not enable {@code not_modified}. Applied on <em>every</em> mode, after the mode
-     * copy and the never-forward strip: forward-all copies them, a negative-list that does not name
-     * them copies them, and a positive-list that names them in {@code headers_allow} copies them —
-     * none of those copies survives this step.
+     * Withholds the two {@link #CONDITIONAL_HEADERS} validators ({@code If-None-Match} and
+     * {@code If-Modified-Since}) from the copied client headers on a route that does not enable
+     * {@code not_modified}. Applied on <em>every</em> mode, after the mode copy and the never-forward
+     * strip: forward-all copies them, a negative-list that does not name them copies them, and a
+     * positive-list that names them in {@code headers_allow} copies them — none of those copies
+     * survives this step. {@code If-Match}, {@code If-Unmodified-Since} and {@code If-Range} are not
+     * touched here; they keep crossing with the unconditional tier.
      * <p>
      * Membership is tested on the {@linkplain ConnectionHeaders#separatorFolded separator-folded}
      * name, so every case <em>and</em> every {@code -}/{@code _} spelling the client used is withheld:
@@ -523,8 +542,10 @@ public final class ForwardPolicyStage {
 
     /**
      * Admits the {@link #PROTOCOL_HEADERS} the client actually sent, so a route never has to
-     * enumerate HTTP mechanics to work. The unconditional tier always applies; the
-     * {@link #CONDITIONAL_HEADERS} tier applies only when the route enables {@code not_modified}.
+     * enumerate HTTP mechanics to work. The unconditional tier — which carries {@code If-Match},
+     * {@code If-Unmodified-Since} and {@code If-Range} alongside {@code Range} — always applies; the
+     * two-validator {@link #CONDITIONAL_HEADERS} tier applies only when the route enables
+     * {@code not_modified}.
      * <p>
      * <strong>A negative-list entry beats the set.</strong> The set is applied only to names the mode
      * copy did not already refuse, so a route that denies {@code Content-Type} by name gets it

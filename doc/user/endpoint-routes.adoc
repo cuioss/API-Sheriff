@@ -126,8 +126,9 @@ endpoint:
                                    #   dimension is REFUSED AT BOOT at either scope
         headers_allow: [x-tenant]  # positive-list. The gateway-understood protocol headers
                                    #   (Accept, Accept-Encoding, Accept-Language, Content-Type,
-                                   #   Range, + the conditional validators) cross WITHOUT being
-                                   #   listed -- do not enumerate HTTP mechanics here
+                                   #   Range, If-Range, If-Match, If-Unmodified-Since, + the
+                                   #   two 304 validators when not_modified is on) cross
+                                   #   WITHOUT being listed -- do not enumerate HTTP mechanics here
         query_deny: [debug]        # negative-list on the OTHER dimension: every other client
                                    #   parameter crosses. The two dimensions are independent
         set_headers:               # additional STATIC gateway-set headers only. Injected

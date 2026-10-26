@@ -3796,11 +3796,15 @@ regenerated forwarding headers.
 *The gateway-understood protocol set.* These cross *without* being named, so a route never
 enumerates HTTP mechanics to make an ordinary backend work:
 
-* *Unconditional* -- `Accept`, `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Range`.
-* *Conditional* -- the five RFC 9110 §13 validators `If-None-Match`, `If-Modified-Since`,
-  `If-Match`, `If-Unmodified-Since`, `If-Range`, admitted only when the route's
-  link:#_upstream_defaults[`not_modified`] toggle is enabled. With the toggle disabled they are
-  withheld under every mode, even where a forward list would admit them.
+* *Unconditional* -- `Accept`, `Accept-Encoding`, `Accept-Language`, `Content-Type`, `Range`,
+  and the three RFC 9110 §13 preconditions `If-Range`, `If-Match` and `If-Unmodified-Since`.
+  They cross whatever the `not_modified` toggle says: withholding `If-Match` or
+  `If-Unmodified-Since` would turn a conditional write into an unconditional one, and withholding
+  `If-Range` would leave `Range` to fetch a `206` slice of a changed representation.
+* *Conditional* -- the two validators a `304` answers, `If-None-Match` and `If-Modified-Since`,
+  admitted only when the route's link:#_upstream_defaults[`not_modified`] toggle is enabled. With
+  the toggle disabled they are withheld under every mode, even where a forward list would admit
+  them.
 
 Membership answers *"does the gateway know what this header means?"*, not "does a backend need
 it" -- the latter rule would admit `Cookie` and `Authorization`. `User-Agent` is deliberately
@@ -4234,23 +4238,25 @@ pipeline reads a single resolved `true`/`false` and never re-derives the inherit
 | End-to-end conditional-request *pass-through* for the route
   (link:adr/0008-data-plane-transport.adoc[ADR-0008],
   link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
-  *Enabled* (default): the five RFC 9110 §13 validators (`If-None-Match`, `If-Modified-Since`,
-  `If-Match`, `If-Unmodified-Since`, `If-Range`) are admitted by the gateway-understood protocol
-  set -- they cross without appearing in any `forward` list -- and upstream `304` responses plus
-  the validator response headers (`ETag`, `Last-Modified`) relay untouched. *Disabled*: the
-  response half strips `ETag` / `Last-Modified`, and the request half withholds the five
-  validators, deliberately forcing full `200` exchanges -- for upstreams whose ETags are
+  *Enabled* (default): the two `304` validators (`If-None-Match`, `If-Modified-Since`) are
+  admitted by the gateway-understood protocol set -- they cross without appearing in any
+  `forward` list -- and upstream `304` responses plus the validator response headers (`ETag`,
+  `Last-Modified`) relay untouched. *Disabled*: the response half strips `ETag` /
+  `Last-Modified`, and the request half withholds those two validators, deliberately forcing full
+  `200` exchanges -- for upstreams whose ETags are
   inconsistent across nodes or leak inode/version detail. Gating both halves on one flag is what
   stops the gateway asking a question whose answer it then discards. In *neither* state does the
   gateway cache response bodies or answer `304` from a cache -- gateway-side response caching is
   rejected by design (ADR-0008).
 
-  *The validators are withheld under every forward mode.* With the toggle disabled, the gateway
-  removes the five validators from the client's headers after the mode copy, so no client
-  validator reaches the upstream -- not under forward-all, not under a negative-list that does not
-  name it, and not under a positive-list that names it in `headers_allow`. No `headers_deny` entry
-  is needed to withhold them. A `set_headers` entry naming a validator is operator configuration
-  and still crosses.
+  *The `304` validators are withheld under every forward mode.* With the toggle disabled, the gateway
+  removes `If-None-Match` and `If-Modified-Since` from the client's headers after the mode copy,
+  so neither reaches the upstream -- not under forward-all, not under a negative-list that does
+  not name it, and not under a positive-list that names it in `headers_allow`. No `headers_deny`
+  entry is needed to withhold them. A `set_headers` entry naming a validator is operator
+  configuration and still crosses. `If-Match`, `If-Unmodified-Since` and `If-Range` are not
+  governed by the toggle: they cross in either state, so a conditional write keeps its `412`
+  protection and `If-Range` stays paired with `Range`.
 |===
 
 *Resolution.* The `upstream_defaults` block itself follows the rule every policy block follows (see
