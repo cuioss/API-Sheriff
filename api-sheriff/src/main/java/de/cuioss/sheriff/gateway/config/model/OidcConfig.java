@@ -592,8 +592,9 @@ List<String> scopes,
      *
      * @param keyFile the path of a PEM file on a mount holding the DPoP proof key, {@code null} when
      *                omitted — a key is then generated at startup. The value is a location, not a
-     *                secret: it may be written literally and is never redacted. It may name the same
-     *                file as {@code client_authentication.key_file}; two keys are recommended
+     *                secret: it may be written literally and is never redacted. It must name a
+     *                different file than {@code client_authentication.key_file} and hold a different
+     *                key; the boot refuses one key for both (FAPI 2.0 section 6.8)
      * @author API Sheriff Team
      * @since 1.0
      */

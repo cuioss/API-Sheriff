@@ -162,6 +162,13 @@ import org.jspecify.annotations.Nullable;
  * restart and cannot be shared, so every instance behind one identity-provider client must be given
  * the same key files. A separate DPoP proof key is never published at the client JWKS endpoint.
  * <p>
+ * <strong>The two signing keys are two keys (FAPI 2.0 section 6.8).</strong> In key mode the key that
+ * signs the client assertion must not also sign the DPoP proofs. Boot validation refuses the two
+ * {@code key_file} fields naming the same file; once both keys are resolved, this producer also
+ * refuses a client-authentication key and a sender-constraint key with the same key id — the same key
+ * provided under two paths, a copy or a link — with {@code CONFIG_INVALID}, naming both fields and no
+ * key id. In client-secret mode there is no client-authentication key to compare.
+ * <p>
  * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
  * token-endpoint client is a {@link BoundTokenEndpointClient} over the base back-channel
  * configuration and the key id of the sender-constraint key. It is the single instance handed to the
@@ -320,6 +327,16 @@ public class BffRuntimeProducer {
     private static final String ON_FAILURE_REAUTHENTICATE = "reauthenticate";
     /** The {@code oidc.session.refresh.on_failure} spelling that answers {@code 401} for every request. */
     private static final String ON_FAILURE_REJECT = "reject";
+    /**
+     * The fixed detail of the boot refusal of one key provided for both client authentication and
+     * DPoP. Names both fields, and neither a path nor a key id.
+     */
+    private static final String SHARED_SIGNING_KEY_DETAIL =
+            "oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key; the "
+                    + "key that signs the client assertion must not also sign the DPoP proofs, because FAPI 2.0 "
+                    + "section 6.8 requires every key to serve one purpose — point "
+                    + "oidc.sender_constraint.key_file at a file holding a different key, or remove it to use a "
+                    + "DPoP key generated at startup";
 
     private final GatewayConfig gatewayConfig;
     private final RouteTable routeTable;
@@ -469,6 +486,8 @@ public class BffRuntimeProducer {
         // ADR-0058: one sender-constraint key, and the one SenderConstraint it hands out, for the whole
         // runtime. The key id is the thumbprint every accepted access token must name in cnf.jkt.
         ClientSigningKey senderConstraintKey = resolveSenderConstraintKey(oidc);
+        // FAPI 2.0 section 6.8: the client assertion and the DPoP proofs are signed with two keys.
+        refuseSharedSigningKey(clientCredential.signingKey(), senderConstraintKey);
         SenderConstraint senderConstraint = senderConstraintKey.senderConstraint();
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
@@ -844,7 +863,7 @@ public class BffRuntimeProducer {
             LOGGER.warn(ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION);
             LOGGER.debug("BFF client authentication: client_secret_basic");
             return new ClientCredential(new ClientSecretBasicAuth(clientId, clientSecret),
-                    ClientJwksEndpoint.withheld());
+                    ClientJwksEndpoint.withheld(), null);
         }
         OidcConfig.ClientAuthenticationSettings settings = oidc.clientAuthentication();
         ClientSigningKey signingKey = resolveSigningKey(settings == null ? null : settings.keyFile(),
@@ -852,7 +871,7 @@ public class BffRuntimeProducer {
         LOGGER.debug("BFF client authentication: private_key_jwt (key mode=%s, algorithm=%s)",
                 signingKey.mode().diagnosticName(), signingKey.algorithm());
         return new ClientCredential(signingKey.clientAuthentication(clientId, issuer),
-                new ClientJwksEndpoint(signingKey.publicJwk()));
+                new ClientJwksEndpoint(signingKey.publicJwk()), signingKey);
     }
 
     /**
@@ -862,8 +881,33 @@ public class BffRuntimeProducer {
      *
      * @param authentication the client authentication every authenticated back-channel leg presents
      * @param jwksEndpoint   the client JWKS endpoint in the form that goes with that authentication
+     * @param signingKey     the key the authentication signs with in key mode, {@code null} in
+     *                       client-secret mode; held so it can be compared with the sender-constraint key
      */
-    private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint) {
+    private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint,
+            @Nullable ClientSigningKey signingKey) {
+    }
+
+    /**
+     * Refuses one key used for both purposes: in key mode, a client-authentication key and a
+     * sender-constraint key with the same key id are the same key, which FAPI 2.0 section 6.8 forbids
+     * — a key serves one purpose. Boot validation already refuses the two {@code key_file} fields
+     * naming the same file; this check catches what a path comparison cannot see, the same key
+     * provided under two different paths (a copy or a link). A generated key is fresh per boot and
+     * never equals another key, so only two provided files can trip it. The message names both fields
+     * and no key id.
+     *
+     * @param clientAuthenticationKey the resolved client-authentication key, {@code null} in
+     *                                client-secret mode, which signs no client assertion
+     * @param senderConstraintKey     the resolved sender-constraint key
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when both keys are the same key
+     */
+    private static void refuseSharedSigningKey(@Nullable ClientSigningKey clientAuthenticationKey,
+            ClientSigningKey senderConstraintKey) {
+        if (clientAuthenticationKey != null
+                && clientAuthenticationKey.keyId().equals(senderConstraintKey.keyId())) {
+            throw new GatewayException(EventType.CONFIG_INVALID, SHARED_SIGNING_KEY_DETAIL);
+        }
     }
 
     /**

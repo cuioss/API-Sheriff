@@ -20,6 +20,8 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.rende
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
@@ -38,6 +40,12 @@ import lombok.experimental.UtilityClass;
  * two select different client authentications, and a declared {@code oidc.client_secret} that resolves
  * to a blank value. The schema does not encode the exclusion; this rule owns it, because its message has
  * to name both keys.
+ * <p>
+ * The signing-key separation rule ({@link #validateSigningKeyFilesDistinct}) refuses, in the
+ * key-based mode, a document whose {@code oidc.client_authentication.key_file} and
+ * {@code oidc.sender_constraint.key_file} name the same file: the client assertion and the DPoP proofs
+ * must be signed with different keys (FAPI 2.0 section 6.8). It judges the paths only; the same key
+ * provided under two different paths is refused where the runtime is assembled, once both keys are read.
  * <p>
  * The back-channel origin rule ({@link #validateBackChannelOrigin}) holds
  * {@code oidc.back_channel_origin} to a bare {@code http}/{@code https} origin, admits an {@code http}
@@ -61,6 +69,9 @@ import lombok.experimental.UtilityClass;
 public class OidcClientRules {
 
     private static final String OIDC_CLIENT_SECRET_POINTER = "/oidc/client_secret";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_SENDER_CONSTRAINT_KEY_FILE_POINTER = "/oidc/sender_constraint/key_file";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER = "/oidc/login/default_return_url";
@@ -129,6 +140,17 @@ public class OidcClientRules {
                     + "oidc.client_secret to authenticate with private_key_jwt";
 
     /**
+     * The fixed detail of the refusal of one file named by both signing-key fields. Fixed text, so the
+     * boot log echoes neither configured path.
+     */
+    private static final String SIGNING_KEY_FILES_NOT_DISTINCT_DETAIL =
+            "oidc.client_authentication.key_file and oidc.sender_constraint.key_file name the same file; the "
+                    + "key that signs the client assertion must not also sign the DPoP proofs, because FAPI 2.0 "
+                    + "section 6.8 requires every key to serve one purpose — point "
+                    + "oidc.sender_constraint.key_file at a file holding a different key, or remove it to use a "
+                    + "DPoP key generated at startup";
+
+    /**
      * Rule: the client-authentication mode must be unambiguous and usable.
      * <p>
      * The presence of {@code oidc.client_secret} selects {@code client_secret_basic}; its absence
@@ -165,6 +187,70 @@ public class OidcClientRules {
         if (clientAuthentication != null && clientAuthentication.keyFile() != null) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER,
                     CLIENT_SECRET_WITH_KEY_FILE_DETAIL));
+        }
+    }
+
+    /**
+     * Rule: the client-authentication key and the DPoP proof key must be two keys.
+     * <p>
+     * FAPI 2.0 section 6.8 requires a key to serve one purpose. In the key-based mode
+     * ({@link OidcConfig#usesClientSecret()} is {@code false}) the gateway signs its
+     * {@code private_key_jwt} client assertion with the key {@code oidc.client_authentication.key_file}
+     * names and its DPoP proofs with the key {@code oidc.sender_constraint.key_file} names; when both
+     * name the same file after {@link Path#normalize()} — so {@code keys/../keys/a.pem} and
+     * {@code keys/a.pem} are one file — one error is collected at
+     * {@code /oidc/sender_constraint/key_file}. Its detail is fixed text that names both keys and
+     * neither path.
+     * <p>
+     * What the rule leaves alone, and why:
+     * <ul>
+     *   <li><strong>Client-secret mode.</strong> The client-authentication key file is not read
+     *       there, and {@link #validateClientAuthentication} already refuses declaring it together
+     *       with a secret.</li>
+     *   <li><strong>Only one key file declared, or neither.</strong> A generated key is fresh per
+     *       boot and therefore never equal to a provided one.</li>
+     *   <li><strong>A path that does not parse.</strong> It is left to the runtime's own refusal of
+     *       an unusable key file, so one defect is reported once.</li>
+     *   <li><strong>The same key under two different paths</strong> — a copy or a link. Telling
+     *       those apart needs the key material, which this pre-boot rule never reads; the runtime
+     *       producer refuses that case once both keys are read.</li>
+     * </ul>
+     * The rule never fails fast (ADR-0009).
+     *
+     * @param gateway the bound gateway document, whose {@code oidc} block is judged
+     * @param errors  the shared violation list every refusal is appended to
+     */
+    public static void validateSigningKeyFilesDistinct(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null || oidc.usesClientSecret()) {
+            return;
+        }
+        OidcConfig.ClientAuthenticationSettings clientAuthentication = oidc.clientAuthentication();
+        OidcConfig.SenderConstraintSettings senderConstraint = oidc.senderConstraint();
+        if (clientAuthentication == null || clientAuthentication.keyFile() == null
+                || senderConstraint == null || senderConstraint.keyFile() == null) {
+            return;
+        }
+        Optional<Path> clientKeyFile = normalizedPath(clientAuthentication.keyFile());
+        Optional<Path> dpopKeyFile = normalizedPath(senderConstraint.keyFile());
+        if (clientKeyFile.isPresent() && clientKeyFile.equals(dpopKeyFile)) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SENDER_CONSTRAINT_KEY_FILE_POINTER,
+                    SIGNING_KEY_FILES_NOT_DISTINCT_DETAIL));
+        }
+    }
+
+    /**
+     * The normalized form of a configured key-file path, or empty when the value does not parse as a
+     * path on this platform.
+     *
+     * @param keyFile the configured key-file path, never {@code null}
+     * @return the normalized path, or empty when it does not parse
+     */
+    private static Optional<Path> normalizedPath(String keyFile) {
+        try {
+            return Optional.of(Path.of(keyFile).normalize());
+        } catch (InvalidPathException _) {
+            return Optional.empty();
         }
     }
 
