@@ -16,73 +16,253 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Pattern;
+
+import io.restassured.http.Header;
+import io.restassured.response.ExtractableResponse;
+import io.restassured.response.Response;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Verifies the RFC 9457 {@code application/problem+json} error contract the edge renders for
- * rejected requests, and that every rejection is terminated at the gateway without reaching the
- * upstream.
+ * rejected requests, that every rejection is terminated at the gateway without reaching the upstream,
+ * and that no gateway-originated error discloses what it runs on.
  * <p>
  * Each rejection carries the failing category's {@code urn:api-sheriff:problem:*} type, its title,
  * and the HTTP status. A forwarded request would carry the {@code go-httpbin} echo (a non-null
  * {@code method}); its absence on every rejection is the observable proof the upstream count stayed
  * {@code 0}.
+ * <p>
+ * <strong>No identity, no version, one shape.</strong> Every error answer exercised here — the
+ * routing {@code 404} and {@code 405}, the authentication {@code 401} and one gateway-originated
+ * {@code 5xx} — carries no {@code Server} and no {@code X-Powered-By} header, names no framework or
+ * product version in a header value or in the body, and renders the same problem member-name set
+ * under {@code application/problem+json}. A fingerprinting client therefore learns nothing about the
+ * runtime from the gateway's own errors, and cannot tell the error classes apart by their shape.
+ * <p>
+ * <strong>The 5xx.</strong> The {@code untrusted-chain-control} route ({@code /proxy/untrusted}) dials
+ * an upstream whose self-signed certificate no truststore of the primary instance anchors, so the
+ * gateway originates the error. Its breaker counts the refusals of every suite that requests the
+ * route, {@code HtmlErrorPageIT} included, so the answer is either the gateway's {@code 502} or the
+ * open circuit identified by its full signature — {@code 503}, {@code Retry-After: 5} and the
+ * upstream problem type. A bare {@code 503} fails. {@code /proxy/fault} is deliberately not used: its
+ * Toxiproxy fixture belongs to {@code HtmlErrorPageIT}.
  */
 class ErrorContractIT extends BaseIntegrationTest {
+
+    /** The RFC 9457 media type of a gateway rejection. */
+    private static final String PROBLEM_JSON = "application/problem+json";
+
+    /** The {@code untrusted-chain-control} route, whose upstream dial is always refused. */
+    private static final String REFUSED_DIAL_PATH = "/proxy/untrusted";
+
+    /** The RFC 9457 problem type of an upstream failure. */
+    private static final String UPSTREAM_PROBLEM_TYPE = "urn:api-sheriff:problem:upstream";
+
+    /** The {@code Retry-After} value of an open circuit: the seconds the breaker stays open. */
+    private static final String BREAKER_OPEN_SECONDS = "5";
+
+    /**
+     * A product or framework name that betrays the runtime, matched case-insensitively in header values
+     * and in the body. {@code API-Sheriff/} and {@code api-sheriff/} are the product-token spellings;
+     * the {@code urn:api-sheriff:problem:*} type URIs carry a colon, not a slash, and stay legal.
+     */
+    private static final Pattern RUNTIME_NAME = Pattern.compile("quarkus|vert\\.x|netty|api-sheriff/",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * A bare dotted version token such as {@code 3.40.1}, matched in header values only: a problem body
+     * carries no number with a dot in it, while a header value is where a {@code Server}-style product
+     * version would land.
+     */
+    private static final Pattern DOTTED_VERSION = Pattern.compile("\\b\\d+(?:\\.\\d+)+\\b");
+
+    /** The problem member names every gateway-originated error renders. */
+    private static final Set<String> PROBLEM_MEMBERS = Set.of("type", "title", "status");
 
     @Test
     @DisplayName("an unmatched path is denied 404 as a routing problem, not forwarded")
     void unmatchedPathProblemJson() {
-        var response = given()
-                .when()
-                .get("/no-such-route/resource")
-                .then()
-                .statusCode(404)
-                .contentType("application/problem+json")
-                .extract();
+        var response = unmatchedPath();
 
         assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:routing"));
         assertEquals("Routing", response.path("title"));
         assertEquals(Integer.valueOf(404), response.path("status"));
         assertNull(response.path("method"), "a denied request must not reach the go-httpbin upstream");
+        assertDisclosesNothing(response);
     }
 
     @Test
     @DisplayName("a disallowed method is rejected 405 as a routing problem, not forwarded")
     void disallowedMethodProblemJson() {
-        var response = given()
-                .when()
-                .patch("/proxy/get")
-                .then()
-                .statusCode(405)
-                .contentType("application/problem+json")
-                .extract();
+        var response = disallowedMethod();
 
         assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:routing"));
         assertEquals("Routing", response.path("title"));
         assertEquals(Integer.valueOf(405), response.path("status"));
         assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+        assertDisclosesNothing(response);
     }
 
     @Test
     @DisplayName("a bearer rejection renders an authentication problem, not forwarded")
     void bearerRejectionProblemJson() {
-        var response = given()
-                .when()
-                .get("/secure/get")
-                .then()
-                .statusCode(401)
-                .contentType("application/problem+json")
-                .extract();
+        var response = bearerRejection();
 
         assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:authentication"));
         assertEquals("Authentication", response.path("title"));
         assertEquals(Integer.valueOf(401), response.path("status"));
         assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+        assertDisclosesNothing(response);
+    }
+
+    @Test
+    @DisplayName("a refused upstream dial is a gateway-originated 502, or the identified open circuit, and discloses nothing")
+    void refusedDialProblemJson() {
+        var response = refusedDial();
+
+        if (response.statusCode() == 503) {
+            assertAll("only the open circuit's 503 is tolerated, identified by its full signature",
+                    () -> assertEquals(BREAKER_OPEN_SECONDS, response.header("Retry-After"),
+                            "an open circuit names the seconds the breaker stays open; body: " + response.asString()),
+                    () -> assertEquals(UPSTREAM_PROBLEM_TYPE, response.path("type"),
+                            "an open circuit carries the upstream problem type; body: " + response.asString()));
+        } else {
+            assertEquals(502, response.statusCode(), () -> REFUSED_DIAL_PATH + " must answer the gateway's own 502"
+                    + " for a refused dial, or an identified open circuit; body: " + response.asString());
+        }
+        assertNull(response.path("method"), "a refused dial never reached the upstream");
+        assertDisclosesNothing(response);
+    }
+
+    @Test
+    @DisplayName("the 4xx and 5xx problem documents share one member-name set under application/problem+json")
+    void errorClassesShareOneProblemShape() {
+        var notFound = unmatchedPath();
+        var methodNotAllowed = disallowedMethod();
+        var unauthorized = bearerRejection();
+        var upstreamFailure = refusedDial();
+
+        assertAll("one shape for every gateway-originated error class",
+                () -> assertEquals(PROBLEM_MEMBERS, memberNames(notFound), "404 routing"),
+                () -> assertEquals(PROBLEM_MEMBERS, memberNames(methodNotAllowed), "405 routing"),
+                () -> assertEquals(PROBLEM_MEMBERS, memberNames(unauthorized), "401 authentication"),
+                () -> assertEquals(PROBLEM_MEMBERS, memberNames(upstreamFailure),
+                        () -> upstreamFailure.statusCode() + " upstream"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Quarkus", "quarkus-vertx-http", "Vert.x", "vertx/Vert.x 4", "Netty", "netty/4.1.118.Final",
+            "API-Sheriff/0.2.0", "api-sheriff/1.0"})
+    @DisplayName("positive control: the runtime-name pattern matches every name it exists to catch")
+    void runtimeNamePatternMatchesKnownSamples(String sample) {
+        assertTrue(RUNTIME_NAME.matcher(sample).find(),
+                () -> "the pattern must match '" + sample + "', otherwise a leak of it would pass vacuously");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3.40.1", "Quarkus/3.40.1", "4.1", "netty/4.1.118.Final"})
+    @DisplayName("positive control: the dotted-version pattern matches a version token in a header value")
+    void dottedVersionPatternMatchesKnownSamples(String sample) {
+        assertTrue(DOTTED_VERSION.matcher(sample).find(),
+                () -> "the pattern must match '" + sample + "', otherwise a leak of it would pass vacuously");
+    }
+
+    @Test
+    @DisplayName("negative control: the patterns leave the gateway's own type URI and an HSTS value alone")
+    void patternsLeaveLegalValuesAlone() {
+        assertAll("values the gateway legitimately emits",
+                () -> assertFalse(RUNTIME_NAME.matcher("urn:api-sheriff:problem:routing").find(),
+                        "the problem type URI names the product with a colon, never as a product token"),
+                () -> assertFalse(DOTTED_VERSION.matcher("max-age=31536000; includeSubDomains").find(),
+                        "an HSTS value carries no dotted version"),
+                () -> assertFalse(DOTTED_VERSION.matcher("5").find(), "a Retry-After delay is no version"));
+    }
+
+    // ---------------------------------------------------------------- requests
+
+    private static ExtractableResponse<Response> unmatchedPath() {
+        return given()
+                .when()
+                .get("/no-such-route/resource")
+                .then()
+                .statusCode(404)
+                .contentType(PROBLEM_JSON)
+                .extract();
+    }
+
+    private static ExtractableResponse<Response> disallowedMethod() {
+        return given()
+                .when()
+                .patch("/proxy/get")
+                .then()
+                .statusCode(405)
+                .contentType(PROBLEM_JSON)
+                .extract();
+    }
+
+    private static ExtractableResponse<Response> bearerRejection() {
+        return given()
+                .when()
+                .get("/secure/get")
+                .then()
+                .statusCode(401)
+                .contentType(PROBLEM_JSON)
+                .extract();
+    }
+
+    private static ExtractableResponse<Response> refusedDial() {
+        return given()
+                .header("Accept", "application/json")
+                .when()
+                .get(REFUSED_DIAL_PATH)
+                .then()
+                .contentType(PROBLEM_JSON)
+                .extract();
+    }
+
+    // ---------------------------------------------------------------- assertions
+
+    /**
+     * Asserts that a gateway-originated error names nothing of the runtime: no {@code Server} and no
+     * {@code X-Powered-By} header, no {@link #RUNTIME_NAME} and no {@link #DOTTED_VERSION} in any
+     * header value, and no {@link #RUNTIME_NAME} in the body.
+     */
+    private static void assertDisclosesNothing(ExtractableResponse<Response> response) {
+        String body = response.asString();
+        assertAll("status " + response.statusCode() + " discloses no server identity and no version",
+                () -> assertNull(response.header("Server"), "no Server header on a gateway-originated error"),
+                () -> assertNull(response.header("X-Powered-By"), "no X-Powered-By header on a gateway-originated error"),
+                () -> {
+                    for (Header header : response.headers()) {
+                        String value = header.getValue();
+                        assertFalse(RUNTIME_NAME.matcher(value).find(),
+                                () -> header.getName() + " names the runtime: " + value);
+                        assertFalse(DOTTED_VERSION.matcher(value).find(),
+                                () -> header.getName() + " carries a version token: " + value);
+                    }
+                },
+                () -> assertFalse(RUNTIME_NAME.matcher(body).find(), () -> "the body names the runtime: " + body));
+    }
+
+    /** The top-level member names of a problem document, after asserting its media type. */
+    private static Set<String> memberNames(ExtractableResponse<Response> response) {
+        String contentType = response.contentType() == null ? "" : response.contentType().toLowerCase(Locale.ROOT);
+        assertTrue(contentType.startsWith(PROBLEM_JSON),
+                () -> "a gateway-originated error renders problem+json; content type was " + response.contentType());
+        return new TreeSet<>(response.jsonPath().getMap("$").keySet().stream().map(String::valueOf).toList());
     }
 }
