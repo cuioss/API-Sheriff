@@ -20,6 +20,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Base64;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -253,51 +254,67 @@ public final class CookieKeyMaterial {
     }
 
     /**
-     * Decodes the content of a provided key file. ISO-8859-1 maps every byte to one character, so a
-     * byte outside ASCII becomes a character outside the base64 alphabet. The strict standard
-     * decoder refuses any whitespace or line break inside the token, so a multi-line value or a PEM
-     * block is refused.
+     * Decodes the content of a provided key file. The token is decoded straight from the file's
+     * bytes, so the key material never becomes an immutable {@link String} that could not be wiped;
+     * every transient buffer holding it — the file content, the token and the decoded bytes — is
+     * zeroed before this method returns, and only the {@link SecretKeySpec}'s own copy survives. A
+     * byte outside ASCII lies outside the base64 alphabet. The strict standard decoder refuses any
+     * whitespace or line break inside the token, so a multi-line value or a PEM block is refused.
      */
     private static SecretKey decodeKey(byte[] content) {
-        String token = stripSurroundingWhitespace(new String(content, StandardCharsets.ISO_8859_1));
-        if (token.isEmpty()) {
-            throw refusal("holds no key");
-        }
         byte[] decoded;
         try {
-            decoded = Base64.getDecoder().decode(token);
+            decoded = decodeToken(content);
+        } finally {
+            Arrays.fill(content, (byte) 0);
+        }
+        try {
+            if (decoded.length != AES_256_KEY_BYTES) {
+                throw refusal("decodes to %d bytes; it must decode to exactly %d bytes (AES-256)"
+                        .formatted(decoded.length, AES_256_KEY_BYTES));
+            }
+            // SecretKeySpec keeps its own copy, so the decoded bytes are wiped below.
+            return new SecretKeySpec(decoded, ALGORITHM);
+        } finally {
+            Arrays.fill(decoded, (byte) 0);
+        }
+    }
+
+    /**
+     * Strips the ASCII whitespace around the token and base64-decodes it with the strict standard
+     * decoder, wiping the stripped token copy before returning.
+     */
+    private static byte[] decodeToken(byte[] content) {
+        int start = 0;
+        int end = content.length;
+        while (start < end && isAsciiWhitespace(content[start])) {
+            start++;
+        }
+        while (end > start && isAsciiWhitespace(content[end - 1])) {
+            end--;
+        }
+        if (start == end) {
+            throw refusal("holds no key");
+        }
+        byte[] token = Arrays.copyOfRange(content, start, end);
+        try {
+            return Base64.getDecoder().decode(token);
         } catch (IllegalArgumentException _) {
             // The decoder's text names the offending character of the key material — name the field
             // and the defect, never chain the cause.
             throw refusal("is not one line of base64");
+        } finally {
+            Arrays.fill(token, (byte) 0);
         }
-        if (decoded.length != AES_256_KEY_BYTES) {
-            throw refusal("decodes to %d bytes; it must decode to exactly %d bytes (AES-256)"
-                    .formatted(decoded.length, AES_256_KEY_BYTES));
-        }
-        return new SecretKeySpec(decoded, ALGORITHM);
     }
 
     /**
-     * Strips the ASCII whitespace around the token — space, tab, line feed, vertical tab, form feed
-     * and carriage return. Any other character, a control character included, stays and is refused by
-     * the decoder.
+     * Whether a byte is ASCII whitespace that may surround the token — space, tab, line feed, vertical
+     * tab, form feed and carriage return. Any other byte, a control character included, stays and is
+     * refused by the decoder.
      */
-    private static String stripSurroundingWhitespace(String value) {
-        int start = 0;
-        int end = value.length();
-        while (start < end && isAsciiWhitespace(value.charAt(start))) {
-            start++;
-        }
-        while (end > start && isAsciiWhitespace(value.charAt(end - 1))) {
-            end--;
-        }
-        return value.substring(start, end);
-    }
-
-    private static boolean isAsciiWhitespace(char character) {
-        return character == ' ' || character == '\t' || character == '\n' || character == '\u000B'
-                || character == '\f' || character == '\r';
+    private static boolean isAsciiWhitespace(byte value) {
+        return value == ' ' || value == '\t' || value == '\n' || value == 0x0B || value == '\f' || value == '\r';
     }
 
     private static IllegalStateException refusal(String defect) {
