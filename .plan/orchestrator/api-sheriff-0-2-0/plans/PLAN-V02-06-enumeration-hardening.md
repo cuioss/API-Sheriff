@@ -77,7 +77,9 @@ must work through that negotiation, not around it.
    callers). Plus **three-layer documentation** (`configuration.adoc` threshold/predicate/action config,
    `doc/user/`, `doc/development/`), including the usability note (uniform-404 is scoped to untrusted
    callers precisely to preserve authenticated-client error handling). Derive the ADR ordinal from
-   `doc/adr/` on the branch at write time; a duplicate ordinal fails the build.
+   `doc/adr/` on the branch at write time; a duplicate ordinal fails the build. Write the record to
+   `doc/development/adr-writing.adoc` (skeleton, writing rule, term list); `AdrRecordLengthContractTest` fails the
+   build on a record body over 500 lines.
 7. **The general-purpose substrate contract** — **stated as its own named line item.** D3 ships the
    mechanism; D7 ships the *contract* that stops the next consumer having to generalise it. Publish
    the substrate as a general-purpose API with a written contract, not as a recon-code-specific

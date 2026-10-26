@@ -27,7 +27,9 @@ and the key cannot be shared across replicas — are unaffected.
    base64 text; weigh what an operator can generate and inspect with standard tools, and how the file
    is read bounded. ADR-0058 is the reference for the reasoning — in particular state whether its
    treatment of ADR-0011 (trust material kept out of `gateway.yaml`) carries over to a symmetric key,
-   rather than assuming it. Derive the ADR ordinal from `doc/adr/` on the branch at write time.
+   rather than assuming it. Derive the ADR ordinal from `doc/adr/` on the branch at write time. Write the record
+   to `doc/development/adr-writing.adoc` (skeleton, writing rule, term list); `AdrRecordLengthContractTest` fails
+   the build on a record body over 500 lines.
 
 2. **Replace the provided mode of `oidc.session.encryption_key` with a key-file reference.** This is
    a breaking configuration change; the Pre-1.0 rules apply, so no compatibility path is kept. It

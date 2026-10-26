@@ -2,8 +2,8 @@
   "id": "PLAN-V02-06",
   "slug": "enumeration-hardening",
   "workstream": "WS-03",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
+  "status": "launched",
+  "plan_marshall_plan_id": "plan-v02-06-enumeration-hardening",
   "pr": "",
   "landing": "",
   "seq": 6
