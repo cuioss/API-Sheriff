@@ -22,6 +22,7 @@ import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.endpo
 import java.util.ArrayList;
 import java.util.List;
 
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.PolicyBlock;
 import de.cuioss.sheriff.gateway.config.PolicyBlock.ScopeChain;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
@@ -36,12 +37,13 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.tools.logging.CuiLogger;
 import lombok.experimental.UtilityClass;
 
 /**
  * The boot-time {@link ValidationRule}s that bound the gateway's inbound limits: the inbound-filter
- * profile a route may run under, the edge admission budget, and the {@code Authorization}
- * header-value carve-out.
+ * profile a route may run under, the edge admission budget, the {@code Authorization}
+ * header-value carve-out, and the per-route {@code rate_limit} block the gateway does not enforce.
  * <p>
  * The inbound-filter mode refusal ({@link #validateSecurityProfileMinimal}, ADR-0024): a route whose
  * effective {@code profile} resolves to {@code minimal} must be neither effectively authenticated nor
@@ -57,15 +59,21 @@ import lombok.experimental.UtilityClass;
  * header-value baseline, since the key can only raise the pre-route cap for {@code Authorization}
  * values.
  * <p>
- * Every rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and never
- * fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of this
- * package (ADR-0061, ADR-0062).
+ * The unenforced-limit rule ({@link #validateRateLimitNotEnforced}) refuses nothing: it emits
+ * {@link ConfigLogMessages.WARN#RATE_LIMIT_NOT_ENFORCED} for every route that declares the
+ * {@code rate_limit} block, because the block is parsed but never enforced.
+ * <p>
+ * Every refusing rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and
+ * never fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of
+ * this package (ADR-0061, ADR-0062).
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 @UtilityClass
 public class LimitRules {
+
+    private static final CuiLogger LOGGER = new CuiLogger(LimitRules.class);
 
     private static final String EDGE_HARDENING_ADMISSION_POINTER = "/edge_hardening/admission_cap";
     private static final String EDGE_HARDENING_WEBSOCKET_POINTER = "/edge_hardening/websocket_relay_cap";
@@ -231,6 +239,36 @@ public class LimitRules {
                             + "security_filter bound general header values rather than the "
                             + "Authorization carve-out")
                             .formatted(declared, baseline)));
+        }
+    }
+
+    /**
+     * Rule: every route that declares the per-route {@code rate_limit} block is reported with the boot
+     * WARN {@link ConfigLogMessages.WARN#RATE_LIMIT_NOT_ENFORCED}, naming the route and its endpoint.
+     * <p>
+     * Rate limiting is not implemented. The block is parsed and bound into {@code RateLimitConfig},
+     * but no request-time component reads it: no rate limit is applied and no request is ever
+     * answered {@code 429}. A configuration key that parses but does not act reads like a control the
+     * operator has in force, so the gap is announced at every boot instead of being left for the
+     * operator to discover under load.
+     * <p>
+     * The rule refuses nothing and appends no violation, so the boot continues: refusing would break
+     * every descriptor that already carries the block, while the WARN keeps the gap visible. It is
+     * the same shape as the forwarded-trust breadth WARN of {@code EdgeRules}. A declared block is
+     * reported whatever it holds — an empty {@code rate_limit: {}} enforces exactly as little as a
+     * populated one. The WARN carries the route and endpoint ids only, never a configured limit value.
+     *
+     * @param endpoints the enabled endpoints, whose every route's {@code rate_limit} is inspected
+     * @param errors    the shared violation list; this rule never appends to it
+     */
+    public static void validateRateLimitNotEnforced(List<EndpointConfig> endpoints,
+            List<ConfigError> errors) { // NOSONAR java:S1172 - ValidationRule seam shape; a WARN-only rule appends nothing
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                if (route.rateLimit() != null) {
+                    LOGGER.warn(ConfigLogMessages.WARN.RATE_LIMIT_NOT_ENFORCED, route.id(), endpoint.id());
+                }
+            }
         }
     }
 }

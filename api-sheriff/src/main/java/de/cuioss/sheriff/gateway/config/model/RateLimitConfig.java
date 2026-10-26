@@ -19,10 +19,13 @@ import lombok.Builder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The reserved per-route {@code rate_limit} block.
+ * The per-route {@code rate_limit} block — planned, not implemented.
  * <p>
- * The rate-limiting feature is deferred; the block is accepted and ignored so
- * the schema need not change when the feature ships.
+ * The block is parsed and bound into this record, and every route that declares it is reported at
+ * boot with the WARN {@code ApiSheriff-140} ({@code LimitRules.validateRateLimitNotEnforced}). It is
+ * never enforced: no component reads it at request time, so no rate limit is applied and no request
+ * is answered {@code 429}. A future implementation builds on the per-source mechanism of the
+ * follow-up rate-limiting work rather than on these two fields as they stand.
  *
  * @param requestsPerSecond the sustained request rate, {@code null} when omitted
  * @param burst             the burst allowance, {@code null} when omitted
