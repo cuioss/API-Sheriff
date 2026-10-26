@@ -210,6 +210,15 @@ public final class ForwardPolicyStage {
     static final List<String> PROTOCOL_HEADERS = Stream.concat(
             UNCONDITIONAL_PROTOCOL_HEADERS.stream(), CONDITIONAL_HEADERS.stream()).toList();
 
+    /**
+     * The {@link #CONDITIONAL_HEADERS} in the lower-cased spelling
+     * {@link ConnectionHeaders#separatorFolded} produces — the lookup {@link #withholdConditionalHeaders}
+     * tests a client-sent name against once it has been folded. Derived from the one list rather than
+     * written beside it, so the two cannot disagree.
+     */
+    private static final Set<String> FOLDED_CONDITIONAL_HEADERS = Set.copyOf(CONDITIONAL_HEADERS.stream()
+            .map(ConnectionHeaders::separatorFolded).toList());
+
     private final ForwardedHeaderResolver resolver;
     private final TcpPeerGate peerGate;
     private final boolean emitForwarded;
@@ -468,13 +477,16 @@ public final class ForwardPolicyStage {
      * them copies them, and a positive-list that names them in {@code headers_allow} copies them —
      * none of those copies survives this step.
      * <p>
-     * The removal goes through the case-insensitive map's own {@code remove}, so every spelling the
-     * client used is withheld. It runs before {@code set_headers} is merged, so an operator's static
-     * validator is untouched: this gate governs <em>client input</em>, exactly like
-     * {@link #applyRequestStrip}.
+     * Membership is tested on the {@linkplain ConnectionHeaders#separatorFolded separator-folded}
+     * name, so every case <em>and</em> every {@code -}/{@code _} spelling the client used is withheld:
+     * a CGI-folding backend resolves {@code If_None_Match} to the same {@code HTTP_IF_NONE_MATCH} as
+     * the canonical name, and a spelling that crossed would carry the very precondition this gate
+     * withholds. It runs before {@code set_headers} is merged, so an operator's static validator is
+     * untouched: this gate governs <em>client input</em>, exactly like {@link #applyRequestStrip}.
      */
     private static void withholdConditionalHeaders(Map<String, String> headers) {
-        CONDITIONAL_HEADERS.forEach(headers::remove);
+        headers.keySet().removeIf(
+                name -> FOLDED_CONDITIONAL_HEADERS.contains(ConnectionHeaders.separatorFolded(name)));
     }
 
     /**

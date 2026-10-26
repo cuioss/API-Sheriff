@@ -847,6 +847,34 @@ class ForwardPolicyStageTest {
                     "the client's validator is withheld and the operator's static value crosses alone");
         }
 
+        @ParameterizedTest
+        @ValueSource(strings = {"If_None_Match", "If-None_Match", "If_Modified-Since", "If_Match",
+                "If_Unmodified_Since", "If_Range"})
+        @DisplayName("an underscore spelling of a validator is withheld while not_modified is off")
+        void underscoreSpelledValidatorIsWithheldWhenToggleOff(String spelling) {
+            // Arrange — a CGI-folding backend resolves every -/_ spelling of a validator to one
+            // HTTP_IF_* variable, so the toggle must close the whole equivalence class, exactly as the
+            // never-forward strip does. The toggle-on run is the matched control: it proves the
+            // spelling really survives the forward-all mode copy, so its absence below is the gate's.
+            Map<String, List<String>> headers = Map.of(spelling, List.of("probe-value"));
+
+            // Act
+            ForwardPolicyStage.Result toggleOff = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result toggleOn = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, true);
+
+            // Assert
+            String folded = ConnectionHeaders.separatorFolded(spelling);
+            assertAll("the not_modified gate closes the separator equivalence class",
+                    () -> assertTrue(toggleOff.headers().keySet().stream()
+                            .noneMatch(name -> ConnectionHeaders.separatorFolded(name).equals(folded)),
+                            () -> spelling + " must not cross with not_modified off — a folding backend"
+                                    + " reads it as the canonical validator"),
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(toggleOn.headers(), spelling),
+                            () -> "control: " + spelling + " crosses forward-all once not_modified is on"));
+        }
+
         @Test
         @DisplayName("the mediated bearer still runs last, beating a re-admitted inbound Authorization")
         void mediatedBearerStillRunsLast() {
