@@ -152,7 +152,8 @@ file-and-JSON-pointer error before any immutable value object is built:
   `cookies`) and its `routes[]`, each route's
   `id`, `protocol`, `anchor`, `match`, `auth`, `security_filter`, `forward`, `cookies`, `upstream`,
   `asset`, `redirect`, the WebSocket-route `websocket` block (which holds `allowed_origins` and
-  `idle_timeout_seconds`), and reserved `rate_limit`.
+  `idle_timeout_seconds`), and `rate_limit` (planned, not implemented, no `429` today -- see
+  link:#_rate_limit[`rate_limit`]).
 |===
 
 Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
@@ -4248,10 +4249,19 @@ link:user/endpoint-routes.adoc#_edge_hardening_defaults[Edge hardening defaults]
 
 === `rate_limit`
 
-Reserved schema for per-node, in-memory token-bucket rate limiting
-(`requests_per_second`, `burst`). *The feature is not implemented*; the field is documented only
-so the schema need not change should that decision ever be revisited. It is accepted and ignored,
-and no `429` is ever produced.
+The per-route schema for token-bucket rate limiting (`requests_per_second`, `burst`). *Rate
+limiting is planned, not implemented, and no `429` is produced today.* The block is parsed and
+bound into the route model, but nothing on the request path reads it: no limit is applied to any
+request.
+
+So that a declared block cannot read as a control in force, every route that declares
+`rate_limit` is named at boot by the WARN `ApiSheriff-140` (see
+link:LogMessages.adoc[Log Messages]). The WARN refuses nothing and the boot continues. To clear
+it, remove the key, or accept that nothing it states is enforced.
+
+A future implementation builds on the per-source mechanism of the follow-up enumeration-hardening
+plan -- a per-source ledger of leaky buckets keyed on the resolved client address -- rather than on
+a separate per-node counter.
 
 === `metadata`
 

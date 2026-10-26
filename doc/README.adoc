@@ -151,8 +151,10 @@ configuration. Each has its own design section:
   link:development/bff-cookie.adoc[contributor guide] (build, test, and extend it).
 |===
 
-Rate limiting is out of scope: the `rate_limit` field is reserved and ignored, and no `429` is
-ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_limit`]).
+Rate limiting is planned, not implemented, and no `429` is produced today: the per-route
+`rate_limit` field is parsed but enforced by nothing, and every route that declares it is named at
+boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Configuration --
+`rate_limit`]).
 
 == Architecture Decisions
 

@@ -156,7 +156,10 @@ endpoint:
                                    # no circuit_breaker key: the breaker is the gateway's fixed
                                    #   policy (20-call window, ratio 0.5, 5 s open) and a route
                                    #   declares none -- the key is refused at boot (ADR-0064)
-      rate_limit: { requests_per_second: 100, burst: 20 }   # reserved; feature deferred
+      rate_limit: { requests_per_second: 100, burst: 20 }
+                                   # planned, not implemented, no 429 today: parsed,
+                                   #   enforced by nothing, and named at boot by the
+                                   #   WARN ApiSheriff-140
 ----
 
 The manifest's `/auth` -> IdP and `/token` -> IdP mappings are just another endpoint file bound to
@@ -873,7 +876,10 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
   resolves `allow: none` whatever is declared. See <<_cookie_dependent_upstream>>.
 
 | `rate_limit`
-| No rate limiting (the feature is out of scope regardless; the field is reserved).
+| No rate limiting, whether the block is declared or not: rate limiting is planned, not
+  implemented, and no `429` is produced today. A declared block is parsed and enforced by nothing,
+  and every route that declares one is named at boot by the WARN `ApiSheriff-140` -- see
+  link:../configuration.adoc#_rate_limit[`rate_limit`].
 |===
 
 [[_edge_hardening_defaults]]

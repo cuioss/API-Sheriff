@@ -48,8 +48,8 @@ same PR as the code:
 |===
 
 The trailers carry the category name only, never internal detail -- the same no-leak rule the
-problem+json contract enforces for HTTP routes. The reserved `429` (rate limiting, out of scope)
-has no mapping.
+problem+json contract enforces for HTTP routes. The `429` (rate limiting) has no mapping: rate
+limiting is planned, not implemented, and no `429` is produced today.
 
 == Consequences
 

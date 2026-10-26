@@ -23,7 +23,9 @@ the next release -- deliberately and loudly, rather than silently changing behav
 Alpha is a statement about *surface stability*, not about code quality or security posture. The
 intended use is evaluation, integration and feedback; do not deploy where an unannounced breaking
 change between releases would be costly. The verified limitations at this cut -- including the
-single-node in-memory session store and the unimplemented rate limiting -- are listed in
+single-node in-memory session store and rate limiting, which is planned, not implemented, and
+produces no `429` today (a route declaring `rate_limit` is named at boot by the WARN
+`ApiSheriff-140`) -- are listed in
 link:../../README.adoc#_known_limitations[Known Limitations].
 ====
 

@@ -1669,7 +1669,7 @@ The consolidated status mapping:
 | `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `ROUTING`
 | `408` | A proxied request body that made no progress for the fixed 10 s request-body idle timeout while its dispatch held an upstream connection, or that had not ended 25 s after its upstream attempt started, before the response head arrived (`REQUEST_BODY_TIMEOUT`, see <<_request_body_idle_timeout>> and <<_request_body_deadline>>). The body behind the answer is unread, so the answer ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only that stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>) | `INPUT_VALIDATION`
 | `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>), and the connection and its other streams carry on | `INPUT_VALIDATION`
-| `429` | Rate limit exceeded -- *reserved*; the feature is out of scope | --
+| `429` | Rate limit exceeded -- *planned, not implemented*; no `429` is produced today. The per-route `rate_limit` block is parsed but enforced by nothing, and every route that declares it is named at boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Configuration -- `rate_limit`]). A future `rate_limit` builds on the per-source mechanism of the follow-up enumeration-hardening plan rather than on a separate per-node counter | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called. The response carries `Retry-After` with the seconds the breaker stays open: the fixed `5` of the gateway's upstream guard, without jitter (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]) | `UPSTREAM`
 | `504` | Upstream timeout (`connect_timeout_ms` / `read_timeout_ms`) | `UPSTREAM`
@@ -1777,7 +1777,8 @@ rejection it would render as an HTTP status for an HTTP route onto the canonical
 | `DEADLINE_EXCEEDED`  | 4  | `504` -- upstream timeout (`connect_timeout_ms` / `read_timeout_ms`)
 |===
 
-The `429` (rate-limit, reserved) row has no gRPC mapping -- the feature is out of scope. Trailers
+The `429` (rate-limit) row has no gRPC mapping: rate limiting is planned, not implemented, and no
+`429` is produced today, so there is no rejection to map. Trailers
 carry the category name only, never internal detail, exactly as the problem+json contract does for
 HTTP routes: `grpc-message` is the category slug, so a `404` or a `405` on a gRPC route reads
 `routing`.

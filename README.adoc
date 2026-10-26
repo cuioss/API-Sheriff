@@ -277,9 +277,11 @@ mode the identity provider additionally fetches the gateway's client key from it
 See link:doc/fapi_status.adoc[FAPI 2.0 Status], link:doc/fapi_next_steps.adoc[FAPI 2.0 Next Steps]
 and link:doc/user/bff-session.adoc[the BFF setup guide].
 
-Rate limiting is not implemented::
-The `rate_limit` field is reserved and accepted, but it is ignored and no `429` is ever produced:
-`RateLimitConfig` is bound into the route model and read by nothing on the request path.
+Rate limiting is planned, not implemented, and no `429` is produced today::
+The per-route `rate_limit` field is parsed and bound into `RateLimitConfig`, but nothing on the
+request path reads it: no limit is applied and no request is answered `429`. Every route that
+declares the key is named at boot by the WARN `ApiSheriff-140`, so a configuration that relies on
+it does not read as a control in force.
 
 From the first two-platform release on, the published image serves linux/amd64 and linux/arm64, each at GraalVM's default CPU baseline::
 From the first release the two-platform lane cuts, `ghcr.io/cuioss/api-sheriff` is one image index
