@@ -25,6 +25,7 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
 import de.cuioss.sheriff.gateway.bff.session.SessionRelayRegistry;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamFailureMapper;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
@@ -59,7 +60,8 @@ import org.jspecify.annotations.Nullable;
  * then relayed opaquely. If the upstream is unreachable or times out, the failure is mapped to
  * {@code 502}/{@code 504} <em>before</em> the client upgrade, so no half-open upgrade is ever left
  * dangling. If the upstream <em>refuses</em> the upgrade with a status, that status is relayed to
- * the client verbatim.
+ * the client verbatim. Either answer is an ordinary response end, written before any upgrade, so it is
+ * ended through the edge's one end rule ({@link ResponseEnds#endResponse}).
  * <p>
  * <strong>Opaque bidirectional relay.</strong> Every frame — text, binary, continuation, ping,
  * pong — is forwarded to the other leg with fragmentation preserved and no per-frame filtering;
@@ -305,7 +307,8 @@ public final class WebSocketRelayStage {
             securityHeaders.forEach(response::putHeader);
             response.setStatusCode(status);
         }
-        response.end();
+        // No upgrade has happened yet, so this is an ordinary response end and passes the one end rule.
+        ResponseEnds.endResponse(ctx, response::end);
     }
 
     private void establishRelay(RoutingContext ctx, Route route, ServerWebSocket clientWs,

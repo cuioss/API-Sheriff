@@ -133,7 +133,9 @@ No reset code is chosen per case.
 The late rejection of a body on a bodyless method stays a `CANCEL` reset taken before any end
 (link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#bodyless-method[ADR-0060]),
 because that response is deliberately not completed. The WebSocket upgrade and the L4 passthrough
-relay are not HTTP/2 response ends. No `quarkus.http.limits.rst-flood-*` key is set or changed.
+relay are not HTTP/2 response ends. The answer the WebSocket relay writes when the upstream dial fails
+comes before any upgrade, so it is an ordinary response end and passes the seam.
+No `quarkus.http.limits.rst-flood-*` key is set or changed.
 
 [[abortive-upstream-close]]
 === A gateway-closed HTTP/1.1 upstream connection is closed abortively
