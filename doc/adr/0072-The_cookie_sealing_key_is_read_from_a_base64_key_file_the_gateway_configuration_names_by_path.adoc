@@ -1,0 +1,221 @@
+= ADR-0072: The cookie sealing key is read from a base64 key file the gateway configuration names by path
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: The provided sealing key of the cookie-based BFF is read from a key file that oidc.session.key_file names by path, which replaces the base64 value of oidc.session.encryption_key; the file holds one line of standard base64 that decodes to exactly 32 bytes, surrounding whitespace including a trailing LF or CRLF is stripped, and the file is read once and bounded to 256 bytes; every defect is a boot refusal that names the field and the defect and never the path, the file content or a decoder message; only the bounded read is shared with the signing-key files of ADR-0058, never the PEM parser, so a PEM block cannot pass as a sealing key; the key file is a location and not a secret; every derivation keeps the unchanged 32-byte key; the generated mode and its two caveats are unchanged.
+// tags: bff, cookie-session, key-material, configuration-surface, secrets-handling, deployment-binding, boot-sequence
+// affects: api-sheriff, integration-tests, documentation
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Accepted
+
+== Decision
+
+The cookie-based BFF seals the session cookie with one AES-256 sealing key
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#key-material[ADR-0018 (iv)]).
+The operator provides the key, or the gateway generates it at boot. This record settles three
+questions about a provided sealing key: how it reaches the gateway, in which format, and what its
+read shares with the two signing-key files of
+link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058].
+
+*The gateway reads a provided sealing key from a key file. `oidc.session.key_file` names the file by
+path. The file holds one line of base64 that decodes to exactly 32 bytes.*
+
+All three BFF keys therefore reach the gateway the same way: a file on a mount, named by path. The
+key `oidc.session.encryption_key` is removed.
+
+=== 1. The file holds one line of base64 that decodes to exactly 32 bytes
+
+The file content is one token of base64. The alphabet is the standard alphabet of RFC 4648
+section 4, the one `openssl` writes. The token decodes to exactly 32 bytes, the AES-256 key.
+
+Whitespace around the token is allowed, and the gateway strips it. That covers leading and trailing
+spaces and a trailing LF or CRLF. Nothing else is allowed in the file.
+
+One command creates a valid file:
+
+[source,shell]
+----
+openssl rand -base64 32 > session.key
+----
+
+=== 2. Base64 text, not raw bytes
+
+The file holds text for four reasons:
+
+* *One standard command creates it.* The output of `openssl rand -base64 32` ends in a newline. The
+  format accepts that newline.
+* *Text tools handle it.* An operator can inspect the file and copy it into a secret store or into an
+  orchestrator's text secret. Text tooling moves it without binary handling.
+* *Line-ending changes do not break it.* A raw 32-byte key can contain the bytes `0x0A` and `0x0D`.
+  End-of-line conversion, an editor or `echo` silently rewrites or extends such a file. A 33rd byte
+  from an added newline then refuses the boot, for a reason the operator cannot see in the file. A
+  base64 line holds no such byte, and the gateway strips the newline around it.
+* *The removed value used the same encoding.* A deployment writes its existing
+  `oidc.session.encryption_key` value into the file unchanged. The key bytes stay the same, so the key
+  id stays the same, and sealed sessions survive the move.
+
+=== 3. The gateway reads the file once, bounded to 256 bytes
+
+The gateway reads the file once, at boot, and reads at most 256 bytes. A 32-byte key is one base64
+line of 44 characters, so the bound leaves ample room for surrounding whitespace. The gateway refuses
+a larger file before it decodes anything.
+
+`CookieKeyMaterial` turns the bytes into text as ISO-8859-1, so a byte outside ASCII becomes a
+character outside the base64 alphabet. It strips the surrounding whitespace. It decodes the rest with
+the strict base64 decoder of the JDK, which refuses any whitespace or line break inside the token.
+
+Each of the following is a boot refusal with `CONFIG_INVALID`:
+
+* a path that does not exist, does not name a regular file, or cannot be read;
+* a file larger than 256 bytes;
+* a value that is empty after stripping;
+* a value that is not one token of strict base64, because it holds interior whitespace, a line
+  break or a character outside the alphabet;
+* a value that decodes to anything other than exactly 32 bytes.
+
+Each refusal names `oidc.session.key_file` and the defect. It never names the path. It never quotes
+the file content. It never carries a decoder message either: the base64 error text of the JDK names
+the offending character, so the gateway does not chain that exception.
+
+=== 4. Only the bounded read is shared with the signing-key files
+
+`ClientSigningKey` reads each ADR-0058 signing key from a PEM file. The sealing key and the signing
+keys share exactly one step: the bounded read in `KeyFiles`. That step answers one question. Is this
+a readable regular file within a byte bound? It parses nothing. Each caller passes its own field
+name and its own bound.
+
+The base64 decode and the PEM parser stay separate. The sealing-key file never reaches the PEM
+parser.
+
+A PEM file therefore cannot pass as a sealing key:
+
+* Its armour line, such as `-----BEGIN PRIVATE KEY-----`, holds `-` and spaces. Both are outside the
+  base64 alphabet.
+* Its body spans several lines. The strict decode refuses that interior whitespace.
+* A bare PEM body without its armour decodes to far more than 32 bytes.
+
+=== 5. The key file is a location, not a secret
+
+link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+keeps trust material out of the gateway configuration. ADR-0058 decision 4 shows that a signing-key
+path does not engage that ruling. The same argument holds for a symmetric secret. It is made here,
+not assumed:
+
+* *The gateway configuration carries no key material.* It carries a location only.
+* *The material is deployment material.* It arrives on a deployment mount, because the deployment
+  supplies what the configuration names
+  (link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]).
+  A TLS private key and an ADR-0058 key file arrive the same way.
+* *The symmetric case adds no exposure.* A key file holds the secret in both cases. The PEM case
+  already accepts that exposure.
+
+The configuration loader therefore treats `oidc.session.key_file` like the two signing-key paths. It
+is not a secret pointer. A literal path and a placeholder are both admitted. The rule that a secret
+is written as a bare placeholder does not cover this key.
+
+=== 6. Every derivation keeps the 32-byte key
+
+Three values derive from the sealing key:
+
+* the identity salt of the cookie-mode session identity;
+* the one-byte key id every sealed session cookie carries;
+* the HMAC-SHA-256 key of the activity cookie.
+
+Each is the SHA-256 digest of a fixed label and the key bytes. This decision changes none of them.
+
+Replacing the key replaces all three. Moving the same key into another file changes none of them. A
+key replacement stays a clean break: every existing sealed session cookie unseals to "no session".
+
+=== 7. The generated mode is unchanged
+
+Without `oidc.session.key_file` the gateway generates a sealing key at boot. The two caveats of that
+mode stay:
+
+* Every session ends on restart.
+* The key cannot be shared across replicas. A multi-replica deployment gives every replica the same
+  key file.
+
+== Alternatives rejected
+
+*Exactly 32 raw bytes in the file*, as nginx `ssl_session_ticket_key` files hold them. The gateway
+would need no decode. Rejected because the file is binary. Text tools can neither create nor check
+it. End-of-line conversion, an editor or an added newline silently breaks it. The boot refusal then
+names a length the operator cannot see in the file (decision 2).
+
+*Keeping the key in `oidc.session.encryption_key` through a placeholder.* It needs no file and no
+mount. Rejected because the key then sits in the process environment. Every process inspector and
+`docker inspect` can read that environment. The sealing key would also be the one BFF key supplied
+differently from the other two.
+
+*A PEM or JWK container for the symmetric key.* It would reuse a known format. Rejected because each
+format adds overhead for one 32-byte secret. Neither adds a property this key needs.
+
+*Reusing the PEM reader end to end.* One reader would serve all three keys. Rejected because the PEM
+parser would then need a branch for a base64 line. A parser shared that way could admit a PEM block
+where a sealing key is expected. The separate decode of decision 4 rules that confusion out.
+
+*A key store.* It holds keys behind a password. Rejected because key-store support is out of scope.
+It would also bring back the store password that ADR-0011 keeps out of the gateway configuration.
+
+The rejected options share one shape. Each either keeps the sealing key apart from the other two BFF
+keys, or lets one parser judge two formats that must never be confused.
+
+== Consequences
+
+=== Positive
+
+* All three BFF keys reach the gateway the same way: a file on a mount, named by path.
+* No gateway configuration and no environment variable carries the sealing key.
+* One standard command creates a valid key file. A trailing newline, CRLF line endings and
+  surrounding spaces leave it valid.
+* A deployment moves its existing key into a file unchanged, and its sealed sessions survive.
+* A malformed, oversize or unreadable file stops the boot. The message names the field and the
+  defect.
+* No code path admits a PEM block as sealing-key material.
+
+=== Negative
+
+* The change is breaking. The bundled schema refuses a gateway configuration that still declares
+  `oidc.session.encryption_key`, as an unknown key.
+* A multi-replica deployment mounts the same key file into every replica.
+* The gateway reads one more file of secret material itself.
+
+=== Risks
+
+* *A key file is as protected as its mount.* The gateway checks the content of the file, not its
+  permissions.
+
+== Links
+
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the ruling on trust material in the gateway configuration, which decision 5 does not engage
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#key-material[ADR-0018 (iv)]
+  -- one optional sealing key in cookie mode, and the clean break when it is replaced
+* link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
+  -- the deployment supplies the material the configuration names
+* link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
+  -- the two signing-key files, their PEM format, and the separation of the two signing keys
+* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the `oidc.session.key_file`
+  contract
+* link:../user/bff-cookie.adoc#_key_material[Operator setup -- cookie-based BFF] -- creating,
+  mounting and replacing the key file
+* link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the sealed-cookie
+  format and the activity cookie
+* `CookieKeyMaterial` -- the two modes, the decode and the derivations; `KeyFiles` -- the shared
+  bounded read; `ClientSigningKey` -- the PEM reader; `BffRuntimeProducer` -- the boot refusal
