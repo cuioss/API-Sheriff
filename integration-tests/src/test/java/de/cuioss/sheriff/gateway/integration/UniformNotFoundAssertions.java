@@ -39,7 +39,8 @@ import io.restassured.response.Response;
  *       the go-httpbin upstream, so the request was refused at the gateway;</li>
  *   <li>{@link #assertTrueEventMetered} — the TRUE event still moves {@code sheriff_errors_total} on
  *       the route the request selected, and {@code NO_ROUTE_MATCHED} does not: the rejection is
- *       rendered TO the unrouted shape, never reported AS it.</li>
+ *       rendered TO the unrouted shape, never reported AS it. Read on the primary instance, or — for a
+ *       one-off gateway — through that gateway's own published management origin.</li>
  * </ul>
  *
  * @author API Sheriff Team
@@ -87,9 +88,9 @@ final class UniformNotFoundAssertions {
     }
 
     /**
-     * Runs {@code request} and asserts it moved the {@code sheriff_errors_total} series of
-     * {@code trueEvent} on {@code routeId}, while the {@code NO_ROUTE_MATCHED} series of that route did
-     * not move.
+     * Runs {@code request} against the primary instance and asserts it moved the
+     * {@code sheriff_errors_total} series of {@code trueEvent} on {@code routeId}, while the
+     * {@code NO_ROUTE_MATCHED} series of that route did not move.
      *
      * @param routeId   the config-fixed id of the route the request selects
      * @param trueEvent the {@code EventType} name the rejection is reported under
@@ -98,13 +99,29 @@ final class UniformNotFoundAssertions {
      */
     static ExtractableResponse<Response> assertTrueEventMetered(String routeId, String trueEvent,
             Supplier<ExtractableResponse<Response>> request) {
-        String before = PrometheusScrape.scrape();
+        return assertTrueEventMetered(PrometheusScrape::scrape, routeId, trueEvent, request);
+    }
+
+    /**
+     * {@link #assertTrueEventMetered(String, String, Supplier)} for a gateway other than the primary
+     * instance: a one-off gateway meters into its own registry, so the counter is read through
+     * {@code scrape} — typically {@code () -> PrometheusScrape.scrape(managementOrigin)}.
+     *
+     * @param scrape    returns the Prometheus exposition of the gateway {@code request} is sent to
+     * @param routeId   the config-fixed id of the route the request selects
+     * @param trueEvent the {@code EventType} name the rejection is reported under
+     * @param request   sends the request and returns its answer
+     * @return the answer {@code request} returned, for further assertions
+     */
+    static ExtractableResponse<Response> assertTrueEventMetered(Supplier<String> scrape, String routeId,
+            String trueEvent, Supplier<ExtractableResponse<Response>> request) {
+        String before = scrape.get();
         double trueBefore = PrometheusScrape.errorCount(before, routeId, trueEvent);
         double unroutedBefore = PrometheusScrape.errorCount(before, routeId, NO_ROUTE_MATCHED);
 
         ExtractableResponse<Response> response = request.get();
 
-        String after = PrometheusScrape.scrape();
+        String after = scrape.get();
         double trueAfter = PrometheusScrape.errorCount(after, routeId, trueEvent);
         double unroutedAfter = PrometheusScrape.errorCount(after, routeId, NO_ROUTE_MATCHED);
         assertAll("the true event of the rejection on route " + routeId,

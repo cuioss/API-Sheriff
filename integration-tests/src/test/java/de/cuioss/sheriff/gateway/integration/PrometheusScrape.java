@@ -18,9 +18,12 @@ package de.cuioss.sheriff.gateway.integration;
 import java.util.Arrays;
 import java.util.List;
 
+import io.restassured.RestAssured;
+
 /**
- * Reads the primary instance's Prometheus exposition on the management port and sums the samples of
- * one meter, so a suite can prove a request moved a series rather than only that the series exists.
+ * Reads a gateway's Prometheus exposition on its management port — the primary instance's, or a
+ * one-off gateway's through its published management origin — and sums the samples of one meter, so
+ * a suite can prove a request moved a series rather than only that the series exists.
  * <p>
  * The one scraping helper of the module: {@link MetricsIT} asserts the metrics surface itself through
  * it, and the suites that assert a pre-trust rejection read the TRUE event of an answer rendered as
@@ -54,6 +57,27 @@ final class PrometheusScrape {
                 .relaxedHTTPSValidation()
                 .when()
                 .get("/metrics")
+                .then()
+                .statusCode(200)
+                .extract()
+                .asString();
+    }
+
+    /**
+     * Scrapes the metrics endpoint of a one-off gateway, whose management port is published on a host
+     * port of its own rather than on the primary instance's.
+     *
+     * @param managementOrigin the gateway's published management origin, without the management
+     *                         context path — for example {@code https://localhost:49153}
+     * @return the Prometheus exposition body
+     */
+    static String scrape(String managementOrigin) {
+        return RestAssured.given()
+                .baseUri(managementOrigin)
+                .basePath("")
+                .relaxedHTTPSValidation()
+                .when()
+                .get(BaseIntegrationTest.managementRootPath() + "/metrics")
                 .then()
                 .statusCode(200)
                 .extract()
