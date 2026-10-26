@@ -88,10 +88,11 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | `application/problem+json` of type `urn:api-sheriff:problem:routing`, title `Routing`. Not a
   redirect.
 
-| a method outside the route's allowlist -- e.g. `DELETE /assets/demo/index.html`
-| `405`
-| The negotiated HTML error page for an explicit `text/html` request, `application/problem+json` of
-  the same `Routing` category otherwise. Not a redirect either way.
+| a method outside the route's allowlist -- e.g. `DELETE /assets/demo/index.html` -- no session
+| `404`
+| Exactly the unrouted answer above: the negotiated HTML error page for an explicit `text/html`
+  request, the same `Routing` problem document otherwise. The verb gate refuses the method before
+  the trust boundary, so an anonymous caller cannot tell the route exists. Not a redirect either way.
 
 | a `text/html` request (a navigation) to a `require: session` route -- no session
 | `302`
@@ -102,13 +103,18 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | `application/problem+json`. Not a redirect.
 |===
 
-The gateway's own rejections -- the `404` and `405` rows -- keep their status whichever rendering a
-request gets. The HTML error page is offered only to a request whose `Accept` lists `text/html`
+The gateway's own rejections -- the three `404` rows -- keep their status whichever rendering a
+request gets. The wrong-method row answers `404` rather than `405` because the verb gate runs before
+authentication, and every rejection raised there is rendered as the unrouted answer, while the true
+event (`METHOD_NOT_ALLOWED`) is still counted in `sheriff_errors_total{event}`. Only a gateway that
+sets `security_defaults.uniform_not_found: false` answers the honest `405`. The HTML error page is offered only to a request whose `Accept` lists `text/html`
 explicitly, and only when the operator enables it with `portal.error_pages: true`; without it, every
 request gets `application/problem+json`. A response relayed from an upstream is never replaced. See
-link:../../doc/user/portal.adoc#_error_pages[Application Portal -- Error pages] and
+link:../../doc/user/portal.adoc#_error_pages[Application Portal -- Error pages],
 link:../../doc/adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]
-for the `Routing` category. The sample's rejection panel fires one request per row -- a "navigate"
+for the `Routing` category and
+link:../../doc/adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+for the uniform `404`. The sample's rejection panel fires one request per row -- a "navigate"
 row as a `fetch` carrying `Accept: text/html` with `redirect: 'manual'`, so the `302` is observed
 rather than followed -- and shows the status, `Content-Type` and whether a redirect happened.
 
