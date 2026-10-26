@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -59,8 +60,8 @@ import io.restassured.response.Response;
  *       ({@code sheriff-config/endpoints/assets-secure.yaml}) and no {@code topology.properties};</li>
  *   <li>{@link #startBffGateway(BffGateway)} — a BFF gateway over the <em>shared</em>
  *       {@code sheriff-config} directory with one overlay descriptor, exactly as a compose variant
- *       instance is mounted. {@link #startBffGatewayWithSigningKeys(BffGateway)} is the same gateway
- *       with the stack's signing-key directory mounted as well.</li>
+ *       instance is mounted. {@link #startBffGatewayWithSigningKeys(BffGateway, List)} is the same
+ *       gateway with the stack's signing-key directory mounted as well.</li>
  * </ul>
  * Both shapes publish alike: the application listener on a fixed host port on every interface (see
  * {@link #applicationPortPublication(int)}), the management port on a fixed host port on loopback,
@@ -132,6 +133,16 @@ final class OneOffGatewayContainers {
 
     /** Where a gateway that mounts the signing-key directory finds it. */
     private static final String SIGNING_KEYS_MOUNT = "/app/signing-keys";
+
+    /**
+     * Where a one-off gateway finds a sealing key file of its test's own (see
+     * {@link #writeSealingKeyFile(Path, String)}): outside every directory the harness mounts, and
+     * outside {@value #SIGNING_KEYS_MOUNT}, whose committed sealing keys belong to the compose instances.
+     */
+    static final String SEALING_KEY_IN_CONTAINER = "/app/sealing-key/cookie-sealing.key";
+
+    /** Readable by the gateway image's own user, which is not the uid the build runs as. */
+    private static final String KEY_FILE_MODE = "rw-r--r--";
 
     /** The demo SPA the {@code /assets/demo} route of the shared configuration serves, as compose mounts it. */
     private static final Path DEMO_SPA = Path.of("..", "demo-client", "src", "main", "resources", "spa");
@@ -290,7 +301,9 @@ final class OneOffGatewayContainers {
     /**
      * Starts a one-off BFF gateway exactly as {@link #startBffGateway(BffGateway)} does, and
      * additionally mounts the stack's signing-key directory at {@code /app/signing-keys}, as every
-     * compose gateway instance has it.
+     * compose gateway instance has it, and the given read-only mounts — such as a sealing key file of
+     * the test's own (see {@link #writeSealingKeyFile(Path, String)}), which a derived cookie-mode
+     * descriptor names in place of the committed one.
      * <p>
      * This is the shape of a gateway whose descriptor is derived from a compose instance's descriptor
      * and keeps that instance's client: it names the client-authentication key file and the DPoP proof
@@ -301,10 +314,15 @@ final class OneOffGatewayContainers {
      * The directory is one extra read-only mount of {@link #startBffGateway(BffGateway, List, List)},
      * so this gateway publishes its ports, and is held to the publication rule, like every other.
      *
-     * @param gateway what to start
+     * @param gateway     what to start
+     * @param extraMounts the additional read-only bind mounts beside the signing-key directory, possibly
+     *                    empty
      */
-    static void startBffGatewayWithSigningKeys(BffGateway gateway) {
-        startBffGateway(gateway, List.of(new ReadOnlyMount(SIGNING_KEYS, SIGNING_KEYS_MOUNT)), List.of());
+    static void startBffGatewayWithSigningKeys(BffGateway gateway, List<ReadOnlyMount> extraMounts) {
+        List<ReadOnlyMount> mounts = new ArrayList<>();
+        mounts.add(new ReadOnlyMount(SIGNING_KEYS, SIGNING_KEYS_MOUNT));
+        mounts.addAll(extraMounts);
+        startBffGateway(gateway, mounts, List.of());
     }
 
     /**
@@ -317,6 +335,29 @@ final class OneOffGatewayContainers {
      *                      {@link #assertOutsideTheHarnessMounts(String)}
      */
     record ReadOnlyMount(Path hostPath, String containerPath) {
+    }
+
+    /**
+     * Writes a cookie sealing key file of a test's own and returns the read-only mount that places it
+     * at {@value #SEALING_KEY_IN_CONTAINER}, the path the test's derived descriptor names as
+     * {@code oidc.session.key_file}.
+     * <p>
+     * The file holds what the key file format takes — one line of base64 followed by a newline — and
+     * is readable by others, because the gateway image reads it as a different uid than the build that
+     * wrote it. A test needs a file of its own whenever its sealed session cookie has to survive a
+     * restart, or must not be readable by any compose instance: the committed sealing keys belong to
+     * those instances.
+     *
+     * @param hostFile   where to write the file; a build output below {@code target/}, never committed
+     * @param sealingKey the AES-256 sealing key, base64 of 32 bytes
+     * @return the read-only mount of the written file at {@value #SEALING_KEY_IN_CONTAINER}
+     * @throws IOException when the file cannot be written or its mode cannot be set
+     */
+    static ReadOnlyMount writeSealingKeyFile(Path hostFile, String sealingKey) throws IOException {
+        Files.createDirectories(hostFile.toAbsolutePath().getParent());
+        Files.writeString(hostFile, sealingKey + "\n", StandardCharsets.US_ASCII);
+        Files.setPosixFilePermissions(hostFile, PosixFilePermissions.fromString(KEY_FILE_MODE));
+        return new ReadOnlyMount(hostFile, SEALING_KEY_IN_CONTAINER);
     }
 
     /**

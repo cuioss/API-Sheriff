@@ -33,8 +33,8 @@ when you need IdP-driven back-channel logout.
   that endpoint server-to-server, over `https`. See <<signing-keys>>.
 * A registered *redirect URI* pointing at the gateway's own callback path (`oidc.redirect_uri`),
   matched exactly at the IdP.
-* A session sealing key, if you pass one, available as an environment variable (never written
-  inline -- secrets in `oidc` must be `${ENV_VAR}` references).
+* A session sealing key file, if you provide one, mounted read-only on every replica (see
+  <<_key_material>>).
 
 No client secret is needed. A client secret remains possible as an operator choice; it is described,
 with its warning, in <<client-secret>>.
@@ -57,7 +57,7 @@ oidc:
   session:
     mode: cookie                              # sealed cookie, no store (this variant)
     cookie_name: __Host-sheriff               # optional; must stay a __Host- name -- see "Session cookie name"
-    encryption_key: ${SHERIFF_SESSION_KEY}    # optional -- see "Key material" below
+    key_file: /run/secrets/session.key        # optional -- see "Key material" below
     max_cookie_size: 4019                     # seal-time VALUE budget; see "Cookie size budget"
     ttl_seconds: 3600                         # absolute lifetime from login
     idle_timeout_seconds: 1800                # optional: ends a session nobody uses; see "Idle timeout"
@@ -77,7 +77,7 @@ keys and a login check (see link:compose-sample.adoc#_logging_in_through_the_bff
 Log in through the BFF]). Everything in it but the `oidc.session` block carries over to this variant
 unchanged -- the client, its signing keys, `back_channel_origin`, the redirect and logout URLs. To run
 it in cookie mode, replace that block: `mode: cookie` instead of `mode: server`, drop `store`, and
-settle the two decisions only this variant has -- whether to pass a sealing key (<<_key_material>>)
+settle the two decisions only this variant has -- whether to provide a sealing key file (<<_key_material>>)
 and the cookie size budget (<<_cookie_size_budget>>). The sample needs the gateway release after `0.2.4`: the `0.2.4` image it
 pins predates `back_channel_origin` and the `/bff/*` reserved paths and refuses its `gateway.yaml` at
 boot, so until that release run it on a locally built image
@@ -98,42 +98,167 @@ cookie. The two *signing keys* -- one for client authentication, one for DPoP --
 <<signing-keys>>. All three follow the same idea: provide the key, or leave it out and let the
 gateway generate one for a single replica.
 
-The sealing key has *two modes*, selected by whether you declare `session.encryption_key`.
+The sealing key has *two modes*, selected by whether you declare `session.key_file`.
 
 [cols="1,2,2"]
 |===
 | Mode | How to select | Trade-off
 
-| Passed key
-| Declare `session.encryption_key` as an `${ENV_VAR}` reference holding an AES-256 key.
-| Sessions survive a gateway restart and are shareable across replicas. Requires you to generate,
-  distribute and safeguard the key.
+| Provided key file
+| Declare `session.key_file` with the path of a key file that holds the AES-256 key.
+| Sessions survive a gateway restart and are shareable across replicas. Requires you to create,
+  distribute and safeguard the file.
 
 | Generate on startup
-| Omit `session.encryption_key` entirely.
+| Omit `session.key_file` entirely.
 | No operator input at all -- the gateway mints a key at boot. But *sessions are dropped on every
   restart* (users re-authenticate) and the key *cannot be shared* with another replica, so each
   replica can only unseal its own cookies.
 |===
 
-Use generate-on-startup for a single-replica deployment or a development environment. Use a passed
-key for anything multi-replica or restart-sensitive. The gateway raises a startup diagnostic naming
-the active key mode -- it never logs key bytes.
+Use generate-on-startup for a single-replica deployment or a development environment. Use a provided
+key file for anything multi-replica or restart-sensitive, and give every replica the same file. The
+gateway raises a startup diagnostic naming the active key mode -- it never logs the path or key
+bytes.
+
+The key file applies to cookie mode only. The server-session variant never reads a sealing key, so
+declaring `session.key_file` with `mode: server` stops the boot.
+
+=== Create the key file
+
+The key file holds *one line of base64* that decodes to *exactly 32 bytes*, the AES-256 key. The
+alphabet is the standard one of RFC 4648 section 4, the one `openssl` writes. ASCII whitespace before
+and after the line is fine, in any amount -- space, tab, line feed (LF), vertical tab, form feed and
+carriage return (CR), so blank lines and a trailing newline written as LF or CRLF are included -- and
+the gateway strips it. Nothing else may be in the file, and no whitespace may appear inside the line.
+
+One command creates a valid file:
+
+[source,bash]
+----
+openssl rand -base64 32 > session.key
+----
+
+The gateway reads the file once, at startup, and accepts a file of at most 256 bytes. It reads at
+most 257 bytes of it: the one byte past the limit is how a larger file is detected. A 32-byte key is
+one base64 line of 44 characters, so a valid file is far below that bound.
+
+=== Mount the file and name it
+
+Mount the key file read-only, on every replica, and name it by its path. Write the path literally, or
+supply it through a variable -- the path is a location, not a secret, so both forms are accepted:
+
+[source,yaml]
+----
+# gateway.yaml
+oidc:
+  session:
+    mode: cookie
+    key_file: /run/secrets/session.key        # a literal path
+    # key_file: ${SHERIFF_SESSION_KEY_FILE}   # or a path supplied by the deployment
+----
+
+The file content is the secret. Restrict the mount to the gateway: the gateway reads the file as it
+finds it and does not check its permissions. Every replica that serves the same sessions is given the
+same file.
+
+=== What stops the gateway from starting
+
+A sealing-key file the gateway cannot use stops the boot. It never falls back to a generated key. The
+boot log names `oidc.session.key_file` and the defect. It never prints the path, a line of the file
+or a decoder message.
+
+[cols="2,3,3", options="header"]
+|===
+| What is wrong | What the log says after the key name | What to do
+
+| The file is not there
+| `names a file that does not exist`
+| Mount it, or correct the path.
+
+| The path names a directory or another non-file
+| `does not name a regular file`
+| Name the key file itself.
+
+| The file cannot be read
+| `names a file that cannot be read`
+| Make it readable by the gateway's user.
+
+| The value is not a usable path
+| `does not name a usable file path`
+| Correct the value. Check what a placeholder resolves to.
+
+| The file is larger than 256 bytes
+| `names a file larger than the 256 byte limit`
+| Write the key file again with the command above.
+
+| The file is empty, or holds whitespace only
+| `holds no key`
+| Write the key into it.
+
+| The content is not one line of base64 -- a line break or space inside it, a character outside
+  the alphabet, a PEM block
+| `is not one line of base64`
+| Write the key file again with the command above.
+
+| The content decodes to another length
+| `decodes to 16 bytes; it must decode to exactly 32 bytes (AES-256)` (with the length found)
+| Use a 32-byte key: `openssl rand -base64 32`.
+|===
+
+In server mode the configuration check refuses a declared key file at `/oidc/session/key_file`
+before anything is read: `oidc session key_file is declared in server session mode, which never
+reads the cookie sealing key`. Remove the line, or use cookie mode.
+
+[[_migrating_to_a_key_file]]
+=== Moving a configuration off `encryption_key`
+
+[WARNING]
+====
+`oidc.session.encryption_key` *has been removed*, and the configuration schema rejects unknown keys.
+A `gateway.yaml` that still declares `encryption_key` therefore *fails at boot*, and the failure names
+the offending key.
+
+*Remedy: write the existing key into a key file unchanged, and name that file.* The value the
+`encryption_key` variable held is already the base64 form of the 32-byte key, so it is a valid key
+file as it is. With the variable name of the earlier exhibit, `SHERIFF_SESSION_KEY`:
+
+[source,bash]
+----
+printf '%s\n' "$SHERIFF_SESSION_KEY" > session.key
+----
+
+Mount the file, replace the `encryption_key` line with `key_file: <path>`, and retire the variable
+from the deployment. The key bytes stay the same, so the key id stays the same and sessions sealed
+before the move still unseal after it.
+====
 
 === Changing the key
 
 There is exactly *one* sealing key. The gateway holds no decrypt-only companion key, so there is no
-rotation window and nothing to stage: replacing `session.encryption_key` is a clean break. Every
-cookie sealed under the withdrawn key carries a key id the gateway no longer holds, is refused as
-"no session", and those users simply log in again.
+rotation window and nothing to stage: replacing the key is a clean break. Every cookie sealed under
+the withdrawn key carries a key id the gateway no longer holds, is refused as "no session", and
+those users simply log in again. Moving the same key into another file, or to another path, changes
+nothing.
+
+The gateway reads the key file only at startup. Replacing the file alone changes nothing: a running
+gateway keeps the key it read at boot, so cookies sealed under the withdrawn key stay valid until it
+restarts. To change the key:
+
+. Generate *one* new key file, once, with `openssl rand -base64 32`, and replace the mounted file
+  on *every* replica with that same file. Do not run the command per replica: each run creates a
+  different key, and replicas holding different keys refuse each other's cookies for good.
+. *Restart every replica.* The key changes when a replica restarts, not when its file changes.
+  Until the last replica has restarted, replicas hold different keys and refuse each other's
+  cookies, so keep that window short.
 
 Treat a key change as a scheduled forced re-login -- operationally the same event as the
 format-version change described under "Upgrading" below.
 
 [[key-rotation]]
-=== When to replace a passed key
+=== When to replace a provided key
 
-A passed key has to be replaced on a schedule. The schedule follows from how often the gateway
+A provided key has to be replaced on a schedule. The schedule follows from how often the gateway
 seals a session cookie with it.
 
 The gateway seals the session cookie with AES-256-GCM and a random 96-bit nonce, and NIST SP
@@ -146,8 +271,8 @@ The activity cookie (see <<idle-timeout>>) does not count towards the bound. It 
 It is authenticated with HMAC-SHA-256 under a key of its own, and that has no limit of this kind.
 How often it is written does not affect the schedule, whatever a client does.
 
-The rule: *replace `session.encryption_key` before this many days have passed since the key was
-first used.*
+The rule: *replace the key in `session.key_file` before this many days have passed since the key
+was first used.*
 
 [source]
 ----
@@ -214,8 +339,9 @@ This is the default setup. Besides the sealing key the gateway signs with two ke
   anywhere.
 |===
 
-Each key is optional. Each names a PEM file on a mount. The two may name the same file, but use two
-keys: one key per purpose is what the FAPI 2.0 profile asks for.
+Each key is optional. Each names a PEM file on a mount. The two must name different files that hold
+different keys: FAPI 2.0 section 6.8 asks for one key per purpose, and the gateway refuses one key
+for both (see <<_signing_key_refusals>>).
 
 === The two modes, and when to use which
 
@@ -237,7 +363,8 @@ replicas must share:
 * A replica with a different *proof key* presents a DPoP proof of a key the session's tokens are not
   bound to when it refreshes a session another replica logged in.
 
-So a deployment that passes a sealing key for more than one replica passes both key files as well.
+So a deployment that provides a sealing key file for more than one replica provides both signing-key
+files as well.
 The exhibit above names no key file and therefore runs on generated keys, which fits one replica.
 
 === Produce a key file
@@ -318,6 +445,7 @@ oidc:
 The file content is the secret. Restrict the mount to the gateway: the gateway reads the file as it
 finds it and does not check its permissions.
 
+[[_signing_key_refusals]]
 === What stops the gateway from starting
 
 A key file the gateway cannot use stops the boot. It never falls back to a generated key. The boot
@@ -364,6 +492,26 @@ log names the configuration key -- `oidc.client_authentication.key_file` or
 | `holds an RSA key with a modulus below 2048 bits`
 | Generate a key of at least 2048 bits.
 |===
+
+*One key for both purposes stops the boot as well.* In the default setup -- no client secret -- the
+key that signs the client assertion must not also sign the DPoP proofs. Two checks enforce it, and
+both messages name the two configuration keys and neither a path nor a key id:
+
+* Both fields name the same file: the configuration check refuses it at
+  `/oidc/sender_constraint/key_file` with `oidc.client_authentication.key_file and
+  oidc.sender_constraint.key_file name the same file`. When both files exist, the file system
+  decides, so a link to the client-authentication key file counts as the same file, while
+  `client/../dpop.pem` with `client` a link to another directory is judged by the file it actually
+  reaches. When either file does not exist -- an offline check on a machine without the keys -- only
+  two paths that are equal after normalisation and contain no `..` segment are refused, so
+  `keys/./a.pem` and `keys/a.pem` are one file, while `keys/x/../a.pem` and `keys/a.pem` are left to
+  the boot, because `x` may be a link. The offline check reports a refused pair too.
+* Two files hold the same key -- a copy, or two paths the configuration check could not prove to be
+  one file: the boot refuses it once both keys are read, with
+  `oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key`.
+
+Either way, point `oidc.sender_constraint.key_file` at a file holding a different key, or remove it
+to use a DPoP key generated at startup.
 
 The remaining refusals -- among them a directory instead of a file, a file above 16 KiB, a second block of the
 same kind, any other PEM block, text outside a block -- are listed in
@@ -458,8 +606,8 @@ key.
 
 That observation has limits, and they are stated here so that it is not read as more than it is:
 
-* It was made in this variant, with a *passed* sealing key, so the session cookie stayed readable
-  across the restart. With a generated sealing key a restart drops every session whatever the
+* It was made in this variant, with a sealing key read from a *provided* key file, so the session
+  cookie stayed readable across the restart. With a generated sealing key a restart drops every session whatever the
   signing keys do.
 * Only generated keys were replaced. Replacing a provided key file was not run.
 * It holds for the identity provider and the image named. Another identity provider may refuse a
@@ -621,17 +769,18 @@ stored in the session -- it is the only thing that re-contacts the IdP -- and in
 session *is* the cookie. An access + ID + refresh session is therefore the largest this variant ever
 carries; the question is only how much room is left over.
 
-Measured on a three-token fixture built to the shape Keycloak issues for the `integration` realm:
-the framed plaintext is *3433 bytes*, and the sealed cookie value that leaves the gateway is *2700
-bytes* -- 78.6 % of the framed plaintext. Against the 4019-byte budget that leaves *1319 bytes*
-unused, *32.8 %* of the budget.
+Measured in the project's integration suite, against the pinned Keycloak image and its `integration`
+realm, with refresh enabled and DPoP-bound access tokens that carry their `cnf` claim: the
+`ApiSheriff-15` records of the cookie-refresh stack show sealed cookie values of *2572 to 2580
+bytes* for a three-token session. Against the 4019-byte budget the largest leaves *1439 bytes*
+unused, *35.8 %* of the budget.
 
 *Read that margin as a budget for growth, not as spare capacity.* It is one realm's claim set, and
 two independent things spend it:
 
 * *A larger claim set.* Every mapper the IdP adds -- realm roles, group membership, audiences, user
   properties -- travels inside the seal. A deployment whose IdP mints fatter tokens spends the
-  32.8 % first, and the gateway cannot trim what the IdP put there.
+  35.8 % first, and the gateway cannot trim what the IdP put there.
 * *A longer `session.cookie_name`, or a `ttl_seconds` past 9999.* These do not grow the payload;
   they lower the bar. Both widen the per-header overhead, so the browser-safe value budget falls
   below 4019 and the margin closes from the other side.
@@ -890,7 +1039,7 @@ that happens after the gate, not at it. So a retired format is never mis-parsed.
   variant: the cookies are cleared first, and an IdP without a usable end-session endpoint lands the
   browser on `oidc.logout.final_redirect` with `ApiSheriff-135` logged once (see
   link:bff-session.adoc#logout[Logout]).
-* *Replace a passed sealing key on schedule.* See <<key-rotation>>.
+* *Replace a provided sealing key on schedule.* See <<key-rotation>>.
 * *The gateway's cookies stay at the gateway.* The session cookie and the activity cookie are
   gateway cookies, as are `+__Host-sheriff-binding+` and `+__Host-sheriff-logout+`: none of them
   reaches an upstream under any `cookies` policy, and an upstream `Set-Cookie` naming one is dropped.

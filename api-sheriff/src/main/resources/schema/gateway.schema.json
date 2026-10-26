@@ -435,7 +435,7 @@
             "key_file": {
               "type": "string",
               "minLength": 1,
-              "description": "Path of a PEM file on a mount holding the DPoP proof key. The file must hold exactly one unencrypted PKCS#8 PRIVATE KEY block and exactly one PUBLIC KEY block, the two halves of one key, and nothing else but whitespace. Accepted key types: RSA with a modulus of at least 2048 bits, and EC on curve P-256. The signing algorithm (PS256 for RSA, ES256 for EC) and the key thumbprint the access tokens are bound to (the RFC 7638 thumbprint of the public key) are derived from the key and are not configurable. The value is a location, not a secret, so it may be written literally. It may name the same file as client_authentication.key_file; two separate keys are recommended. With no key file configured, a key is generated at startup; a generated key lives in one process, so that mode suits a single node only. A separate DPoP proof key is never published: it is not served at the client JWKS endpoint, and its public half travels only in the proofs the gateway sends to the identity provider."
+              "description": "Path of a PEM file on a mount holding the DPoP proof key. The file must hold exactly one unencrypted PKCS#8 PRIVATE KEY block and exactly one PUBLIC KEY block, the two halves of one key, and nothing else but whitespace. Accepted key types: RSA with a modulus of at least 2048 bits, and EC on curve P-256. The signing algorithm (PS256 for RSA, ES256 for EC) and the key thumbprint the access tokens are bound to (the RFC 7638 thumbprint of the public key) are derived from the key and are not configurable. The value is a location, not a secret, so it may be written literally. It must name a different file than client_authentication.key_file and hold a different key: FAPI 2.0 section 6.8 requires every key to serve one purpose, so a document naming one file for both is refused at boot, and so is the same key provided under two paths (enforced in code). With no key file configured, a key is generated at startup; a generated key lives in one process, so that mode suits a single node only. The DPoP proof key is never published: it is not served at the client JWKS endpoint, and its public half travels only in the proofs the gateway sends to the identity provider."
             }
           }
         },
@@ -465,7 +465,11 @@
               "type": "string",
               "description": "Name of the session cookie, in both session modes; defaults to __Host-sheriff-session when omitted. The name is written verbatim into Set-Cookie, so a declared value is REFUSED AT BOOT unless it starts with the case-sensitive __Host- prefix followed by a name (the prefix is what makes the browser enforce Secure, Path=/ and no Domain), is a non-empty RFC 9110 token (no whitespace, control characters or separators such as ';' or '='), and differs from the gateway-owned cookies __Host-sheriff-binding and __Host-sheriff-logout. The rule is stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no pattern keyword is declared."
             },
-            "encryption_key": { "type": "string" },
+            "key_file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path of a file on a mount holding the cookie-mode sealing key. The file must hold one line of base64 (the standard alphabet of RFC 4648 section 4) that decodes to exactly 32 bytes, the AES-256 key; whitespace around that line, a trailing line break included, is allowed and nothing else is. One command creates a valid file: openssl rand -base64 32 > session.key. The file is read once, at boot. The value is a location, not a secret, so it may be written literally. With no key file configured, a key is generated at startup: every session ends on restart and the key cannot be shared across replicas, so every replica of a multi-replica deployment must be given the same key file. Declared in server mode, which never reads it, it is refused at boot (enforced in code)."
+            },
             "ttl_seconds": { "type": "integer" },
             "idle_timeout_seconds": {
               "type": "integer",

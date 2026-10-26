@@ -26,6 +26,7 @@ import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.mediatedCa
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.sleepSeconds;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.soleKey;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.SEALING_KEY_IN_CONTAINER;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.docker;
@@ -34,6 +35,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gate
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.publishedPort;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.restartGateway;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGateway;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeSealingKeyFile;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -57,6 +59,7 @@ import org.yaml.snakeyaml.Yaml;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
+import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
 
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
@@ -98,15 +101,19 @@ import org.junit.jupiter.api.Test;
  *       Keycloak service trusts that certificate. {@code BffClientKeyWiringTest} guards all three
  *       statements on the committed files.</li>
  *   <li>The descriptor is derived at test time from the committed cookie-refresh descriptor: both
- *       {@code key_file} entries removed, {@code client_id} {@value #CLIENT_ID}, a declared
- *       {@code client_authentication.jwks_path} of {@value #JWKS_PATH}, and the origin triple
- *       retargeted at the fixed host port {@value #APPLICATION_PORT}. Everything else — cookie
- *       mode, refresh on, the 30-second leeway — is the committed document.</li>
- *   <li>A sealing key is passed, so the sealed session cookie survives the restart. Without it the
- *       cookie would be undecipherable after the restart and the test would observe a lost session for
- *       a reason that has nothing to do with the signing keys.</li>
+ *       signing-key {@code key_file} entries removed, {@code client_id} {@value #CLIENT_ID}, a
+ *       declared {@code client_authentication.jwks_path} of {@value #JWKS_PATH}, the origin triple
+ *       retargeted at the fixed host port {@value #APPLICATION_PORT}, and {@code session.key_file}
+ *       retargeted at {@value OneOffGatewayContainers#SEALING_KEY_IN_CONTAINER}. Everything else —
+ *       cookie mode, refresh on, the 30-second leeway — is the committed document.</li>
+ *   <li>The sealing key is a file of this suite alone, written below {@code target/} and mounted
+ *       read-only by itself, so the sealed session cookie survives the restart. Without it the
+ *       gateway would generate a sealing key at every boot, the cookie would be undecipherable after
+ *       the restart, and the test would observe a lost session for a reason that has nothing to do with
+ *       the signing keys. It is not the committed {@code cookie-refresh-sealing.key} the source
+ *       descriptor names: that key belongs to {@code api-sheriff-cookie-refresh} alone.</li>
  *   <li>No signing-key file is mounted: the harness mounts the certificates, the configuration, the
- *       assets and the demo directory, and nothing else.</li>
+ *       assets and the demo directory, this test adds the one sealing key file, and nothing else.</li>
  * </ul>
  * <p>
  * <strong>What is asserted, in order.</strong>
@@ -195,6 +202,12 @@ class BffGeneratedKeysIT {
             .encodeToString("generated-keys-sealing-key-01234".getBytes(StandardCharsets.US_ASCII));
 
     /**
+     * Where the sealing key file is written; the gateway finds it at
+     * {@value OneOffGatewayContainers#SEALING_KEY_IN_CONTAINER}.
+     */
+    private static final Path SEALING_KEY_FILE = Path.of("target", "generated-keys-gateway", "cookie-sealing.key");
+
+    /**
      * INFO — a signing key was generated at startup; names the purpose, never the key. The trailing
      * colon keeps the match off the identifiers from 210 to 219.
      */
@@ -212,10 +225,13 @@ class BffGeneratedKeysIT {
     void generatedKeysServeALoginAndARestartUnderALiveSession() throws Exception {
         dockerQuietly("rm", "-f", NETWORK_ALIAS);
         try {
-            // Arrange — the derived descriptor and the one-off gateway, with no signing-key mount
+            // Arrange — the derived descriptor and the one-off gateway, with its own sealing key file
+            // and no signing-key mount
             writeDerivedDescriptor();
+            ReadOnlyMount sealingKeyMount = writeSealingKeyFile(SEALING_KEY_FILE, SEALING_KEY);
             startBffGateway(new BffGateway(NETWORK_ALIAS, composeNetwork(), NETWORK_ALIAS, APPLICATION_PORT,
-                    DERIVED_DESCRIPTOR, CERTIFICATE, CERTIFICATE_KEY, List.of("SESSION_ENCRYPTION_KEY=" + SEALING_KEY)));
+                            DERIVED_DESCRIPTOR, CERTIFICATE, CERTIFICATE_KEY, List.of()),
+                    List.of(sealingKeyMount), List.of());
             awaitUp("https://localhost:" + publishedPort(NETWORK_ALIAS, 9000));
 
             // Assert (1) and (2) — one generated key per purpose, and the published client key
@@ -314,23 +330,27 @@ class BffGeneratedKeysIT {
 
     /**
      * Writes the descriptor of the one-off gateway: the committed cookie-refresh descriptor with both
-     * key files removed, the generated-key client, a declared JWKS path and the origin triple
-     * retargeted at this gateway's port. The source is asserted to carry what the derivation removes
-     * and retargets, so a change to the committed descriptor fails here instead of producing a gateway
-     * that differs from it in more than the stated ways.
+     * signing-key files removed, the generated-key client, a declared JWKS path, the origin triple
+     * retargeted at this gateway's port and the sealing key file retargeted at this suite's own. The
+     * source is asserted to carry what the derivation removes and retargets, so a change to the
+     * committed descriptor fails here instead of producing a gateway that differs from it in more than
+     * the stated ways.
      */
     private static void writeDerivedDescriptor() throws IOException {
-        Map<String, Object> document = loadDescriptor();
+        Map<String, Object> document = load(SOURCE_DESCRIPTOR);
         Map<String, Object> oidc = mapping(document.get("oidc"), "oidc");
-        assertAll(SOURCE_DESCRIPTOR + " must name both key files the derivation removes",
+        Map<String, Object> session = mapping(oidc.get("session"), "oidc.session");
+        assertAll(SOURCE_DESCRIPTOR + " must name the three key files the derivation removes or retargets",
                 () -> assertTrue(mapping(oidc.get("client_authentication"), "oidc.client_authentication")
                         .containsKey("key_file")),
                 () -> assertTrue(mapping(oidc.get("sender_constraint"), "oidc.sender_constraint")
-                        .containsKey("key_file")));
+                        .containsKey("key_file")),
+                () -> assertTrue(session.containsKey("key_file"), "oidc.session.key_file"));
 
         oidc.put("client_id", CLIENT_ID);
         oidc.put("client_authentication", new LinkedHashMap<>(Map.of("jwks_path", JWKS_PATH)));
         oidc.remove("sender_constraint");
+        session.put("key_file", SEALING_KEY_IN_CONTAINER);
         oidc.put("redirect_uri", retargeted(oidc.get("redirect_uri"), "oidc.redirect_uri"));
         Map<String, Object> logout = mapping(oidc.get("logout"), "oidc.logout");
         logout.put("post_logout_redirect_uri",
@@ -348,8 +368,14 @@ class BffGeneratedKeysIT {
         Files.writeString(DERIVED_DESCRIPTOR, new Yaml(options).dump(document));
         Files.setPosixFilePermissions(DERIVED_DESCRIPTOR, PosixFilePermissions.fromString(DESCRIPTOR_MODE));
 
-        assertFalse(Files.readString(DERIVED_DESCRIPTOR).contains("key_file"),
-                "the derived descriptor must name no key file, so both keys are generated");
+        Map<String, Object> written = mapping(load(DERIVED_DESCRIPTOR).get("oidc"), "oidc");
+        assertAll("the derived descriptor must name no signing-key file, so both signing keys are generated",
+                () -> assertFalse(mapping(written.get("client_authentication"), "oidc.client_authentication")
+                        .containsKey("key_file"), "oidc.client_authentication.key_file"),
+                () -> assertFalse(written.containsKey("sender_constraint"), "oidc.sender_constraint"),
+                () -> assertEquals(SEALING_KEY_IN_CONTAINER,
+                        mapping(written.get("session"), "oidc.session").get("key_file"),
+                        "the one key file it names is this suite's sealing key"));
     }
 
     private static String retargeted(Object value, String key) {
@@ -359,9 +385,9 @@ class BffGeneratedKeysIT {
         return ORIGIN + configured.substring(SOURCE_ORIGIN.length());
     }
 
-    private static Map<String, Object> loadDescriptor() throws IOException {
-        try (Reader reader = Files.newBufferedReader(SOURCE_DESCRIPTOR)) {
-            return mapping(new Yaml().load(reader), SOURCE_DESCRIPTOR.toString());
+    private static Map<String, Object> load(Path descriptor) throws IOException {
+        try (Reader reader = Files.newBufferedReader(descriptor)) {
+            return mapping(new Yaml().load(reader), descriptor.toString());
         }
     }
 

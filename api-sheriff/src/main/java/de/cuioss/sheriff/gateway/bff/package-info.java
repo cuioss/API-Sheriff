@@ -20,12 +20,16 @@
  * The confidential-client login, session, refresh, CSRF, and logout mechanics live in the
  * sub-packages ({@code bff.login}, {@code bff.session}, {@code bff.refresh}, {@code bff.csrf},
  * {@code bff.logout}, {@code bff.pending}, {@code bff.reserved}, {@code bff.runtime}). This
- * root package holds only the framework-agnostic
- * {@link de.cuioss.sheriff.gateway.bff.BffLogMessages} catalogue — the DSL-style
+ * root package holds two framework-agnostic types the sub-packages share:
+ * <ul>
+ * <li>the {@link de.cuioss.sheriff.gateway.bff.BffLogMessages} catalogue — the DSL-style
  * {@link de.cuioss.tools.logging.LogRecord} vocabulary for the session lifecycle, transparent
  * refresh, CSRF, and logout events those sub-packages emit. Keeping the catalogue in the
  * framework-agnostic {@code cui-tools} {@code LogRecord} abstraction carries no framework
- * dependency.
+ * dependency;</li>
+ * <li>{@link de.cuioss.sheriff.gateway.bff.KeyFiles} — the one bounded read of a BFF key file,
+ * shared by the signing-key files and the cookie sealing-key file, which parses nothing.</li>
+ * </ul>
  *
  * @author API Sheriff Team
  * @since 1.0

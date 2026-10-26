@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=../../../../main/resources/schema/gateway.schema.json
 # Cookie-mode boot configuration for CookieModeBootTest (D6).
 #
-# Deliberately declares NO session.encryption_key: that selects the
+# Deliberately declares NO session.key_file: that selects the
 # generate-on-startup key mode, which is a fully supported production mode (the
 # key is fresh per boot, so sessions do not survive a restart). This fixture is
 # what proves the gateway BOOTS in that mode rather than refusing to start.
@@ -57,7 +57,7 @@ oidc:
   session:
     mode: cookie
     ttl_seconds: 3600
-    # NO encryption_key on purpose — this is the generate-on-startup path.
+    # NO key_file on purpose — this is the generate-on-startup path.
   user_info:
     path: /auth/userinfo
     allowed_claims: ["sub"]

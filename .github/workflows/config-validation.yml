@@ -182,14 +182,12 @@ jobs:
       - name: Validate the cookie variant
         env:
           OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-ec.pem
-          SESSION_ENCRYPTION_KEY: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
         run: '"$RUNNER_TEMP/validate-set.sh" cookie "$RUNNER_TEMP/config-sets/cookie"'
 
       # Service api-sheriff-cookie-refresh.
       - name: Validate the cookie-refresh variant
         env:
           OIDC_DPOP_KEY_FILE: /app/signing-keys/dpop-rsa.pem
-          SESSION_ENCRYPTION_KEY: Y29va2llLXJlZnJlc2gtc2VhbGluZy1rZXktMDEyMzQ=
         run: '"$RUNNER_TEMP/validate-set.sh" cookie-refresh "$RUNNER_TEMP/config-sets/cookie-refresh"'
 
       # Service api-sheriff-egress-verify-off.

@@ -18,8 +18,15 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.FileSystemException;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,18 +40,23 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the OIDC client rules the {@link ConfigValidator} runs through {@link OidcClientRules}: a
  * declared {@code oidc.login.default_return_url} must be same-origin with {@code redirect_uri}, and
  * {@code oidc.client_secret} and {@code oidc.client_authentication.key_file} select at most one client
- * authentication, with a declared secret that resolves blank refused as well. The
- * {@code oidc.back_channel_origin} rule is tested in {@code OidcClientRulesBackChannelOriginTest}.
+ * authentication, with a declared secret that resolves blank refused as well; in the key-based mode
+ * {@code oidc.client_authentication.key_file} and {@code oidc.sender_constraint.key_file} must name two
+ * files. The {@code oidc.back_channel_origin} rule is tested in
+ * {@code OidcClientRulesBackChannelOriginTest}.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed.
@@ -262,6 +274,214 @@ class OidcClientRulesTest {
                     topologyWith());
 
             assertHasError(errors, POINTER, KEY_FILE_KEY);
+        }
+    }
+
+    /**
+     * FAPI 2.0 section 6.8 requires a key to serve one purpose, so in the key-based mode the
+     * client-authentication key file and the sender-constraint key file must be two files. A document
+     * naming one file for both is refused at {@code /oidc/sender_constraint/key_file} with a fixed text
+     * that names both keys and neither path. Two existing files are compared by the file system, so a
+     * link to the other key file is refused and a {@code ..} behind a symbolic link is judged by the file
+     * it reaches. Where a file does not exist, only a pair equal after normalization with no {@code ..}
+     * element in either path is refused; a pair that meets only by collapsing a {@code ..} is left to the
+     * runtime's comparison of the two keys.
+     */
+    @Nested
+    @DisplayName("oidc.client_authentication.key_file and oidc.sender_constraint.key_file must name two files")
+    class SigningKeyFilesDistinct {
+
+        private static final String POINTER = "/oidc/sender_constraint/key_file";
+        private static final String CLIENT_KEY_FILE_KEY = "oidc.client_authentication.key_file";
+        private static final String DPOP_KEY_FILE_KEY = "oidc.sender_constraint.key_file";
+        /** Distinctive paths, so an echo of either into a refusal is detectable. */
+        private static final String SHARED_KEY_FILE = "/etc/sheriff/keys/shared-signing-key-5d1e.pem";
+        private static final String CLIENT_KEY_FILE = "/etc/sheriff/keys/client-key-0b7c.pem";
+        private static final String DPOP_KEY_FILE = "/etc/sheriff/keys/dpop-key-a24f.pem";
+
+        private List<ConfigError> signingKeyErrors(@Nullable String clientSecret, @Nullable String clientKeyFile,
+                @Nullable String dpopKeyFile) {
+            OidcConfig oidc = OidcConfig.builder()
+                    .issuer("https://idp.example.com/realms/main")
+                    .clientId("api-sheriff")
+                    .clientSecret(clientSecret)
+                    .clientAuthentication(clientKeyFile == null ? null
+                            : OidcConfig.ClientAuthenticationSettings.builder().keyFile(clientKeyFile).build())
+                    .senderConstraint(dpopKeyFile == null ? null
+                            : new OidcConfig.SenderConstraintSettings(dpopKeyFile))
+                    .build();
+            return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith()).stream()
+                    .filter(error -> POINTER.equals(error.pointer()))
+                    .toList();
+        }
+
+        /**
+         * Creates {@code link} pointing at {@code target}, or aborts the calling test when the file
+         * system refuses symbolic links.
+         */
+        private static Path createSymbolicLinkOrAbort(Path link, Path target) throws IOException {
+            try {
+                return Files.createSymbolicLink(link, target);
+            } catch (UnsupportedOperationException | FileSystemException e) {
+                return Assumptions.abort("the file system refuses symbolic links: " + e.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("Should refuse one file named for both keys, naming both keys and echoing neither path")
+        void shouldRefuseTheSameFileForBothKeys() {
+            List<ConfigError> errors = signingKeyErrors(null, SHARED_KEY_FILE, SHARED_KEY_FILE);
+
+            assertEquals(1, errors.size(), () -> "exactly one refusal at " + POINTER + ", got: " + errors);
+            ConfigError refusal = errors.getFirst();
+            assertAll("the refusal names both keys and the requirement, and no path",
+                    () -> assertEquals("gateway.yaml", refusal.file()),
+                    () -> assertTrue(refusal.message().contains(CLIENT_KEY_FILE_KEY),
+                            () -> "the refusal must name " + CLIENT_KEY_FILE_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains(DPOP_KEY_FILE_KEY),
+                            () -> "the refusal must name " + DPOP_KEY_FILE_KEY + ": " + refusal.message()),
+                    () -> assertTrue(refusal.message().contains("FAPI 2.0 section 6.8"),
+                            () -> "the refusal must name the requirement it enforces: " + refusal.message()),
+                    () -> assertFalse(refusal.message().contains(SHARED_KEY_FILE),
+                            "the configured path must not be echoed"),
+                    () -> assertFalse(refusal.message().contains("shared-signing-key"),
+                            "no fragment of the configured path may be echoed either"));
+        }
+
+        @ParameterizedTest(name = "''{0}'' and ''{1}''")
+        @CsvSource({
+                "./a.pem, a.pem",
+                "./keys/dpop.pem, keys/dpop.pem",
+                "/etc/sheriff/keys/./a.pem, /etc/sheriff/./keys/a.pem",
+                "/etc/sheriff//keys/a.pem, /etc/sheriff/keys/a.pem"
+        })
+        @DisplayName("Should refuse two spellings of one absent file that differ only by '.' elements or separators")
+        void shouldRefuseTwoSpellingsOfOneFile(String clientKeyFile, String dpopKeyFile) {
+            assertAll("precondition: neither file exists, so only the spelling can be judged",
+                    () -> assertFalse(Files.exists(Path.of(clientKeyFile)), clientKeyFile),
+                    () -> assertFalse(Files.exists(Path.of(dpopKeyFile)), dpopKeyFile));
+
+            List<ConfigError> errors = signingKeyErrors(null, clientKeyFile, dpopKeyFile);
+
+            assertAll("one refusal echoing neither spelling",
+                    () -> assertEquals(1, errors.size(),
+                            () -> "exactly one refusal at " + POINTER + ", got: " + errors),
+                    () -> assertFalse(errors.getFirst().message().contains(clientKeyFile),
+                            "the client-authentication path must not be echoed"),
+                    () -> assertFalse(errors.getFirst().message().contains(dpopKeyFile),
+                            "the sender-constraint path must not be echoed"));
+        }
+
+        @ParameterizedTest(name = "''{0}'' and ''{1}''")
+        @CsvSource({
+                "/etc/sheriff/keys/x/../a.pem, /etc/sheriff/keys/a.pem",
+                "keys/../shared-signing-key.pem, shared-signing-key.pem",
+                "/etc/sheriff/keys/a.pem, /etc/sheriff/keys/client/../a.pem",
+                "/etc/sheriff/a/../k.pem, /etc/sheriff/b/../k.pem"
+        })
+        @DisplayName("Should leave absent files whose spellings meet only by collapsing '..' to the runtime key comparison")
+        void shouldNotJudgeAbsentFilesEqualOnlyThroughAParentElement(String clientKeyFile, String dpopKeyFile) {
+            assertAll("precondition: absent files whose spellings normalize alike only through a '..'",
+                    () -> assertFalse(Files.exists(Path.of(clientKeyFile)), clientKeyFile),
+                    () -> assertFalse(Files.exists(Path.of(dpopKeyFile)), dpopKeyFile),
+                    () -> assertEquals(Path.of(clientKeyFile).normalize(), Path.of(dpopKeyFile).normalize(),
+                            "the pair the former lexical comparison refused"));
+
+            List<ConfigError> errors = signingKeyErrors(null, clientKeyFile, dpopKeyFile);
+
+            assertEquals(List.of(), errors, "where the files are missing, as on the machine running the offline "
+                    + "check, a '..' may follow a symbolic link, so the spelling proves no shared file");
+        }
+
+        @Test
+        @DisplayName("Should refuse one existing file named under two spellings")
+        void shouldRefuseOneExistingFileUnderTwoSpellings(@TempDir Path root) throws Exception {
+            Path keysDir = Files.createDirectories(root.resolve("keys"));
+            Path key = Files.writeString(keysDir.resolve("shared.pem"), "one key");
+            String otherSpelling = keysDir.resolve("..").resolve("keys").resolve("shared.pem").toString();
+
+            List<ConfigError> errors = signingKeyErrors(null, key.toString(), otherSpelling);
+
+            assertEquals(1, errors.size(), () -> "one file under two spellings is one key, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse one existing file reached directly and through a symbolic link")
+        void shouldRefuseOneExistingFileReachedThroughALink(@TempDir Path root) throws Exception {
+            Path keysDir = Files.createDirectories(root.resolve("keys"));
+            Path key = Files.writeString(keysDir.resolve("shared.pem"), "one key");
+            Path alias = createSymbolicLinkOrAbort(root.resolve("alias"), keysDir);
+            String linkedSpelling = alias.resolve("shared.pem").toString();
+            assertNotEquals(key.normalize(), Path.of(linkedSpelling).normalize(),
+                    "precondition: the two spellings must differ lexically, so only the file system can tell");
+
+            List<ConfigError> errors = signingKeyErrors(null, key.toString(), linkedSpelling);
+
+            assertEquals(1, errors.size(), () -> "a link to the client key is the client key, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should admit two different files even when '..' behind a symbolic link normalizes one onto the other")
+        void shouldAdmitTwoFilesThatNormalizeAlikeThroughASymlinkedParent(@TempDir Path root) throws Exception {
+            Path vaultClientDir = Files.createDirectories(root.resolve("vault").resolve("client"));
+            Path keysDir = Files.createDirectories(root.resolve("run").resolve("keys"));
+            Files.writeString(root.resolve("vault").resolve("dpop.pem"), "client-authentication key");
+            Path dpopKey = Files.writeString(keysDir.resolve("dpop.pem"), "DPoP key");
+            Path clientLink = createSymbolicLinkOrAbort(keysDir.resolve("client"), vaultClientDir);
+            String clientKeyFile = clientLink.resolve("..").resolve("dpop.pem").toString();
+            assertAll("precondition: the trap the rule must not fall into",
+                    () -> assertEquals(dpopKey.normalize(), Path.of(clientKeyFile).normalize(),
+                            "lexical normalization removes the link together with the '..'"),
+                    () -> assertFalse(Files.isSameFile(Path.of(clientKeyFile), dpopKey),
+                            "but the '..' resolves against the link target, so the files differ"));
+
+            List<ConfigError> errors = signingKeyErrors(null, clientKeyFile, dpopKey.toString());
+
+            assertEquals(List.of(), errors, "two different files hold two keys, whatever their spellings normalize to");
+        }
+
+        @Test
+        @DisplayName("Should leave an unparseable key-file path to the runtime refusal, even when both fields carry it")
+        void shouldNotJudgeAnUnparseablePath() {
+            String unparseable = "/etc/sheriff/keys/nul\0key.pem";
+            assertThrows(InvalidPathException.class, () -> Path.of(unparseable),
+                    "precondition: the value must not parse as a path");
+
+            assertAll("an unusable path is one defect, reported once by the runtime",
+                    () -> assertEquals(List.of(), signingKeyErrors(null, unparseable, unparseable),
+                            "the same unparseable value twice is not two names of one file"),
+                    () -> assertEquals(List.of(), signingKeyErrors(null, unparseable, DPOP_KEY_FILE),
+                            "an unparseable client-authentication path"),
+                    () -> assertEquals(List.of(), signingKeyErrors(null, CLIENT_KEY_FILE, unparseable),
+                            "an unparseable sender-constraint path"));
+        }
+
+        @Test
+        @DisplayName("Should admit two different files")
+        void shouldAdmitTwoDifferentFiles() {
+            assertEquals(List.of(), signingKeyErrors(null, CLIENT_KEY_FILE, DPOP_KEY_FILE),
+                    "two key files are the configuration the rule asks for");
+        }
+
+        @Test
+        @DisplayName("Should admit a document declaring only one of the two key files, or neither")
+        void shouldAdmitOneOrNoKeyFile() {
+            assertAll("a generated key is fresh per boot and never equals a provided one",
+                    () -> assertEquals(List.of(), signingKeyErrors(null, CLIENT_KEY_FILE, null),
+                            "only the client-authentication key file"),
+                    () -> assertEquals(List.of(), signingKeyErrors(null, null, DPOP_KEY_FILE),
+                            "only the sender-constraint key file"),
+                    () -> assertEquals(List.of(), signingKeyErrors(null, null, null), "neither key file"));
+        }
+
+        @Test
+        @DisplayName("Should not judge the key files in client-secret mode, where no client assertion is signed")
+        void shouldNotJudgeClientSecretMode() {
+            List<ConfigError> errors = signingKeyErrors("configured-secret-value-7f3a", SHARED_KEY_FILE,
+                    SHARED_KEY_FILE);
+
+            assertEquals(List.of(), errors, "the secret selects client_secret_basic, so the client-authentication"
+                    + " key file is never read; the both-credentials rule refuses that document on its own pointer");
         }
     }
 }

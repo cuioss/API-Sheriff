@@ -487,7 +487,7 @@ oidc:                              # only used by the BFF variants (2 and 3)
     final_redirect: https://app.example.com/   # where the browser lands after verification
     backchannel_path: /bff/backchannel   # back-channel receiver (mode: server only)
   session:                         # NOTE: exhibit shows the fields of BOTH modes; store is
-                                   #   server-mode-only, the encryption key cookie-mode-only
+                                   #   server-mode-only, key_file cookie-mode-only
     mode: cookie                   # cookie (Variant 3) | server (Variant 2)
     store: memory                  # REQUIRED for server mode; memory is the only initial option
     max_sessions: 10000            # server mode only: upper bound on concurrently stored
@@ -497,8 +497,10 @@ oidc:                              # only used by the BFF variants (2 and 3)
     cookie_name: __Host-sheriff    # OPTIONAL, both modes; default __Host-sheriff-session. REFUSED AT
                                    #   BOOT unless a __Host--prefixed RFC 9110 token distinct from
                                    #   the gateway-owned __Host-sheriff-binding / -logout cookies
-    encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
-                                   #   generate a key on startup (sessions die on restart)
+    key_file: /run/secrets/session.key  # cookie mode only (AES-256-GCM); OPTIONAL -- a file holding
+                                   #   one line of base64 decoding to 32 bytes (openssl rand -base64
+                                   #   32 > session.key). A location, not a secret. Omit to generate
+                                   #   a key on startup (sessions die on restart). REFUSED in server mode
     max_cookie_size: 4019          # cookie mode only: sealed cookie-VALUE size budget in bytes.
                                    #   40..8192, default 4019. Drives BOTH the seal budget and the
                                    #   gateway's pre-route Cookie header-value cap
@@ -2605,9 +2607,13 @@ canonical gateway path works, and keeping the application's own routes under a s
 | *Optional* string, at least one character. The path of a PEM file on a mount that holds the key
   the gateway signs its DPoP proofs with -- the key every access token it obtains is bound to. Same file
   format, key types and boot refusals as `client_authentication.key_file`; omitted, a key is
-  generated at startup. Read in *both* client-authentication modes. It may name the same file as
-  `client_authentication.key_file`; two separate keys are recommended, one per purpose (FAPI 2.0
-  §6.8). A separate key is never published. See link:#_oidc_signing_keys[Signing keys] and
+  generated at startup. Read in *both* client-authentication modes. In key mode it must name a
+  different file holding a different key than `client_authentication.key_file`, one key per purpose
+  (FAPI 2.0 §6.8): one file named by both fields is *refused at boot* at
+  `/oidc/sender_constraint/key_file` -- decided by the file system when both files exist, otherwise
+  only by paths equal after normalisation with no `..` segment -- and the same key in two files is
+  refused when the BFF runtime reads both keys (`CONFIG_INVALID`). Both messages name
+  the two fields and neither a path nor a key id. The DPoP key is never published. See link:#_oidc_signing_keys[Signing keys] and
   link:#_oidc_sender_constraint[The sender constraint and the token-binding check].
 
 | `client_secret`
@@ -2808,20 +2814,43 @@ See link:#_oidc_client_authentication[Client authentication].
   `<cookie_name>-activity` -- `+__Host-sheriff-session-activity+` under the default name. It has no
   key of its own. See `session.idle_timeout_seconds` below.
 
-| `session.encryption_key`
-| `cookie` mode only. AES-256-GCM key as an `${ENV_VAR}` reference. Both key-material modes are
-  fully supported production options:
+| `session.key_file`
+| `cookie` mode only. Optional string: the path of the key file holding the AES-256-GCM sealing key
+  (ADR-0072). The value is a *location, not a secret*: it may be written literally or as a `${VAR}`
+  placeholder, like the two signing-key paths, and the secret rule below does not cover it. Both
+  key-material modes are fully supported production options:
 
-  * *Passed key* -- `encryption_key` is set. Sessions survive a restart and the key can be shared
-    across replicas. This is the mode a multi-replica deployment must use.
-  * *Generate on startup* -- `encryption_key` is omitted. A fresh AES-256 key is generated at boot.
-    Two consequences the operator must accept: *all sessions are dropped on every restart*, and
-    *the key cannot be shared across replicas*, so a load-balanced deployment would reject every
-    cookie sealed by another instance.
+  * *Provided key file* -- `key_file` is set. Sessions survive a restart and the key can be shared
+    across replicas by mounting the same file on each. This is the mode a multi-replica deployment
+    must use.
+  * *Generate on startup* -- `key_file` is omitted. A fresh AES-256 key is generated at boot and
+    `ApiSheriff-16` is logged. Two consequences the operator must accept: *all sessions are dropped
+    on every restart*, and *the key cannot be shared across replicas*, so a load-balanced deployment
+    would reject every cookie sealed by another instance.
+
+  *File format.* One line of base64 -- the standard alphabet of RFC 4648 section 4 -- that decodes
+  to *exactly 32 bytes*. Whitespace around the line, a trailing LF or CRLF included, is stripped;
+  nothing else is allowed. `openssl rand -base64 32 > session.key` writes a valid file. The file is
+  read once, at boot, and may hold at most 256 bytes; the bounded read takes one byte more, at most
+  257, to detect a larger file.
+
+  *Refusals.* Each of these fails the boot with `CONFIG_INVALID`: a value that is not a usable path;
+  a path that does not exist, does not name a regular file or cannot be read; a file larger than 256 bytes; a file that holds no key
+  after stripping; content that is not one token of strict base64 (a line break or space inside it,
+  a character outside the alphabet, a PEM block); content that decodes to anything but 32 bytes. The
+  message names `oidc.session.key_file` and the defect -- never the path, the file content or a
+  decoder message -- and the gateway never falls back to a generated key. In `server` mode a
+  declared `key_file` is *refused at boot* at `/oidc/session/key_file`: that mode never reads the
+  sealing key, so the key would parse and do nothing. A document from an earlier release that still
+  carries the sealing key as a configuration value is refused as declaring an unknown key; see
+  link:user/bff-cookie.adoc#_migrating_to_a_key_file[the migration note] for moving that key
+  into a file unchanged.
 
   There is exactly *one* sealing key -- no decrypt-only companion key and no rotation window.
   Replacing it is a clean break: cookies sealed under the withdrawn key carry a key id the gateway
-  no longer holds, are refused as "no session", and those users log in again.
+  no longer holds, are refused as "no session", and those users log in again. The file is read only
+  at boot, so a replacement takes effect when the gateway restarts: replace the file on every
+  replica and restart every replica. Moving the same key into another file changes nothing.
 
 | `session.max_cookie_size`
 | *Cookie mode only.* The sealed cookie-value size budget in bytes. Optional; range `40`--`8192`,
@@ -3082,8 +3111,11 @@ The gateway holds up to two signing keys, one per purpose. Each has its own conf
 | `sender_constraint.key_file`
 | the DPoP proofs, so every access token is bound to it
 | both modes
-| travels in each proof; not published unless it is also the client-authentication key
+| travels in each proof; never published
 |===
+
+In key mode the two keys must be two keys: one file named by both fields, or the same key under two
+paths, is refused at boot (see <<_oidc_signing_key_separation>>).
 
 ===== Two modes per key
 
@@ -3286,6 +3318,33 @@ below.
 | `holds a PRIVATE KEY block that is neither an RSA nor an EC key in unencrypted PKCS#8 form`
 | Provide an RSA or an EC P-256 key.
 |===
+
+[[_oidc_signing_key_separation]]
+===== One key per purpose
+
+In key mode the key that signs the client assertion must not also sign the DPoP proofs: FAPI 2.0
+section 6.8 requires every key to serve one purpose. The two fields therefore name different files
+that hold different keys, and two checks refuse anything else:
+
+* *One file named by both fields.* When both files exist, the configuration validator asks the file
+  system whether the two paths locate one file, so a symbolic link to the other key file is a match
+  and a `..` segment behind a symbolic link is judged by the file it reaches, not by its spelling; an
+  I/O error while asking refuses nothing. When either file does not exist -- as on a machine running
+  the offline check without the deployment's keys -- only a match its spelling proves is refused: the
+  two paths must be equal after normalisation, and neither may contain a `..` segment. So
+  `keys/./a.pem` and `keys/a.pem` are one file, while `keys/x/../a.pem` and `keys/a.pem` are not
+  judged here, because `x` may be a symbolic link to another directory. It reports a match through
+  `ApiSheriff-200` at `/oidc/sender_constraint/key_file`: `oidc.client_authentication.key_file and
+  oidc.sender_constraint.key_file name the same file`. The offline check reports it as well.
+* *The same key in two files* -- a copy, or two paths the validator could not prove to be one file.
+  The validator cannot see that, because it reads no key material. The BFF runtime compares the two
+  key ids once both keys are read, and refuses a match with `CONFIG_INVALID`:
+  `oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key`.
+
+Both messages continue with the reason and the remedy -- point `oidc.sender_constraint.key_file` at a
+file holding a different key, or remove it to use a DPoP key generated at startup -- and name neither
+a path nor a key id. Neither check applies in client-secret mode, where no client-authentication key
+exists, or when either key is generated: a generated key is fresh per boot.
 
 ===== The same files on every instance
 
@@ -4973,16 +5032,16 @@ from one a variable emptied -- is a property of lists alone, and an object desti
 loudly without it.
 +
 *One class of destination refuses the whole-map form outright.* Where the object-typed key
-*contains* a secret-classified field anywhere beneath it -- `oidc.session`, which holds the session
-encryption key, is the case an operator actually meets -- a `${VAR}` written at the map itself is
-refused at boot. The error names the pointer and the rule, and never echoes what the variable
+*contains* a secret-classified field anywhere beneath it -- `oidc`, which holds `client_secret`, the
+one secret-classified field -- a `${VAR}` written at the map itself is refused at boot. `oidc.session`
+holds no secret, so a `${VAR}` written at it is admitted like any other object. The error names the pointer and the rule, and never echoes what the variable
 resolved to. The remedy is the one the secrets bullet below states in its own right: write the bare
 `${VAR}` at the secret field itself.
 +
 The refusal has to happen at the substitution site rather than alongside the other secrets checks,
 because the whole-map form can *synthesise* a secret field after those checks have already run: the
 bare-reference rule reads the document as written, so a defaulted placeholder expanding to
-`encryption_key=...` would materialise the very shape the rule exists to refuse, with the rule
+`client_secret=...` would materialise the very shape the rule exists to refuse, with the rule
 reporting nothing. Refusing this one form costs an operator nothing a secret was ever allowed to do.
 * *Reachable is not recommended.* Per
   link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025],
@@ -5004,11 +5063,12 @@ control, which is the rule above doing exactly the work it was added for.
   millisecond-precision options on the data-plane client
   (link:adr/0008-data-plane-transport.adoc[ADR-0008] dropped the former whole-second
   restriction, which existed only for the `cui-http` `HttpHandler` builder).
-* Secrets in `oidc` (`client_secret`, the session encryption key) must be *bare* `${ENV_VAR}`
-  references -- not literals, and not the defaulted `${ENV_VAR:-...}` form, whose default would
-  itself be a literal secret in a committed document. Both shapes fail the boot. The two `key_file`
-  values (`client_authentication.key_file`, `sender_constraint.key_file`) are locations, not secrets,
-  and are not held to this rule: a literal path and a defaulted placeholder are both accepted.
+* The one secret in `oidc`, `client_secret`, must be a *bare* `${ENV_VAR}` reference -- not a
+  literal, and not the defaulted `${ENV_VAR:-...}` form, whose default would itself be a literal
+  secret in a committed document. Both shapes fail the boot. The three `key_file` values
+  (`client_authentication.key_file`, `sender_constraint.key_file`, `session.key_file`) are
+  locations, not secrets, and are not held to this rule: a literal path and a defaulted placeholder
+  are both accepted.
 * `oidc.client_secret` together with `oidc.client_authentication.key_file` fails the boot. The two
   select different client authentications, so at most one of them may be configured; declaring
   neither is valid and selects `private_key_jwt` with a generated key. A declared
@@ -5030,10 +5090,13 @@ control, which is the rule above doing exactly the work it was added for.
   refusal is raised when the BFF runtime reads the key, not by the validator, so it is reported on
   its own rather than with the collected `ApiSheriff-200` violations (see
   link:#_oidc_signing_keys[Signing keys]).
-* `session.mode: cookie` does *not* require `session.encryption_key` -- omitting it selects the
+* `session.mode: cookie` does *not* require `session.key_file` -- omitting it selects the
   generate-on-startup key mode (sessions are dropped on restart and the key is not shareable
-  across replicas). `session.mode: server` requires an explicit `session.store` (only `memory` is
-  valid) and uses no encryption key.
+  across replicas). A declared `session.key_file` the gateway cannot use fails the boot when the
+  BFF runtime reads it, naming the key and the defect and never the path (see the
+  link:#_oidc[`session.key_file`] field reference). `session.mode: server` requires an explicit
+  `session.store` (only `memory` is valid), reads no sealing key, and refuses a declared
+  `session.key_file` at `/oidc/session/key_file`.
 * A declared `oidc.session.cookie_name` -- in either session mode -- must start with the
   case-sensitive `+__Host-+` prefix followed by a name, be a non-empty RFC 9110 token, and differ
   from the gateway-owned `+__Host-sheriff-binding+` and `+__Host-sheriff-logout+` cookies; otherwise

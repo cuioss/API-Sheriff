@@ -230,7 +230,7 @@ List<String> scopes,
 
     /**
      * Session settings. The exhibited fields span both modes: {@code store} is
-     * server-mode only, the encryption keys are cookie-mode only.
+     * server-mode only, the key file is cookie-mode only.
      *
      * @param mode          the session mode, canonicalized to lower case by the
      *                      canonical constructor ({@link Session#MODE_COOKIE} /
@@ -240,12 +240,17 @@ List<String> scopes,
      *                      locally-declared constant
      * @param store         the server-mode store, {@code null} when omitted
      * @param cookieName    the session cookie name, {@code null} when omitted
-     * @param encryptionKey the cookie-mode AES-256 sealing key ({@code ${ENV_VAR}}
-     *                      reference). Present selects the <em>passed-key</em> mode;
+     * @param keyFile       the path of the file holding the cookie-mode AES-256 sealing
+     *                      key ({@code oidc.session.key_file}): one line of base64 that
+     *                      decodes to exactly 32 bytes. The value is a location, not a
+     *                      secret: it may be written literally and is never redacted.
+     *                      Present selects the <em>provided-key-file</em> mode;
      *                      {@code null} selects <em>generate-on-startup</em>, which is a
      *                      fully supported production mode whose key is fresh per
      *                      boot — so every session is dropped on restart and the key
-     *                      cannot be shared across replicas
+     *                      cannot be shared across replicas, and a multi-replica
+     *                      deployment must give every replica the same key file. Boot
+     *                      validation refuses the key in server mode, which never reads it
      * @param ttlSeconds    the absolute session lifetime in seconds, {@code null} when
      *                      omitted
      * @param csrf          the CSRF settings, {@code null} when omitted
@@ -278,7 +283,7 @@ List<String> scopes,
     @Nullable String mode,
     @Nullable String store,
     @Nullable String cookieName,
-    @Nullable String encryptionKey,
+    @Nullable String keyFile,
     @Nullable Integer ttlSeconds,
     @Nullable Csrf csrf,
     @Nullable Refresh refresh,
@@ -423,21 +428,6 @@ List<String> scopes,
                 return maxSessionsPerSubject;
             }
             return Math.min(DEFAULT_MAX_SESSIONS_PER_SUBJECT, effectiveMaxSessions());
-        }
-
-        /**
-         * Overridden to redact {@link #encryptionKey()}. The default record
-         * {@code toString()} would otherwise print the resolved cookie-encryption key
-         * value verbatim into any log line, exception message, or debugger view that
-         * captures this instance.
-         *
-         * @return a string representation with the key field redacted
-         */
-        @Override
-        public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, encryptionKey=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s, idleTimeoutSeconds=%s, maxSessionsPerSubject=%s]"
-                    .formatted(mode, store, cookieName, redact(encryptionKey), ttlSeconds, csrf,
-                            refresh, maxSessions, maxCookieSize, idleTimeoutSeconds, maxSessionsPerSubject);
         }
     }
 
@@ -588,8 +578,9 @@ List<String> scopes,
      *
      * @param keyFile the path of a PEM file on a mount holding the DPoP proof key, {@code null} when
      *                omitted — a key is then generated at startup. The value is a location, not a
-     *                secret: it may be written literally and is never redacted. It may name the same
-     *                file as {@code client_authentication.key_file}; two keys are recommended
+     *                secret: it may be written literally and is never redacted. It must name a
+     *                different file than {@code client_authentication.key_file} and hold a different
+     *                key; the boot refuses one key for both (FAPI 2.0 section 6.8)
      * @author API Sheriff Team
      * @since 1.0
      */

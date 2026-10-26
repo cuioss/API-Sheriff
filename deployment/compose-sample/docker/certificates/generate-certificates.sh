@@ -79,10 +79,11 @@ TEMP_PASSWORD="temp-$(date +%s)"
 TRUSTSTORE="${CERT_DIR}/sample-idp-truststore.p12"
 TRUSTSTORE_PASSWORD="sample-idp-trust"
 
-# The BFF's two signing keys. Each file holds exactly what oidc.client_authentication.key_file and
-# oidc.sender_constraint.key_file accept: one unencrypted PKCS#8 PRIVATE KEY block followed by the
+# The BFF's two signing keys. Each file holds exactly what oidc.client_authentication.key_file or
+# oidc.sender_constraint.key_file accepts: one unencrypted PKCS#8 PRIVATE KEY block followed by the
 # matching PUBLIC KEY block, and nothing else. The gateway derives the algorithm and the key id from
-# the key, so gateway.yaml names neither.
+# the key, so gateway.yaml names neither. Every key serves ONE purpose: the gateway refuses at boot a
+# configuration that names one key for both fields, so the two files must always hold two keys.
 #
 #   client-auth.pem  RSA-2048. Signs the private_key_jwt client assertion with PS256.
 #   dpop.pem         EC P-256. Signs the DPoP proofs that bind the BFF's tokens, with ES256.

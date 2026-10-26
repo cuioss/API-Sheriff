@@ -148,18 +148,6 @@ No standards guidance was found on request forgery through a client-hosted key-s
 mitigations that exist are on the identity-provider side: its fetch interval and its policy on
 secure URIs. On the gateway side the endpoint publishes a public key and reads no input.
 
-== A Follow-Up Outside the FAPI Controls
-
-The following is not a FAPI item. It is a follow-up outside the plan that introduced the controls
-above, and it is tracked separately.
-
-=== Align the cookie sealing key with the file-based key model
-
-The two signing keys are read from PEM files on a mount, named by path. The cookie sealing key,
-`oidc.session.encryption_key`, is still a base64 value supplied through a variable. The follow-up is
-to bring the sealing key in line with the file-based key model, so that all key material of a BFF
-deployment is provisioned the same way.
-
 == Out of Scope
 
 * Authorization-server-side requirements -- the IdP's concern.

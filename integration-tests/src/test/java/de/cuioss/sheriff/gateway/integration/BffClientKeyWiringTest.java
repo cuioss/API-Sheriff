@@ -79,9 +79,13 @@ import org.junit.jupiter.api.Test;
  *       {@value #CLIENT_SECRET_VARIABLE}, and its realm client authenticates with that secret,
  *       registers no key and no JWKS URL, and still requires both controls.</li>
  * </ul>
- * Across both parts, every key file a descriptor or a service variable names exists in the
- * signing-keys directory and holds exactly one private and one public block, and that directory is
- * mounted into every gateway service and into no other service.
+ * Across both parts, every signing-key file a gateway service names — through
+ * {@code oidc.client_authentication.key_file}, {@code oidc.sender_constraint.key_file} or
+ * {@value #DPOP_KEY_VARIABLE} — exists in the signing-keys directory and holds exactly one private and
+ * one public block, and that directory is mounted into every gateway service and into no other
+ * service. The directory also holds the two cookie-mode sealing key files, one line of base64 each,
+ * which {@code oidc.session.key_file} names; they carry no PEM block, and
+ * {@code BffCookieActivationWiringTest} checks them.
  * <p>
  * <strong>The third key-authenticated client.</strong> {@code generated-key-client} is named by no
  * compose service: {@code BffGeneratedKeysIT} starts its gateway as a one-off container. Its wiring
@@ -182,8 +186,8 @@ class BffClientKeyWiringTest {
     }
 
     @Test
-    @DisplayName("every key file a descriptor or a service variable names holds one private and one public block")
-    void everyNamedKeyFileHoldsOnePrivateAndOnePublicBlock() throws Exception {
+    @DisplayName("every client-authentication and DPoP signing-key file a gateway service names holds one private and one public block")
+    void everyNamedSigningKeyFileHoldsOnePrivateAndOnePublicBlock() throws Exception {
         Map<Path, String> named = new LinkedHashMap<>();
         for (Gateway gateway : gateways()) {
             gateway.clientKeyFile().ifPresent(file -> named.put(gateway.hostFile(file),

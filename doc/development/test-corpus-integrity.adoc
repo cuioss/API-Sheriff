@@ -926,10 +926,13 @@ pass is the larger sample that says so again, from the other direction.
 | `composeSuppliesTheSealingKey`
   (`BffCookieActivationWiringTest`)
 | 156 | (d)
-| The yaml side asserts the reference is `${...}`-shaped (`:104`); the compose side asserts a variable
-  literally named `SESSION_ENCRYPTION_KEY` is supplied. *Neither reads the other.* Renaming the
-  variable in the overlay to `${OTHER}` keeps both green and aborts the instance's boot. Read the
-  referenced name out of the yaml and compare it against the compose key.
+| The yaml side asserted the sealing-key reference was `${...}`-shaped (`:104`); the compose side
+  asserted that an environment variable of one hard-coded name was supplied. *Neither read the
+  other.* Renaming the variable in the overlay to `${OTHER}` kept both green and aborted the
+  instance's boot. *The method has since been replaced* rather than strengthened: the sealing key is
+  now a key file the overlay names by path, and `thePeerReadsTheSameSealingKeyFile` resolves that
+  path through each service's own mounts, so the yaml side and the compose side are read together.
+  See <<after-the-passes>>.
 
 | `rpInitiatedLogoutClearsTheSealedCookie`
   (`BffCookieSessionIT`)
@@ -2203,8 +2206,8 @@ to revisit this, and nothing else is.
 [[after-the-passes]]
 == Classified Rows Changed After the Passes
 
-The three passes record verdicts against the commits they read. Eight of the methods they classified
-have changed since -- thirteen classification rows between them, because the first pass and
+The three passes record verdicts against the commits they read. Nine of the methods they classified
+have changed since -- fourteen classification rows between them, because the first pass and
 <<unit-lane-audit>> each classified the five `edge/GatewayEdgeRouteTest` methods -- and each method is
 named here so that a verdict above is never read as a description of a method that no longer has that
 body. The passes' own totals are unchanged: they count verdicts, and later work does not rewrite a
@@ -2278,6 +2281,16 @@ verdict named does not come back:
   client is requested for a `DispatchStage` path and that it is forced to HTTP/2 exactly for gRPC,
   so every other protocol is the control.
 
+=== One `strengthen` method replaced
+
+`BffCookieActivationWiringTest.composeSuppliesTheSealingKey`, one of the fourteen `strengthen`
+verdicts of <<pro-forma-audit>>, no longer exists. The gap the verdict named -- the yaml side and the
+compose side of the sealing-key wiring each asserted alone, neither reading the other -- went away
+with the thing it wired: the sealing key is no longer an environment variable the overlay references
+but a key file the overlay names by path. `thePeerReadsTheSameSealingKeyFile` replaces the method and
+reads both sides together: it resolves the path the overlay names through each service's own mounts
+and asserts that both cookie services reach the one committed sealing-key file.
+
 === Two unflagged tests that gained an assertion
 
 Neither was a row of this note, because neither carries a marker: both were `assertThrows` or
@@ -2318,8 +2331,9 @@ What replaces it is not "nothing left to do" but a *different* residue, and the 
 `strengthen` verdicts split cleanly in two. The fourteen in <<unit-lane-audit>> are no longer
 outstanding at all: they were applied at `857822d` and each one was inversion-verified in
 <<unit-lane-inversion-audit>>. The fourteen in <<pro-forma-audit>> are the work list that pass left,
-every one of them a named method with a `file:line` and a stated gap; one of them,
-`BffSessionLoginIT.loginEstablishesUsableSession`, has since left the list by being removed
+every one of them a named method with a `file:line` and a stated gap; two of them have since left
+the list -- `BffSessionLoginIT.loginEstablishesUsableSession` by being removed, and
+`BffCookieActivationWiringTest.composeSuppliesTheSealingKey` by being replaced
 (<<after-the-passes>>). Neither half is a coverage gap -- the applied fourteen are closed, the
 integration-lane rows are a work list -- and that distinction is the one this section was built to
 keep.

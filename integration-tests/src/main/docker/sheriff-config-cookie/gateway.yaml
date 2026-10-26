@@ -13,8 +13,8 @@
 #
 # The anchors and token_validation block are a faithful copy of the primary gateway.yaml so the
 # shared endpoints/ resolve identically and the offline it-static JWKS issuer reaches readiness
-# without Keycloak. The ONLY intentional difference is the oidc.session block: mode cookie, an
-# encryption_key ${ENV_VAR} reference, and NO store (a stateless binding holds no server-side index).
+# without Keycloak. The ONLY intentional difference is the oidc.session block: mode cookie, key_file
+# naming the shared sealing key file /app/signing-keys/cookie-sealing.key, and NO store (stateless).
 version: 1
 metadata:
   config_version: "integration-test-cookie"
@@ -158,19 +158,19 @@ oidc:
     # server-side index, which is exactly what makes the back-channel logout endpoint report
     # UNSUPPORTED and answer 404.
     mode: cookie
-    # The AES-256 sealing key as a bare ${ENV_VAR} reference (the D4 secrets rule refuses a
-    # literal). Supplying it — rather than letting the gateway generate one at startup — is what
-    # lets a second instance unseal a cookie this one sealed: the instances share only this key.
-    encryption_key: ${SESSION_ENCRYPTION_KEY}
+    # The AES-256 sealing key file, shared with api-sheriff-cookie-2: one line of base64, test
+    # material from generate-signing-keys.sh. Naming it — rather than letting the gateway generate a
+    # key at startup — is what lets the peer unseal a cookie this one sealed: they share this file.
+    key_file: /app/signing-keys/cookie-sealing.key
     ttl_seconds: 3600
     # No max_cookie_size override: this instance keeps the shipped default VALUE budget, which is
     # 4019 — the largest value budget whose emitted Set-Cookie still fits the ~4 KB a browser
     # guarantees, once the name, the __Host- prefix and the attributes are counted (a further 77
     # bytes for this cookie under the default name and TTL). Raising it does not buy headroom, it
     # only moves the failure into the browser, which drops an oversized Set-Cookie silently.
-    # A cookie-mode session that ALSO refreshes now fits: the version-3 packaging seals access +
-    # id + refresh to 2700 bytes, leaving 32.8 % of the budget spare. That is exercised on the
-    # separate api-sheriff-cookie-refresh instance, not here.
+    # A refreshing cookie-mode session fits: with the DPoP cnf claim it seals to 2572-2580 bytes
+    # (ApiSheriff-15, measured 2026-10-26), leaving 1439 bytes / 35.8 % of the budget spare. That
+    # is exercised on the separate api-sheriff-cookie-refresh instance, not here.
     refresh:
       # OFF so this instance covers the access + id cookie variant. It is off to keep the variants
       # separated, NOT because a refreshing cookie session cannot fit — see the budget note above,
