@@ -162,6 +162,11 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-26 — the stale local plan `plan-v02-23-cookie-forwarding-policy` was discarded** by operator instruction
+  (`manage-status delete-plan`, 14 files, no lesson to carry back). It was the first, paused attempt at `PLAN-V02-23`
+  (stopped at 4-plan on 2026-10-14 for the refactor chain); `plan-v02-23-cookie-forwarding-policy-r2` shipped as #515.
+  The gate no longer counts its 66-file surface as a live plan.
+- **2026-10-26 — `PLAN-V02-06`, `PLAN-V02-05` and `PLAN-V02-20` are running** (operator confirmed the starts).
 - **2026-10-26 — emitted `PLAN-V02-06`, `PLAN-V02-05` and `PLAN-V02-20` when `PLAN-V02-04` landed.** Operator
   instruction: "after ingesting, emit the next three". `PLAN-V02-07` waits for `PLAN-V02-06`. The gate read every
   pair: V02-06/V02-05 share `SecurityHeadersConfig.java`, V02-06/V02-20 share `OidcConfig.java` and
