@@ -868,7 +868,7 @@ class ForwardPolicyStageTest {
             String folded = ConnectionHeaders.separatorFolded(spelling);
             assertAll("the not_modified gate closes the separator equivalence class",
                     () -> assertTrue(toggleOff.headers().keySet().stream()
-                            .noneMatch(name -> ConnectionHeaders.separatorFolded(name).equals(folded)),
+                                    .noneMatch(name -> ConnectionHeaders.separatorFolded(name).equals(folded)),
                             () -> spelling + " must not cross with not_modified off — a folding backend"
                                     + " reads it as the canonical validator"),
                     () -> assertEquals(List.of("probe-value"), valuesNamed(toggleOn.headers(), spelling),
