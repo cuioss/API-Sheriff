@@ -35,7 +35,7 @@ import org.junit.jupiter.api.Test;
  * Proves the defining property of the Variant 3 sealed-cookie session — <em>statelessness</em> — as a
  * literal two-instance fact: a session created against one cookie-mode gateway is served by a
  * <strong>second, separate</strong> gateway process that shares nothing with the first but the AES
- * sealing key.
+ * sealing key file.
  * <p>
  * <strong>Why two real instances and not one.</strong> Everything a single-instance suite can observe
  * about a sealed cookie — that it is opaque, that it round-trips, that it survives a restart — is also
@@ -43,7 +43,9 @@ import org.junit.jupiter.api.Test;
  * out is another process, which never saw the login, serving the very same cookie. The compose stack
  * therefore publishes {@code api-sheriff-cookie} on {@code 10445} and its key-sharing peer
  * {@code api-sheriff-cookie-2} on {@code 10446}: same image, same overlaid cookie {@code gateway.yaml},
- * identical {@code SESSION_ENCRYPTION_KEY}, and <em>no</em> shared session store, volume, or state.
+ * and so the same sealing key file it names through {@code oidc.session.key_file}
+ * ({@code /app/signing-keys/cookie-sealing.key} on the read-only signing-key mount), and <em>no</em>
+ * shared session store or session state.
  * <p>
  * <strong>No sticky routing.</strong> Each test addresses the two instances by their own published
  * host ports, so there is no load balancer and no affinity mechanism in the path that a passing result

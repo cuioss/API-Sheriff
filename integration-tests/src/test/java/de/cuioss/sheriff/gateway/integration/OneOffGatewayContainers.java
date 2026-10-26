@@ -304,7 +304,24 @@ final class OneOffGatewayContainers {
      * @param gateway what to start
      */
     static void startBffGatewayWithSigningKeys(BffGateway gateway) {
-        startBffGateway(gateway, List.of(new ReadOnlyMount(SIGNING_KEYS, SIGNING_KEYS_MOUNT)), List.of());
+        startBffGatewayWithSigningKeys(gateway, List.of());
+    }
+
+    /**
+     * Starts a one-off BFF gateway with the stack's signing-key directory mounted, exactly as
+     * {@link #startBffGatewayWithSigningKeys(BffGateway)} does, and additionally the given read-only
+     * mounts — such as a sealing key file of the test's own, which a derived cookie-mode descriptor
+     * names in place of the committed one.
+     *
+     * @param gateway     what to start
+     * @param extraMounts the additional read-only bind mounts beside the signing-key directory, possibly
+     *                    empty
+     */
+    static void startBffGatewayWithSigningKeys(BffGateway gateway, List<ReadOnlyMount> extraMounts) {
+        List<ReadOnlyMount> mounts = new ArrayList<>();
+        mounts.add(new ReadOnlyMount(SIGNING_KEYS, SIGNING_KEYS_MOUNT));
+        mounts.addAll(extraMounts);
+        startBffGateway(gateway, mounts, List.of());
     }
 
     /**
