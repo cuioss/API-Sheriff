@@ -61,8 +61,25 @@ decision.
   `GatewayEdgeRoute` are stale since #431 and #448: run `cleanup` before emitting it. Its D4 (DP-6) must
   be read against #448's abortive close and guard-keyed breaker. Carries two wire-or-remove decisions for
   the operator at outline.
+  **Re-grounded 2026-10-26 at `54f82f03`:** the four keys are still inert (#506 added fixed constants, none
+  reads them); the guard and client code now live in `edge/upstream/UpstreamGuards.java` and
+  `EgressClients.java` (#487); D4 stays a record correction; the cross-epic hold is lifted. See the spec's
+  re-grounding table for every moved reference. `PLAN-V02-48` must not run beside it (both write ADRs 0008 and 0064).
 - **PLAN-31 (staged 2026-10-14 by the other orchestrator session, WS-01) — the exact JWKS publish rule**
-  via token-sheriff 0.9.7's `getKeyIds()`. Not yet re-grounded by this session.
+  via token-sheriff 0.9.7's `getKeyIds()`. **Re-grounded 2026-10-26 at `54f82f03`:** premise intact, `main` is
+  on 0.9.8 (#491; the jar was not readable locally, so the outline reads it first), the threat-model residual
+  moved and was already reworded by #492, and the operator hold's three named overlaps (V02-12, V02-23,
+  V02-44) have all shipped. Sequence before sibling `PLAN-V02-48`.
+- **Cleanup 2026-10-26 (HEAD `54f82f03`, worktree rebased onto `origin/main`).** All five staged plans
+  (PLAN-20, -21, -26, -29, -31) were re-grounded: 32 claims, 21 corroborated, 7 contradicted and rescoped in
+  the spec, 4 unverifiable, 0 blocking; every Expected Surface path exists. Still `applicability:
+  still_applicable` for all five; nothing else was shipped or fixed elsewhere. The disjointness gate is
+  determinate (no unread gate candidate) and reports a multi-file overlap (4 to 20 files) with each of the
+  three running siblings V02-05, V02-06 and V02-20 for every staged plan, so each emit raises the operator's
+  overlap question, and the sibling's three slots are full. Open operator decisions the re-ground surfaced:
+  PLAN-26 D2 (implement or keep unbound logout revocation, now cheap since `oidc.back_channel_origin` landed),
+  PLAN-29 D1 (wire or remove each key pair), PLAN-21 option a/b/c (b/c need V02-06's substrate), PLAN-20
+  deliverable 1 (wire or remove the inert `oidc.step_up.enabled` / `honor_upstream_challenge`).
 - PLAN-25 — shipped #408. The pairing note below ("pairs with anything") held for files and failed for
   the CI job's wall-clock.
 - **Flow is sequential in practice.** Every staged pair overlaps on `doc/configuration.adoc`, the schemas
@@ -637,6 +654,13 @@ decision.
   multi-file overlaps with the running V02-12 (8 files: docs, `JwksKeyRotationIT`), the parked V02-23 (8 doc
   files) and the running V02-44 (`RetryingJwksLoaderTest`, `doc/LogMessages.adoc`). Re-run the gate once
   V02-12's second PR and V02-44 have landed.
+  **Update 2026-10-26 (cleanup at `54f82f03`): the chain has landed and the hold is lifted.** V02-28, V02-40
+  to V02-43 (#485, #489, #502, #505), V02-44 (#476), V02-25 (#487), V02-12 (#450, #492), V02-23 (#515) and
+  V02-27 (#520) are all shipped, plus V02-45 (#506), V02-46 (#513), V02-15 (#516), V02-22 (#512) and V02-04
+  (#521). PLAN-20, -21, -26 and -29 have been re-grounded and may be emitted subject to the gate: the sibling
+  runs V02-05, V02-06 and V02-20 (three of three slots) and the gate finds a 4 to 20 file overlap with each, so
+  an emit needs a free slot and the operator's overlap answer. Never two WS-04 plans at once (PLAN-20, -21, -26).
+  The reason for the PLAN-31 hold (V02-12, V02-23, V02-44) is gone for the same reason.
 
 - **The JWKS publish rule stays approximate until token-sheriff exposes a key set's key ids — TRIGGER
   FIRED, STAGED AS PLAN-31 (2026-10-14).** token-sheriff 0.9.7 carries `JwksLoader.getKeyIds()`

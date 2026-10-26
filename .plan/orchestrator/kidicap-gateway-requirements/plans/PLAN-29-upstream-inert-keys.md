@@ -69,46 +69,92 @@ Promoted lesson `2026-10-13-06-003` carries the documentation side.
    and the DP-2 and DP-6 entries of `doc/quality-report/code-correctness.adoc` and
    `doc/quality-report/README.adoc`. Sweep every example for all four keys, not only the ones listed.
 
+> ⚠ **Re-grounded 2026-10-26 (cleanup at `54f82f03`).** The premise holds: the four keys are still bound and
+> unread, #506 (V02-45) added only fixed gateway constants (10 s request-body idle, 25 s request-body
+> deadline, 5 min gRPC stream idle) that read none of them, and D4 stays a record correction (DP-6 is fixed
+> by #386 and #448). The spec's code locations are stale, because #487 moved the guard and the client and #476
+> merged `ResolvedRoute` into `Route`:
+>
+> | Spec says | At `54f82f03` |
+> |---|---|
+> | `GatewayEdgeRoute.guardFor` (:2568–2571, :2657–2660) | `edge/upstream/UpstreamGuards.java` `guardFor` :88–116 (timeout :110, retry :111–114, breaker :102–109) |
+> | `GatewayEdgeRoute.clientFor` (:2378–2382) | `edge/upstream/EgressClients.java` `clientFor` :167–181 (`SO_LINGER 0` :171); egress TLS :190–197 |
+> | `RouteTableBuilder.resolveRetryEnabled` (:239/:371) | no such method: `resolveRoute` :239 reads `route.upstream().retry()` :252, `routeToggle` (:381) at :254; the value ends in `Route.retryEnabled` and `ResilienceShape(target, retryEnabled)` |
+> | `endpoint.schema.json` 211–219 | 259–267; no `minimum`, so no positivity bound exists anywhere |
+> | `architecture.adoc` :1318, :1420 | :1675 (504 row), :1777 (`DEADLINE_EXCEEDED` row) |
+> | `endpoint-routes.adoc` :136–137 | :149–155 |
+> | `variants/01-base-gateway.adoc` :115 | :133 (the same example's :132 comment "replaces the matched prefix" contradicts the append semantics, ADR-0004 A2) |
+> | `ConfigLoaderTest:341`, `ConfigValidatorTest:1030` | `ConfigLoaderTest` :501 (`max_attempts: 3`, in a binding test that must be edited if the key is removed); `ConfigValidatorTest` :119–137 (`shouldAcceptMillisecondPrecisionTimeout`, `readTimeoutMs(2500)`) |
+> | `DispatchStage.java:246-266` (DP-6 location) | `edge/upstream/DispatchStage.java` `awaitDispatch` :467–493; the DP-6 entry is `code-correctness.adoc` :725–739; DP-2 :644–671 (it cites `resolveRetryEnabled` :667) |
+> | ADR-0066 "Amendment A1" | ADR-0066 was rewritten in place and has no amendment headings: the abortive-close lifecycle is the section "A gateway-closed HTTP/1.1 upstream connection is closed abortively" (:141); the V02-46 landing calls it "A2" |
+> | `ConfigValidator` hosts bounds for a wired key | `ConfigValidator` is a 289-line rule list (ADR-0071); a bounds rule is a new or extended class in `config/validation/rule/` (`ProtocolRules` is the closest), see `doc/development/boot-validation-rules.adoc` |
+> | `doc/configuration.adoc` | upstream paragraph :3994–3999, inert NOTE :4001–4005, validation line :5003–5006 ("must be positive integers", which no rule enforces) |
+> | ADR-0008 timeout sentence | `doc/adr/0008-data-plane-transport.adoc` :82–83; adjacent :84–87 and :73–75 |
+>
+> - **Structural constraint for D2/D3.** The guard is built once per `ResilienceShape(target, retryEnabled)` and
+>   shared across routes, and the client is shared per `UpstreamTarget`. A per-route timeout or attempt count
+>   cannot be a guard or client option without widening those keys; the outline chooses between widening
+>   `ResilienceShape` and applying per-request values in `DispatchStage.awaitDispatch` (:470–475). This is the
+>   strongest argument for the remove option, and pre-1.0 removal is cheap.
+> - **D2 relation to #506.** `UpstreamGuards` and `EdgeHardeningOptions` state the ordering idle 10 s < deadline
+>   25 s < guard 30 s; `DispatchStage`'s constructor checks only deadline > idle (:283–285). A wired
+>   `read_timeout_ms` under 25 s inverts it, so the ADR and `doc/architecture.adoc` (anchors
+>   `_request_body_idle_timeout`, `_request_body_deadline`) must state the relation. V02-45 shipped (#506), so
+>   the "whichever plan runs second" coordination below is now one-way and this plan owns the statement.
+> - **Also sweep.** `UpstreamConfig` Javadoc (:40–41, :62–64), the `DispatchStage` Javadoc (:160, "the edge's
+>   idle timeout can reap an inbound connection before the route's read timeout fires": there is no route read
+>   timeout), `README.adoc` :105–110, and `doc/adr/0064` (:9, :101–111, retry bullet :106–108; rewritten in
+>   place by #521, content survives). The `ConfigModelReflection` registration of `UpstreamConfig.Retry` stays
+>   while `retry.enabled` stays.
+> - **ADR ordinal.** 0072 is free (0071 is the highest). Sibling `PLAN-V02-48` (staged) rewrites ADRs 0008 and
+>   0064 and defers the 0008 timeout sentence to D6: it must NOT run beside this plan; if it lands first,
+>   re-ground the 0008/0064 line references.
+
 Split guard: 6 deliverables — within the operator-authorized 12.
 
 ## Claim Labels
 
 - OBSERVED: `connectTimeoutMs`, `readTimeoutMs`, `maxAttempts` and `idempotentOnly` occur under `api-sheriff/src/main` only in `UpstreamConfig` (record components and Javadoc); nothing reads them — read by searching `api-sheriff/src/main` for the four names at `128fd07e`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: under api-sheriff/src/main the four names occur only in UpstreamConfig.java:40-70; nothing reads them
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: the four names occur under api-sheriff/src/main only in UpstreamConfig.java:52-53 and :70 plus the schema; no upstream timeout is set anywhere in main (EgressClients, EdgeHardeningOptions:228 is the inbound listener); #506/#515/#487/#476 wired none
 - OBSERVED: the dispatch guard applies `withTimeout().duration(30, SECONDS)` and, for a route with retry enabled, `withRetry().maxRetries(2).delay(100, MILLIS).whenException(DispatchStage::allowsRetryAfter)` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § the guard builder (lines 2568 to 2571), at `128fd07e`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: GatewayEdgeRoute.guardFor :2657 withTimeout 30 s; :2659-2660 maxRetries(2).delay(100 ms).whenException(DispatchStage::allowsRetryAfter) (moved by #431/#448)
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: code moved by #487: edge/upstream/UpstreamGuards.java guardFor :88-116, withTimeout 30 s :110, maxRetries(2).delay(100 ms).whenException(DispatchStage::allowsRetryAfter) :111-114; allowsRetryAfter DispatchStage.java:413; idempotent set hard-coded in StreamAwareRetryGate:45
 - OBSERVED: only `retry.enabled` acts, through `RouteTableBuilder.resolveRetryEnabled` — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java` § `resolveRetryEnabled`, at `128fd07e`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: RouteTableBuilder:239 calls resolveRetryEnabled, declared :371
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: behaviour holds, symbol gone: RouteTableBuilder.resolveRoute :239 reads route.upstream().retry() :252 and calls routeToggle :254 (declared :381); max_attempts and idempotent_only never read; resolveRetryEnabled no longer exists
 - OBSERVED: the schema declares all four keys — read at `api-sheriff/src/main/resources/schema/endpoint.schema.json` § `upstream` (lines 211 to 219), at `128fd07e`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: endpoint.schema.json:211-219 declares connect_timeout_ms, read_timeout_ms, retry.max_attempts, retry.idempotent_only
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: endpoint.schema.json:259-260 connect_timeout_ms, read_timeout_ms (bare integer), :265-267 retry keys; no minimum; no rule under config/validation reads them, so doc/configuration.adoc:5003 'must be positive integers' overstates
 - OBSERVED: `doc/architecture.adoc` names `connect_timeout_ms` / `read_timeout_ms` as the cause of `504` in two rows; `doc/user/endpoint-routes.adoc` marks the keys inert in its example; `doc/variants/01-base-gateway.adoc` carries `read_timeout_ms: 5000` unmarked — read at those files at `128fd07e`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: architecture.adoc:1318 (504) and :1420 (DEADLINE_EXCEEDED) name the timeout keys; endpoint-routes.adoc:136-137 INERT; variants/01-base-gateway.adoc:115 read_timeout_ms 5000 with no note
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: architecture.adoc:1675 (504) and :1777 (DEADLINE_EXCEEDED) name the keys; endpoint-routes.adoc:149-155 INERT block; variants/01-base-gateway.adoc:133 read_timeout_ms 5000 unmarked; only the lines moved
 - HYPOTHESIS: the upstream client is built from a bare `HttpClientOptions` with no connect and no idle timeout, only the egress-TLS settings — the sender's statement; the orchestrator saw the bare options object and did not read the whole method. Confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` § `clientFor` (verify-at-outline)
-  - verdict: contradicted | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: no connect or idle timeout still holds, but since #448 the default client also sets SO_LINGER 0 (GatewayEdgeRoute.clientFor:2378-2382), not only egress-TLS settings; spec D4 rewritten
+  - verdict: contradicted | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: no connect or idle timeout still holds, but EgressClients.clientFor :167-181 sets SO_LINGER 0 on the HTTP/1.1 branch (:171, #448) then egress TLS :190-197; moved from GatewayEdgeRoute by #487; spec re-scoped
 - HYPOTHESIS: the 30 s guard timeout strands a pooled upstream connection when it fires (DP-6) — taken from the quality report, not re-read. Confirm/refute at `doc/quality-report/code-correctness.adoc` § DP-6 and the dispatch path it cites (verify-at-outline)
-  - verdict: contradicted | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: DP-6 fixed by #386 (84afdba0): DispatchStage.awaitDispatch:379-386 calls attempt.abandon() on any non-handed-back exit incl. the guard timeout; #448 closes abortively; D4 re-scoped to correcting the stale record
+  - verdict: contradicted | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: yes | evidence: DP-6 fixed: DispatchStage.awaitDispatch edge/upstream :467-493 abandons the attempt in finally for any non-handed-back exit (:489-491) and dispatch() calls abandonCurrentAttempt at :364-366; default client closes abortively; D4 stays a record correction (code-correctness.adoc:725-739 still the old text)
 - HYPOTHESIS: no descriptor in the repository's own stacks relies on any of the four keys, so removal breaks no suite — not checked. Confirm/refute by searching `integration-tests/src/main/docker/`, `benchmarks/` and `deployment/` for the four keys (verify-at-outline)
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: none of the four keys in integration-tests, benchmarks, deployment or demo-client descriptors; only ConfigLoaderTest:341 and ConfigValidatorTest:1030 (surface entry added)
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: key names appear in no descriptor under integration-tests, benchmarks, deployment, demo-client, build-parent or main resources; test hits only ConfigLoaderTest:501, ConfigModelContractTest:300-302 and :591-592, ConfigValidatorTest:119-137
 - Verify-first clause: settle deliverable 1 before writing code. The two decisions determine which of deliverables 2 to 5 exist in which form, and the surface below is declared for both outcomes.
-  - verdict: unverifiable | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: process rule; the operator decision is still to be taken
+  - verdict: unverifiable | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: process rule; the operator decision is still outstanding: ADR-0064:99-111 and doc/configuration.adoc:4001-4005 still say undecided
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/UpstreamConfig.java`
 - OBSERVED: `api-sheriff/src/main/resources/schema/endpoint.schema.json`
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` — if a key is wired
-- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java` — if a key is wired
+- OBSERVED (re-grounded 2026-10-26: the guard and client code left `GatewayEdgeRoute`, now a thin wiring root, in #487): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamGuards.java` (guard timeout and attempt count) and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/EgressClients.java` (the client; a connect timeout at client level) — if a key is wired
+- OBSERVED (added 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/assembly/ResilienceShape.java` and `RouteAssembler` (the guard cache key is `(UpstreamTarget, retryEnabled)`: a per-route value must enter the key or bypass the shared guard), `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/routing/Route.java` (carries `retryEnabled`, would carry any resolved value) — if a key is wired
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRoute.java` — only to remove stale wiring references; it no longer holds the guard or client code
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/RouteTableBuilder.java` — if a key is wired (`resolveRoute` :239, `routeToggle` :381); `retry.maxAttempts` and `idempotentOnly` are read nowhere
 - OBSERVED: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/load/ConfigLoaderTest.java`, `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/model/ConfigModelContractTest.java` — PLAN-27 touched both for the one key it removed
 - OBSERVED: `doc/architecture.adoc`, `doc/configuration.adoc`, `doc/user/endpoint-routes.adoc`, `doc/variants/01-base-gateway.adoc`
 - OBSERVED: `doc/adr/` — one new record or an amendment to ADR-0064, and `doc/adr/0008-data-plane-transport.adoc`
 - OBSERVED: `doc/quality-report/code-correctness.adoc`, `doc/quality-report/README.adoc`, `doc/development/declared-limit-assertion-coverage.adoc`
-- OBSERVED (added 2026-10-14, cleanup at `5490144f`): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidatorTest.java` — line 1030 builds `UpstreamConfig` with `readTimeoutMs(2500)`, so removing that key breaks its compilation
+- OBSERVED (added 2026-10-14, cleanup at `5490144f`; line moved 2026-10-26): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidatorTest.java` — :119–137 (`shouldAcceptMillisecondPrecisionTimeout`) builds `UpstreamConfig` with `readTimeoutMs(2500)`, so removing that key breaks its compilation; `ConfigLoaderTest` :501 and `ConfigModelContractTest` :300–302, :591–592 also use the keys
 - OBSERVED (added 2026-10-14): `doc/adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc` — names the four keys (lines 9, 103 to 106)
 - OBSERVED (added 2026-10-14): `doc/adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc` — Amendment A1 is the connection lifecycle deliverable 4 reads against
 - HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigModelReflection.java` — if a nested record goes away with a removed key (verify-at-outline)
-- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/ConfigValidator.java` — bounds for a wired key; the path is the orchestrator's guess (verify-at-outline)
-- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/DispatchStage.java` — if `idempotent_only` is wired (verify-at-outline)
-- HYPOTHESIS: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/` — unit tests for a wired timeout or attempt count (verify-at-outline)
+- HYPOTHESIS (re-grounded 2026-10-26: the rules left `ConfigValidator` under ADR-0071): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ProtocolRules.java` or a new class in that package registered on the `ConfigValidator` rule list, plus `doc/development/boot-validation-rules.adoc` — bounds for a wired key (verify-at-outline)
+- HYPOTHESIS (re-grounded 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStage.java` — `awaitDispatch`, `allowsRetryAfter` :413 — if a key is wired (verify-at-outline)
+- HYPOTHESIS (re-grounded 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/StreamAwareRetryGate.java` — the idempotent method set is hard-coded at :45 — if `idempotent_only` is wired (verify-at-outline)
+- HYPOTHESIS (re-grounded 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/upstream/UpstreamFailureMapper.java` (guard failure to 504) and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/EdgeHardeningOptions.java` (:71–76, the ordering constants) — if a timeout key is wired (verify-at-outline)
+- HYPOTHESIS (re-grounded 2026-10-26): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/upstream/DispatchStageTest.java`, `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/upstream/GrpcDispatchStageTest.java` and `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/edge/GatewayEdgeRequestBodyIdleTimeoutTest.java` — the existing homes for stalled-upstream and retry-count tests; no UpstreamGuards or EgressClients test class exists, so a new one is needed for a wired timeout or attempt count (verify-at-outline)
+- HYPOTHESIS (added 2026-10-26): `doc/security-threat-model.adoc` (matches the guard/timeout pattern once: check the mention) and `README.adoc` :105–110 (lists the four keys as inert)
 - HYPOTHESIS: `integration-tests/src/main/docker/sheriff-config/endpoints/` and `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/` — only if a wired key is also proven at integration level, or a descriptor there declares a removed key (verify-at-outline)
 
 ## Dependencies and Sequencing
@@ -118,6 +164,11 @@ Split guard: 6 deliverables — within the operator-authorized 12.
   or 8 find their cause in the gateway's edge; with PLAN-20, PLAN-21, PLAN-26 and PLAN-28 on
   `doc/configuration.adoc`, `doc/architecture.adoc` and `doc/adr/`. `GatewayEdgeRoute` and
   `UpstreamConfig` are touched by no other staged spec.
+- Re-grounded 2026-10-26: the cross-epic hold is lifted (the sibling refactor chain, including V02-25's edge
+  decomposition #487, has shipped) and PLAN-28 (#437), PLAN-30 (#448) and PLAN-32 (#466) are landed, so the
+  sequencing gate below is met. No live PR matched the duplicate-run guard. The running siblings V02-05,
+  V02-06 and V02-20 share `doc/configuration.adoc`, `doc/architecture.adoc` and `LogMessages.adoc` with D6;
+  staged `V02-49` (test simplification part 2) collides on `config/` and `edge/` tests.
 - ⚠ **Sequence it after PLAN-28.** PLAN-28 diagnoses two intermittent failures on the dispatch path (an
   edge framing test and the `upload_small` benchmark). Changing the dispatch timeout and retry behaviour
   before those are understood would move the ground under the diagnosis.
@@ -125,7 +176,8 @@ Split guard: 6 deliverables — within the operator-authorized 12.
   adds a total request-body bound (deadline or minimum rate) beside #466's 10 s request-body idle bound.
   This plan decides whether the per-route `read_timeout_ms` is wired. The two must not overlap: whichever
   plan runs second reads the other's result and states how its bound relates to the other's (and to the
-  guard's 30 s timeout) in the ADR and `doc/architecture.adoc`.
+  guard's 30 s timeout) in the ADR and `doc/architecture.adoc`. (Resolved 2026-10-26: V02-45 shipped as #506;
+  its D3 is the fixed 25 s request-body deadline, so this plan runs second and owns the statement.)
 - **If a test fails against shipped behaviour this plan did not intend to change, STOP and file a
   finding** to the epic inbox.
 

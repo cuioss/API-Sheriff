@@ -77,40 +77,93 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 > request host equals the host of `oidc.redirect_uri`, which is what broke the k6 version. No new file
 > surface — the IT directory is already declared.
 
+> ⚠ **Re-grounded 2026-10-26 (cleanup at `54f82f03`).** The premise is intact: the store, `LoginFlow`,
+> `LoginInitiationEndpoint` and `BindingCookieCodec` are untouched since #377, eviction is still global and
+> oldest-first, and no per-source limiter exists in `api-sheriff/src/main`. What changed is the framing.
+> - **A second creation surface.** Any unauthenticated HTML navigation to a `require: session` route also calls
+>   `loginFlow.initiate` (`SessionAuthenticationStage` :429 → `LoginInitiation`), beside `oidc.login.path`
+>   (`LoginInitiationEndpoint` :130). A cap placed only in the endpoint leaves that path open: put it in or
+>   before `LoginFlow.initiate`, or at both entry points. Neither login seam carries a source argument today
+>   (`LoginFlow.initiate(requestedReturnUrl, scopes, now)`), so the signature changes.
+> - **Source address.** Only the raw TCP peer (`PipelineRequest.peerAddress()`) is plumbed. Behind a load
+>   balancer it keys every user to the proxy; a per-source limit needs the trusted-proxy-resolved client
+>   address (ADR-0003 / ADR-0044, `forward/TcpPeerGate`). V02-06's keying decides this.
+> - **IT constraint.** `BffPendingLoginBoundIT` floods and completes the other login from one host, so the
+>   flooder and the "other browser" share a source address; under an address-keyed limit (b/c) the existing
+>   flood would itself be throttled. The outline must settle how the victim login gets a distinct source
+>   (trusted-proxy forwarded headers) or exercise option (a) with separate cookie jars. The IT runs
+>   sequentially, never in the concurrent failsafe execution.
+> - **Log amplification.** Deliverable 3's WARN must not become one line per eviction on an unauthenticated
+>   path: latch it, one WARN per reason per runtime and repeats at DEBUG, as ApiSheriff-132 does (ADR-0051,
+>   threat model :3360). The metric carries the count. The store has no clock, logger or metric dependency
+>   today and eviction ignores expiry (an expired record frees its slot only on `consume`), so "live record
+>   evicted" needs a reference instant (`createdAt()` + TTL) and a log/metric seam injected from
+>   `BffRuntimeProducer`.
+> - **Widenings share the bound.** `SessionWidening` creates the other live pending records (via
+>   `StepUpEndpoint`, the session stage and callback re-drive); `StepUpCoordinator` also calls `create`/`store`
+>   but nothing at the edge drives it. A flood can evict an authenticated user's widening record, and a
+>   per-source cap must not throttle widenings.
+> - **Existing residual.** `doc/security-threat-model.adoc` :3368–3374 already records an accepted residual
+>   for this path ("no dedicated bound on login initiation …", row `bff-02` ~:3846). Deliverable 5 updates or
+>   retires that residual instead of adding a row. `doc/user/bff-session.adoc` does not state the 10 000
+>   pending bound.
+> - **Log catalogue.** BFF records live in `bff/BffLogMessages.java`, not `ApiSheriffLogMessages.java`; the next
+>   free WARN id looked like 140 at this HEAD and V02-06 D9 and V02-20 will claim ids concurrently: derive at
+>   write time. `SheriffMetrics` has no pending-store meter (the nearest hook is `recordSessionEvent`,
+>   `sheriff_session_events_total`): the eviction metric needs a new meter and a seam into the store.
+> - **Sequencing.** `PLAN-V02-06` is running (no PR, no landing): options (b)/(c), and option (a)'s required
+>   degrade-to-(b), need its D3/D7 substrate. Only an observability-only subset (the live-eviction WARN and
+>   metric, no admission cap) is buildable now. Line references: `rate_limit` is `endpoint.schema.json:335`;
+>   `LoginFlow`: authorize :131, same-origin :132–134, create :137, store :139, binding cookie :141;
+>   `BffRuntimeProducer`: `DEFAULT_MAX_PENDING` :280, store :527. ADR ordinal: 0072 is free (0071 is the
+>   highest; gaps are retired). New ADRs follow `doc/development/adr-writing.adoc` (500-line ceiling).
+
 ## Claim Labels
 
 - HYPOTHESIS: `PendingAuthorizationStore.InMemory` bounds at `DEFAULT_MAX_PENDING = 10_000` and evicts the oldest beyond capacity — confirm/refute at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/` § pending-authorization store and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducer.java` § store construction (verify-at-outline)
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.java:281 DEFAULT_MAX_PENDING = 10_000; :528 new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING)
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: BffRuntimeProducer.java:280 DEFAULT_MAX_PENDING = 10_000; :527 new PendingAuthorizationStore.InMemory(DEFAULT_MAX_PENDING); eviction PendingAuthorizationStore.java:115-121; store untouched since #377
 - HYPOTHESIS: eviction is global rather than per-client, so a flood from one client evicts another client's live record — confirm/refute at the same store's eviction method (verify-at-outline)
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java:93-94 put then evictOldestBeyondCapacity (:115) on one global LinkedHashMap (:75); no per-client partition
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java:75 one LinkedHashMap, :91-95 store puts then evictOldestBeyondCapacity; no client partition; eviction ignores expiry and the store has no clock, logger or metric dependency
 - HYPOTHESIS: `rate_limit` is reserved in the schema with no reader — confirm/refute at `api-sheriff/src/main/resources/schema/gateway.schema.json` § `rate_limit` and a grep for its config accessor (verify-at-outline)
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: rate_limit reserved and unread: RateLimitConfig referenced only by RouteConfig:69 and ConfigModelReflection:112; key is in endpoint.schema.json:287, not gateway.schema.json (spec note added)
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: rate_limit is in endpoint.schema.json:335, read by no validation rule, stage or limiter (only RateLimitConfig, RouteConfig, ConfigModelReflection, tests and docs); doc/configuration.adoc:4249 says not implemented; V02-06 D9 (running) will add a boot WARN
 - OBSERVED: `LoginFlow.initiate` creates the pending record and validates the return URL's origin — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.initiate :128; PAR authorize :131, same-origin check :133, create :137, store :139
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.java:128 initiate; :131 authorize (PAR push before the store); :132-134 sameOrigin else defaultReturnUrl; :137 create; :139 pendingStore.store; unchanged since #377
 - OBSERVED (cleanup re-grounding, 3abc370): the binding cookie is minted from the newly created record's own id — `PendingAuthorizationRecord.create(...)` → `pendingStore.store(pending)` → `bindingCookieCodec.toSetCookieHeader(pending.id())` — so no inbound binding identity exists at record-creation time — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/LoginFlow.java` § `initiate`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow:137 create, :139 pendingStore.store, :141 toSetCookieHeader(pending.id()); cookie minted from the new record
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: LoginFlow.java:141 toSetCookieHeader(pending.id()); cookie __Host-sheriff-binding=<recordId> (BindingCookieCodec:55,:75-79); the login seams take no source or client identity; only PipelineRequest.peerAddress() exists and is not passed to them
 - OBSERVED: `PendingAuthorizationStore.InMemory` keys one shared insertion-ordered map on `pending.id()` with no per-client partition, and `evictOldestBeyondCapacity` walks that single map — read at `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` § `InMemory`, `evictOldestBeyondCapacity`
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore:72-121 one insertion-ordered map keyed on pending.id(); eviction walks that map
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: PendingAuthorizationStore.java:72-121 one insertion-ordered map keyed on pending.id(); eviction walks that map
 - Verify-first clause (SETTLED and absorbed 2026-09-21): the clause's own "if not" branch fired — a per-binding cap keyed on an existing cookie is not viable, and deliverable 1 now carries the three re-scoped options. What remains open for outline is only WHICH option, and the cost of option (a)'s pre-login cookie on the unauthenticated path.
-  - verdict: corroborated | checked_at: 5490144f | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: no inbound binding identity at creation (LoginFlow:141); no V02-06 per-source substrate in api-sheriff/src/main
+  - verdict: corroborated | checked_at: 54f82f03 | by: kidicap-gateway-requirements/cleanup | rescoped: n/a | evidence: per-binding cap keyed on an existing cookie stays non-viable (claim 4); no per-source limiter in api-sheriff/src/main; PLAN-V02-06 is running with no PR or landing, so options b/c are unbuilt
 
 ## Expected Surface
 
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/pending/PendingAuthorizationStore.java` — the store and its eviction (corrected 2026-09-21: it lives in `bff/pending/`, not `bff/login/`)
 - OBSERVED (added 2026-10-05, re-grounding at `35f2bb37`): ⛔ **`rate_limit` is declared in the WRONG
   schema by this spec.** It is a PER-ROUTE key in
-  `api-sheriff/src/main/resources/schema/endpoint.schema.json:295`; `gateway.schema.json` carries no
-  `rate_limit` at all. Any work on the reserved key edits the endpoint schema
+  `api-sheriff/src/main/resources/schema/endpoint.schema.json` (`:335` at `54f82f03`); `gateway.schema.json`
+  carries no `rate_limit` at all. Any work on the reserved key edits the endpoint schema
 - OBSERVED (added 2026-10-05): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/SessionWidening.java`
   and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/refresh/StepUpCoordinator.java` — PLAN-23's
   OTHER creators of pending records, sharing the one store. ⛔ An admission cap must not throttle a widening
   or a step-up while bounding logins
-- OBSERVED (added 2026-10-05): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java`
+- OBSERVED (corrected 2026-10-26: BFF records live in `BffLogMessages`):
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/BffLogMessages.java`
   (the WARN record for evicting a live record) and
-  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java` (the eviction metric,
-  moved ~66 lines by `5ddf8081`)
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/SheriffMetrics.java` (the eviction metric; a
+  new meter, none exists for the pending store)
+- OBSERVED (added 2026-10-26, re-grounding at `54f82f03`): the second creation surface —
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`
+  (`LoginInitiation`, :429) and
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LoginInitiationEndpoint.java` (:130)
+- HYPOTHESIS (added 2026-10-26): option (a) adds a pre-login gateway-own cookie, which
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/http/GatewayCookies.java` already covers by
+  construction (its reserved prefix) (verify-at-outline)
+- HYPOTHESIS (added 2026-10-26): a new cookie or key would touch
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/CookieRules.java`,
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/OidcSessionRules.java` and
+  `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java` (the model and schema are shared with running V02-06 and V02-20) (verify-at-outline)
 - ⚠ OBSERVED (added 2026-10-05): since PAR (`e8db85bf`), `LoginFlow.initiate` pushes the authorization
-  request to the IdP **before** storing the pending record (`LoginFlow:132` ahead of `:138`), so a login
+  request to the IdP **before** storing the pending record (`LoginFlow:131` ahead of `:139` at `54f82f03`), so a login
   flood now also hits the IdP's PAR endpoint. **Any admission cap must sit before `authorize`**, not merely
   before the store — see `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/login/PushedAuthorizationRequests.java`
 - OBSERVED (added 2026-10-02, re-grounding at `e8db85bf`):
@@ -131,7 +184,8 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 
 - Depends on: none functionally; shares the BFF login surface with PLAN-14 and PLAN-20, so it is sequenced against whichever is in flight
 - Overlaps with: PLAN-14 (`LoginFlow`, `BffRuntimeProducer`), PLAN-20 (`BffRuntimeProducer`, reserved endpoints), PLAN-19 (session branch)
-- Consumes (options b/c): `api-sheriff-0-2-0` `PLAN-V02-06`'s per-source substrate — sequence after it when either option is chosen
+- Consumes (options b/c): `api-sheriff-0-2-0` `PLAN-V02-06`'s per-source substrate — sequence after it when either option is chosen. Re-grounded 2026-10-26: V02-06 is still running, so options (b)/(c) are not buildable yet
+- Re-grounded 2026-10-26: the cross-epic hold on the refactor chain is lifted (that chain has shipped). The running siblings V02-05, V02-06 and V02-20 fill all three slots and share `doc/configuration.adoc`, `doc/LogMessages.adoc`, `doc/security-threat-model.adoc`, `OidcConfig.java`, the BFF WARN ids and the next ADR ordinal with this plan. Never two WS-04 plans at once: PLAN-20 and PLAN-21 exclude each other
 - Adjacent to: PLAN-20's browser step-up also creates authorization requests — the chosen cap must not throttle a legitimate step-up
 
 ## Hand-Off Command
