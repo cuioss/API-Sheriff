@@ -37,9 +37,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Acceptance of the route-table and response-path behaviour against the native image over the public
  * HTTPS edge: exact routes and the redirect terminal action (AS-3), anchor-scoped security headers with
  * their per-header precedence (AS-8), the appended {@code upstream.path} (AS-9), the opt-in
- * {@code Location} rewrite (AS-11), and header-matcher route selection: a {@code present: true} /
+ * {@code Location} rewrite (AS-11), header-matcher route selection: a {@code present: true} /
  * {@code present: false} route pair on one prefix selects the same route whichever order it is declared
- * in, with the matcher name compared case-insensitively.
+ * in, with the matcher name compared case-insensitively, and the upstream identity-header strip: the
+ * {@code Server} and {@code X-Powered-By} an origin sends are removed on the relay by default and kept
+ * on a route that declares {@code keep_identity_headers: true}.
  * <p>
  * Asset-only endpoints without a {@code base_url} (AS-4) carry no row of their own here.
  * {@code endpoints/assets.yaml} and {@code endpoints/assets-secure.yaml} declare none, and had either
@@ -53,9 +55,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>
  * Every assertion is driven by the mounted descriptors: {@code sheriff-config/gateway.yaml} (the global
  * {@code security_headers} block and the {@code api} anchor block), {@code endpoints/httpbin.yaml} (the
- * exact redirect route), {@code endpoints/origin-headers.yaml} (the precedence and rewrite routes, and
- * the two header-discriminated route pairs under {@code /proxy/header-order/present-first} and
- * {@code /proxy/header-order/absent-first}) and
+ * exact redirect route), {@code endpoints/origin-headers.yaml} (the precedence and rewrite routes, the
+ * two header-discriminated route pairs under {@code /proxy/header-order/present-first} and
+ * {@code /proxy/header-order/absent-first}, and the identity-header pair: the default-strip
+ * {@code origin-headers} route and its {@code origin-headers-keep-identity} opt-out twin) and
  * {@code endpoints/assets.yaml}. Redirects are never followed, so the gateway's own answer is observed.
  */
 class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
@@ -354,6 +357,63 @@ class RoutingAndResponseHeadersIT extends BaseIntegrationTest {
             String vary = String.join(", ", varyValues);
             assertTrue(varyNamesMatcherHeader,
                     "route selection depends on the matcher header, so a Vary field name must equal it: " + vary);
+        }
+    }
+
+    @Nested
+    @DisplayName("identity headers are stripped by default and kept on opt-out")
+    class IdentityHeaders {
+
+        private static final String SERVER = "Server";
+        private static final String POWERED_BY = "X-Powered-By";
+        /** A non-identity header the origin echoes alongside, proving the relay passed its headers at all. */
+        private static final String CONTROL = "X-Probe";
+
+        private static final String SERVER_VALUE = "probe-server";
+        private static final String POWERED_BY_VALUE = "probe-framework";
+        private static final String CONTROL_VALUE = "probe-control";
+
+        /**
+         * Asks go-httpbin's {@code /response-headers} echo behind {@code prefix} to send both identity
+         * headers and the non-identity control header, so the origin itself proposes all three.
+         */
+        private ExtractableResponse<Response> requestOriginBanners(String prefix) {
+            return given()
+                    .queryParam(SERVER, SERVER_VALUE)
+                    .queryParam(POWERED_BY, POWERED_BY_VALUE)
+                    .queryParam(CONTROL, CONTROL_VALUE)
+                    .when()
+                    .get(prefix)
+                    .then()
+                    .statusCode(200)
+                    .extract();
+        }
+
+        @Test
+        @DisplayName("a route without keep_identity_headers removes Server and X-Powered-By and relays the rest")
+        void defaultRouteStripsIdentityHeaders() {
+            ExtractableResponse<Response> response = requestOriginBanners("/proxy/origin-headers");
+
+            assertAll("the identity set is removed on the relay, every other origin header crosses",
+                    () -> assertNull(response.header(SERVER),
+                            "the origin's Server banner must not reach the client"),
+                    () -> assertNull(response.header(POWERED_BY),
+                            "the origin's X-Powered-By banner must not reach the client"),
+                    () -> assertEquals(CONTROL_VALUE, response.header(CONTROL),
+                            "a non-identity header the same origin sent is relayed, so the strip is selective"));
+        }
+
+        @Test
+        @DisplayName("a route declaring keep_identity_headers: true relays the origin's Server and X-Powered-By")
+        void optOutRouteKeepsIdentityHeaders() {
+            ExtractableResponse<Response> response = requestOriginBanners("/proxy/origin-headers-keep-identity");
+
+            assertAll("THE CONTROL: the same origin, asked the same way, really sends both banners",
+                    () -> assertEquals(SERVER_VALUE, response.header(SERVER),
+                            "the opt-out keeps the origin's Server header unchanged"),
+                    () -> assertEquals(POWERED_BY_VALUE, response.header(POWERED_BY),
+                            "the opt-out keeps the origin's X-Powered-By header unchanged"),
+                    () -> assertEquals(CONTROL_VALUE, response.header(CONTROL)));
         }
     }
 }
