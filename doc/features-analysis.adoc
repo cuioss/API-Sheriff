@@ -158,8 +158,7 @@ set of things well, with zero mandatory external dependencies.
   produced today*: the per-route `rate_limit` field in the
   link:configuration.adoc#_rate_limit[configuration schema] is parsed and enforced by nothing,
   and every route that declares it is named at boot by the WARN `ApiSheriff-140`. A future
-  implementation builds on the per-source mechanism of the follow-up enumeration-hardening plan,
-  which stays per-node and in memory, so it needs no shared store.
+  implementation builds on the per-source mechanism of the follow-up enumeration-hardening plan.
 |===
 
 == Features to Avoid

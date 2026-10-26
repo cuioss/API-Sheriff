@@ -88,11 +88,13 @@ what makes the whole contract reachable with a plain same-origin `fetch`.
 | `application/problem+json` of type `urn:api-sheriff:problem:routing`, title `Routing`. Not a
   redirect.
 
-| a method outside the route's allowlist -- e.g. `DELETE /assets/demo/index.html` -- no session
+| a method outside the route's allowlist -- e.g. `DELETE /assets/demo/index.html` -- with or without
+  a session
 | `404`
 | Exactly the unrouted answer above: the negotiated HTML error page for an explicit `text/html`
   request, the same `Routing` problem document otherwise. The verb gate refuses the method before
-  the trust boundary, so an anonymous caller cannot tell the route exists. Not a redirect either way.
+  any credential is looked at, so every caller gets this answer, a signed-in one included, and no
+  caller can tell from it that the route exists. Not a redirect either way.
 
 | a `text/html` request (a navigation) to a `require: session` route -- no session
 | `302`
@@ -107,8 +109,8 @@ The gateway's own rejections -- the three `404` rows -- keep their status whiche
 request gets. The wrong-method row answers `404` rather than `405` because the verb gate runs before
 authentication, and every rejection raised there is rendered as the unrouted answer, while the true
 event (`METHOD_NOT_ALLOWED`) is still counted in `sheriff_errors_total{event}`. Only a gateway that
-sets `security_defaults.uniform_not_found: false` answers the honest `405`. The HTML error page is offered only to a request whose `Accept` lists `text/html`
-explicitly, and only when the operator enables it with `portal.error_pages: true`; without it, every
+sets `security_defaults.uniform_not_found: false` answers the honest `405`. The HTML error page is
+offered only to a request whose `Accept` lists `text/html` explicitly, and only when the operator enables it with `portal.error_pages: true`; without it, every
 request gets `application/problem+json`. A response relayed from an upstream is never replaced. See
 link:../../doc/user/portal.adoc#_error_pages[Application Portal -- Error pages],
 link:../../doc/adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]

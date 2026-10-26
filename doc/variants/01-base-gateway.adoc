@@ -74,8 +74,9 @@ link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML erro
 
 | Path whitelisting
 | The route's `allowed_paths` list -- the manifest's "WAF via path white-listing". A validated,
-  normalized path that matches no entry is rejected -- with the unrouted `404` to an
-  unauthenticated caller while `security_defaults.uniform_not_found` is on.
+  normalized path that matches no entry is rejected. While `security_defaults.uniform_not_found` is
+  on, the rejection is the unrouted `404` to every caller, an authenticated one included: the
+  allowlist runs before the gateway looks at any credential.
 
 | Token validation
 | `token-sheriff-validation` `TokenValidator.createAccessToken(...)`, offline, cache-backed,

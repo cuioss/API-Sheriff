@@ -2306,9 +2306,10 @@ caller as the unrouted `404` on the shipped default
 (link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
 The tests below are named in a verdict or a per-file note above, which was written against the honest
 status they then asserted. Each was migrated to
-assert the `404` plus the true event, and where the stage's own status is the claim it is read on an
-edge built with `security_defaults.uniform_not_found: false` -- a switch-off control. No verdict above
-is rewritten; the bodies changed.
+assert the `404` plus the true event, except `GrpcProxyIT`, whose row states the gRPC status it asserts
+in place of an event. Where the stage's own status is the claim, it is read on an edge built with
+`security_defaults.uniform_not_found: false` -- a switch-off control. No verdict above is rewritten;
+the bodies changed.
 
 [cols="3,4",options="header"]
 |===
@@ -2338,13 +2339,48 @@ is rewritten; the bodies changed.
 | The routing problem document with status `404`, metered `METHOD_NOT_ALLOWED` and `TOKEN_MISSING`.
 |===
 
-The integration lane's other migrated suites -- `BearerValidationIT`,
-`BearerSecurityFilterInteractionIT`, `PipelineVerbIT`, `HtmlErrorPageIT`, `LargeBodyIT`,
-`DeclaredLimitBoundaryIT`, `SecurityProfileModeIT`, `StrictQueryAcceptanceIT`, `MetricsIT`,
-`BffSessionFallbackIT`, `CookieForwardingPolicyIT`, the three `Jwks*IT` suites, `WebSocketProxyIT`,
-`UpstreamAssetServingIT`, and the two one-off-gateway suites `BffReservedPathPrecedenceIT` and
-`BffTlsRelaxationIT` -- carried no flagged row, so no verdict above names them. Their refusals
-assert the same pair, through `UniformNotFoundAssertions`.
+The integration lane's other migrated suites are not rows of the table above. `MetricsIT` is named
+in a verdict above, for `sheriffMetersAppearAndMoveAfterProxyTraffic`, a method the migration did
+not change; its migrated method is the sibling that verdict cites as the shape to copy. The other
+suites do not assert the same thing, and the difference is what a reader of a green run may rely
+on.
+
+*The unrouted problem document plus the true event.* These refusals assert both signals:
+`UniformNotFoundAssertions.assertUnroutedProblem` and `assertTrueEventMetered`, which also checks
+that `NO_ROUTE_MATCHED` did not move on the route. A refusal raised by a different stage, or a
+path that is genuinely unrouted, turns them red.
+
+* `BearerValidationIT`, `BearerSecurityFilterInteractionIT`, `DeclaredLimitBoundaryIT`,
+  `SecurityProfileModeIT` and `StrictQueryAcceptanceIT`, on the primary instance;
+* `BffReservedPathPrecedenceIT` and `BffTlsRelaxationIT`, through each one-off gateway's own
+  management origin;
+* `BffSessionFallbackIT.unsafeMethodWithoutAuthorizationForeignOriginCsrfRejected`, the CSRF
+  refusal, and only that method of the suite.
+
+`LargeBodyIT.bodyOverTheRouteCapIsRejectedByTheGateway` asserts the same two signals without the
+helper. It checks the `404`, the routing problem type and title, and no upstream echo, and it reads
+the `CONTENT_TOO_LARGE` delta directly through `PrometheusScrape`. It does not check
+`NO_ROUTE_MATCHED`.
+
+*The `404` without the true event.* These refusals stay green if the refusal is raised by another
+stage that also answers the unrouted `404`, a route-table regression included:
+
+* `UpstreamAssetServingIT.postRejected` -- the unrouted problem document, no event;
+* `CookieForwardingPolicyIT` (`assertRefused`) -- the `404`, the routing problem type and no
+  upstream echo; `CSRF_REJECTED` is not read;
+* `BffSessionFallbackIT.rejectedAuthorizationAnswers404WithoutSessionFallback` -- the `404`, the
+  HTML error page, no challenge and no `Location`; no event;
+* `HtmlErrorPageIT.bodyOverRouteCap` -- the `404` on both negotiated legs; it defers the
+  `CONTENT_TOO_LARGE` event to `SecurityProfileModeIT`, on the same route;
+* `MetricsIT.securityEventsMeterAppearsAndMovesAfterRejection` -- the `404`, beside the
+  `sheriff_security_events_total` delta that is its own subject; `sheriff_errors_total` is not
+  read;
+* `WebSocketProxyIT.unauthenticatedBearerHandshakeRejected` and the three `Jwks*IT` suites -- the
+  bare status, compared against `UniformNotFoundAssertions.UNROUTED_STATUS`.
+
+`PipelineVerbIT` has no refusal test. Only its class Javadoc changed: it now names
+`ErrorContractIT.disallowedMethodProblemJson` (table above) as the test that asserts the verb
+gate's refusal.
 
 [[backlog]]
 == The Countable Backlog

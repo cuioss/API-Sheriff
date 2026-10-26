@@ -32,8 +32,13 @@ import io.restassured.RestAssured;
  * <p>
  * Micrometer exposes a meter only once it has been recorded, so a series that was never recorded sums
  * to {@code 0.0}; a delta is therefore always measured as "after strictly greater than before".
- * Concurrent suites can only add to a series, never subtract from it, which keeps that comparison
- * sound while other classes run.
+ * <p>
+ * That delta attributes the movement to the request under test only while nothing else sends traffic
+ * that records the same series in between. A suite running concurrently against the same gateway
+ * cannot lower a series, but it can raise it, and a raise is exactly what the comparison accepts: the
+ * assertion then passes vacuously even when the request under test recorded nothing. A suite that
+ * asserts a delta through this class therefore belongs in the sequential default execution, not in a
+ * group whose classes share the gateway concurrently.
  *
  * @author API Sheriff Team
  * @since 1.0

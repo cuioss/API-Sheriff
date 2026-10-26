@@ -71,11 +71,17 @@ import org.junit.jupiter.params.provider.MethodSource;
  * must agree on the status, the body, the {@code Content-Type} and the set of response-header names —
  * names, not values, because {@code Date} differs between any two answers. The comparison is made
  * twice: as a JSON client, and as a browser navigation ({@code Accept: text/html}), which the portal's
- * {@code error_pages: true} answers with the HTML error page. The cases are the pre-trust rejections
- * a bearer route can raise: no token, a garbage token, a method outside {@code allowed_methods}, a path
- * outside {@code allowed_paths}, a declared body over the route's inherited strict cap, and a
- * {@code protocol: grpc} route, which is answered with the HTTP {@code 404} and never the trailers-only
- * status a gRPC rejection otherwise carries.
+ * {@code error_pages: true} answers with the HTML error page. The cases are a selection of the pre-trust
+ * rejections a bearer route can raise: no token, a garbage token, a method outside
+ * {@code allowed_methods}, a path outside {@code allowed_paths}, a declared body over the route's
+ * inherited strict cap, and a {@code protocol: grpc} route, which is answered with the HTTP {@code 404}
+ * and never the trailers-only status a gRPC rejection otherwise carries. The list is not exhaustive:
+ * the route-scoped security-filter refusal ({@code SECURITY_FILTER_VIOLATION}) and the CSRF and cookie
+ * same-origin refusals ({@code CSRF_REJECTED}) are not compared here. The byte comparison of the filter
+ * refusal and of the session CSRF refusal against the unrouted address is made in-process by
+ * {@code GatewayEdgeUniformNotFoundTest}; on the IT stack the filter refusal is held to the unrouted
+ * problem document and its true event by {@code StrictQueryAcceptanceIT} and
+ * {@code SecurityProfileModeIT}.
  * <p>
  * <strong>What is still reported.</strong> The cause is withheld from the caller only: every case moves
  * {@code sheriff_errors_total} under its TRUE event on the route it selected, and never under

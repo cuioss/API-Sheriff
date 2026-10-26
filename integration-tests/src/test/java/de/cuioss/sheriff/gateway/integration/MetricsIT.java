@@ -78,7 +78,7 @@ class MetricsIT extends BaseIntegrationTest {
                 .then()
                 .statusCode(200);
 
-        String body = scrapeMetrics();
+        String body = PrometheusScrape.scrape();
 
         assertTrue(body.contains("# TYPE") || body.contains("# HELP"),
                 "the metrics endpoint must serve the Prometheus exposition format");
@@ -91,7 +91,8 @@ class MetricsIT extends BaseIntegrationTest {
     void sheriffMetersAppearAndMoveAfterProxyTraffic() {
         // Arrange — capture the route's request count before the act. Micrometer only emits a meter
         // once it has been recorded, so on a fresh instance the series may be absent and sums to 0.0.
-        double baseline = meterSum(scrapeMetrics(), REQUESTS_TOTAL, HTTPBIN_ROUTE_LABEL);
+        double baseline = PrometheusScrape.sum(PrometheusScrape.scrape(), REQUESTS_TOTAL,
+                HTTPBIN_ROUTE_LABEL);
 
         // Act — drive a successful proxied GET so the edge records its request, duration, and
         // upstream-duration meters. A 200 means the request traversed the full pipeline and the
@@ -102,7 +103,7 @@ class MetricsIT extends BaseIntegrationTest {
                 .then()
                 .statusCode(200);
 
-        String body = scrapeMetrics();
+        String body = PrometheusScrape.scrape();
 
         // Assert — the gateway's own meters are present (Micrometer only emits recorded meters), so
         // their presence proves GatewayEdgeRoute records them end-to-end, not just that the adapter
@@ -123,7 +124,7 @@ class MetricsIT extends BaseIntegrationTest {
 
         // Assert — the counter MOVED: presence alone is satisfied by a series recorded by any earlier
         // request, so only a strictly greater route sum proves this request was counted.
-        double after = meterSum(body, REQUESTS_TOTAL, HTTPBIN_ROUTE_LABEL);
+        double after = PrometheusScrape.sum(body, REQUESTS_TOTAL, HTTPBIN_ROUTE_LABEL);
         assertTrue(after > baseline,
                 "a proxied request must move sheriff_requests_total for route httpbin-proxy: before="
                         + baseline + ", after=" + after);
@@ -134,10 +135,10 @@ class MetricsIT extends BaseIntegrationTest {
     void securityEventsMeterAppearsAndMovesAfterRejection() {
         // Arrange — the boot-shared cui-http SecurityEventCounter is bound to Micrometer, so the meter
         // is exposed from boot for the fixed UrlSecurityFailureType enum; capture its pre-rejection sum.
-        String before = scrapeMetrics();
+        String before = PrometheusScrape.scrape();
         assertTrue(before.contains("sheriff_security_events_total"),
                 "sheriff_security_events_total must be exposed once the shared counter is bound at boot");
-        double baseline = meterSum(before, SECURITY_EVENTS_TOTAL, FAILURE_TYPE_LABEL);
+        double baseline = PrometheusScrape.sum(before, SECURITY_EVENTS_TOTAL, FAILURE_TYPE_LABEL);
 
         // Act — drive a filter rejection: a query-parameter value carrying an encoded path-traversal
         // attack. urlEncodingEnabled(false) sends the pre-encoded value verbatim so cui-http decodes
@@ -156,10 +157,10 @@ class MetricsIT extends BaseIntegrationTest {
 
         // Assert — the bound function counter moved: the summed sheriff_security_events_total series is
         // strictly greater than the baseline, proving the counter → Micrometer bridge works end-to-end.
-        String after = scrapeMetrics();
+        String after = PrometheusScrape.scrape();
         assertTrue(after.contains("sheriff_security_events_total"),
                 "sheriff_security_events_total must remain exposed after the rejection");
-        assertTrue(meterSum(after, SECURITY_EVENTS_TOTAL, FAILURE_TYPE_LABEL) > baseline,
+        assertTrue(PrometheusScrape.sum(after, SECURITY_EVENTS_TOTAL, FAILURE_TYPE_LABEL) > baseline,
                 "a security-filter rejection must move sheriff_security_events_total on the metrics endpoint");
     }
 
@@ -168,9 +169,11 @@ class MetricsIT extends BaseIntegrationTest {
     void authBranchMeterCountsBothBranchesOnSessionFallbackRoutesOnly() {
         // Arrange — capture both branch series of the fallback route before the act; Micrometer emits a
         // series only once it has been recorded, so an absent series sums to 0.0.
-        String before = scrapeMetrics();
-        double bearerBaseline = meterSum(before, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, BEARER_BRANCH_LABEL);
-        double sessionBaseline = meterSum(before, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, SESSION_BRANCH_LABEL);
+        String before = PrometheusScrape.scrape();
+        double bearerBaseline = PrometheusScrape.sum(before, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL,
+                BEARER_BRANCH_LABEL);
+        double sessionBaseline = PrometheusScrape.sum(before, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL,
+                SESSION_BRANCH_LABEL);
         String token = BffSessionFallbackIT.mintFallbackRouteToken();
 
         // Act — one BEARER and one SESSION request on the fallback route. The SESSION request is an XHR
@@ -202,11 +205,13 @@ class MetricsIT extends BaseIntegrationTest {
                 .then()
                 .statusCode(200);
 
-        String after = scrapeMetrics();
+        String after = PrometheusScrape.scrape();
 
         // Assert — each branch series of the fallback route MOVED, which presence alone cannot prove.
-        double bearerAfter = meterSum(after, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, BEARER_BRANCH_LABEL);
-        double sessionAfter = meterSum(after, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL, SESSION_BRANCH_LABEL);
+        double bearerAfter = PrometheusScrape.sum(after, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL,
+                BEARER_BRANCH_LABEL);
+        double sessionAfter = PrometheusScrape.sum(after, AUTH_BRANCH_TOTAL, FALLBACK_ROUTE_LABEL,
+                SESSION_BRANCH_LABEL);
         assertTrue(bearerAfter > bearerBaseline,
                 "a request with Authorization on the session_fallback route must move the branch=\"bearer\" "
                         + "series: before=" + bearerBaseline + ", after=" + bearerAfter);
@@ -218,7 +223,7 @@ class MetricsIT extends BaseIntegrationTest {
         // exposed series names one of the declared session_fallback routes and one of the two branch
         // values. The plain session route and the plain bearer route driven above are the routes this
         // rules out: each resolved a branch in this very test, and neither may have recorded one.
-        List<String> samples = samples(after, AUTH_BRANCH_TOTAL);
+        List<String> samples = PrometheusScrape.samples(after, AUTH_BRANCH_TOTAL);
         List<String> foreignRoute = samples.stream()
                 .filter(line -> SESSION_FALLBACK_ROUTE_LABELS.stream().noneMatch(line::contains))
                 .toList();
@@ -231,20 +236,5 @@ class MetricsIT extends BaseIntegrationTest {
         assertTrue(foreignBranch.isEmpty(),
                 "sheriff_auth_branch_total must carry only branch=\"bearer\" or branch=\"session\", but exposes "
                         + foreignBranch);
-    }
-
-    /** {@link PrometheusScrape#sum}, the module's one sample-summing helper. */
-    private static double meterSum(String body, String meterName, String... requiredLabels) {
-        return PrometheusScrape.sum(body, meterName, requiredLabels);
-    }
-
-    /** {@link PrometheusScrape#samples}, the module's one sample-line reader. */
-    private static List<String> samples(String body, String meterName) {
-        return PrometheusScrape.samples(body, meterName);
-    }
-
-    /** {@link PrometheusScrape#scrape}, the module's one scrape of the management metrics endpoint. */
-    private static String scrapeMetrics() {
-        return PrometheusScrape.scrape();
     }
 }

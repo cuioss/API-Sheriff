@@ -157,13 +157,6 @@ public final class UniformNotFound {
     }
 
     /**
-     * @return the resolved {@code security_defaults.uniform_not_found} switch
-     */
-    public boolean enabled() {
-        return enabled;
-    }
-
-    /**
      * Decides whether a rejection is answered as the unrouted {@code 404}; see the class
      * documentation for the five legs of the predicate.
      *

@@ -25,7 +25,7 @@ import org.jspecify.annotations.Nullable;
  * boot with the WARN {@code ApiSheriff-140} ({@code LimitRules.validateRateLimitNotEnforced}). It is
  * never enforced: no component reads it at request time, so no rate limit is applied and no request
  * is answered {@code 429}. A future implementation builds on the per-source mechanism of the
- * follow-up rate-limiting work rather than on these two fields as they stand.
+ * follow-up enumeration-hardening plan rather than on these two fields as they stand.
  *
  * @param requestsPerSecond the sustained request rate, {@code null} when omitted
  * @param burst             the burst allowance, {@code null} when omitted

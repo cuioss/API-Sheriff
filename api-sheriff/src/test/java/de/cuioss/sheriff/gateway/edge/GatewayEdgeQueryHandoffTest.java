@@ -67,9 +67,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * that decodes to CR or LF is refused.
  * <p>
  * A refusal is raised after route selection and before the trust boundary, so the default edge answers
- * it to the untrusted caller as the unrouted {@code 404}; the discriminating signal that the filter, and
- * not routing, refused it is that the upstream saw nothing. A second, <em>honest</em> edge built with
- * {@code security_defaults.uniform_not_found: false} pins the filter's own {@code 400}.
+ * it to the untrusted caller as the unrouted {@code 404}. On the default edge neither that status nor an
+ * upstream that saw nothing tells a filter refusal from a routing miss: a request no route matches also
+ * reaches no upstream and gets the same {@code 404}. Two other cases make that separation. The
+ * switch-off control {@code switchOffKeepsTheFilterVerdict} sends three of the refused queries (a
+ * dangerous value, a delimiter in a name and the protocol-scheme false positive) to a second,
+ * <em>honest</em> edge built with {@code security_defaults.uniform_not_found: false}, which answers the
+ * filter's own {@code 400}. The accepted cases forward benign queries on the same {@code strict} route
+ * verbatim, which shows the route matches. This class does not read the metered event. A refusal case
+ * added on the default edge alone stays green if its route stops matching, so it needs a matching case
+ * on the honest edge.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — the raw query is validated and forwarded as one form")

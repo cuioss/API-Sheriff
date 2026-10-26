@@ -20,8 +20,9 @@
  *      With `portal.error_pages: true` (both demo instances set it), an unrouted path keeps its
  *      `404` and only changes its body: the HTML error page for a request that lists `text/html`
  *      explicitly, `application/problem+json` otherwise. A method outside a route's allowlist is
- *      refused before the trust boundary, so an anonymous caller gets exactly that unrouted
- *      answer -- the gateway does not disclose that the route exists. A session route's floor is
+ *      refused before the gateway looks at any credential, so every caller, a signed-in one
+ *      included, gets exactly that unrouted answer -- the gateway does not disclose that the route
+ *      exists. A session route's floor is
  *      the exception: it answers a `text/html` request with a `302` into login and anything else
  *      with a `401`. The rejection panel demonstrates the split.
  */
@@ -59,8 +60,8 @@ const REJECTION_PROBES = [
   { id: 'session-navigation', method: 'GET', path: SESSION_ROUTE_PATH, accept: ACCEPT_HTML },
   { id: 'unrouted-navigation', method: 'GET', path: UNROUTED_PATH, accept: ACCEPT_HTML },
   { id: 'unrouted-xhr', method: 'GET', path: UNROUTED_PATH, accept: ACCEPT_JSON },
-  // The asset anchor allows GET and HEAD only. The verb gate refuses DELETE before the trust
-  // boundary, so an anonymous caller is answered as an unrouted path is: the uniform 404 HTML page.
+  // The asset anchor allows GET and HEAD only. The verb gate refuses DELETE before any credential
+  // is looked at, so every caller is answered as an unrouted path is: the uniform 404 HTML page.
   { id: 'method-navigation', method: 'DELETE', path: DEMO_PAGE_PATH, accept: ACCEPT_HTML },
 ];
 

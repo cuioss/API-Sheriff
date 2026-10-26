@@ -4278,7 +4278,7 @@ link:user/endpoint-routes.adoc#_edge_hardening_defaults[Edge hardening defaults]
 
 === `rate_limit`
 
-The per-route schema for token-bucket rate limiting (`requests_per_second`, `burst`). *Rate
+The per-route rate-limiting schema (`requests_per_second`, `burst`). *Rate
 limiting is planned, not implemented, and no `429` is produced today.* The block is parsed and
 bound into the route model, but nothing on the request path reads it: no limit is applied to any
 request.
@@ -4289,8 +4289,7 @@ link:LogMessages.adoc[Log Messages]). The WARN refuses nothing and the boot cont
 it, remove the key, or accept that nothing it states is enforced.
 
 A future implementation builds on the per-source mechanism of the follow-up enumeration-hardening
-plan -- a per-source ledger of leaky buckets keyed on the resolved client address -- rather than on
-a separate per-node counter.
+plan rather than on these two fields as they stand.
 
 === `metadata`
 

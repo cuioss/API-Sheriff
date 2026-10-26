@@ -153,15 +153,25 @@ class UniformNotFoundTest {
         void switchOffKeepsEveryMemberHonest(EventType eventType) {
             UniformNotFound switchedOff = new UniformNotFound(false);
 
-            assertAll(eventType.name(),
-                    () -> assertFalse(switchedOff.enabled()),
-                    () -> assertFalse(switchedOff.applies(routedRequest(), eventType)));
+            assertFalse(switchedOff.applies(routedRequest(), eventType));
         }
 
         @Test
-        @DisplayName("switch on: the accessor reports the resolved switch")
-        void switchOnIsReported() {
-            assertTrue(new UniformNotFound(true).enabled());
+        @DisplayName("the switch alone flips both the rendering and the timing floor for the same request")
+        void switchAloneFlipsRenderingAndTimingFloor() {
+            PipelineRequest request = routedRequest();
+            UniformNotFound switchedOn = new UniformNotFound(true);
+            UniformNotFound switchedOff = new UniformNotFound(false);
+
+            assertAll("the same routed, untrusted member request under each switch position",
+                    () -> assertTrue(switchedOn.applies(request, EventType.METHOD_NOT_ALLOWED),
+                            "switch on: the member is answered as the unrouted 404"),
+                    () -> assertFalse(switchedOff.applies(request, EventType.METHOD_NOT_ALLOWED),
+                            "switch off: the member keeps its honest answer"),
+                    () -> assertTrue(switchedOn.delaysAnswer(EventType.NO_ROUTE_MATCHED),
+                            "switch on: the unrouted 404 waits for the response-timing floor"),
+                    () -> assertFalse(switchedOff.delaysAnswer(EventType.NO_ROUTE_MATCHED),
+                            "switch off: no answer is delayed"));
         }
 
         @Test

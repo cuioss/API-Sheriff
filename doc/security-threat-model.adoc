@@ -2193,14 +2193,21 @@ not shown. One switch, `security_defaults.uniform_not_found`, governs the branch
 is on by default (link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
 
 *Status:* COVERED. `UniformNotFoundTest` walks every `EventType` constant and fails for one with
-neither a closed-set nor an exclusion entry; `GatewayEdgeUniformNotFoundTest` asserts over a live
-edge that each pre-trust rejection is byte-identical to the unrouted answer in status, body,
-`Content-Type` and header set -- the HTML branch and a `protocol: grpc` route included -- that no
-uniform `404` leaves before the floor, that a scope `403` is not delayed, and that the switch set to
-`false` restores the honest codes; `ResponseDelayTest` asserts that the wait is a timer and not a
-held thread; and `EnumerationOracleIT` asserts the same comparison against the native image on the
-shipped default, together with the honest `403` of a validated token lacking a scope and the `302` /
-`401` of a session route.
+neither a closed-set nor an exclusion entry. `GatewayEdgeUniformNotFoundTest` asserts over a live
+edge that each of its pre-trust rejections is byte-identical to the unrouted answer in status, body,
+`Content-Type` and header set, the HTML branch included. Its rejections are a missing and a garbage
+bearer, a wrong method, an off-allowlist path, the route-scoped filter `400` and body cap, the
+session CSRF refusal, a `protocol: grpc` route, the bearer branch of a session-fallback route and a
+`match.headers` route. It also asserts that no uniform `404` leaves before the floor, that a scope
+`403` is not delayed, and that the switch set to `false` restores the honest codes.
+`ResponseDelayTest` asserts that the wait is a timer and not a held thread. `EnumerationOracleIT`
+makes the same comparison against the native image on the shipped default for the bearer-route
+subset: no token, a garbage token, a wrong method, an off-allowlist path, an oversized declared body
+and a `protocol: grpc` route. It also asserts the honest `403` of a validated token lacking a scope
+and the `302` / `401` of a session route. The cookie-forwarding same-origin refusal is covered by
+status and problem type only: `GatewayEdgeCookiePolicyTest` asserts its `404`, and
+`CookieForwardingPolicyIT` asserts the `404` and the routing problem type. No test compares its
+body, header set, HTML page or timing with the unrouted answer.
 
 *Residual risk (accepted) -- session routes and anonymous routes still disclose themselves.* A
 session route answers an anonymous navigation with a `302` into login and anything else with a
@@ -2221,13 +2228,16 @@ pre-trust requests therefore occupies admission permits for longer than it would
 and past the admission cap the edge answers `503`, which is the same for every address. No thread is
 held while an answer waits (<<gw-07>>).
 
-*Assertion.* For a bearer route and an unrouted address on the same gateway, a request with no
-token, a garbage token, a wrong method, an off-allowlist path, an oversized declared body or a
-cross-site unsafe request carrying a forwarded cookie receives the same status, body, `Content-Type`
-and header names as the unrouted address, under `Accept: text/html` as well and on a `protocol: grpc`
-route; none of those answers leaves before the floor; `sheriff_errors_total` carries the true event;
-a validated token without the needed scope still receives `403`, and a session route still `302` /
-`401`; with `security_defaults.uniform_not_found: false` every case receives its honest code.
+*Assertion.* For a routed address and an unrouted address on the same gateway, a request with no
+token, a garbage token, a wrong method, an off-allowlist path, a route-scoped filter violation, an
+oversized declared body, or a cross-origin unsafe request on a session route receives the same
+status, body, `Content-Type` and header names as the unrouted address. This holds under
+`Accept: text/html` as well and on a `protocol: grpc` route. None of those answers leaves before the
+floor, and `sheriff_errors_total` carries the true event. A cross-site unsafe request carrying a
+forwarded cookie receives the `404` with the routing problem type; only that status and type are
+asserted for it. A validated token without the needed scope still receives `403`, and a session
+route still receives `302` / `401`. With `security_defaults.uniform_not_found: false`, every case
+receives its honest code.
 
 == OAuth / OIDC / BFF failure catalogue
 
