@@ -130,7 +130,7 @@ class CookieKeyMaterialTest {
     private static void assertRefusal(Path keyFile, String defect) throws IOException {
         List<String> contentLines = Files.isRegularFile(keyFile)
                 ? new String(Files.readAllBytes(keyFile), StandardCharsets.ISO_8859_1).lines()
-                        .map(String::strip).filter(line -> !line.isEmpty()).toList()
+                .map(String::strip).filter(line -> !line.isEmpty()).toList()
                 : List.of();
         String configured = keyFile.toString();
 
@@ -207,7 +207,7 @@ class CookieKeyMaterialTest {
             assertAll("sealing key",
                     () -> assertEquals(32, material.currentKeyLengthBytes(), "the key should be AES-256"),
                     () -> assertEquals(Optional.of(payload()), overEncodedBytes.unseal(sealed)
-                            .map(SealedSessionCookieCodec.Unsealed::payload),
+                                    .map(SealedSessionCookieCodec.Unsealed::payload),
                             "a codec over the encoded bytes should unseal what the material sealed"));
         }
 
@@ -280,7 +280,7 @@ class CookieKeyMaterialTest {
                             "the salt is bound to the sealing key"),
                     () -> assertEquals(32, current.identitySalt().length, "the salt is a full SHA-256 digest"),
                     () -> assertTrue(current.activityCodec(COOKIE_NAME)
-                            .verify(signedByOther, SESSION_IDENTITY, LOGIN).isEmpty(),
+                                    .verify(signedByOther, SESSION_IDENTITY, LOGIN).isEmpty(),
                             "replacing the sealing key replaces the activity key with it"));
         }
     }

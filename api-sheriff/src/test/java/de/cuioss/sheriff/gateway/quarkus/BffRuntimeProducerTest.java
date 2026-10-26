@@ -3503,7 +3503,7 @@ class BffRuntimeProducerTest {
                                         "the refusal names the requirement it enforces: " + message),
                                 () -> assertFalse(message.contains(keyId), "no key id is echoed: " + message),
                                 () -> assertFalse(message.contains(clientKeyFile.getFileName().toString())
-                                                || message.contains(copiedKeyFile.getFileName().toString()),
+                                        || message.contains(copiedKeyFile.getFileName().toString()),
                                         "no configured path is echoed: " + message));
                     }));
         }

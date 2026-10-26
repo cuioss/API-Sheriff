@@ -231,7 +231,7 @@ class BffGeneratedKeysIT {
             writeDerivedDescriptor();
             writeSealingKeyFile();
             startBffGateway(new BffGateway(NETWORK_ALIAS, composeNetwork(), NETWORK_ALIAS, APPLICATION_PORT,
-                    DERIVED_DESCRIPTOR, CERTIFICATE, CERTIFICATE_KEY, List.of()),
+                            DERIVED_DESCRIPTOR, CERTIFICATE, CERTIFICATE_KEY, List.of()),
                     List.of(new ReadOnlyMount(SEALING_KEY_FILE, SEALING_KEY_IN_CONTAINER)), List.of());
             awaitUp("https://localhost:" + publishedPort(NETWORK_ALIAS, 9000));
 

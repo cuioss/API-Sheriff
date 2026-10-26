@@ -885,7 +885,7 @@ public class BffRuntimeProducer {
      *                       client-secret mode; held so it can be compared with the sender-constraint key
      */
     private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint,
-            @Nullable ClientSigningKey signingKey) {
+    @Nullable ClientSigningKey signingKey) {
     }
 
     /**
