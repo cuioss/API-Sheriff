@@ -488,13 +488,11 @@ public final class ForwardPolicyStage {
     }
 
     /**
-     * Withholds the two {@link #CONDITIONAL_HEADERS} validators ({@code If-None-Match} and
-     * {@code If-Modified-Since}) from the copied client headers on a route that does not enable
-     * {@code not_modified}. Applied on <em>every</em> mode, after the mode copy and the never-forward
-     * strip: forward-all copies them, a negative-list that does not name them copies them, and a
-     * positive-list that names them in {@code headers_allow} copies them — none of those copies
-     * survives this step. {@code If-Match}, {@code If-Unmodified-Since} and {@code If-Range} are not
-     * touched here; they keep crossing with the unconditional tier.
+     * Withholds the {@link #CONDITIONAL_HEADERS} validators from the copied client headers on a route
+     * that does not enable {@code not_modified}. Applied on <em>every</em> mode, after the mode copy
+     * and the never-forward strip: forward-all copies them, a negative-list that does not name them
+     * copies them, and a positive-list that names them in {@code headers_allow} copies them — none of
+     * those copies survives this step.
      * <p>
      * Membership is tested on the {@linkplain ConnectionHeaders#separatorFolded separator-folded}
      * name, so every case <em>and</em> every {@code -}/{@code _} spelling the client used is withheld:
@@ -542,10 +540,8 @@ public final class ForwardPolicyStage {
 
     /**
      * Admits the {@link #PROTOCOL_HEADERS} the client actually sent, so a route never has to
-     * enumerate HTTP mechanics to work. The unconditional tier — which carries {@code If-Match},
-     * {@code If-Unmodified-Since} and {@code If-Range} alongside {@code Range} — always applies; the
-     * two-validator {@link #CONDITIONAL_HEADERS} tier applies only when the route enables
-     * {@code not_modified}.
+     * enumerate HTTP mechanics to work. The unconditional tier always applies; the
+     * {@link #CONDITIONAL_HEADERS} tier applies only when the route enables {@code not_modified}.
      * <p>
      * <strong>A negative-list entry beats the set.</strong> The set is applied only to names the mode
      * copy did not already refuse, so a route that denies {@code Content-Type} by name gets it
