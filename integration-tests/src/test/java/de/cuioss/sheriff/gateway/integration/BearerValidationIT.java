@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.integration;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.restassured.http.ContentType;
@@ -47,10 +46,13 @@ import org.junit.jupiter.api.Test;
  * A token of {@code token-mint-client} is an unbound bearer token of the same realm, signed by the
  * same realm keys, which is all the bearer route validates.
  * <p>
- * <strong>Rejection scenarios.</strong> A missing token and a malformed token must both be rejected
- * {@code 401} at the gateway and the upstream must never be reached. A forwarded request would carry
- * the {@code go-httpbin} echo (a non-null {@code method}); its absence is the observable proof the
- * upstream count stayed {@code 0} on every bearer rejection.
+ * <strong>Rejection scenarios.</strong> A missing token and a malformed token must both be refused at
+ * the gateway and the upstream must never be reached. The caller has not passed the trust boundary,
+ * so the shipped default answers either refusal as the unrouted {@code 404} with no
+ * {@code WWW-Authenticate} challenge (ADR-0072); the cause stays observable as the TRUE event
+ * ({@code TOKEN_MISSING} / {@code TOKEN_INVALID}) in {@code sheriff_errors_total}. A forwarded request
+ * would carry the {@code go-httpbin} echo (a non-null {@code method}); its absence is the observable
+ * proof the upstream count stayed {@code 0} on every bearer rejection.
  * <p>
  * <strong>The admitted scenario is a regression control.</strong> Before the {@code Authorization}
  * header-value carve-out, a real Keycloak access token plus its {@code Bearer } prefix exceeded the
@@ -78,35 +80,37 @@ class BearerValidationIT extends BaseIntegrationTest {
     /** The gateway's {@code oidc.scopes}, which every bearer route checks on a presented token. */
     static final String OIDC_SCOPE = "openid profile email";
 
-    @Test
-    @DisplayName("a request with no bearer token is rejected 401 and never forwarded")
-    void missingTokenRejected() {
-        var response = given()
-                .when()
-                .get("/secure/get")
-                .then()
-                .statusCode(401)
-                .header("WWW-Authenticate", "Bearer")
-                .extract();
+    /** A path on the {@code secure-proxy} route, the {@code require: bearer} route this suite drives. */
+    private static final String SECURE_PATH = "/secure/get";
 
-        assertTrue(response.contentType().contains("application/problem+json"));
-        assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+    /** The config-fixed id of that route, the {@code route} label of its error series. */
+    private static final String SECURE_ROUTE_ID = "secure-proxy";
+
+    @Test
+    @DisplayName("a request with no bearer token is refused as the unrouted 404, metered as TOKEN_MISSING, never forwarded")
+    void missingTokenRejected() {
+        var response = UniformNotFoundAssertions.assertTrueEventMetered(SECURE_ROUTE_ID, "TOKEN_MISSING",
+                () -> given()
+                        .when()
+                        .get(SECURE_PATH)
+                        .then()
+                        .extract());
+
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a request with no bearer token");
     }
 
     @Test
-    @DisplayName("a request with a malformed bearer token is rejected 401 and never forwarded")
+    @DisplayName("a request with a malformed bearer token is refused as the unrouted 404, metered as TOKEN_INVALID, never forwarded")
     void malformedTokenRejected() {
-        var response = given()
-                .header("Authorization", "Bearer not-a-real-jwt")
-                .when()
-                .get("/secure/get")
-                .then()
-                .statusCode(401)
-                .header("WWW-Authenticate", "Bearer")
-                .extract();
+        var response = UniformNotFoundAssertions.assertTrueEventMetered(SECURE_ROUTE_ID, "TOKEN_INVALID",
+                () -> given()
+                        .header("Authorization", "Bearer not-a-real-jwt")
+                        .when()
+                        .get(SECURE_PATH)
+                        .then()
+                        .extract());
 
-        assertTrue(response.contentType().contains("application/problem+json"));
-        assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a request with a malformed bearer token");
     }
 
     @Test
@@ -140,7 +144,7 @@ class BearerValidationIT extends BaseIntegrationTest {
         var response = given()
                 .header("Authorization", authorization)
                 .when()
-                .get("/secure/get")
+                .get(SECURE_PATH)
                 .then()
                 .statusCode(200)
                 .extract();

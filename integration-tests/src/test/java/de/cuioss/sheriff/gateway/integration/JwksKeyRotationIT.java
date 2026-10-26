@@ -48,10 +48,12 @@ import org.junit.jupiter.api.Test;
  * <strong>What each leg proves, and the control that makes it mean something.</strong>
  * <ol>
  *   <li><em>A rotated key is accepted.</em> Control first: a token signed with the stub's first key is
- *       answered {@code 200} on the bearer-gated asset route and a request without a token
- *       {@code 401}, so the route accepts such a token and admits nothing else. The stub's key is
- *       then replaced; the key set it serves holds the new key alone. The first request carrying a
- *       token signed with the new key is answered {@code 401} — the gateway does not hold that key and
+ *       answered {@code 200} on the bearer-gated asset route and a request without a token is refused,
+ *       so the route accepts such a token and admits nothing else. A refused bearer is raised before
+ *       the trust boundary, so the shipped default answers it as the unrouted {@code 404} (ADR-0072);
+ *       every refusal below is that {@value #REFUSED}. The stub's key is then replaced; the key set it
+ *       serves holds the new key alone. The first request carrying a token signed with the new key is
+ *       refused — the gateway does not hold that key and
  *       never fetches on a request thread — and a later one {@code 200} within twice the window plus
  *       {@value #MARGIN_SECONDS} seconds. In between, the stub recorded at least one further key-set
  *       request of the issuer, and the gateway logged {@value #UNKNOWN_KEY_ID_RECORD} naming the
@@ -60,7 +62,7 @@ import org.junit.jupiter.api.Test;
  *       publishes that key, so the gateway answers from the key set it retired — the grace period
  *       acts.</li>
  *   <li><em>Invented key ids are bounded.</em> {@value #FLOOD_REQUESTS} requests, each carrying a token
- *       that names a key id of its own which the stub never published, are all answered {@code 401}.
+ *       that names a key id of its own which the stub never published, are all refused.
  *       They are spread over more than one window, so at least one of them finds the window free.
  *       Over the flood the stub records at least one and at most {@code floor(elapsed / window) + 1}
  *       further key-set requests of the issuer, and the gateway logs
@@ -105,6 +107,12 @@ class JwksKeyRotationIT {
 
     /** WARN — a token named a key id that is in no key set the gateway holds. */
     private static final String UNKNOWN_KEY_ID_RECORD = "ApiSheriff-136";
+
+    /**
+     * The status a refused bearer is answered with on the shipped default: the unrouted {@code 404},
+     * because the refusal is raised before the trust boundary (ADR-0072).
+     */
+    private static final int REFUSED = UniformNotFoundAssertions.UNROUTED_STATUS;
 
     /** The issuer's unknown-key-id refresh window, as the rig's descriptor declares it. */
     private static final Duration WINDOW = Duration.ofSeconds(StubIdentityProviderRig.KEY_ROTATION_WINDOW_SECONDS);
@@ -173,7 +181,7 @@ class JwksKeyRotationIT {
         assertAll("matched control: the route accepts a token signed with a key the gateway loaded at boot",
                 () -> assertEquals(200, securedAssetStatus(origin, rig.accessToken(SCOPES, TOKEN_LIFETIME)),
                         () -> "a token signed with the stub's first key. " + rig.gatewayOutput()),
-                () -> assertEquals(401, securedAssetStatus(origin, null), "a request without a token"));
+                () -> assertEquals(REFUSED, securedAssetStatus(origin, null), "a request without a token"));
         String replacedKeyToken = rig.accessToken(SCOPES, TOKEN_LIFETIME);
         String replacedKeyTokenForTheFlood = rig.accessToken(SCOPES, TOKEN_LIFETIME);
         int keySetRequestsBefore = keySetRequests(rig);
@@ -182,8 +190,8 @@ class JwksKeyRotationIT {
 
         publishedKeyIds.add(rig.replaceSigningKey());
 
-        assertEquals(401, securedAssetStatus(origin, rig.accessToken(SCOPES, TOKEN_LIFETIME)), () -> "the first "
-                + "token signed with the new key names a key the gateway does not hold yet, and a lookup "
+        assertEquals(REFUSED, securedAssetStatus(origin, rig.accessToken(SCOPES, TOKEN_LIFETIME)), () -> "the "
+                + "first token signed with the new key names a key the gateway does not hold yet, and a lookup "
                 + "never fetches: it must be rejected. " + rig.gatewayOutput());
         awaitWithinTheBound(rig, "a token signed with the new key to be answered 200",
                 () -> securedAssetStatus(origin, rig.accessToken(SCOPES, TOKEN_LIFETIME)) == 200);
@@ -210,7 +218,7 @@ class JwksKeyRotationIT {
         for (int request = 0; request < FLOOD_REQUESTS; request++) {
             String keyId = UUID.randomUUID().toString();
             inventedKeyIds.add(keyId);
-            if (securedAssetStatus(origin, rig.accessTokenNamingKeyId(SCOPES, TOKEN_LIFETIME, keyId)) != 401) {
+            if (securedAssetStatus(origin, rig.accessTokenNamingKeyId(SCOPES, TOKEN_LIFETIME, keyId)) != REFUSED) {
                 notRejected++;
             }
             pause(FLOOD_PACE);
@@ -226,7 +234,7 @@ class JwksKeyRotationIT {
                 + " distinct invented key ids, over " + elapsed.toMillis() + " ms",
                 () -> assertEquals(FLOOD_REQUESTS, inventedKeyIds.size(), "every request names a key id of its own"),
                 () -> assertEquals(0, notRejectedInTotal, "every token naming an invented key id must be "
-                        + "answered 401"),
+                        + "refused with " + REFUSED),
                 () -> assertTrue(elapsed.compareTo(WINDOW) > 0, "the flood must outlast one window, otherwise "
                         + "it may have run entirely inside a claimed one and triggered nothing"),
                 () -> assertTrue(keySetRequestsDuring >= 1, "the flood must have caused at least one key-set "

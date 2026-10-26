@@ -46,7 +46,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Proves the body-size contract end-to-end across the <em>real</em> framework boundary: a body larger
  * than the Vert.x default is accepted and forwarded, and a body larger than the route's declared
- * {@code security_filter.max_body_bytes} is rejected by the <em>gateway</em> with its own RFC 9457
+ * {@code security_filter.max_body_bytes} is refused by the <em>gateway</em> with its own RFC 9457
  * envelope rather than by the framework with a bare status line.
  * <p>
  * Both cases run against the {@code /upload/small} route, which rides the {@code upload} anchor's
@@ -79,13 +79,14 @@ import org.junit.jupiter.api.Test;
  * payload crossed the wire, not after 68 MiB were uploaded and discarded.
  * <p>
  * The negative case asserts <strong>both</strong> halves of the error contract, and neither replaces
- * the other. The status assertion locks the mapping under test: a proxy-path body-cap breach renders
- * {@code CONTENT_TOO_LARGE} as HTTP {@code 413}, so a regression that moved the event back to a
- * 400-mapped constant fails here. The envelope assertions — the {@code application/problem+json}
- * content type, the input-validation problem type and title, and the absence of the go-httpbin echo —
- * are what discriminate the <em>gateway's</em> rejection from the <em>framework's</em>: the framework's
- * own {@code Content-Length} pre-check answers with a bare {@code 413} carrying no envelope, so the
- * status alone cannot tell the two apart.
+ * the other. The declared-length breach is refused before the trust boundary, so the shipped default
+ * answers the untrusted caller as the unrouted {@code 404} with the routing problem document
+ * (ADR-0072): that envelope — the {@code application/problem+json} content type, the routing problem
+ * type and title, and the absence of the go-httpbin echo — is what discriminates the <em>gateway's</em>
+ * refusal from the <em>framework's</em>, whose own {@code Content-Length} pre-check answers with a bare
+ * {@code 413} carrying no envelope. The cause is locked by the TRUE event: the refusal moves
+ * {@code sheriff_errors_total} under {@code CONTENT_TOO_LARGE} on the route, so a regression that
+ * moved the breach to another event fails here.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -109,8 +110,9 @@ class LargeBodyIT extends BaseIntegrationTest {
     static final long NEGATIVE_BODY_BYTES = 71303168L;
 
     private static final String UPLOAD_PATH = "/upload/small";
-    private static final String PROBLEM_JSON = "application/problem+json";
-    private static final String INPUT_VALIDATION_TYPE = "urn:api-sheriff:problem:input-validation";
+
+    /** The config-fixed id of the route {@link #UPLOAD_PATH} selects, the {@code route} label of its error series. */
+    private static final String UPLOAD_ROUTE_ID = "httpbin-upload-small";
 
     private static HttpClient httpClient;
 
@@ -147,7 +149,7 @@ class LargeBodyIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a 68 MiB declared body over the route cap is rejected by the gateway before any payload")
+    @DisplayName("a 68 MiB declared body over the route cap is refused by the gateway before any payload")
     void bodyOverTheRouteCapIsRejectedByTheGateway() throws Exception {
         CountingBodyPublisher body = new CountingBodyPublisher(NEGATIVE_BODY_BYTES);
         HttpRequest request = HttpRequest.newBuilder(URI.create(uploadUri()))
@@ -156,23 +158,29 @@ class LargeBodyIT extends BaseIntegrationTest {
                 .expectContinue(true)
                 .POST(body)
                 .build();
+        double meteredBefore = PrometheusScrape.errorCount(PrometheusScrape.scrape(), UPLOAD_ROUTE_ID,
+                "CONTENT_TOO_LARGE");
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-        assertEquals(413, response.statusCode(),
-                "an over-cap request must render CONTENT_TOO_LARGE as HTTP 413");
+        assertEquals(404, response.statusCode(),
+                "an over-cap request is refused before the trust boundary, so it is answered as the unrouted 404");
+        double meteredAfter = PrometheusScrape.errorCount(PrometheusScrape.scrape(), UPLOAD_ROUTE_ID,
+                "CONTENT_TOO_LARGE");
+        assertTrue(meteredAfter > meteredBefore, () -> "the refusal must be metered under its true event "
+                + "CONTENT_TOO_LARGE on " + UPLOAD_ROUTE_ID + ": before=" + meteredBefore + ", after=" + meteredAfter);
 
         String contentType = response.headers().firstValue("Content-Type").orElse("");
         JsonPath problem = JsonPath.from(response.body());
-        assertTrue(contentType.contains(PROBLEM_JSON),
+        assertTrue(contentType.contains(UniformNotFoundAssertions.PROBLEM_JSON),
                 "the gateway must render its own RFC 9457 envelope, Content-Type was: " + contentType);
         // Use the typed getString accessor rather than the generic get(): inside String.valueOf(...)
         // javac resolves JsonPath's <T> T get(String) against the most specific overload,
         // String.valueOf(char[]), inferring T = char[] and failing with a ClassCastException at runtime.
         String problemType = problem.getString("type");
-        assertTrue(String.valueOf(problemType).contains(INPUT_VALIDATION_TYPE),
-                "an oversize body is an input-validation rejection, type was: " + problemType);
-        assertEquals("Input Validation", problem.getString("title"));
+        assertEquals(UniformNotFoundAssertions.ROUTING_PROBLEM_TYPE, problemType,
+                "the untrusted caller is shown the unrouted routing problem, type was: " + problemType);
+        assertEquals("Routing", problem.getString("title"));
         assertNull(problem.get("method"), "a rejected request must not reach the go-httpbin upstream");
         assertEquals(0L, body.producedBytes(),
                 "the rejection must land on the declared Content-Length, before the 100-continue invite —"

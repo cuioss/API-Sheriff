@@ -34,9 +34,17 @@ import org.junit.jupiter.api.Test;
  * {@code Content-Type} is set from the file extension (never from the source), {@code nosniff} is
  * added, and only {@code GET}/{@code HEAD} are served. The {@code assets-secure} anchor
  * ({@code access: authenticated}) proves auth precedes source resolution — an unauthenticated
- * request is rejected {@code 401} at stage 4 and no file is ever read.
+ * request is refused at stage 4 and no file is ever read.
+ * <p>
+ * Two of those refusals are raised before the trust boundary — a method outside the anchor's
+ * {@code allowed_methods} at the verb gate, a missing bearer at stage 4 — so the shipped default
+ * answers both to the untrusted caller as the unrouted {@code 404} (ADR-0072), with the TRUE event
+ * ({@code METHOD_NOT_ALLOWED}, {@code TOKEN_MISSING}) still metered.
  */
 class DirectoryAssetServingIT extends BaseIntegrationTest {
+
+    /** The config-fixed id of the {@code /secure-assets} route, the {@code route} label of its error series. */
+    private static final String SECURE_ASSET_ROUTE_ID = "assets-secure-directory";
 
     @Test
     @DisplayName("GET serves a mounted file with the gateway-governed content type and nosniff")
@@ -79,13 +87,15 @@ class DirectoryAssetServingIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("POST is rejected 405 — an asset action serves only GET and HEAD")
+    @DisplayName("POST is refused by the verb gate — an asset anchor serves only GET and HEAD — as the unrouted 404")
     void postRejected() {
-        given()
+        var response = given()
                 .when()
                 .post("/assets/static/app.css")
                 .then()
-                .statusCode(405);
+                .extract();
+
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a POST to a GET/HEAD asset route");
     }
 
     @Nested
@@ -168,39 +178,25 @@ class DirectoryAssetServingIT extends BaseIntegrationTest {
 
     /**
      * The ordering "authentication before source resolution" cannot be observed directly from
-     * outside the gateway, so it is asserted by contrast: the existing file and a file that does not
-     * exist under {@code /secure-assets} must be rejected identically with {@code 401}. A gateway
-     * that resolved the directory source first would answer the missing file {@code 404} — as the
-     * public {@code /assets/static} route does in {@link #getMissingFileIsNotFound()} — and leak
-     * which files exist to an unauthenticated caller.
+     * outside the gateway by status alone: the missing bearer is answered as the unrouted {@code 404},
+     * which is also what a directory miss would answer. It is asserted on the TRUE event instead: the
+     * existing file and a file that does not exist under {@code /secure-assets} must both be refused
+     * as {@code TOKEN_MISSING} with the identical routing problem document. A gateway that resolved
+     * the directory source first would answer the missing file with the asset miss — as the public
+     * {@code /assets/static} route does in {@link #getMissingFileIsNotFound()} — and meter no
+     * {@code TOKEN_MISSING} for it.
      */
     @Test
-    @DisplayName("an unauthenticated request to a bearer-gated asset is rejected 401 before any file is read")
+    @DisplayName("an unauthenticated request to a bearer-gated asset is refused TOKEN_MISSING before any file is read")
     void authenticatedAssetRejectsWithoutToken() {
-        var existing = given()
-                .when()
-                .get("/secure-assets/app.css")
-                .then()
-                .statusCode(401)
-                .header("WWW-Authenticate", "Bearer")
-                .extract();
+        var existing = UniformNotFoundAssertions.assertTrueEventMetered(SECURE_ASSET_ROUTE_ID, "TOKEN_MISSING",
+                () -> given().when().get("/secure-assets/app.css").then().extract());
+        var missing = UniformNotFoundAssertions.assertTrueEventMetered(SECURE_ASSET_ROUTE_ID, "TOKEN_MISSING",
+                () -> given().when().get("/secure-assets/does-not-exist.css").then().extract());
 
-        assertEquals("application/problem+json", problemType(existing.contentType()),
-                "the rejection is rendered as an RFC 9457 problem document");
-
-        given()
-                .when()
-                .get("/secure-assets/does-not-exist.css")
-                .then()
-                .statusCode(401)
-                .header("WWW-Authenticate", "Bearer");
-    }
-
-    private static String problemType(String contentType) {
-        if (contentType == null) {
-            return "";
-        }
-        int semicolon = contentType.indexOf(';');
-        return (semicolon < 0 ? contentType : contentType.substring(0, semicolon)).trim();
+        UniformNotFoundAssertions.assertUnroutedProblem(existing, "a tokenless request for an existing asset");
+        UniformNotFoundAssertions.assertUnroutedProblem(missing, "a tokenless request for a missing asset");
+        assertEquals(existing.asString(), missing.asString(),
+                "an existing and a missing file are refused identically: no file was resolved before auth");
     }
 }

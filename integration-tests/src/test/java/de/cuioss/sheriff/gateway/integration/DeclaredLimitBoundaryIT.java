@@ -77,15 +77,15 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
     private static final int STRICT_BODY_CAP_BYTES = 1048576;
 
     private static final String BEARER_PREFIX = "Bearer ";
-    private static final String PROBLEM_JSON = "application/problem+json";
-    private static final String INPUT_VALIDATION_TYPE = "urn:api-sheriff:problem:input-validation";
 
     /** The bearer-protected route: only here does an admitted header reach bearer validation. */
     private static final String SECURE_PATH = "/secure/get";
+    private static final String SECURE_ROUTE_ID = "secure-proxy";
 
     /** The strict, public route inheriting the gateway-wide preset. */
     private static final String PROXY_GET_PATH = "/proxy/get";
     private static final String PROXY_POST_PATH = "/proxy/post";
+    private static final String PROXY_ROUTE_ID = "httpbin-proxy";
 
     @Nested
     @DisplayName("G1 — the Authorization carve-out admits up to its declared 8192-character cap")
@@ -100,21 +100,21 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
             assertEquals(AUTHORIZATION_VALUE_CAP, atCap.length(), "the at-cap probe must measure exactly the cap");
 
             // Act
-            var response = given()
-                    .header("Authorization", atCap)
-                    .when()
-                    .get(SECURE_PATH)
-                    .then()
-                    .statusCode(401)
-                    .extract();
+            var response = UniformNotFoundAssertions.assertTrueEventMetered(SECURE_ROUTE_ID, "TOKEN_INVALID",
+                    () -> given()
+                            .header("Authorization", atCap)
+                            .when()
+                            .get(SECURE_PATH)
+                            .then()
+                            .extract());
 
-            // Assert — 401 (not 400) is the load-bearing discriminator: the header was ADMITTED by the
-            // pre-route floor and rejected later, by stage-4 bearer validation, for being an invalid
-            // token. A 400 here would mean the floor refused the header outright and the carve-out is
-            // gone or narrower than declared.
-            assertTrue(response.contentType().contains(PROBLEM_JSON),
-                    "a bearer rejection carries the gateway's RFC 9457 envelope");
-            assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+            // Assert — the unrouted 404 (not the floor's 400) plus the TOKEN_INVALID event is the
+            // load-bearing discriminator: the header was ADMITTED by the pre-route floor and refused
+            // later, by stage-4 bearer validation, for being an invalid token — a refusal the shipped
+            // default answers to the untrusted caller as the unrouted 404 (ADR-0072). A 400 here would
+            // mean the floor refused the header outright and the carve-out is gone or narrower than
+            // declared.
+            UniformNotFoundAssertions.assertUnroutedProblem(response, "an at-cap Authorization value");
         }
 
         @Test
@@ -192,33 +192,29 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
     class StrictInheritedBodyCap {
 
         @Test
-        @DisplayName("a body one byte over the inherited 1 MiB cap is rejected 413 by the gateway")
+        @DisplayName("a body one byte over the inherited 1 MiB cap is refused by the gateway, metered CONTENT_TOO_LARGE")
         void bodyOverInheritedCapIsRejectedByTheGateway() {
             // Arrange
             byte[] overCap = new byte[STRICT_BODY_CAP_BYTES + 1];
             Arrays.fill(overCap, (byte) 'x');
 
             // Act
-            var response = given()
-                    .contentType("text/plain")
-                    .body(overCap)
-                    .when()
-                    .post(PROXY_POST_PATH)
-                    .then()
-                    .statusCode(413)
-                    .extract();
+            var response = UniformNotFoundAssertions.assertTrueEventMetered(PROXY_ROUTE_ID, "CONTENT_TOO_LARGE",
+                    () -> given()
+                            .contentType("text/plain")
+                            .body(overCap)
+                            .when()
+                            .post(PROXY_POST_PATH)
+                            .then()
+                            .extract());
 
-            // Assert — the envelope, not just the status, is what proves the GATEWAY rejected this. The
+            // Assert — the declared-length breach is refused before the trust boundary, so the untrusted
+            // caller sees the unrouted 404 (ADR-0072); the CONTENT_TOO_LARGE event above is what ties it to
+            // the SIZE. The envelope, not just the status, is what proves the GATEWAY refused this. The
             // compose stack raises the framework floor to 128M (docker-compose.yml:242), far above this
             // 1 MiB cap, so the Quarkus root handler cannot shadow the gateway here — and its own
             // pre-check would answer a bare 413 carrying no problem+json body at all.
-            assertTrue(response.contentType().contains(PROBLEM_JSON),
-                    "the gateway must render its own RFC 9457 envelope, not the framework's bare 413");
-            String problemType = response.path("type");
-            assertTrue(String.valueOf(problemType).contains(INPUT_VALIDATION_TYPE),
-                    "an oversize body is an input-validation rejection, type was: " + problemType);
-            assertEquals("Input Validation", response.path("title"));
-            assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+            UniformNotFoundAssertions.assertUnroutedProblem(response, "a body over the inherited cap");
         }
 
         @Test

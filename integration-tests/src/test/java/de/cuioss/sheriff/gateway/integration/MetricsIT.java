@@ -18,7 +18,6 @@ package de.cuioss.sheriff.gateway.integration;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
@@ -142,17 +141,18 @@ class MetricsIT extends BaseIntegrationTest {
 
         // Act — drive a filter rejection: a query-parameter value carrying an encoded path-traversal
         // attack. urlEncodingEnabled(false) sends the pre-encoded value verbatim so cui-http decodes
-        // and rejects it (400 SECURITY_FILTER_VIOLATION), incrementing the shared SecurityEventCounter
-        // the meter is bound to. The rejection now happens POST-route in ThoroughChecksStage — the
+        // and rejects it (SECURITY_FILTER_VIOLATION), incrementing the shared SecurityEventCounter
+        // the meter is bound to. The rejection happens POST-route in ThoroughChecksStage — the
         // url-parameter validation was relocated there so it runs under the route's own profile
-        // (ADR-0024) — which is immaterial to the meter, but the /proxy route must stay non-'none'
-        // for this rejection to occur at all.
+        // (ADR-0024) — so the untrusted caller is answered with the unrouted 404 (ADR-0072). Both are
+        // immaterial to the meter, but the /proxy route must stay non-'none' for this rejection to
+        // occur at all.
         given()
                 .urlEncodingEnabled(false)
                 .when()
                 .get("/proxy/get?probe=%2E%2E%2F%2E%2E%2F%2E%2E%2Fetc%2Fpasswd")
                 .then()
-                .statusCode(400);
+                .statusCode(404);
 
         // Assert — the bound function counter moved: the summed sheriff_security_events_total series is
         // strictly greater than the baseline, proving the counter → Micrometer bridge works end-to-end.
@@ -233,52 +233,18 @@ class MetricsIT extends BaseIntegrationTest {
                         + foreignBranch);
     }
 
-    /**
-     * Sums every sample of one meter in a Prometheus exposition body across the labelled series that
-     * carry every one of {@code requiredLabels}. Only sample lines are considered (see
-     * {@link #samples(String, String)}). A meter with no matching series — for example one not yet
-     * recorded — sums to {@code 0.0}.
-     *
-     * @param body the scraped exposition body
-     * @param meterName the exposed meter name, including any {@code _total} suffix Micrometer appends
-     * @param requiredLabels label fragments every counted series must contain, such as
-     *            {@code route="httpbin-proxy"}
-     * @return the summed sample value of the matching series
-     */
+    /** {@link PrometheusScrape#sum}, the module's one sample-summing helper. */
     private static double meterSum(String body, String meterName, String... requiredLabels) {
-        double sum = 0.0;
-        for (String line : samples(body, meterName)) {
-            if (Arrays.stream(requiredLabels).allMatch(line::contains)) {
-                int lastSpace = line.lastIndexOf(' ');
-                if (lastSpace >= 0) {
-                    sum += Double.parseDouble(line.substring(lastSpace + 1).strip());
-                }
-            }
-        }
-        return sum;
+        return PrometheusScrape.sum(body, meterName, requiredLabels);
     }
 
-    /**
-     * Returns every labelled sample line of one meter in a Prometheus exposition body. A sample line
-     * starts with the meter name followed directly by its label set, so {@code # HELP} /
-     * {@code # TYPE} comment lines (which begin with {@code #}) and meters that merely share the name
-     * as a prefix are never returned.
-     *
-     * @param body the scraped exposition body
-     * @param meterName the exposed meter name, including any {@code _total} suffix Micrometer appends
-     * @return the meter's sample lines, in exposition order
-     */
+    /** {@link PrometheusScrape#samples}, the module's one sample-line reader. */
     private static List<String> samples(String body, String meterName) {
-        return body.lines().filter(line -> line.startsWith(meterName + "{")).toList();
+        return PrometheusScrape.samples(body, meterName);
     }
 
+    /** {@link PrometheusScrape#scrape}, the module's one scrape of the management metrics endpoint. */
     private static String scrapeMetrics() {
-        return givenManagement()
-                .when()
-                .get("/metrics")
-                .then()
-                .statusCode(200)
-                .extract()
-                .asString();
+        return PrometheusScrape.scrape();
     }
 }

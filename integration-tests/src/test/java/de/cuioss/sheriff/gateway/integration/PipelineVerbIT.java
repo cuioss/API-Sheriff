@@ -28,9 +28,11 @@ import org.junit.jupiter.api.Test;
  * The mounted {@code gateway.yaml} allows {@code GET, POST, PUT, DELETE}; the {@code /proxy}
  * route forwards to the {@code go-httpbin} echo backend ({@code /anything/*}), which reflects the
  * received method and body. Each allowed verb must forward and echo. The other side of the gate — a
- * method outside the allowed set is rejected {@code 405} at the gateway <em>without</em> reaching the
- * upstream — is asserted by {@link ErrorContractIT#disallowedMethodProblemJson()}, which drives the
- * same {@code PATCH /proxy/get} and additionally pins the problem document.
+ * method outside the allowed set is refused at the gateway <em>without</em> reaching the upstream,
+ * answered to the untrusted caller as the unrouted {@code 404} and metered as
+ * {@code METHOD_NOT_ALLOWED} (ADR-0072) — is asserted by
+ * {@link ErrorContractIT#disallowedMethodProblemJson()}, which drives the same {@code PATCH /proxy/get}
+ * and additionally pins the problem document.
  */
 class PipelineVerbIT extends BaseIntegrationTest {
 

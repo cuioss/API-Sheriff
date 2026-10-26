@@ -50,7 +50,9 @@ import org.junit.jupiter.api.Timeout;
  *   <li><em>Response direction.</em> An upstream {@code Set-Cookie} line outside the route's policy is
  *       not relayed, and a relayed line loses its {@code Domain} attribute.</li>
  *   <li><em>The same-origin check.</em> A cross-site unsafe request carrying a cookie the route would
- *       forward is refused {@code 403} before it reaches the upstream; an {@code additional_origins}
+ *       forward is refused before it reaches the upstream — before the trust boundary, so the shipped
+ *       default answers the refusal as the unrouted {@code 404} (ADR-0072), the matched same-origin
+ *       request being the control that ties it to the check; an {@code additional_origins}
  *       entry admits its origin; {@code same_origin_check: false} admits a cross-site request; and on
  *       one route the check keys on the forwardable cookie, not on the route: the same cross-site
  *       request without it is forwarded.</li>
@@ -123,7 +125,9 @@ class CookieForwardingPolicyIT {
     private static final String SEC_FETCH_SITE = "Sec-Fetch-Site";
 
     private static final int OK = 200;
-    private static final int FORBIDDEN = 403;
+
+    /** What a refused same-origin check answers an untrusted caller: the unrouted status. */
+    private static final int UNROUTED = UniformNotFoundAssertions.UNROUTED_STATUS;
 
     @Nested
     @DisplayName("request direction: which browser cookies reach the upstream")
@@ -247,7 +251,7 @@ class CookieForwardingPolicyIT {
     class SameOriginCheck {
 
         @Test
-        @DisplayName("a cross-site unsafe request carrying a forwarded cookie is refused 403")
+        @DisplayName("a cross-site unsafe request carrying a forwarded cookie is refused as the unrouted 404")
         void crossSiteRequestCarryingAForwardedCookieIsRefused() {
             String cookie = pairs(THEME);
 
@@ -309,8 +313,10 @@ class CookieForwardingPolicyIT {
         }
 
         private static void assertRefused(Response response, String provenance) {
-            assertEquals(FORBIDDEN, response.statusCode(), () -> "an unsafe request carrying a forwarded cookie"
-                    + " and " + provenance + " must be refused");
+            assertEquals(UNROUTED, response.statusCode(), () -> "an unsafe request carrying a forwarded cookie"
+                    + " and " + provenance + " must be refused, answered as the unrouted 404");
+            assertEquals(UniformNotFoundAssertions.ROUTING_PROBLEM_TYPE, response.path("type"),
+                    () -> "the refusal (" + provenance + ") carries the unrouted routing problem");
             assertNull(response.path("method"), () -> "the refused request (" + provenance
                     + ") must not reach the upstream");
         }
