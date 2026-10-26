@@ -185,6 +185,18 @@ import jakarta.inject.Inject;
  * response carrying the failing event's status and problem type, followed by the exception's
  * {@linkplain GatewayException#getProblemExtensions() problem extension members} when it carries any,
  * never leaking internal detail.
+ * <p>
+ * <strong>The trust boundary.</strong> A request passes it once its bearer token validated offline or
+ * stage 4 completed on any branch; {@link AuthenticationStage} records the passage on the request,
+ * and the session-branch resolution below is recorded beside it. A rejection raised after route
+ * selection and before that point — the verb gate, stage 3, the CSRF and cookie-origin checks and the
+ * bearer branch of stage 4 — is still metered and logged under its true event first, then answered
+ * to the caller exactly as an unrouted address while {@code security_defaults.uniform_not_found} is
+ * on: the {@code 404}, the unrouted response headers and the negotiated HTML page, never a
+ * trailers-only gRPC status (see {@link ErrorResponseWriter} and
+ * {@link de.cuioss.sheriff.gateway.edge.error.UniformNotFound}). A caller past the boundary keeps the
+ * honest answer.
+ * <p>
  * <strong>Negotiated HTML error pages.</strong> With {@code portal.error_pages} on, the three
  * gateway-originated error writers — the problem renderer, a failed OIDC callback and a
  * {@code source: directory} asset miss — answer an {@link ErrorPageClassifier HTML-eligible} exit with
@@ -420,8 +432,11 @@ public class GatewayEdgeRoute {
         this.connectionRetirement = new ConnectionRetirement(framingGate);
         this.rejectionReporter = new RejectionReporter(gatewayEventCounter, sheriffMetrics,
                 hardening.requestBodyIdleTimeoutMillis(), hardening.requestBodyDeadlineMillis());
+        // The trust-boundary branch is on unless security_defaults.uniform_not_found is declared false:
+        // an omitted block resolves to the secure default exactly as a block omitting the key does.
+        boolean uniformNotFound = securityDefaultsConfig == null || securityDefaultsConfig.effectiveUniformNotFound();
         this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
-                rejectionReporter);
+                rejectionReporter, uniformNotFound);
         this.reservedBodyReader = new ReservedBodyReader(reservedPathRegistry, hardening.reservedBodyMaxBytes(),
                 gatewayEventCounter, rejectionReporter, errorResponseWriter);
         this.reservedPathHandler = new ReservedPathHandler(reservedPathRegistry, bffRuntime, portalEndpoint,
@@ -588,6 +603,12 @@ public class GatewayEdgeRoute {
             AuthBranch branch = AuthBranch.resolve(effectiveAuth, request);
             if (effectiveAuth.effectiveSessionFallback()) {
                 sheriffMetrics.recordAuthBranch(route.id(), branch);
+            }
+            // Recorded before the CSRF gate below so a rejection it raises already knows its branch: the
+            // session branch keeps its 302 / 401 negotiation for an authentication failure, while its
+            // CSRF refusal is still answered as the unrouted 404 to an untrusted caller.
+            if (branch == AuthBranch.SESSION) {
+                request.markSessionBranch();
             }
             // Fixed CSRF defence (D7): every unsafe-method request resolved onto the SESSION branch must
             // prove same-origin provenance before the session runtime resolves it — a require:session

@@ -73,6 +73,7 @@ import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.edge.EdgeFixtures;
 import de.cuioss.sheriff.gateway.edge.GatewayEdgeRoute;
@@ -333,16 +334,42 @@ class WebSocketRelayStageTest {
     }
 
     @Test
-    @DisplayName("rejects a bearer handshake without a token 401 before dialing the upstream")
+    @DisplayName("rejects a bearer handshake without a token as the unrouted 404 before dialing the upstream")
     void rejectsMissingBearerTokenBeforeDial() {
         // Act
         ExecutionException failure = assertThrows(ExecutionException.class,
                 () -> connect("/ws-secure/room", ALLOWED_ORIGIN));
 
-        // Assert — authentication (stage 4) rejects the handshake before the WebSocket dispatch runs
+        // Assert — authentication (stage 4) rejects the handshake before the WebSocket dispatch runs, and
+        // the pre-trust refusal is answered to the untrusted caller as the unrouted 404
         UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
-        assertEquals(401, rejected.getStatus(), () -> rejectionReport(failure));
+        assertEquals(404, rejected.getStatus(), () -> rejectionReport(failure));
+        assertNull(rejected.getHeaders().get("WWW-Authenticate"), "no challenge discloses the route");
         assertEquals(0, upstreamConnects.get(), "an unauthenticated handshake never reaches the upstream");
+    }
+
+    @Test
+    @DisplayName("switch off: rejects a bearer handshake without a token 401 before dialing the upstream")
+    void rejectsMissingBearerTokenBeforeDialSwitchOff() throws Exception {
+        HttpServer honest = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                .routes(wsRoute("wssecure", "/ws-secure", Require.BEARER, upstreamPort, Set.of(ALLOWED_ORIGIN), null,
+                        positiveListNamingNothing()))
+                .gatewayConfig(ConfigFixtures.gateway().securityHeaders(securityHeaders())
+                        .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(false).build()).build())
+                .serve();
+        try {
+            WebSocketConnectOptions options = new WebSocketConnectOptions().setHost(LoopbackHost.ADDRESS)
+                    .setPort(honest.actualPort()).setURI("/ws-secure/room").addHeader("Origin", ALLOWED_ORIGIN);
+
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> Awaits.connect(wsClient.connect(options), "the WebSocket upgrade to the honest edge"));
+
+            UpgradeRejectedException rejected = assertInstanceOf(UpgradeRejectedException.class, failure.getCause());
+            assertEquals(401, rejected.getStatus(), () -> rejectionReport(failure));
+            assertEquals(0, upstreamConnects.get(), "an unauthenticated handshake never reaches the upstream");
+        } finally {
+            Awaits.teardown(honest.close(), "the honest edge front server to close");
+        }
     }
 
     @Test

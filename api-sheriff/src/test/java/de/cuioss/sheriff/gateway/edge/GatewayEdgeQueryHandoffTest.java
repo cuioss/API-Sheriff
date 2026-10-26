@@ -29,7 +29,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
+import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -63,6 +65,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * asserts the upstream saw nothing at all. The {@code strict} route runs the {@link SecurityProfile#STRICT}
  * policy, which deviates from the cui-http strict preset in exactly one component: a parameter value
  * that decodes to CR or LF is refused.
+ * <p>
+ * A refusal is raised after route selection and before the trust boundary, so the default edge answers
+ * it to the untrusted caller as the unrouted {@code 404}; the discriminating signal that the filter, and
+ * not routing, refused it is that the upstream saw nothing. A second, <em>honest</em> edge built with
+ * {@code security_defaults.uniform_not_found: false} pins the filter's own {@code 400}.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — the raw query is validated and forwarded as one form")
@@ -79,6 +86,8 @@ class GatewayEdgeQueryHandoffTest {
     private ExecutorService virtualThreadExecutor;
     private HttpServer upstreamServer;
     private HttpServer frontServer;
+    /** The same routes behind an edge with {@code security_defaults.uniform_not_found: false}. */
+    private HttpServer honestServer;
     private HttpClient client;
     /** The transport's decoded view of {@code q}, captured by a probe registered ahead of the edge. */
     private final AtomicReference<@Nullable String> transportDecodedQ = new AtomicReference<>();
@@ -106,7 +115,15 @@ class GatewayEdgeQueryHandoffTest {
                 route("allowx", upstreamPort, null, ForwardConfig.builder().queryAllow(List.of("x")).build()),
                 route("allowab", upstreamPort, null,
                         ForwardConfig.builder().queryAllow(List.of("a", "b")).build())));
-        GatewayEdgeRoute edge = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(routeTable).build();
+        frontServer = startFront(routeTable, ConfigFixtures.gateway().build());
+        honestServer = startFront(routeTable, ConfigFixtures.gateway()
+                .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(false).build()).build());
+        client = vertx.createHttpClient();
+    }
+
+    private HttpServer startFront(RouteTable routeTable, GatewayConfig gatewayConfig) throws Exception {
+        GatewayEdgeRoute edge = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(routeTable)
+                .gatewayConfig(gatewayConfig).build();
 
         Router router = Router.router(vertx);
         // Registered before the edge's catch-all: records what the transport's decoded parameter view
@@ -116,15 +133,15 @@ class GatewayEdgeQueryHandoffTest {
             ctx.next();
         });
         edge.registerRoutes(router);
-        frontServer = Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
+        return Awaits.connect(vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                 "the edge front server to start listening");
-        client = vertx.createHttpClient();
     }
 
     @AfterEach
     void tearDown() throws Exception {
         Awaits.teardown(client.close(), "the HTTP client to close");
         Awaits.teardown(frontServer.close(), "the edge front server to close");
+        Awaits.teardown(honestServer.close(), "the honest edge front server to close");
         Awaits.teardown(upstreamServer.close(), "the echo upstream server to close");
         virtualThreadExecutor.close();
         Awaits.teardown(vertx.close(), "Vert.x to close");
@@ -168,7 +185,8 @@ class GatewayEdgeQueryHandoffTest {
 
         // Assert
         assertAll(query,
-                () -> assertEquals(400, response.status(), "strict refuses the value"),
+                () -> assertEquals(404, response.status(),
+                        "strict refuses the value, answered to the untrusted caller as the unrouted 404"),
                 () -> assertEquals(0, upstreamHits.get(), "a refused value never reaches the upstream"));
     }
 
@@ -181,8 +199,23 @@ class GatewayEdgeQueryHandoffTest {
 
         // Assert
         assertAll(query,
-                () -> assertEquals(400, response.status(), "the parameter-name pipeline refuses the name"),
+                () -> assertEquals(404, response.status(),
+                        "the parameter-name pipeline refuses the name, answered as the unrouted 404"),
                 () -> assertEquals(0, upstreamHits.get(), "a refused name never reaches the upstream"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"q=%00", "a%3Db=1", "q=data%3A%20x"})
+    @DisplayName("switch off: each refusal keeps the filter's own 400 and still reaches no upstream")
+    void switchOffKeepsTheFilterVerdict(String query) throws Exception {
+        // Act — one refused value per refusal test above: a dangerous value, a delimiter in a name and
+        // the protocol-scheme false positive
+        Response response = get(honestServer, "/strict/orders?" + query, Map.of());
+
+        // Assert
+        assertAll(query,
+                () -> assertEquals(400, response.status(), "the honest edge reports the filter's verdict"),
+                () -> assertEquals(0, upstreamHits.get(), "a refused value never reaches the upstream"));
     }
 
     @Test
@@ -195,7 +228,8 @@ class GatewayEdgeQueryHandoffTest {
         Response response = get("/strict/orders?q=data%3A%20x");
 
         // Assert
-        assertEquals(400, response.status(), "the decoded value matches the protocol-scheme injection pattern");
+        assertEquals(404, response.status(),
+                "the decoded value matches the protocol-scheme injection pattern, answered as the unrouted 404");
         assertEquals(0, upstreamHits.get(), "the refused value never reaches the upstream");
     }
 
@@ -241,7 +275,8 @@ class GatewayEdgeQueryHandoffTest {
         Response response = get("/lenient/orders?q=%252F");
 
         // Assert
-        assertEquals(400, response.status(), "lenient still runs the parameter-value pipeline");
+        assertEquals(404, response.status(),
+                "lenient still runs the parameter-value pipeline, its refusal answered as the unrouted 404");
         assertEquals(0, upstreamHits.get(), "the refused value never reaches the upstream");
     }
 
@@ -283,7 +318,8 @@ class GatewayEdgeQueryHandoffTest {
 
         // Assert
         assertAll(
-                () -> assertEquals(400, strict.status(), "strict refuses a ';' in a parameter name"),
+                () -> assertEquals(404, strict.status(),
+                        "strict refuses a ';' in a parameter name, answered as the unrouted 404"),
                 () -> assertEquals(0, strictHits, "the refused name never reaches the upstream"),
                 () -> assertEquals(200, minimal.status(), "'minimal' turns the url-parameter validation off"),
                 () -> assertEquals("GET " + UPSTREAM_PATH + "?a%3Bb=1", minimal.body(),
@@ -394,8 +430,12 @@ class GatewayEdgeQueryHandoffTest {
     }
 
     private Response get(String uri, Map<String, String> requestHeaders) throws Exception {
+        return get(frontServer, uri, requestHeaders);
+    }
+
+    private Response get(HttpServer front, String uri, Map<String, String> requestHeaders) throws Exception {
         RequestOptions options = new RequestOptions().setHost(LoopbackHost.ADDRESS)
-                .setPort(frontServer.actualPort()).setMethod(HttpMethod.GET).setURI(uri);
+                .setPort(front.actualPort()).setMethod(HttpMethod.GET).setURI(uri);
         CompletableFuture<Response> future = client.request(options)
                 .compose(request -> {
                     requestHeaders.forEach(request::putHeader);

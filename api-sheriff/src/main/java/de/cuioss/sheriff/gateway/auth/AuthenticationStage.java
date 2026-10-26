@@ -77,6 +77,14 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  * The upstream is never contacted on any authentication or authorization rejection.
  * <p>
+ * <strong>The trust boundary.</strong> The stage records on the request when it has passed the trust
+ * boundary ({@link PipelineRequest#markTrustBoundaryPassed()}): on the bearer branch right after the
+ * token validated and <em>before</em> the scope check, so a {@link EventType#SCOPE_MISSING} {@code 403}
+ * is answered honestly to a caller whose credential is valid; and on every branch when the stage
+ * completes without a rejection. A {@link EventType#TOKEN_MISSING} or {@link EventType#TOKEN_INVALID}
+ * rejection leaves the marker unset, so the edge answers it to the caller as the unrouted
+ * {@code 404} while {@code security_defaults.uniform_not_found} is on (ADR-0072).
+ * <p>
  * The session runtime is an optional collaborator: it is wired only when the gateway serves a BFF
  * variant. A request resolved onto the session branch — a {@code require: session} route, or the
  * session branch of a {@code session_fallback} route — reaching this stage without a wired session
@@ -125,7 +133,8 @@ public final class AuthenticationStage {
     }
 
     /**
-     * Enforces the selected route's auth posture on the {@link AuthBranch} resolved for the request.
+     * Enforces the selected route's auth posture on the {@link AuthBranch} resolved for the request,
+     * and records the passed trust boundary on the request when it returns normally.
      *
      * @param request the in-flight request context; its route must be selected (stage 2)
      * @throws GatewayException on a missing / invalid token or a missing session (401), or a missing
@@ -159,6 +168,9 @@ public final class AuthenticationStage {
             case null -> throw new IllegalStateException(
                     "Route " + route.id() + " reached authentication with a null auth branch");
         }
+        // Reached only when no branch rejected: a validated bearer, a live session (or the session
+        // runtime's own short-circuit answer) or an anonymous route that authenticates nothing.
+        request.markTrustBoundaryPassed();
     }
 
     private SessionAuthenticationStage requireSessionStage(Route route) {
@@ -170,7 +182,8 @@ public final class AuthenticationStage {
     }
 
     /**
-     * Validates the inbound bearer token offline and enforces the route's needed scopes.
+     * Validates the inbound bearer token offline, records the passed trust boundary once it validated,
+     * and enforces the route's needed scopes.
      *
      * @return the raw token, once it has passed validation and the scope check
      */
@@ -185,6 +198,9 @@ public final class AuthenticationStage {
         } catch (TokenValidationException validationFailure) {
             throw unauthorizedFromValidation(request, validationFailure);
         }
+        // The credential is valid: the caller is trusted from here on, so the scope check below answers
+        // its 403 honestly instead of as the unrouted 404.
+        request.markTrustBoundaryPassed();
 
         Set<String> neededScopes = route.neededScopes();
         if (!neededScopes.isEmpty()) {

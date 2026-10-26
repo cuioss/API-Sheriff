@@ -194,7 +194,7 @@ class SurefireForkGroupContractTest {
         Path sourceRoot = MODULE.resolve(TEST_SOURCES);
         Path gateway = Path.of("de", "cuioss", "sheriff", "gateway");
         Path mentionsQuarkusTest = gateway.resolve(Path.of("quarkus", "BffRuntimeProducerTest.java"));
-        Path edgeWithoutVertx = gateway.resolve(Path.of("edge", "error", "ErrorResponseWriterTest.java"));
+        Path edgeWithoutVertx = gateway.resolve(Path.of("edge", "error", "UniformNotFoundTest.java"));
         Path fixtureItself = gateway.resolve(Path.of("auth", "SanMismatchedJwksServer.java"));
         TestSource mentioning = read(sourceRoot, mentionsQuarkusTest);
         TestSource edge = read(sourceRoot, edgeWithoutVertx);
