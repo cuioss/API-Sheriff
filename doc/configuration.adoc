@@ -4379,8 +4379,10 @@ anchor's block wins over the global one by the rule every policy block follows (
 link:user/anchors.adoc#_policy_block_resolution[Policy-block resolution]).
 
 *Every header is explicit opt-in.* The block emits a header only when it is configured. A gateway
-with no `security_headers` block, or with an empty one, sends none of the headers below, and the
-gateway adds none on its own. The per-header guide -- the header each key produces, a recommended
+with no `security_headers` block, or with an empty one, sends none of the headers below. Outside the
+block, two gateway-authored answers keep fixed headers of their own: an asset served through the
+response envelope always carries `X-Content-Type-Options: nosniff`, and a portal page or HTML error
+page carries the portal's fixed `Content-Security-Policy` and `nosniff`. The per-header guide -- the header each key produces, a recommended
 value, and why nothing is applied automatically -- is in
 link:user/anchors.adoc#_security_headers_opt_in[Every header is opt-in -- what to configure].
 

@@ -112,10 +112,10 @@ description no longer holds in either of its two parts:
 *The toggle withholds the validators under every forward mode.* With the flag *off*, the
 gateway removes the five validators from the client's headers after the mode copy. A
 forward-all, negative-list or positive-list route therefore carries none of them upstream, and
-no route forwards a precondition whose answering `ETag` the response half strips. The two halves
-are one decision in every mode, so `headers_deny` is no longer needed to withhold the validators
-under a permissive posture. `set_headers` is operator configuration and stays ungated. ADR-0037
-records why narrowing forward-all for this class of client headers is deliberate.
+no route forwards a client-supplied precondition whose answering `ETag` the response half strips.
+The two halves are one decision in every mode, so `headers_deny` is no longer needed to withhold
+the validators under a permissive posture. `set_headers` is operator configuration and stays
+ungated. ADR-0037 records why narrowing forward-all for this class of client headers is deliberate.
 
 [[_amendment_a2]]
 === Amendment A2 -- the breaker is not assembled from `upstream.circuit_breaker`

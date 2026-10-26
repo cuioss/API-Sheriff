@@ -313,8 +313,8 @@ headers cross, and only the toggle knows that the answer would be stripped.
   so a positive-list route names three headers instead of eleven.
 * One home per direction means a name cannot be present in one relay path and
   absent from another — the #172 failure mode is structurally excluded.
-* A route with the toggle on forwards all five validators, and a route with it
-  off forwards none under any forward mode, so the two halves always agree.
+* With the toggle on, client validators cross unless `headers_deny` names them;
+  off, none crosses in any mode, so the halves agree. `set_headers` is ungated.
 * The membership rule is stateable in one sentence, so a future addition can be
   argued against it rather than judged ad hoc.
 * The gateway can front an upstream that keeps its own session in a cookie, while

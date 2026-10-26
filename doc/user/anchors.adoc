@@ -332,10 +332,11 @@ policy block follows (see <<_policy_block_resolution>>), not a special case for 
 [[_security_headers_opt_in]]
 ==== Every header is opt-in -- what to configure
 
-A `security_headers` block emits a header *only when the operator configures it*. There is no
-default-on header and no header the gateway adds on its own: a gateway with no `security_headers`
-block, or with an empty one, sends none of the headers below. Each row is one key of the block, the
-header it produces, a recommended starting value and why:
+A `security_headers` block emits a header *only when the operator configures it*. No configurable
+header is on by default: an absent or empty `security_headers` block emits none of the headers below.
+Gateway-authored answers -- an asset, a portal page, an HTML error page -- keep their own fixed
+headers, listed after the table. Each row is one key of the block, the header it produces, a
+recommended starting value and why:
 
 [cols="2,3,3,4"]
 |===
@@ -344,7 +345,9 @@ header it produces, a recommended starting value and why:
 | `hsts` (`max_age`, `include_subdomains`)
 | `Strict-Transport-Security: max-age=<max_age>[; includeSubDomains]`
 | `max_age: 31536000`, `include_subdomains: true` -- the latter only when every subdomain serves HTTPS
-| Pins the browser to HTTPS for a year, so a later plain-HTTP first hop cannot be downgraded.
+| Once a browser has stored the policy, it reaches the host only over HTTPS for a year, so a later
+  visit cannot be downgraded to plain HTTP. The first visit, before the policy is stored, is not
+  covered.
 
 | `content_type_nosniff`
 | `X-Content-Type-Options: nosniff`
