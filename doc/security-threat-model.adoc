@@ -331,7 +331,8 @@ The threat categories that actually bite each boundary (empty cells omitted for 
   unauthenticated login request driving an outbound request to the identity provider -> <<bff-20>>;
   a token naming an arbitrary key id driving a JWKS request to the identity provider ->
   <<gw-07-jwks-refresh,GW-07>>.
-  *Info disclosure* via error paths -> <<gw-12>>.
+  *Info disclosure* via error paths -> <<gw-12>>; which addresses name routes, through the status,
+  headers or timing of a rejection -> <<gw-16>>.
 
 | B2 edge->pipeline
 | *Elevation* via path-confusion auth bypass -> <<gw-01>>. *Tampering* via header injection
@@ -741,7 +742,8 @@ protocol. `cui-http` admits decoded CR, LF and TAB in parameter values under eve
 -- a form-data textarea carve-out -- so the gateway's `strict` profile turns that carve-out off:
 `SecurityProfile.STRICT` is the `cui-http` strict preset with exactly one component changed
 (`allowLineBreaksInParameterValues(false)`), and a value carrying `%0D` or `%0A` is refused `400`
-before it reaches the upstream. `lenient` keeps the library default, and `minimal` runs no
+before it reaches the upstream -- answered as the unrouted `404` to an untrusted caller while
+`security_defaults.uniform_not_found` is on (<<gw-16>>). `lenient` keeps the library default, and `minimal` runs no
 parameter validation at all; both are documented as such (see
 link:configuration.adoc#_query_validation_raw_form[the configuration reference]). Because the
 filter now judges the raw form it forwards (<<gw-01>>), the refusal covers exactly the bytes the
@@ -1353,7 +1355,8 @@ first one, so the egress allowance of <<gw-05>> and the TLS posture of <<gw-06>>
 do to every other JWKS fetch. A `file`-sourced issuer has nothing to fetch and schedules no refresh.
 
 *Residual (accepted).* Two limits remain. Within one window after an abrupt key change, tokens signed
-with the new key are rejected: the request that triggers the refresh is itself answered `401`, and
+with the new key are rejected: the request that triggers the refresh is itself rejected (the
+unrouted `404` on the shipped default, `401` with `security_defaults.uniform_not_found: false`), and
 when the window was already claimed the next refresh waits for it to pass. And a caller who keeps
 presenting invented key ids can claim an issuer's window ahead of legitimate tokens. The refresh such
 a claim triggers is discarded even when the key set it fetched holds a newly rotated key, so for as
@@ -1870,7 +1873,7 @@ acted on per request, and there is no reviewable value to judge. Each flag alone
 gateway path may keep the query, and a fixed external target may be declared without it.
 
 Two further properties bound what a redirect route discloses: the redirect is answered only *after*
-authentication, so under an authenticated anchor an anonymous caller is challenged before any
+authentication, so under an authenticated anchor an anonymous caller is rejected before any
 `Location` is revealed; and the action is refused on every protocol but `http`, and together with an
 `upstream` or `asset` block, so no configuration reaches it silently.
 
@@ -1963,7 +1966,7 @@ a redirect answer carries
 exactly the configured status and `Location` (the raw query appended only under `keep_query`) and
 causes no upstream request; an authenticated or cookie-bearing redirect answer carries
 `Cache-Control: no-store` and a public cookie-less one does not; an unauthenticated request to a
-redirect route under an authenticated anchor is challenged and receives no `Location`.
+redirect route under an authenticated anchor is rejected and receives no `Location`.
 
 [#gw-14]
 === GW-14 -- Response security-header floor weakened (origin precedence, anchor replacement)
@@ -2090,8 +2093,9 @@ mechanism.
 | Every non-WebSocket route whose block forwards a cookie carries a same-origin check, built at
   route-table assembly: an unsafe request that carries a cookie the route would forward must present
   an `Origin` equal to the origin the gateway was reached on or to one of `additional_origins`, or
-  `Sec-Fetch-Site: same-origin`, or it is refused `403` before authentication and before the
-  upstream. A cookie-forwarding WebSocket route must declare a non-empty `websocket.allowed_origins`,
+  `Sec-Fetch-Site: same-origin`, or it is refused before authentication and before the upstream:
+  answered as the unrouted `404` while `security_defaults.uniform_not_found` is on (<<gw-16>>), `403`
+  with the switch off, with the `CSRF_REJECTED` event metered either way. A cookie-forwarding WebSocket route must declare a non-empty `websocket.allowed_origins`,
   which <<gw-09>> enforces on the upgrade. Closed, with the scope stated below.
 |===
 
@@ -2149,11 +2153,81 @@ refused until the public origin is listed in `additional_origins`. The failure i
 *Assertion.* Under the default `none` the upstream receives no `Cookie` and the client no upstream
 `Set-Cookie`; a list forwards and relays exactly the listed names; `all` forwards and relays every
 name but the gateway's own; no relayed line carries `Domain`; a gateway cookie crosses in neither
-direction under any policy; a cross-site unsafe request carrying a forwarded cookie is refused `403`
-and reaches no upstream, while the same request without one is forwarded, a same-origin or
+direction under any policy; a cross-site unsafe request carrying a forwarded cookie is refused --
+the uniform `404` with `CSRF_REJECTED` metered on the shipped default (<<gw-16>>), `403` with the
+switch off -- and reaches no upstream, while the same request without one is forwarded, a same-origin or
 `additional_origins` request passes and `same_origin_check: false` admits it; a cookie-forwarding
 WebSocket route without `allowed_origins`, a gateway-scope `allow: all` and a list naming a gateway
 cookie each fail the boot.
+
+[#gw-16]
+=== GW-16 -- Endpoint-existence oracle through rejection status, headers and timing (information disclosure)
+
+A gateway that answers an address without a route with `404`, but a routed address with `401`,
+`405`, `413`, `400` or `403`, tells an unauthenticated caller which addresses name routes. The
+caller maps the deployment's surface -- every protected API, its methods, its body caps -- without a
+credential, then aims the next attack at what exists (CWE-204, CWE-203). The same signal leaks
+through the response headers a routed rejection carries (`WWW-Authenticate`, `Allow`, a route's
+`security_headers`, a `match.headers` `Vary`), through a gRPC trailers-only status that names the
+address as a gRPC route, and through the time the answer takes: an unrouted address is answered
+straight after route selection, a routed rejection only after the stages before it ran.
+
+*Evidence.* The class is the observable-discrepancy weakness of CWE-204 (response) and CWE-208
+(timing) applied to routing; API-discovery scanners enumerate a surface exactly this way. No
+gateway-product CVE is cited: most gateways answer an unauthenticated request with `401` on purpose,
+and the entry is recorded from the mechanism.
+
+*Control.* Every rejection raised after route selection and before the trust boundary -- a
+validated bearer token or a completed authentication stage, never a network address -- is rendered
+to the caller exactly as the unrouted address is answered: status `404`, the `NO_ROUTE_MATCHED`
+problem body or its HTML error page, the response headers the request carried before its route was
+selected, and never a trailers-only gRPC status. The closed set of events, every exclusion and its
+reason, and the definition of "identical" are recorded in
+link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+and in link:architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the
+trust boundary]. Every unrouted `404`, genuine or resolved, leaves the edge no earlier than a fixed
+floor plus a random jitter after admission, written from a Vert.x timer, so the two paths cannot be
+told apart by timing either. The true event is still reported -- the event counter, the WARN and
+INFO lines and `sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is
+not shown. One switch, `security_defaults.uniform_not_found`, governs the branch and the floor and
+is on by default (link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
+
+*Status:* COVERED. `UniformNotFoundTest` walks every `EventType` constant and fails for one with
+neither a closed-set nor an exclusion entry; `GatewayEdgeUniformNotFoundTest` asserts over a live
+edge that each pre-trust rejection is byte-identical to the unrouted answer in status, body,
+`Content-Type` and header set -- the HTML branch and a `protocol: grpc` route included -- that no
+uniform `404` leaves before the floor, that a scope `403` is not delayed, and that the switch set to
+`false` restores the honest codes; `ResponseDelayTest` asserts that the wait is a timer and not a
+held thread; and `EnumerationOracleIT` asserts the same comparison against the native image on the
+shipped default, together with the honest `403` of a validated token lacking a scope and the `302` /
+`401` of a session route.
+
+*Residual risk (accepted) -- session routes and anonymous routes still disclose themselves.* A
+session route answers an anonymous navigation with a `302` into login and anything else with a
+`401`; that negotiation is what the route is for, so it names the route by design (ADR-0055). An
+anonymous route discloses itself through its own success answer. The uniform answer covers their
+pre-trust rejections only.
+
+*Residual risk (accepted) -- the floor is a reasoned value, not a measured one.* The floor
+(`UniformNotFound.RESPONSE_FLOOR`, 50 ms) is meant to sit above the slowest pre-trust arm, the
+offline signature check of a well-formed token with a wrong signature; the jitter
+(`RESPONSE_JITTER`, 20 ms) blurs a residual overrun. No benchmark times that arm against the floored
+answer yet. An arm that exceeds the floor -- a garbage-collection pause, an unusually large token --
+reopens a timing signal the jitter blurs only partly.
+
+*Residual risk (accepted) -- the floor costs admission under a `404` flood.* Each unrouted `404`
+holds its admission permit until it is written, up to 70 ms after admission. A flood of unrouted or
+pre-trust requests therefore occupies admission permits for longer than it would without the floor,
+and past the admission cap the edge answers `503`, which is the same for every address. No thread is
+held while an answer waits (<<gw-07>>).
+
+*Assertion.* For a bearer route and an unrouted address on the same gateway, a request with no
+token, a garbage token, a wrong method, an off-allowlist path, an oversized declared body or a
+cross-site unsafe request carrying a forwarded cookie receives the same status, body, `Content-Type`
+and header names as the unrouted address, under `Accept: text/html` as well and on a `protocol: grpc`
+route; none of those answers leaves before the floor; `sheriff_errors_total` carries the true event;
+a validated token without the needed scope still receives `403`, and a session route still `302` /
+`401`; with `security_defaults.uniform_not_found: false` every case receives its honest code.
 
 == OAuth / OIDC / BFF failure catalogue
 
@@ -2383,7 +2457,8 @@ interval (`RetryingJwksLoaderTest`, `SheriffMetricsTest`); against the native im
 identity provider appears only after boot reports `DOWN`, turns `UP` within a minute of the provider
 appearing, and then accepts that provider's token (`JwksLateIdpReadinessIT`). The egress allowance
 is proven in both directions against the native image: an explicit list naming another host keeps
-the key set refused and a real token rejected `401`, and the same gateway with only that key removed
+the key set refused and a real token rejected -- the uniform `404` with `TOKEN_INVALID` metered --
+and the same gateway with only that key removed
 loads the key set through the derived allowance and accepts the same token (`JwksEgressMismatchIT`).
 
 [#bff-08]
@@ -2672,14 +2747,17 @@ real BFF bug.*
 
 *Control.* Fixed CSRF defence on unsafe methods: `Origin` exact-match against
 `session.csrf.trusted_origins`; `Sec-Fetch-Site: same-origin` accepted when `Origin` absent;
-else `403` + `CSRF_REJECTED`. Lock CORS to the SPA origin. This composes with the WebSocket
+else `CSRF_REJECTED`, answered as the unrouted `404` while `security_defaults.uniform_not_found` is
+on -- the defence runs before authentication, so the caller is untrusted (<<gw-16>>) -- and `403`
+with the switch off; the event is metered either way. Lock CORS to the SPA origin. This composes with the WebSocket
 Origin check (GW-09). A route that forwards the browser's own application cookies to its upstream
 carries a second instance of the same proof, scoped to that route (<<gw-15>>).
 
 *Status:* COVERED (fixed behaviour, no knob).
 
-*Assertion.* An unsafe-method request with a foreign `Origin` -> `403`; `Sec-Fetch-Site`
-variants behave per spec; CORS is limited to the configured origin.
+*Assertion.* An unsafe-method request with a foreign `Origin` -> the uniform `404` with
+`CSRF_REJECTED` metered, and `403` with `security_defaults.uniform_not_found: false`;
+`Sec-Fetch-Site` variants behave per spec; CORS is limited to the configured origin.
 
 [#bff-12]
 === BFF-12 -- Encrypted-cookie AES-GCM nonce / key rotation (stateless variant)
@@ -2948,7 +3026,8 @@ the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
 
 * *No downgrade.* Any `Authorization` header, whatever its scheme or value, an empty one included,
   selects BEARER. A malformed, foreign-scheme (`Basic`) or empty credential is therefore a `401` with
-  `WWW-Authenticate: Bearer`, never a login redirect, and a valid session cookie sent alongside it
+  `WWW-Authenticate: Bearer` -- answered as the unrouted `404` while
+  `security_defaults.uniform_not_found` is on (<<gw-16>>) -- never a login redirect, and a valid session cookie sent alongside it
   never rescues it. The only way onto the session branch is to send no `Authorization` at all, which
   gains an attacker nothing a `require: session` route does not already offer.
 * *CSRF where the credential is ambient.* The fixed CSRF defence (<<bff-11>>) runs on the SESSION
@@ -2982,7 +3061,8 @@ the ambient credential that makes the CSRF defence necessary (<<bff-11>>).
 *Assertion.* On a `session_fallback` route, with and without a live session cookie: a valid bearer is
 `200` with exactly the client's token upstream, no upstream `Cookie` and no `Set-Cookie`; a token
 lacking a needed scope is `403 insufficient_scope`; an invalid, `Basic` or empty `Authorization` is
-`401 WWW-Authenticate: Bearer` with no `Location`, even for a navigation. Without `Authorization`, a
+the uniform `404` with no `Location` and the true event metered, even for a navigation, and
+`401 WWW-Authenticate: Bearer` with `security_defaults.uniform_not_found: false`. Without `Authorization`, a
 live session is served with its mediated token, a navigation is redirected into the IdP, an XHR is
 `401`, and an unsafe method under a foreign `Origin` is CSRF-rejected while a bearer unsafe method
 without any `Origin` is admitted (`BffSessionFallbackIT`, `AuthBranchTest`, `AuthenticationStageTest`,
@@ -3842,6 +3922,7 @@ outstanding hardening work (next section).
 | <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
 | <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
+| <<gw-16>> | Every rejection raised after route selection and before the trust boundary rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released no earlier than a fixed floor plus jitter on a Vert.x timer; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `ResponseDelay`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0072 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor is a reasoned value pending a measurement, and its admission cost under a `404` flood, accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED

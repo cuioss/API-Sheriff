@@ -14,6 +14,18 @@
 
 Accepted
 
+[NOTE]
+====
+*Amended for untrusted callers.*
+link:0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+overrides the `403` this record states for the same-origin check. The check runs before
+authentication, so on the shipped default its refusal is answered as an unrouted address is
+answered: `404`, the routing problem document, and the HTTP `404` on a gRPC route rather than a
+trailers-only status. The event is still `CSRF_REJECTED`, and `sheriff_errors_total` still meters
+it. Which requests the check refuses is unchanged. With `security_defaults.uniform_not_found: false`
+the refusal answers `403` again.
+====
+
 == Context
 
 Once a route can resolve a forward-all posture

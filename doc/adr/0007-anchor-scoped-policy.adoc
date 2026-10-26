@@ -6,7 +6,8 @@
 
 Accepted. Amended by <<amendment-a1>> (`security_headers` apply after route selection; CORS stays
 global and pre-auth) and by <<amendment-a2>> (the inheritance chain is one declared rule resolved by
-`PolicyBlock`, with a fixed scope set per block).
+`PolicyBlock`, with a fixed scope set per block). Amended for untrusted callers by ADR-0072 -- see
+<<amendment-adr-0072>>.
 
 == Context
 
@@ -262,6 +263,18 @@ Blocks added later -- `cookies`
   together by a contract test, so a scope added in one place and not the others fails the build.
 * A boot rule that enumerates declarations instead of resolving the block still has to be widened by
   hand when a block gains a scope; the development guide lists that obligation.
+
+[[amendment-adr-0072]]
+== Amendment -- the header block of a rejection before the trust boundary
+
+link:0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+overrides one statement of <<amendment-a1>>: that the verb gate's `405`, like every response after
+stage 2a, carries the route's `security_headers` block. On the shipped default a rejection raised
+after route selection and before the trust boundary is answered as the unrouted `404`. The gateway
+restores the response headers the request had before its route was selected, so that answer carries
+the *global* block, as an unrouted `404` does. The verb gate is one such rejection; the others are
+listed in ADR-0072. With `security_defaults.uniform_not_found: false` those rejections carry the
+route's block again. Every other response after stage 2a is unchanged.
 
 == References
 

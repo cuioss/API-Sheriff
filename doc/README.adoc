@@ -248,7 +248,9 @@ boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Confi
 | link:adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016]
 | gRPC gateway rejections are emitted as trailers-only gRPC responses (a gRPC client cannot
   consume `application/problem+json`), with a canonical status mapping and h2-negotiation-failure
-  to `UNAVAILABLE`. *(Status: accepted.)*
+  to `UNAVAILABLE`. A rejection raised before the trust boundary is the HTTP `404` of
+  link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+  instead. *(Status: accepted.)*
 
 | link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
 | A dedicated raw-TCP front listener owns the public TLS port, reassembles the ClientHello, and by
@@ -299,6 +301,14 @@ boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Confi
   link:adr/0005-module-structure.adoc[ADR-0005]: the framework-agnostic core rule and its
   six-package gate are retired, and a narrowed gate keeps the five pre-boot configuration packages
   free of framework dependencies. *(Status: accepted.)*
+
+| link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+| A rejection raised after route selection and before the trust boundary -- the verb gate, the
+  post-route stage, the CSRF defence, a missing or invalid bearer token -- is answered exactly as an
+  unrouted address is answered, so an untrusted caller cannot tell an existing route from an absent
+  one. Every unrouted `404` leaves the edge no earlier than a fixed floor plus a random jitter, the
+  true event stays metered, and `security_defaults.uniform_not_found` (default `true`) governs both.
+  *(Status: accepted.)*
 |===
 
 NOTE: This index is *not exhaustive* -- most records in link:adr/[`doc/adr/`] have no row here.

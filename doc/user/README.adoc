@@ -237,6 +237,12 @@ nothing else. In particular, a `minimal` route **still**:
   count, and an oversized header value are all still rejected `400`;
 * enforces authentication, the verb gate, CSRF, and the forward-policy allowlists.
 
+An untrusted caller -- one that has not authenticated -- sees the two route-scoped rejections, the
+body-cap `413` and the `allowed_paths` `400`, as the unrouted `404`, so it cannot tell that the route
+exists; the true cause is counted in `sheriff_errors_total{event}` (see
+link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). The
+pre-route floor `400`s are the same for every address and keep their status.
+
 If you set `minimal` expecting the body cap or the path allowlist to stop applying, that is the
 misreading to correct: the mode is the *least* validation the gateway performs, not none of it. The
 normative closed list of what `minimal` disables is in
@@ -282,7 +288,11 @@ validate it against real traffic before it reaches production.
 
 `strict` is genuinely strict, so a route that legitimately needs headroom must say so. If a request
 is rejected `400` -- or `413` when it is the body cap -- check it against the `strict` caps in the
-mode table above. Two remedies, in order of preference:
+mode table above. An unauthenticated client sees a route-scoped rejection as the unrouted `404`
+instead, so a `404` from a route that exists can be the same cap: read `sheriff_errors_total{event}`
+for the true cause (`SECURITY_FILTER_VIOLATION`, `PATH_NOT_ALLOWED`, `CONTENT_TOO_LARGE`), as
+described in link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route
+answers 404]. Two remedies, in order of preference:
 
 . *Raise only the cap you need*, on the specific route that needs it -- e.g.
   `security_filter: { max_body_bytes: 5242880 }`. This keeps the strict posture everywhere else.

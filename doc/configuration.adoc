@@ -286,13 +286,21 @@ security_defaults:                 # baseline inbound filter mode; overridable p
                                    #   header values and Latin-1 characters in paths and parameter
                                    #   values. C1 controls, header names and cookies stay ASCII-only.
                                    #   See "The extended-ASCII override" below.
+  uniform_not_found: true          # OPTIONAL, default true. A rejection raised after route
+                                   #   selection and before the trust boundary is answered to the
+                                   #   caller as the unrouted 404, on a timing floor; the true
+                                   #   event stays in sheriff_errors_total{event}. false restores
+                                   #   the honest 401/400/405/413/403. See "The uniform 404" below.
 
 allowed_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]   # positive HTTP-verb allowlist
                                    #   (global default). An anchor or endpoint may REPLACE this
                                    #   wholesale -- the nearest declared scope wins (see
                                    #   "Policy-block resolution" in user/anchors.adoc).
                                    #   A routed request whose method is not in the EFFECTIVE list
-                                   #   is rejected 405. TRACE and CONNECT are never permitted and
+                                   #   is rejected 405 -- answered as the unrouted 404 while
+                                   #   security_defaults.uniform_not_found is on, the true event
+                                   #   METHOD_NOT_ALLOWED staying in sheriff_errors_total{event}.
+                                   #   TRACE and CONNECT are never permitted and
                                    #   cannot be listed. Omit => the standard set shown here.
 
 cookies:                           # OPTIONAL gateway-wide cookie policy (see "cookies"); an anchor,
@@ -1808,6 +1816,10 @@ below exactly as an anchor or route block is. The block maps onto `cui-http`'s
   pipeline ("body content validation should be handled at application layer"), so the gateway
   enforces the cap itself while reading the request body; `SecurityConfiguration.maxBodySize` is
   not wired. The cap only takes effect *below the framework floor* described immediately below.
+  The `413` for a declared `Content-Length` over the cap is raised before authentication, so it is
+  answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found`
+  is on; the true event stays in `sheriff_errors_total{event}` (see <<_uniform_not_found>>). The
+  `413` of a body that crosses the cap while it streams is raised after dispatch and stays.
 
 | `max_header_count` / `max_query_params`
 | `maxHeaderCount` / `maxParameterCount` (`RequestCollectionValidator`)
@@ -1961,7 +1973,10 @@ receives the gateway's `application/problem+json` envelope, regardless of where 
 
 *Whitelisting.* `cui-http` has no path allow-list knob, so path whitelisting is enforced at the
 gateway layer by `allowed_paths`: a request whose validated, normalized path matches no entry is
-rejected -- the manifest's "WAF via path white-listing". Header-name and content-type allow/block
+rejected `400` -- the manifest's "WAF via path white-listing". Like every refusal of the per-route
+filter, that `400` is answered as the unrouted `404` to an untrusted caller while
+`security_defaults.uniform_not_found` is on; the true event stays in `sheriff_errors_total{event}`
+(see <<_uniform_not_found>>). Header-name and content-type allow/block
 are configured via `allowed_header_names` / `blocked_header_names` / `allowed_content_types`
 above, wired to the corresponding `cui-http` knobs. *What reaches the upstream is a separate,
 later question* answered by the route's link:#_forward[`forward`] block, which offers a
@@ -2014,7 +2029,9 @@ raw pairs verbatim.
 *Known residual false positive under `strict`.* The injection patterns match on the *decoded*
 value, so a legitimate value whose decoded form starts with `javascript:`, `vbscript:`, `data:` or
 `file:` -- `q=data%3A%20x`, for instance -- or that matches a path-traversal pattern is refused
-`400`. A route that must accept such values declares `profile: lenient` or, on a public
+`400`, answered as the unrouted `404` to an untrusted caller while
+`security_defaults.uniform_not_found` is on (see <<_uniform_not_found>>). A route that must accept
+such values declares `profile: lenient` or, on a public
 unauthenticated route, `minimal`.
 
 *Forward lists match the decoded name.* `forward.query_allow` and `forward.query_deny` entries are
@@ -2046,7 +2063,7 @@ always an explicit, audited choice.
 | Value | Behaviour
 
 | `require: none`  | No authentication (e.g. `/health`). Must be written explicitly at the endpoint (or route) level -- an endpoint file without an `auth` block, and without an anchor-provided one, fails the boot (see link:user/endpoint-routes.adoc#_defaults_for_omitted_blocks[Defaults for omitted blocks]).
-| `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; then check the route's needed scope set, `oidc.scopes ∪ endpoint.scopes` (`endpoint.scopes` alone without an `oidc` block). A valid token missing any member is answered `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the missing scopes, and the upstream is never contacted; an empty needed set skips the check. Because the set includes `oidc.scopes`, a BFF-mode gateway rejects a bearer token lacking them -- a `client_credentials` token among them. link:variants/01-base-gateway.adoc[Variant 1].
+| `require: bearer`| Offline-validate the incoming `Authorization: Bearer` via `token-sheriff-validation` against the issuers in link:#_token_validation[`token_validation`]; then check the route's needed scope set, `oidc.scopes ∪ endpoint.scopes` (`endpoint.scopes` alone without an `oidc` block). A missing or invalid token is `401` with `WWW-Authenticate: Bearer`, answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found` is on; the true event (`TOKEN_MISSING` / `TOKEN_INVALID`) stays in `sheriff_errors_total{event}` (see <<_uniform_not_found>>). A valid token missing any member is answered `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`, naming only the missing scopes, and the upstream is never contacted; an empty needed set skips the check. Because the set includes `oidc.scopes`, a BFF-mode gateway rejects a bearer token lacking them -- a `client_credentials` token among them. link:variants/01-base-gateway.adoc[Variant 1].
 | `require: session`| Require a valid mediated OIDC session per the link:#_oidc[`oidc`] block; inject the token upstream. The BFF variants. An unauthenticated *navigation* request (one that accepts `text/html`, i.e. a browser page load) is redirected into the auth-code flow; any other unauthenticated request (XHR/`fetch`, API clients) receives `401` `application/problem+json` -- redirecting a JSON call is useless to its caller. The distinction is content negotiation, not per-route configuration. A session route *enforces* its needed scope set, `oidc.scopes ∪ endpoint.scopes`: it is what a login started on the route requests from the IdP, and every request's live session is compared against it before anything is relayed. A missing scope inside the session's granted set is obtained by a refresh; any other missing scope redirects a navigation into a widening of the live session and answers every other request `403` `application/problem+json` with the extension members `missing_scopes` and, when link:#_oidc[`oidc.step_up.path`] is configured, `step_up_url` -- with no `WWW-Authenticate` header. A session short of a needed scope is never relayed (see link:user/bff-session.adoc#scope-enforcement[When a session lacks a scope the route needs]). With `token_relay: false` the session is still required and still scope-checked, but no token is relayed.
 |===
 
@@ -2093,7 +2110,7 @@ single input: whether the request carries an `Authorization` header.
 | Request | Behaviour
 
 | `Authorization` present (any scheme, any value, an empty value included) -- *BEARER branch*
-| Exactly a plain `require: bearer` route: the token is validated offline, a token missing a member of the route's needed scope set is `403 insufficient_scope`, and a missing, malformed, non-`Bearer` or empty credential is `401` with `WWW-Authenticate: Bearer`. No session is looked up, the session branch's fixed CSRF defence does not run, the gateway writes no session `Set-Cookie` and no login redirect is ever issued -- a live session cookie never rescues a failed bearer. An upstream `Set-Cookie` is still relayed when the route's `cookies` policy admits the cookie it names, as on every route (see <<_cookies>>). The route's cookie same-origin check is not a session check and still applies, as on every route: an unsafe request carrying a cookie the route's `cookies` policy forwards is checked before authentication (see <<_cookies_same_origin_check>>). An admitted token is forwarded upstream as exactly the validated client token, through the same mediated-bearer seam the session branch uses; no `headers_allow` entry is needed for it, and the browser `Cookie` crosses only as the route's `cookies` policy admits it, as on every route (see <<_never_forward_set>>).
+| Exactly a plain `require: bearer` route: the token is validated offline, a token missing a member of the route's needed scope set is `403 insufficient_scope`, and a missing, malformed, non-`Bearer` or empty credential is `401` with `WWW-Authenticate: Bearer` -- answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found` is on, the true event staying in `sheriff_errors_total{event}` (see <<_uniform_not_found>>). No session is looked up, the session branch's fixed CSRF defence does not run, the gateway writes no session `Set-Cookie` and no login redirect is ever issued -- a live session cookie never rescues a failed bearer. An upstream `Set-Cookie` is still relayed when the route's `cookies` policy admits the cookie it names, as on every route (see <<_cookies>>). The route's cookie same-origin check is not a session check and still applies, as on every route: an unsafe request carrying a cookie the route's `cookies` policy forwards is checked before authentication (see <<_cookies_same_origin_check>>). An admitted token is forwarded upstream as exactly the validated client token, through the same mediated-bearer seam the session branch uses; no `headers_allow` entry is needed for it, and the browser `Cookie` crosses only as the route's `cookies` policy admits it, as on every route (see <<_never_forward_set>>).
 | `Authorization` absent -- *SESSION branch*
 | Exactly a `require: session` route: the fixed CSRF defence on unsafe methods, a live session mediates its token upstream when the effective `token_relay` is `true` (with `false` the session is still required but no session token is relayed), an unauthenticated navigation is redirected into the auth-code flow and any other unauthenticated request is `401` `application/problem+json`. A login started on the route requests the route's needed scope set (see <<_endpoint_scopes>>), and -- as on every session route -- the branch enforces that set on every request: a live session whose token lacks a member is not relayed. A missing scope inside the session's granted set is obtained by a refresh; any other missing scope redirects a navigation into a widening of the live session and answers every other request `403` `application/problem+json` naming `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`. Both branches therefore hold a caller to the same set, each with its own answer: the BEARER branch's `403` carries `WWW-Authenticate: Bearer error="insufficient_scope"`, the SESSION branch's carries no `WWW-Authenticate`. `token_relay` governs whether this branch relays the token, not whether it checks the scopes.
 |===
@@ -2250,7 +2267,9 @@ cover that window:
   link:LogMessages.adoc[Log messages]); a key set loaded by the very first attempt logs neither. Once
   a key set is loaded, the regular background refresh keeps it current.
 
-Until an issuer's key set loads, a bearer token from that issuer is rejected `401`. A `file`-sourced
+Until an issuer's key set loads, a bearer token from that issuer is rejected `401` (`TOKEN_INVALID`),
+answered as the unrouted `404` while `security_defaults.uniform_not_found` is on (see
+<<_uniform_not_found>>). A `file`-sourced
 issuer loads from disk and normally reports `ready` immediately.
 
 *Readiness reports key-set availability, not key-set freshness.* Once an issuer's key set has loaded,
@@ -2323,11 +2342,14 @@ never act. Every violation of every issuer is reported in one pass.
 *What happens when a token names an unknown key id.* The lookup that verifies a token never fetches.
 It is answered from the key sets the gateway holds at that moment -- the current one, then a
 replaced one still inside its grace period -- so a token naming a key id neither holds is rejected
-`401`. When the issuer's key set is loaded, that same lookup tries to claim the issuer's window:
+`401` (`TOKEN_INVALID`). The caller holds no validated token at that point, so while
+`security_defaults.uniform_not_found` is on it receives the unrouted `404` instead, and the true
+event stays in `sheriff_errors_total{event}` (see <<_uniform_not_found>>). When the issuer's key set
+is loaded, that same lookup tries to claim the issuer's window:
 
 * *The first unknown key id in a window* logs `WARN ApiSheriff-136` and schedules one refresh of the
   key set, off the request thread -- unless the refresh of an earlier window is still running, in
-  which case none is added. The request that triggered it is still answered `401`.
+  which case none is added. The request that triggered it is still rejected.
 * *Every further unknown key id inside the window* schedules nothing and is logged at `DEBUG` only.
   The window is claimed when the token arrives, not when the refresh completes, so the bound holds
   whatever the refresh's outcome, the request rate and the number of distinct key ids.
@@ -2341,7 +2363,8 @@ replaced one still inside its grace period -- so a token naming a key id neither
 
 A token signed with a new key is therefore accepted once a refresh it triggered has loaded that key:
 after the fetch when the window was free, and after at most one further window when it was not. A
-client that receives `401` for such a token succeeds by retrying. A refresh triggered by a token that
+client whose request with such a token is rejected -- `404` on the shipped default, `401` with
+`uniform_not_found: false` -- succeeds by retrying. A refresh triggered by a token that
 names a key id the identity provider never published is discarded even when the key set it fetched
 holds a newly rotated key; that key is then picked up by the next window a token signed with it
 claims or, at the latest, by the background refresh.
@@ -2738,7 +2761,10 @@ See link:#_oidc_client_authentication[Client authentication].
   domain, e.g. `app.example.com` calling `gw.example.com` -- because the session cookie is
   fixed at `SameSite=Lax`: a truly *cross-site* SPA (different registrable domain) never gets
   the cookie attached to its calls, by design. Host the application under the same site as the
-  gateway. See link:variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
+  gateway. An unsafe call from an origin outside the list is refused as `CSRF_REJECTED` (`403`)
+  before authentication, so it is answered as the unrouted `404` to an untrusted caller while
+  `security_defaults.uniform_not_found` is on; the true event stays in `sheriff_errors_total{event}`
+  (see <<_uniform_not_found>>). See link:variants/02-bff-session.adoc#_csrf_defence[CSRF Defence].
 
 | `session.mode`
 | `cookie` (Variant 3, encrypted-cookie state) or `server` (Variant 2, server-side store).
@@ -3877,8 +3903,11 @@ exception, settled below.
   same-origin`. Anything else is refused `403` as a `CSRF_REJECTED` event before authentication
   and before the upstream. The refusal is recorded by the `CSRF_REJECTED` event counter and a
   DEBUG diagnostic naming its disposition only -- no `ApiSheriff-xxx` log record is written, and the
-  `Origin` value is never logged. A gRPC route answers the refusal as a trailers-only
-  `PERMISSION_DENIED`.
+  `Origin` value is never logged. Because the check runs before authentication, the `403` is
+  answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found`
+  is on; the true event stays in `sheriff_errors_total{event}` (see <<_uniform_not_found>>). That
+  holds on a gRPC route too, which answers the HTTP `404` rather than a trailers-only status; with
+  the switch off a gRPC route answers the refusal as a trailers-only `PERMISSION_DENIED`.
 * *When it runs.* The check applies *only to an unsafe request that carries at least one cookie the
   route would forward* -- read after the gateway's own cookies are dropped and the policy filter has
   run, through the same reading stage 5 rebuilds the header from, so the check and the rebuild
@@ -4099,7 +4128,7 @@ A route declares *exactly one* terminal action: a `redirect` block together with
 an `upstream` block fails the boot. A redirect is admitted under every anchor `type` and on
 unanchored routes, but only on `protocol: http` -- a `grpc`, `websocket` or `graphql` route declaring
 one fails the boot. The redirect is answered *after* authentication, so under an authenticated anchor
-an unauthenticated caller is challenged before the location is disclosed; the route's `forward` block
+an unauthenticated caller is rejected before the location is disclosed; the route's `forward` block
 is not consulted.
 
 [[_upstream_defaults]]
@@ -4284,8 +4313,12 @@ before anything else runs. Immediately after route selection, the selected route
 its anchor's block when the anchor declares one, the global block otherwise -- replaces the
 gateway-owned security headers. Every response produced before a route is selected (a stage-1
 rejection, the `404` for an unrouted path, a CORS preflight answer) therefore carries the *global*
-block, and every response produced after it (a proxied response, an asset, a redirect, a `405`, an
-authentication rejection) carries the *route's* block.
+block, and every response produced after it (a proxied response, an asset, a redirect, a scope
+`403`) carries the *route's* block. A rejection raised after route selection but answered as the
+unrouted `404` -- a `405`, a bearer `401` and the others of <<_uniform_not_found>> -- carries the
+*global* block again: the gateway restores the headers the request had before its route was
+selected, so the answer cannot be told apart from an unrouted one. With
+`security_defaults.uniform_not_found: false` those rejections carry the route's block.
 
 *An anchor block replaces the global block wholesale.* There is no key-by-key merge: a key the anchor
 block does not declare is absent for that anchor's routes. An anchor declaring only `frame_deny: true`
@@ -4346,6 +4379,7 @@ final value, including a weaker one -- a permissive `Content-Security-Policy`, o
 `X-Frame-Options: SAMEORIGIN` where the gateway would send `DENY`. Keep `set` unless the upstream is trusted to own that header (see
 link:security-threat-model.adoc#gw-14[GW-14]).
 
+[[_security_defaults]]
 === `security_defaults`
 
 The gateway-wide inbound-filter baseline. `profile` selects the *inbound-filter mode*, and the mode
@@ -4383,7 +4417,7 @@ wanting the content block-lists must declare `paranoid` explicitly -- adding `pa
 the default, because the tightest available mode and the default mode are separate decisions. The
 concrete numbers each mode carries are tabulated under link:#_preset_limits[Preset limits].
 
-The block carries three further keys:
+The block carries four further keys:
 
 [cols="1,4"]
 |===
@@ -4417,7 +4451,64 @@ The block carries three further keys:
   its placement must not be read as per-anchor enforcement. The same budget is applied by the
   post-route re-run, so the raised cap reaches `Authorization` values on every route, including one
   declaring its own `security_filter`.
+
+| `uniform_not_found`
+| *Boolean, default `true`.* Whether a rejection raised after route selection and before the trust
+  boundary is answered to the caller as the unrouted `404`, and whether every unrouted `404` waits
+  for the response-timing floor. `false` restores the honest statuses and the undelayed `404`. See
+  link:#_uniform_not_found[The uniform 404] below for what it governs and what it never touches.
 |===
+
+[[_uniform_not_found]]
+==== The uniform 404 (`uniform_not_found`)
+
+A route that answers `405`, `401` or `413` to an unauthenticated request tells the caller that the
+route exists, because an address without a route answers `404`. With `uniform_not_found` on -- the
+secure default, also when the key is omitted -- the gateway closes that endpoint-existence oracle:
+every rejection raised in the *pre-trust window* is answered exactly as an unrouted address is
+answered (link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+
+*The trust boundary.* A request passes it once a bearer token validated offline, or once the
+authentication stage completed on any branch -- a live session, or a `require: none` route. The
+pre-trust window runs from route selection to that point. The trust boundary is identity, never
+network position.
+
+*What it governs.* Answered as the unrouted `404` while the key is on:
+
+[cols="2,3", options="header"]
+|===
+| Honest answer | Raised by
+
+| `401` (missing or invalid token) | `auth.require: bearer`, and the bearer branch of `auth.session_fallback`
+| `405` | the effective `allowed_methods` verb gate
+| `413` (declared `Content-Length`) | `security_filter.max_body_bytes`
+| `400` | `allowed_paths` and the per-route `security_filter` validation
+| `403` | the `cookies` same-origin check and the `oidc.session.csrf` defence
+| trailers-only gRPC status | any of the above on a `protocol: grpc` route -- answered as the HTTP `404`
+|===
+
+The answer is identical to the unrouted one in status, body (the `routing` problem document, or the
+HTML error page under `portal.error_pages`), `Content-Type` and header set: no `WWW-Authenticate`, no
+`Allow`, no route `security_headers`, no `match.headers` `Vary` and no `Set-Cookie`. Every unrouted
+`404`, genuine or resolved, leaves the edge no earlier than a fixed floor plus a random jitter after
+admission. The two values are gateway constants without a key; ADR-0072 records them.
+
+*What it never touches.* These answers keep their status with the key on:
+
+* the pre-route floor and framing-gate `400`s -- they run before route selection and are the same
+  for every address;
+* the reserved paths -- the OIDC paths, the portal and the client JWKS path;
+* the scope `403` of a validated token or a live session;
+* the session branch's login negotiation -- `302` for a navigation, `401` otherwise;
+* the `413` of a body that crosses `max_body_bytes` while it streams, and every other answer raised
+  after authentication completed (dispatch `400` / `408`, the WebSocket origin `403`, upstream
+  `5xx`).
+
+*What is still reported.* The key changes what the caller is shown, never what is recorded. The
+true event -- `METHOD_NOT_ALLOWED`, `TOKEN_MISSING`, `CSRF_REJECTED` and so on -- stays the one
+counted in `sheriff_errors_total{event}` and logged in the WARN and INFO lines. Read those to tell
+an existing route's rejection from an unrouted address (see
+link:user/endpoint-routes.adoc#_uniform_not_found_operator_note[Endpoint Routes -- Why an existing route answers 404]).
 
 [[_the_get_body_opt_in]]
 ==== The `GET`-body opt-in
@@ -4603,7 +4694,10 @@ endpoint serves `DELETE`/`HEAD` and *not* `GET`/`POST`; other endpoints keep the
 
 *Runtime.* After route selection, a request whose method is not in the matched route's
 effective `allowed_methods` is rejected with `405 Method Not Allowed` and an `Allow` header
-listing the effective set (`METHOD_NOT_ALLOWED`, a `ROUTING` event); the upstream is never called. `TRACE` and
+listing the effective set (`METHOD_NOT_ALLOWED`, a `ROUTING` event); the upstream is never called.
+The verb gate runs before authentication, so that `405` is answered as the unrouted `404`, without
+`Allow`, to an untrusted caller while `security_defaults.uniform_not_found` is on; the true event
+stays in `sheriff_errors_total{event}` (see <<_uniform_not_found>>). `TRACE` and
 `CONNECT` are *never* permitted -- they are not proxyable through the data plane and cannot
 appear in any `allowed_methods` list (listing either fails the boot).
 
@@ -4612,8 +4706,8 @@ appear in any `allowed_methods` list (listing either fails the boot).
 `allowed_methods` -- a route that matches a verb its endpoint forbids is a contradiction and
 *fails the boot* (fail-fast, rather than a route that can never fire). A route that *omits*
 `match.methods` (so it would match all methods) does *not* fail the boot against a narrower
-`allowed_methods`; it simply serves the effective set and the verb gate returns `405` at runtime
-for the rest. So `allowed_methods` is the way to blanket-restrict verbs across an endpoint's
+`allowed_methods`; it simply serves the effective set and the verb gate rejects the rest at runtime
+(`405`, or the uniform `404` above). So `allowed_methods` is the way to blanket-restrict verbs across an endpoint's
 routes without restating `match.methods` on each.
 
 [[_forwarded_headers]]

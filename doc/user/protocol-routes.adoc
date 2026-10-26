@@ -192,10 +192,22 @@ Because a gRPC client cannot consume an `application/problem+json` body, a *gate
 rejection on a `protocol: grpc` route is emitted as a *trailers-only* gRPC response -- an HTTP
 `200` whose `content-type` is `application/grpc` and whose `grpc-status` (and `grpc-message`)
 name the failure, with no message body. The gateway maps the same rejection it would render as an
-HTTP status on an HTTP route onto the canonical gRPC status; for example, a bearer gRPC route
-called without a token is rejected `UNAUTHENTICATED` (16). Operators do not configure this
-mapping -- it is fixed. The full mapping table is in
+HTTP status on an HTTP route onto the canonical gRPC status; for example, a call whose validated
+token lacks a scope the route needs is rejected `PERMISSION_DENIED` (7). Operators do not configure
+this mapping -- it is fixed. The full mapping table is in
 link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)].
+
+*The exception: rejections before the trust boundary.* On the shipped default, a rejection raised
+before the caller is authenticated -- a missing or invalid token, a wrong method, a refused path or
+filter check, an oversized declared body, a same-origin refusal -- is answered to that caller as the
+unrouted HTTP `404`, never trailers-only. A trailers-only status would itself tell an unauthenticated
+caller that the address is a gRPC route. A gRPC client therefore sees such a call fail with the
+transport error its runtime derives from an HTTP `404` -- `UNIMPLEMENTED` (12) in the common
+runtimes -- rather than `UNAUTHENTICATED` (16). The true cause is counted in
+`sheriff_errors_total{event}` (see
+link:endpoint-routes.adoc#_uniform_not_found_operator_note[Endpoint Routes -- Why an existing route
+answers 404]). Setting `security_defaults.uniform_not_found: false` restores the trailers-only answer
+for these rejections, `UNAUTHENTICATED` (16) for a call without a token included.
 
 [[_cookies_on_protocol_routes]]
 == Cookies on WebSocket and gRPC routes
@@ -231,7 +243,8 @@ it and with its `Domain` attribute removed. A gRPC route whose block forwards a 
 same-origin check, and the check applies only to an unsafe call -- every gRPC call is a `POST` --
 that carries at least one cookie the route would forward. A non-browser gRPC client that sends no
 cookie therefore needs no `Origin` and passes unchecked; a cross-site browser call carrying a
-forwarded cookie is refused with a trailers-only `PERMISSION_DENIED`.
+forwarded cookie is refused before authentication, so it is answered with the uniform HTTP `404`, and
+with a trailers-only `PERMISSION_DENIED` when `security_defaults.uniform_not_found` is `false`.
 
 == See also
 

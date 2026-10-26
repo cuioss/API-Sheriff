@@ -572,8 +572,11 @@ endpoint:
 | Bearer token lacking a needed scope
 | `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`.
 | Invalid token, a `Basic` credential or an empty `Authorization`, with or without a session cookie
-| `401` with `WWW-Authenticate: Bearer`. Never a login redirect, and a valid session cookie does not
-  rescue it -- the bearer branch was chosen the moment the header was sent.
+| The unrouted `404`, with no `WWW-Authenticate` challenge, metered as `TOKEN_MISSING` or
+  `TOKEN_INVALID` (see link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing
+  route answers 404]); `401` with `WWW-Authenticate: Bearer` when
+  `security_defaults.uniform_not_found` is `false`. Never a login redirect, and a valid session
+  cookie does not rescue it -- the bearer branch was chosen the moment the header was sent.
 | No `Authorization`, live session
 | Served exactly as on a `require: session` route. The session's scopes are compared with the set
   the route needs. A session that carries them is relayed: its token goes upstream (unless

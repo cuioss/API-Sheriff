@@ -121,7 +121,7 @@ added. It is part of the surface all the same: `DescriptorInventoryWiringTest` s
 counted in the thirty-two and held to the same exact-set rule as every other descriptor. It declares
 `allowed_methods`, which the sweep below matches, so it is limit-bearing; that list is asserted on
 the wire under the `allowed_methods` row of the Coverage Matrix -- a `GET` on the routed path is
-refused `405`.
+refused, answered as the unrouted `404` and metered `METHOD_NOT_ALLOWED`.
 
 The sweep is a key-name pattern, applied to
 declared key names only -- never to raw file text, so the descriptors' extensive prose comments
@@ -490,7 +490,8 @@ declaration's *existence* is proven while its *boundary* is not.
   `gateway.yaml` ×4 -- base:187, cookie:64, mtls:71, ws:69
 | `ThoroughChecksStage` (per-route body cap)
 | COVERED
-| `LargeBodyIT` (runtime 413) + `BodyLimitActivationWiringTest` (framework-floor coupling)
+| `LargeBodyIT` (runtime refusal: the unrouted `404` with the gateway's own envelope, metered
+  `CONTENT_TOO_LARGE`) + `BodyLimitActivationWiringTest` (framework-floor coupling)
 
 | `httpbin-minimal-mode.max_body_bytes: 1024`
   `sheriff-config/endpoints/httpbin.yaml:87`
@@ -503,7 +504,8 @@ declaration's *existence* is proven while its *boundary* is not.
 | `ThoroughChecksStage` (path allowlist)
 | COVERED
 | `SecurityProfileModeIT` (`allowedPathsStillRejectsPathOutsideAllowlist` -- the two-segment
-  `/proxy/minimal-mode/deep/path` rejected 400 -- with the matched one-wildcard-segment control
+  `/proxy/minimal-mode/deep/path` refused, answered as the unrouted `404` and metered
+  `PATH_NOT_ALLOWED` -- with the matched one-wildcard-segment control
   `/proxy/minimal-mode/echo` admitted 200 by `bodyWithinCapIsForwarded` /
   `minimalRouteAcceptsRejectedParameterValue`, proving the rejection follows the segment-count
   mismatch rather than the route refusing the shape outright)
@@ -532,16 +534,19 @@ declaration's *existence* is proven while its *boundary* is not.
   `reserved-path-overlap/bff-overlap.yaml:37` (endpoint, `["POST"]`)
 | Route selection / method gate
 | COVERED
-| `PipelineVerbIT` (405 plus four positive controls); `BffReservedPathPrecedenceIT` for the
-  endpoint-level list -- a `GET` on the routed path below `/bff` is refused `405` naming `POST` as the
-  allowed verb, while the same `GET` on the reserved client JWKS path under that prefix is answered
-  `200` with the key set
+| `PipelineVerbIT` (four positive controls) with `ErrorContractIT` (`disallowedMethodProblemJson`:
+  the refusal, answered as the unrouted `404` and metered `METHOD_NOT_ALLOWED`);
+  `BffReservedPathPrecedenceIT` for the endpoint-level list -- a `GET` on the routed path below `/bff`
+  is refused as the unrouted `404` and metered `METHOD_NOT_ALLOWED`, a `POST` to the same path is
+  proxied `200` as the matched control, and the same `GET` on the reserved client JWKS path under
+  that prefix is answered `200` with the key set
 
 | `oidc.session.csrf.trusted_origins`
   `gateway.yaml` ×4 -- base:336, cookie:184, mtls:164, ws:139
 | BFF CSRF origin gate
 | COVERED
-| `BffCsrfIT` (403 / 403 with a 401 control)
+| `BffCsrfIT` (a foreign `Origin` and a missing proof each refused as the unrouted `404` and metered
+  `CSRF_REJECTED`, with a `401` control for a trusted `Origin`)
 
 | `websocket.allowed_origins`
   `sheriff-config/endpoints/websocket.yaml:31,44`,
@@ -586,7 +591,10 @@ declaration's *existence* is proven while its *boundary* is not.
   with `oidc_verify_hostname` removed): readiness still `UP` and a bearer token accepted, while a
   login is refused before any redirect into the identity provider -- the single variable attributes
   the first leg's login to the key. *Both relaxed, proxy certificate naming the host but untrusted*:
-  the key set never loads and a login is refused, so neither key reached chain trust.
+  the key set never loads and a login is refused, so neither key reached chain trust. Each bearer
+  refusal in the suite -- the tokenless control of the JWKS leg and the realm's token without its key
+  set -- is asserted as the unrouted `404` and metered `TOKEN_MISSING` respectively `TOKEN_INVALID`
+  in the rig's own registry.
   `ItProfileConfigBindingWiringTest` is the descriptor half: it exempts exactly this file from the
   trust-profile guard and exactly the test's source from the launch-site guard, and asserts for each
   that the property the exemption rests on is still there.
@@ -669,8 +677,9 @@ declaration's *existence* is proven while its *boundary* is not.
   `sheriff-config/gateway.yaml:52`
 | `BasicChecksStage` -- the non-skippable pre-route floor, *before* route selection
 | COVERED
-| `DeclaredLimitBoundaryIT` -- 8192 admitted and reaching bearer validation (401), 8193 rejected 400
-  at the floor; the 401-vs-400 delta on a one-character change is the discriminator.
+| `DeclaredLimitBoundaryIT` -- 8192 admitted and reaching bearer validation (refused there as the
+  unrouted `404`, metered `TOKEN_INVALID`), 8193 rejected 400 at the floor; the 404-vs-400 delta on a
+  one-character change is the discriminator.
   `BearerValidationIT` (`validBearerTokenAdmittedAndForwarded`) independently proves the carve-out
   is in force on a real token.
 
@@ -681,7 +690,8 @@ declaration's *existence* is proven while its *boundary* is not.
 | COVERED
 | `JwksEgressMismatchIT` -- a one-off gateway whose only issuer declares an explicit list naming a
   host other than its own `jwks.url` host stays readiness `DOWN`, logs `ApiSheriff-129` (a failed
-  load with a retry scheduled) and rejects a real Keycloak-minted token `401`; the matched control,
+  load with a retry scheduled) and refuses a real Keycloak-minted token -- the unrouted `404`; the
+  matched control,
   the same document with that one key removed, reaches `UP` and accepts the *same* token `200`. The
   single variable attributes the refusal to the explicit list -- which is authoritative and never
   merged with the host derived from `jwks.url` -- rather than to DNS, TLS or a dead IdP. The compose
@@ -706,8 +716,9 @@ declaration's *existence* is proven while its *boundary* is not.
   Layer 2 -- resolved, in no yaml
 | `ThoroughChecksStage` (GW-07 default body guard)
 | COVERED
-| `DeclaredLimitBoundaryIT` -- one byte over is rejected 413 carrying the gateway's own RFC 9457
-  envelope (not the framework's bare 413), one byte under is forwarded and echoed
+| `DeclaredLimitBoundaryIT` -- one byte over is refused with the gateway's own RFC 9457 envelope
+  (not the framework's bare 413): the unrouted `404`, metered `CONTENT_TOO_LARGE`; one byte under is
+  forwarded and echoed
 
 | *G5* `forward.headers_allow` / `headers_deny` / `query_allow` -- the three-mode projection
   `sheriff-config/endpoints/httpbin.yaml:48-49,99,102,123,135,145,168` (6 routes declaring a list)
@@ -768,7 +779,8 @@ declaration's *existence* is proven while its *boundary* is not.
   holds for the cookies go-httpbin's `/cookies/set` sets itself
   (`cookiesTheUpstreamSetsItselfFollowThePolicy`); a relayed
   line loses its `Domain` (`relayedLineLosesItsDomain`). *Same-origin check*: a cross-site unsafe
-  request carrying a forwarded cookie is refused `403`, by a foreign `Origin` and by
+  request carrying a forwarded cookie is refused -- answered as the unrouted `404` with the routing
+  problem -- by a foreign `Origin` and by
   `Sec-Fetch-Site: cross-site`, while the received origin and `Sec-Fetch-Site: same-origin` are
   forwarded (`crossSiteRequestCarryingAForwardedCookieIsRefused`); the same cross-site request
   without a cookie the route forwards is forwarded (`theCheckKeysOnAForwardableCookie`);

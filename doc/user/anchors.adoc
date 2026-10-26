@@ -308,10 +308,18 @@ anchors:
 first stage, before anything else runs. Once a route is selected, the route's resolved block -- the
 anchor's block when its anchor declares one, the global block otherwise -- *replaces* the
 gateway-owned security headers on the response. Every response produced after that point carries the
-route's block: a proxied response, an asset, a redirect, the verb gate's `405`, an authentication
-`401`, a gRPC trailers-only rejection and a failed WebSocket handshake alike. Every response produced
-*before* a route is selected carries the global block, because no anchor is known yet: a stage-1
-rejection, the `404` for a path no route matches, and a CORS preflight answer.
+route's block: a proxied response, an asset, a redirect, a scope `403`, a gRPC trailers-only rejection
+of an authenticated caller and a failed WebSocket handshake alike. Every response produced *before* a
+route is selected carries the global block, because no anchor is known yet: a stage-1 rejection, the
+`404` for a path no route matches, and a CORS preflight answer.
+
+One group of answers carries the global block although a route was selected. A rejection raised
+before authentication completed -- the verb gate's `405`, a bearer `401`, a filter `400`, a declared
+body over the cap, a CSRF refusal -- is answered to an unauthenticated caller as the unrouted `404`,
+and the gateway restores the headers the request carried before its route was selected, so that the
+answer matches the unrouted one header for header (see
+link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). With
+`security_defaults.uniform_not_found: false` those rejections carry the route's block.
 
 [IMPORTANT]
 .The anchor block replaces the global block wholesale -- there is no merge

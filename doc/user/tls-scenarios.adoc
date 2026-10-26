@@ -524,11 +524,15 @@ REPLACES the platform bundle].
 * *A declared `allowed_egress_hosts` that does not name the `jwks.url` host of a private-address
   provider.* The list is authoritative, so the egress guard keeps refusing that host: readiness stays
   `DOWN`, `WARN ApiSheriff-129` reports each scheduled retry, and every bearer request is rejected
-  `401`. Name the host in the list, or omit the list to take the derived allowance.
+  as `TOKEN_INVALID` -- answered as the unrouted `404` on the shipped default, `401` with
+  `security_defaults.uniform_not_found: false`. Name the host in the list, or omit the list to take
+  the derived allowance.
 * *No profile, and a JVM default trust store that does not hold the provider's CA.* The JWKS loader
   `TokenValidatorProducer` configured verifies against the default store, the fetch fails PKIX path
-  building, the key set never loads, and every bearer request is rejected `401` -- a trust problem that
-  looks like a token problem.
+  building, the key set never loads, and every bearer request is rejected as `TOKEN_INVALID` -- a
+  trust problem that looks like a token problem. The caller sees the unrouted `404` on the shipped
+  default, so read the true event in `sheriff_errors_total{event}` (see
+  link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]).
 * *The BFF back-channel store is missing, or supplied through `JAVA_TOOL_OPTIONS`.* A native executable
   ignores that variable, so the leg has no anchor for the provider. Discovery is the first call a
   login makes: it fails PKIX and the login answers `500`. The pushed authorization request and the

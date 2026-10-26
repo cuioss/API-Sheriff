@@ -390,15 +390,19 @@ Two cross-cutting rules govern *both* sources:
   and no upstream is fetched for a rejected path.
 * *Auth before source resolution.* The route's effective auth (materialized from its `access`
   axis and auth floor) is enforced at stage 4 *before* the source is resolved, so an unauthorized
-  request to an `access: authenticated` asset is rejected `401` and never triggers a directory
-  read or an upstream fetch.
+  request to an `access: authenticated` asset is rejected and never triggers a directory read or an
+  upstream fetch. On a bearer route the caller sees the unrouted `404` rather than a `401` (see
+  <<_uniform_not_found_operator_note>>).
 
 Every served response passes through the *gateway-owned response envelope*, so the gateway -- never
 the backing directory or upstream -- governs the response metadata: the `Content-Type` is set from
 the gateway's own extension map (overriding whatever the source claimed), `X-Content-Type-Options:
 nosniff` is always added, any source `Set-Cookie` is stripped, and an `access: authenticated`
 asset is forced to `Cache-Control: no-store` even when the source sent `Cache-Control: public`.
-Only `GET` and `HEAD` are served; any other verb is rejected `405`.
+Only `GET` and `HEAD` are served; any other verb that the route's `allowed_methods` admits is
+rejected `405` by the asset action. A verb outside `allowed_methods` is refused earlier, by the verb
+gate, and an unauthenticated caller sees that refusal as the unrouted `404` (see
+<<_uniform_not_found_operator_note>>).
 
 An operator may *teach* the gateway an extension it does not already map -- but never *restate* one
 it does. See link:../configuration.adoc#_asset_defaults[`asset_defaults`] for the add-only block
@@ -518,8 +522,10 @@ context path (see link:context-path.adoc[The Context Path]).
 *Answered after authentication.* A redirect route runs the same pipeline as any other route up to its
 terminal action: route selection, the verb gate, the thorough checks and *authentication* all come
 first. Under an anchor or endpoint that requires authentication, an unauthenticated request is
-challenged (`401`, or the login redirect on a `require: session` navigation) *before* any `Location` is
-disclosed -- the configured target is itself information an anonymous caller does not get. A public
+rejected *before* any `Location` is disclosed -- the configured target is itself information an
+anonymous caller does not get. On a bearer route it receives the unrouted `404` (see
+<<_uniform_not_found_operator_note>>); on a `require: session` route a navigation is redirected into
+the login and any other request receives `401`. A public
 entry redirect declares `auth: { require: none }` like any other public route. The redirect answer
 carries the route's resolved security headers (see link:anchors.adoc#_anchors[Anchors]) and any
 `Set-Cookie` an earlier stage produced; the route's `forward` block is not consulted, because nothing is
@@ -700,6 +706,46 @@ carve-out, not an anchor: it claims its one path and nothing beneath it, so `/bf
 the route table like any other request, and the `/bff/*` spelling the samples use is a naming
 convention nothing validates.
 
+[[_uniform_not_found_operator_note]]
+=== Why an existing route answers 404
+
+A request to a route that exists can be answered `404`, exactly as an address without any route is
+answered. That is deliberate. When a caller has not authenticated yet, every rejection a route
+raises before authentication completes is answered as the unrouted `404`: a missing or invalid
+bearer token, a method outside `allowed_methods`, a path outside `allowed_paths`, a refusal of the
+route's `security_filter`, a declared `Content-Length` over `max_body_bytes`, and a CSRF or
+same-origin refusal. Without this, an unauthenticated scanner would learn which addresses name
+routes from the `401`, `405`, `400`, `413` or `403` it receives. The answer is the same in every
+detail: status, body, `Content-Type`, response headers -- no `WWW-Authenticate`, no `Allow` -- and
+the time it takes. A `protocol: grpc` route answers with the HTTP `404` too, not with a gRPC status
+(link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+
+*How to tell the true cause apart.* The gateway reports the real reason even though the caller does
+not see it:
+
+* `sheriff_errors_total{event}` on the management port counts the true event --
+  `TOKEN_MISSING`, `TOKEN_INVALID`, `METHOD_NOT_ALLOWED`, `PATH_NOT_ALLOWED`,
+  `SECURITY_FILTER_VIOLATION`, `CONTENT_TOO_LARGE` or `CSRF_REJECTED` -- with the route id and the
+  category, never `NO_ROUTE_MATCHED`. A rising `NO_ROUTE_MATCHED` count is a request for an address
+  that has no route; any of the others is a request a route refused.
+* The WARN and INFO lines the gateway logs for a rejection name the true event as well (see
+  link:../LogMessages.adoc[Log Messages]).
+
+*Who still gets the honest code.* The uniform `404` is for callers that have not passed
+authentication. A client with a valid token keeps every answer raised after authentication: the
+`403 insufficient_scope` of a token lacking a scope, the dispatch `408` and `413`, and upstream
+`5xx`. A session route keeps its own answers too: a navigation without a session is redirected into
+the login, and any other request receives `401` `application/problem+json`. Rejections raised before
+authentication -- a wrong method, for example -- answer `404` to every caller, because the gateway
+has not looked at a credential at that point. An authenticated client that receives an unexpected
+`404` from a route it knows exists has therefore sent a request that route refuses; the metric above
+names which refusal.
+
+*Turning it off.* `security_defaults.uniform_not_found: false` in `gateway.yaml` restores the honest
+`401`, `405`, `400`, `413` and `403` for every caller, and the gRPC trailers-only status on a gRPC
+route. The default is `true`. See
+link:../configuration.adoc#_uniform_not_found[Configuration -- The uniform 404].
+
 [[_endpoint_scopes]]
 === Endpoint scopes (`endpoint.scopes`)
 
@@ -773,7 +819,10 @@ What the route then does with cookies:
 * *Cross-site requests.* Because the route forwards a cookie, the gateway checks the origin of every
   unsafe request (`POST`, `PUT`, `PATCH`, `DELETE`, ...) that carries `SESSIONID`. A request sent by
   a page on another site -- its `Origin` is neither the origin the gateway was reached on nor one the
-  block lists in `additional_origins` -- is refused `403` before the upstream sees it. The same
+  block lists in `additional_origins` -- is refused before the upstream sees it. The refusal is
+  raised before authentication, so the browser sees the unrouted `404` (see
+  <<_uniform_not_found_operator_note>>), and `403` on a gateway that sets
+  `security_defaults.uniform_not_found: false`. The same
   cross-site request *without* a `SESSIONID` cookie carries no credential to forge and is
   forwarded, so a server-to-server client that sends no cookie and no `Origin` keeps working. A `GET`
   is never checked.
@@ -888,8 +937,9 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
 
 The *transport bounds* — the framing limits, the HTTP/2 connection window, the request-body idle
-timeout and deadline, the gRPC stream-idle timeout and the drain window — are fixed secure defaults
-applied in code (`EdgeHardeningOptions`, and the gRPC relay for the stream-idle timeout) and are not
+timeout and deadline, the gRPC stream-idle timeout, the unrouted-`404` response floor and the drain
+window — are fixed secure defaults applied in code (`EdgeHardeningOptions`, the gRPC relay for the
+stream-idle timeout, and `UniformNotFound` for the response floor) and are not
 operator-configurable. The framing limits fail fast on abusive framing before a request is
 admitted to the pipeline. These values are recorded here doc-first: they are the
 contract the edge-hardening code implements, and any change to a constant must be reflected in this
@@ -975,6 +1025,15 @@ deployment that never writes it keeps the behaviour shown here.
   frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
   upstream guard's 30 s timeout bounds the call instead. Not configurable. See
   link:../architecture.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
+
+| Unrouted-`404` response floor
+| 50 ms + a random jitter below 20 ms +
+  (from admission)
+| While `security_defaults.uniform_not_found` is on, every answer rendered as the unrouted `404` is
+  written no earlier than this after the request was admitted, so the answer time does not tell an
+  existing route from an absent one (<<_uniform_not_found_operator_note>>). A Vert.x timer holds the
+  answer; no thread waits. The answer keeps its admission permit until it is written. Not
+  configurable.
 
 | Admission cap (in-flight requests) +
   [`edge_hardening.admission_cap`]

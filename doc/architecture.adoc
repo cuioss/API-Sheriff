@@ -79,7 +79,9 @@ headers/CORS -> inbound validation -> route match -> authenticate -> forward pol
 
 The fixed per-request order the edge (`GatewayEdgeRoute`) runs on a virtual thread. A rejection at
 any stage is rendered immediately (RFC 9457 `application/problem+json`, or trailers-only on a gRPC
-route) and nothing after it runs:
+route) and nothing after it runs. A rejection raised between stage 2 and the trust boundary in
+stage 4 is rendered to an untrusted caller as the unrouted `404` instead
+(<<_trust_boundary_rejections>>):
 
 [cols="1,2,4", options="header"]
 |===
@@ -108,7 +110,8 @@ route) and nothing after it runs:
 
 | 2b
 | `VerbGateStage`
-| The route's effective `allowed_methods`; a verb outside it is a `405` with `Allow`.
+| The route's effective `allowed_methods`; a verb outside it is a `405` with `Allow`, rendered as the
+  unrouted `404` while `security_defaults.uniform_not_found` is on (<<_trust_boundary_rejections>>).
 
 | 3
 | `ThoroughChecksStage`
@@ -219,9 +222,10 @@ the flow hands off lives in a sub-package:
   `EgressClients`, `UpstreamGuards`
 
 | `end`
-| The one end rule every response passes, the early-answer path (<<_http2_post_response_reset>>) and
-  connection retirement.
-| `ResponseEnds`, `ResponseEnd`, `EarlyResponseEnd`, `InboundStreamWindow`, `ConnectionRetirement`
+| The one end rule every response passes, the early-answer path (<<_http2_post_response_reset>>),
+  connection retirement and the one delay primitive that holds an answer back on a Vert.x timer.
+| `ResponseEnds`, `ResponseEnd`, `EarlyResponseEnd`, `InboundStreamWindow`, `ConnectionRetirement`,
+  `ResponseDelay`
 
 | `relay`
 | Streaming an upstream answer back to the client.
@@ -236,8 +240,9 @@ the flow hands off lives in a sub-package:
 | `EdgeRequests`
 
 | `error`
-| Rejection metering, logging and rendering.
-| `RejectionReporter`, `ErrorResponseWriter`
+| Rejection metering, logging and rendering, and the trust-boundary branch
+  (<<_trust_boundary_rejections>>).
+| `RejectionReporter`, `ErrorResponseWriter`, `UniformNotFound`
 
 | `reserved`
 | The reserved OIDC paths, the portal and the reserved-body read.
@@ -796,7 +801,9 @@ the nearest declared list replacing every broader one wholesale -- gates which H
 endpoint serves at all: a routed request whose
 method is outside the matched route's effective set is rejected `405` with an `Allow` header,
 above and beyond the per-route `match.methods` matcher (see
-link:configuration.adoc#_allowed_methods[Configuration -- `allowed_methods`]).
+link:configuration.adoc#_allowed_methods[Configuration -- `allowed_methods`]). The verb gate runs
+before authentication, so while `security_defaults.uniform_not_found` is on that `405` is rendered
+as the unrouted `404`, without `Allow` (<<_trust_boundary_rejections>>).
 
 Every policy block is resolved for a route by one resolver: each block is one `PolicyBlock`
 descriptor naming the scopes it is declarable at, and the nearest declared scope of
@@ -1372,8 +1379,11 @@ logged as `WARN ApiSheriff-139`. The instance trusts the origin the request was 
 `PipelineRequest.scheme()`, `host()` and `authorityPort()`, rendered `scheme://host[:port]` with a
 default port dropped on both sides -- plus the block's exact `additional_origins`. Its proof is the
 session-route defence's: a trusted `Origin`, or with no `Origin` a `Sec-Fetch-Site: same-origin`;
-anything else is `CSRF_REJECTED` (`403`, a trailers-only `PERMISSION_DENIED` on gRPC), recorded by
-that event counter and a DEBUG diagnostic only -- no `ApiSheriff-xxx` log record. The edge asks
+anything else is `CSRF_REJECTED`, recorded by that event counter and a DEBUG diagnostic only -- no
+`ApiSheriff-xxx` log record. The check runs before authentication, so the caller is answered the
+unrouted `404` while `security_defaults.uniform_not_found` is on, on gRPC routes too; with the switch
+off it is answered `403`, a trailers-only `PERMISSION_DENIED` on gRPC
+(<<_trust_boundary_rejections>>). The edge asks
 for the proof right after the session CSRF gate and before authentication, and only when the method
 is unsafe *and* `admittedCookiePairs` -- the reading stage 5 rebuilds the header from -- is non-empty
 for the request. A request that carries no forwardable cookie hands the upstream no ambient browser
@@ -1531,8 +1541,10 @@ Three properties define the action:
 
 * *Auth before source resolution.* Because authentication is a pipeline stage that runs *before*
   the terminal dispatch, an unauthorized request to an `access: authenticated` asset is rejected
-  `401` and no byte is ever read -- the source is never touched until authorization succeeds. The
-  ordering is structural, not a per-source check.
+  and no byte is ever read -- the source is never touched until authorization succeeds. The
+  bearer branch's `401` is answered to the untrusted caller as the unrouted `404` while
+  `security_defaults.uniform_not_found` is on (<<_trust_boundary_rejections>>). The ordering is
+  structural, not a per-source check.
 * *A shared, gateway-owned response envelope.* Both sources serve through one envelope so the
   gateway -- never the backing directory or the (possibly hostile) upstream -- governs the
   response metadata: the `Content-Type` is set from the gateway's own extension map, `nosniff`
@@ -1588,7 +1600,7 @@ trailing-slash redirect needs neither an upstream nor a proxied round-trip.
 A redirect route runs the full pipeline up to its terminal step -- stage 0, the pre-route floor, route
 selection, the stage-2a route headers, the verb gate, the thorough checks and *authentication* -- and
 is answered only then. Placing the answer after authentication is the secure default: under an
-authenticated anchor an unauthenticated caller is challenged before the configured location is
+authenticated anchor an unauthenticated caller is rejected before the configured location is
 disclosed. The answer is written on the event loop with the status, the `Location`, the headers the
 earlier stages accumulated (the route's security headers, any `Set-Cookie`) and an empty body; the
 forward policy is not consumed and `REQUEST_FORWARDED` is not counted. The stage additionally decides
@@ -1656,19 +1668,25 @@ names the category but leaks no internal detail. There are two exceptions. A rej
 `protocol: grpc` route is a trailers-only gRPC response rather than a problem document
 (<<_grpc_error_contract>>). And the HTML error page of <<_html_error_pages>> is negotiated: the same
 status, rendered as HTML for a browser navigation when the application portal's `error_pages` is on.
+
+One rule overrides the status itself. A rejection raised after route selection and before the trust
+boundary is rendered to the caller as the unrouted `404` while `security_defaults.uniform_not_found`
+is on, the shipped default (<<_trust_boundary_rejections>>). The table below names the honest status
+each cause has; the rows that this rule reaches say so.
+
 The consolidated status mapping:
 
 [cols="1,2,2"]
 |===
 | Status | Cause | EventCategory
 
-| `400` | Security-filter violation (path/parameter/header pipeline, collection limits, framing gate, a body on a bodyless method or beyond its declared length -- see <<_dispatch_body_framing>>); a proxied request body that failed after dispatch began -- a client disconnecting mid-upload, or broken chunk framing (`INBOUND_BODY_ABORTED`, see <<_aborted_inbound_body>>) | `INPUT_VALIDATION`
-| `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). | `AUTHENTICATION`
-| `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`); live session lacking one on a non-navigation request when no refresh can obtain it (no `WWW-Authenticate`; the problem body carries the extension members `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`, while a navigation is redirected into a widening of the session instead -- see <<_scope_enforcement>>); failed CSRF origin check, on a session route or on a cookie-forwarding route (see <<_cookie_origin_check>>) | `AUTHORIZATION`
-| `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode) | `ROUTING`
-| `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set | `ROUTING`
+| `400` | Security-filter violation (path/parameter/header pipeline, collection limits, framing gate, a body on a bodyless method or beyond its declared length -- see <<_dispatch_body_framing>>); a proxied request body that failed after dispatch began -- a client disconnecting mid-upload, or broken chunk framing (`INBOUND_BODY_ABORTED`, see <<_aborted_inbound_body>>). The route-scoped `allowed_paths` and security-filter `400`s of the post-route stage are rendered as the unrouted `404` for an untrusted caller (<<_trust_boundary_rejections>>); the pre-route floor and framing-gate `400`s are not | `INPUT_VALIDATION`
+| `401` | Missing/invalid bearer token; invalid or expired session on a non-navigation request. Unauthenticated *navigation* requests (those accepting `text/html`) on `session` routes are redirected into the login flow instead -- content negotiation, not configuration (see link:configuration.adoc#_auth[Configuration -- `auth`]). Gateway `401`s carry `WWW-Authenticate` (`Bearer` per RFC 6750 on bearer routes). The bearer `401` is rendered as the unrouted `404`, without `WWW-Authenticate`, while `security_defaults.uniform_not_found` is on; the session branch keeps its `302` / `401` (<<_trust_boundary_rejections>>). | `AUTHENTICATION`
+| `403` | Valid bearer token lacking a member of the route's needed scope set (carries `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"`); live session lacking one on a non-navigation request when no refresh can obtain it (no `WWW-Authenticate`; the problem body carries the extension members `missing_scopes` and, when `oidc.step_up.path` is configured, `step_up_url`, while a navigation is redirected into a widening of the session instead -- see <<_scope_enforcement>>); failed CSRF origin check, on a session route or on a cookie-forwarding route (see <<_cookie_origin_check>>) -- raised before authentication, so rendered as the unrouted `404` while `security_defaults.uniform_not_found` is on (<<_trust_boundary_rejections>>); the scope `403` is post-trust and stays | `AUTHORIZATION`
+| `404` | No route matched (deny-by-default routing); reserved-for-passthrough `Host` on a terminated connection; disabled endpoint (e.g. back-channel logout in cookie mode); and, while `security_defaults.uniform_not_found` is on, every pre-trust rejection of the rows marked so, rendered as the unrouted answer. Every such unrouted `404` leaves the edge no earlier than the response-timing floor (<<_trust_boundary_rejections>>) | `ROUTING`
+| `405` | Request method not in the matched route's *effective* `allowed_methods` verb allowlist (global default, or anchor/endpoint replacement); the response carries an `Allow` header listing the permitted set. The verb gate runs before authentication, so the `405` is rendered as the unrouted `404`, without `Allow`, while `security_defaults.uniform_not_found` is on (<<_trust_boundary_rejections>>) | `ROUTING`
 | `408` | A proxied request body that made no progress for the fixed 10 s request-body idle timeout while its dispatch held an upstream connection, or that had not ended 25 s after its upstream attempt started, before the response head arrived (`REQUEST_BODY_TIMEOUT`, see <<_request_body_idle_timeout>> and <<_request_body_deadline>>). The body behind the answer is unread, so the answer ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only that stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>) | `INPUT_VALIDATION`
-| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>), and the connection and its other streams carry on | `INPUT_VALIDATION`
+| `413` | Request body beyond a declared size limit -- the per-route `security_filter.max_body_bytes` cap on the proxy path (`CONTENT_TOO_LARGE`), or the edge's `reserved_body_max_bytes` ceiling on a gateway-terminated reserved BFF POST path (`RESERVED_BODY_TOO_LARGE`). Both reject on the declared `Content-Length` before any body is read, and both abort mid-transfer on a chunked or under-declared body once the cap is crossed. The declared-`Content-Length` `413` of the proxy path is raised before authentication, so it is rendered as the unrouted `404` while `security_defaults.uniform_not_found` is on (<<_trust_boundary_rejections>>); the mid-transfer `413` is raised after dispatch and stays. The reserved-path `413` leaves the body unread and, on both of those paths, ends what it arrived on: on HTTP/1.x it carries `Connection: close` and the connection is closed once it is written; on HTTP/2 only the offending stream is reset with `NO_ERROR` once it is written (see <<_http2_post_response_reset>>), and the connection and its other streams carry on | `INPUT_VALIDATION`
 | `429` | Rate limit exceeded -- *planned, not implemented*; no `429` is produced today. The per-route `rate_limit` block is parsed but enforced by nothing, and every route that declares it is named at boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Configuration -- `rate_limit`]). A future `rate_limit` builds on the per-source mechanism of the follow-up enumeration-hardening plan rather than on a separate per-node counter | --
 | `502` | Upstream connection failure / invalid upstream response | `UPSTREAM`
 | `503` | Circuit breaker open -- the upstream was not called. The response carries `Retry-After` with the seconds the breaker stays open: the fixed `5` of the gateway's upstream guard, without jitter (link:adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]) | `UPSTREAM`
@@ -1700,6 +1718,58 @@ Two exits of the BFF login belong to this contract and are easy to misread from 
   leg and the reason. At a
   refresh the same refusal ends the session instead, and the request is answered as
   `oidc.session.refresh.on_failure` says.
+
+[[_trust_boundary_rejections]]
+==== Rejections before the trust boundary (the uniform 404)
+
+An honest status on a matched route tells an unauthenticated caller that the route exists: a `405`,
+a `401` or a `413` answers where an unrouted address answers `404`. To close that
+endpoint-existence oracle, the edge renders every rejection raised in the *pre-trust window* exactly
+as it renders an unrouted address
+(link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+
+*The trust boundary.* A request passes it when the bearer branch of stage 4 validated a token, or
+when stage 4 completed on any branch: a live session, or an anonymous route. The pre-trust window
+runs from route selection to that point. It covers the verb gate (2b), the post-route stage (3),
+the CSRF defence, the cookie-forwarding same-origin check and the bearer branch up to a validated
+token. The rule holds whoever the caller is: the gateway has not looked at a credential yet.
+
+*The rejection flow.* `GatewayEdgeRoute` hands every `GatewayException` to
+`ErrorResponseWriter.handleGatewayRejection`. That method reports the rejection under its *true*
+event first -- the event counter, the WARN / INFO line and `sheriff_errors_total{event}` -- and then
+renders it. `renderRejection` consults `UniformNotFound.applies` before it chooses any other shape,
+the trailers-only gRPC status included. On a hit it restores the response headers the request carried
+before its route was selected (`PipelineRequest.restoreUnroutedResponse`), drops every route
+`Set-Cookie`, and renders the answer as `NO_ROUTE_MATCHED`: status `404`, the routing problem body
+without extension members, or its negotiated HTML error page.
+
+[cols="1,3", options="header"]
+|===
+| Rendered as the unrouted `404` | Kept honest
+
+| `METHOD_NOT_ALLOWED`, `PATH_NOT_ALLOWED`, the route-scoped `SECURITY_FILTER_VIOLATION`,
+  `PARAMETER_LIMIT_EXCEEDED`, the declared-`Content-Length` `CONTENT_TOO_LARGE`, `CSRF_REJECTED`,
+  and `TOKEN_MISSING` / `TOKEN_INVALID` on the bearer branch
+| the session branch's `302` / `401`; `SCOPE_MISSING`; every answer raised after stage 4 completed
+  (dispatch `400` / `408` / `413`, the WebSocket origin `403`, upstream `5xx`); reserved paths;
+  every stage-1 rejection, the framing gate included; the `405` of an unparseable method
+|===
+
+`UniformNotFound.CLOSED_SET` is the authoritative member list, and `UniformNotFoundTest` fails for an
+`EventType` constant that is neither a member nor in its recorded exclusion table. ADR-0072 gives the
+reason for every exclusion.
+
+*The response-timing floor.* While the switch is on, every answer rendered as the unrouted `404` --
+the genuine `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED` as much as a resolved rejection -- is
+written no earlier than admission plus `UniformNotFound.RESPONSE_FLOOR` (50 ms) plus a random jitter
+below `UniformNotFound.RESPONSE_JITTER` (20 ms). `edge.end.ResponseDelay` schedules the write on a
+Vert.x timer, so no thread is held while an answer waits. The answer still holds its admission
+permit until it is written. Honest answers are never delayed. Both values are fixed constants; ADR-0072
+records how they were chosen.
+
+*The switch.* `security_defaults.uniform_not_found` (default `true`) governs the branch and the floor
+together; `false` restores every honest status and the undelayed `404`
+(link:configuration.adoc#_security_defaults[Configuration -- `security_defaults`]).
 
 [[_html_error_pages]]
 ==== Negotiated HTML error pages
@@ -1744,7 +1814,9 @@ hostnames are reserved. The `405`
 is eligible because a browser can navigate into one. One `405` never negotiates, whatever the
 classification says: a request whose method the gateway cannot parse is answered before a pipeline
 request exists, so it is always `application/problem+json`. The `405` of the verb gate, raised on a
-selected route, negotiates.
+selected route, negotiates. A rejection rendered as the unrouted `404` (<<_trust_boundary_rejections>>)
+is classified as `NO_ROUTE_MATCHED`, not as its true event. A bearer `401` or a route-scoped `400`
+that the rule reaches therefore negotiates the HTML error page like any unrouted address.
 
 An error page carries the unchanged status and a fixed per-status title. It never carries a problem
 detail, an exception message or an upstream address. It renders anonymously (no session is resolved
@@ -1761,7 +1833,14 @@ the gRPC status carried in the response *trailers*. So a gateway-generated rejec
 `protocol: grpc` route is *not* rendered as problem+json; it is emitted as a *trailers-only* gRPC
 response: an HTTP/2 response whose HEADERS frame carries `grpc-status` (and `grpc-message`) with
 *no message body and no DATA frame* (the gRPC "Trailers-Only" case). The gateway maps the same
-rejection it would render as an HTTP status for an HTTP route onto the canonical gRPC status:
+rejection it would render as an HTTP status for an HTTP route onto the canonical gRPC status.
+
+`ErrorResponseWriter` takes the trust-boundary branch before this mapping
+(<<_trust_boundary_rejections>>). A rejection raised before the trust boundary is therefore answered
+to an untrusted caller as the unrouted HTTP `404`, never trailers-only, while
+`security_defaults.uniform_not_found` is on: a trailers-only status would itself name the address as
+a gRPC route. The mapping below applies to every other rejection, and to all of them with the switch
+off:
 
 [cols="1,1,3"]
 |===
@@ -1851,6 +1930,9 @@ The manifest requires *paths, errors, and average timing*. These map to:
   path. They appear in the `4xx` bucket of `sheriff_requests_total` only, the first of them under
   `method="OTHER"`
   (link:adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
+  A rejection answered as the unrouted `404` (<<_trust_boundary_rejections>>) is counted under its
+  true `event` and `category`, never as `NO_ROUTE_MATCHED`: this counter is where an operator sees
+  the real cause the caller is not shown.
 
 | `sheriff_security_events_total{failure_type}`
 | The `cui-http` `SecurityEventCounter` counts, exposed per `UrlSecurityFailureType`.
@@ -1970,7 +2052,8 @@ HTTP/3 / QUIC is deferred.
   metadata only, never the protobuf payload. Gateway-generated rejections on a `protocol: grpc`
   route are emitted as *trailers-only* gRPC responses (see
   link:#_grpc_error_contract[gRPC rejections]), because a gRPC client cannot consume
-  `application/problem+json`.
+  `application/problem+json`. The exception is a rejection raised before the trust boundary: an
+  untrusted caller gets the unrouted HTTP `404` instead (<<_trust_boundary_rejections>>).
 
 | GraphQL
 | A single POST endpoint over standard HTTP; routed and forwarded like any HTTP route. The
@@ -2147,7 +2230,8 @@ described above. Each is a deliberate, recorded gap rather than a silent diverge
 
 * *Integration bearer validation covers rejection, not live issuance.* The default integration suite
   exercises routing, health, the RFC 9457 error contract, and bearer *rejection* (missing / malformed
-  token → `401`, upstream never reached) against a static file-JWKS issuer, so it needs no live
+  token → the uniform `404` with the true `TOKEN_MISSING` / `TOKEN_INVALID` event metered, upstream
+  never reached) against a static file-JWKS issuer, so it needs no live
   Keycloak. Positive end-to-end token validation against the Keycloak realm is exercised only under
   the `-Pintegration-tests` / `-Pbenchmark` profiles (native container + compose stack), not the
   default build.

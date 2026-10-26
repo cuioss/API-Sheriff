@@ -371,6 +371,16 @@ a missing or invalid token, the `405` for a request method the gateway cannot pa
 reserved-path body ceiling, gRPC trailers-only
 rejections, the admission `503`, and an unexpected internal failure.
 
+*A rejection before the trust boundary negotiates as the unrouted `404`.* With
+`security_defaults.uniform_not_found` on, the shipped default, a rejection raised on a matched route
+before the caller is trusted is answered exactly as an unrouted address is answered
+(link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). It
+therefore gets the `404` page on a navigation and the `404` problem document otherwise. That covers
+the failed CSRF origin check, the route's verb gate, the declared-`Content-Length` `413`, the
+route-scoped `400` of the security filter and the `401` of a missing or invalid bearer token. The
+table and the paragraph above describe those exits with the switch off. The scope `403`, the
+streamed-body `413` and the pre-route `400` are not affected.
+
 *A response relayed from an origin is never replaced.* An upstream's own `404` or `500`, a
 `source: upstream` asset response, the gRPC and WebSocket relays and a relay that fails after the
 response head was sent all pass through unchanged, whatever the request accepts.
