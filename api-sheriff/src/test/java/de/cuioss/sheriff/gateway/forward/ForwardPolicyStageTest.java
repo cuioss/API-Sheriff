@@ -701,10 +701,12 @@ class ForwardPolicyStageTest {
             // gated by the same flag, so dropping either half orphans the other. Two same-file tests
             // could not catch that; this one fails the moment the halves disagree.
             //
-            // The route declares a positive-list, which is where the toggle actually governs: the
-            // conditional tier of the protocol set is then the ONLY path admitting a validator. Under
-            // forward-all the mode copy carries the client's headers wholesale and the gate never sees
-            // them — pinned separately by forwardAllCarriesValidatorsPastTheToggle below.
+            // The route declares an empty positive-list, so the conditional tier of the protocol set is
+            // the ONLY admission path a validator has here. The mode-copy paths — forward-all, a
+            // negative-list that does not name the validator, and a positive-list that does — are
+            // withheld by the same toggle and pinned separately by forwardAllWithholdsValidatorsWhenToggleOff,
+            // negativeListWithholdsUnnamedValidatorWhenToggleOff and
+            // positiveListNamingValidatorWithholdsItWhenToggleOff below.
             Map<String, List<String>> headers = Map.of(requestValidator, List.of("probe-value"));
 
             // Act
@@ -732,30 +734,117 @@ class ForwardPolicyStageTest {
 
         @ParameterizedTest
         @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
-        @DisplayName("under forward-all a validator crosses even with not_modified off — the mode copy, not the set")
-        void forwardAllCarriesValidatorsPastTheToggle(String requestValidator) {
-            // Arrange — characterization of where the toggle's reach ENDS, pinned so the boundary is
-            // visible rather than discovered later. not_modified gates the protocol set's conditional
-            // tier; it is not a withholding rule applied to the mode copy. A forward-all route has
-            // declared that client headers cross, and this validator crosses on that posture alone.
-            //
-            // Note the asymmetry this leaves: the response half strips ETag / Last-Modified on the very
-            // same route, so a forward-all + not_modified:false route forwards the precondition and then
-            // discards the validator answering it. Resolving that is a change to forward-all semantics,
-            // which is outside this deliverable's declared edit (widening the tier's membership) — it is
-            // recorded here as behaviour, not endorsed as intent.
-            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
-            PipelineRequest request = request(UNTRUSTED_PEER,
-                    Map.of(requestValidator, List.of("probe-value")));
+        @DisplayName("under forward-all a validator is withheld while not_modified is off, and crosses once it is on")
+        void forwardAllWithholdsValidatorsWhenToggleOff(String requestValidator) {
+            // Arrange — ADR-0037 recorded this boundary as open: the mode copy used to carry a
+            // validator past the toggle, while the response half stripped the ETag / Last-Modified
+            // answering it on the very same route, so a forward-all + not_modified: false route asked a
+            // question whose answer it then discarded. This plan closes that boundary: the toggle
+            // withholds the validators from the client copy under every mode, forward-all included.
+            // The unowned companion header is the matched control proving the mode copy really ran.
+            Map<String, List<String>> headers = Map.of(
+                    requestValidator, List.of("probe-value"),
+                    "X-Api-Version", List.of("v2"));
 
             // Act
-            ForwardPolicyStage.Result result = stage.process(request, forwardAll(), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result toggleOff = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result toggleOn = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, true);
 
             // Assert
-            assertEquals(List.of("probe-value"), valuesNamed(result.headers(), requestValidator),
-                    () -> requestValidator + " crosses under forward-all because the mode copy carried"
-                            + " it, not because the protocol set admitted it — the not_modified gate"
-                            + " governs the set's admission path only");
+            assertAll("forward-all is bounded by the not_modified gate",
+                    () -> assertEquals(List.of(), valuesNamed(toggleOff.headers(), requestValidator),
+                            () -> requestValidator + " must not cross a forward-all route with not_modified"
+                                    + " off — the response half would discard the answer"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(toggleOff.headers(), "X-Api-Version"),
+                            "control: a non-validator header still crosses forward-all with the toggle off"),
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(toggleOn.headers(), requestValidator),
+                            () -> requestValidator + " crosses forward-all once the route enables"
+                                    + " not_modified"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @DisplayName("under a negative-list that does not name it a validator is withheld while not_modified is off")
+        void negativeListWithholdsUnnamedValidatorWhenToggleOff(String requestValidator) {
+            // Arrange — the deny list names something else, so only the toggle can withhold the validator
+            Map<String, List<String>> headers = Map.of(
+                    requestValidator, List.of("probe-value"),
+                    "X-Api-Version", List.of("v2"));
+            ForwardConfig negativeList = deny(List.of("X-Unrelated"));
+
+            // Act
+            ForwardPolicyStage.Result toggleOff = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), negativeList, CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result toggleOn = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), negativeList, CookiesConfig.NONE, true);
+
+            // Assert
+            assertAll("a negative-list is bounded by the not_modified gate",
+                    () -> assertEquals(List.of(), valuesNamed(toggleOff.headers(), requestValidator),
+                            () -> requestValidator + " must not cross a negative-list route with"
+                                    + " not_modified off, although no deny entry names it"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(toggleOff.headers(), "X-Api-Version"),
+                            "control: the negative-list copy carried the undenied non-validator header"),
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(toggleOn.headers(), requestValidator),
+                            () -> requestValidator + " crosses the negative-list route once not_modified"
+                                    + " is on"));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range"})
+        @DisplayName("a positive-list naming a validator in headers_allow does not carry it while not_modified is off")
+        void positiveListNamingValidatorWithholdsItWhenToggleOff(String requestValidator) {
+            // Arrange — the operator names the validator explicitly, once canonically and once in the
+            // lower-cased spelling, so the withholding is shown to be case-insensitive. An explicit
+            // headers_allow entry is still client input; the toggle decides whether the question is
+            // asked, because the response half decides on the same flag whether the answer returns.
+            Map<String, List<String>> headers = Map.of(
+                    requestValidator, List.of("probe-value"),
+                    "X-Api-Version", List.of("v2"));
+            ForwardConfig canonical = allow(List.of(requestValidator, "X-Api-Version"));
+            ForwardConfig lowerCased = allow(List.of(requestValidator.toLowerCase(Locale.ROOT), "X-Api-Version"));
+
+            // Act
+            ForwardPolicyStage.Result toggleOff = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), canonical, CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result lowerCasedToggleOff = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), lowerCased, CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result toggleOn = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), canonical, CookiesConfig.NONE, true);
+
+            // Assert
+            assertAll("a headers_allow entry does not outrank the not_modified gate",
+                    () -> assertEquals(List.of(), valuesNamed(toggleOff.headers(), requestValidator),
+                            () -> requestValidator + " must not cross with not_modified off, although"
+                                    + " headers_allow names it"),
+                    () -> assertEquals(List.of(), valuesNamed(lowerCasedToggleOff.headers(), requestValidator),
+                            () -> requestValidator + " must not cross under a lower-cased headers_allow"
+                                    + " entry either"),
+                    () -> assertEquals(List.of("v2"), valuesNamed(toggleOff.headers(), "X-Api-Version"),
+                            "control: the positive-list really did admit its non-validator entry"),
+                    () -> assertEquals(List.of("probe-value"), valuesNamed(toggleOn.headers(), requestValidator),
+                            () -> requestValidator + " crosses the positive-list route once not_modified"
+                                    + " is on"));
+        }
+
+        @Test
+        @DisplayName("an operator's set_headers validator is not withheld by the toggle — it is not client input")
+        void setHeadersValidatorSurvivesTheToggle() {
+            // Arrange — the toggle governs CLIENT input, exactly like the never-forward strip; an
+            // operator's static header is configuration and is merged afterwards
+            ForwardPolicyStage stage = stage(EMIT_XFORWARDED, List.of(), Set.of());
+            PipelineRequest request = request(UNTRUSTED_PEER, Map.of("If-None-Match", List.of("\"client\"")));
+
+            // Act
+            ForwardPolicyStage.Result result = stage.process(request,
+                    ForwardConfig.builder().setHeaders(Map.of("If-None-Match", "\"operator\"")).build(),
+                    CookiesConfig.NONE, false);
+
+            // Assert
+            assertEquals(List.of("\"operator\""), valuesNamed(result.headers(), "If-None-Match"),
+                    "the client's validator is withheld and the operator's static value crosses alone");
         }
 
         @Test

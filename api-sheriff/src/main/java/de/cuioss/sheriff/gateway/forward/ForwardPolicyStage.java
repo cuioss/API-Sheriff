@@ -107,12 +107,17 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>Conditional requests.</strong> The five {@link #CONDITIONAL_HEADERS} validators are
  *       the protocol set's gated tier: they cross only when the route enables {@code not_modified},
  *       which is the same flag the response direction reads before relaying {@code ETag} /
- *       {@code Last-Modified}. Gating both halves on one flag is what stops the gateway asking a
- *       question whose answer it then discards.</li>
+ *       {@code Last-Modified}. The gate holds in <em>every</em> forward mode: with the flag off a
+ *       validator is withheld under forward-all, under a negative-list that does not name it, and
+ *       under a positive-list that names it in {@code headers_allow}. Gating both halves on one
+ *       flag, in every mode, is what stops the gateway asking a question whose answer it then
+ *       discards. {@code set_headers} is operator configuration rather than client input and is not
+ *       gated.</li>
  * </ul>
  * <p>
  * <strong>The application order is pinned, and it encodes a precedence rule.</strong>
- * {@link #process} runs: the mode copy and the never-forward strip, then the rebuilt {@code Cookie},
+ * {@link #process} runs: the mode copy, the never-forward strip and — when {@code not_modified} is
+ * off — the withholding of the conditional validators, then the rebuilt {@code Cookie},
  * then the protocol set, then {@code set_headers}, then the regenerated forwarding headers, then the
  * mediated bearer. Two sentences explain every step of it — <em>operator configuration beats client input</em>, so
  * {@code set_headers} is merged after everything sourced from the request; and <em>gateway-owned
@@ -177,6 +182,12 @@ public final class ForwardPolicyStage {
      * {@code Last-Modified}, and a {@code 304} or {@code 206}) are gated by the same flag in the
      * response direction: forwarding a validator whose response counterpart is then stripped would
      * make the gateway ask a question it discards the answer to.
+     * <p>
+     * The request half and the response half are one decision in every forward mode. With the toggle
+     * off the validators are withheld from the client copy whatever the mode — forward-all, a
+     * negative-list, or a positive-list that names one in {@code headers_allow} — so the request
+     * direction can never carry a validator the response direction would then answer without its
+     * {@code ETag} / {@code Last-Modified}.
      */
     private static final List<String> CONDITIONAL_HEADERS = List.of(
             "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since", "If-Range");
@@ -239,6 +250,9 @@ public final class ForwardPolicyStage {
         Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         copyHeadersByMode(request, forwardConfig, headers);
         applyRequestStrip(forwardConfig, headers);
+        if (!notModifiedEnabled) {
+            withholdConditionalHeaders(headers);
+        }
         applyCookiePolicy(request, cookies, headers);
         applyProtocolHeaders(request, forwardConfig, notModifiedEnabled, headers);
         headers.putAll(forwardConfig.setHeaders());
@@ -445,6 +459,22 @@ public final class ForwardPolicyStage {
             return !TRAILERS.equalsIgnoreCase(value.strip());
         }
         return true;
+    }
+
+    /**
+     * Withholds the five {@link #CONDITIONAL_HEADERS} validators from the copied client headers on a
+     * route that does not enable {@code not_modified}. Applied on <em>every</em> mode, after the mode
+     * copy and the never-forward strip: forward-all copies them, a negative-list that does not name
+     * them copies them, and a positive-list that names them in {@code headers_allow} copies them —
+     * none of those copies survives this step.
+     * <p>
+     * The removal goes through the case-insensitive map's own {@code remove}, so every spelling the
+     * client used is withheld. It runs before {@code set_headers} is merged, so an operator's static
+     * validator is untouched: this gate governs <em>client input</em>, exactly like
+     * {@link #applyRequestStrip}.
+     */
+    private static void withholdConditionalHeaders(Map<String, String> headers) {
+        CONDITIONAL_HEADERS.forEach(headers::remove);
     }
 
     /**
