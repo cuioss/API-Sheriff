@@ -5059,7 +5059,7 @@ class BffRuntimeProducerTest {
      * Writes {@code keyFileContent} to a fresh sealing-key file followed by a newline, as
      * {@code openssl rand -base64 32} writes one, and returns its path.
      */
-    static String sealingKeyFile(String keyFileContent) {
+    private static String sealingKeyFile(String keyFileContent) {
         Path keyFile = sealingKeyDirectory.resolve("session-" + SEALING_KEY_FILES.incrementAndGet() + ".key");
         try {
             Files.writeString(keyFile, keyFileContent + "\n", StandardCharsets.US_ASCII);

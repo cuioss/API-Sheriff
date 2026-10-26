@@ -429,20 +429,6 @@ List<String> scopes,
             }
             return Math.min(DEFAULT_MAX_SESSIONS_PER_SUBJECT, effectiveMaxSessions());
         }
-
-        /**
-         * Overridden to keep the rendering explicit. {@link #keyFile()} is rendered as it is: a key
-         * file is a path, not a secret — the same treatment {@link ClientAuthenticationSettings}
-         * gives its key file. The key material itself never reaches this record.
-         *
-         * @return a string representation of every field
-         */
-        @Override
-        public String toString() {
-            return "Session[mode=%s, store=%s, cookieName=%s, keyFile=%s, ttlSeconds=%s, csrf=%s, refresh=%s, maxSessions=%s, maxCookieSize=%s, idleTimeoutSeconds=%s, maxSessionsPerSubject=%s]"
-                    .formatted(mode, store, cookieName, keyFile, ttlSeconds, csrf,
-                            refresh, maxSessions, maxCookieSize, idleTimeoutSeconds, maxSessionsPerSubject);
-        }
     }
 
     /**

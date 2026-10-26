@@ -80,15 +80,7 @@ generate_key_file() {
 # Writes one sealing key file. $1 = file name.
 generate_sealing_key_file() {
     local target="${SCRIPT_DIR}/$1"
-    local decoded_bytes
     openssl rand -base64 32 > "${target}"
-    # The gateway refuses at boot a key file that does not decode to exactly 32 bytes, so a short or
-    # long key is caught here and not in the stack.
-    decoded_bytes="$(openssl base64 -d -A -in "${target}" | wc -c | tr -d '[:space:]')"
-    if [[ "${decoded_bytes}" != "32" ]]; then
-        echo "❌ ${target} decodes to ${decoded_bytes} bytes, not the 32 an AES-256 sealing key needs." >&2
-        exit 1
-    fi
     # Readable by the container's non-root user, like the PEM files. The key protects nothing outside
     # this stack.
     chmod 644 "${target}"
