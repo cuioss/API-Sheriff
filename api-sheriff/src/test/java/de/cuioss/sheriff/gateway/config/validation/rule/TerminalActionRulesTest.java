@@ -337,19 +337,13 @@ class TerminalActionRulesTest {
          * accept it, and the three that relay none and refuse it.
          */
         enum RouteKind {
-            HTTP_PROXY(true),
-            GRAPHQL_PROXY(true),
-            GRPC_PROXY(true),
-            UPSTREAM_ASSET(true),
-            REDIRECT(false),
-            DIRECTORY_ASSET(false),
-            WEBSOCKET(false);
-
-            private final boolean relaysUpstreamHeaders;
-
-            RouteKind(boolean relaysUpstreamHeaders) {
-                this.relaysUpstreamHeaders = relaysUpstreamHeaders;
-            }
+            HTTP_PROXY,
+            GRAPHQL_PROXY,
+            GRPC_PROXY,
+            UPSTREAM_ASSET,
+            REDIRECT,
+            DIRECTORY_ASSET,
+            WEBSOCKET
         }
 
         private List<ConfigError> validateRoute(RouteKind kind, @Nullable Boolean keepIdentityHeaders) {
@@ -415,8 +409,7 @@ class TerminalActionRulesTest {
         void shouldAcceptUndeclaredKeyOnEveryRouteKind(RouteKind kind) {
             List<ConfigError> errors = validateRoute(kind, null);
 
-            assertTrue(errors.isEmpty(), () -> "the control: " + kind + " (relays upstream headers: "
-                    + kind.relaysUpstreamHeaders + ") is valid without the key, got: " + errors);
+            assertTrue(errors.isEmpty(), () -> "the control: " + kind + " is valid without the key, got: " + errors);
         }
     }
 }

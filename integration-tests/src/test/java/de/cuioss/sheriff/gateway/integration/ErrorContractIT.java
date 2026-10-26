@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
@@ -258,11 +257,11 @@ class ErrorContractIT extends BaseIntegrationTest {
                 () -> assertFalse(RUNTIME_NAME.matcher(body).find(), () -> "the body names the runtime: " + body));
     }
 
-    /** The top-level member names of a problem document, after asserting its media type. */
+    /**
+     * The top-level member names of a problem document. The media type is already asserted by the
+     * request helper that produced {@code response}.
+     */
     private static Set<String> memberNames(ExtractableResponse<Response> response) {
-        String contentType = response.contentType() == null ? "" : response.contentType().toLowerCase(Locale.ROOT);
-        assertTrue(contentType.startsWith(PROBLEM_JSON),
-                () -> "a gateway-originated error renders problem+json; content type was " + response.contentType());
         return new TreeSet<>(response.jsonPath().getMap("$").keySet().stream().map(String::valueOf).toList());
     }
 }
