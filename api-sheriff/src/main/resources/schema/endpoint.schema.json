@@ -359,7 +359,7 @@
               },
               "keep_identity_headers": {
                 "type": "boolean",
-                "description": "Per-route opt-out of the upstream identity-header strip. Absent (the default) or false strips the gateway-owned identity set (Server, X-Powered-By and their framework kin) from the upstream response on every path that relays upstream headers: the HTTP relay, the gRPC relay (leading headers and trailers) and an asset route with source: upstream. true keeps them for this route. A per-route key only, with no endpoint, anchor or gateway scope. Refused on a redirect route, an asset route with source: directory and a protocol: websocket route, none of which relays an upstream response header (enforced in code)."
+                "description": "Per-route opt-out of the upstream identity-header strip. Absent (the default) or false strips the gateway-owned identity set (Server and X-Powered-By) from the upstream response on every path that relays upstream headers: the HTTP relay, the gRPC relay (leading headers and trailers) and an asset route with source: upstream. true keeps them for this route. A per-route key only, with no endpoint, anchor or gateway scope. Refused on a redirect route, an asset route with source: directory and a protocol: websocket route, none of which relays an upstream response header (enforced in code)."
               }
             }
           }

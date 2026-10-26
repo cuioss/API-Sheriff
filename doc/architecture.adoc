@@ -1261,6 +1261,9 @@ safe*
   for the response direction, are listed once, in
   link:configuration.adoc#_never_forward_set[the never-forward section of the configuration
   reference]; `ConnectionHeaders.REQUEST_STRIP` and `ConnectionHeaders.RESPONSE_STRIP` hold them.
+  A fourth, response-direction set is not a strip member: `UpstreamIdentityHeaders` holds the
+  identity headers removed by default from every relayed upstream response (see
+  <<_cookie_policy,the response predicate>> below).
   Membership is tested on the *separator-folded* name (lower-cased, every `_` mapped to `-`), so
   the set closes the whole `-`/`_` equivalence class of each name it holds rather than listing the
   variants -- a two-separator name has four spellings a CGI-folding backend resolves to one
@@ -1283,7 +1286,8 @@ route's `cookies` policy (<<_cookie_policy>>).
   `Accept-Encoding`, `Accept-Language`, `Content-Type` and `Range` unconditionally, plus the
   five RFC 9110 §13 conditional validators (`If-None-Match`, `If-Modified-Since`, `If-Match`,
   `If-Unmodified-Since`, `If-Range`) gated by the route's
-  link:configuration.adoc#_upstream_defaults[`not_modified`] toggle. Membership answers *"does the
+  link:configuration.adoc#_upstream_defaults[`not_modified`] toggle -- with the toggle off they are
+  also removed from the mode copy, so no forward mode carries one. Membership answers *"does the
   gateway know what this header means?"* -- not "does a backend need it", a rule that would
   admit `Cookie` and `Authorization`. `User-Agent` is deliberately outside the set on the same
   test. A `headers_deny` entry naming one of these wins; a *positive*-list is deliberately not
@@ -1363,6 +1367,19 @@ and removes the `Domain` attribute -- every occurrence, the attribute name compa
 to case -- from each line it keeps. The WebSocket upgrade relays no upstream response header, so the
 predicate has nothing to judge there; an asset with `source: upstream` strips every source
 `Set-Cookie` in its own envelope.
+
+*Identity-header normalization (stage 7 and the asset envelope).* The same predicate also drops
+every `UpstreamIdentityHeaders` member -- `Server` and `X-Powered-By`, the headers that name the
+upstream's software -- at all three relay sites, and `AssetResponseEnvelope` drops them from an
+asset with `source: upstream`. They are removed, never rewritten to a neutral value, and the set is
+kept apart from `RESPONSE_STRIP`: a strip member is wrong on the client's connection and no route
+may keep it, while an identity header is removed only because it discloses the upstream's
+fingerprint. A route that sets `keep_identity_headers: true` keeps them on all three paths;
+`RouteTableBuilder` carries the flag into `Route.keepIdentityHeaders`, and `RouteAssembler` and
+`AssetSourceFactory` hand it to the asset source
+(link:configuration.adoc#_keep_identity_headers[Configuration -- `keep_identity_headers`]). The
+boot validator refuses the key on a redirect, a `source: directory` asset and a WebSocket route,
+none of which relays an upstream response header.
 
 [[_cookie_origin_check]]
 *The same-origin check of a cookie-forwarding route.* Route-table assembly builds one `CsrfDefence`
@@ -1490,13 +1507,12 @@ The upstream client is split by plane
   `If-Unmodified-Since`, `If-Range`) cross without an operator entry and the upstream's
   `304`/`ETag`/`Last-Modified` are relayed untouched (a `304` has no body --
   streaming-compatible, zero gateway state). Disabled, the response half strips `ETag` and
-  `Last-Modified`, and the request half withholds the five validators from the
-  <<_forward_policy,gateway-understood protocol set>>. *One boundary is recorded rather than
-  resolved*: the toggle gates that set's admission path only, so a forward-all or
-  negative-list route still carries a client's validator upstream on its declared posture
-  while the response half strips the `ETag` that would answer it. That edge is pinned by a
-  characterization test and left open deliberately -- closing it would change what forward-all
-  means for a class of client headers (link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+  `Last-Modified`, and the request half withholds the five validators under *every* forward
+  mode: `ForwardPolicyStage` drops them from the client-sourced copy after the mode copy and the
+  never-forward strip, so neither forward-all, a negative-list nor a positive-list naming one in
+  `headers_allow` carries a validator upstream while the response half strips the `ETag` that
+  would answer it. An operator's `set_headers` entry is configuration, not client input, and stays
+  ungated (link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
 
 *Two planes, two body shapes* (link:adr/0006-body-streaming-vs-httpresult.adoc[ADR-0006]). The
 `HttpResult<T>` *materialize-the-body* pattern is used on the *control plane* only -- the small,

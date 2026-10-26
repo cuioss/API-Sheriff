@@ -730,7 +730,10 @@ honest statement of the control's reach -- the gateway does not re-run `Characte
 over upstream response headers. Both response paths (`edge.relay.ResponseStage` for the streamed proxy
 relay, `asset.AssetResponseEnvelope` for the buffered asset envelope) copy the source's remaining
 headers through once the gateway-owned never-relay set below has been applied -- and on the proxy
-relay once the route's `cookies` policy has judged each `Set-Cookie` (<<gw-15>>). That direction is
+relay once the route's `cookies` policy has judged each `Set-Cookie` (<<gw-15>>). A third removal
+applies on both paths: the gateway-owned identity set (`Server`, `X-Powered-By`) is dropped on the
+proxy relay and in the asset envelope unless the route sets `keep_identity_headers: true`
+(<<gw-12>>). That direction is
 bounded by *which names* cross rather than by re-checking their characters, so the residual is
 scoped to a configured upstream that is already inside the gateway's trust boundary rather than
 to client-supplied input. Never let a client `Connection:` header steer stripping of framing or
@@ -1816,6 +1819,17 @@ Config binding-error messages are sanitized/truncated so no resolved scalar (sec
 logged. `OidcConfig`/`Session` `toString()` redaction already holds; the binding path must not
 bypass it. No `/api/info` or `/api/health` placeholder resource is exposed on the public port.
 
+*Control -- the software fingerprint.* The upstream's `Server` and `X-Powered-By` headers are
+stripped by default on the HTTP relay, the gRPC relay and an asset route with `source: upstream`;
+a route opts out per route with `keep_identity_headers: true`
+(link:configuration.adoc#_identity_set[the identity set],
+link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
+A gateway-originated answer carries no `Server`, no `X-Powered-By` and no version string, and every
+gateway error shares one problem shape, so neither the error body nor its headers tell one
+rejecting component from another. The TLS and HTTP/2 fingerprint of the listener is an accepted
+residual that no gateway key disguises (link:user/tls-edge.adoc#_tls_and_http2_fingerprints[TLS and
+HTTP/2 fingerprints]).
+
 *Status:* PARTIAL. The error contract and the placeholder removal are delivered; binding
 redaction is enforced by the configuration validator.
 
@@ -1823,7 +1837,11 @@ redaction is enforced by the configuration validator.
 trace/internal detail; a bind failure adjacent to a resolved secret never surfaces the
 secret; problem+json bodies carry the category only, an HTML error page carries no
 request-derived input beyond the unchanged status, and a gRPC trailers-only rejection's
-`grpc-message` carries the category slug only.
+`grpc-message` carries the category slug only. A gateway error carries no `Server`, no
+`X-Powered-By` and no version string, and every gateway error answers in one problem shape
+(pinned by `ErrorContractIT`). An upstream's `Server` and `X-Powered-By` are absent from the
+client response by default and present on a route that sets `keep_identity_headers: true`
+(pinned by `RoutingAndResponseHeadersIT`).
 
 [#gw-13]
 === GW-13 -- Open redirect through a gateway-answered redirect (CWE-601)
@@ -3839,7 +3857,7 @@ outstanding hardening work (next section).
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
-| <<gw-12>> | problem+json category-only; no secret in logs | cui-http + token-sheriff mappers + gateway error contract | PARTIAL
+| <<gw-12>> | problem+json category-only; no secret in logs; upstream `Server` / `X-Powered-By` stripped by default with a per-route opt-out; no version string on gateway errors | cui-http + token-sheriff mappers + gateway error contract + `UpstreamIdentityHeaders` (ADR-0037) | PARTIAL
 | <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
 | <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)

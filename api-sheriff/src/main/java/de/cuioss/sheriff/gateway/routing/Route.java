@@ -155,8 +155,8 @@ import org.jspecify.annotations.Nullable;
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle (meaningful only for
  *                               a proxy route)
  * @param keepIdentityHeaders    the materialized {@code keep_identity_headers} opt-out: {@code true}
- *                               keeps the upstream's server-identity headers ({@code Server},
- *                               {@code X-Powered-By} and their framework kin) on every path that
+ *                               keeps the upstream's server-identity headers ({@code Server} and
+ *                               {@code X-Powered-By}, see {@code UpstreamIdentityHeaders}) on every path that
  *                               relays upstream response headers — the HTTP relay, the gRPC relay's
  *                               leading headers and trailers, and an upstream-backed asset route;
  *                               the default {@code false} strips them. An absent key materializes

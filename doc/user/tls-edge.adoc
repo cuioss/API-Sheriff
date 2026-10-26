@@ -72,7 +72,7 @@ The gateway exposes no configuration that disguises them. The policy keys above 
 negotiated -- a floor, a cipher list, the ALPN protocols -- and a changed list can change the
 negotiated values, but the shape of the handshake and of the `SETTINGS` frame stays the shape of
 that stack. Removing the `Server` header (see
-link:endpoint-routes.adoc[`keep_identity_headers`]) does not hide it.
+link:endpoint-routes.adoc#_keep_identity_headers[`keep_identity_headers`]) does not hide it.
 
 *The mitigation is out of process.* Where the fingerprint matters, put a CDN or load balancer in
 front of the gateway that terminates TLS and HTTP/2 itself: a client then fingerprints that front

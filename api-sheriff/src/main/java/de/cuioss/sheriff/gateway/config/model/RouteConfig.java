@@ -59,8 +59,8 @@ import org.jspecify.annotations.Nullable;
  * @param websocket      the per-route WebSocket settings ({@code allowed_origins},
  *                       {@code idle_timeout_seconds}), {@code null} for non-WebSocket routes
  * @param keepIdentityHeaders the per-route {@code keep_identity_headers} opt-out: {@code true}
- *                       keeps the upstream's server-identity headers ({@code Server},
- *                       {@code X-Powered-By} and their framework kin) on every response path of
+ *                       keeps the upstream's server-identity headers ({@code Server} and
+ *                       {@code X-Powered-By}, see {@code UpstreamIdentityHeaders}) on every response path of
  *                       this route; {@code null} (absent) and {@code false} both mean they are
  *                       stripped. A per-route scalar, not a policy block (ADR-0067): it has no
  *                       endpoint, anchor or gateway scope. Refused at boot on a redirect, a
