@@ -38,7 +38,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * Boots the gateway in cookie mode with <strong>no</strong> {@code session.encryption_key} configured
+ * Boots the gateway in cookie mode with <strong>no</strong> {@code session.key_file} configured
  * and asserts it comes up active (D6).
  * <p>
  * Omitting the key selects the generate-on-startup key mode — a fully supported production mode whose
@@ -89,10 +89,10 @@ class CookieModeBootTest {
     }
 
     @Test
-    @DisplayName("Should boot an active cookie-mode runtime with no encryption_key configured")
+    @DisplayName("Should boot an active cookie-mode runtime with no session.key_file configured")
     void shouldBootActiveWithGeneratedKey() {
         assertTrue(runtime.isActive(),
-                "cookie mode with no encryption_key selects generate-on-startup — a boot, not a failure");
+                "cookie mode with no session.key_file selects generate-on-startup — a boot, not a failure");
         assertNotNull(runtime.sessionStage(), "the require: session stage-4 runtime is wired in cookie mode");
         assertNotNull(runtime.csrfDefence());
     }

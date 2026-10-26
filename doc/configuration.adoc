@@ -497,8 +497,10 @@ oidc:                              # only used by the BFF variants (2 and 3)
     cookie_name: __Host-sheriff    # OPTIONAL, both modes; default __Host-sheriff-session. REFUSED AT
                                    #   BOOT unless a __Host--prefixed RFC 9110 token distinct from
                                    #   the gateway-owned __Host-sheriff-binding / -logout cookies
-    encryption_key: ${SHERIFF_SESSION_KEY}   # cookie mode only (AES-256-GCM); OPTIONAL -- omit to
-                                   #   generate a key on startup (sessions die on restart)
+    key_file: /run/secrets/session.key  # cookie mode only (AES-256-GCM); OPTIONAL -- a file holding
+                                   #   one line of base64 decoding to 32 bytes (openssl rand -base64
+                                   #   32 > session.key). A location, not a secret. Omit to generate
+                                   #   a key on startup (sessions die on restart). REFUSED in server mode
     max_cookie_size: 4019          # cookie mode only: sealed cookie-VALUE size budget in bytes.
                                    #   40..8192, default 4019. Drives BOTH the seal budget and the
                                    #   gateway's pre-route Cookie header-value cap

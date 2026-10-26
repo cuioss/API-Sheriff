@@ -159,7 +159,7 @@ public final class ConfigValidationCommand {
                     "a named trust profile that is unbound, anchor-free or trust-all:"
                             + " deployment quarkus.tls.* material, checked at boot"),
             new NotChecked("BFF runtime",
-                    "client-authentication / sender-constraint key files, cookie key material,"
+                    "client-authentication / sender-constraint key files, the cookie sealing key file,"
                             + " oidc_tls_profile with oidc_verify_hostname: false: deployment key material,"
                             + " checked at boot"),
             new NotChecked("portal template",

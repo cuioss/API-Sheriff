@@ -58,7 +58,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the OIDC session rules the {@link ConfigValidator} runs through {@link OidcSessionRules}:
- * the {@code oidc.session.mode} store requirement, the {@code max_sessions},
+ * the {@code oidc.session.mode} store requirement and its server-mode {@code key_file} refusal, the
+ * {@code max_sessions},
  * {@code max_sessions_per_subject}, {@code idle_timeout_seconds} and {@code max_cookie_size} ranges, the
  * browser-guarantee warning on the derived session {@code Set-Cookie} header, and the
  * {@code cookie_name} refusal.
@@ -195,8 +196,8 @@ class OidcSessionRulesTest {
     class RuleViolations {
 
         @Test
-        @DisplayName("Should accept cookie session mode without an encryption_key (generate-on-startup)")
-        void shouldAcceptCookieSessionWithoutEncryptionKey() {
+        @DisplayName("Should accept cookie session mode without a key_file (generate-on-startup)")
+        void shouldAcceptCookieSessionWithoutKeyFile() {
             GatewayConfig gateway = validGateway()
                     .oidc(OidcConfig.builder()
                             .session(OidcConfig.Session.builder()
@@ -209,17 +210,17 @@ class OidcSessionRulesTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
-                    () -> "omitting encryption_key selects the generate-on-startup key mode, got: " + errors);
+                    () -> "omitting key_file selects the generate-on-startup key mode, got: " + errors);
         }
 
         @Test
-        @DisplayName("Should accept cookie session mode with an encryption_key (passed-key mode)")
-        void shouldAcceptCookieSessionWithEncryptionKey() {
+        @DisplayName("Should accept cookie session mode with a key_file (provided-key-file mode)")
+        void shouldAcceptCookieSessionWithKeyFile() {
             GatewayConfig gateway = validGateway()
                     .oidc(OidcConfig.builder()
                             .session(OidcConfig.Session.builder()
                                     .mode("cookie")
-                                    .encryptionKey("${SHERIFF_SESSION_KEY}")
+                                    .keyFile("/run/keys/session.key")
                                     .build())
                             .build())
                     .build();
@@ -228,7 +229,54 @@ class OidcSessionRulesTest {
             List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
 
             assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
-                    () -> "declaring the one sealing key selects the passed-key mode, got: " + errors);
+                    () -> "naming the one sealing key file selects the provided-key-file mode, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse a key_file declared in server session mode, which never reads it")
+        void shouldRefuseKeyFileInServerSessionMode() {
+            String declaredPath = "/run/keys/never-read-session.key";
+            GatewayConfig gateway = validGateway()
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("server")
+                                    .store("memory")
+                                    .keyFile(declaredPath)
+                                    .build())
+                            .build())
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertHasError(errors, "/oidc/session/key_file", "declared in server session mode");
+            assertAll(
+                    () -> assertTrue(errors.stream()
+                                    .filter(e -> "/oidc/session/key_file".equals(e.pointer()))
+                                    .allMatch(e -> e.message().contains("remove the key, or use cookie session mode")),
+                            () -> "the refusal must name the remedy, got: " + errors),
+                    () -> assertTrue(errors.stream().noneMatch(e -> e.message().contains(declaredPath)),
+                            () -> "the refusal must name the key, never the declared path, got: " + errors));
+        }
+
+        @Test
+        @DisplayName("Should accept server session mode without a key_file")
+        void shouldAcceptServerSessionWithoutKeyFile() {
+            GatewayConfig gateway = validGateway()
+                    .oidc(OidcConfig.builder()
+                            .session(OidcConfig.Session.builder()
+                                    .mode("server")
+                                    .store("memory")
+                                    .build())
+                            .build())
+                    .build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS", List.of(), route("r", HttpMethod.GET));
+
+            List<ConfigError> errors = validator.validate(gateway, List.of(endpoint), topologyWith("ORDERS"));
+
+            assertTrue(errors.stream().noneMatch(e -> e.pointer().contains("/oidc/session/")),
+                    () -> "THE CONTROL for the server-mode key_file refusal: the same document without the key "
+                            + "must pass, got: " + errors);
         }
 
         @Test
@@ -255,7 +303,7 @@ class OidcSessionRulesTest {
                     .oidc(OidcConfig.builder()
                             .session(OidcConfig.Session.builder()
                                     .mode("  CoOkIe ")
-                                    .encryptionKey("${SHERIFF_SESSION_KEY}")
+                                    .keyFile("/run/keys/session.key")
                                     .build())
                             .build())
                     .build();

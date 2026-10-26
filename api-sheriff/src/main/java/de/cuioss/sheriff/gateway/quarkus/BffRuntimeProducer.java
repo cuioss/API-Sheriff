@@ -1225,12 +1225,18 @@ public class BffRuntimeProducer {
      * than configured separately, so it needs no operator input and cannot be recomputed
      * off-gateway.
      * <p>
-     * Per ADR-0011 the configuration stays neutral — the key is an {@code ${ENV_VAR}} reference
-     * carrying no material — so the concrete runtime choice is named by a startup diagnostic
-     * reporting the active key mode, never any key bytes. The
-     * generate-on-startup mode additionally raises the catalogued INFO
-     * {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
+     * Per ADR-0072 the configuration carries a location and never key material: a declared
+     * {@code oidc.session.key_file} names a file holding one line of base64 that decodes to the
+     * 32-byte sealing key, and an omitted one selects a key generated at startup. The concrete
+     * runtime choice is named by a startup diagnostic reporting the active key mode only, never the
+     * path and never any key bytes. The generate-on-startup mode additionally raises the catalogued
+     * INFO {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
      * sessions-die-on-restart consequence is operationally notable rather than merely diagnostic.
+     * <p>
+     * A refused key file fails the boot the way a refused signing-key file does: the refusal text
+     * {@link CookieKeyMaterial} raises names the field and the defect — never the configured path
+     * nor the file content — and is carried over as it is into a {@link GatewayException} with
+     * {@link EventType#CONFIG_INVALID}.
      * <p>
      * The codec's seal-time size budget comes from {@code oidc.session.max_cookie_size} — the single
      * declared number that also drives the edge's pre-route {@code Cookie} header-value cap, so the
@@ -1239,10 +1245,13 @@ public class BffRuntimeProducer {
      * The activity-cookie codec is built from the same key material, over a key derived for that cookie
      * alone, and handed to the binding together with the resolved idle timeout. It exists in cookie
      * mode only: server mode keeps the last access in its store.
+     *
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the sealing key file is
+     *                          refused
      */
     private static SessionBinding cookieSessionBinding(OidcConfig.Session session, String cookieName,
             Duration sessionTtl, Duration idleTimeout) {
-        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(session.encryptionKey());
+        CookieKeyMaterial keyMaterial = resolveSealingKey(session.keyFile());
         Integer declaredMaxCookieSize = session.maxCookieSize();
         int maxCookieSize = declaredMaxCookieSize == null
                 ? SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET
@@ -1251,6 +1260,23 @@ public class BffRuntimeProducer {
                 keyMaterial.mode().diagnosticName(), maxCookieSize);
         return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
                 keyMaterial.identitySalt(), keyMaterial.activityCodec(cookieName), idleTimeout);
+    }
+
+    /**
+     * Resolves the cookie sealing key and translates a refusal into the boot failure every other
+     * invalid configuration raises, exactly as {@link #resolveSigningKey} does for a signing key.
+     *
+     * @param keyFile the configured {@code oidc.session.key_file}, {@code null} to generate a key
+     * @return the resolved key material
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the key file is refused
+     */
+    private static CookieKeyMaterial resolveSealingKey(@Nullable String keyFile) {
+        try {
+            return CookieKeyMaterial.resolve(keyFile);
+        } catch (IllegalStateException refused) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    Objects.requireNonNullElse(refused.getMessage(), "oidc.session.key_file is refused"), refused);
+        }
     }
 
     /**

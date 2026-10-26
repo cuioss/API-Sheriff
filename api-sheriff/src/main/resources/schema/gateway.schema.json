@@ -465,7 +465,11 @@
               "type": "string",
               "description": "Name of the session cookie, in both session modes; defaults to __Host-sheriff-session when omitted. The name is written verbatim into Set-Cookie, so a declared value is REFUSED AT BOOT unless it starts with the case-sensitive __Host- prefix followed by a name (the prefix is what makes the browser enforce Secure, Path=/ and no Domain), is a non-empty RFC 9110 token (no whitespace, control characters or separators such as ';' or '='), and differs from the gateway-owned cookies __Host-sheriff-binding and __Host-sheriff-logout. The rule is stated here in prose only: the configuration validator is the sole enforcing authority and names the offending value at boot, which is why no pattern keyword is declared."
             },
-            "encryption_key": { "type": "string" },
+            "key_file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path of a file on a mount holding the cookie-mode sealing key. The file must hold one line of base64 (the standard alphabet of RFC 4648 section 4) that decodes to exactly 32 bytes, the AES-256 key; whitespace around that line, a trailing line break included, is allowed and nothing else is. One command creates a valid file: openssl rand -base64 32 > session.key. The file is read once, at boot. The value is a location, not a secret, so it may be written literally. With no key file configured, a key is generated at startup: every session ends on restart and the key cannot be shared across replicas, so every replica of a multi-replica deployment must be given the same key file. Declared in server mode, which never reads it, it is refused at boot (enforced in code)."
+            },
             "ttl_seconds": { "type": "integer" },
             "idle_timeout_seconds": {
               "type": "integer",

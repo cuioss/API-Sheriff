@@ -764,7 +764,7 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should boot cookie mode without an encryption key, generating one on startup")
+        @DisplayName("Should boot cookie mode without a key_file, generating a key on startup")
         void shouldBootCookieModeWithoutKey() {
             OidcConfig noKey = OidcConfig.builder()
                     .issuer(ISSUER)
@@ -799,6 +799,23 @@ class BffRuntimeProducerTest {
                                     + "boot's cookie, which a hard-coded or absent key would"));
         }
 
+        @Test
+        @DisplayName("Should seal under the provided key file, so a second boot on the same file opens the cookie")
+        void shouldSealUnderTheProvidedKeyFile() {
+            OidcConfig provided = cookieModeOidc();
+            SealedSessionCookieCodec firstBoot = assembledCodecOf(producer(provided).bffRuntime());
+            SealedSessionCookieCodec secondBoot = assembledCodecOf(producer(provided).bffRuntime());
+            SealedSessionPayload session = cookieSession();
+
+            String sealed = assertDoesNotThrow(() -> firstBoot.seal(session));
+
+            // The matched counterpart of shouldBootCookieModeWithoutKey: a generated key cannot open the
+            // first boot's cookie, so a second boot opening it proves the key came from the file.
+            assertEquals(Optional.of(new SealedSessionCookieCodec.Unsealed(session)), secondBoot.unseal(sealed),
+                    "two boots reading the same oidc.session.key_file seal under the same key, which is what "
+                            + "lets a session survive a restart and replicas share it");
+        }
+
         /**
          * The single {@link SealedSessionCookieCodec} the cookie-mode producer wired, located by the
          * same bounded object-graph walk the query-mode assertions use.
@@ -829,15 +846,29 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should refuse an encryption key that is not a base64 AES-256 value")
-        void shouldRefuseMalformedKey() {
-            BffRuntimeProducer nonBase64 = producer(cookieModeOidcWithKey("not-base64-~~~"));
-            BffRuntimeProducer aes128 =
-                    producer(cookieModeOidcWithKey(Base64.getEncoder().encodeToString(new byte[16])));
+        @DisplayName("Should abort the build with CONFIG_INVALID for a sealing key file the resolver refuses")
+        void shouldAbortTheBuildOnARefusedSealingKeyFile() {
+            String notBase64 = "not-base64-~~~";
+            String aes128 = Base64.getEncoder().encodeToString(new byte[16]);
 
-            assertThrows(IllegalStateException.class, nonBase64::bffRuntime);
-            assertThrows(IllegalStateException.class, aes128::bffRuntime,
-                    "an AES-128 key is refused — the codec is specified as AES-256-GCM");
+            assertAll("a refused sealing key file fails the boot the way a refused signing-key file does",
+                    Stream.of(notBase64, aes128).map(content -> (Executable) () -> {
+                        OidcConfig oidc = cookieModeOidcWithKey(content);
+                        String keyFile = oidc.session().keyFile();
+                        BffRuntimeProducer producer = producer(oidc);
+
+                        GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime);
+
+                        String message = thrown.getMessage();
+                        assertAll("the refusal of a key file holding '" + content + "'",
+                                () -> assertEquals(EventType.CONFIG_INVALID, thrown.getEventType()),
+                                () -> assertTrue(message.contains("oidc.session.key_file"),
+                                        "the refusal must name the configuration field: " + message),
+                                () -> assertFalse(message.contains(keyFile),
+                                        "the configured path is never echoed: " + message),
+                                () -> assertFalse(message.contains(content),
+                                        "the file content is never echoed: " + message));
+                    }));
         }
     }
 
@@ -4781,7 +4812,7 @@ class BffRuntimeProducerTest {
                     .mode(mode)
                     .ttlSeconds(ttlSeconds)
                     .idleTimeoutSeconds(idleTimeoutSeconds)
-                    .encryptionKey("cookie".equals(mode) ? sealingKeyFile(Base64.getEncoder().encodeToString(key)) : null)
+                    .keyFile("cookie".equals(mode) ? sealingKeyFile(Base64.getEncoder().encodeToString(key)) : null)
                     .build();
             return OidcConfig.builder()
                     .issuer(ISSUER)
@@ -5000,7 +5031,7 @@ class BffRuntimeProducerTest {
         OidcConfig.Session session = OidcConfig.Session.builder()
                 .mode("cookie")
                 .ttlSeconds(3600)
-                .encryptionKey(sealingKeyFile(keyFileContent))
+                .keyFile(sealingKeyFile(keyFileContent))
                 .build();
         return OidcConfig.builder()
                 .issuer(ISSUER)

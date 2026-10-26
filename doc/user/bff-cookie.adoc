@@ -57,7 +57,7 @@ oidc:
   session:
     mode: cookie                              # sealed cookie, no store (this variant)
     cookie_name: __Host-sheriff               # optional; must stay a __Host- name -- see "Session cookie name"
-    encryption_key: ${SHERIFF_SESSION_KEY}    # optional -- see "Key material" below
+    key_file: /run/secrets/session.key        # optional -- see "Key material" below
     max_cookie_size: 4019                     # seal-time VALUE budget; see "Cookie size budget"
     ttl_seconds: 3600                         # absolute lifetime from login
     idle_timeout_seconds: 1800                # optional: ends a session nobody uses; see "Idle timeout"
