@@ -135,7 +135,7 @@ class GatewayEdgeUniformNotFoundTest {
      * under, and the status an honest edge answers it with.
      */
     record Rejection(String name, io.vertx.core.http.HttpMethod method, String uri, Map<String, String> headers,
-            @Nullable String body, String routeId, EventType trueEvent, int honestStatus) {
+    @Nullable String body, String routeId, EventType trueEvent, int honestStatus) {
 
         @Override
         public String toString() {

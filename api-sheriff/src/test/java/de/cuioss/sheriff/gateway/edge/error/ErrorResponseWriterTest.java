@@ -244,7 +244,7 @@ class ErrorResponseWriterTest {
                     () -> assertNotNull(trueEvent, "sheriff_errors_total carries the true event"),
                     () -> assertEquals(1.0, trueEvent.count()),
                     () -> assertNull(meterRegistry.find(SheriffMetrics.ERRORS_TOTAL)
-                            .tag("event", EventType.NO_ROUTE_MATCHED.name()).counter(),
+                                    .tag("event", EventType.NO_ROUTE_MATCHED.name()).counter(),
                             "the rejection is never re-reported as NO_ROUTE_MATCHED"));
         }
 

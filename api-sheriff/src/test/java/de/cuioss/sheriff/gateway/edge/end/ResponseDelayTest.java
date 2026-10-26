@@ -192,8 +192,8 @@ class ResponseDelayTest {
 
     private int get() throws Exception {
         return Awaits.connect(client.request(options())
-                .compose(HttpClientRequest::send)
-                .compose(response -> response.body().map(ignored -> response.statusCode())),
+                        .compose(HttpClientRequest::send)
+                        .compose(response -> response.body().map(ignored -> response.statusCode())),
                 "the response to the held request");
     }
 }
