@@ -72,9 +72,10 @@ The file holds text for four reasons:
 
 === 3. The gateway reads the file once, bounded to 256 bytes
 
-The gateway reads the file once, at boot, and reads at most 256 bytes. A 32-byte key is one base64
-line of 44 characters, so the bound leaves ample room for surrounding whitespace. The gateway refuses
-a larger file before it decodes anything.
+The gateway reads the file once, at boot, and accepts a file of at most 256 bytes. The bounded read
+takes at most 257 bytes: the one byte past the limit is how a larger file is detected without reading
+the rest of it. A 32-byte key is one base64 line of 44 characters, so the bound leaves ample room for
+surrounding whitespace. The gateway refuses a larger file before it decodes anything.
 
 `CookieKeyMaterial` decodes the bytes directly and never turns them into a `String`, so every buffer
 holding key material can be zeroed once the key is built. It strips the surrounding whitespace and

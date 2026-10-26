@@ -2830,7 +2830,8 @@ See link:#_oidc_client_authentication[Client authentication].
   *File format.* One line of base64 -- the standard alphabet of RFC 4648 section 4 -- that decodes
   to *exactly 32 bytes*. Whitespace around the line, a trailing LF or CRLF included, is stripped;
   nothing else is allowed. `openssl rand -base64 32 > session.key` writes a valid file. The file is
-  read once, at boot, and at most 256 bytes of it.
+  read once, at boot, and may hold at most 256 bytes; the bounded read takes one byte more, at most
+  257, to detect a larger file.
 
   *Refusals.* Each of these fails the boot with `CONFIG_INVALID`: a value that is not a usable path;
   a path that does not exist, does not name a regular file or cannot be read; a file larger than 256 bytes; a file that holds no key
@@ -2846,8 +2847,9 @@ See link:#_oidc_client_authentication[Client authentication].
 
   There is exactly *one* sealing key -- no decrypt-only companion key and no rotation window.
   Replacing it is a clean break: cookies sealed under the withdrawn key carry a key id the gateway
-  no longer holds, are refused as "no session", and those users log in again. Moving the same key
-  into another file changes nothing.
+  no longer holds, are refused as "no session", and those users log in again. The file is read only
+  at boot, so a replacement takes effect when the gateway restarts: replace the file on every
+  replica and restart every replica. Moving the same key into another file changes nothing.
 
 | `session.max_cookie_size`
 | *Cookie mode only.* The sealed cookie-value size budget in bytes. Optional; range `40`--`8192`,

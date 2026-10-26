@@ -125,9 +125,10 @@ class KeyFilesTest {
     @DisplayName("Should name the caller's field, so each key file is refused under its own name")
     void shouldNameTheCallersField() {
         String otherField = "oidc.sender_constraint.key_file";
+        String absentKeyFile = directory.resolve("absent.key").toString();
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> KeyFiles.readBounded(directory.resolve("absent.key").toString(), otherField, BOUND));
+                () -> KeyFiles.readBounded(absentKeyFile, otherField, BOUND));
 
         assertTrue(thrown.getMessage().startsWith(otherField + " "), thrown.getMessage());
     }

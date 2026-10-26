@@ -227,12 +227,16 @@ public class OidcClientRules {
         }
         OidcConfig.ClientAuthenticationSettings clientAuthentication = oidc.clientAuthentication();
         OidcConfig.SenderConstraintSettings senderConstraint = oidc.senderConstraint();
-        if (clientAuthentication == null || clientAuthentication.keyFile() == null
-                || senderConstraint == null || senderConstraint.keyFile() == null) {
+        if (clientAuthentication == null || senderConstraint == null) {
             return;
         }
-        Optional<Path> clientKeyFile = normalizedPath(clientAuthentication.keyFile());
-        Optional<Path> dpopKeyFile = normalizedPath(senderConstraint.keyFile());
+        String clientKeyFileValue = clientAuthentication.keyFile();
+        String dpopKeyFileValue = senderConstraint.keyFile();
+        if (clientKeyFileValue == null || dpopKeyFileValue == null) {
+            return;
+        }
+        Optional<Path> clientKeyFile = normalizedPath(clientKeyFileValue);
+        Optional<Path> dpopKeyFile = normalizedPath(dpopKeyFileValue);
         if (clientKeyFile.isPresent() && clientKeyFile.equals(dpopKeyFile)) {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_SENDER_CONSTRAINT_KEY_FILE_POINTER,
                     SIGNING_KEY_FILES_NOT_DISTINCT_DETAIL));

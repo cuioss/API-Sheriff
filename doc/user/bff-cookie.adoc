@@ -138,8 +138,9 @@ One command creates a valid file:
 openssl rand -base64 32 > session.key
 ----
 
-The gateway reads the file once, at startup, and reads at most 256 bytes of it. A 32-byte key is one
-base64 line of 44 characters, so a valid file is far below that bound.
+The gateway reads the file once, at startup, and accepts a file of at most 256 bytes. It reads at
+most 257 bytes of it: the one byte past the limit is how a larger file is detected. A 32-byte key is
+one base64 line of 44 characters, so a valid file is far below that bound.
 
 === Mount the file and name it
 
@@ -234,10 +235,20 @@ before the move still unseal after it.
 === Changing the key
 
 There is exactly *one* sealing key. The gateway holds no decrypt-only companion key, so there is no
-rotation window and nothing to stage: replacing the key in the key file is a clean break. Every
-cookie sealed under the withdrawn key carries a key id the gateway no longer holds, is refused as
-"no session", and those users simply log in again. Moving the same key into another file, or to
-another path, changes nothing.
+rotation window and nothing to stage: replacing the key is a clean break. Every cookie sealed under
+the withdrawn key carries a key id the gateway no longer holds, is refused as "no session", and
+those users simply log in again. Moving the same key into another file, or to another path, changes
+nothing.
+
+The gateway reads the key file only at startup. Replacing the file alone changes nothing: a running
+gateway keeps the key it read at boot, so cookies sealed under the withdrawn key stay valid until it
+restarts. To change the key:
+
+. Write a new key file with `openssl rand -base64 32` and replace the mounted file on *every*
+  replica.
+. *Restart every replica.* The key changes when a replica restarts, not when its file changes.
+  Until the last replica has restarted, replicas hold different keys and refuse each other's
+  cookies, so keep that window short.
 
 Treat a key change as a scheduled forced re-login -- operationally the same event as the
 format-version change described under "Upgrading" below.

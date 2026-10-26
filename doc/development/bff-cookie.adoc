@@ -55,8 +55,9 @@ The cookie-specific code is in the `api-sheriff` module under
 | Resolves the one sealing key -- a provided key file named by `oidc.session.key_file` versus
   generate-on-startup -- the derived per-gateway identity salt, and the activity cookie's codec over
   a key derived from the sealing key (`activityCodec(...)`). A provided file is read once through
-  `de.cuioss.sheriff.gateway.bff.KeyFiles`, bounded to `MAX_KEY_FILE_BYTES` (256), and decoded as
-  one line of strict base64 that must yield exactly 32 bytes. `KeyFiles` is the one step shared
+  `de.cuioss.sheriff.gateway.bff.KeyFiles`, limited to a file of at most `MAX_KEY_FILE_BYTES` (256)
+  -- the bounded read takes one byte more, `readNBytes(maxBytes + 1)`, to detect a larger file --
+  and decoded as one line of strict base64 that must yield exactly 32 bytes. `KeyFiles` is the one step shared
   with the signing-key reader `ClientSigningKey`; the PEM parser is never reached
   (link:../adr/0072-The_cookie_sealing_key_is_read_from_a_base64_key_file_the_gateway_configuration_names_by_path.adoc[ADR-0072]).
 |===
