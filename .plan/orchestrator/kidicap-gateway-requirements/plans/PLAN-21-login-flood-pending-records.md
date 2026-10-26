@@ -40,6 +40,16 @@ Inbox `kidicap-gateway-downstream-007.md` (finding, 2026-09-17), filed by the do
 
 ## Deliverables
 
+> ✅ **DECIDED by the operator 2026-10-26: WAIT FOR `api-sheriff-0-2-0` `PLAN-V02-06`, THEN DO ALL OF IT AS
+> ONE PLAN.** This plan is HELD until V02-06 has shipped; it is not split into an observability-now part and a
+> cap-later part. Consequences: no part of it is emitted before V02-06 lands, no second hand-rolled limiter is
+> built (so the ADR-0062 "why not reuse" branch below does not arise), and the plan is re-grounded (`cleanup`)
+> when V02-06 lands, because the per-source substrate's keying, the trusted-proxy-resolved source address,
+> the `OidcConfig`/schema keys and the BFF WARN ids and ADR ordinal it claims all become inputs the outline must
+> read rather than guess. Until then the flood stays undiagnosable in production (no WARN or metric on a live
+> eviction) and the accepted residual at `doc/security-threat-model.adoc` § login initiation (bff-02) stands.
+> Deliverable 1's choice among options (a), (b) and (c) is made at that outline, against V02-06's actual result.
+
 1. Decide the mechanism and record it as an ADR, **re-scoped 2026-09-21 by the cleanup re-grounding at
    3abc370**: a per-binding slot cap keyed on an existing cookie is NOT buildable as filed — the binding
    cookie is minted FROM the new record's own id inside `LoginFlow.initiate`, so at record-creation time

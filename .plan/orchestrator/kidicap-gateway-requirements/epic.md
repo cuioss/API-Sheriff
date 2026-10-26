@@ -142,6 +142,24 @@ decision.
 
 ## Decisions
 
+- 2026-10-26 — **Operator decisions on the four open questions the cleanup surfaced** (each recorded in the
+  spec as a dated DECIDED block; the spec is the durable record):
+  - **PLAN-26 D2: implement logout refresh-token revocation INSIDE PLAN-26.** Overrides the spec's former
+    stop-and-split rule. PLAN-26 is no longer documentation-only: full quality gate, verify and the native IT
+    lane apply. Alternatives offered: a separate follow-up plan (the recommendation, which keeps PLAN-26
+    doc-only and fast) and keeping the seam deliberately unbound.
+  - **PLAN-29 D1: remove all four inert upstream keys** (`connect_timeout_ms`, `read_timeout_ms`,
+    `retry.max_attempts`, `retry.idempotent_only`); `retry.enabled` stays; recorded as an ADR-0064 amendment.
+    Alternatives offered: wire the timeouts only, wire both pairs.
+  - **PLAN-20 D1: delete `oidc.step_up.enabled` and `honor_upstream_challenge` now; the upstream-signalled leg
+    is still built later behind ONE opt-in key, off by default, resolved per policy block.** Reasons to disable
+    are per route (client handles step-up itself, untrusted upstream, routes that cannot buffer for replay),
+    which is why a global key was the wrong shape. Alternatives offered: one global key refused at boot, or
+    dropping the leg.
+  - **PLAN-21: HOLD until `PLAN-V02-06` ships, then do all of it as one plan.** Alternatives offered: split
+    observability now and cap later (the recommendation), or option (a) with its own cookie.
+  Consequence for sequencing: PLAN-26 now touches `BffRuntimeProducer` and `BffLogMessages`, shared with the
+  running V02-06 and V02-20, so it is no longer a free filler; PLAN-29 must run before sibling `PLAN-V02-48`.
 - 2026-10-15 — **PLAN-32 shipped** as PR #466 / 73233f1e, closing #455. The inbound HTTP/2 connection window
   is now sized to max concurrent streams × stream window, and streams are capped at 100 per connection.
   A 10 s request-body idle bound on HTTP dispatch resets the upstream request and answers `408`. ADR-0060
@@ -371,7 +389,8 @@ decision.
   **Update 2026-10-26 (cleanup at `54f82f03`): the chain has landed and the hold is lifted.** V02-28, V02-40
   to V02-43 (#485, #489, #502, #505), V02-44 (#476), V02-25 (#487), V02-12 (#450, #492), V02-23 (#515) and
   V02-27 (#520) are all shipped, plus V02-45 (#506), V02-46 (#513), V02-15 (#516), V02-22 (#512) and V02-04
-  (#521). PLAN-20, -21, -26 and -29 have been re-grounded and may be emitted subject to the gate: the sibling
+  (#521). PLAN-20, -26 and -29 have been re-grounded and may be emitted subject to the gate (PLAN-21 is held
+  for V02-06 by the operator's decision of the same day): the sibling
   runs V02-05, V02-06 and V02-20 (three of three slots) and the gate finds a 4 to 20 file overlap with each, so
   an emit needs a free slot and the operator's overlap answer. Never two WS-04 plans at once (PLAN-20, -21, -26).
   The reason for the PLAN-31 hold (V02-12, V02-23, V02-44) is gone for the same reason.

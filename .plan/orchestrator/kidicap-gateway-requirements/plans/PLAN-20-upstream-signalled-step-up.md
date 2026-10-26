@@ -143,6 +143,24 @@ the client — session unchanged, refusal signalled, retried call `403`, no loop
 >   `ScopedEngineFlows`, `refreshForScopes` at `TokenRefreshCoordinator` :65) and PLAN-19 (`session_fallback`,
 >   ADR-0055) have landed. Never two WS-04 plans at once: PLAN-20 and PLAN-21 exclude each other.
 
+> ✅ **DECIDED by the operator 2026-10-26 (deliverable 1's open config-key question): delete the two inert keys
+> now, add ONE opt-in key later.** `oidc.step_up.enabled` and `oidc.step_up.honor_upstream_challenge` are removed
+> (pre-1.0: no alias, no warning; a descriptor still declaring one is refused at load), and the three documents
+> that claim they work (`doc/configuration.adoc`, `doc/variants/02-bff-session.adoc`, `doc/user/bff-session.adoc`)
+> are corrected to say the upstream-challenge leg does not exist until this plan lands it. `oidc.step_up.path`
+> stays (it serves the gateway-declared leg). The upstream-signalled leg is still built by this plan, behind
+> **one new key that is OFF by default and is resolved per policy block** (gateway, anchor, endpoint, route, the
+> mechanism V02-24 settled), because the reasons to disable it are per route: a client that handles step-up
+> itself, an upstream that is not fully trusted (the challenge is upstream-controlled input that starts
+> authorization requests), and routes that cannot afford the bounded request-body buffer replay needs (large
+> uploads, gRPC, WebSocket). The outline settles the key's name, its place in the policy-block chain, whether it
+> applies only to `require: session` routes, and a boot rule in a concern class (ADR-0071). Removal and the doc
+> corrections are the first deliverable and do not depend on the replay design; an IT or load-refusal test must
+> go red if either removed key is accepted again. The removal touches
+> `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/OidcConfig.java`, the `step_up` block of
+> `api-sheriff/src/main/resources/schema/gateway.schema.json`, `ConfigModelContractTest`, `ConfigLoaderTest`
+> and the Javadoc of `StepUpCoordinator` (:73 names a gate that does not exist), all already on the surface.
+
 1. Edge integration: evaluate the upstream `WWW-Authenticate` on session routes for `insufficient_scope`
    and `insufficient_user_authentication`, and route it into `StepUpCoordinator` — the caller that does
    not exist today. Decide and record whether the existing `session.step_up` (RFC 9470) configuration

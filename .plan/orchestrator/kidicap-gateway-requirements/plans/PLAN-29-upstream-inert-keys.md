@@ -29,6 +29,21 @@ Promoted lesson `2026-10-13-06-003` carries the documentation side.
 
 ## Deliverables
 
+> ✅ **DECIDED by the operator 2026-10-26: REMOVE ALL FOUR KEYS** (both pairs: `connect_timeout_ms` and
+> `read_timeout_ms`; `retry.max_attempts` and `retry.idempotent_only`). Nothing is wired. Consequences for the
+> deliverables below, which still carry both branches as written: **D1** records the decision as an amendment
+> to ADR-0064 (the "if both pairs are removed" branch) and no new ADR; **D2 and D3** take their "If removed"
+> branch only; `retry.enabled` stays, so `UpstreamConfig.Retry` stays with that one component and its
+> `ConfigModelReflection` registration; the guard's fixed 30 s timeout, `maxRetries(2)` and the #506 constants
+> (10 s idle, 25 s deadline) are untouched and become the documented fixed behaviour; **D5** becomes the
+> load-refusal test for each removed key (a descriptor declaring one fails at load; it must go red if the
+> refusal is deleted), plus the removal of the tests and fixtures that bind them (`ConfigLoaderTest` :501,
+> `ConfigModelContractTest` :300–302 and :591–592, `ConfigValidatorTest` :119–137) — no
+> `declared-limit-assertion-coverage` rows are added for removed keys; **D6** states the fixed behaviour
+> (30 s, two retries on the idempotent set) instead of the keys. The structural-constraint and D2-relation
+> notes in the re-grounding block below no longer apply. The remaining operator question is whether
+> `PLAN-V02-48` (which rewrites ADR-0064) may run first; the answer is no unless this plan is re-grounded.
+
 1. **Decide and record, per key, whether it is wired or removed.** Four keys, two decisions (the timeout
    pair, the retry pair). Pre-1.0: a removed key is deleted with no deprecation, and a descriptor still
    declaring it is refused at load, as ADR-0064 did for `circuit_breaker`. ⚠ **Put both decisions to the

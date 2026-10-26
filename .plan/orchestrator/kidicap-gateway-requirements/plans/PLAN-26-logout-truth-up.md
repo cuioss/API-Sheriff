@@ -20,8 +20,9 @@ truth and the claim.
 A security document that over-claims is worse than one with a gap: a gap invites a question, a false
 COVERED closes it. This plan makes the record match the runtime — and, since the same landing left two
 shipped decisions unrecorded and one Medium-rated residual undisposed, it closes those in the same pass.
-It changes **no runtime behaviour**: everything here is record-keeping about behaviour that already
-shipped.
+~~It changes no runtime behaviour: everything here is record-keeping about behaviour that already
+shipped.~~ **Superseded 2026-10-26 (operator decision on deliverable 2):** this plan now also binds the
+logout revocation seam, so it changes runtime behaviour. Deliverables 1, 4 and 5 remain record-keeping.
 
 ## Source
 
@@ -99,11 +100,35 @@ because the component is this project's own.
    residual risk is a token that stays valid at the resource server until it expires — and say what an
    operator can do about it (short access-token lifetimes; IdP-side revocation on logout where the IdP
    supports it). ⛔ Do not relabel by deleting the row: the control's absence is the fact to record.
-2. **Decide and record the revocation seam's fate.** It exists and is bound to a no-op. Either implement
-   RFC 7009 revocation on logout, or state in code and docs that the seam is deliberately unbound and why.
-   ⚠ **This is the one deliverable that may touch runtime code.** If the decision is to implement, STOP and
-   say so — that is its own plan with its own tests, not a sub-step of a documentation pass. The default
-   outcome here is the recorded decision, not the implementation.
+2. **Implement RFC 7009 refresh-token revocation on logout — DECIDED by the operator 2026-10-26 (overriding
+   this deliverable's former stop-and-split rule).** The seam exists and is bound to a no-op; this plan binds
+   it. The operator chose to keep the implementation inside this plan rather than a follow-up, so **this plan
+   is no longer documentation-only: it changes runtime code and the full Pre-Commit Process (quality gate and
+   verify) and the native integration lane apply.** Scope for the outline:
+   - Bind `buildLogoutEndpoint`'s revocation argument (`BffRuntimeProducer` :1284–1287) to the existing
+     `revokeRefreshToken(revocationClient, metadata, refreshToken, clientAuthentication)` helper (:1162–1170),
+     which already builds on the `oidc.back_channel_origin` configuration (ADR-0069) and handles a missing
+     `revocation_endpoint` at DEBUG. Establish at outline whether the refresh token is available on every
+     logout path in server and cookie mode (`SessionRecord` carries one) and say what happens when it is not.
+   - Settle and record in the ADR: the call runs synchronously after `sessionBinding.destroy` and before the
+     end-session redirect (`LogoutEndpoint` :116–124, `RpInitiatedLogout` :150–157); a failure is swallowed at
+     DEBUG today (audit item SEC-7), so decide whether a failed revocation stays DEBUG, becomes a latched WARN
+     (one per reason per runtime, as ApiSheriff-132 does) or is metered; the logout latency bound on a slow
+     IdP; only the refresh token is revoked (the access token stays valid until it expires); the back-channel
+     logout receiver, which the IdP initiated, does not revoke; and that revoking the presented refresh token
+     SHRINKS the cookie-mode residual but does not close it (a late refresh whose rotation already ran).
+   - Tests: `RpInitiatedLogoutTest`, `BffRuntimeProducerTest`, and `BffLogoutIT` driven so that the revocation
+     request is observed at the IdP stub (the IT's Javadoc :31–38 currently says "bound as a best-effort
+     no-op"). CLAUDE.md: if the binding were deleted, a test must go red.
+   - Records that change with the code: the threat model BFF-09 Control line (:2487) becomes true for the
+     refresh token, the *Not delivered* paragraph (:2544–2550) and its :2556–2557 sentence are rewritten, the
+     summary row (:3853), `doc/variants/02-bff-session.adoc`, `doc/variants/03-bff-cookie.adoc`,
+     `doc/user/tls-edge.adoc` :436–441, `doc/configuration.adoc`, the user docs' Logout sections, and
+     `package-info.java` of `bff/logout`. Deliverable 1 is therefore written AFTER this deliverable's decision
+     on failure semantics, and states exactly what is and is not revoked.
+   - Coordination: `BffRuntimeProducer`, `BffLogMessages` and the next ADR ordinal are shared with the running
+     sibling plans V02-06 and V02-20; derive the ordinal and any WARN id at write time. The deliverable count
+     is unchanged (the split guard is not at issue); the footprint is now `*.java` plus docs.
 3. **Dispose of the cookie-mode logout residual explicitly.** Cookie mode cannot observe a logout, so a
    late refresh or widening response can set a fresh cookie. PLAN-23 documented it as residual; CodeRabbit
    rates it **Medium** and nothing disposes of that rating. Record it as an accepted risk with its bound
@@ -165,21 +190,21 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
   The declared surface named only `bff/`, where `RpInitiatedLogout` holds the seam's javadoc
 - OBSERVED (added 2026-10-05): `doc/variants/03-bff-cookie.adoc` and `doc/development/bff-cookie.adoc` —
   the logout sections the threat model cites for the cookie-mode mitigations
-- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/` — ONLY if deliverable 2 resolves
-  to "state it in code" (a comment or a named no-op binding). An implementation decision leaves this plan
-  (verify-at-outline)
-- HYPOTHESIS (added 2026-10-26, concretising the entry above):
+- HYPOTHESIS: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/` — the logout package and its `package-info.java`, which name BFF-09 and revocation (verify-at-outline). Deliverable 2 is decided 2026-10-26: implement, inside this plan
+- OBSERVED (scope decided 2026-10-26):
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogout.java` — the
-  `TokenRevocation` seam, :33–47 and :287–309 (verify-at-outline)
-- HYPOTHESIS (added 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java` — javadoc :35–48 describes the revocation call (verify-at-outline)
+  `TokenRevocation` seam, :33–47 and :287–309; its Javadoc changes with the binding
+- OBSERVED (scope decided 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/reserved/LogoutEndpoint.java` — javadoc :35–48 describes the revocation call
+- OBSERVED (added 2026-10-26): `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/BffLogMessages.java` — only if the failure semantics decided at outline add a latched WARN (derive the WARN id at write time)
 - HYPOTHESIS: `doc/configuration.adoc` — one revocation-seam statement exists; read it, and edit it if the
   operator-facing mitigation of deliverable 1 names a configuration key (verify-at-outline)
 - OBSERVED (added 2026-10-26, re-grounding at `54f82f03`): `doc/variants/02-bff-session.adoc` (states the
   no-op seam; only the 03 variant was listed) and `doc/user/tls-edge.adoc` :436–441 (explicitly states the
   seam is bound to a no-op)
-- HYPOTHESIS (added 2026-10-26): `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffLogoutIT.java`
-  (javadoc :31–38, "bound as a best-effort no-op") and `doc/quality-report/security-posture.adoc` — touched
-  only if deliverable 2 implements or states the decision in code (verify-at-outline)
+- OBSERVED (scope decided 2026-10-26): `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/BffLogoutIT.java`
+  (javadoc :31–38, "bound as a best-effort no-op") — must change: it asserts the revocation request reaches the IdP stub
+- OBSERVED (added 2026-10-26): `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/bff/logout/RpInitiatedLogoutTest.java` and `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/quarkus/BffRuntimeProducerTest.java` — the unit homes for the binding and its failure semantics
+- HYPOTHESIS (added 2026-10-26): `doc/quality-report/security-posture.adoc` (SEC-7 and a BFF-09 row) — a dated report, an optional consistency touch (verify-at-outline)
 - OBSERVED (added 2026-10-26, read-only references for deliverables 4 and 5, not files this plan edits):
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/ReservedPathRules.java` and
   `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/bff/runtime/SessionAuthenticationStage.java`
@@ -198,11 +223,12 @@ Split guard: 4 live deliverables (5 filed, deliverable 3 dropped as already done
   after V02-12's held half has landed that key; this plan still owns logout revocation itself.
   (Re-grounded 2026-10-26: that key has landed; see the re-grounding note under Deliverables.)
 - Overlaps with: PLAN-20 (`doc/adr/`, `doc/configuration.adoc`, `doc/security-threat-model.adoc`,
-  `doc/user/bff-session.adoc`) and PLAN-21 (the same docs). Documentation-only overlap, but on the SAME
-  threat-model and ADR files, so it is sequenced against both rather than paired.
-- **Pairs cleanly with PLAN-24 or PLAN-25**, which touch neither the threat model nor `doc/adr/`.
-- Small and mostly prose, so it is a good filler for a slot that would otherwise go unused — but it is
-  **not** cosmetic: deliverable 1 removes a false security claim.
+  `doc/user/bff-session.adoc`, and now `BffRuntimeProducer`) and PLAN-21 (the same docs and `BffRuntimeProducer`),
+  and, since deliverable 2 became an implementation (2026-10-26), the running siblings V02-06 and V02-20 on
+  `BffRuntimeProducer` and `BffLogMessages`. Sequenced against all of them rather than paired.
+- Re-scoped 2026-10-26 from "small and mostly prose" to prose plus one runtime binding: it needs the full
+  quality gate, verify and the native integration lane, and it is no longer a no-risk filler for an unused slot.
+  Deliverable 1 still removes a false security claim and is not cosmetic.
 
 ## Hand-Off Command
 
