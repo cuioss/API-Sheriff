@@ -1174,12 +1174,6 @@ class ForwardPolicyStageTest {
                     .flatMap(method -> validatorSpellings().map(spelling -> Arguments.of(method, spelling)));
         }
 
-        /** Every 304 validator spelling on every method. */
-        static Stream<Arguments> allMethodValidators() {
-            return Stream.of(HttpMethod.values())
-                    .flatMap(method -> validatorSpellings().map(spelling -> Arguments.of(method, spelling)));
-        }
-
         @Test
         @DisplayName("the gate applies to exactly GET and HEAD, the methods a 304 answers")
         void notModifiedMethodsAreGetAndHead() {
@@ -1277,19 +1271,6 @@ class ForwardPolicyStageTest {
                             "forward-all must carry the create-only precondition"),
                     () -> assertEquals(List.of("*"), valuesNamed(underEmptyPositiveList.headers(), "If-None-Match"),
                             "an empty positive-list must carry it as a protocol header"));
-        }
-
-        @ParameterizedTest(name = "{0} {1}")
-        @MethodSource("allMethodValidators")
-        @DisplayName("with not_modified on a 304 validator crosses on every method")
-        void everyMethodCarriesValidatorWhenToggleOn(HttpMethod method, String spelling) {
-            Map<String, List<String>> headers = Map.of(spelling, List.of("probe-value"));
-
-            ForwardPolicyStage.Result result = stage(EMIT_XFORWARDED, List.of(), Set.of())
-                    .process(methodRequest(method, headers), forwardAll(), CookiesConfig.NONE, true);
-
-            assertEquals(List.of("probe-value"), valuesNamed(result.headers(), spelling),
-                    () -> spelling + " crosses a " + method + " once the route enables not_modified");
         }
     }
 

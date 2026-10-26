@@ -336,8 +336,7 @@ public final class ForwardPolicyStage {
      * Copies the client request headers according to the route's header forward mode: a declared
      * {@code headers_allow} selects the positive-list, otherwise the copy iterates the inbound
      * headers and withholds the {@code headers_deny} names (an absent deny list denying nothing —
-     * the forward-all baseline), compared separator-folded so every {@code -}/{@code _} spelling of a
-     * denied name is withheld.
+     * the forward-all baseline).
      * <p>
      * The {@link #FORWARDING_HEADERS} skip is applied on every mode, and on the
      * {@linkplain #isRegeneratedForwardingName separator-folded} name: a regenerated header must
@@ -521,9 +520,8 @@ public final class ForwardPolicyStage {
 
     /**
      * Withholds the {@link #CONDITIONAL_HEADERS} validators from the copied client headers of a
-     * {@link #NOT_MODIFIED_METHODS} request on a route that does not enable {@code not_modified}; on
-     * any other method {@link #process} does not call it, so the validators cross there as the write
-     * preconditions they are. Applied on <em>every</em> mode, after the mode copy
+     * {@link #NOT_MODIFIED_METHODS} request on a route that does not enable {@code not_modified}.
+     * Applied on <em>every</em> mode, after the mode copy
      * and the never-forward strip: forward-all copies them, a negative-list that does not name them
      * copies them, and a positive-list that names them in {@code headers_allow} copies them — none of
      * those copies survives this step.
