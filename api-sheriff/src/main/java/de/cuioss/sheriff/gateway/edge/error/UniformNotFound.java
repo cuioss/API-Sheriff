@@ -127,12 +127,13 @@ public final class UniformNotFound {
 
     /**
      * The least time after admission before which no unrouted {@code 404} leaves the edge, while the
-     * switch is on. It sits above the worst-case processing cost of the pre-trust window, whose slowest
-     * arm is the offline validation of a well-formed bearer token with a wrong signature: every
-     * rejection the window can raise has then finished before the floor, so an unrouted address and a
-     * resolved rejection are released at the same moment. A fixed constant of the gateway, like the
-     * hardening bounds of ADR-0060 and ADR-0064 — no configuration key reaches it. The value and the
-     * measurement it rests on are recorded in ADR-0072.
+     * switch is on. It is meant to sit above the worst-case processing cost of the pre-trust window,
+     * whose slowest arm is the offline validation of a well-formed bearer token with a wrong signature,
+     * so that every rejection the window can raise has finished before the floor and an unrouted address
+     * and a resolved rejection are released at the same moment. The value is a reasoned choice, not a
+     * measurement: ADR-0072 records the reasoning and that the worst-case cost has not been measured. A
+     * fixed constant of the gateway, like the hardening bounds of ADR-0060 and ADR-0064 — no
+     * configuration key reaches it.
      */
     public static final Duration RESPONSE_FLOOR = Duration.ofMillis(50);
 
