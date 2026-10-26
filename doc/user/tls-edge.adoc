@@ -5,8 +5,9 @@
 
 An operator guide to the TLS edge: the *TLS policy keys* (protocol floor, cipher allowlist, ALPN),
 *SNI passthrough* (relay selected hostnames at L4 without terminating), *mTLS* (require and verify a
-client certificate on terminated connections), and the *management interface* (health and metrics on
-their own port). This topic describes how to *configure and operate* these keys; the authoritative
+client certificate on terminated connections), *egress TLS* (the posture of every TLS connection the
+gateway dials), and the *management interface* (health and metrics on their own port). This topic
+describes how to *configure and operate* these keys; the authoritative
 field contract lives in the link:../configuration.adoc#_tls[Configuration Reference `tls` section],
 and the design rationale in the link:../development/tls-edge.adoc[developer TLS-edge topic].
 
@@ -257,9 +258,158 @@ Plan trust-root rotation as a coordinated event: stage the new client certificat
 compromised client where you cannot rotate the whole fleet immediately, the compensating control is
 network-level (drop the client at the perimeter), not certificate-level.
 
+[[_egress_tls]]
+== Egress TLS (`egress_tls`)
+
+Everything above governs connections *to* the gateway. The global `egress_tls` block governs the TLS
+connections the gateway *dials*. It holds a hostname-verification key for the proxied upstreams, the
+JWKS fetch and the BFF back channel, and a trust-profile key for the proxied upstreams and the BFF
+back channel. The JWKS leg takes its trust per issuer from `jwks.tls_profile`, and the asset-origin
+fetch reads no key of this block. Every key is optional:
+
+[source,yaml]
+----
+egress_tls:
+  upstream_verify_hostname: true      # proxy, gRPC and WebSocket upstreams
+  upstream_tls_profile: corporate-up  # logical name only; the deployment binds the anchors
+  jwks_verify_hostname: true          # the JWKS fetch of every http issuer
+  oidc_verify_hostname: true          # the BFF back channel to the identity provider
+  oidc_tls_profile: corporate-idp     # logical name only; the deployment binds the anchors
+----
+
+The design is recorded in
+link:../adr/0040-Upstream_hostname_verification_is_a_global_egress-TLS_knob_bound_at_client_construction.adoc[ADR-0040],
+with the JWKS leg in
+link:../adr/0041-The_JWKS_hostname-verification_knob_is_the_librarys_own_passthrough_and_its_sslContext_collision_is_refused_at_boot.adoc[ADR-0041]
+and the BFF back channel in
+link:../adr/0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045].
+The field contract is in link:../configuration.adoc#_egress_tls[the `egress_tls` reference]. To start
+from a goal instead -- a corporate CA, a private-CA identity provider, a name the certificate does not
+carry -- see link:tls-scenarios.adoc[TLS Scenarios].
+
+=== Which key reaches which leg
+
+The gateway has six egress legs that can dial over TLS. The keys below act only on a leg's TLS dial,
+and every leg also has a form that dials no TLS at all, which no key of the block reaches: an `http`
+or `ws` upstream and a gRPC upstream over prior-knowledge h2c speak cleartext, a JWKS read from a file
+makes no connection, and the BFF back channel speaks cleartext under the explicit
+`oidc.back_channel_allow_insecure_http` opt-in. The table is maintained by hand from the
+client-construction sites; it is not what holds the set closed. `EgressTlsPostureArchTest` fails the build when any egress TLS client is
+built without its posture, whether or not a list names it.
+
+[cols="1,2,2", options="header"]
+|===
+| Leg | Client | Keys that reach it
+
+| 1. Proxied upstreams
+| The default Vert.x HTTP client
+| `upstream_verify_hostname`, `upstream_tls_profile`
+
+| 2. gRPC upstreams
+| The forced-HTTP/2 Vert.x HTTP client
+| `upstream_verify_hostname`, `upstream_tls_profile`
+
+| 3. WebSocket upstreams
+| The one edge-wide Vert.x WebSocket client
+| `upstream_verify_hostname`, `upstream_tls_profile`
+
+| 4. JWKS fetch
+| The token-validation library, per issuer
+| `jwks_verify_hostname`; trust through the per-issuer `jwks.tls_profile`
+
+| 5. Asset-origin fetch
+| A JDK `HttpClient` on the JVM default context
+| None -- see below
+
+| 6. BFF back channel
+| The identity-provider client library, once per gateway
+| `oidc_verify_hostname`, `oidc_tls_profile`
+|===
+
+The L4 passthrough relay and the loopback health probe negotiate no TLS and are not legs here.
+
+*Every `egress_tls` key is gateway-wide.* No key of the block has a per-route, per-endpoint or
+per-issuer override: the runtime fixes the setting when each client is built, and the WebSocket client
+serves the whole edge. The one per-issuer key in the table, `jwks.tls_profile`, is not part of the
+block; it stays per issuer. A gateway
+with one name-mismatched upstream relaxes hostname verification for every proxied upstream or for none.
+
+*The asset-origin fetch is outside the block, in a known direction.* Its JDK client verifies
+hostnames unless the JDK switch described in <<_jdk_hostname_verification_switch>> is set, so turning
+`upstream_verify_hostname` off cannot weaken it. `upstream_tls_profile` does not
+reach it either, so an asset origin behind a private CA fails closed with a `502`. Put that anchor into
+the JVM default trust store instead (see
+<<_operator_consideration_outbound_trust_material_replaces_the_platform_bundle>>).
+
+=== What a relaxation does and does not do
+
+Setting a `*_verify_hostname` key to `false` stops the gateway comparing the dialled name with the
+names in the peer's certificate, on that leg only. It does *not* turn off certificate-chain validation,
+does not accept a self-signed certificate, and does not accept a certificate from an untrusted
+authority. A peer whose chain is not trusted is still refused. If the real problem is a private CA,
+the answer is the leg's trust key, not the relaxation.
+
+An omitted flag is `true`. A block that names only a trust profile leaves hostname verification on.
+
+*A named trust profile replaces the leg's anchors.* It does not add to them: a profile holding only a
+private CA stops that leg trusting public certificate authorities. A profile that the deployment does
+not bind, that carries no anchors, or that sets `trust-all` is refused at boot. The gateway never falls
+back to default trust.
+
+*Two combinations are refused at boot,* because the client library refuses them one layer down:
+
+* `jwks_verify_hostname: false` while an `http` issuer names `jwks.tls_profile`. The flag is global and
+  the profile is per issuer, so this refuses every such issuer, not only the one you meant to relax.
+* `oidc_verify_hostname: false` together with a named `oidc_tls_profile`.
+
+A peer that needs both a private CA and a relaxed name check on one of those legs has no supported
+combination. Fix the certificate's names, or put the CA into the JVM default trust store and name no
+profile on that leg.
+
+=== What you see at boot
+
+Each relaxed or re-anchored posture outside the two refused combinations above is reported once, as a
+`WARN`, and the gateway still starts:
+
+[cols="1,3", options="header"]
+|===
+| Record | Reported when
+
+| `ApiSheriff-118`
+| `upstream_verify_hostname` is `false`. States the scope: proxy, gRPC and WebSocket clients, chain trust
+  untouched, asset-origin fetch not governed.
+
+| `ApiSheriff-119`
+| `upstream_tls_profile` is named. States that its anchors replace the default trust store on three
+  clients, not on the asset-origin fetch.
+
+| `ApiSheriff-120`
+| `jwks_verify_hostname` is `false`. Logged once, not once per issuer.
+
+| `ApiSheriff-125`
+| `oidc_verify_hostname` is `false`, on an active BFF only.
+
+| `ApiSheriff-126`
+| `oidc_tls_profile` is named, on an active BFF only. Carries the logical name, never a path, password or
+  anchor.
+|===
+
+A refused combination does not start the gateway. The refused JWKS pair still logs `ApiSheriff-120`,
+because that record is written at bean construction, before the per-issuer refusal.
+
+The full wording of each record is in link:../LogMessages.adoc[Log messages].
+
+[[_jdk_hostname_verification_switch]]
+*One switch sits below every key.* The JDK system property
+`jdk.internal.httpclient.disableHostnameVerification` turns off hostname verification on every JDK-client
+leg -- the JWKS fetch, the BFF back channel and the asset-origin fetch -- whatever `egress_tls` says. It is
+a start-up flag, so no gateway key and no build check can see it. Do not set it.
+
+[[_operator_consideration_outbound_trust_material_replaces_the_platform_bundle]]
 == Operator Consideration: Outbound trust material replaces the platform bundle
 
-The section above is about the anchor the gateway *accepts clients against*. The mirror-image hazard
+The emergency trust-root replacement consideration earlier on this page is about the anchor the
+gateway *accepts clients against*. The mirror-image hazard
 sits on the outbound side, and it catches operators for the same reason: *supplying a default trust
 store substitutes for the platform trust bundle rather than adding to it.* A store holding only your
 private CA has not added an anchor -- it has removed every public root the platform shipped, and the

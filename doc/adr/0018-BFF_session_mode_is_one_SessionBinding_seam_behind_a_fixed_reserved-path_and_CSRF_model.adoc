@@ -1,13 +1,12 @@
 = ADR-0018: BFF session mode is one SessionBinding seam behind a fixed reserved-path and CSRF model
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
-// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
-// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
-// relevance without reading the full file. List fields are comma-separated.
-// summary: Session mode selects only which SessionBinding is assembled; reserved paths, CSRF and session identity are fixed, mode-neutral models behind that one seam; amended because the fixed SameSite=Lax policy forces the OIDC authorization response to return by response_mode=query, accepting a bounded code-in-URL exposure rather than weakening the browser-binding cookie; amended so that the seam has one creating write (bind, the login) and one updating write (persist) that never creates a session, which keeps a server-mode session terminated when a logout overtakes an in-flight refresh or widening, while cookie mode cannot observe a termination and re-seals; amended so that the updating write has a second variant (persistReissuingCookie) that also re-issues the value the browser holds, which in server mode is a handle the store maps to the session and is separate from the session identity, so a step-up or a widening changes the cookie value and nothing else about the session; amended so that a session has an idle deadline beside its absolute one in both modes, which resolve enforces and never extends, kept in the store and removed by a periodic sweep in server mode and kept in a separate authenticated activity cookie in cookie mode, with the sealed session payload and its format version unchanged
+// summary: Session mode selects only which SessionBinding is assembled; reserved paths (exact, ahead of the route table, six on the OIDC host and the back-channel logout and client JWKS paths on every host), a fixed CSRF model with SameSite=Lax and the session identity are mode-neutral; the fixed Lax policy forces response_mode=query, whose code-in-URL exposure is accepted and bounded; the seam has one creating write (bind) and two updating writes (persist, persistReissuingCookie) that never create a session, and server mode re-issues a cookie handle separate from the session identity; a session has an absolute and an idle deadline in both modes, the idle one kept in the store in server mode and in a separate authenticated activity cookie in cookie mode; cookie mode has one optional sealing key and a derived identity with a per-session nonce; the two inbound-validation relaxations the BFF needs belong to ADR-0019
 // tags: bff, session-mode, csrf, reserved-paths, cookie-session, key-material, session-identity, oidc, authorization-code-flow, response-mode, samesite, browser-binding, pkce, accepted-tradeoff, logout, session-termination, cookie-handle, idle-timeout, activity-cookie
 // affects: api-sheriff
 // supersedes:
@@ -15,663 +14,392 @@
 
 == Status
 
-Proposed
-
-== Context
-
-A Backend-For-Frontend gateway that acts as an OIDC confidential client has to answer four
-structural questions at once, and each of them admits a tempting per-deployment or per-route answer
-that fragments the security model.
-
-*Gateway-owned paths versus proxied namespaces.* The BFF must serve its own OIDC endpoints — the
-auth-code callback, login initiation, logout and its return leg, the back-channel logout receiver,
-and a curated user-info view. Those paths live on the same host as proxied traffic. If they are
-resolved by the ordinary route table, a proxy prefix can swallow them: a route matching a broad
-prefix silently captures the callback, and a login that appears to be misconfigured is in fact
-being forwarded upstream. The failure is silent and configuration-dependent, which is the worst
-combination for a security-critical path.
-
-*CSRF as a knob versus a fixed property.* A cookie-authenticated session is inherently exposed to
-cross-site request forgery. Making the defence configurable creates a deployment in which it is
-off, and the class of gateway most likely to turn it off is the one that least understands the
-exposure.
-
-*Two session modes with one feature surface.* Token custody has two legitimate shapes: hold tokens
-server-side and give the browser an opaque id, or seal the tokens into the cookie itself and hold
-nothing. These differ in state, in failure modes, and in which capabilities are achievable — but
-they do *not* differ in what the login flow, the refresh path, the CSRF defence, or the reserved
-endpoints have to do. Implementing them as two parallel stacks would double the surface on which a
-security defect can appear, and guarantee the two drift.
-
-*Key material for the stateless mode.* Sealing requires a key. Demanding one unconditionally makes
-the simplest deployment impossible without key management; generating one silently makes a
-multi-replica deployment fail in a way that looks like an unrelated session bug.
-
-*Session identity under a derived-identity scheme.* Any session needs a stable identity to key
-per-session coordination — most importantly single-flight coalescing of token refresh, so
-concurrent requests for one session do not each drive a refresh. A stateless mode has no store to
-mint an id in, so identity must be *derived* from the sealed material. A derived identity creates
-a constraint that a minted one does not: the derivation inputs must be simultaneously stable across
-re-seals and unique across sessions. Choosing inputs that are merely stable produces collisions
-between distinct sessions, which cross-wires precisely the coordination the identity exists to key.
-
-Decisions (i) through (iv) below originate in the earlier BFF implementation work and are recorded
-here *retroactively* — they were made and implemented before this record was written, and this ADR
-captures them rather than proposing them. Decision (v) is recorded as it was made.
+Accepted
 
 == Decision
 
-*Session mode selects only which `SessionBinding` is assembled. Everything else — reserved-path
-resolution, CSRF, and the session-identity contract — is a fixed, mode-neutral model behind that one
-seam.*
+A BFF that acts as an OIDC confidential client has to settle several structural questions at once.
+Each admits a tempting per-deployment or per-route answer that fragments the security model.
 
-=== (i) Reserved paths resolve before the proxy route table
+* *Gateway-owned paths beside proxied traffic.* The BFF serves its own OIDC endpoints on the host
+  that also carries proxied routes. If the route table resolves them, a broad prefix route captures
+  the callback, and the login fails silently.
+* *CSRF as a setting.* A cookie-authenticated session is exposed to cross-site request forgery, and
+  a defence for it could be made a setting.
+* *Two session modes.* Tokens can be held server-side behind an opaque cookie, or sealed into the
+  cookie itself. The modes differ in state and failure modes. They do not differ in what the login,
+  the refresh, the CSRF defence or the reserved paths must do.
+* *Key material for cookie mode.* Sealing needs a key. Requiring one blocks the simplest
+  deployment. Generating one silently breaks a multi-replica deployment.
+* *Session identity without a store.* Per-session coordination, such as single-flight refresh, needs
+  a stable identity. Cookie mode has no store and must derive it, and a derived identity must be
+  both stable across re-seals and unique across sessions.
+* *Writes that race a logout.* A refresh and a widening resolve the session, call the identity
+  provider (IdP) and write back. A logout in between must not be undone.
+* *Lifetime.* A session that ends only at its absolute lifetime stays usable on an unattended
+  device.
 
-The gateway carves out its own exact paths on the OIDC host and resolves them *ahead of* the proxy
-route table, via a `ReservedPathRegistry` the edge consults first. A matched reserved path is
-terminated at the gateway and dispatched to its handler; it can never be captured by a proxy prefix,
-whatever the route configuration says.
+*Session mode selects only which `SessionBinding` is assembled. Reserved-path resolution, the CSRF
+model, the authorization-response transport, the session writes, the two deadlines and the
+session-identity contract are fixed, mode-neutral models behind that one seam.*
 
-The *on the OIDC host* half of that rule is amended below for the one reserved path no browser ever
-reaches — see <<backchannel-host>>. Exact-path matching, and resolution ahead of the route table, are
-unamended and hold for all six.
+*The boundary with ADR-0019.* This record owns the BFF's structure: the seam, the reserved-path and
+CSRF models, the session writes and lifetime, and the key and identity contract.
+link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]
+owns the two inbound-validation relaxations this structure needs.
 
-The set is closed and each entry is configuration-driven, so operators can move a reserved path out
-of a namespace they need — but they cannot make a reserved path proxyable, and no route ordering
-can shadow one.
+[[reserved-paths]]
+=== (i) Reserved paths resolve before the route table
 
-=== (ii) The CSRF model is fixed, not a knob
+The gateway carves its own exact paths out of the route table. `ReservedPathRegistry` holds up to
+eight: the callback, login initiation, the RP-initiated logout and its return leg, the back-channel
+logout receiver, the user-info view, the step-up path and the client JWKS path. The edge consults the
+registry before the route table. A matched reserved path ends at its handler, and no prefix route or
+route ordering can shadow it. Each path is configured in the `oidc` block, so an operator can move
+one out of a namespace. No configuration makes a reserved path proxyable.
 
-Origin verification on unsafe methods, plus a `SameSite=Lax` cookie, applies to every
-`require: session` route as a fixed property. There is no switch to disable it. The only
-configuration is the *allowlist* of trusted origins a cross-origin SPA is served from — that is, the
-operator declares who may call, never whether the check happens.
-
-=== (iii) Server and cookie mode sit behind one `SessionBinding` seam
-
-The whole BFF foundation binds to a `SessionBinding` abstraction, never to a store. The configured
-mode selects only which implementation is assembled: a store-backed binding, or a stateless binding
-over the sealed-cookie codec. The login flow, CSRF defence, refresh and step-up coordinators, the
-reserved endpoints, and the session-authentication runtime are written against the seam and are
-unaware of which binding is in force.
-
-Where the modes genuinely differ, they differ by *declared capability*, not by mode name. A binding
-reports whether it supports IdP-driven destruction; the back-channel logout endpoint is gated on
-that signal and answers a deliberate `404` when unsupported, rather than claiming a destruction that
-did not happen or letting the reserved path fall through to the proxy route table.
-
-=== (iv) Cookie-mode key material has two modes, and the key is optional
-
-Cookie mode accepts an explicitly supplied sealing key or, when none is configured, generates one at
-startup. Boot does *not* require a configured key — the relaxed rule is deliberate, so the simplest
-deployment needs no key management at all.
-
-The trade-off is made explicit rather than hidden: a generated key cannot be shared with another
-replica and does not survive a restart, so sessions are dropped on restart and cannot be served by a
-peer. There is exactly *one* sealing key in force: the gateway holds no decrypt-only companion key,
-so there is no rotation window to stage and nothing to roll onto. Replacing the key is a clean
-break — every cookie sealed under the withdrawn key carries a key id the gateway no longer holds, is
-refused as "no session", and those users log in again. The operator-facing consequence, and the
-migration for a configuration that still declares the removed `previous_key`, are in
-link:../user/bff-cookie.adoc[Operator setup — cookie-based BFF].
-
-=== (v) Cookie-mode session identity is a keyed digest including a per-session nonce
-
-The derived cookie-mode identity is a salted digest over the session's fixed material *plus a
-per-session random nonce* minted once at login. The nonce is sealed with the session, re-sealed
-verbatim on every refresh, and never re-minted; the identity remains a digest, and the raw nonce is
-never used as or substituted for the session id. The identity is never emitted to the browser.
-
-This satisfies both halves of the derived-identity constraint: stable, because every input is fixed
-for the session's life, so a re-seal reproduces the identity exactly; and unique, because the nonce
-separates two sessions that would otherwise share every other input — notably two logins by the same
-subject within one clock granule.
-
-Adding the nonce changed the sealed payload's field set and the session record's shape. Because the
-sealed-cookie format version is bound into the cookie's authenticated data, the version was bumped
-and there is deliberately no acceptance path for the previous format: admitting an older cookie
-would require synthesizing the missing nonce, which would silently change the derived identity —
-exactly the defect the nonce exists to prevent.
-
-== Amendment: the fixed `SameSite=Lax` policy determines the OIDC authorization-response transport
-
-*This record is amended, not superseded. Decisions (i) through (v) are unchanged. This amendment
-records a decision that decision (ii) forces — the authorization-response transport is not free to
-be chosen once the cookie policy is fixed — together with the tradeoff that choice accepts.*
-
-=== The coupling
-
-A BFF acting as an OIDC confidential client must choose how the authorization response travels from
-the identity provider back to the gateway. Two transports are standard: an auto-submitted cross-site
-`POST` to the redirect URI (`response_mode=form_post`), or a top-level `GET` navigation carrying the
-parameters in the query string (`response_mode=query`). Read on its own, that choice has a
-well-known answer — `form_post` keeps the authorization code out of the URL, and therefore out of
-the `Referer` header, out of proxy, CDN and server access logs, and out of browser history. Most
-OIDC client libraries default to it for exactly that reason.
-
-The choice is not on its own. The gateway binds the *in-flight* authorization transaction to the
-browser that started it, using a short-lived pre-session binding cookie — the pre-session analogue of
-the session cookie, and the control that makes a callback replayed from a different browser
-rejectable even while the code is still live. That cookie carries `SameSite=Lax` under decision
-(ii), and a `Lax` cookie accompanies top-level `GET` navigations only: it is *not* sent on a
-cross-site `POST`.
-
-The transport decision and the cookie-policy decision are therefore coupled, and the coupling is
-easy to miss because each looks locally correct. Driving the request with `form_post` while holding a
-`Lax` binding cookie produces a callback that *structurally cannot* carry the binding: the browser
-drops the cookie on the cross-site POST leg, the gateway resolves no pending record, and every
-real-browser login terminates at the "no binding cookie" `403`. The pre-session control does not fail
-loudly — it is simply never presented. Because decision (ii) makes `SameSite=Lax` a fixed property
-with no configuration switch, the cookie side cannot move; the transport side is the only side that
-can.
-
-Two properties make the coupling worth recording rather than leaving implicit. It is *invisible
-below a real browser* — any client that constructs the callback request directly supplies its own
-cookies and passes on either transport, so the entire test pyramid can be green while the
-browser-facing flow is unusable. And its *obvious local fix inverts a security property*, as the
-rejected alternatives below set out.
-
-=== The decision
-
-*The gateway itself selects the authorization response mode, and it selects `query`. The
-consequential exposure of the authorization code in the callback URL is accepted and explicitly
-bounded; the binding cookie is not weakened by one attribute.*
-
-A gateway-owned authorization-request builder overrides the client engine's built-in `form_post` and
-emits `response_mode=query`, making the callback a top-level `GET` navigation for which `SameSite=Lax`
-*is* sent. The override rewrites that one parameter and copies every other authorization parameter
-through byte-for-byte in its original order and encoding, so no decode/re-encode round-trip can
-corrupt an already-encoded value; it is idempotent and total. The same builder is wired into *both*
-seams that construct an authorization URL — the login leg and the step-up re-drive leg — so a second
-entry point cannot keep emitting the broken mode. There is deliberately no configuration key: the
-mode is a property of the gateway's own browser-facing contract, because the alternative value
-re-creates a login flow that cannot work.
-
-*The accepted tradeoff.* `response_mode=query` places the authorization code in the callback URL,
-exposing it to the `Referer` header, to intermediary access logs, and to browser history. That
-exposure is real, it is the standard reason `form_post` is preferred, and nothing below removes it.
-It is accepted deliberately, because it is what makes the browser-facing flow work at all.
-
-=== The mitigations are standing obligations, not observations
-
-The tradeoff above is acceptable only while all four of the following hold. Each is an obligation on
-future work: an edit that removes one removes the basis on which the exposure was accepted, and the
-first two are one-line edits that look harmless in isolation.
-
-. *The binding cookie keeps `SameSite=Lax` and every other attribute.* Relaxing it to `SameSite=None`
-  is the change this decision exists to avoid; relaxing it would also make the transport choice moot
-  in the wrong direction.
-. *The response mode stays `query`.* Reverting to `form_post` — directly, or by adding an
-  authorization-URL seam that bypasses the gateway-owned builder, or through a client-engine upgrade
-  that changes the override's shape — re-breaks the browser-facing flow silently.
-. *PKCE stays mandatory with the verifier gateway-held.* The flow context carries a non-optional PKCE
-  challenge, the request always emits `code_challenge` / `code_challenge_method`, and the flow
-  refuses a provider that does not advertise `S256`. A code observed in a log or a history entry is
-  not redeemable without the verifier.
-. *The pending record stays single-use and the `state` check stays.* Resolution removes the record as
-  it returns it under the store's own lock, so a second callback for the same transaction resolves to
-  empty; the record is short-lived, with TTL expiry enforced on that same consumption path. A
-  callback is honoured only when the binding cookie resolves a live record *and* the returned `state`
-  matches it in constant time, so a code replayed from a different browser is rejected `403` even
-  while the code itself is still live at the token endpoint.
-
-No lifetime figure is asserted here for the authorization code. The short lifetime that bounds it is
-the identity provider's own default — the gateway does not widen it and does not restate it. The
-TTL the gateway does own is the pending record's, which is a distinct quantity and must not be read
-as the code's.
-
-Not overstated: the exposure of the code to intermediaries is real and is bounded by the above, never
-removed by it.
-
-=== Consequential narrowing of the edge surface
-
-A `query`-mode callback is a top-level `GET` that reads no request body at all, so the callback path
-is removed from the edge's reserved-body-read allowlist rather than left in it as an apparently inert
-entry. The removal is not cosmetic: retaining the entry would keep granting *any unauthenticated*
-`POST` to the callback path a pre-authentication, pre-pipeline body read up to the reserved-body
-ceiling before any handler could reject it. A stray `POST` now takes the ordinary path, reaches the
-callback with no body, and is rejected `400` for a missing `state`. Back-channel logout remains a
-genuinely body-carrying reserved `POST` and stays in the allowlist with its ceiling unchanged — it is
-now the only entry.
-
-An identity provider still configured to `form_post` to this gateway is consequently no longer
-supported. That is intended: the gateway selects the mode.
-
-=== Alternatives considered for this amendment
-
-*Relax the browser-binding cookie to `SameSite=None`.* The shortest path: it keeps `form_post`, keeps
-the code out of the URL, and makes the cookie survive the cross-site POST. Rejected because it
-weakens the exact cross-site binding control the cookie exists to provide. The cookie's whole purpose
-is to bind an in-flight authorization to one browser; a binding cookie sent cross-site no longer
-distinguishes the browser that started the transaction from one that did not, which is precisely the
-check the `403` branch performs. It would also contradict decision (ii) directly. The code's URL
-exposure is bounded on four independent axes; the binding has no layer behind it.
-
-*Stay on `form_post` and accept that the binding cookie is absent on the callback.* This would
-preserve the preferred transport and require no change. Rejected because it is not a choice between
-two working designs: with the cookie absent the callback resolves no pending record, so the
-browser-facing flow simply does not work. Making it work means dropping the binding requirement,
-which is the previous alternative under another name.
-
-*Expose the response mode as a configuration key defaulting to `query`.* Rejected because the
-non-default value produces a login flow that structurally cannot succeed while the binding cookie
-stays `Lax`, so the key's only reachable second value is a broken one. A knob whose alternative
-setting is always wrong is a trap, not flexibility.
-
-*Bind the transaction through the `state` parameter alone and drop the pre-session cookie.* With no
-cookie in play either transport would work and the coupling would disappear. Rejected because `state`
-travels with the callback wherever the callback goes: it is returned by whichever browser presents
-the code, so it correlates a response to a request but cannot attest that the response arrived in the
-browser that started it. This would remove the replay-from-another-browser rejection entirely — a
-strictly larger loss than the URL exposure it avoids.
-
-These alternatives fall into the same class as those below: each restores a local convenience by
-removing a structural guarantee, and each pays for a bounded, well-understood exposure with an
-unbounded one.
-
-=== Residual risks specific to this amendment
-
-* *Diagnostic and test infrastructure republishing the code.* Browser-automation failure traces
-  capture the code-bearing callback URL, and a CI system retaining those traces as artifacts
-  republishes it to everyone who can read the build. The residual is bounded by the code being
-  single-use, already consumed by the time the trace is written, PKCE-bound, and issued by a
-  disposable test realm — but the shape (a tool that faithfully records URLs now records a
-  credential) applies to any URL-carried secret and outlives any one tool's retention setting.
-* *Green tests over a broken flow.* The defect class this amendment resolves is invisible to every
-  test that constructs the callback itself. Only a real-browser end-to-end path can detect its
-  return.
+Every path is matched exactly. Six are matched on the OIDC host only, the host of
+`oidc.redirect_uri`, because a browser reaches them at the origin the gateway published.
 
 [[backchannel-host]]
-== Amendment: the back-channel logout receiver is reserved on every host, not only the OIDC host
+*The back-channel logout path and the client JWKS path are matched on every host.* No browser
+reaches them. The IdP dials them server-to-server, at whatever address the relying party registered.
+In a container or internal-network deployment that address is a service name, while the OIDC host
+is the public name. The two are expected to differ, and no configuration can make them coincide.
+With an OIDC-host gate, a logout token sent to the service name fell through to the route table and
+got a `404`. The session it should have destroyed stayed alive, and neither side reported an error.
+The widening grants no authorization. The receiver acts only on a logout token whose signature
+verifies against the IdP's JWKS and whose `iss` and `aud` match the client. The client JWKS path
+joined the set for the same reason
+(link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
 
-Decision (i) binds every reserved path to the OIDC host — the host of `oidc.redirect_uri`. That is
-right for five of the six and wrong for the sixth, and the difference is categorical rather than one
-of degree.
+[[csrf]]
+=== (ii) The CSRF model is fixed
 
-=== Five of them are browser-facing; one is not
+Every `require: session` route verifies the origin of an unsafe request, and the session cookie
+carries `SameSite=Lax`. Both are fixed properties with no switch. The only configuration is the
+allowlist of trusted origins an SPA is served from. The operator declares who may call, never
+whether the check happens. The proof and the allowlist are in
+link:../variants/02-bff-session.adoc#_csrf_defence[Variant 2 -- CSRF Defence].
 
-The callback, the login initiation, the RP-initiated logout, its return leg and the user-info fold are
-each reached by a *browser*, at the origin the gateway published to that browser. A request for one of
-those paths arriving on some other virtual host is by construction not that browser, so declining to
-treat it as reserved — and letting it fall through to the proxy route table — is exactly right.
+[[response-mode]]
+*The fixed `Lax` policy decides the authorization-response transport.* The gateway binds an
+in-flight login to the browser that started it with a short-lived binding cookie. That cookie also
+carries `SameSite=Lax`, and a `Lax` cookie is sent on a top-level `GET` navigation but not on a
+cross-site `POST`. Under `response_mode=form_post` the IdP returns the code by a cross-site `POST`.
+The browser drops the binding cookie, the callback finds no pending login, and every real-browser
+login ends in `403`. The cookie side cannot move, so the transport moves.
 
-Back-channel logout is the one reserved endpoint no browser ever touches. The identity provider
-delivers the logout token server-to-server, to whatever address the relying party registered as its
-`backchannel_logout_uri`. In a containerised or internal-network deployment that address is a service
-name on the network the two share, while the OIDC host is the public name the browser uses. The two
-are *expected* to differ, and no configuration can make them coincide: the provider cannot dial a
-public name that does not resolve on its network, and the browser cannot use the internal one.
+*The gateway selects `response_mode=query`.* `QueryResponseModeAuthorizationRequestBuilder` replaces
+the engine's `form_post` and copies every other parameter unchanged, in order and encoding. It is
+wired into every seam that builds an authorization request: the login, the session widening and the
+RFC 9470 step-up re-drive. The URL it builds is the parameter source of the pushed authorization
+request (ADR-0058), so the mode travels to the IdP inside the push. The mode has no configuration
+key, because its other value cannot produce a working login.
 
-=== The failure the unamended rule produced
+*The accepted trade-off.* `query` places the authorization code in the callback URL. The code is
+then exposed to the `Referer` header, to intermediary access logs and to browser history. This is the
+standard reason `form_post` is preferred, and nothing here removes the exposure. It is accepted
+because it is what makes the browser-facing login work. It stays acceptable only while all four of
+the following hold:
 
-Under decision (i) as written, such a delivery is answered by the proxy route table instead of the
-receiver. No route claims the reserved path, so the gateway returns `404`, the logout token is never
-validated, and the session it was meant to destroy stays alive. Every documented piece of the
-mechanism — the registered URL, the `sid`-bearing token, the trust material on the TLS leg, the
-receiver itself — is present and correct, and none of it is consulted.
+. *The binding cookie keeps `SameSite=Lax` and every other attribute.*
+. *The response mode stays `query`*, on every seam that builds an authorization request, also after
+  an engine upgrade.
+. *PKCE stays mandatory with the verifier held by the gateway.* The flow refuses an IdP that does not
+  advertise `S256`. A code read from a log is not redeemable without the verifier.
+. *The pending login stays single-use, and the `state` check stays.* The callback resolves the
+  pending record by the binding cookie, consumes it, and compares `state` in constant time. A code
+  replayed from another browser is rejected `403` while the code is still live.
 
-The failure is silent from both ends, which is what makes it worth an amendment rather than a bug fix
-in passing: the provider records a delivery it considers failed, the gateway records a path it
-considers unrouted, and neither is looking at the session. `BffBackchannelLogoutIT` is what surfaced
-it — the first time that suite ran against a real Keycloak whose realm named the gateway by its
-compose service name, the session survived an IdP-initiated logout and the suite failed on the
-effect it exists to assert.
+The code's lifetime is the IdP's default, which the gateway does not widen. The TTL the gateway owns
+is the pending record's, a separate quantity. A `query` callback reads no body, so the callback path
+is not in the edge's reserved-body allowlist. An IdP configured to `form_post` to this gateway is not
+supported. The mechanics are in
+link:../architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
 
-=== The amendment
+[[seam]]
+=== (iii) Server and cookie mode sit behind one `SessionBinding` seam
 
-`ReservedPathRegistry` matches `BACKCHANNEL_LOGOUT` on every host. The other five keep the OIDC-host
-gate unchanged, and path matching stays exact for all six.
+The BFF binds to `SessionBinding`, never to a store. The configured mode selects only which binding
+`BffRuntimeProducer` assembles: `ServerSessionBinding` over a session store, or `CookieSessionBinding`
+over the sealed-cookie codec. The login flow, the CSRF defence, the refresh and step-up
+coordinators, the reserved handlers and the session stage are written against the seam.
 
-The widening grants no authorization. The receiver admits nothing but a logout token whose signature
-verifies against the provider's JWKS and whose `iss`/`aud` match the configured confidential client,
-and it destroys nothing on any other input — so reachability on a second host lets a caller attempt
-precisely what it could already attempt on the first. What the widening does cost is the ability to
-proxy the configured back-channel path on a non-OIDC virtual host: decision (i)'s "reserved paths
-permanently occupy their configured paths" now holds for that one path on *every* host. An operator
-who needs that namespace proxied relocates `oidc.logout.backchannel_path`, exactly as decision (i)
-already requires on the OIDC host.
-
-=== Alternatives considered for this amendment
-
-*Make the accepted back-channel host configurable.* A key naming the internal host the provider dials
-would keep the gate and admit the deployment. Rejected because its only correct value is whatever the
-provider was registered with, so the same fact is maintained in two places and any drift between them
-reproduces the silent `404` — a configuration surface whose failure mode is the defect it was added to
-remove.
-
-*Derive the accepted host from a full `backchannel_logout_url` rather than a path.* Rejected for the
-same reason wearing a different shape, and it adds a migration: the configuration declares a path
-today, so promoting it to a URL makes every existing descriptor's value incomplete while still
-requiring it to agree with the provider's registration.
-
-*Leave the gate and require deployments to expose the gateway to the provider under its public name.*
-The only alternative that changes no code. Rejected because it is not generally available: a provider
-on a private network frequently cannot resolve the public name at all, and arranging that it can means
-adding DNS or hairpin routing so that a gateway becomes reachable from a container standing beside it.
+Where the modes differ, they differ by declared capability, not by mode name. A binding reports
+whether it can honour IdP-driven destruction (`idpDestruction()`). The back-channel logout endpoint
+is gated on that signal and answers `404` when it is unsupported. It never claims a destruction that
+did not happen.
 
 [[updating-write]]
-== Amendment: the seam's updating write never creates a session
+*One creating write and two updating writes.*
 
-*This record is amended, not superseded. Decision (iii) is unchanged: both session modes still sit
-behind the one `SessionBinding` seam. This amendment records what the seam's two writes mean, and the
-one capability in which the two modes differ on them.*
+* `bind` creates a session. It is the login's write.
+* `persist` updates a session that already exists, and never creates one. It is the refresh's write.
+* `persistReissuingCookie` updates the session as `persist` does and also re-issues the value the
+  browser holds. It is the write of a step-up or a widening
+  (link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
 
-=== A write that could undo a termination
-
-A session is written at three moments. A login creates it. A token refresh replaces its tokens. A
-widening merges a new grant into it
-(link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057]).
-The last two are a check followed by an act: the writer resolves the session, calls the identity
-provider, and writes the result back under the same session identity.
-
-In server mode that write was an unconditional store write keyed by the session identity. A logout,
-or a validated back-channel logout, that destroyed the session between the writer's resolve and its
-write was therefore undone by the write: the session existed again, holding newly issued tokens,
-after the user or the identity provider had ended it.
-
-=== The amendment
-
-The seam has one creating write and one updating write, and they are not interchangeable. The
-updating write has a second variant, which <<cookie-reissue>> adds; what this section says of
-`persist` holds for both.
-
-* `bind` creates a session. It is the write a login makes.
-* `persist` updates a session that already exists, and never creates one. Its result says whether the
-  session was still there: an implementation that can observe that the session was destroyed writes
-  nothing and reports the session gone.
-
-In server mode the store checks for the session and replaces its record as one atomic step, under the
-lock every destroy operation takes. A destruction therefore either precedes the check, and nothing is
-written, or follows the replacement and removes it. A replacement consumes no capacity, so it is not
-refused at the session bound.
-
-Both callers of `persist` treat a session reported gone as a session that has ended. The widening
-callback answers the terminal `403` it gives a callback without a live session, with no `Location`
-and no `Set-Cookie`, and stores nothing. The refresh coordinator returns its session-ended outcome on
-both of its legs, to the request that led the refresh and to every request coalesced with it, and
-revokes, best-effort, the refresh token the exchange returned -- that token is live at the identity
-provider and no session holds it
+Neither updating write extends the absolute lifetime. A binding that can observe that the session was
+destroyed since the caller resolved it writes nothing and reports the session gone. In server mode
+the store checks for the session and replaces its record in one atomic step, under the lock every
+destroy takes. A logout therefore precedes the check, and nothing is written, or it follows the
+write and removes the result. Both callers treat a session reported gone as ended. The widening
+callback answers its terminal `403` and stores nothing. The refresh coordinator ends the request as
+session-ended and revokes, best-effort, the refresh token the exchange returned
 (link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046]).
 
-=== Cookie mode cannot observe a termination
-
-This is a difference of capability between the modes, of the kind decision (iii) describes. The
-stateless binding holds no server-side session state. Its `destroy` removes nothing, because there is
-nothing held to remove; a logout ends a cookie-mode session by clearing the browser's cookie. Its
-`persist` therefore has nothing to consult: it always re-seals the updated session and never reports
-it gone.
-
-The consequence is a residual of the stateless variant, not of the seam. A refresh or a widening that
-was in flight while the browser logged out still produces a sealed `Set-Cookie`. If that response
-reaches the browser after the logout response, the browser again holds a cookie the gateway resolves
-as a session, until the session's absolute lifetime. The mitigations are the ones the variant already
-names for a termination it cannot enforce at once -- a short `ttl_seconds`, short access-token
-lifetimes, and the session-based variant where immediate termination is a hard requirement
-(link:../variants/03-bff-cookie.adoc[Variant 3], Logout). The threat model records it under
-link:../security-threat-model.adoc#bff-09[BFF-09].
-
-Unlike IdP-driven destruction, this difference has no capability flag of its own. The result of
-`persist` carries it: a binding that cannot observe a termination never returns "gone".
-
-=== Alternatives considered for this amendment
-
-*Resolve the session again immediately before the write.* It needs no change to the store. Rejected
-because a second check followed by an unconditional write is the same check-then-act with a shorter
-window: a destruction between the second resolve and the write is still undone.
-
-*Make logout wait for the writers.* Serialising a logout with an in-flight refresh or widening -- on
-the refresh coordinator's per-session single-flight, or on a per-session lock -- would close the
-window from the other side. Rejected because it makes a logout wait on an identity-provider round
-trip, and because a back-channel logout destroys by `sid` or `sub` without knowing which sessions
-have a writer in flight. The store already serialises its own operations, so the guarantee is
-available where the state lives.
-
-*Keep one upserting write and add a tombstone for destroyed sessions.* A marker for each destroyed
-session identity would let the upsert refuse it. Rejected because it adds per-session state that
-outlives the session and needs its own bound and expiry, to reconstruct a fact the store has at the
-moment of the write: whether the record is there.
-
-*Give cookie mode a server-side list of logged-out sessions.* It would let the stateless binding
-report a termination too. Rejected because it is server-side session state in the variant that
-exists to have none, and it would have to be shared between instances to mean anything.
+*Cookie mode cannot observe a termination.* `CookieSessionBinding` holds no server-side state. Its
+`destroy` removes nothing; a logout clears the browser's cookie. Its updating writes always re-seal
+and never report the session gone. This difference has no capability flag: the result of `persist`
+carries it. The residual is in the Consequences.
 
 [[cookie-reissue]]
-== Amendment: the updating write has a variant that re-issues the browser's handle
+*Server mode re-issues a handle, not an identity.* In server mode the session cookie carries a random
+handle that the store maps to the session. The handle is separate from the session identity. A
+re-issue mints a new handle and makes the previous one stop resolving in the same atomic step as the
+record's replacement. The session's identity, its authentication time, its absolute expiry, its
+`sid` and `sub` index entries and the refresh coordinator's single-flight key stay. The session
+identity is never the cookie value, in either mode, and it is never emitted. The re-issued cookie
+carries the session's remaining absolute lifetime as its `Max-Age`. A request still in flight with
+the previous handle resolves no session and gets one "no session" answer without a clearing cookie,
+so it cannot remove the cookie the re-issue just set. In cookie mode every update already produces a
+new sealed value, so the variant re-seals exactly as `persist` does, and the nonce is not re-minted.
+The store side is described in link:../development/bff-session.adoc#session-store[the server-session
+contributor guide].
 
-*This record is amended, not superseded. Decision (iii) is unchanged: both session modes still sit
-behind the one `SessionBinding` seam. Decision (v) is unchanged: the cookie-mode nonce is minted once
-at login and is not re-minted on a step-up or a widening. The amendment above stands: no updating
-write creates a session.*
+[[key-material]]
+=== (iv) Cookie mode has one sealing key, and it is optional
 
-=== A cookie value that outlives a change of privilege
+Cookie mode accepts a configured sealing key or, when none is configured, generates one at startup.
+Boot does not require a key, so the simplest deployment needs no key management. The trade-off is
+explicit: a generated key cannot be shared with another replica and does not survive a restart, so
+its sessions end on restart and a peer cannot serve them. The gateway holds exactly one sealing key
+and no decrypt-only companion. Replacing the key is a clean break: a cookie sealed under the
+withdrawn key carries a key id the gateway does not hold, resolves as "no session", and its user logs
+in again. The operator view, including the removed `previous_key`, is in
+link:../user/bff-cookie.adoc#_key_material[Operator setup -- cookie-based BFF].
 
-A step-up and a scope widening
-(link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057])
-change what a session is allowed to do while it stays the same session. Good practice for a session
-credential is to replace the value the browser holds whenever the privilege behind it changes, so a
-copy taken earlier does not carry the new privilege.
+[[session-identity]]
+=== (v) The cookie-mode identity is a keyed digest with a per-session nonce
 
-In server mode that was not possible without ending the session. The cookie value was the session
-identity, and the identity is the key of everything that must survive the change: the store entry,
-the `sid` and `sub` indexes a back-channel logout uses, and the single-flight key of the refresh
-coordinator. Replacing the value meant minting a new identity and moving all of it.
+The derived cookie-mode identity is a salted digest over the login instant, `sub` and a random nonce
+minted once at login. The nonce is sealed with the session, re-sealed verbatim on every update and
+never re-minted. The raw nonce is never used as the identity, and the identity is never emitted to the
+browser. Every input is fixed for the session's life, so a re-seal reproduces the identity: it is
+stable. The nonce separates two logins by one subject within one clock granule: it is unique.
 
-=== The amendment
-
-The seam has one creating write, `bind`, and two updating writes.
-
-* `persist` is the write a token refresh makes. It leaves the value the browser holds as it is in
-  server mode.
-* `persistReissuingCookie` is the write a step-up or a widening makes. It updates the session exactly
-  as `persist` does and also re-issues the value the browser holds.
-
-Neither creates a session, neither extends the absolute lifetime, and both report a session that is
-gone instead of writing.
-
-In server mode the value the browser holds is a *handle*. The store maps the handle to the session,
-and the handle is separate from the session identity. A re-issue mints a new handle and makes the
-previous one stop resolving in the same atomic step as the record's replacement, under the lock
-every destroy operation takes. The session's identity, its authentication time, its absolute expiry,
-its place in the `sid` and `sub` indexes and the refresh coordinator's single-flight key do not
-change. The session identity is not the cookie value in either mode, and it is never emitted.
-
-The re-issued cookie carries the session's remaining absolute lifetime as its `Max-Age`, so the
-browser drops it when the session ends. The cookie a login sets carries the full `ttl_seconds`.
-
-A request that was in flight with the previous handle resolves no session. It gets one "no session"
-answer -- `401` for an API call, the redirect into login for a navigation -- that carries no clearing
-`Set-Cookie`, so it cannot remove the cookie the re-issue has just set. The same single answer
-reaches a request that already carries the new handle but was coalesced behind a refresh whose
-leading request carried the previous one. The next attempt of either succeeds.
-
-In cookie mode the variant re-seals the session exactly as `persist` does. Every updating write of
-the stateless binding already produces a new sealed value, so there is nothing further to re-issue;
-the nonce and the derived identity stay as they are.
-
-=== Cookie mode cannot withdraw the earlier value
-
-A sealed cookie from before a step-up or a widening stays usable as it was sealed. It resolves a
-session at the earlier privilege, without the scopes the later grant added, until the session's
-absolute expiry. The stateless binding holds nothing that could make it stop resolving. This is a
-property of the stateless variant, of the same kind as the termination it cannot observe, and the
-threat model records it as an accepted residual under
-link:../security-threat-model.adoc#bff-21[BFF-21]. The earlier cookie never gains the new scopes.
-
-=== Alternatives considered for this amendment
-
-*Mint a new session identity at every step-up and widening.* It needs no handle beside the record.
-Rejected because the identity is the key the rest of the runtime holds: the `sid` and `sub` indexes
-would have to move in step, a refresh coalesced on the earlier identity would no longer exclude one
-on the new identity, and the authentication time and the absolute expiry would have to be carried
-across by hand. A session that keeps its identity and changes only its handle has none of these
-moving parts.
-
-*Re-mint the cookie-mode nonce on a step-up or a widening.* It would give the stateless variant a
-new derived identity at the same moments. Rejected because the identity is derived from the nonce
-(decision (v)): a re-minted nonce is a different session to everything keyed on the identity, and it
-withdraws nothing, because the earlier sealed cookie still unseals under the same key.
+The sealed-cookie format version is bound into the cookie's authenticated data. Any change to the
+sealed field set raises the version, and an older format is not accepted. Admitting one would mean
+inventing the missing input, which would change the derived identity. The wire format is in
+link:../development/bff-cookie.adoc[the cookie-based contributor guide].
 
 [[idle-deadline]]
-== Amendment: a session has an idle deadline, and cookie mode tracks it outside the sealed session
+=== (vi) A session has an absolute and an idle deadline
 
-*This record is amended, not superseded. Decision (iii) is unchanged: the idle deadline is part of
-the one seam and both bindings implement it. Decision (v) and the sealed session format are
-unchanged: the sealed session payload gains no field.*
+A session ends at its absolute lifetime (`oidc.session.ttl_seconds`), and earlier when
+`oidc.session.idle_timeout_seconds` pass without a request that was let through on a session route.
+This holds in both modes.
 
-=== A session with only an absolute lifetime
-
-A session ended at its absolute lifetime and at no other moment the gateway chose. A browser left
-open on a shared device held a usable session for the rest of `ttl_seconds`, however long nobody had
-used it.
-
-=== The amendment
-
-A session has two deadlines in both modes. It ends at its absolute lifetime, and earlier when
-`oidc.session.idle_timeout_seconds` have passed without a request that was let through on a session
-route.
-
-* `resolve` enforces both deadlines and extends neither. A caller that only reads a session -- a
-  reserved endpoint, the portal's identity lookup -- does not keep it alive.
+* `resolve` enforces both deadlines and extends neither. A caller that only reads a session, such as
+  a reserved handler or the portal, does not keep it alive.
 * `recordAccess` is the only operation that moves the idle deadline. The session stage calls it once
-  for each request it lets through. A request that is refused, challenged or redirected into a login
-  or a widening is not an access.
-* The absolute lifetime is not affected by an access.
+  for each request it lets through. A rejected, challenged or redirected request is not an access.
+* No access moves the absolute lifetime.
 
-A session past its idle deadline is no session: the request gets the ordinary unauthenticated
-answer.
+A session past either deadline is no session. *Server mode* keeps the last access in the store beside
+the record. The store removes an expired session when it is next looked up, and otherwise a periodic
+sweep removes it.
 
-*Server mode* keeps the last access in the store, beside the record. An expired session -- past
-either deadline -- is removed when it is next looked up, and otherwise by a periodic sweep, so it
-does not stay in memory until the store fills.
+*Cookie mode* keeps the last access in a separate *activity cookie*, not in the sealed session. The
+activity cookie is authenticated with HMAC-SHA-256 under a key of its own and bound to the derived
+session identity, so it is valid for one session only. It is not encrypted, because the time of the
+last access is not a secret. The binding writes it at most once per interval, so the idle deadline is
+exact to within that interval. The binding keeps no per-session state, so the client decides how often
+the cookie is written. A message authentication code has no per-key usage limit that such a client
+could spend, which a cipher with a random nonce has. The sealed payload gains no field, so its format
+version is unchanged. *The activity cookie fails closed.* A missing, forged, unreadable or foreign
+activity cookie never extends a session. Without a usable one the idle deadline counts from the
+login. The layout and the interval are in
+link:../development/bff-cookie.adoc#activity-cookie[the cookie-based contributor guide].
 
-*Cookie mode* keeps the last access in a separate *activity cookie*. The cookie is authenticated
-with HMAC-SHA-256 under a key of its own and bound to the derived session identity, so it is valid
-for one session only. It is not encrypted: the time of the last access is not a secret. It
-carries the session cookie's attributes and the session's remaining absolute lifetime. The binding
-writes it once the recorded access is one interval old -- 60 seconds, or half the idle timeout where
-that is shorter -- so the recorded access can be up to one interval older than the latest request
-and the idle deadline is exact to within that interval. The binding keeps no state per session, so
-a request that presents an activity cookie one interval old receives a new one, whether it is one
-of several sent in parallel or presents a cookie the client was already given a successor for. How
-often the cookie is written is therefore decided by the client. That is the reason for the message
-authentication code: a cipher with a random nonce may protect only a limited number of values under
-one key, and a client could spend that limit, while HMAC-SHA-256 has none. The session cookie
-itself is not written on an access.
+== Alternatives rejected
 
-The sealed session payload gains no field. The Negative consequence "any change to the sealed
-payload's field set forces a format-version bump" is therefore not triggered, and no cookie-mode
-session ends at an upgrade because of the idle deadline.
+*Resolve reserved paths through the ordinary route table.* One mechanism would resolve every path.
+Rejected because a security-critical endpoint would then depend on route ordering and prefix breadth.
+A legitimate broad prefix silently captures the callback, and the failure depends on configuration.
+Precedence must be structural to be trustworthy.
 
-*The activity cookie fails closed.* A missing, stale, forged or unreadable activity cookie, and one
-that belongs to another session, never extends a session. Without a usable one the idle deadline is
-measured from the login. A browser or an intermediary that drops the cookie therefore ends the
-session one idle period after login; it cannot keep one alive.
+*Make the accepted back-channel host configurable.* A key naming the internal host would keep the
+gate. Rejected because its only correct value is whatever the IdP registered. The same fact would
+live in two places, and any drift between them reproduces the silent `404`.
 
-=== Alternatives considered for this amendment
+*Derive the accepted host from a full `backchannel_logout_url` instead of a path.* Rejected for the
+same reason. It also adds a migration: every existing configuration declares a path, and each would
+become incomplete while still having to agree with the IdP's registration.
 
-*Carry the last access as a field of the sealed session.* One cookie instead of two. Rejected for
-two reasons. The field changes the sealed payload, which forces the format-version bump and ends
-every cookie-mode session at the upgrade. And it makes every access a re-seal of the whole session:
-a full-size `Set-Cookie` carrying the tokens on ordinary responses, each one a write that races the
-refresh's own.
+*Keep the OIDC-host gate and require the IdP to reach the gateway by its public name.* The only
+alternative that changes no code. Rejected because a provider on a private network often cannot
+resolve the public name. Making it resolve means DNS or hairpin routing between two containers that
+stand side by side.
 
-*No idle timeout in cookie mode.* It keeps the stateless variant at one cookie. Rejected because
-the two modes would then differ in a property operators read as one feature, which is the drift
-decision (iii) exists to prevent, and because the capability is achievable without server-side
-state.
+*Make CSRF defence configurable, with a secure default.* Rejected because the option's existence is
+the vulnerability. A defence that can be switched off will be switched off where the exposure is
+least understood, and a secure default does not resist a deliberate override.
+
+*Relax the binding cookie to `SameSite=None` and keep `form_post`.* It keeps the code out of the URL.
+Rejected because it weakens the cross-site binding the cookie exists to provide. A binding cookie
+sent cross-site no longer tells the browser that started the login from one that did not, which is
+the check the callback's `403` performs. It would also contradict decision (ii). The code's exposure
+is bounded on four axes; the binding has nothing behind it.
+
+*Stay on `form_post` without the binding cookie on the callback.* Rejected because it is not a working
+design: with the cookie absent the callback resolves no pending login. Making it work means dropping
+the binding requirement, which is the previous alternative under another name.
+
+*Expose the response mode as a key that defaults to `query`.* Rejected because the other value cannot
+produce a working login while the binding cookie stays `Lax`. A setting whose alternative is always
+wrong is a trap.
+
+*Bind the login through `state` alone and drop the binding cookie.* Either transport would then work.
+Rejected because `state` travels with the callback: any browser that presents the code also presents
+it. It correlates a response to a request but cannot attest which browser received it. This removes
+the replay-from-another-browser rejection, a larger loss than the URL exposure.
+
+*Implement the two session modes as independent stacks.* Each could be tuned to its own shape.
+Rejected because it doubles the surface where a security defect can occur. A fix to one stack does
+not reach the other, and the two drift apart in what operators read as one feature.
+
+*Resolve the session again just before the updating write.* It needs no store change. Rejected
+because a second check followed by an unconditional write is the same check-then-act with a shorter
+window. A destruction between the second resolve and the write is still undone.
+
+*Make a logout wait for in-flight writers.* Serialising a logout with a refresh or a widening would
+close the window from the other side. Rejected because a logout would then wait on an IdP round
+trip. A back-channel logout also destroys by `sid` or `sub` without knowing which sessions have a
+writer in flight. The store already serialises its own operations.
+
+*Keep one upserting write and add a tombstone per destroyed session.* Rejected because it adds
+per-session state that outlives the session and needs its own bound and expiry, to rebuild a fact the
+store has at the moment of the write: whether the record is there.
+
+*Give cookie mode a server-side list of logged-out sessions.* It would let `CookieSessionBinding`
+report a termination. Rejected because it is server-side session state in the variant that exists to
+have none, and it would have to be shared between instances to mean anything.
+
+*Mint a new session identity at every step-up and widening.* It needs no handle beside the record.
+Rejected because the identity is the key the rest of the runtime holds. The `sid` and `sub` indexes
+would have to move in step, a refresh coalesced on the old identity would no longer exclude one on
+the new identity, and the authentication time and absolute expiry would have to be carried across by
+hand.
+
+*Re-mint the cookie-mode nonce on a step-up or a widening.* Rejected because the identity is derived
+from the nonce. A new nonce is a different session to everything keyed on the identity, and it
+withdraws nothing: the earlier sealed cookie still unseals under the same key.
+
+*Require a sealing key unconditionally in cookie mode.* Rejected because it imposes key management on
+every deployment, single-node and development ones included. That pushes operators toward checked-in
+or trivially derived keys, a worse outcome than a documented, deliberately scoped generated key.
+
+*Derive the cookie-mode identity from the fixed material alone, without a nonce.* It needs no extra
+sealed field. Rejected because stability and uniqueness are independent requirements and this meets
+only the first. Two sessions of one subject within one login granule derive the same identity, which
+cross-wires the coordination the identity keys. The defect is silent and appears only under
+concurrency.
+
+*Accept the previous sealed-cookie format beside the new one.* It would avoid a forced re-login on
+upgrade. Rejected because an older cookie lacks an identity input, and any value supplied for it
+changes the derived identity. That reintroduces the collision the nonce removes.
+
+*Carry the last access as a field of the sealed session.* One cookie instead of two. Rejected for two
+reasons. The field changes the sealed payload, which raises the format version and ends every
+cookie-mode session at the upgrade. And every access becomes a re-seal of the whole session: a
+full-size `Set-Cookie` carrying the tokens, each one racing the refresh's own write.
+
+*No idle timeout in cookie mode.* It keeps the cookie-based BFF at one cookie. Rejected because the
+two modes would then differ in a property operators read as one feature, the drift decision (iii)
+prevents. The capability is achievable without server-side state.
+
+The rejected options share one shape. Each buys a local convenience, such as a setting, less
+abstraction or an easier upgrade, by removing a structural guarantee. Each pays with a failure that is
+silent and shows only in the deployments least equipped to diagnose it.
 
 == Consequences
 
-=== Positive
+*Positive.*
 
-* A security-critical path cannot be shadowed by configuration: reserved-path precedence is
-  structural, not an ordering convention.
-* There is no deployment of this gateway with CSRF defence disabled, because there is no way to
-  express one.
-* A capability added to the BFF is written once, against the seam, and is available in both session
-  modes without a second implementation — so the two modes cannot drift apart in behaviour.
-* Mode-specific limitations surface as an explicit capability signal with a defined response, rather
-  than as a silently missing behaviour.
-* The stateless mode is usable with no key management at all, while the multi-replica case remains
-  fully supported by supplying a key.
-* Single-flight refresh coalescing keys correctly in both modes, including for concurrent logins by
-  one subject.
+* Configuration cannot shadow a security-critical path: reserved-path precedence is structural.
+* No deployment of this gateway runs without CSRF defence, because none can be expressed.
+* A BFF capability is written once, against the seam, and both modes get it.
+* A mode-specific limit surfaces as a capability signal with a defined answer, never as a silently
+  missing behaviour.
+* In server mode a logout or a back-channel logout is not undone by a refresh or a widening in flight.
+* A step-up or a widening changes the server-mode cookie value and nothing else about the session.
+* A session nobody uses ends at its idle deadline in both modes. A reader of a session does not keep
+  it alive.
+* Cookie mode works without key management. The multi-replica case works with a configured
+  key.
+* Single-flight refresh keys correctly in both modes, also for concurrent logins by one subject.
 
-=== Negative
+*Negative.*
 
-* Reserved paths permanently occupy their configured paths on the OIDC host; an operator who wants
-  those namespaces proxied must relocate the reserved paths instead. The back-channel logout path
-  occupies its configured path on *every* host (see <<backchannel-host>>), so relocating it is the
-  only way to proxy that one path anywhere.
-* A truly cross-site SPA cannot be supported, because the fixed cookie policy will not attach the
-  session cookie cross-site — such an SPA must be hosted under the gateway's site.
-* Any change to the sealed payload's field set forces a format-version bump, which invalidates every
-  existing cookie-mode session and forces re-login on deploy. There is no rolling migration.
-* The session record carries a component that is meaningful in only one mode, and it must be
-  explicitly propagated wherever the record is rebuilt field-by-field.
+* Six reserved paths occupy their configured paths on the OIDC host, and the back-channel logout and
+  client JWKS paths on every host. An operator who needs such a namespace proxied relocates the
+  reserved path.
+* A truly cross-site SPA cannot be served, because the fixed cookie policy does not attach the session
+  cookie cross-site. Such an SPA must be hosted under the gateway's site.
+* The authorization code travels in the callback URL. The exposure is bounded by the four obligations
+  of decision (ii) and never removed.
+* Any change to the sealed field set raises the format version and ends every cookie-mode session on
+  deploy. There is no rolling migration.
+* The session record carries a component that only one mode uses. Every code path that rebuilds the
+  record field by field must copy it.
+* A server-mode request in flight with the previous handle during a re-issue gets one "no session"
+  answer. Its next attempt succeeds.
+* *Cookie mode cannot observe a termination.* A refresh or a widening in flight during a logout still
+  produces a sealed `Set-Cookie`. If it reaches the browser after the logout, the browser again holds
+  a session until its absolute lifetime. The mitigations are a short `ttl_seconds`, short access-token
+  lifetimes, and the server-session variant where immediate termination is required
+  (link:../security-threat-model.adoc#bff-09[BFF-09]).
+* *Cookie mode cannot withdraw an earlier value.* A sealed cookie from before a step-up or a widening
+  stays usable at its earlier privilege until the absolute expiry. It never gains the later scopes
+  (link:../security-threat-model.adoc#bff-21[BFF-21]).
+* In cookie mode a browser or intermediary that drops the activity cookie ends the session one idle
+  period after login.
 
-=== Risks
+*Constraints on later change.* Each of the following reintroduces a defect this record removes:
 
-* *Silent identity drift.* Any code path that reconstructs the session record component-by-component
-  and omits the nonce would change the derived identity mid-session, breaking refresh coalescing.
-  The re-seal path fails loud rather than re-minting a nonce, which converts this from a silent
-  corruption into an immediate error.
-* *Operator misreading of the key default.* Omitting the key is easy and works perfectly on one
-  replica, so a deployment can scale out and only then discover its sessions are not portable. The
-  trade-off is therefore documented at the point of configuration rather than only in reference
-  material.
-* *Cookie size ceiling.* Sealing tokens into the cookie makes session size a function of token size,
-  which is bounded by what browsers accept. The gateway refuses to seal an over-budget session
-  rather than emitting a cookie the browser would silently drop.
+* rebuilding the session record without the nonce, which changes the derived identity mid-session.
+  The re-seal path fails loud instead of re-minting;
+* reverting to `form_post`, adding an authorization-request seam that bypasses the query builder, or
+  relaxing the binding cookie's `SameSite`;
+* splitting an updating write into a check and a write across two store calls;
+* using the session identity as a cookie value or a lookup key for a request;
+* letting any caller other than the session stage call `recordAccess`.
 
-== Alternatives Considered
+*Accepted risks.*
 
-*Resolve reserved paths through the ordinary route table.* This would need no separate registry and
-no precedence rule, letting one mechanism resolve every path. Rejected because it makes the
-correctness of a security-critical endpoint depend on route ordering and prefix breadth: a
-legitimate broad proxy prefix silently captures the callback, and the resulting failure is
-configuration-dependent and hard to attribute. Precedence must be structural to be trustworthy.
+* *An operator misreads the key default.* Omitting the key works on one replica, so a deployment can
+  scale out before it finds its sessions are not portable. The trade-off is documented where the key
+  is configured.
+* *The cookie size ceiling.* The session size follows the token size. The gateway refuses to seal an
+  over-budget session rather than emit a cookie the browser would drop.
+* *Tools that record URLs record the code.* Browser-automation traces capture the code-bearing
+  callback URL. The code is single-use, consumed by then, PKCE-bound and issued by a test realm, but
+  the shape applies to any URL-carried secret.
+* *Green tests over a broken login.* A test that builds the callback itself passes on either
+  transport. Only a real-browser end-to-end path detects a return of the `form_post` defect.
 
-*Make CSRF defence configurable, with a secure default.* This would accommodate deployments that
-believe they do not need it, while defaulting to protection. Rejected because the option's existence
-is the vulnerability: a defence that can be switched off will be switched off in the deployment that
-understands the exposure least, and a secure default provides no protection against a deliberate
-override.
+== Links
 
-*Implement the two session modes as independent stacks.* Each mode could then be optimised for its
-own shape without abstraction overhead. Rejected because it doubles the surface where a
-security-relevant defect can occur and guarantees divergence: a fix or hardening applied to one
-stack does not reach the other, and the two slowly acquire different behaviour for what operators
-reasonably read as one feature.
-
-*Require a sealing key unconditionally in cookie mode.* This would remove the weaker generated-key
-mode and the possibility of an operator being surprised by non-portable sessions. Rejected because
-it imposes key management on every deployment including single-node and development ones, which
-pushes operators toward checked-in or trivially-derived keys — a worse security outcome than an
-explicitly documented, deliberately-scoped generated key.
-
-*Derive the cookie-mode identity from the session's fixed material alone, without a nonce.* This
-would need no extra sealed field and no format bump. Rejected because stability and uniqueness are
-independent requirements and this satisfies only the first: two sessions sharing the same subject
-and login granule derive the same identity, which cross-wires the per-session coordination the
-identity exists to key. The defect is silent, load-dependent, and appears only under concurrency.
-
-*Accept the previous sealed-cookie format alongside the new one.* This would avoid forcing every
-user to log in again on upgrade. Rejected because accepting an older cookie means supplying the
-absent identity input, and any value chosen changes the derived identity for that session —
-reintroducing exactly the collision class the nonce removes. A clean break with a forced re-login is
-the honest cost.
-
-The alternatives fall into one class: each trades a structural guarantee for local convenience —
-configurability, less abstraction, an easier upgrade — and each pays for it with a failure mode that
-is silent and surfaces only in the deployments least equipped to diagnose it.
-
-== References
-
-* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved-path and cookie-header relaxations] -- the inbound-validation relaxations this architecture requires.
-* link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] -- the server-side-custody realisation.
-* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the stateless realisation.
-* link:../architecture.adoc[Architecture] -- the seam statement in context.
-* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the authoritative key contract, including the relaxed cookie-mode key rule.
-* link:../user/bff-cookie.adoc[Operator setup -- cookie-based BFF] -- the key-material trade-off and upgrade consequence as operators meet them.
-* link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the wire format and identity constraints as implementers meet them.
+* link:0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019 -- Reserved-path and cookie-header relaxations] -- the two inbound-validation relaxations this structure needs.
+* link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057 -- Session routes obtain their declared scopes] -- the widening that uses the cookie-re-issuing write.
+* link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058 -- Pushed requests, DPoP and client authentication] -- the client JWKS path and the push that carries the response mode.
+* link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046 -- Refresh failures] -- the session-ended outcome of a refresh whose session is gone.
+* link:../architecture.adoc#_bff_session_runtime[Architecture -- BFF runtime], link:../architecture.adoc#_bff_session_store[session store, writes and lifetime] and link:../architecture.adoc#_oidc_callback_response_mode[OIDC callback response mode].
+* link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] and link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the two realisations.
+* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the key contract.
+* link:../user/bff-session.adoc[Operator setup -- server-session BFF] and link:../user/bff-cookie.adoc[Operator setup -- cookie-based BFF].
+* link:../development/bff-session.adoc[Contributor guide -- server-session BFF] and link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF].
+* link:../security-threat-model.adoc#bff-09[BFF-09] and link:../security-threat-model.adoc#bff-21[BFF-21] -- the accepted cookie-mode residuals.
+* `SessionBinding`, `ServerSessionBinding`, `CookieSessionBinding`, `ReservedPathRegistry`, `QueryResponseModeAuthorizationRequestBuilder` -- the implementation; `BffReservedPathPrecedenceIT`, `BffBackchannelLogoutIT`, `BffSessionIdleTimeoutIT` -- the integration tests.

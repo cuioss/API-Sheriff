@@ -9,8 +9,8 @@ layer on top of an existing one -- the link:features-analysis.adoc[Feature Analy
 shows that no existing OSS gateway covers the required combination of confidential-client
 token mediation, correct forwarding-header normalization (RFC 7239 `Forwarded` +
 `X-Forwarded-*` behind a trusted-proxy allowlist), RFC 9470 step-up, and datastore-free
-distributed configuration (the last deferred past the initial release --
-link:adr/0002-initial-scope.adoc[ADR-0002]).
+distributed configuration (the last deferred past the initial release -- see the
+link:features-analysis.adoc#_initial_scope[Initial Scope]).
 
 This directory holds the design documentation; these documents define *what is built* and
 *how the parts fit together*.
@@ -164,10 +164,6 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
 | Compile *and* run on Java 25 (the LTS) for full virtual-thread benefit; CI build/test matrix
   covers Java 25 + 26 (add 27 at GA). Java 21 is not a target. *(Status: accepted.)*
 
-| link:adr/0002-initial-scope.adoc[ADR-0002]
-| Initial scope: gRPC + GraphQL (with HTTP/2 + WebSocket) ship from the start, HTTP/3 deferred;
-  configuration is Static mode only, dynamic discovery deferred.
-
 | link:adr/0003-forwarded-headers.adoc[ADR-0003]
 | Forwarding headers: accept both `Forwarded` and `X-Forwarded-*`, normalize behind a
   trusted-proxy allowlist, emit a configurable output with `X-Forwarded-*` as the default.
@@ -226,13 +222,6 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   neutral keys `jwks.refresh_interval_seconds` and `jwks.key_rotation_grace_period_seconds`
   (link:adr/0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
   *(Status: accepted.)*
-
-| link:adr/0012-Comparative_cross-gateway_benchmarking_runs_on-demand_and_stays_segregated_from_the_CI_baseline.adoc[ADR-0012]
-| Cross-gateway comparison benchmarking is a target-neutral, on-demand-only lane whose results stay
-  strictly segregated from the authoritative CI baseline and its published pages; one target
-  parameter switches the whole matrix between gateways, and fairness parity (identical upstreams,
-  auth realm, TLS material and resource limits) is a precondition of any comparison.
-  *(Status: proposed.)*
 
 | link:adr/0013-anchor-type-access-axes.adoc[ADR-0013]
 | Anchor type/access axes: two required, orthogonal classification axes on every anchor --
@@ -298,9 +287,9 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   protocol-blind because the management scheme is deployment-bound
   (link:adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]),
   its logic lives in a separate testable class rather than in the untestable entry-point shim, and
-  the resulting health state is liveness -- readiness stays asserted where
-  link:adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031]
-  puts it. *(Status: accepted.)*
+  the resulting health state is liveness -- readiness stays asserted by the host-side
+  link:development/integration-test-topology.adoc#readiness-contract[readiness gate].
+  *(Status: accepted.)*
 
 | link:adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
 | Where the Quarkus platform already supplies a mechanism the gateway uses it, and a hand-rolled
@@ -310,9 +299,10 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
   free of framework dependencies. *(Status: accepted.)*
 |===
 
-NOTE: This index is *not exhaustive* -- ADR-0020 through ADR-0035, ADR-0038, every ADR from
-ADR-0040 through ADR-0061, and every ADR from ADR-0063 through ADR-0066 are recorded in link:adr/[`doc/adr/`] without a row here. Treat the directory as the authoritative list and this
-table as a curated entry point; a missing row is index drift, never a withdrawn decision.
+NOTE: This index is *not exhaustive* -- most records in link:adr/[`doc/adr/`] have no row here.
+Treat the directory as the authoritative list and this table as a curated entry point; a record without a
+row is not a withdrawn decision. Ordinals are never reused, so a gap in the numbering is a
+record that was moved into developer documentation or merged into another record.
 
 == Reading Order
 

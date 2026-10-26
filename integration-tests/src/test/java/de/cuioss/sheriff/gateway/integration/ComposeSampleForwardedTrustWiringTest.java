@@ -374,7 +374,9 @@ class ComposeSampleForwardedTrustWiringTest {
                         () -> "the merged model must STILL publish container port " + MANAGEMENT_PORT
                                 + " for '" + GATEWAY_SERVICE + "'. scripts/start-sample.sh derives its"
                                 + " whole readiness probe from the host port published against it"
-                                + " (ADR-0031), so dropping it — which a bare '!reset' of the list"
+                                + " (the readiness-gate rules in"
+                                + " doc/development/integration-test-topology.adoc), so dropping it"
+                                + " — which a bare '!reset' of the list"
                                 + " would do — leaves the readiness gate with no target at all."
                                 + " Found: " + mergedPorts));
     }

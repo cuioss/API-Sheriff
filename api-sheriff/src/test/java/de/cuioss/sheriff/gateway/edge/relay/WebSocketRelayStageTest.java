@@ -101,10 +101,13 @@ import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.ServerWebSocket;
+import io.vertx.core.http.StreamResetException;
 import io.vertx.core.http.UpgradeRejectedException;
 import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketClient;
@@ -527,6 +530,48 @@ class WebSocketRelayStageTest {
             relayTimeline.startUpgrade();
             return Awaits.connect(wsClient.connect(relayOnlyOptions(port)),
                     "the WebSocket upgrade against the relay-only server");
+        }
+    }
+
+    /**
+     * The answer the relay writes when the upstream dial fails, before any client upgrade, ends through
+     * the edge's one end rule ({@code ResponseEnds.endResponse}) like every other answer the edge writes
+     * itself. On an HTTP/2 request whose body is still open that rule ends the response and then resets
+     * the stream with {@code NO_ERROR}; a bare end would leave the stream half-open, so no reset would
+     * ever arrive. Driven over a relay-only server whose route dials a closed port, so the dial-failure
+     * branch is reached directly.
+     */
+    @Nested
+    @DisplayName("pre-upgrade failure answer — ended through the one end rule")
+    class PreUpgradeFailureEnd {
+
+        @Test
+        @DisplayName("HTTP/2 with an open body: the dial-failure 502 arrives whole, then a NO_ERROR reset")
+        void dialFailureAnswerOnAnOpenHttp2BodyIsFollowedByANoErrorReset() throws Exception {
+            HttpServer relayServer = startRelayOnlyServer(deadPort, UNOBSERVED_ADMISSION_RELEASE);
+            HttpClient http2Client = vertx.createHttpClient(new HttpClientOptions()
+                    .setProtocolVersion(HttpVersion.HTTP_2).setHttp2ClearTextUpgrade(false));
+            try {
+                HttpClientRequest request = Awaits.connect(http2Client.request(HttpMethod.POST,
+                        relayServer.actualPort(), LoopbackHost.ADDRESS, "/relay"), "the HTTP/2 request to open");
+                CompletableFuture<Throwable> streamEnd = new CompletableFuture<>();
+                request.exceptionHandler(streamEnd::complete);
+                Future<Integer> answered = request.response()
+                        .compose(response -> response.body().map(body -> response.statusCode()));
+
+                Awaits.connect(request.setChunked(true).write(Generators.letterStrings(8, 16).next()),
+                        "the first part of the body to be sent, leaving the body open");
+                int status = Awaits.connect(answered, "the dial-failure answer to arrive whole");
+                Throwable reset = Awaits.connect(streamEnd, "the relay's answer to reset the open stream");
+
+                assertAll("the dial-failure answer to an open HTTP/2 body",
+                        () -> assertEquals(502, status, "an unreachable upstream is answered 502"),
+                        () -> assertEquals(0L, assertInstanceOf(StreamResetException.class, reset).getCode(),
+                                "the stream must be reset with NO_ERROR after the answer"));
+            } finally {
+                Awaits.teardown(http2Client.close(), "the HTTP/2 client to close");
+                Awaits.teardown(relayServer.close(), "the relay-only server to close");
+            }
         }
     }
 

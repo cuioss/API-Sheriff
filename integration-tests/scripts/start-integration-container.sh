@@ -482,7 +482,8 @@ capture_gateway_diagnostics() {
 # this runs the instance has been reported healthy by the runtime, so a non-UP readiness answer is a
 # real defect, and retrying would only delay reporting it. That holds only while Keycloak is ready
 # before the gateways start (see the Keycloak gate above): readiness also waits for each issuer's
-# key set, which the TCP-accept health check cannot see (ADR-0031 records the residual). That is also why the scheme still comes
+# key set, which the TCP-accept health check cannot see (the readiness-gate rules in
+# doc/development/integration-test-topology.adoc record the residual). That is also why the scheme still comes
 # from each service's management-scheme label rather than from its name — the plain-management
 # instance is asserted over http:// with NO -k, and if it ever needs -k the plain-management opt-out
 # has silently stopped working and THAT is the bug, not the probe.

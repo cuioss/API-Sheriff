@@ -86,8 +86,8 @@ before the proxy route table and dispatches a matched reserved path through
 
 `SessionBinding` is the contract; `ServerSessionBinding` implements it over a `SessionStore`. The
 decisions are in
-link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
-and its amendments. The store is hand-written because no platform session mechanism has what the
+link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#updating-write[ADR-0018].
+The store is hand-written because no platform session mechanism has what the
 contract needs (ADR-0062), and the producer builds it, not the container, because a bearer-only
 gateway must not have one.
 
@@ -133,7 +133,9 @@ Three rules follow for code that touches sessions:
   session identity, never on the handle. The handle changes; the identity does not.
 * A request that still carries the previous handle resolves nothing. Answer it as "no session for
   this request" (`TokenRefreshCoordinator`'s `NO_SESSION`, the stage's `RefreshResult.NoSession`)
-  and send *no* clearing cookie: the browser may already hold the re-issued one.
+  and send *no* clearing cookie: the browser may already hold the re-issued one. The same single
+  answer reaches a request that already carries the new handle but was coalesced behind a refresh
+  whose leading request carried the previous one. The next attempt of either succeeds.
 
 === Why every operation is one monitor-guarded method
 
@@ -222,8 +224,18 @@ under a key-set URL the identity provider may hold. The constructor refuses a JW
 private member.
 
 `CLIENT_JWKS` is one of the two kinds matched on every host, and it is registered last, after the
-step-up path, so that boot validation sees a `jwks_path` another key also names as a collision. If you add a reserved kind the identity
-provider dials server-to-server, add it to that set and say why in `match(...)`.
+step-up path, so that boot validation sees a `jwks_path` another key also names as a collision. If
+you add a reserved kind the identity provider dials server-to-server, add it to that set and say why
+in `match(...)`.
+
+`BACKCHANNEL_LOGOUT` is the other kind, and `BffBackchannelLogoutIT` depends on it. The test's
+Keycloak realm names the gateway by its compose service name, while the OIDC host is the public name,
+and the test asserts that an IdP-initiated logout ends the session. With an OIDC-host gate on the
+receiver, the logout token reaches the route table, is answered `404`, and the session survives, and
+neither side logs an error: the IdP records a failed delivery, the gateway an unrouted path. That is
+how the suite's first CI run failed. The IT does not reproduce it, and `ReservedPathRegistryTest`
+pins the exemption with both arms
+(link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#backchannel-host[ADR-0018]).
 
 === The PAR adapter
 
@@ -272,6 +284,154 @@ failure of the read is the `unreadable-access-token` refusal.
 leg, so its re-drive is a pushed request. *No edge code calls it.* The path is proven at unit level
 and is not reachable in a running gateway
 (link:../quality-report/code-correctness.adoc[code-correctness report, BFF-1]).
+
+[[adr-0058-residuals]]
+== The premises behind the FAPI controls
+
+The decisions of
+link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]
+rest on findings and premises about the pinned engine, the JDK and the identity provider. This
+section keeps them, so that a change to any of the three can be checked against them. "Decision N"
+below is the numbered decision of that record.
+
+=== Accepted residuals
+
+Each of the following was read from the sources of the pinned engine, the JDK the build uses and
+the identity provider's documentation, or was a premise no source settled when the decision was
+taken. Each is accepted as a residual. Three have since been observed on the running stack, and
+<<observed-on-the-integration-stack>> holds their verdicts: the native image (entry 3), the key-id
+re-fetch (entry 5) and identity-provider support for client-secret mode (entry 7). The others were
+not observed on a running stack:
+
+* *`EdDSA`.* The engine's client-assertion signer supports the `RS`, `PS` and `ES` families only.
+* *No PAR path in the engine's flows.* Neither `AuthorizationCodeFlow.authorize` nor
+  `StepUpHandler.initiate` pushes. `ParClient` is a free-standing transport, which is why the
+  adapter of decision 11 exists.
+* *Proofs on the token legs only.* The engine's PAR and revocation clients attach no DPoP proof.
+* *The client secret on every authenticated leg.* The engine's `ClientSecretBasicAuth` decorates the
+  pushed request, the token request and the revocation request alike.
+* *A Basic credential and a DPoP proof on one request.* The token and refresh legs take the client
+  authentication and the sender constraint independently, so in client-secret mode both travel on
+  one request.
+* *No tie between the authentication method and the sender constraint.* The engine's
+  `ClientConfiguration` ties no authentication method to the sender constraint.
+* *The engine accepts an unbound token response.* In both modes the engine accepts a token response
+  of type `Bearer` as well as `DPoP`, and it compares neither the token type nor `cnf` with the
+  constraint it sent. This is an engine gap. The gateway closes it itself in decision 19.
+* *The gateway's own validation ignores `cnf`.* The validation pipeline runs DPoP checks only for an
+  issuer that carries a DPoP configuration, and the gateway configures none. The same fact means
+  that the gateway's bearer routes accept a bound token presented without a proof.
+* *Plain HTTP stays refused.* The engine refuses a non-`https` issuer and a non-`https` back-channel
+  endpoint unless its insecure-HTTP flag is set. The gateway never sets it and gains no key that
+  would, in line with ADR-0022.
+* *An omitted `oidc.issuer`.* It resolves to the gateway's own origin for discovery and for the
+  assertion audience alike, which cannot authenticate against any identity provider. This is
+  existing behaviour and is unchanged.
+* *Identity-provider support.* PAR, `private_key_jwt` and DPoP-bound tokens are documented for
+  Keycloak 26.4 and later. The integration realm sets its client attributes explicitly and does not
+  apply Keycloak's FAPI 2.0 client profiles; what those profiles enforce was not established.
+* *Identity-provider support for client-secret mode.* No source settled whether Keycloak accepts a
+  pushed request authenticated with a client secret, or whether it binds the tokens of such a client
+  to the proof key. Both were observed afterwards; entry 7 holds the verdict.
+* *The key-id re-fetch.* Keycloak is documented to cache a client key by `kid` and to fetch again on
+  an unknown one, at most once per ten seconds.
+* *The JDK public-key derivation.* The statement of decision 6 was established by reading the JDK
+  sources, not by execution.
+* *The native image.* That it reaches PEM decoding, the RSA and EC key factories, EC key generation
+  and the signature algorithms was not verified by reading.
+* *No key-file permission check.* The file is read without one. The gateway image runs as its own
+  user and bind mounts differ per platform, so the documentation asks for a restricted mount.
+* *Test fixtures.* The unit-level identity-provider fixture serves TLS from test dependencies that
+  are already declared. If it cannot be made to complete a verified dial with those, that is
+  reported as a finding and no dependency is added.
+
+Not established, and not observable from the stack as designed: whether Keycloak's token endpoint
+ever issues `DPoP-Nonce`; whether Keycloak's FAPI 2.0 client profiles enforce the issuer-only
+audience and the algorithm list; and the status of the JDK's PEM API on the newer JDK of the build
+matrix.
+
+[[observed-on-the-integration-stack]]
+=== Observed on the integration stack
+
+Each entry is a fact that only the running integration stack can show. It is not a decision, and
+it is established here and nowhere else: ADR-0058 decisions 14 and 18 and its first positive
+consequence point back to these entries without adding to them. An entry that the stack has not
+shown stays marked as unobserved and carries no verdict.
+
+. Whether Keycloak accepts the issuer identifier as the client-assertion audience.
+  Observed on Keycloak 26.5.7: it does. The primary gateway instance holds no credential but the
+  assertion, whose `aud` is the realm's issuer identifier as a single string. Its login completes in
+  `BffSessionLoginIT`, so Keycloak accepted that audience at the pushed-authorization-request
+  endpoint and at the token endpoint on the code exchange. The refresh grant of a key-authenticated
+  instance completes in `BffCookieRefreshIT`. Not shown: whether Keycloak refuses any other
+  audience.
+. The realm client settings actually used, and whether the JWKS URL attributes survive a realm
+  import.
+  Observed on Keycloak 26.5.7: they survive. A key-authenticated gateway client is imported with
+  `clientAuthenticatorType: client-jwt` and the attributes `use.jwks.url: true`, `jwks.url`,
+  `token.endpoint.auth.signing.alg: PS256`, `require.pushed.authorization.requests: true` and
+  `dpop.bound.access.tokens: true`, and with no secret and no key. The one secret-authenticated
+  gateway client carries `clientAuthenticatorType: client-secret`, the same two requirements and no
+  key attribute. `BffClientKeyWiringTest` asserts these settings on the committed import, the
+  signing algorithm excepted, and the admin interface of the running Keycloak returns each attribute
+  as it was imported. That they are in effect is shown by `BffSessionLoginIT`: the client key is
+  registered nowhere but at the JWKS URL, so the completed login means that Keycloak fetched it from
+  the gateway over TLS. One setting is not as imported: Keycloak generates and stores a secret for a
+  client that is imported without one. Read from the admin interface and presented at the token
+  endpoint, that stored secret is refused with `invalid_client`; the authenticator type admits a
+  signed assertion only. No test asserts this last observation.
+. Whether the native image reaches PEM decoding, the RSA and EC key factories and the `PS256` and
+  `ES256` signatures with provided keys.
+  Observed on Keycloak 26.5.7, against the native image: it does. The primary instance boots from a
+  provided RSA client-authentication key and a provided EC proof key, and its login completes in
+  `BffSessionLoginIT`. Keycloak therefore verified a `PS256` client assertion and an `ES256` proof,
+  and the gateway accepts no token response that is not bound to its proof key (decision 19). The
+  instance that `BffCookieRefreshIT` drives holds a provided RSA proof key, so its login and its
+  refresh show a `PS256` proof as well.
+. Whether the native image generates an EC key for both purposes when none is configured.
+  Observed on Keycloak 26.5.7, against the native image: it generates a key for each purpose.
+  `BffGeneratedKeysIT` starts a gateway whose descriptor names no key file and which mounts no
+  signing-key file. Its boot log carries the generated-key record once for client authentication and
+  once for the sender constraint, and no member of the published key. The client key it publishes is
+  an EC P-256 key with `use: sig`, `alg: ES256` and a `kid` equal to its RFC 7638 thumbprint. A login
+  completes, so Keycloak verified the client assertion with the key it fetched from the gateway and
+  accepted the proofs of the second key. The type of the proof key is not read directly, because
+  that key is never published. What is shown is that it is a second key: the `cnf.jkt` of the
+  mediated token differs from the published `kid`.
+. Whether Keycloak fetches a replaced client key when it meets the unknown key id.
+  Observed on Keycloak 26.5.7: it does. In `BffGeneratedKeysIT` a restart replaces the generated
+  client key, and the `kid` the gateway publishes after the restart differs from the one before. The
+  session established before the restart is then refreshed, and the gateway authenticates that
+  refresh grant with an assertion signed by the new key. The refresh succeeds. The new key is
+  registered nowhere but at the JWKS URL, so Keycloak fetched it when it met the new `kid`. The
+  refresh is driven no earlier than 22 seconds after the login, which is more than the ten seconds
+  Keycloak is documented to leave between two fetches of a client's key set. Not shown: what
+  Keycloak answers to an unknown `kid` inside that interval.
+. What a key change does to a live session.
+  Observed on Keycloak 26.5.7: the session continues. In `BffGeneratedKeysIT` a restart replaces the
+  client key and the proof key of a gateway under a live session. The next refresh of that session
+  succeeds, and the access token it yields carries a `cnf.jkt` that differs from the one before the
+  restart and from the new client key id. The gateway refuses a token response that is not bound to
+  its own proof key (decision 19), and its log carries the refresh and no refusal, so the new token
+  is bound to the new proof key. A restart with newly generated keys therefore does not end a live
+  session. This is what RFC 9449 section 5 and Keycloak's DPoP guide lead one to expect. Three
+  limits apply:
+* The gateway ran in cookie mode and was given a sealing key, so the session itself survived the
+  restart. The run shows nothing about a session that does not.
+* The binding to the new proof key is shown through the changed `jkt` and the gateway's own check.
+  The test cannot compute the thumbprint of a key that is never published.
+* Only generated keys were replaced. Replacing a provided key file was not run.
+. Whether Keycloak accepts a pushed request authenticated with a client secret, and binds that
+  client's tokens to the proof key.
+  Observed on Keycloak 26.5.7: it does both. `BffClientSecretModeIT` drives the one gateway instance
+  that authenticates with `client_secret_basic`. The login redirect of that instance carries exactly
+  `client_id` and `request_uri`, and the login completes, so Keycloak accepted the pushed request
+  under the client secret. A front-channel request for the same client without `request_uri` is
+  refused. The token of the code exchange and the token of the refresh grant both carry a `cnf.jkt`
+  equal to the RFC 7638 thumbprint of the instance's provided RSA proof key, which the test computes
+  from the key file. The log of the instance carries the refresh and no refused token response. Not
+  observable on the stack: the request itself. That the secret travels as a Basic credential on
+  every leg is asserted at unit level, in `BffRuntimeProducerTest`.
 
 == Build and test
 

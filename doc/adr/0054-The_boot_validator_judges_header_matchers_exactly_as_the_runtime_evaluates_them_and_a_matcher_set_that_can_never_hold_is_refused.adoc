@@ -1,143 +1,205 @@
 = ADR-0054: The boot validator judges header matchers exactly as the runtime evaluates them, and a matcher set that can never hold is refused
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
-// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
-// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
-// relevance without reading the full file. List fields are comma-separated.
-// summary: The boot-time route-disjointness rule and the header-matcher consistency rule reason about match.headers with the runtime's own semantics — names compared after the same Locale.ROOT lower-casing the route compiler applies, never with a look-alike such as equalsIgnoreCase, and presence reasoned as requires/forbids — so every route pair the validator certifies disjoint is disjoint at runtime. A matcher declaring present false together with value, and two matchers of one route that name the same header and cannot both hold, are refused at boot in the all-violations pass instead of shipping a silently dead route.
-// tags: configuration-validation, boot-validation, route-selection, route-disjointness, header-matching, fail-closed, silent-failure, validator-runtime-agreement
+// summary: A match.headers header matcher has one semantics, shared by the runtime and the boot validator. The route compiler lower-cases the configured name under Locale.ROOT exactly once at boot, so the per-request test is a plain lookup in the lower-case-keyed request-header map, while the config model keeps the operator's spelling; the matcher's fields compose with AND (present true requires the header, present false forbids it, value requires that exact case-sensitive value), and Vary announces the normalised names. The boot validator compares names with that same function and reasons about presence as requires/forbids, so every route pair it certifies disjoint is disjoint at runtime; a matcher declaring present false together with value, and two matchers of one route that name the same header and cannot both hold, are boot refusals in the all-violations pass
+// tags: routing, route-selection, header-matching, normalisation, boot-compilation, configuration-validation, boot-validation, route-disjointness, fail-closed, silent-failure, validator-runtime-agreement, vary, rfc9110
 // affects: api-sheriff
 // supersedes:
 // end-adr-metadata
 
 == Status
 
-Proposed
-
-== Context
-
-The configuration validator certifies, at boot, that routes sharing a path cannot both claim the
-same request: two same-prefix routes are accepted only when some match dimension — method, host or
-a header matcher — makes them disjoint. That certificate is what makes route precedence independent
-of declaration order. It is only worth something if the validator and the runtime agree on what a
-matcher *means*. When they disagree, the failure is silent in the worst direction: the validator
-accepts a pair as disjoint, the runtime lets both routes match, and the first one in table order
-takes the traffic — possibly with a weaker auth posture.
-
-Two independent ways for the two sides to drift exist for header matchers.
-
-*Name comparison.* The runtime normalises a matcher name by one function (lower-casing under
-`Locale.ROOT`, applied once at route compilation) and looks it up in a map keyed by the same
-function. A validator that compares names with a different but similar-looking function — such as a
-per-character case-insensitive equality — agrees with the runtime on every ASCII name and disagrees
-outside ASCII. A name spelled with `U+0130` (capital I with dot above) and its plain-`I` twin are
-equal under per-character case-insensitive comparison, yet lower-case under `Locale.ROOT` to two
-different strings, so the runtime reads two different headers where the validator saw one. Every such
-mismatch is a pair of routes judged on a different basis from the one that will select between them.
-
-*Presence reasoning.* A matcher can require a header (`present: true`, or any `value`), forbid it
-(`present: false`), or both. Disjointness and satisfiability both follow from that lattice, and a
-validator that reasons about `present` and `value` as independent flags gets the corner cases wrong:
-a `value` matcher against a `present: false` matcher is genuinely disjoint, while a single matcher
-declaring `present: false` together with `value` can never match anything.
-
-A matcher set that can never hold is itself a silent failure. Its route loads, appears in the boot
-log, and receives no traffic; the operator learns of it only by noticing requests landing elsewhere.
+Accepted
 
 == Decision
 
-*The validator reasons about `match.headers` with the runtime's own semantics, and a route whose
-header matchers can never hold together is refused at boot.*
+A route can narrow route selection on request headers through `match.headers`. Each header matcher
+names a header and may declare `present` (`true` or `false`) and an exact `value`. Route selection is
+first-match over a route table sorted by path specificity. A header matcher is what lets two routes
+share one path prefix and still receive different requests. The canonical shape is a pair: one route
+requires a header, the other forbids it.
 
-* *Same normalisation.* Every validator comparison of two header-matcher names applies the same
-  normalisation the route compiler applies — lower-casing under `Locale.ROOT` — and compares the
-  results for equality. A look-alike comparison is not used even where it agrees on ASCII.
-* *Requires / forbids.* A matcher *requires* its header when it declares a `value` or
-  `present: true`, and *forbids* it when it declares `present: false`. Two same-name matchers on
-  different routes are disjoint when their values differ or one requires what the other forbids.
-  `value` against `present: false` is disjoint; `value` against `present: true`, `present: true`
-  against `present: true`, and `present: false` against `present: false` still collide.
-* *Unsatisfiable matcher sets are refused.* A single matcher declaring `present: false` together with
-  `value` is a configuration error. So are two matchers of one route that name the same header and
-  cannot both hold — two differing values, or one requiring what the other forbids — because every
-  matcher of a route must hold. `present: true` together with `value` stays valid (redundant but
-  consistent).
-* *All-violations pass.* The refusal is a rule in the validator's single aggregating pass: every
-  violation is reported with its file, pointer, route id and header name, and none fails fast.
+The configuration validator certifies at boot that routes sharing a path cannot both claim the same
+request. Two same-prefix routes are accepted only when a match dimension (method, host or a header
+matcher) makes them disjoint. That certificate makes route precedence independent of declaration
+order. Route selection decides which auth posture, security filter and upstream a request reaches, so
+every failure below sits on the security-relevant path.
+
+Header matchers can fail silently in three ways.
+
+* *Name comparison.* HTTP field names are case-insensitive (RFC 9110 §5.1), and HTTP/2 and HTTP/3
+  carry them lower-case. The request side keys its header map by the lower-cased name. An operator
+  writes the configured side in any spelling: `Authorization`, `X-Tenant`. If the two sides are
+  compared in different spellings, a matcher never finds its header, and a route that looks correct
+  never matches.
+* *Field composition.* A matcher carries up to three constraints. Evaluated as alternatives (test the
+  value, otherwise test presence), one field shadows another. `present: false`, evaluated only on the
+  positive branch, constrains nothing. A "header absent" route then matches every request, and
+  whichever member of a present/absent pair sorts first takes the other's traffic.
+* *Validator and runtime disagree.* If the validator reads a matcher differently from the runtime, it
+  certifies a pair as disjoint that the runtime lets both match. The first route in table order then
+  takes the traffic, possibly with a weaker auth posture. Two drifts are possible. A validator that
+  compares names with a look-alike, such as per-character case-insensitive equality, agrees on every
+  ASCII name and disagrees outside ASCII. And a validator that reasons about `present` and `value` as
+  independent flags gets the corner cases wrong.
+
+A matcher set that can never hold is a silent failure too. Its route loads, appears in the boot log
+and receives no traffic.
+
+*A header matcher has one semantics, and the runtime defines it. The route compiler normalises a
+configured name exactly once, at boot, and every field a matcher declares must hold. The boot
+validator judges matchers with that same semantics, and the boot refuses a route whose header
+matchers can never hold together.*
+
+=== The runtime semantics
+
+* *One normalisation site.* The route compiler (`RouteMatcher.from`) copies every configured matcher
+  with its `name` lower-cased under `Locale.ROOT`, and keeps `present` and `value` unchanged. Every
+  runtime consumer of a route's `match` block goes through that seam, once per route at boot. The
+  per-request test is a plain lookup in the lower-case-keyed map the request carries
+  (`PipelineRequest#singleValueHeaders`). Nothing is lower-cased per request.
+* *The config model keeps the operator's spelling.* `MatchConfig.HeaderMatcher` binds the name
+  verbatim, so boot diagnostics quote exactly what was written.
+* *AND composition, with no precedence between fields.* `present: false` fails when the header is
+  present. `value` fails unless the header carries exactly that value. `present: true` fails when the
+  header is absent. The matchers of one route also compose with AND, so the matcher set is a
+  conjunction all the way down.
+* *Values stay case-sensitive.* A header value is opaque. The runtime compares it with exact string
+  equality (`RouteMatcher.headersMatch`).
+* *`Vary` announces the normalised names.* The names route selection depends on come from the
+  compiled matchers. `Vary` carries the lower-case name, and two matchers whose names normalise to the
+  same string announce it once.
+
+=== The boot validator uses the same semantics
+
+`RouteMatchingRules` holds the rules below.
+
+* *Same normalisation.* Every validator comparison of two matcher names applies the route compiler's
+  function, lower-casing under `Locale.ROOT`, and compares the results for equality. A look-alike is
+  not used, even where it agrees on ASCII.
+* *Requires and forbids.* A matcher requires its header when it declares a `value` or
+  `present: true`. It forbids the header when it declares `present: false`. Two same-name matchers on
+  different routes are disjoint when their values differ, or when one requires what the other
+  forbids. `value` against `present: false` is disjoint. `value` against `present: true`,
+  `present: true` against `present: true`, and `present: false` against `present: false` collide.
+* *Unsatisfiable matcher sets are boot refusals.* A single matcher that declares `present: false`
+  together with `value` is a configuration error. So are two matchers of one route that name the same
+  header and cannot both hold: two differing values, or one requiring what the other forbids. Every
+  matcher of a route must hold. `present: true` together with `value` stays valid: redundant, but
+  consistent.
+* *All-violations pass.* The refusal is a rule in the validator's single aggregating pass. Each
+  violation names its file, pointer, route id and header name. None fails fast.
+
+*The rule behind both halves.* When a boot-time check certifies a property of runtime behaviour, the
+check evaluates the function the runtime evaluates, not a specification-equivalent one. "Equivalent
+on the inputs we expect" is where the certificate and the behaviour quietly part. If an input exists
+on which the check and the runtime answer differently, the runtime is the truth, so the check is built
+from it.
+
+The operator-facing `match.headers` contract and route ordering are in
+link:../user/endpoint-routes.adoc[Endpoint routes].
+
+== Alternatives rejected
+
+*Normalise the name when the config model binds.* The binding record would lower-case `name` in its
+constructor, so every consumer of the model sees the canonical form. Rejected because the model is the
+operator's record of what was written. Every validator message would quote a spelling the operator
+never typed, and the model would stop being a faithful projection of the file. Normalisation is a
+runtime concern of the matcher, and the compile seam is where runtime forms are built.
+
+*Compare case-insensitively on every request.* Keep the configured spelling and look the header up
+with a case-insensitive comparison, or a case-insensitive map, per request. Rejected because it moves a
+boot-time constant into the hot path. It also adds a second comparison semantics beside the
+lower-case-keyed map the request already carries, which is exactly the divergence this decision
+removes.
+
+*Keep precedence between fields: value first, presence otherwise.* Evaluate `value`, and fall back to
+`present` only when no value is declared. Rejected because one declared constraint then silently voids
+another. A matcher is a conjunction of what the operator wrote. Any precedence rule turns part of the
+declaration into dead text.
+
+*Treat `present: false` as "unconstrained".* Read `present` as an opt-in presence check whose negative
+value means "do not check". Rejected because the documented contract has always described
+`present: true` and `present: false` as mutually exclusive. The boot disjointness check already treated
+a present/absent pair as disjoint. And a negative value that means nothing is the silent-failure class
+a security gateway must not carry.
+
+*Compare names in the validator with per-character case-insensitive equality.* This reads as the
+natural way to say "header names are case-insensitive". Rejected because it is a different function
+from the one the runtime applies. The validator's job is to predict the runtime, not to restate the
+HTTP specification. Any divergence, however exotic the input, is a case where the certificate is
+issued on the wrong basis.
+
+*Accept an unsatisfiable matcher and let its route be dead.* Treat `present: false` with `value`, or
+two contradictory matchers on one route, as the operator's problem: the route simply never matches.
+Rejected because this is the silent-failure class the matcher semantics exist to remove. On a security
+gateway, a route that never matches means its requests reach a different route with a different
+posture.
+
+*Warn instead of refusing.* Boot with a WARN that names the dead route. Rejected because an
+unsatisfiable matcher has no legitimate reading. Unlike a broad but deliberate setting, no deployment
+intends it, so a warning only delays the discovery the refusal forces.
+
+*Let the runtime resolve overlaps by declaration order.* Drop the disjointness certificate and document
+that the first declared route wins. Rejected because the effective routing then depends on file layout
+and declaration order across endpoint files. Operators cannot see that at a glance and reviewers
+cannot check it. The route model promises the opposite.
 
 == Consequences
 
-=== Positive
+*Positive.*
 
-* Every route pair the validator accepts as header-disjoint is disjoint at runtime, so the boot
-  certificate and the traffic agree, and precedence never depends on declaration order.
-* A present/absent pair on one header — the canonical header discriminator — is accepted in every
-  combination the runtime can actually tell apart, including `value` against `present: false`.
-* A dead route is a refused boot with a message naming the route and the header, not a quiet gap in
+* A header-discriminated route pair selects the same route in whatever order it is declared. Every
+  pair the validator accepts as header-disjoint is disjoint at runtime, so the boot certificate and the
+  traffic agree.
+* A present/absent pair on one header is accepted in every combination the runtime can tell apart,
+  `value` against `present: false` included.
+* The request path does no case conversion and has no second comparison semantics. The normalisation
+  cost is paid once per route at boot.
+* Operators see their own spelling in every boot diagnostic, while the runtime works on one canonical
+  form.
+* A dead route is a boot refusal with a message naming the route and the header, not a quiet gap in
   routing.
 
-=== Negative
+*Negative.*
 
-* A configuration that previously booted with a contradictory matcher now fails to boot. That is the
-  intended fail-closed outcome; the fix is to drop `value` or declare `present: true`, or to remove
-  the contradicting sibling matcher.
+* A `present: false` route that used to match requests carrying its header no longer does. This is the
+  corrected contract, not a regression, but deployments that relied on the old behaviour change
+  routing.
+* A configuration that used to boot with a contradictory matcher now fails to boot. The fix is to drop
+  `value`, to declare `present: true`, or to remove the contradicting sibling matcher.
+* `Vary` no longer echoes the declared spelling. Field names are case-insensitive, so caches are
+  unaffected, but a human reading the response sees another spelling than the configuration.
 
-=== Risks
+*Accepted failure modes.*
 
-* The agreement is maintained by construction at two sites (route compiler and validator) using the
-  same function, not by a shared helper type. A future change to the runtime normalisation must be
-  mirrored in the validator; the validator's tests pin the non-ASCII cases where a look-alike
-  comparison would diverge, so a drift turns a test red rather than passing silently.
+* *`Locale.ROOT` lower-casing is case-insensitive matching only for ASCII names.* Outside ASCII it is
+  not per-character case folding. `U+0130` (capital I with dot above) and its plain-`I` twin lower-case
+  to different names. `U+212A` (Kelvin sign) lower-cases to ASCII `k`. RFC 9110 field names are tokens
+  and therefore ASCII, but a configured matcher name is not restricted to ASCII. So a configured name
+  containing `U+212A` matches a conforming request that carries a header named `k`. The validator
+  applies the same function, so validator and runtime agree on such a name. It is a documented property
+  of the normalisation, not a divergence.
 
-== Alternatives Considered
+*Constraints on later change.*
 
-=== Compare names with per-character case-insensitive equality in the validator
+* The agreement is kept by construction at two sites, the route compiler and the validator, using the
+  same function, not a shared helper type. A change to the runtime normalisation must be mirrored in the
+  validator. The validator's tests pin the non-ASCII cases where a look-alike would diverge, so a drift
+  turns a test red instead of passing silently.
+* Any other comparison of matcher names must use this same function, not a look-alike.
 
-This reads as the natural way to say "header names are case-insensitive". *Rejected because* it is a
-different function from the one the runtime applies, and the validator's job is to predict the
-runtime, not to restate the HTTP specification. Any divergence — however exotic the input — is a
-case where the certificate is issued on the wrong basis.
+== Links
 
-=== Accept an unsatisfiable matcher and let it be dead
-
-Treat `present: false` + `value`, or two contradictory matchers on one route, as the operator's
-problem: the route simply never matches. *Rejected because* this is precisely the silent-failure
-class the matcher semantics exist to remove, and on a security gateway a route that never matches
-means requests reach a different route with a different posture.
-
-=== Warn instead of refusing
-
-Boot with a WARN naming the dead route. *Rejected because* an unsatisfiable matcher has no legitimate
-reading — unlike a broad-but-deliberate setting, there is no deployment for which it is the intended
-behaviour — so a warning only delays the discovery the refusal forces.
-
-=== Let the runtime resolve overlaps by declaration order
-
-Drop the disjointness certificate and document that the first declared route wins. *Rejected because*
-it makes the effective routing a function of file layout and declaration order across endpoint
-files, which operators cannot see at a glance and reviewers cannot check; the route model promises
-the opposite.
-
-== Generalisation
-
-When a boot-time check certifies a property of runtime behaviour, the check must evaluate the same
-function the runtime evaluates, not a specification-equivalent one. "Equivalent on the inputs we
-expect" is where the certificate and the behaviour quietly part. The diagnostic question is: *if an
-input exists on which the check and the runtime answer differently, which one is the truth?* — and
-the answer must always be the runtime, so the check has to be built from it.
-
-== References
-
-* link:0056-A_header_matchers_name_is_normalised_once_at_the_route-compile_seam_and_its_fields_compose_with_AND.adoc[ADR-0056] — the runtime header-matcher semantics this validator mirrors
-* link:0007-anchor-scoped-policy.adoc[ADR-0007] — the other boot-time route-table invariants
-* link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026]
-  — the sibling principle that stages reasoning about the same input must not silently disagree
-* link:0028-Operator_content-type_mappings_extend_the_built-in_asset_map_add-only_and_a_colliding_entry_is_refused_at_boot.adoc[ADR-0028]
-  — refuse at boot rather than silently honour or ignore
-* link:../user/endpoint-routes.adoc[Endpoint routes] — "Route ordering" and the disjointness rule
-* link:../configuration.adoc[Configuration Model] — boot validation of `match.headers`
-* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/RouteMatchingRules.java` — the
-  disjointness and header-matcher consistency rules
+* link:0007-anchor-scoped-policy.adoc[ADR-0007 -- Anchor-scoped policy] -- route membership, namespace rules and the other boot-time route-table invariants.
+* link:0014-asset-serving-terminal-action.adoc[ADR-0014 -- Asset serving] -- the route model's terminal actions and exact routes.
+* link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- A security bound is re-asserted at every later stage] -- the sibling principle that stages reasoning about the same input must not silently disagree.
+* link:0028-Operator_content-type_mappings_extend_the_built-in_asset_map_add-only_and_a_colliding_entry_is_refused_at_boot.adoc[ADR-0028 -- Operator content-type mappings] -- the same refuse-at-boot stance against silently honouring or ignoring a configuration.
+* link:../user/endpoint-routes.adoc[Endpoint routes] -- the operator-facing `match.headers` contract, route ordering and the disjointness rule.
+* link:../configuration.adoc[Configuration Reference] -- the field-level `match.headers` contract and its boot validation.
+* `RouteMatcher`, `MatchConfig`, `RouteMatchingRules` -- the implementation; `RouteMatchingRulesTest`, `RouteTest` -- the tests.

@@ -26,6 +26,11 @@ to *run* the finished gateway).
   component stays only with a recorded reason. The ADR lists the components that stay and why, and
   defines the one package rule still enforced, the pre-boot gate.
 
+| link:adr-writing.adoc[Writing an Architecture Decision Record]
+| What belongs in `doc/adr/` and what is developer documentation -- the keep / relocate / delete
+  rubric, the meta-block definition and the 500-line body ceiling `AdrRecordLengthContractTest`
+  enforces, the four-section skeleton, the writing rule and the term list a record uses.
+
 | link:sonar-quality-gate.adoc[SonarCloud Quality Gate -- Compliance Policy]
 | The rules around the authoritative, blocking SonarCloud gate -- zero new findings, never
   merging over a red or stale-green gate, PR-new-code vs post-merge project-gate auditability,
@@ -37,8 +42,9 @@ to *run* the finished gateway).
   reversion -- the three consequences a contributor acts on (verify by surviving the gate,
   attribute a dirty tree before reverting it, never hand-edit formatter-owned formatting), the
   revert rule with the objection to it and the standing fixed-point debt, the recipe-scoping trap,
-  the non-gating `rewrite-report` job that reports all of it, the incremental-build rule, and the
-  recorded discard of the fully-qualified-refspec fix.
+  the non-gating `rewrite-report` job that reports all of it, the incremental-build rule, the
+  Quarkus platform BOM import-order rule with the alternatives it rejects, and the recorded discard
+  of the fully-qualified-refspec fix.
 
 | link:local-test-environment-caveats.adoc[Local Test-Environment Caveats -- Loopback Port Collisions
   on the Workstation]
@@ -101,7 +107,9 @@ to *run* the finished gateway).
 | The shape of the stack `integration-tests` brings up -- the gateway instances and their
   published ports, the SNI front listener's L4 relay to the passthrough backend, the mounted
   certificate and configuration material, and the two trust boundaries -- drawn from
-  `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources.
+  `docker-compose.yml` and the mounted `gateway.yaml`, which stay the authoritative sources. It also
+  carries the host-port rule for the containers a test starts itself, with the shapes it rejects, and
+  the readiness contract with the rules every host-side readiness gate follows.
 
 | link:context-path-verification.adoc[Context Path -- Verification Runbook]
 | The six-case procedure that proves the context-path seam, with the responses observed rather than
@@ -165,8 +173,8 @@ to *run* the finished gateway).
   container health check, then a bounded readiness poll beneath the derived management
   context path (link:../user/context-path.adoc[The Context Path]) -- deriving its entire probe
   target from the resolved Compose model under
-  link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031],
-  and where its two bounds come from; and the opt-in `skipComposeSample` / `compose-sample`
+  link:integration-test-topology.adoc#readiness-gate-rules[the rules every host-side readiness gate
+  follows], and where its two bounds come from; and the opt-in `skipComposeSample` / `compose-sample`
   build mechanism that keeps the whole thing out of the default lane.
 |===
 

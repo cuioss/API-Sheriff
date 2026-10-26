@@ -124,7 +124,8 @@ subdirectories, are ignored.
 [[_distributed_configuration]]
 === Configuration Mode -- Static Only (initial scope)
 
-*API Sheriff supports only Static mode initially* -- see link:adr/0002-initial-scope.adoc[ADR-0002].
+*API Sheriff supports only Static mode initially* -- see
+link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial Scope].
 The manifest's dynamic `/api/gateway-config.json` discovery is deferred; `metadata.config_version`
 is retained now only as an audit stamp.
 
@@ -1676,7 +1677,8 @@ declaration, and that stack's BFF login suites exercise the leg through it.
 === `protocol`
 
 Each route declares the protocol it serves: `http` (the default), `graphql`, `grpc`, or
-`websocket`. All four are supported *from the start* (link:adr/0002-initial-scope.adoc[ADR-0002]);
+`websocket`. All four are supported *from the start*
+(link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial Scope]);
 HTTP/3 is deferred. The value selects handshake/streaming behaviour only (WebSocket upgrade,
 gRPC streaming); the semantics of each protocol -- and what the security filter does and does
 not inspect -- are defined once in
@@ -3690,7 +3692,9 @@ reaches an upstream *only as the route's link:#_cookies[`cookies`] policy admits
 gateway's own cookies *never*: every cookie under the reserved `+__Host-sheriff-+` prefix, the
 configured `oidc.session.cookie_name` and its `-activity` sibling -- in both session modes, since an
 activity cookie issued before a switch from cookie to server mode stays live until it expires -- are
-dropped under every policy and every mode. Stage 5 rebuilds the header from the pairs that remain,
+dropped under every policy and every mode. A cookie name is read the way a user agent reads it: the
+`+__Host-+` and `+__Secure-+` prefixes compare without regard to case, so a respelled prefix does not
+take a gateway cookie past the drop. Stage 5 rebuilds the header from the pairs that remain,
 so the upstream receives at most the application cookies the route names. Under the default
 `allow: none` no `Cookie` reaches the upstream at all. A `forward.headers_allow`,
 `forward.headers_deny` or `forward.set_headers` entry naming `Cookie` is refused at boot: the
@@ -4253,7 +4257,8 @@ and no `429` is ever produced.
 
 `config_version` is an audit stamp only -- logged at boot, exposed for operational
 traceability, no runtime behaviour. Retained so the model need not change if dynamic
-discovery is added later (link:adr/0002-initial-scope.adoc[ADR-0002]).
+discovery is added later (link:features-analysis.adoc#_initial_scope[Feature Analysis -- Initial
+Scope]).
 
 [[_security_headers]]
 === `security_headers`

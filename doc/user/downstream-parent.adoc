@@ -284,7 +284,9 @@ Two artefacts in this repository publish the management context path to the *hos
 is something a consumer inherits:
 
 * the `de.cuioss.sheriff.management-root-path` Compose label, which this repository's bring-up gates
-  read so that a probe URL is derived rather than restated (ADR-0031); and
+  read so that a probe URL is derived rather than restated (see
+  link:../development/integration-test-topology.adoc#readiness-gate-rules[the readiness-gate
+  rules]); and
 * `integration-tests/prometheus.yml`'s `metrics_path`, which is the one deliberate literal in that
   tree -- Prometheus interpolates no environment variables into a scrape config, so nothing can
   derive it.

@@ -63,7 +63,8 @@ services:
     # `!override` and not `!reset`, deliberately. `!reset` removes the key outright, which would drop
     # the base's LOOPBACK MANAGEMENT publication (127.0.0.1:9000:9000) along with the public 8443 —
     # and that management publication is exactly what scripts/start-sample.sh derives its readiness
-    # probe from (ADR-0031: the host port published against container port 9000). Resetting the list
+    # probe from (the host port published against container port 9000, per the readiness-gate rules
+    # in doc/development/integration-test-topology.adoc). Resetting the list
     # would leave the readiness gate with no target and fail discovery outright. `!override` replaces
     # the list with precisely the entries this variant wants: management stays, 8443 goes.
     #

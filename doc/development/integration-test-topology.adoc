@@ -502,8 +502,8 @@ the native image, in this order:
 The last line is the restart verdict: a restart with newly generated keys does not end a live
 session. The failure message of the test names the other possible verdict -- the refresh is refused
 and the session ends through `oidc.session.refresh.on_failure` -- so a Keycloak upgrade that changes
-the behaviour turns the test red. The decision record states the limits of this observation
-(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc#observed-on-the-integration-stack[ADR-0058: Observed on the integration stack]).
+the behaviour turns the test red. The contributor guide states the limits of this observation
+(link:bff-session.adoc#observed-on-the-integration-stack[Server-Session BFF -- Observed on the integration stack]).
 
 [#test-started-host-ports]
 === The test-started containers and their host ports
@@ -589,9 +589,11 @@ column against the derivation. The suite still reads the published management po
 before it polls readiness. The application port of a BFF has to be known before the container exists,
 because the descriptor names the gateway's own origin and is read at boot. The two bearer-only suites
 have no such constraint and take a fixed port for the reason the next paragraphs give. The cost of
-the form is that a test's gateway is reachable from the network the host is on while the test runs,
-as the Compose gateways are. The decision and that accepted cost are recorded in
-link:../adr/0065-Test-started_gateways_publish_the_application_port_on_every_interface_at_a_fixed_port_and_the_management_port_on_loopback.adoc[ADR-0065].
+the form is accepted: while a test runs, its gateway is reachable from the network the host is on,
+at a fixed port, as the Compose gateways are. It carries only committed test material --
+descriptors, certificates and signing keys that exist for the tests and protect nothing -- and it
+lives only as long as the test that started it. The shapes rejected for it are listed under
+<<test-started-rejected-shapes>>.
 
 *Why the management port is fixed as well.* The management interface used to be published as
 `127.0.0.1::9000`, on a loopback port docker assigned. In a full integration run on Rancher Desktop
@@ -657,6 +659,34 @@ ports docker assigned. By the measurement above each such gateway left its two n
 lie in the range docker assigns from and are not recorded, which is why no test-started container
 takes a port docker assigns on every interface, and why no test-started gateway takes one on loopback
 either.
+
+[#test-started-rejected-shapes]
+*The shapes rejected, and what stays open.* Four other ways to publish these containers were
+considered:
+
+* *Both ports on loopback.* It would keep a test gateway off the host's network entirely. It is
+  exactly the first dead-port shape above. On Rancher Desktop under WSL 2, the one host and runtime
+  that shape was measured on, every container removed leaves both of its numbers dead, so the harness would use up host port numbers faster than any allocation could hand them out, and a
+  dead number fails a run in a way that reads as a gateway defect.
+* *The gateways as Compose instances.* A Compose service is reached the same way and needs no
+  harness. It cannot carry what these gateways exist for. The stack's readiness gate refuses an
+  instance that is `DOWN` by design. A restart under a live session takes every other suite's
+  sessions on that instance with it. A route under an anchor of its own would force that anchor into
+  every gateway document. Each of these properties belongs to one test and has to end with it.
+* *An application port docker assigns.* A BFF's descriptor names its own origin and is read at boot,
+  so the port must be known before the container exists. The bearer-only gateways keep the same fixed
+  form, so every test-started gateway publishes alike.
+* *A management port docker assigns.* This was the first form, and it was rejected after the
+  refused-connection run recorded above. A management port derived from the application port costs no
+  allocation of its own.
+
+Three questions stay open. The dead-port defect was observed on one host and one runtime, so the rule
+may be stricter than another host needs. A fixed port in this range can collide with a Compose
+instance added later: the table above allocates this range and `docker-compose.yml` allocates its
+own, and the derived management ports (`19459` and up) lie above the Compose stack's management ports
+(`19000` to `19011`). And which property of the docker-assigned management number refused the
+connection was not established; fixing the number removes the assignment from the path, but does not
+explain the refusal.
 
 [#stub-idp-rig]
 === The stub identity-provider rig
@@ -1143,6 +1173,7 @@ The consequence reaches past this stack. Everything that consumes the container'
 reader who takes a healthy container for a ready one has drawn a conclusion the signal does not
 support.
 
+[#readiness-bound-origin]
 === Where the bound came from
 
 There is no host-side retry budget left to derive. Layer 1 does the waiting, and the only number this
@@ -1191,10 +1222,11 @@ fetch against an already-ready Keycloak. It is not re-measured here and no figur
 What keeps layer 2's single shot sound is the ordering rather than a zero delta: Keycloak is ready
 before any gateway starts, and the baked health check first reports healthy only after its
 `--interval` of ten seconds, which a fetch against a ready IdP -- or a first fetch that failed and was
-retried on the one-second-doubling backoff -- does not approach. A stack that broke that ordering
-would need a bounded readiness *wait* in layer 2 rather than a single shot
-(link:../adr/0031-Host-side_readiness_gates_derive_the_probe_URL_from_the_resolved_Compose_model_and_assert_readiness.adoc[ADR-0031]
-records the residual).
+retried on the one-second-doubling backoff -- does not approach. The single shot still races the
+key-set fetch; the stack, not the probe, bounds that race. A stack that starts a gateway before
+its identity provider is serving, or that shortens the health check's `--interval`, turns a key set
+that is merely late into a spurious layer-2 failure. Such a stack needs a bounded readiness *wait* in
+layer 2 rather than a single shot (see <<readiness-gate-rules>>).
 
 *The bound is `--wait-timeout 180`, and the image's `--start-period` is 20s -- both retained on that
 evidence.* The headroom is stated as a factor against the worst observed figure: the worst
@@ -1211,8 +1243,9 @@ no bound at all.
 The operator sample's `deployment/compose-sample/scripts/start-sample.sh` derives its own
 `--wait-timeout 120` from this same measurement; it brings up one gateway instance rather than the
 whole set, which is why the two differ. The sample also carries a derived readiness poll budget, and
-ADR-0031 records the residual duplication rather than claiming it away.
+<<readiness-gate-rules>> records the residual duplication rather than claiming it away.
 
+[#demo-bring-up]
 === The demo bring-up does *not* gate this way
 
 Everything above describes `integration-tests/scripts/start-integration-container.sh`. The parallel
@@ -1224,9 +1257,10 @@ document names, so the *shape* of the derivation is shared even though the *laye
 
 The two scripts therefore agree on *what is finally asserted* -- the readiness endpoint beneath the
 derived management root path, failing closed on a 4xx or 5xx answer -- and differ on *where the
-waiting happens*. The measured evidence above justifies both. ADR-0031 records that split in its scope note, which is why its `affects: demo-client` metadata
-remains correct.
+waiting happens*. The measured evidence above justifies both. <<readiness-gate-rules>> records the
+split, including where the demo script's Keycloak gate departs from the named-constant rule.
 
+[#plain-mgmt-plain-http]
 === `-plain-mgmt` serves plain HTTP by design
 
 `api-sheriff-plain-mgmt` is the one instance whose management interface is plain HTTP. That is the
@@ -1247,6 +1281,78 @@ only to the assertion behind it.
 The corollary is a standing assertion: this instance must be probed over `http://` with *no* `-k`.
 If it ever needs `-k`, the plain-HTTP opt-out has silently stopped working, and that is the bug --
 not the probe.
+
+[#readiness-gate-rules]
+=== The rules every host-side readiness gate follows
+
+Three bring-up scripts gate a stack before it is driven: `start-integration-container.sh` here,
+`deployment/compose-sample/scripts/start-sample.sh` for the operator sample (see
+link:compose-sample.adoc[the Compose sample guide]) and `demo-client/scripts/start-dev-environment.sh`.
+A gate built carelessly fails quietly in two ways: it waits on the wrong signal, or it restates a fact
+the Compose model owns. The rules below close both. Each script is bound by them, with the one
+departure the named-constant rule records.
+
+* *Gate on readiness, not liveness, and fail closed.* The final assertion hits the readiness
+  endpoint, and the HTTP client treats an error status (`4xx` or `5xx`) as a failure (`curl -f`; a
+  `3xx` is not followed and does not fail). A service that answers "not ready" while it starts
+  therefore does not clear the gate when its port accepts.
+  Delegating the *waiting* to the image's health check changes where the waiting happens, never what
+  is finally asserted.
+* *Derive the whole probe target from the resolved Compose model.* The service set, each service's
+  published management port, the scheme its management interface speaks and its management root path
+  come from `docker compose config`. The scheme and the root path come from the
+  `de.cuioss.sheriff.management-scheme` and `de.cuioss.sheriff.management-root-path` labels, never
+  from a name or a port number. No published host port, scheme or root path is restated in a script,
+  so adding, removing or renumbering an instance needs no script edit. Two literals stay, and both
+  deliberately. The host is `localhost`: the probe runs on the Docker host, and the management
+  interfaces serve a certificate issued for `localhost`, so there is nothing to derive. The
+  container-side management port `9000` is the selector that picks the management binding out of a
+  service's port list. It is a stable platform contract, not a per-instance fact.
+* *A per-instance exception is data, not a branch.* An instance whose management interface serves
+  plain HTTP by design is probed over plain HTTP because its label says so (<<plain-mgmt-plain-http>>).
+  The exception costs one label, not one special case in the prober.
+* *Delegate the waiting to the image's health check where there is one; the host keeps a bound.*
+  `compose up --wait` blocks on the `HEALTHCHECK` baked into the image, so its cadence is declared
+  once, in `Dockerfile.native`. A Compose `healthcheck:` key does not extend that declaration, it
+  *replaces* it. A copy is therefore a mirror to keep in step and never a second authority, and the
+  operator sample's copy names the Dockerfile as its authority in-line. The host keeps a
+  `--wait-timeout` bound sized from a recorded measurement (<<readiness-bound-origin>>).
+* *Assert once, or wait a bounded time, as the stack decides.* Where the stack orders every gateway
+  behind its identity provider's readiness, as this one does, the assertion is a single shot and a
+  non-`UP` answer is a defect. Where it does not -- the operator sample orders its gateway only behind
+  an accept-level Keycloak check -- the assertion becomes a bounded readiness *wait* with a budget of
+  recorded origin. A bound never widens what counts as ready. No budget turns a key set that can
+  never load into a ready gateway: an issuer whose JWKS the gateway cannot fetch or cannot trust
+  needs its trust fixed, not a longer wait.
+* *A wait that still polls takes its attempt count from one named constant, with one recorded
+  departure.* Some waits have no baked health check to delegate to: this stack's Keycloak and backend
+  gates, the operator sample's readiness wait and demo-client's waits. `KEYCLOAK_WAIT_ATTEMPTS` and
+  `BACKEND_WAIT_ATTEMPTS` in `start-integration-container.sh`, both handed to its one `wait_for_url`
+  helper, `READY_ATTEMPTS` in `start-sample.sh` and `GATEWAY_READY_ATTEMPTS` in
+  `start-dev-environment.sh` are each declared once in their script, and the count is never restated
+  as a literal in the loop bound, the exhaustion check and the progress message, where the copies
+  could be re-tuned apart. The departure is the Keycloak gate of `start-dev-environment.sh`: it
+  restates its 120-attempt budget as literals in the loop range, the exhaustion check and the
+  progress message.
+
+*The shapes the rules reject.* Each keeps in the gate a fact the model already owns, or a number
+whose origin cannot be reconstructed:
+
+* *Gating on liveness and accepting the window.* The window is exactly where a suite's first request
+  lands, and the failures are then blamed on the tests rather than on the gate.
+* *A hardcoded probe URL, corrected when it drifts.* The drift is silent in the dangerous direction:
+  the gate keeps passing against a stale endpoint, and the model change that caused it is elsewhere.
+* *A branch on the service name for the plain-HTTP instance.* It moves a property of the service into
+  the prober, so every future exception costs another branch.
+* *A neighbouring wait's retry budget, or one sized from an uncontended local run.* A budget without
+  a derivation cannot be told apart from a guess, and a fast local run measures the wrong machine:
+  the budget has to survive a loaded CI runner.
+
+*The residual duplication.* `start-integration-container.sh` and `start-sample.sh` derive from their
+models independently, so the derivation logic and the `--wait-timeout` constant exist twice.
+Duplicated derivation stays correct when a model changes. The two timeout values are a genuine
+duplicate that can be re-tuned apart, and only a shared library would make them one.
+`start-dev-environment.sh` keeps its host-side retry budget, for the reason <<demo-bring-up>> gives.
 
 == Keeping the Diagram Honest
 
@@ -1481,10 +1587,9 @@ or accepted, and an accepted one names the reason it is safe to keep.
 | Test-started gateways publish their application port on every interface
 | Accepted
 | Publishing it on loopback leaves the host port number dead after the container is removed
-  (<<test-started-host-ports>>). The decision and its accepted cost -- a test gateway is reachable from
-  the host's network at a fixed port while its test runs, carrying only committed test material -- are
-  recorded in
-  link:../adr/0065-Test-started_gateways_publish_the_application_port_on_every_interface_at_a_fixed_port_and_the_management_port_on_loopback.adoc[ADR-0065].
+  (<<test-started-host-ports>>). The accepted cost -- a test gateway is reachable from the host's
+  network at a fixed port while its test runs, carrying only committed test material -- and the
+  shapes rejected for it are stated there, under <<test-started-rejected-shapes>>.
 
 | `ItProfileConfigBindingWiringTest` exempts the TLS-relaxation rig from its trust guards
 | Accepted

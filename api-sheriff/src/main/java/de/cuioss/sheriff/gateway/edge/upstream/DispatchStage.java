@@ -108,10 +108,10 @@ import org.jspecify.annotations.Nullable;
  * keeping it until the guard's timeout. What becomes of that connection depends on the protocol. On
  * HTTP/1.1 the request head is written together with the first forwarded body chunk, so the connection
  * itself goes back to the pool only when no body chunk had been forwarded; a partly sent request closes
- * its connection (abortively, ADR-0066 A1), and the next dispatch obtains a new one. On HTTP/2 the reset
- * ends one stream and the connection carries on. What the clock does and does not measure is described
- * on {@link ByteCappedBodyStream}. A dispatch constructed with {@link #NO_BODY_IDLE_TIMEOUT} never arms
- * the clock.
+ * its connection (abortively, per the abortive upstream close of ADR-0066), and the next dispatch
+ * obtains a new one. On HTTP/2 the reset ends one stream and the connection carries on. What the clock
+ * does and does not measure is described on {@link ByteCappedBodyStream}. A dispatch constructed with
+ * {@link #NO_BODY_IDLE_TIMEOUT} never arms the clock.
  * <p>
  * <strong>A body that does not end in time is ended at the request-body deadline.</strong> A dispatch
  * constructed with a request-body deadline also bounds how long it waits for the whole body. The

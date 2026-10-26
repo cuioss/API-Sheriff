@@ -166,7 +166,8 @@ keys: one key per purpose is what the FAPI 2.0 profile asks for.
 Each key is in one of two modes. Both are supported in production.
 
 * *Generated* -- leave `key_file` out. The gateway generates an EC P-256 key when it starts and logs
-  `ApiSheriff-21` once for that purpose. Nothing has to be provisioned. The key lives in one process:
+  `ApiSheriff-21` once for that purpose. The record names the purpose and the mode, never any key
+  material. Nothing has to be provisioned. The key lives in one process:
   it is replaced on every restart, and no other instance has it. Use this mode for *a single node*.
 * *Provided* -- name a key file. The key survives a restart and can be given to every instance. Use
   this mode as soon as *more than one instance* serves the same identity-provider client. Every

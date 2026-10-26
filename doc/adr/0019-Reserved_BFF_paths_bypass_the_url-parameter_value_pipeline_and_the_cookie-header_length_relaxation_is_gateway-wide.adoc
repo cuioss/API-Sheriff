@@ -1,13 +1,12 @@
 = ADR-0019: Reserved BFF paths bypass the url-parameter value pipeline and the cookie-header length relaxation is gateway-wide
 :toc: left
-:toclevels: 2
+:toclevels: 3
+:toc-title: Table of Contents
 :sectnums:
+:source-highlighter: highlight.js
 
 // adr-metadata
-// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
-// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
-// relevance without reading the full file. List fields are comma-separated.
-// summary: Two deliberate inbound-validation relaxations the BFF requires — the url-parameter value pipeline is not applied to matched reserved paths, and the pre-route header-value raise is necessarily gateway-wide; amended to cover the Authorization header alongside Cookie/Set-Cookie
+// summary: Two bounded inbound-validation relaxations: a matched reserved path never reaches the url-parameter value pipeline, because it is answered before route selection and its handler validates its own parameters; and the header-value length cap is raised for two header names only -- Cookie/Set-Cookie on an active cookie-mode BFF and Authorization on every gateway -- gateway-wide because the pre-route floor runs before any route exists; each carve-out is seeded from the resolved configuration so only the length cap changes, it is honoured by the post-route re-run too, and no site may lower a cap; the BFF structure belongs to ADR-0018 and the re-assertion principle to ADR-0026
 // tags: security, bff, reserved-paths, input-validation, cookie-header, authorization-header, relaxation, blast-radius
 // affects: api-sheriff
 // supersedes:
@@ -15,389 +14,211 @@
 
 == Status
 
-Proposed
-
-== Context
-
-The gateway applies an inbound security-validation pipeline to every request before any routing
-decision: path canonicalisation, url-parameter validation, and header validation, each fail-closed
-and each refusing to echo an offending value. The pipeline is tuned for its primary job — defending
-an *upstream* against traffic the gateway forwards.
-
-The BFF introduces two request shapes that pipeline does not fit, and both create the same kind of
-choice point: relax the default policy for a narrow case, or leave a legitimate request permanently
-rejected at the edge.
-
-*Gateway-terminated requests are not forwarded traffic.* The url-parameter value pipeline is an
-anti-injection defence for parameters the gateway passes to an upstream — its threat model is a
-value that means one thing to the gateway and another to the backend. A reserved BFF path is not
-forwarded anywhere: it terminates at the gateway and is consumed by a handler the gateway itself
-owns. Worse, some of its parameters legitimately carry structure the pipeline is designed to reject.
-A same-origin post-login return target is a path, so it contains separators the anti-injection
-policy treats as suspicious in a value destined for an upstream. Applying an upstream-oriented
-policy to a request that has no upstream rejects correct traffic while defending nothing.
-
-*Validation runs before route selection.* The cookie-mode BFF's sealed session cookie is designed to
-a multi-kilobyte budget, well past the default header-value length cap, so an authenticated request
-in that mode fails the header check every single time. The obvious containment — raise the cap only
-for the routes that need it — is not available at this position in the pipeline: the stage runs
-*before* any route or anchor is resolved, so at the moment the header must be validated there is no
-per-anchor context in existence to scope the relaxation to. This is a structural property of where
-inbound validation has to sit (it must precede routing so routing decides on canonicalised,
-validated input), not an implementation shortcut that could be tightened later.
-
-Both cases pose the same question: when a defence does not fit a legitimate request class, is the
-correct answer to weaken the defence globally, to carve out the narrowest possible exception, or to
-reject the request class? Answering it once, explicitly, and bounding what each relaxation gives up
-is what this record exists to do.
+Accepted
 
 == Decision
 
-*Both relaxations are granted, each scoped as narrowly as its position in the pipeline permits, and
-each leaves every other validator untouched.*
+The gateway validates every request before routing: path canonicalisation, url-parameter validation
+and header validation. Each check is fail-closed and echoes no offending value. The pipeline is tuned
+to defend an upstream against traffic the gateway forwards. Two legitimate request classes do not fit
+it.
 
-=== (a) The url-parameter value pipeline is not applied to matched reserved paths
+* *A reserved path is not forwarded traffic.* The url-parameter value pipeline is an anti-injection
+  defence for parameters that reach an upstream. A reserved BFF path ends at a handler the gateway
+  owns. Some of its parameters carry structure the pipeline rejects: a same-origin return target is a
+  path, with separators that look suspicious in a value bound for an upstream.
+* *Some header values are long by design.* The cookie-mode BFF's sealed session cookie is designed to
+  a multi-kilobyte budget. A bearer token with its `Bearer ` prefix routinely exceeds the `strict`
+  preset's 1024-character value cap. Both fail the pre-route floor on every request.
 
-When a request matches a reserved gateway path, the url-parameter *value* pipeline is not applied to
-it. See the Amendment below: this relaxation is now enforced *structurally* rather than by the
-reserved-path predicate this section originally described.
+The pre-route floor (`BasicChecksStage`) runs before route selection, so routing decides on
+canonical, validated input. At that point no route or anchor exists to scope a relaxation to. That
+is a structural property of the pipeline, not a shortcut.
 
-The justification is that a matched reserved path is *terminated at the gateway and never proxied*,
-so the threat the value pipeline addresses — a parameter reinterpreted by an upstream — does not
-exist for it. Validation of those parameters is not skipped; it *moves to the reserved handler*,
-which is the component that actually knows each parameter's grammar. The handler validates a return
-target as a same-origin path, a state parameter as an opaque correlator, and so on — checks that are
-strictly more precise than a generic value policy, because they are type-aware.
+*Both relaxations are granted. Each is scoped as narrowly as its position in the pipeline permits,
+and each leaves every other validator in force.*
 
-What still constrains a reserved path is everything else: path canonicalisation still runs and still
-yields the single canonical path every later stage consumes, the parameter- and header-*count* caps
-still apply, and every other header validator still applies. The relaxation is confined to
-url-parameter *values*, on *matched reserved paths only*. A gateway with no BFF configured matches
-no reserved path and is byte-for-byte unaffected.
+*The boundaries.*
+link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+owns the BFF structure these relaxations serve, the reserved-path model included. This record owns
+the two inbound-validation relaxations.
+link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026]
+owns the principle that a bound declared at one stage is re-asserted at every later stage that
+re-validates the same input. The post-route handling of the header carve-outs below applies that
+principle; this record does not restate it.
 
-=== (b) The cookie-header value-length relaxation is gateway-wide
+[[reserved-path-parameters]]
+=== (a) A matched reserved path never reaches the url-parameter value pipeline
 
-See the second Amendment below: this decision now covers *two* header-value relaxations — the
-`Cookie` / `Set-Cookie` one described here and an `Authorization` one on the same seam — and the
-"only the length cap changes" bound below has been corrected and is now enforced structurally. Both
-are *declared* on the pre-route floor and, per the third Amendment, are *honoured* by the post-route
-per-route re-run as well.
-
-The stage accepts an optional cookie-header policy whose *only* difference from the default is a
-raised maximum header-value length, and applies it to the `Cookie` and `Set-Cookie` header values
-only. It is supplied only by a cookie-mode BFF gateway; a bearer-only or server-mode gateway
-supplies nothing and is byte-for-byte unaffected.
-
-The relaxation is gateway-wide rather than per-anchor because, as established above, no anchor is
-resolved at this pipeline position. The configuration key that supplies the budget sits on the
-global session block for exactly that reason, and its placement must not be read as per-anchor
-enforcement — it is global because the enforcement point is global.
-
-The blast radius is bounded on three independent axes:
-
-* *By header.* Only `Cookie` and `Set-Cookie` values are affected. Every other header keeps the
-  default cap.
-* *By validator.* Only the length cap changes. The null-byte, control-character, and
-  injection-pattern validators apply to the cookie header unchanged, so the relaxation admits a
-  *longer* value, never a *differently-shaped* one.
-* *By deployment.* Only a cookie-mode gateway supplies the policy at all.
-
-The residual exposure is therefore precisely: on a cookie-mode gateway, a client may send a longer
-`Cookie` header value than the default policy would accept, subject to every other content check and
-to the gateway's own transport limits. A value that is not a resolvable sealed session is refused by
-the session binding fail-closed as "no session".
-
-== Amendment: relaxation (a) is now enforced structurally, not by a predicate
-
-*This record is amended, not superseded. The observable relaxation of decision (a) is unchanged; only
-its enforcement mechanism is.*
-
-When this record was written, the url-parameter *value* pipeline ran in the pre-route stage, so
-exempting a reserved path required an explicit reserved-path *predicate* over host and canonical path
-threaded into that stage. The exemption was therefore predicate-driven: a decision the stage made
-per request by consulting a matcher.
-
-The url-parameter name and value validation has since *moved into the post-route stage*, so that it
-runs under the route's own configuration and under the inbound-filter profile gate introduced by
+A matched reserved path is answered by `ReservedPathHandler` before route selection. The url-parameter
+name and value validation runs in the post-route stage (`ThoroughChecksStage`), under the route's
+configuration and the inbound-filter profile gate of
 link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024].
-That relocation makes decision (a) *structural*: a matched reserved path terminates at its reserved
-handler *before route selection*, so it never reaches the post-route stage and therefore never reaches
-the parameter pipeline at all. The exemption is now a consequence of the pipeline's shape rather than
-of a predicate consulted inside it.
+A reserved path therefore never reaches it. The exemption is a consequence of where reserved paths
+end, not a predicate consulted per request. There is no second representation of the reserved-path
+set that could disagree with the registry.
 
-Consequences of the amendment:
+Validation of those parameters is not skipped. It moves to the reserved handler, which knows each
+parameter's grammar. The handler validates a return target as a same-origin path and `state` as an
+opaque correlator. Those checks are type-aware, so they are stricter than a generic value policy.
 
-* *The reserved-path predicate is removed* from the pre-route stage, which no longer takes one. There
-  is no longer a matcher to keep in sync with the reserved-path set, and no way for the exemption and
-  the reserved-path routing to disagree about which paths are reserved — previously two independent
-  representations of the same set.
-* *The observable behaviour is identical.* A reserved path's url-parameter values are not run through
-  the generic value pipeline, exactly as before, and validation still *moves to* the reserved handler
-  that knows each parameter's grammar. The obligation recorded under Risks — that a new reserved
-  handler must validate its own parameters — is unchanged and remains the load-bearing half of the
-  guarantee.
-* *Everything else that constrained a reserved path still constrains it.* Path canonicalisation still
-  runs in the pre-route floor and still yields the single canonical path later stages consume, the
-  parameter- and header-*count* caps still apply, and every header validator still applies. The
-  relocation moved the *value* pipeline only.
-* *Relaxation (b), the cookie-header value-length raise, is untouched* by this amendment. It is still
-  declared pre-route, remains gateway-wide for the structural reason decision (b) gives, and its three
-  bounding axes are unchanged. (The third Amendment below extends where it is *honoured* — the
-  post-route re-run — without touching those axes.)
+Everything else still constrains a reserved path. The pre-route floor still canonicalises the path
+and yields the single canonical path every later stage reads. The parameter and header count caps
+still apply, and so does every header validator. A gateway with no BFF matches no reserved path and is
+unaffected.
 
-The amendment strengthens the original decision rather than qualifying it: the relaxation the record
-granted deliberately is now a property of where reserved paths terminate, which cannot drift out of
-agreement with itself the way a predicate could.
+[[header-carve-outs]]
+=== (b) The header-value length cap is raised for two header names, gateway-wide
 
-== Amendment: decision (b) covers both pre-route header-value carve-outs, and its "only the length cap changes" bound is now structurally true
+`BasicChecksStage` selects the value policy by header name, on three branches:
 
-*This record is amended, not superseded.* Decision (b) is *extended* to a second header on the same
-seam, and one of its three bounding axes is *corrected*: it was stated as a guarantee but was not in
-fact being upheld for the cookie carve-out.
+* *`Cookie` and `Set-Cookie`*, on an active cookie-mode BFF only. The budget is
+  `oidc.session.max_cookie_size` plus 512 bytes for co-resident cookies. A bearer-only or server-mode
+  gateway has no cookie carve-out.
+* *`Authorization`*, on every gateway. The budget is
+  `security_defaults.max_authorization_header_value_length`, default 8192, the `lenient` preset's own
+  header-value cap. A declared value below the resolved baseline is a boot refusal: a relaxation key
+  must not tighten.
+* *Every other header* keeps the resolved baseline cap.
 
-=== The extension: `Authorization` joins `Cookie` / `Set-Cookie`
+`SecurityPostures` builds both carve-out policies. Each is seeded component by component from the
+resolved baseline and overrides the length cap alone. The null-byte, control-character and
+injection-pattern validators, extended-ASCII handling and case sensitivity stay as the baseline sets
+them. The seeding makes "only the length cap changes" a structural property: a carve-out admits a
+longer value, never a differently shaped one.
 
-The pre-route floor measures every inbound header value against the gateway's *resolved baseline*
-`maxHeaderValueLength`. Once the gateway-wide `security_defaults.profile` knob became load-bearing,
-that baseline became the `strict` preset's 1024 characters. A bearer token plus its `Bearer ` prefix
-routinely exceeds 1024, so *every* bearer-authenticated request was rejected at the floor, before
-route selection and before bearer validation ever ran.
+The relaxation is gateway-wide because no anchor exists at the floor. The cookie budget sits on the
+global `oidc.session` block and the `Authorization` budget on the gateway-wide `security_defaults`
+block for that reason. Their placement must not be read as per-anchor enforcement.
 
-This is decision (b)'s situation exactly, on a different header: a legitimate request class that a
-defence does not fit, at a pipeline position where no anchor exists to scope a per-route exception
-to. The same answer therefore applies — a carve-out selected on the header *name*, raising the length
-cap for `Authorization` values and nothing else. It is an *extension of the existing decision*, not a
-new one: it relaxes the *same* validator, on one further header, for the same structural reason. (The
-Risks bullet "Relaxation creep" reserves a separate record for relaxing a *different* validator; that
-bound is unchanged and is not being spent here.)
+*The post-route re-run honours both carve-outs.* `ThoroughChecksStage` re-validates every header under
+the route's configuration whenever that configuration diverges from the baseline. A route that only
+raises `max_body_bytes` already diverges. The re-run runs before authentication, so an
+`Authorization` value is still present there. Without the carve-outs it would reject a bearer token
+the floor had admitted. The re-run therefore uses the same three-way dispatch, seeds each carve-out
+from the route's configuration and caps it at `max(route cap, budget)`. A route stricter than the
+gateway keeps its strictness on the carved-out headers for every validator but length.
 
-Its blast radius is bounded on the same three axes, and the third is *deliberately weaker* than the
-cookie carve-out's — the amendment states this rather than implying parity:
+*No site may lower a cap.* Three sites derive a carved-out cap, and each only ever admits more
+length:
 
-* *By header.* Only `Authorization` values are affected. Every other header keeps the resolved
-  baseline cap.
-* *By validator.* Only the length cap changes — see the correction below, which is what makes this
-  claim true.
-* *By deployment.* *Unconditional.* Unlike the cookie carve-out, which exists only in an active
-  cookie-mode BFF, this one is present on every gateway, because a bearer-capable gateway is every
-  gateway. There is no mode axis to contain it. That is a genuinely larger residual exposure than
-  decision (b)'s original third axis, and it is accepted knowingly: the alternative is a gateway that
-  cannot serve bearer traffic at all.
-
-The budget is operator-declared, not a fixed constant, because the right value is a property of the
-deployment's identity provider rather than of the gateway: `security_defaults.max_authorization_header_value_length`,
-defaulting to 8192 — the `lenient` preset's own header-value ceiling, so the carve-out never admits a
-value the loosest shipped profile would itself reject. A declared value *below* the resolved baseline
-is refused at boot, since that would be a per-header tightening wearing a relaxation key's name.
-
-*The key's placement directly answers this record's own Risks bullet* "Misreading the configuration
-key's placement". That risk was raised because the cookie budget sits on `oidc.session`, a block whose
-name says nothing about scope. This key sits on `security_defaults` — a block that is *by name*
-gateway-wide — so its global scope cannot be misread. The risk is retired for this carve-out; it
-stands unchanged for the cookie one.
-
-=== The correction: "only the length cap changes" was not true
-
-Decision (b) states, as a bounding axis, that *only the length cap changes*. For the cookie carve-out
-that was not the case. The cookie policy was built from the `cui-http` builder's bare defaults rather
-than from the gateway's resolved baseline, so on a `strict` gateway it silently also relaxed
-`failOnSuspiciousPatterns`, `allowExtendedAscii` and `caseSensitiveComparison` for cookie header
-values. The stated bound and the shipped behaviour had diverged: the record promised a *longer* value,
-never a *differently-shaped* one, while the implementation admitted a differently-shaped one too.
-
-This is recorded as a *corrected defect*, not as a restatement. The correction: both carve-out
-policies are now seeded component-by-component *from the resolved baseline* and override the length
-cap alone. The bound is therefore enforced *structurally* — by the seeding, which cannot silently
-drop a validator — rather than by an unchecked comment asserting it. Decision (b)'s "By validator"
-axis is true for the first time, and true for both carve-outs.
-
-=== The post-amendment limit, restated
-
-*This restatement answers this record's own Risks bullet* "Relaxation creep", which enumerates the
-bound as "one header pair, one validator, one deployment mode". Two of those three clauses describe
-the state *before* this amendment. The original bullet is left as written and corrected here in
-prose, exactly as the "Misreading the configuration key's placement" risk is retired above rather
-than edited.
-
-The limit now accepted is *two header names* — `Cookie` / `Set-Cookie` and `Authorization` — *one
-validator*, the length cap, and a *deployment-mode axis that binds the cookie carve-out alone*: the
-`Authorization` carve-out is unconditional, so there is no mode axis to bound it. Only the "one
-validator" clause survives unchanged, and it is the clause that bullet actually spends — a future
-request to relax a *different* validator is still a separate decision requiring its own record.
-
-The Risks bullet is therefore to be read together with this restatement. The residual exposure this
-record claims to keep "explicitly enumerable rather than emergent" is the exposure enumerated here,
-not the narrower one the unedited bullet describes.
-
-== Amendment: both carve-outs are honoured by the post-route re-run, so the by-header bound holds on every route
-
-*This record is amended, not superseded.* The two carve-outs' *bounds* are unchanged; what changes is
-that decision (b) is now upheld at *both* points that measure a header value, rather than only at the
-first.
-
-Both carve-outs were named "pre-route" because the stage that grants them runs before route
-selection. That name described where they are *declared*, but it was silently also describing where
-they *stopped*: the post-route stage re-validates every header name and value under the route's own
-configuration whenever that configuration diverges from the gateway baseline, and it did so with no
-carve-out at all. Since it runs *before* the authentication stage, an `Authorization` value was still
-present to be rejected there. A route declaring nothing but a raised `max_body_bytes` already
-diverges, so on a `strict` gateway such a route rejected a 1107-character bearer token `400` — the
-exact failure decision (b)'s `Authorization` extension exists to prevent, reinstated one stage later
-for any bearer-protected route that also declares a `security_filter`.
-
-The correction: the post-route re-run performs the *same* three-way header-name dispatch, seeding each
-carve-out from the *route's* configuration rather than from the gateway baseline. Its cap is
-`max(route maxHeaderValueLength, budget)`. The `max` is load-bearing in both directions — a route that
-legitimately raises its own cap above the budget keeps its higher cap, and the carve-out never *lowers*
-a route's own cap.
-
-The three bounding axes are unchanged and now hold uniformly:
-
-* *By header.* Still exactly `Authorization` and `Cookie` / `Set-Cookie`. Every other header is
-  measured at the route's own cap by the re-run, exactly as before.
-* *By validator.* Still the length cap alone. The post-route carve-out is seeded from the route's
-  configuration through the same shared seam as the pre-route one, so every non-length validator stays
-  on the *route's* setting — a route stricter than the gateway keeps its strictness for the carved-out
-  headers too.
-* *By deployment.* Unchanged and asymmetric as recorded: a gateway that is not an active cookie-mode
-  BFF supplies no cookie budget, so its `Cookie` / `Set-Cookie` values stay on the route's own cap
-  post-route as well.
-
-The direction of change is *admit-more-length-only, for exactly two header names*. No route's posture
-is weakened on any other axis, and no route's own declared cap is reduced.
-
-This also removes a secure-design pressure the divergence created: an operator hitting the `400` would
-most plausibly have raised that route's `max_header_value_length`, relaxing *every* header on the route
-— precisely the blunt, gateway-widening relaxation the name-scoped carve-out exists to avoid.
-
-== Amendment: the admit-more-length-only direction is now enforced at all three sites
-
-*This record is amended, not superseded.* No bound changes; the *direction of change* stated
-immediately above — `admit-more-length-only, for exactly two header names` — is now honoured at every
-site that derives a carved-out cap, rather than at two of the three.
-
-The amendment above bounded the *post-route* re-run with `max(route cap, budget)` and called that
-`max` load-bearing. The *pre-route* cookie site was left setting its cap outright from the budget, and
-that made it the sole outlier. The shipped default triggers the divergence with no operator
-misconfiguration at all: the default cookie budget (4096) plus the fixed 512-byte header overhead is
-4608, which sits *below* the `lenient` preset's 8192 baseline. On a `lenient` cookie-mode gateway the
-carve-out therefore *lowered* the cap for `Cookie` / `Set-Cookie` — rejecting `400` every request whose
-cookie value fell between 4609 and 8192, while every *other* header on the same gateway was admitted to
-8192. A relaxation key that tightens exactly the header it names is the failure shape this record has
-already corrected once, in "The correction: 'only the length cap changes' was not true".
-
-The correction: the pre-route cookie cap is `max(resolved baseline maxHeaderValueLength, budget +
-header overhead)`. The three sites that can move a carved-out cap now share one invariant:
-
-[cols="1,2,2", options="header"]
+[cols="1,2,3", options="header"]
 |===
-| Site | Bound | Mechanism
+| Site | Cap | Mechanism
 
 | Pre-route `Cookie` / `Set-Cookie`
-| `max(baseline cap, budget + overhead)`
-| Silent `max` — the budget is a *codec transport* property with its own floor/ceiling validation, so
-  a value below the baseline is a legitimate cookie budget rather than an operator error, and clamping
-  it is the correct, non-surprising response.
+| `max(baseline cap, budget + 512)`
+| A silent `max`. The cookie budget is a codec transport property with its own range check, so a
+  value below the baseline is a legitimate budget, and clamping it is correct. The shipped default,
+  4019 plus 512, is 4531, below the `lenient` baseline of 8192.
 
 | Pre-route `Authorization`
-| Declared budget, with a below-baseline value refused at boot
-| *Loud refusal*, deliberately not a silent `max`. The key
-  (`security_defaults.max_authorization_header_value_length`) is by name a *relaxation* knob on a
-  gateway-wide block, so a below-baseline value is a misconfiguration and is worth a boot diagnostic;
-  an omitted key resolves to 8192, at or above every shipped baseline. Adding a silent `max` here
-  would trade that diagnostic for silent coercion.
+| The declared budget
+| A boot refusal of a below-baseline value, not a silent `max`. The key is a relaxation key on a
+  gateway-wide block, so a lower value is a misconfiguration and earns a boot diagnostic.
 
-| Post-route re-run (both names)
+| Post-route re-run, both names
 | `max(route cap, budget)`
-| Silent `max` — a route that raised its own cap keeps it, and a route at or below the baseline still
-  admits the carved-out header to the budget.
+| A silent `max`. A route that raised its own cap keeps it.
 |===
 
-The two mechanisms differ on purpose and the difference is the point: *no site may lower a cap*, but
-where the lower value is an operator error it is refused rather than quietly clamped. The direction of
-change is admit-more-length-only at every one of them.
+The residual exposure is enumerable. On a cookie-mode gateway a client may send a longer `Cookie`
+value, subject to every other content check and the transport limits. A value that is not a
+resolvable sealed session is "no session" to the binding. On every gateway a client may send a longer
+`Authorization` value, subject to the same checks, before bearer validation rejects an invalid token.
+The configuration field contract is in
+link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route
+header-name carve-outs].
+
+== Alternatives rejected
+
+*Apply the url-parameter value pipeline to reserved paths unchanged.* One uniform policy with no
+exception. Rejected because it rejects correct traffic and protects nothing. A path-shaped return
+target fails a policy whose threat, reinterpretation by an upstream, does not apply to a request that
+is never forwarded. The login return leg could not work.
+
+*Loosen the url-parameter value policy globally so reserved paths pass.* Rejected because it weakens
+the defence where it carries weight, on parameters that are forwarded, to accommodate requests that
+are not. The narrow case must be the exception, not the new baseline.
+
+*Keep a reserved-path predicate inside the pre-route stage.* The first form of decision (a) exempted
+reserved paths by a host-and-path matcher threaded into the stage that then ran the value pipeline.
+Rejected once the value pipeline moved post-route: the matcher was a second copy of the reserved-path
+set that could drift from the registry, and the pipeline's shape now gives the exemption for free.
+
+*Raise the header-value cap globally for all headers.* The simplest change. Rejected because it drops
+the cap's protection on every other header to solve a problem confined to two. A relaxation must name
+the header it applies to, or it is a removal.
+
+*Make the cookie-header cap per-anchor.* The natural containment. Rejected because it cannot be built
+at this position: no anchor exists before route selection. Moving the header check after routing
+would route on unvalidated input, a worse exposure than the raised cap.
+
+*Reject the cookie-mode variant instead of relaxing anything.* Rejected because the cookie-based BFF
+answers a real deployment need. The relaxation it requires is bounded and reviewable.
+
+*Leave bearer requests to fail the floor, or raise the route's `max_header_value_length` instead.*
+Rejected because a gateway that cannot serve bearer traffic is not an option. Raising a route's own
+cap relaxes every header on that route, the blunt widening the name-scoped carve-out exists to avoid.
+
+*Seed the carve-out from the builder's defaults.* Rejected because the defaults are not the resolved
+baseline. On a `strict` gateway that seeding also relaxed suspicious-pattern detection, extended ASCII
+and case-sensitive comparison for cookie values, so the shipped behaviour broke the "only the length
+cap changes" bound. Seeding from the resolved baseline is what makes the bound true.
+
+*Measure the carved-out headers post-route at the route's own cap.* Rejected because it undoes the
+carve-out one stage later on any route with a divergent `security_filter`: the floor admits a bearer
+token and the re-run rejects it, still before bearer validation.
+
+*Set the pre-route cookie cap outright from the budget.* Rejected because the shipped default budget
+lies below the `lenient` baseline. The carve-out then lowered the cap for exactly the header it names
+and rejected cookie values every other header could carry.
+
+*Clamp a below-baseline `Authorization` budget silently, like the cookie budget.* Rejected because it
+turns a misconfiguration into silent coercion. A boot refusal names the key that is wrong.
+
+The rejected options fall into two classes. One widens a relaxation past the case that motivates it.
+The other refuses a bounded relaxation at the cost of a legitimate capability. The chosen position is
+the narrowest scope each enforcement point permits, and where that scope is coarser than wanted, the
+limit is structural and stated.
 
 == Consequences
 
-=== Positive
+*Positive.*
 
-* Legitimate BFF traffic is not rejected at the edge: a login return leg carrying a path-shaped
-  target, and an authenticated cookie-mode request carrying a multi-kilobyte sealed cookie, both
-  pass validation.
-* Reserved-path parameters end up *better* validated, not less: a type-aware handler check is
-  stricter than a generic value policy.
-* Each relaxation is inert on deployments that do not use the feature — a bearer-only gateway's
-  inbound validation is unchanged in both respects.
-* The residual exposure of each relaxation is explicitly enumerable rather than emergent, which is
-  what makes it reviewable.
+* Legitimate BFF and bearer traffic passes the edge: a login return leg with a path-shaped target, a
+  cookie-mode request with a multi-kilobyte sealed cookie, and a bearer request with a long token.
+* Reserved-path parameters are validated more precisely, by a handler that knows their grammar.
+* The cookie carve-out is inert on a gateway that is not an active cookie-mode BFF.
+* The carve-outs hold the same bound at every site that measures a header value, and no route's
+  posture is weakened on any other axis.
+* The residual exposure of each relaxation is enumerable, which makes it reviewable.
 
-=== Negative
+*Negative.*
 
-* Reserved-path parameter validation is now the reserved handlers' responsibility, so a new reserved
-  handler that neglects to validate its own parameters has no generic backstop behind it.
-* The cookie-header length relaxation cannot be scoped to the routes that need it, so on a
-  cookie-mode gateway it applies to every request including ones that will never carry a session
-  cookie.
-* Two documented exceptions now exist to what was a uniform inbound policy, which is a cost in
-  comprehensibility for anyone reasoning about the pipeline.
+* Reserved-path parameter validation is the reserved handlers' responsibility. A new handler that
+  does not validate its own parameters has no generic backstop.
+* Neither length relaxation can be scoped to the routes that need it. On a cookie-mode gateway the
+  cookie carve-out applies to every request.
+* The `Authorization` carve-out has no mode axis. It is present on every gateway, a larger residual
+  than the cookie carve-out's, accepted because the alternative is a gateway that cannot serve bearer
+  traffic.
+* Two documented exceptions now exist to a uniform inbound policy, a cost in comprehensibility.
 
-=== Risks
+*Constraints on later change.*
 
-* *A reserved handler forgetting its own validation.* The relaxation moves a check rather than
-  removing it, so the guarantee holds only while every reserved handler upholds its half. Adding a
-  reserved endpoint therefore carries an obligation to validate its parameters explicitly.
-* *Relaxation creep.* Each carve-out makes the next easier to justify. The bounding described above
-  — one header pair, one validator, one deployment mode — is the limit, not a starting point; a
-  future request to relax a *different* validator for the same convenience is a separate decision
-  requiring its own record.
-* *Misreading the configuration key's placement.* The budget key sitting on the global session block
-  can be misread as per-anchor enforcement; it is global because the enforcement point precedes
-  routing.
+* A new reserved handler must validate every parameter it reads.
+* The limit now accepted is two header names, one validator (the length cap) and a mode axis that
+  binds the cookie carve-out alone. Relaxing a different validator is a separate decision with its
+  own record.
+* A carve-out must stay seeded from the resolved configuration, and no site may lower a cap.
 
-== Alternatives Considered
+== Links
 
-*Apply the url-parameter value pipeline to reserved paths unchanged.* This would keep one uniform
-inbound policy with no exceptions to reason about. Rejected because it rejects correct traffic while
-protecting nothing: a legitimately path-shaped return target fails a policy whose threat model
-(reinterpretation by an upstream) does not apply to a request that is never forwarded. The result
-would be a BFF whose login return leg cannot function.
-
-*Loosen the url-parameter value policy globally so reserved paths pass.* This would need no
-predicate and no per-request branch. Rejected because it weakens the defence exactly where it is
-load-bearing — on parameters actually forwarded to an upstream — in order to accommodate requests
-that are not forwarded at all. It inverts the scoping: the narrow case should be the exception, not
-the new global baseline.
-
-*Raise the header-value cap globally for all headers.* This is the simplest change and needs no
-optional policy. Rejected because it discards the cap's protection on every other header to solve a
-problem confined to one. The relaxation must name the header it applies to, or it is not a
-relaxation but a removal.
-
-*Make the cookie-header cap per-anchor.* This is the natural containment and would confine the
-raised cap to routes that need it. Rejected because it is not achievable at this pipeline position:
-inbound validation must precede route selection so routing decides on canonicalised, validated
-input, and therefore no anchor exists to scope against at the moment of the check. Deferring the
-header check until after routing would mean routing on unvalidated input — a strictly worse exposure
-than the raised cap it would contain.
-
-*Reject the cookie-mode variant instead of relaxing anything.* This would preserve a uniform policy
-absolutely. Rejected because the stateless variant answers a real deployment need, and the
-relaxation it requires is bounded and reviewable — the trade is a longer permitted cookie value
-against a gateway that scales out without shared session state.
-
-The alternatives fall into two classes, and both are rejected for the same reason: one class widens
-a relaxation past the case that motivates it, and the other refuses a bounded relaxation at the cost
-of a legitimate capability. The chosen position is the narrowest scoping each relaxation's
-enforcement point actually permits — and where that scoping is coarser than one would like, the
-limit is structural and is stated as such rather than left to be discovered.
-
-== References
-
-* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode and the reserved-path model] -- the architecture these relaxations serve.
-* link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- relocates the url-parameter validation into the post-route stage, which is what makes relaxation (a) structural (see the Amendment above). Does not supersede this record.
-* link:../architecture.adoc[Architecture] -- the inbound pipeline's position ahead of routing.
-* link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the session block carrying the cookie-size budget.
-* link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] -- both carve-outs, their budget keys and their bounds, side by side.
-* link:../configuration.adoc#_preset_limits[Configuration Reference -- Preset limits] -- the concrete `strict` / `lenient` numbers the resolved baseline takes.
-* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the variant whose sealed cookie motivates the length relaxation.
-* link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the sealed-cookie format the budget bounds.
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018 -- BFF session mode and the reserved-path model] -- the structure these relaxations serve.
+* link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- A security bound is re-asserted at every later stage] -- the principle the post-route handling of the carve-outs applies.
+* link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- the post-route position of the url-parameter validation.
+* link:../architecture.adoc#_inbound_security_filter[Architecture -- Inbound Security Filter] -- the pipeline's position ahead of routing.
+* link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] and link:../configuration.adoc#_preset_limits[Preset limits] -- the keys, their bounds and the preset numbers.
+* link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] and link:../development/bff-cookie.adoc[Contributor guide -- cookie-based BFF] -- the sealed cookie the cookie budget bounds.
+* `ReservedPathHandler`, `BasicChecksStage`, `ThoroughChecksStage`, `SecurityPostures` -- the implementation; `GatewayEdgeRouteTest`, `ThoroughChecksStageTest`, `LimitRulesTest`, `DeclaredLimitBoundaryIT` -- the tests.

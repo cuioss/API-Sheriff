@@ -1403,8 +1403,8 @@ answers, both upload aspects stayed at an error rate of 0 -- `uploadSmall` at 80
 second (p99 762.2 ms) and `uploadLarge` at 1.80 requests per second (p99 3737.9 ms).
 
 *Control*
-(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#amendment-a1[ADR-0066
-Amendment A1]):
+(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#abortive-upstream-close[ADR-0066
+-- the abortive upstream close]):
 
 * *The close holds no port.* The HTTP/1.1 upstream client closes every connection abortively
   (`SO_LINGER 0`). The close is a TCP reset and leaves no `TIME_WAIT` socket on the gateway, so the
@@ -1418,15 +1418,71 @@ Amendment A1]):
   is dropped, so a burst of uploads does not write one `ERROR` record per upload (CWE-779).
 
 *FIN-first was evaluated and rejected*
-(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#amendment-a2[ADR-0066
-Amendment A2]). A close that shuts down the write side, drains the connection for a bounded time and
-falls back to `SO_LINGER 0` only when the drain fails was weighed against the abortive close for the
-early answer, the client abort and the request-body deadline. Every drain that completes makes the
+(link:adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#fin-first-rejected[ADR-0066
+-- FIN-first rejected]). A close that shuts down the write side, drains the connection for a bounded
+time and falls back to `SO_LINGER 0` only when the drain fails was weighed against the abortive close
+for the four triggers: the early answer, the client abort, the request-body idle timeout and the
+request-body deadline. Every drain that completes makes the
 gateway the side that sent the first `FIN`, so its local port is held in `TIME_WAIT` again, on triggers
 a client drives at rate; the abortive close stays. A Linux reproduction of the upstream's side found that
 the upstream resets at once on loopback, after one round trip with a delayed path, and after one
 challenge ACK (RFC 5961) when the reset overtakes body data still in flight. Only when the reset is lost
 does the upstream keep its socket open until its own idle timeout.
+
+[#gw-07-fin-first-reproduction]
+*The FIN-first reproduction.* The hypothesis that an upstream might go on holding its side of an
+abortively closed connection was tested once, on Linux, in a throwaway container (Docker
+`debian:bookworm-slim` with `python3`, `iproute2` and `tcpdump`, run with `--cap-add NET_ADMIN`; kernel
+`7.2.9-orbstack`, `tcp_invalid_ratelimit` 500 ms). Both ends ran on the container's loopback interface.
+The upstream was a Python server that read the head of an upload declaring a 1 GiB `Content-Length`,
+answered `200` at once, then stopped reading and waited only for a hang-up or a socket error, with an
+application idle timeout of 30 s. The gateway was a Python client that streamed the body and, when the
+early answer arrived, filled its send queue and closed with `SO_LINGER {1,0}` -- at kernel level what
+`setSoLinger(0)` does for Vert.x. The gateway's send queue still held about 2.5 MB of unacknowledged
+body when it closed. The upstream socket was sampled with `ss -tano` once per second until the
+upstream's idle timeout; `nstat` recorded `TcpExtTCPChallengeACK` and `TcpExtTCPACKSkippedChallenge`,
+and `tcpdump` the reset, `FIN` and `SYN` segments. Four network variants were run:
+
+[cols="2,3,4,3,2", options="header"]
+|===
+|Variant |Network on the loopback interface |What the upstream observed |Its socket |Challenge ACKs (sent / skipped)
+
+|Loopback
+|no shaping
+|`ECONNRESET` within 10 ms of its answer
+|gone at the first sample
+|0 / 0
+
+|Delay
+|`netem delay 50ms` on every packet (100 ms round trip)
+|`ECONNRESET` 0.11 s after its answer, one round trip
+|gone at the second sample
+|0 / 0
+
+|Reset overtakes data
+|every packet delayed 50 ms except TCP reset segments
+|`ECONNRESET` 0.20 s after its answer
+|gone at the second sample
+|1 / 1
+
+|Reset dropped
+|every TCP reset segment dropped (`netem loss 100%` on a reset-only band)
+|no EOF and no reset; its own idle timeout after 30.03 s, then its own close
+|`ESTABLISHED`, 94,277 unread body bytes in its receive queue, for the full 30 s; gone at t+31 s
+|0 / 0
+|===
+
+When the reset overtook the body segments still in flight, its sequence number was ahead of what the
+upstream expected next, and the upstream answered with a challenge ACK instead of resetting, as RFC 5961
+requires; a second challenge was suppressed by the rate limit. The gateway's host had no socket for the
+connection any more and answered the upstream's late segments with plain resets, and one of those
+carried the expected sequence number and was accepted. An out-of-order reset therefore cost the
+upstream about one and a half round trips, not its idle timeout. The hypothesis reproduced only in the
+last variant: a reset that never arrives, on a connection where the upstream has answered and stopped
+reading and so sends nothing that could draw another reset, leaves the upstream holding its socket and
+the unread body until its own idle timeout. A FIN-first close would not have changed that case: the
+upstream had stopped reading, so the `FIN` would have stayed queued behind the body and the drain would
+have ended in the same reset. No FIN-first variant was built and no comparative benchmark was run.
 
 *Residual (accepted).* Each such upload still costs one new upstream connection, and the upstream sees
 a TCP reset instead of a `FIN` for every connection the gateway closes, idle-pool evictions included,
@@ -1448,6 +1504,9 @@ absence on the forced-HTTP/2 and WebSocket clients. `DispatchStageTest`
 (`gatewayResetAfterACompleteResponseLeavesTheBreakerClosed`) drives a burst of early-answered
 dispatches larger than the test guard's breaker window, each followed by the gateway's reset, and
 asserts that the breaker made no transition and the next dispatch reached the upstream. No test
+asserts the abortive close for the request-body idle timeout or the request-body deadline: both
+triggers rely on the same client-wide option, and `GatewayEdgeRequestBodyIdleTimeoutTest` drives them
+without observing how the upstream connection ends. No test
 observes the gateway's own `TIME_WAIT` sockets: at test scale the observable is the reset the upstream
 receives. The benchmark run above is the system-scale proof, and it is not a standing guard: the upload
 aspects now target a backend that reads the body, so no benchmark aspect drives early answers any
@@ -1459,10 +1518,12 @@ frame.* A dispatch holds one pooled upstream connection and one admission permit
 the request body, a gRPC call holds its stream for as long as it stays open, and an HTTP/2 stream
 whose body the gateway does not read holds flow-control credit of its connection. Each is bounded by
 a fixed gateway constant that no configuration key or system property reaches
-(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a1[ADR-0060
-Amendment A1],
-link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#amendment-a2[Amendment
-A2]):
+(link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-idle-timeout[ADR-0060
+-- request-body idle timeout],
+link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[request-body
+deadline],
+link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-stream-idle-bound[gRPC
+stream-idle bound]):
 
 * *A body that stops.* A dispatch that holds its upstream connection and is reading the body ends
   after 10 s without a forwarded body byte: the upstream request is reset, which ends the dispatch's
@@ -1503,8 +1564,7 @@ attempt while it keeps arriving. A body the upstream is not taking data for when
 is ended only once the upstream reads it again; until then the upstream holds it, and before the
 response head the guard's 30 s timeout ends that dispatch. A gRPC call has no bound on its total
 duration: a call that carries a frame at least every five minutes stays open, as long-lived streaming
-calls are normal for gRPC
-(Amendment A2).
+calls are normal for gRPC (ADR-0060).
 
 *Status of this control:* PARTIAL. `GatewayEdgeRequestBodyIdleTimeoutTest` drives a body trickling
 to an upstream that reads it whole and to one that answered at once, over HTTP/2 and HTTP/1.1
@@ -3772,8 +3832,8 @@ outstanding hardening work (next section).
 | <<gw-06>> | Fail-closed SNI/mTLS; verify upstream certs by default; test behaviour not flag | ADR-0017 (front listener) + ADR-0040 (`egress_tls`: upstream verify behaviour-tested, trust profile fail-closed) + ADR-0041 (`jwks_verify_hostname` bound and behaviour-tested; `jwks.tls_profile` collision refused at boot on `http` sources) + ADR-0045 (`oidc_verify_hostname` / `oidc_tls_profile` bound and behaviour-tested on the BFF back-channel; collision refused at boot) + `EgressTlsPostureArchTest` (explicit posture on every outbound TLS client) | PARTIAL
 | <<gw-07>> | Streaming + body cap; idle timeout; admission cap; YAML limits | Gateway (cui-http no streaming body) -- ADR-0006 | PARTIAL
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
-| <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 Amendment A1 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard)
-| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 Amendments A1 and A2 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
+| <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
+| <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
 | <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
