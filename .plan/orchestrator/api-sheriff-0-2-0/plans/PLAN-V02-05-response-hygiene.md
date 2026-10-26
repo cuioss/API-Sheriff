@@ -115,7 +115,8 @@ backend stack identity is exposed today. D1 and D2 are small and are the high-va
   the TLS/CDN deployment note
 - OBSERVED: `api-sheriff/src/test/**` — the header tests
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/forward/ForwardPolicyStage.java` — D5; its test `ForwardPolicyStageTest.forwardAllCarriesValidatorsPastTheToggle` changes with it
-- `doc/adr/` — a new record if the strip policy needs one
+- `doc/adr/` — a new record if the strip policy needs one, written to `doc/development/adr-writing.adoc` (the
+  500-line body ceiling is enforced by `AdrRecordLengthContractTest`)
 
 ## Dependencies and Sequencing
 

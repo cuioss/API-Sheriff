@@ -6,7 +6,8 @@ workstream: WS-02
 > Staged plan spec — one shippable unit of work, ready for `/plan-marshall` hand-off.
 > The orchestrator EMITS the command below; it never launches the plan inline.
 > Staged 2026-10-25 on the request of `plan-v02-04-adr-corpus-cleanup` (inbox `plan-v02-04-adr-corpus-cleanup-001`),
-> which audited all 71 records and shipped six groups in PR #521. This plan takes the nine groups it deferred.
+> which audited all 71 records and shipped six groups in PR #521 (merged, `f5826465`). This plan takes the nine
+> groups it deferred.
 
 ## Objective
 
@@ -64,12 +65,25 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
     request stopped at runtime (`0029`, `0060`, `0066`), "routing" for route selection (`0019`, `0026`, `0029`,
     `0054`), unqualified "warning" for the boot WARN (`0023`, `0024`, `0054`), and "outbound" beside "egress"
     (`0040`). Outside the records, "outbound TLS" remains in `doc/configuration.adoc`,
-    `doc/security-threat-model.adoc` and two test sources; align those to "egress TLS".
+    `doc/security-threat-model.adoc` and two test sources; align those to "egress TLS". Two more corrections in
+    records `PLAN-V02-04` rewrote: the `0060` sentence that says no test covers the `dispatchGrpc` hand-off and the
+    fixed five-minute value (`TerminalDispatchGrpcStreamIdleTest` now covers both; only the public one-line
+    hand-over is unasserted, as the threat model says), and the `0066` list of users of the end rule, which names
+    the failed-dial answer and omits the relayed upgrade refusal.
 11. **Report.** Before and after line count per record, plus corpus total and mean before and after, as
     `PLAN-V02-04` did. The ceiling stays enforced by `AdrRecordLengthContractTest`; the plan changes no ceiling.
+    The corpus stood at 65 records, 15,289 lines and a mean of 235 per file on `main` at `f5826465`; the early
+    records average about 136. Say where the result lands against that and why.
+12. **Documentation residue of `PLAN-V02-04`.** Four statements outside `doc/adr/` that the WebSocket pre-upgrade
+    end-rule fix or the rebase left untrue. Re-read each at outline; one that no longer holds is dropped.
+    `doc/architecture.adoc` (near line 587) says the end rule leaves the WebSocket path unaffected and omits the
+    pre-upgrade answer from its list of end-rule writers. `benchmarks/README.adoc` (near line 514) says Methodology
+    lists every parity condition, but the list omits the shared auth realm and tokens. `doc/development/bff-session.adoc`
+    (near line 302) credits the native-image residual verdict to entry 3 only; its EC key-generation part is verified
+    in entry 4. The `ResponseEnds` Javadoc names the failed-dial answer only; add the relayed upgrade refusal.
 
-Split guard: 11 deliverables, one PR (under the 12 the operator authorised per plan). The footprint is the 52
-rewrites plus the repointed files of three decisions: the `0022` relocation (about 15 files), the `0030` relocation
+Split guard: 12 deliverables, one PR (the 12 the operator authorised per plan). The footprint is the 52
+rewrites, deliverable 12 (three documentation files and one Javadoc), plus the repointed files of three decisions: the `0022` relocation (about 15 files), the `0030` relocation
 (5) and the `0036`/`0047` merge (about 18). That sums to about 90 files against the 100-file review-bot cap. Measure
 the projection at outline. If it exceeds 90 files, deliverables 1, 6 and 8 carry the repoint-heavy decisions: cut
 there, ship the rest, and report the remainder to the orchestrator as a finding so a successor can be staged.
@@ -94,10 +108,12 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 ## Claim Labels
 
 - OBSERVED: `PLAN-V02-04` deferred nine groups covering 53 records and shipped 12 rewrites, 5 relocations and the
-  ceiling guard — its inbox message `plan-v02-04-adr-corpus-cleanup-001` and PR #521 (open at staging)
-- HYPOTHESIS: `doc/development/adr-writing.adoc` carries the rubric, skeleton, writing rule and term list, and
-  `AdrRecordLengthContractTest` enforces the 500-line body ceiling — both arrive with #521; confirm on `main` after
-  the merge (verify-at-outline)
+  ceiling guard — its inbox message `plan-v02-04-adr-corpus-cleanup-001` and PR #521 (merged, `f5826465`)
+  - verdict: corroborated | checked_at: e087e5cec0ac2a48443e5df02882163bd38ecd53 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: PR #521 merged as f5826465; doc/adr holds 65 records (6 deleted, 12 rewritten); the deferral message names nine groups and 53 records
+- OBSERVED: `doc/development/adr-writing.adoc` carries the rubric, skeleton, writing rule and term list, and
+  `AdrRecordLengthContractTest` enforces the 500-line body ceiling (`MAX_BODY_LINES = 500`) — both on `main` at
+  `f5826465`
+  - verdict: corroborated | checked_at: e087e5cec0ac2a48443e5df02882163bd38ecd53 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: adr-writing.adoc is 385 lines on main; AdrRecordLengthContractTest has MAX_BODY_LINES = 500 and a fixture control at 500 and 501
 - HYPOTHESIS: the verdict table of `PLAN-V02-04` deliverable 2 holds for every record named above — read it in the
   #521 body; refutation per record re-scopes that record (verify-at-outline)
 - OBSERVED: `doc/adr/` holds `0001`–`0071` on `main` at `6b8d88f4`, and `0027-*` is Proposed and owned by
@@ -118,6 +134,8 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 - OBSERVED: `doc/technical_aspects.adoc`, `doc/configuration.adoc`, `doc/development/README.adoc`,
   `doc/development/test-corpus-integrity.adoc` — destinations of relocated content
 - OBSERVED: `doc/security-threat-model.adoc` — "outbound TLS" wording and the `0066` gap entry (deliverable 10)
+- HYPOTHESIS: `doc/architecture.adoc`, `benchmarks/README.adoc`, `doc/development/bff-session.adoc` and the
+  `ResponseEnds` Javadoc — the four statements of deliverable 12 (verify-at-outline)
 - HYPOTHESIS: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/arch/` — the ArchUnit tests that cite `0030`, and
   the two test sources that say "outbound TLS" (repointed or reworded only)
 - OBSERVED: every inbound `ADR-00NN` reference and `link:…adr/…adoc` across `doc/`, `api-sheriff/src/**`,
@@ -126,11 +144,10 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 
 ## Dependencies and Sequencing
 
-- Depends on: `PLAN-V02-04` merged (#521). It delivers the rubric, the skeleton, the term list and the ceiling guard
-  this plan applies; staged work must not start on a corpus without them. #521 was `DIRTY` against `main` at
-  staging.
-- **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-04`, `PLAN-V02-06`, `PLAN-V02-07`,
-  `PLAN-V02-09` (re-opens `0027`) and `PLAN-V02-11`. A relocation or merge here moves the ground under a record
+- Depends on: `PLAN-V02-04` merged (#521, `f5826465`, done). It delivers the rubric, the skeleton, the term list and
+  the ceiling guard this plan applies.
+- **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-05` (if its strip policy needs one),
+  `PLAN-V02-06`, `PLAN-V02-07`, `PLAN-V02-09` (re-opens `0027`), `PLAN-V02-11` and `PLAN-V02-20`. A relocation or merge here moves the ground under a record
   being written there, and the ceiling guard fails a concurrent plan that lands an over-long record.
 - `PLAN-V02-09` re-examines `0027`; kidicap `PLAN-29` D6 owns `0008`'s timeout sentence. Neither is settled here.
 - Merges and relocations break links in released versions' documentation. Report every removed or merged record

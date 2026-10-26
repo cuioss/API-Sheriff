@@ -50,6 +50,9 @@ machine): §2.4–2.8 and §6 list the findings. Re-derive every finding at outl
    - `ResponseStage.GrpcStreamIdleBound#timeoutMillis()` is a public production method added only so a test can read
      the bound. Decide whether a package-private seam or an existing observable covers it; remove the public method
      if so. The pre-1.0 rules allow the removal.
+   - `WebSocketRelayStageTest.PreUpgradeFailureEnd` (added by `PLAN-V02-04`, #521) covers the failed upstream dial
+     only. The relayed upstream upgrade refusal passes through the same `ResponseEnds.endResponse` seam and has no
+     test. Add it, and show it red against a bare `response.end()`.
    - **GW-07 request body stays PARTIAL.** The operator held the public `dispatchGrpc` hand-over of the five-minute
      bound as the named residual. Do not close it and do not change the status paragraph.
 4. **Prove nothing was lost.** JaCoCo per class before and after is identical or higher for every touched class. The

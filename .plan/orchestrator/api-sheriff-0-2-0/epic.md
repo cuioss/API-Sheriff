@@ -127,9 +127,15 @@ would otherwise force a retrofit.
   them, and the HTTP/2 late-timeout cases still call the retirement methods directly. The rest of the cleanup
   (`config/validation/`, `config/`, `routing/`) is staged as `PLAN-V02-49`. GW-07 request body stays PARTIAL by
   operator ruling (Watch).
-- **PLAN-V02-48** (staged 2026-10-25): the nine ADR groups `PLAN-V02-04` deferred (52 records). It starts only
-  after #521 has merged, because it applies the rubric, skeleton, term list and ceiling guard that plan delivers,
-  and it never runs beside an ADR-authoring plan (V02-06, -07, -09, -11).
+- **PLAN-V02-04** — SHIPPED 2026-10-26 as PR #521 (`f5826465`), see `landings/PLAN-V02-04.md`. It audited all 71
+  records, removed six (five relocated, `0056` merged into `0054`) and rewrote 12; 65 remain, 17,899 → 15,289 lines
+  (−14.6%), mean 252 → 235 against the early-record reference of about 136. `AdrRecordLengthContractTest` enforces
+  the 500-line body ceiling. One operator-approved production fix: `WebSocketRelayStage` ends its pre-upgrade 502/504
+  through `ResponseEnds.endResponse`. Residue is owned by `PLAN-V02-48` (D10, D12) and `PLAN-V02-49` (D3). Its side
+  fix #522 (`e087e5ce`) repaired two flaky tests (`EdgeAdmissionTest` race vacuity, `GatewayCookiesTest` case variant).
+- **PLAN-V02-48** (staged 2026-10-25): the nine ADR groups `PLAN-V02-04` deferred (52 records), plus its
+  documentation residue (D12). Unblocked since #521 merged; it never runs beside an ADR-authoring plan (V02-06,
+  -07, -09, -11).
 - **PLAN-V02-49** (staged 2026-10-25): the `config/validation/`, `config/` and `routing/` duplicates plus the edge
   residue of V02-27 (FU-1 and FU-2 merged). It collides on `config/` and `edge/` tests with V02-05, -06, -07, -09
   and -20, so it runs after them, not beside them.
@@ -156,6 +162,15 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-26 — emitted `PLAN-V02-06`, `PLAN-V02-05` and `PLAN-V02-20` when `PLAN-V02-04` landed.** Operator
+  instruction: "after ingesting, emit the next three". `PLAN-V02-07` waits for `PLAN-V02-06`. The gate read every
+  pair: V02-06/V02-05 share `SecurityHeadersConfig.java`, V02-06/V02-20 share `OidcConfig.java` and
+  `LogMessages.adoc`, V02-05/V02-20 share documentation only (`configuration.adoc`, the cookie pages,
+  `tls-scenarios.adoc`). The operator accepted those overlaps for this triple (overlap prompt answered "V02-06,
+  V02-05, V02-20"). The three rows are `launched`; `launched → running` stays with the operator. The three specs now
+  point their ADR step at `doc/development/adr-writing.adoc` and the 500-line guard. Held back: V02-07 (waits for
+  V02-06), V02-09 (never beside V02-20), V02-11 (held earlier), V02-48 and V02-49 (V02-48 never beside an ADR-writing
+  plan, and V02-06, V02-05 and V02-20 each write one; V02-49 collides with all three on `config/` and `edge/` tests).
 - **2026-10-26 — free slots are filled when the running plan lands, three at a time.** Operator ruling at the
   emit after `PLAN-V02-27` landed: with `PLAN-V02-04` running, nothing else is emitted. When it lands, the
   orchestrator emits up to three plans (n=3) instead of filling slots one by one. Every candidate still passes the
@@ -164,7 +179,7 @@ needs no translation.
 - **2026-10-25 — the V02-27 follow-ups are one plan, the V02-04 follow-up is one plan with a cut line.**
   `PLAN-V02-27` named two follow-ups (config/validation, and config plus routing); both are thin and touch one
   fixture class, so they are merged as `PLAN-V02-49`. `PLAN-V02-04` asked for one follow-up for its nine deferred
-  groups; it is staged as `PLAN-V02-48` with eleven deliverables, one PR and a stated cut line (the three
+  groups; it is staged as `PLAN-V02-48` with twelve deliverables (the twelfth added at its landing), one PR and a stated cut line (the three
   repoint-heavy decisions) if the projection passes the 100-file bot cap.
 - **2026-10-22 — security findings that are not fixed stay out of git.** Operator decision. A plan
   fixes a security finding right away whenever possible. One that is not fixed is recorded only in
@@ -537,10 +552,9 @@ doc-only or build-light plan for the second and third slots.
   Stage a plan when the hand-kept list drifts or the refusal paths are touched anyway.
 
 - > ↪ Relocated to `settled.md` § "Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512"
-- **ADR-0059 AND ADR-0060 ARE `Proposed` — OWNER: `PLAN-V02-04` D3's status sweep** (added 2026-10-04; ADR-0060 added 2026-10-05). Both
-  decisions are shipped — the ROUTING problem category (#383) and bodyless-method dispatch with exact
-  declared-length framing (#385). Each record needs an acceptance decision. Operator call, or
-  `PLAN-V02-04`'s status sweep.
+- **ADR-0059 IS STILL `Proposed` — OWNER: `PLAN-V02-48` D9** (added 2026-10-04). The decision is shipped (the ROUTING
+  problem category, #383). ADR-0060 was flipped to Accepted by #521 (`PLAN-V02-04`, 2026-10-26); 0059 sits in the
+  deferred group V02-48 D9 and needs its acceptance decision there.
 - **OPERATOR DECISION OWED: a simplification in `DispatchStage`'s inbound-body handling** (added
   2026-10-05, inbox `fix-four-audit-findings-and-bff-flaky-test-001.md`). The plan behind #385 left one
   simplification finding there for an operator decision instead of changing it. The finding text is
@@ -722,10 +736,6 @@ doc-only or build-light plan for the second and third slots.
 - **ADR TERM-LIST RESIDUE IN RECORDS `PLAN-V02-04` REWROTE** (added 2026-10-25). "refuse" for a runtime stop, "routing"
   for route selection, unqualified "warning" for the boot WARN, "outbound" beside "egress", and "outbound TLS" in
   `doc/configuration.adoc`, `doc/security-threat-model.adoc` and two test sources. Owner: `PLAN-V02-48` D10.
-- **#521 (`PLAN-V02-04`) WAS `DIRTY` AGAINST `main` ON 2026-10-26** (added 2026-10-26). `main` moved by #519 and #520.
-  The plan's finalize owns the rebase (memory: long finalizes let `main` drift). Re-check when it reports its landing,
-  and check ADR ordinals and the files #520 touched (`doc/security-threat-model.adoc`,
-  `doc/development/test-corpus-integrity.adoc`).
 
 ## Inbox Drain — 2026-10-09 (sender `plan-v02-01-adr-0005-reversal-quarkus-adoption`, at its landing)
 
