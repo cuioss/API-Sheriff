@@ -52,10 +52,20 @@ The cookie-specific code is in the `api-sheriff` module under
   <<activity-cookie>>.
 
 | `CookieKeyMaterial`
-| Resolves the one sealing key -- passed `encryption_key` versus generate-on-startup -- the
-  derived per-gateway identity salt, and the activity cookie's codec over a key derived from the
-  sealing key (`activityCodec(...)`).
+| Resolves the one sealing key -- a provided key file named by `oidc.session.key_file` versus
+  generate-on-startup -- the derived per-gateway identity salt, and the activity cookie's codec over
+  a key derived from the sealing key (`activityCodec(...)`). A provided file is read once through
+  `de.cuioss.sheriff.gateway.bff.KeyFiles`, bounded to `MAX_KEY_FILE_BYTES` (256), and decoded as
+  one line of strict base64 that must yield exactly 32 bytes. `KeyFiles` is the one step shared
+  with the signing-key reader `ClientSigningKey`; the PEM parser is never reached
+  (link:../adr/0072-The_cookie_sealing_key_is_read_from_a_base64_key_file_the_gateway_configuration_names_by_path.adoc[ADR-0072]).
 |===
+
+*Keep the two formats apart.* A sealing-key file and a signing-key file share the bounded read and
+nothing else. Do not route the base64 decode through the PEM reader or the reverse: a shared parser
+could admit a PEM block where a sealing key is expected. Every refusal names the field and the
+defect, never the path, the content or a decoder message -- the JDK's base64 error text names the
+offending character, so `CookieKeyMaterial` does not chain that exception.
 
 Everything else is shared with the server-session variant; see
 link:bff-session.adoc#_where_the_code_lives[the server-session guide] for the `bff.*` package map.
@@ -132,7 +142,8 @@ limit, and `sign` is deterministic: the same session and instant give the same v
 
 *Its own key.* `CookieKeyMaterial.activityCodec(...)` derives a key for this cookie alone from the
 sealing key, so one key serves one algorithm. A value produced by either codec is refused by the
-other. Both keys go when `encryption_key` is replaced. The operator's replacement schedule in
+other. Both keys go when the sealing key is replaced; moving the same key into another file changes
+neither. The operator's replacement schedule in
 link:../user/bff-cookie.adoc#key-rotation[the operator guide] depends on the session cookie alone.
 
 *Bound to the derived identity.* The 16-byte derived identity of the session is part of what the
@@ -360,42 +371,44 @@ This is the route that shipped, and it is the wire format the section above desc
 raw UTF-8 framing (which removes the inner base64 armouring entirely) followed by deflation before
 the seal.
 
-The measurement, from `SealedSessionCookieCodecTest`'s three-token fixture -- an access, refresh and
-ID token built to the shape Keycloak issues for the `integration` realm, with random signature
-segments of the right width for RS256 and HS512, because a repeating filler in the one part of a JWT
-deflation cannot help with would report a ratio no real token reaches:
+The headroom figure comes from a real IdP. The integration suite's cookie-refresh stack -- the
+pinned Keycloak image, its `integration` realm, refresh enabled, and access tokens bound with DPoP, so
+each carries its `cnf` claim -- logs every login's sealed value length as `ApiSheriff-15`. A targeted
+`verify -Pintegration-tests` run of the cookie and BFF suites recorded login seals of 2572, 2574,
+2578 and 2580 bytes:
 
 [cols="3,2"]
 |===
 | Quantity | Measured
 
-| Framed plaintext (length-prefixed raw UTF-8)
-| 3433 bytes -- measured before the tenth and eleventh fields, the active and granted scope sets,
-  were added; each adds its scope names (`email openid profile` in this fixture, for both sets) plus
-  one 2-byte prefix, so the rows below move by a few dozen bytes at most
+| Sealed cookie value of a three-token session, as emitted
+| 2572 to 2580 bytes
 
-| Sealed cookie value, as emitted
-| 2700 bytes -- *78.6 %* of the framed plaintext
-
-| Deflated ciphertext behind that value
-| ~1995 bytes -- about *58 %* of the framed plaintext; the difference between the two rows is the
-  14-byte envelope, the 16-byte GCM tag and the single 4/3 base64url transport expansion
-
-| Margin under the 4019-byte bar
-| *1319 bytes*, i.e. the seal uses 67.2 % of the budget and *32.8 % remains* for claim-set growth
+| Margin under the 4019-byte bar, at the largest
+| *1439 bytes*, i.e. the seal uses 64.2 % of the budget and *35.8 % remains* for claim-set growth
 
 | Against the 10 % headroom reserve (3617 bytes)
-| clears it by 917 bytes
+| clears it by 1037 bytes
 |===
+
+The packaging ratio comes from `SealedSessionCookieCodecTest`'s three-token fixture -- an access,
+refresh and ID token built to the shape Keycloak issues for the `integration` realm, with random
+signature segments of the right width for RS256 and HS512, because a repeating filler in the one part
+of a JWT deflation cannot help with would report a ratio no real token reaches. On that fixture the
+sealed value is about *79 %* of the length-prefixed framed plaintext, and the deflated ciphertext
+behind it about *58 %*; the difference between the two is the 14-byte envelope, the 16-byte GCM tag
+and the single 4/3 base64url transport expansion. The fixture predates the two scope-set fields and
+carries no `cnf` claim, so it measures the ratio, not the headroom.
 
 The ratio has a floor that no compression level can beat: the 43-character session nonce is 32 random
 bytes and is incompressible, as are the three signature segments. What deflation actually recovers is
 the JWT header and claim segments, which are base64 text carrying about six bits per byte.
 
 Read the margin as a budget for *growth*, not as spare capacity: the figures above are one realm's
-claim set, and a deployment whose IdP mints larger tokens spends that 32.8 % first. The fast gate is
-the unit measurement above, which fails before any browser is involved;
-`BffCookieRefreshIT` is what measures the real thing against a running IdP.
+claim set, and a deployment whose IdP mints larger tokens spends that 35.8 % first. The fast gate is
+the unit measurement, which fails before any browser is involved; `BffCookieRefreshIT` is what
+exercises the real thing against a running IdP. Re-measure the headroom from the `ApiSheriff-15`
+records of that stack whenever the sealed field set, the token shape or the realm changes.
 
 The safety of compress-then-encrypt in this construction -- the CRIME/BREACH discriminator, the payload
 components and who controls each -- is settled in
@@ -471,7 +484,7 @@ Docker compose stack under the integration-tests Maven profile:
 
 * `BffCookieSessionIT` -- the full login -> mediated call -> logout round trip through a real IdP.
 * `BffCookieStatelessnessIT` -- the two-instance topology (ports `10445` and `10446`) sharing only
-  the sealing key. It logs in against the *first* instance only, then exercises the second, which
+  the key files, the sealing-key file among them. It logs in against the *first* instance only, then exercises the second, which
   is what makes "the peer held no record of this session" the evidence rather than an assumption.
   That asymmetry is deliberate: it also documents the login-leg affinity boundary.
 

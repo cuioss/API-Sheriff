@@ -158,8 +158,14 @@ This is the default setup. The gateway signs with two keys, one per purpose:
   anywhere.
 |===
 
-Each key is optional. Each names a PEM file on a mount. The two may name the same file, but use two
-keys: one key per purpose is what the FAPI 2.0 profile asks for.
+Each key is optional. Each names a PEM file on a mount. The two must name different files that hold
+different keys: FAPI 2.0 section 6.8 asks for one key per purpose
+(link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]),
+and the boot refuses one key for both. In key mode one file named by both fields is refused at
+`/oidc/sender_constraint/key_file`, and the same key under two paths -- a copy or a link -- is refused
+once both keys are read. Both messages name the two configuration keys and neither a path nor a key
+id. Point `oidc.sender_constraint.key_file` at a file holding a different key, or remove it to use a
+DPoP key generated at startup.
 
 === The two modes, and when to use which
 
@@ -400,8 +406,8 @@ that session succeeds, and the new access token is bound to the new proof key.
 
 That observation has limits, and they are stated here so that it is not read as more than it is:
 
-* The gateway under test ran in cookie mode with a passed sealing key, so the session itself
-  survived the restart. In this variant sessions are held in memory, and *a restart drops them
+* The gateway under test ran in cookie mode and read its sealing key from a provided key file, so
+  the session itself survived the restart. In this variant sessions are held in memory, and *a restart drops them
   whatever the keys do*.
 * Only generated keys were replaced. Replacing a provided key file was not run.
 * It holds for the identity provider and the image named. Another identity provider may refuse a

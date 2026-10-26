@@ -254,8 +254,12 @@ column names how the boot reports it.
 | Startup fails with a `CONFIG_INVALID` refusal naming the profile key.
 
 | BFF runtime
-| Client-authentication and sender-constraint key files, cookie key material,
-  `egress_tls.oidc_tls_profile` together with `egress_tls.oidc_verify_hostname: false`.
+| Client-authentication and sender-constraint key files, one key held in both signing-key files,
+  the cookie sealing key file (`oidc.session.key_file`), `egress_tls.oidc_tls_profile` together with
+  `egress_tls.oidc_verify_hostname: false`. One file *named* by both signing-key fields is checked
+  offline -- it is a configuration verdict and is reported as an `INVALID` line at
+  `/oidc/sender_constraint/key_file`; only the same key under two different paths needs the key
+  material.
 | Startup fails with a `CONFIG_INVALID` refusal naming the key.
 
 | portal template

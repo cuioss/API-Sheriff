@@ -275,13 +275,14 @@ and an operator cannot observe systematic revocation failures. Consider WARN + c
 [cols="1,4"]
 |===
 |Severity |INFO — Confidence HIGH — Category: insecure-default (documented)
-|Location |`bff/cookie/CookieKeyMaterial.java:91-97`
+|Location |`bff/cookie/CookieKeyMaterial.resolve`
 |===
 
-Cookie mode with no `encryption_key` generates an ephemeral key (`Mode.GENERATED`,
+Cookie mode with no `session.key_file` generates an ephemeral key (`Mode.GENERATED`,
 INFO-logged). Sessions die on restart and cannot span replicas; a multi-replica operator who
-misses the caveat gets random logouts, not a vulnerability. Documented in
-`doc/user/bff-cookie.adoc`.
+misses the caveat gets random logouts, not a vulnerability. A *declared* key file never falls back
+to a generated key: a missing, unreadable, oversize or malformed file refuses the boot. Documented
+in `doc/user/bff-cookie.adoc`.
 
 === SEC-9 — Sample credentials (documented with warnings)
 

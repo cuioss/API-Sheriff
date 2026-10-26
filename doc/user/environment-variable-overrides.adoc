@@ -273,22 +273,25 @@ an alias referenced by an endpoint file that resolves to nothing, is a *boot fai
 
 === Secret placeholders written into the configuration
 
-`SHERIFF_CLIENT_SECRET` and `SHERIFF_SESSION_KEY` belong to this same visible-placeholder class,
-and the distinction matters: they are *conventional placeholder names written inside an in-file
-`${VAR}` reference*, like `TOPOLOGY_<ALIAS>` and `ENDPOINT_<ID>_ENABLED`. They are *not*
-fixed runtime keys like the `QUARKUS_*` variables the tables above enumerate.
+`SHERIFF_CLIENT_SECRET` belongs to this same visible-placeholder class, and the distinction
+matters: it is a *conventional placeholder name written inside an in-file `${VAR}` reference*, like
+`TOPOLOGY_<ALIAS>` and `ENDPOINT_<ID>_ENABLED`. It is *not* a fixed runtime key like the
+`QUARKUS_*` variables the tables above enumerate.
 
-Nothing in the gateway looks either name up. The name is whatever the configuration author wrote
+Nothing in the gateway looks the name up. The name is whatever the configuration author wrote
 between `${` and `}` -- rename it and the deployment keeps working, provided the environment
-supplies the same name. The two below are simply the names the worked examples use:
+supplies the same name. The one below is simply the name the worked examples use:
 
 [source,yaml]
 ----
 oidc:
   client_secret: ${SHERIFF_CLIENT_SECRET}     # any name works; this is the one the examples use
-  session:
-    encryption_key: ${SHERIFF_SESSION_KEY}    # cookie-mode key material
 ----
+
+`oidc.client_secret` is the one secret-classified field of the configuration. The cookie sealing
+key is not written into the configuration at all: it is read from a key file that
+`oidc.session.key_file` names by path, like the two signing keys (see
+<<_key_file_paths_are_locations_not_secrets>>).
 
 [WARNING]
 ====
@@ -303,21 +306,22 @@ link:bff-cookie.adoc#signing-keys[Cookie-Based BFF -- Key material: the two sign
 
 *The resemblance stops at the name, and the difference is load-bearing.* A secret field must be a
 *bare* `${VAR}` reference. The `${VAR:-default}` form that the topology and endpoint-enablement
-examples above use is *refused at boot* for `oidc.client_secret` and `oidc.session.encryption_key`,
-and so is a literal -- because a default on a secret is, by construction, a credential written into
-a document you commit. Write no fallback: an unset variable must fail the boot loudly rather than
-silently select a checked-in secret. This is the one place where the secret placeholders and the
-other two conventions genuinely diverge.
+examples above use is *refused at boot* for `oidc.client_secret`, and so is a literal -- because a
+default on a secret is, by construction, a credential written into a document you commit. Write no
+fallback: an unset variable must fail the boot loudly rather than silently select a checked-in
+secret. This is the one place where the secret placeholder and the other two conventions genuinely
+diverge.
 
-The practical consequence: searching the codebase for either name tells you nothing about whether
+The practical consequence: searching the codebase for the name tells you nothing about whether
 a deployment needs it. What a deployment needs is whatever `${VAR}` references its own
 `gateway.yaml` actually contains -- read the file, not this page, for that list.
 
+[[_key_file_paths_are_locations_not_secrets]]
 ==== Key-file paths are locations, not secrets
 
-The two signing-key files of a BFF deployment are named by *path*, and a path is not a secret. It
-sits with the topology values, not with the two fields above: write it literally, or supply it
-through a placeholder with or without a default.
+The three key files of a BFF deployment -- the two signing keys and the cookie sealing key -- are
+named by *path*, and a path is not a secret. It sits with the topology values, not with the secret
+field above: write it literally, or supply it through a placeholder with or without a default.
 
 [source,yaml]
 ----
@@ -326,12 +330,15 @@ oidc:
     key_file: /etc/sheriff/keys/client-auth.pem                    # a literal path
   sender_constraint:
     key_file: ${SHERIFF_DPOP_KEY_FILE:-/etc/sheriff/keys/dpop.pem} # or a variable, with a default
+  session:
+    key_file: ${SHERIFF_SESSION_KEY_FILE}                          # cookie mode: the sealing key file
 ----
 
-`SHERIFF_DPOP_KEY_FILE` is again only a name the example uses. The secret is the *content* of the
-file, and that is deployment-bound in the ordinary way: the deployment mounts the file, and
-`gateway.yaml` says where it is. See
-link:../configuration.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys].
+`SHERIFF_DPOP_KEY_FILE` and `SHERIFF_SESSION_KEY_FILE` are again only names the example uses. The
+secret is the *content* of each file, and that is deployment-bound in the ordinary way: the
+deployment mounts the file, and `gateway.yaml` says where it is. See
+link:../configuration.adoc#_oidc_signing_keys[Configuration Reference -- Signing keys] and
+link:bff-cookie.adoc#_key_material[Cookie-Based BFF -- Key material: the sealing key].
 
 === The configuration directory
 
@@ -631,7 +638,7 @@ above; it did not exhaustively trace every `@ConfigProperty` in the codebase.
   names a *profile* the deployment binds. The exceptions are keys that name a filesystem *path* to
   deployment-mounted material -- `tls.mtls.client_ca` for a CA bundle, and
   `oidc.client_authentication.key_file` and `oidc.sender_constraint.key_file` for the two BFF signing
-  keys. Each is a reference to material, still not the material itself, and the path may be supplied
+  keys, and `oidc.session.key_file` for the cookie sealing key. Each is a reference to material, still not the material itself, and the path may be supplied
   through a `${VAR}` placeholder.
 
 | Native-image SSL support

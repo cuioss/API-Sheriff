@@ -926,10 +926,13 @@ pass is the larger sample that says so again, from the other direction.
 | `composeSuppliesTheSealingKey`
   (`BffCookieActivationWiringTest`)
 | 156 | (d)
-| The yaml side asserts the reference is `${...}`-shaped (`:104`); the compose side asserts a variable
-  literally named `SESSION_ENCRYPTION_KEY` is supplied. *Neither reads the other.* Renaming the
-  variable in the overlay to `${OTHER}` keeps both green and aborts the instance's boot. Read the
-  referenced name out of the yaml and compare it against the compose key.
+| The yaml side asserted the sealing-key reference was `${...}`-shaped (`:104`); the compose side
+  asserted that an environment variable of one hard-coded name was supplied. *Neither read the
+  other.* Renaming the variable in the overlay to `${OTHER}` kept both green and aborted the
+  instance's boot. *The method has since been replaced* rather than strengthened: the sealing key is
+  now a key file the overlay names by path, and `thePeerReadsTheSameSealingKeyFile` resolves that
+  path through each service's own mounts, so the yaml side and the compose side are read together.
+  See <<after-the-passes>>.
 
 | `rpInitiatedLogoutClearsTheSealedCookie`
   (`BffCookieSessionIT`)
