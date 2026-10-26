@@ -46,6 +46,7 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
+import de.cuioss.sheriff.gateway.edge.error.UniformNotFound;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
 import de.cuioss.sheriff.gateway.portal.PortalEndpoint;
@@ -90,6 +91,12 @@ import org.junit.jupiter.params.provider.MethodSource;
  * Answers past the trust boundary, and the session branch's own negotiation, stay honest. An edge built
  * with {@code security_defaults.uniform_not_found: false} returns every honest code, so deleting the
  * switch turns this test red.
+ * <p>
+ * Every uniform {@code 404}, genuine or resolved, problem document or HTML page, leaves the edge no
+ * earlier than {@link UniformNotFound#RESPONSE_FLOOR} after it was sent; an honest answer, and the
+ * unrouted {@code 404} of an edge with the switch off, is not held back. The floor is asserted as a
+ * lower bound on the round trip; "not held back" as the fastest of several round trips coming in under
+ * the floor, which a held answer never can.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — a pre-trust rejection is answered exactly as an unrouted address")
@@ -108,6 +115,8 @@ class GatewayEdgeUniformNotFoundTest {
     private static final String NEVER_GRANTED_SCOPE = "sheriff-uniform-never-granted";
     private static final int BODY_CAP = 16;
     private static final String OVER_CAP_BODY = "x".repeat(BODY_CAP * 4);
+    /** Round trips an answer that must not be held back gets to come in under the floor once. */
+    private static final int TIMING_ATTEMPTS = 5;
 
     /** Counts the requests that actually reached the stub upstream. */
     private final AtomicInteger upstreamHits = new AtomicInteger();
@@ -274,6 +283,49 @@ class GatewayEdgeUniformNotFoundTest {
                         .contains(TENANT_HEADER.toLowerCase(Locale.ROOT)), "the match.headers Vary: " + tenant.headers()));
     }
 
+    static Stream<Rejection> floorBoundAnswers() {
+        Rejection unrouted = new Rejection("unrouted address", io.vertx.core.http.HttpMethod.GET, UNROUTED, Map.of(),
+                null, "", EventType.NO_ROUTE_MATCHED, 404);
+        Rejection unroutedPage = new Rejection("off-allowlist path, HTML page", io.vertx.core.http.HttpMethod.GET,
+                "/fenced/elsewhere", Map.of("Accept", TEXT_HTML), null, "fenced", EventType.PATH_NOT_ALLOWED, 400);
+        Set<String> timed = Set.of("missing bearer", "garbage bearer", "off-allowlist path");
+        return Stream.concat(Stream.of(unrouted, unroutedPage),
+                preTrustRejections().filter(rejection -> timed.contains(rejection.name())));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("floorBoundAnswers")
+    @DisplayName("no uniform 404, genuine or resolved, leaves the edge before the response-timing floor")
+    void uniformAnswerWaitsForTheFloor(Rejection rejection) throws Exception {
+        long sentAt = System.nanoTime();
+        Response response = send(uniformFront, rejection.method(), rejection.uri(), rejection.headers(), null);
+        long tookNanos = System.nanoTime() - sentAt;
+
+        assertAll(rejection.name(),
+                () -> assertEquals(404, response.status()),
+                () -> assertTrue(tookNanos >= UniformNotFound.RESPONSE_FLOOR.toNanos(),
+                        () -> "answered after " + tookNanos + " ns, before the floor of " + UniformNotFound.RESPONSE_FLOOR));
+    }
+
+    @Test
+    @DisplayName("an honest answer is not held back: a SCOPE_MISSING 403 arrives before the floor could release it")
+    void honestAnswerIsNotDelayed() throws Exception {
+        long fastest = fastestAnswer(uniformFront, "/scoped/data",
+                Map.of("Authorization", "Bearer " + validBearerToken, "Accept", "application/json"), 403);
+
+        assertTrue(fastest < UniformNotFound.RESPONSE_FLOOR.toNanos(),
+                () -> "the fastest of " + TIMING_ATTEMPTS + " scope refusals took " + fastest + " ns");
+    }
+
+    @Test
+    @DisplayName("switch off: the unrouted 404 is not held back either")
+    void switchOffAnswersTheUnroutedAddressAtOnce() throws Exception {
+        long fastest = fastestAnswer(honestFront, UNROUTED, Map.of("Accept", "application/json"), 404);
+
+        assertTrue(fastest < UniformNotFound.RESPONSE_FLOOR.toNanos(),
+                () -> "the fastest of " + TIMING_ATTEMPTS + " unrouted answers took " + fastest + " ns");
+    }
+
     @Test
     @DisplayName("past the trust boundary: a validated token without the needed scope is answered 403")
     void validatedTokenWithoutScopeIsAnswered403() throws Exception {
@@ -317,6 +369,23 @@ class GatewayEdgeUniformNotFoundTest {
         assertAll("control: the fixture's routes are live",
                 () -> assertEquals(200, response.status()),
                 () -> assertEquals(1, upstreamHits.get()));
+    }
+
+    /**
+     * The shortest of {@value #TIMING_ATTEMPTS} round trips to {@code uri}: a held answer can never come
+     * in under the floor, so one fast round trip proves the answer is not held, while a slow machine
+     * needs only one of the attempts to be quick.
+     */
+    private long fastestAnswer(HttpServer front, String uri, Map<String, String> headers, int expectedStatus)
+            throws Exception {
+        long fastest = Long.MAX_VALUE;
+        for (int attempt = 0; attempt < TIMING_ATTEMPTS; attempt++) {
+            long sentAt = System.nanoTime();
+            Response response = send(front, io.vertx.core.http.HttpMethod.GET, uri, headers, null);
+            fastest = Math.min(fastest, System.nanoTime() - sentAt);
+            assertEquals(expectedStatus, response.status(), uri);
+        }
+        return fastest;
     }
 
     private static void assertNothingDisclosesTheRoute(Response response) {

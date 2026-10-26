@@ -54,6 +54,7 @@ import de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler;
 import de.cuioss.sheriff.gateway.edge.assembly.SecurityPostures;
 import de.cuioss.sheriff.gateway.edge.assembly.UpstreamClients;
 import de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement;
+import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
 import de.cuioss.sheriff.gateway.edge.error.RejectionReporter;
@@ -195,7 +196,9 @@ import jakarta.inject.Inject;
  * on: the {@code 404}, the unrouted response headers and the negotiated HTML page, never a
  * trailers-only gRPC status (see {@link ErrorResponseWriter} and
  * {@link de.cuioss.sheriff.gateway.edge.error.UniformNotFound}). A caller past the boundary keeps the
- * honest answer.
+ * honest answer. Every unrouted {@code 404}, genuine or resolved, also leaves the edge no earlier than
+ * the response-timing floor after admission: the edge stashes its admission reading on the context
+ * ({@link ResponseDelay#ADMITTED_AT_KEY}), and the writer holds the answer back on a Vert.x timer.
  * <p>
  * <strong>Negotiated HTML error pages.</strong> With {@code portal.error_pages} on, the three
  * gateway-originated error writers — the problem renderer, a failed OIDC callback and a
@@ -488,6 +491,9 @@ public class GatewayEdgeRoute {
             return;
         }
         long startNanos = System.nanoTime();
+        // The admission reading is also the origin of the uniform 404's response-timing floor: the
+        // writer that answers on the far side of the virtual-thread hop reads it from the context.
+        ctx.put(ResponseDelay.ADMITTED_AT_KEY, startNanos);
         // Guard the admission accounting so it is rolled back exactly once. The end handler releases
         // it on the normal path; the executor-rejection path below also rolls it back, and both must
         // never double-release (reject() ends the response, which itself fires this end handler).

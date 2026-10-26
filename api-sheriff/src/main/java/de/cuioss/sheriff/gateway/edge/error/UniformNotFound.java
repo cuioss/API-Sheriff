@@ -15,6 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.edge.error;
 
+import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Set;
@@ -90,7 +92,17 @@ import org.jspecify.annotations.Nullable;
  * ({@code CONTENT_TOO_LARGE}, {@code SECURITY_FILTER_VIOLATION}); the trust-boundary leg of the
  * predicate, not the closed set, keeps those honest.
  * <p>
- * Immutable and thread-safe.
+ * <strong>The response-timing floor.</strong> An identical answer is not enough while the time it
+ * takes still tells the two paths apart: an unrouted address is answered straight after route
+ * selection, a resolved rejection only after the stages before it ran. So while the switch is on,
+ * every answer rendered as the unrouted {@code 404} — the genuine {@link EventType#NO_ROUTE_MATCHED}
+ * and {@link EventType#PASSTHROUGH_HOST_SMUGGLED} as much as a resolved rejection — leaves the edge no
+ * earlier than {@link #RESPONSE_FLOOR} plus a random jitter below {@link #RESPONSE_JITTER} after the
+ * request was admitted ({@link #delaysAnswer}, {@link #releaseAtNanos}). The wait is a Vert.x timer
+ * ({@code edge.end.ResponseDelay}), so no thread is held while an answer waits. Honest answers are
+ * never delayed.
+ * <p>
+ * Thread-safe: besides the switch, the only state is the jitter source, a {@link SecureRandom}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -113,7 +125,28 @@ public final class UniformNotFound {
             EventType.TOKEN_MISSING,
             EventType.TOKEN_INVALID));
 
+    /**
+     * The least time after admission before which no unrouted {@code 404} leaves the edge, while the
+     * switch is on. It sits above the worst-case processing cost of the pre-trust window, whose slowest
+     * arm is the offline validation of a well-formed bearer token with a wrong signature: every
+     * rejection the window can raise has then finished before the floor, so an unrouted address and a
+     * resolved rejection are released at the same moment. A fixed constant of the gateway, like the
+     * hardening bounds of ADR-0060 and ADR-0064 — no configuration key reaches it. The value and the
+     * measurement it rests on are recorded in ADR-0072.
+     */
+    public static final Duration RESPONSE_FLOOR = Duration.ofMillis(50);
+
+    /**
+     * The exclusive upper bound of the random jitter added on top of {@link #RESPONSE_FLOOR}. Should
+     * processing overrun the floor — a garbage-collection pause, an unusually large token — the
+     * residual difference is blurred by a jitter drawn afresh for every answer instead of showing up as
+     * a fixed offset. A fixed constant like the floor; no configuration key reaches it.
+     */
+    public static final Duration RESPONSE_JITTER = Duration.ofMillis(20);
+
     private final boolean enabled;
+    /** Draws the jitter; a predictable jitter could be subtracted out by a caller that learned it. */
+    private final SecureRandom jitterSource = new SecureRandom();
 
     /**
      * @param enabled the resolved {@code security_defaults.uniform_not_found} switch
@@ -146,5 +179,31 @@ public final class UniformNotFound {
             return false;
         }
         return !(request.onSessionBranch() && eventType.category() == EventCategory.AUTHENTICATION);
+    }
+
+    /**
+     * Decides whether an answer waits for the response-timing floor: {@code true} exactly when the
+     * switch is on and the answer is rendered as the unrouted {@code 404} —
+     * {@link EventType#NO_ROUTE_MATCHED}, which a resolved rejection is rendered as, or
+     * {@link EventType#PASSTHROUGH_HOST_SMUGGLED}, which is identical to it on the wire.
+     *
+     * @param renderedAs the event the answer is rendered as, {@code null} for an unexpected internal
+     *                   failure
+     * @return {@code true} when the answer is released no earlier than {@link #releaseAtNanos}
+     */
+    public boolean delaysAnswer(@Nullable EventType renderedAs) {
+        return enabled && (renderedAs == EventType.NO_ROUTE_MATCHED
+                || renderedAs == EventType.PASSTHROUGH_HOST_SMUGGLED);
+    }
+
+    /**
+     * The release time of an unrouted {@code 404}: admission plus {@link #RESPONSE_FLOOR} plus a fresh
+     * random jitter in {@code [0, RESPONSE_JITTER)}.
+     *
+     * @param admittedAtNanos the {@link System#nanoTime()} reading taken when the request was admitted
+     * @return the {@link System#nanoTime()} value before which the answer is not written
+     */
+    public long releaseAtNanos(long admittedAtNanos) {
+        return admittedAtNanos + RESPONSE_FLOOR.toNanos() + jitterSource.nextLong(RESPONSE_JITTER.toNanos());
     }
 }

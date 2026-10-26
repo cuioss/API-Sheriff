@@ -18,10 +18,12 @@ package de.cuioss.sheriff.gateway.edge.error;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
 
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement;
+import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnds;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
@@ -60,6 +62,15 @@ import org.jspecify.annotations.Nullable;
  * {@code Set-Cookie} line survives, and the answer is rendered through the same path as
  * {@link EventType#NO_ROUTE_MATCHED}: status {@code 404}, the {@code NO_ROUTE_MATCHED} problem body
  * without extension members, or its negotiated HTML error page — never a trailers-only gRPC status.
+ * <p>
+ * <strong>One release rule for every unrouted {@code 404}.</strong> While the switch is on, every
+ * answer rendered as the unrouted {@code 404} — a resolved rejection, the genuine
+ * {@link EventType#NO_ROUTE_MATCHED} and {@link EventType#PASSTHROUGH_HOST_SMUGGLED}, the problem
+ * document and the HTML error page alike — is written through {@link ResponseDelay} no earlier than
+ * the request's admission plus {@link UniformNotFound#RESPONSE_FLOOR} plus a random jitter below
+ * {@link UniformNotFound#RESPONSE_JITTER} ({@link UniformNotFound#releaseAtNanos}), so the unrouted
+ * path and the resolved path cannot be told apart by when they answer either. The wait is a Vert.x
+ * timer; no thread is held. Every other answer is written at once.
  * <p>
  * <strong>Rendered TO, not CALLED.</strong> The branch changes only what the caller is shown. The
  * rejection is reported under its TRUE event before it is rendered ({@link #handleGatewayRejection}),
@@ -162,6 +173,16 @@ public final class ErrorResponseWriter {
      */
     public boolean answeredWithErrorPage(RoutingContext ctx, @Nullable PipelineRequest request,
             ErrorPageClassifier.Classification classification, int status, List<String> extraSetCookies) {
+        return answeredWithErrorPage(ctx, request, classification, status, extraSetCookies, OptionalLong.empty());
+    }
+
+    /**
+     * {@link #answeredWithErrorPage(RoutingContext, PipelineRequest, ErrorPageClassifier.Classification,
+     * int, List)} with the page written no earlier than {@code releaseAtNanos} when one is present.
+     */
+    private boolean answeredWithErrorPage(RoutingContext ctx, @Nullable PipelineRequest request,
+            ErrorPageClassifier.Classification classification, int status, List<String> extraSetCookies,
+            OptionalLong releaseAtNanos) {
         if (request == null || !portalEndpoint.errorPagesEnabled()
                 || classification != ErrorPageClassifier.Classification.HTML_ELIGIBLE
                 || !ErrorPageClassifier.offersHtml(acceptHeader(request))) {
@@ -179,7 +200,7 @@ public final class ErrorResponseWriter {
                     renderFailure.getMessage());
             return false;
         }
-        writePortal(ctx, request, page, extraSetCookies);
+        writePortal(ctx, request, page, extraSetCookies, releaseAtNanos);
         return true;
     }
 
@@ -200,10 +221,19 @@ public final class ErrorResponseWriter {
      */
     public static void writePortal(RoutingContext ctx, PipelineRequest request,
             PortalEndpoint.PortalResponse portal, List<String> extraSetCookies) {
+        writePortal(ctx, request, portal, extraSetCookies, OptionalLong.empty());
+    }
+
+    /**
+     * {@link #writePortal(RoutingContext, PipelineRequest, PortalEndpoint.PortalResponse, List)} with
+     * the page written no earlier than {@code releaseAtNanos} when one is present.
+     */
+    private static void writePortal(RoutingContext ctx, PipelineRequest request,
+            PortalEndpoint.PortalResponse portal, List<String> extraSetCookies, OptionalLong releaseAtNanos) {
         SecurityHeadersStage.applyPortalHeaders(request);
         Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
-        ctx.vertx().runOnContext(v -> {
+        ctx.vertx().runOnContext(v -> answerNoEarlierThan(ctx, releaseAtNanos, () -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
                 return;
@@ -222,7 +252,7 @@ public final class ErrorResponseWriter {
             }
             ConnectionRetirement.retireMarkedConnection(ctx);
             ResponseEnds.endResponse(ctx, () -> response.end(portal.body()));
-        });
+        }));
     }
 
     /**
@@ -339,7 +369,8 @@ public final class ErrorResponseWriter {
      * HTML error page first ({@link #answeredWithErrorPage}); otherwise, or when the request does not
      * explicitly accept {@code text/html}, the RFC 9457 {@code application/problem+json} body is
      * written with the same status. The body carries the standard members first and then
-     * {@code problemExtensions}; the HTML error page never does.
+     * {@code problemExtensions}; the HTML error page never does. An answer rendered as the unrouted
+     * {@code 404} waits for its release time ({@link UniformNotFound#delaysAnswer}) in either shape.
      */
     private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType,
             Map<String, Object> problemExtensions) {
@@ -359,7 +390,10 @@ public final class ErrorResponseWriter {
             title = category != null ? category.title() : "Internal Server Error";
             classification = ErrorPageClassifier.classify(eventType);
         }
-        if (answeredWithErrorPage(ctx, request, classification, status, List.of())) {
+        OptionalLong releaseAtNanos = uniformNotFound.delaysAnswer(eventType)
+                ? OptionalLong.of(uniformNotFound.releaseAtNanos(admittedAtNanos(ctx)))
+                : OptionalLong.empty();
+        if (answeredWithErrorPage(ctx, request, classification, status, List.of(), releaseAtNanos)) {
             return;
         }
         String body = problemBody(gatewayJson, type, title, status, problemExtensions);
@@ -367,7 +401,7 @@ public final class ErrorResponseWriter {
         // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
         // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
         List<String> setCookies = request != null ? request.responseSetCookies() : List.of();
-        ctx.vertx().runOnContext(v -> {
+        ctx.vertx().runOnContext(v -> answerNoEarlierThan(ctx, releaseAtNanos, () -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
                 return;
@@ -378,7 +412,25 @@ public final class ErrorResponseWriter {
             response.putHeader("Content-Type", PROBLEM_JSON);
             ConnectionRetirement.retireMarkedConnection(ctx);
             ResponseEnds.endResponse(ctx, () -> response.end(body));
-        });
+        }));
+    }
+
+    /**
+     * Runs a writer's answer on the event loop — at once when no release time is set, the honest
+     * answer's case, and otherwise no earlier than that time through {@link ResponseDelay}.
+     */
+    private static void answerNoEarlierThan(RoutingContext ctx, OptionalLong releaseAtNanos, Runnable answer) {
+        releaseAtNanos.ifPresentOrElse(releaseAt -> ResponseDelay.endNoEarlierThan(ctx, releaseAt, answer),
+                answer);
+    }
+
+    /**
+     * The admission reading the edge root stashed ({@link ResponseDelay#ADMITTED_AT_KEY}); an answer
+     * rendered for a request that carries none is measured from now, so it still waits the full floor.
+     */
+    private static long admittedAtNanos(RoutingContext ctx) {
+        Long admittedAt = ctx.get(ResponseDelay.ADMITTED_AT_KEY);
+        return admittedAt != null ? admittedAt : System.nanoTime();
     }
 
     /**
