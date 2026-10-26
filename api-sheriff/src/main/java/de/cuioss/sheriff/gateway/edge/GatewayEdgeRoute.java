@@ -359,7 +359,8 @@ public class GatewayEdgeRoute {
                 filter -> SecurityPostures.securityPostureFor(filter, globalProfile, allowExtendedAscii),
                 egressClients::clientFor,
                 upstreamGuards::guardFor,
-                asset -> AssetSources.assetSourceFor(asset, assetContentTypes));
+                (asset, keepIdentityHeaders) -> AssetSources.assetSourceFor(asset, assetContentTypes,
+                        keepIdentityHeaders));
         this.routes = assembled.routes();
         LOGGER.info(ApiSheriffLogMessages.INFO.ROUTE_TABLE_COMPILED, routes.size());
 

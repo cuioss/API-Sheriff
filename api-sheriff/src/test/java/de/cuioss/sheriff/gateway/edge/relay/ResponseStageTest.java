@@ -226,7 +226,7 @@ class ResponseStageTest {
                     .request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, clientReq.path())
                     .compose(HttpClientRequest::send)
                     .onSuccess(upResp -> responseStage
-                            .relay(upResp, clientReq.response(), false, null, CookiesConfig.NONE,
+                            .relay(upResp, clientReq.response(), false, null, CookiesConfig.NONE, false,
                                     Map.of(FRAME_OPTIONS, "DENY"), Map.of(CSP, GATEWAY_POLICY), Supplier::get)
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                     .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
@@ -292,35 +292,196 @@ class ResponseStageTest {
         @DisplayName("a hop-by-hop header does not cross under any cookie policy")
         void hopByHopNeverCrosses() {
             assertAll("the forwardability rule comes first",
-                    () -> assertNull(stage.relayedUpstreamHeader("Connection", "close", true, all)),
-                    () -> assertNull(stage.relayedUpstreamHeader("Transfer-Encoding", "chunked", true, all)));
+                    () -> assertNull(stage.relayedUpstreamHeader("Connection", "close", true, all, false)),
+                    () -> assertNull(stage.relayedUpstreamHeader("Transfer-Encoding", "chunked", true, all, true),
+                            "keeping the identity headers re-admits no hop-by-hop header"));
         }
 
         @Test
         @DisplayName("a validator crosses only on a not_modified-enabled route")
         void validatorFollowsNotModified() {
             assertAll("the not_modified gate is part of the shared judgement",
-                    () -> assertEquals("\"v1\"", stage.relayedUpstreamHeader("ETag", "\"v1\"", true, CookiesConfig.NONE)),
-                    () -> assertNull(stage.relayedUpstreamHeader("ETag", "\"v1\"", false, CookiesConfig.NONE)));
+                    () -> assertEquals("\"v1\"",
+                            stage.relayedUpstreamHeader("ETag", "\"v1\"", true, CookiesConfig.NONE, false)),
+                    () -> assertNull(stage.relayedUpstreamHeader("ETag", "\"v1\"", false, CookiesConfig.NONE, false)));
         }
 
         @Test
         @DisplayName("an ordinary header crosses unchanged even under allow: none")
         void ordinaryHeaderCrossesUnchanged() {
             assertEquals("text/plain",
-                    stage.relayedUpstreamHeader("Content-Type", "text/plain", false, CookiesConfig.NONE));
+                    stage.relayedUpstreamHeader("Content-Type", "text/plain", false, CookiesConfig.NONE, false));
         }
 
         @Test
         @DisplayName("a Set-Cookie line crosses by the policy, with its Domain attribute removed")
         void setCookieFollowsThePolicy() {
             assertAll("the cookie policy is part of the shared judgement",
-                    () -> assertNull(stage.relayedUpstreamHeader("Set-Cookie", "app=1", false, CookiesConfig.NONE),
+                    () -> assertNull(stage.relayedUpstreamHeader("Set-Cookie", "app=1", false, CookiesConfig.NONE,
+                                    false),
                             "the default none relays no upstream cookie"),
                     () -> assertEquals("app=1; Path=/",
-                            stage.relayedUpstreamHeader("Set-Cookie", "app=1; Domain=example.com; Path=/", false, all)),
-                    () -> assertNull(stage.relayedUpstreamHeader("Set-Cookie", "__Host-sheriff-x=1", false, all),
+                            stage.relayedUpstreamHeader("Set-Cookie", "app=1; Domain=example.com; Path=/", false, all,
+                                    false)),
+                    () -> assertNull(stage.relayedUpstreamHeader("Set-Cookie", "__Host-sheriff-x=1", false, all, false),
                             "a gateway cookie is dropped under all"));
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"Server", "server", "X-Powered-By", "X-POWERED-BY"})
+        @DisplayName("an identity header is stripped by default and kept on the opt-out")
+        void identityHeaderFollowsTheOptOut(String name) {
+            assertAll("the identity strip is part of the shared judgement",
+                    () -> assertNull(stage.relayedUpstreamHeader(name, "probe/1.0", true, all, false),
+                            name + " must not cross on a route that keeps the default"),
+                    () -> assertEquals("probe/1.0", stage.relayedUpstreamHeader(name, "probe/1.0", true, all, true),
+                            name + " crosses unchanged on a keep_identity_headers route"));
+        }
+
+        @ParameterizedTest(name = "keepIdentityHeaders = {0}")
+        @ValueSource(booleans = {true, false})
+        @DisplayName("the strip composes with the ETag gating and the Set-Cookie policy, changing neither")
+        void identityStripComposesWithTheOtherRules(boolean keepIdentityHeaders) {
+            assertAll("the not_modified gate and the cookie policy are independent of the identity strip",
+                    () -> assertEquals("\"v1\"",
+                            stage.relayedUpstreamHeader("ETag", "\"v1\"", true, CookiesConfig.NONE, keepIdentityHeaders)),
+                    () -> assertNull(
+                            stage.relayedUpstreamHeader("ETag", "\"v1\"", false, CookiesConfig.NONE, keepIdentityHeaders)),
+                    () -> assertNull(stage.relayedUpstreamHeader("Set-Cookie", "app=1", false, CookiesConfig.NONE,
+                            keepIdentityHeaders)),
+                    () -> assertEquals("app=1; Path=/", stage.relayedUpstreamHeader("Set-Cookie",
+                            "app=1; Domain=example.com; Path=/", false, all, keepIdentityHeaders)),
+                    () -> assertEquals("kept", stage.relayedUpstreamHeader("X-Custom", "kept", false,
+                            CookiesConfig.NONE, keepIdentityHeaders)));
+        }
+    }
+
+    /**
+     * Both relays over a live origin that sends {@code Server} and {@code X-Powered-By} in its leading
+     * headers <em>and</em> in its trailer section, beside an ordinary {@code X-Custom} control. The front
+     * server relays that one origin with the identity strip on (the default) and off (the
+     * {@code keep_identity_headers} opt-out), so every difference between the answers is the flag's
+     * doing — and the opt-out answers prove the origin really sent the headers the default answers lack.
+     */
+    @Nested
+    @DisplayName("upstream identity headers are stripped on every relay path unless the route opts out")
+    class IdentityHeaders {
+
+        private static final String SERVER = "Server";
+        private static final String POWERED_BY = "X-Powered-By";
+        private static final String CONTROL = "X-Custom";
+        private static final String SERVER_VALUE = "nginx/1.27.0";
+        private static final String POWERED_BY_VALUE = "Express";
+        private static final String TRAILER_SERVER_VALUE = "nginx/1.27.0-trailer";
+        private static final String TRAILER_POWERED_BY_VALUE = "Express-trailer";
+        private static final String STRIP = "/strip";
+        private static final String KEEP = "/keep";
+        private static final String RELAY = "/relay";
+        private static final String WITH_TRAILERS = "/with-trailers";
+
+        private Vertx vertx;
+        private HttpClient client;
+        private HttpServer upstream;
+        private HttpServer front;
+
+        /** What the client saw of one relayed response: its leading headers and its trailers. */
+        private record Relayed(MultiMap headers, MultiMap trailers) {
+        }
+
+        @BeforeEach
+        void setUp() throws Exception {
+            vertx = Vertx.vertx();
+            client = vertx.createHttpClient();
+            upstream = Awaits.connect(vertx.createHttpServer().requestHandler(req -> {
+                HttpServerResponse response = req.response();
+                response.putHeader(SERVER, SERVER_VALUE).putHeader(POWERED_BY, POWERED_BY_VALUE)
+                        .putHeader(CONTROL, "kept");
+                response.setChunked(true);
+                response.trailers().add(SERVER, TRAILER_SERVER_VALUE).add(POWERED_BY, TRAILER_POWERED_BY_VALUE)
+                        .add("grpc-status", "0");
+                response.end("origin-body");
+            }).listen(0, LoopbackHost.ADDRESS), "the stub origin to start listening");
+            int upstreamPort = upstream.actualPort();
+
+            ResponseStage stage = new ResponseStage(RESERVED_ONLY);
+            front = Awaits.connect(vertx.createHttpServer().requestHandler(clientReq -> {
+                String path = clientReq.path();
+                boolean keep = path.startsWith(KEEP);
+                boolean withTrailers = path.endsWith(WITH_TRAILERS);
+                client.request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, "/")
+                        .compose(HttpClientRequest::send)
+                        .onSuccess(upResp -> (withTrailers
+                                ? stage.relayWithTrailers(upResp, clientReq.response(), false, CookiesConfig.NONE, keep,
+                                Map.of(), Map.of(), Supplier::get, ResponseStage.GrpcStreamIdleBound.on(vertx))
+                                : stage.relay(upResp, clientReq.response(), false, null, CookiesConfig.NONE, keep,
+                                Map.of(), Map.of(), Supplier::get))
+                                .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
+                        .onFailure(failure -> clientReq.response().setStatusCode(502).end());
+            }).listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
+        }
+
+        @AfterEach
+        void tearDown() throws Exception {
+            Awaits.teardown(front.close(), "the relaying front server to close");
+            Awaits.teardown(upstream.close(), "the stub origin to close");
+            Awaits.teardown(client.close(), "the HTTP client to close");
+            Awaits.teardown(vertx.close(), "Vert.x to close");
+        }
+
+        private Relayed relayed(String path) throws Exception {
+            return Awaits.connect(client
+                            .request(HttpMethod.GET, front.actualPort(), LoopbackHost.ADDRESS, path)
+                            .compose(HttpClientRequest::send)
+                            .compose(resp -> resp.body().map(body -> new Relayed(resp.headers(), resp.trailers()))),
+                    "the relayed response to " + path);
+        }
+
+        @Test
+        @DisplayName("HTTP relay: Server and X-Powered-By are stripped by default while X-Custom crosses")
+        void httpRelayStripsByDefault() throws Exception {
+            Relayed answer = relayed(STRIP + RELAY);
+
+            assertAll("the default strips the identity headers of the HTTP relay",
+                    () -> assertNull(answer.headers().get(SERVER), "Server must not reach the client"),
+                    () -> assertNull(answer.headers().get(POWERED_BY), "X-Powered-By must not reach the client"),
+                    () -> assertEquals("kept", answer.headers().get(CONTROL), "the control header crosses"));
+        }
+
+        @Test
+        @DisplayName("gRPC relay: the leading Server and X-Powered-By are stripped by default")
+        void grpcLeadingHeadersStripByDefault() throws Exception {
+            Relayed answer = relayed(STRIP + WITH_TRAILERS);
+
+            assertAll("the default strips the identity headers of the gRPC leading headers",
+                    () -> assertNull(answer.headers().get(SERVER)),
+                    () -> assertNull(answer.headers().get(POWERED_BY)),
+                    () -> assertEquals("kept", answer.headers().get(CONTROL), "the control header crosses"));
+        }
+
+        @Test
+        @DisplayName("gRPC relay: a Server and X-Powered-By trailer is stripped by default, grpc-status crosses")
+        void grpcTrailersStripByDefault() throws Exception {
+            Relayed answer = relayed(STRIP + WITH_TRAILERS);
+
+            assertAll("the default strips the identity trailers",
+                    () -> assertNull(answer.trailers().get(SERVER)),
+                    () -> assertNull(answer.trailers().get(POWERED_BY)),
+                    () -> assertEquals("0", answer.trailers().get("grpc-status"), "the call status still crosses"));
+        }
+
+        @Test
+        @DisplayName("opt-out: both headers cross on the HTTP relay, the gRPC leading headers and the gRPC trailers")
+        void optOutKeepsBothHeadersOnEveryPath() throws Exception {
+            Relayed http = relayed(KEEP + RELAY);
+            Relayed grpc = relayed(KEEP + WITH_TRAILERS);
+
+            assertAll("keep_identity_headers: true relays the origin's identity headers unchanged",
+                    () -> assertEquals(SERVER_VALUE, http.headers().get(SERVER)),
+                    () -> assertEquals(POWERED_BY_VALUE, http.headers().get(POWERED_BY)),
+                    () -> assertEquals(SERVER_VALUE, grpc.headers().get(SERVER)),
+                    () -> assertEquals(POWERED_BY_VALUE, grpc.headers().get(POWERED_BY)),
+                    () -> assertEquals(TRAILER_SERVER_VALUE, grpc.trailers().get(SERVER)),
+                    () -> assertEquals(TRAILER_POWERED_BY_VALUE, grpc.trailers().get(POWERED_BY)));
         }
     }
 
@@ -398,10 +559,10 @@ class ResponseStageTest {
                 client.request(HttpMethod.GET, upstreamPort, LoopbackHost.ADDRESS, "/")
                         .compose(HttpClientRequest::send)
                         .onSuccess(upResp -> (withTrailers
-                                ? stage.relayWithTrailers(upResp, clientReq.response(), false, policy, Map.of(),
-                                Map.of(), Supplier::get, ResponseStage.GrpcStreamIdleBound.on(vertx))
-                                : stage.relay(upResp, clientReq.response(), false, null, policy, Map.of(), Map.of(),
-                                Supplier::get))
+                                ? stage.relayWithTrailers(upResp, clientReq.response(), false, policy, false,
+                                Map.of(), Map.of(), Supplier::get, ResponseStage.GrpcStreamIdleBound.on(vertx))
+                                : stage.relay(upResp, clientReq.response(), false, null, policy, false, Map.of(),
+                                Map.of(), Supplier::get))
                                 .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
                         .onFailure(failure -> clientReq.response().setStatusCode(502).end());
             }).listen(0, LoopbackHost.ADDRESS), "the relaying front server to start listening");
@@ -573,9 +734,9 @@ class ResponseStageTest {
         private Future<Void> relay(ResponseStage stage, String path, HttpClientResponse upResp,
                 HttpServerResponse response, ResponseEnd end) {
             return WITH_TRAILERS.equals(path)
-                    ? stage.relayWithTrailers(upResp, response, false, CookiesConfig.NONE, Map.of(), Map.of(), end,
-                    ResponseStage.GrpcStreamIdleBound.on(vertx))
-                    : stage.relay(upResp, response, false, null, CookiesConfig.NONE, Map.of(), Map.of(), end);
+                    ? stage.relayWithTrailers(upResp, response, false, CookiesConfig.NONE, false, Map.of(), Map.of(),
+                    end, ResponseStage.GrpcStreamIdleBound.on(vertx))
+                    : stage.relay(upResp, response, false, null, CookiesConfig.NONE, false, Map.of(), Map.of(), end);
         }
 
         @ParameterizedTest

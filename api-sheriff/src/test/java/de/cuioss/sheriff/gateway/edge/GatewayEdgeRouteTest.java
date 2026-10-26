@@ -489,7 +489,8 @@ class GatewayEdgeRouteTest {
                     .compose(response -> response.end().map(response))
                     .onSuccess(ended -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), ended, end -> new ResponseStage(
                             GatewayCookies.of(ConfigFixtures.gateway().build()))
-                            .relay(ended, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(), end))));
+                            .relay(ended, ctx.response(), false, null, CookiesConfig.NONE, false, Map.of(), Map.of(),
+                                    end))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),
                     "the relaying front server to start listening");
@@ -618,8 +619,8 @@ class GatewayEdgeRouteTest {
                     }))
                     .onSuccess(received -> TerminalDispatch.relayOnEventLoop(ctx, List.of(), received,
                             end -> new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build()))
-                                    .relay(received, ctx.response(), false, null, CookiesConfig.NONE, Map.of(), Map.of(),
-                                            end)
+                                    .relay(received, ctx.response(), false, null, CookiesConfig.NONE, false, Map.of(),
+                                            Map.of(), end)
                                     .onSuccess(_ -> bodyOpenWhenRelayed.complete(!ctx.request().isEnded())))));
             HttpServer front = Awaits.connect(
                     vertx.createHttpServer().requestHandler(router).listen(0, LoopbackHost.ADDRESS),

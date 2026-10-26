@@ -24,6 +24,7 @@ import java.util.Set;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
+import de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders;
 import lombok.experimental.UtilityClass;
 
 /**
@@ -53,6 +54,10 @@ import lombok.experimental.UtilityClass;
  *       pseudo-header — the gateway's own client connection owns those, never the
  *       source's. The rule itself is {@link ConnectionHeaders}, shared with the proxy
  *       data plane's relay so the two response paths cannot diverge.</li>
+ *   <li><strong>No upstream identity.</strong> Every {@link UpstreamIdentityHeaders} member
+ *       ({@code Server}, {@code X-Powered-By}, …) the source proposed is removed — never
+ *       rewritten to a neutral value — unless the route sets
+ *       {@code keep_identity_headers: true}. The set is the one the proxy relay strips.</li>
  *   <li><strong>Read-only verbs.</strong> Only {@code GET} and {@code HEAD} are
  *       served ({@link #isAllowedMethod(HttpMethod)}).</li>
  * </ul>
@@ -180,19 +185,23 @@ public class AssetResponseEnvelope {
      * headers, and any HTTP/2 pseudo-header ({@code :status} and friends, which a source
      * reached over HTTP/2 reports among its response headers): both describe the source's
      * connection, and re-emitting either onto the client's connection makes the response
-     * malformed. Header-name matching is case-insensitive.
+     * malformed. Unless {@code keepIdentityHeaders} is set, every {@link UpstreamIdentityHeaders}
+     * member ({@code Server}, {@code X-Powered-By}, …) is dropped too — removed, never rewritten —
+     * the same set the proxy relay strips. Header-name matching is case-insensitive.
      *
-     * @param filename      the served filename, used to resolve the content type
-     * @param access        the effective access level of the serving route
-     * @param sourceHeaders the raw headers the backing source proposed; never
-     *                      {@code null}
-     * @param operatorTypes the boot-resolved add-only operator content-type additions,
-     *                      forwarded to {@link #contentTypeFor(String, Map)}; never
-     *                      {@code null}, empty when unconfigured
+     * @param filename            the served filename, used to resolve the content type
+     * @param access              the effective access level of the serving route
+     * @param sourceHeaders       the raw headers the backing source proposed; never
+     *                            {@code null}
+     * @param operatorTypes       the boot-resolved add-only operator content-type additions,
+     *                            forwarded to {@link #contentTypeFor(String, Map)}; never
+     *                            {@code null}, empty when unconfigured
+     * @param keepIdentityHeaders whether the serving route opts out of the identity-header strip
+     *                            ({@code keep_identity_headers: true})
      * @return an ordered, mutable copy of the governed headers
      */
     public static Map<String, String> governedHeaders(String filename, AccessLevel access,
-            Map<String, String> sourceHeaders, Map<String, String> operatorTypes) {
+            Map<String, String> sourceHeaders, Map<String, String> operatorTypes, boolean keepIdentityHeaders) {
         Objects.requireNonNull(filename, "filename");
         Objects.requireNonNull(access, "access");
         Objects.requireNonNull(sourceHeaders, "sourceHeaders");
@@ -200,7 +209,7 @@ public class AssetResponseEnvelope {
         boolean authenticated = access == AccessLevel.AUTHENTICATED;
         Map<String, String> governed = new LinkedHashMap<>();
         for (Map.Entry<String, String> header : sourceHeaders.entrySet()) {
-            if (isGatewayOwned(header.getKey(), authenticated)) {
+            if (isGatewayOwned(header.getKey(), authenticated, keepIdentityHeaders)) {
                 continue;
             }
             governed.put(header.getKey(), header.getValue());
@@ -213,11 +222,12 @@ public class AssetResponseEnvelope {
         return governed;
     }
 
-    private static boolean isGatewayOwned(String headerName, boolean authenticated) {
+    private static boolean isGatewayOwned(String headerName, boolean authenticated, boolean keepIdentityHeaders) {
         return CONTENT_TYPE.equalsIgnoreCase(headerName)
                 || CONTENT_TYPE_OPTIONS.equalsIgnoreCase(headerName)
                 || SET_COOKIE.equalsIgnoreCase(headerName)
                 || (authenticated && CACHE_CONTROL.equalsIgnoreCase(headerName))
-                || ConnectionHeaders.isConnectionSpecific(headerName);
+                || ConnectionHeaders.isConnectionSpecific(headerName)
+                || (!keepIdentityHeaders && UpstreamIdentityHeaders.isIdentityHeader(headerName));
     }
 }

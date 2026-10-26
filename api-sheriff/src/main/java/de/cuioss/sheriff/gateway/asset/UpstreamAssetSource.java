@@ -65,7 +65,10 @@ import org.jspecify.annotations.Nullable;
  * upstream sent {@code Cache-Control: public}. The envelope also strips every header the
  * shared {@link de.cuioss.sheriff.gateway.http.ConnectionHeaders} policy names — this source
  * is the only one that proposes any, since {@code DirectoryAssetSource} has no connection to
- * describe — so the upstream's hop state never lands on the client's connection.
+ * describe — so the upstream's hop state never lands on the client's connection. Unless the route
+ * sets {@code keep_identity_headers: true}, the envelope also removes the origin's
+ * {@link de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders} ({@code Server},
+ * {@code X-Powered-By}, …), the same set the proxy relay strips.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -97,6 +100,7 @@ public final class UpstreamAssetSource implements AssetSource {
     private final UpstreamFetcher fetcher;
     private final long maxBytes;
     private final Map<String, String> operatorContentTypes;
+    private final boolean keepIdentityHeaders;
 
     /**
      * Creates a source for a fixed-topology upstream and route access level, using the
@@ -107,12 +111,15 @@ public final class UpstreamAssetSource implements AssetSource {
      * @param access               the serving route's effective access level (mandatory)
      * @param operatorContentTypes the boot-resolved add-only content-type additions
      *                             (mandatory; empty when unconfigured)
+     * @param keepIdentityHeaders  whether the serving route keeps the origin's
+     *                             {@link de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders}
+     *                             ({@code keep_identity_headers: true}); {@code false} strips them
      */
     public UpstreamAssetSource(ResolvedUpstream upstream, AccessLevel access,
-            Map<String, String> operatorContentTypes) {
+            Map<String, String> operatorContentTypes, boolean keepIdentityHeaders) {
         this(upstream, access, new PathConfinement(),
                 httpFetcher(DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, AssetSource.DEFAULT_MAX_BYTES),
-                AssetSource.DEFAULT_MAX_BYTES, operatorContentTypes);
+                AssetSource.DEFAULT_MAX_BYTES, operatorContentTypes, keepIdentityHeaders);
     }
 
     /**
@@ -134,7 +141,7 @@ public final class UpstreamAssetSource implements AssetSource {
      * otherwise serve.
      * <p>
      * The production path keeps the caps aligned anyway: the {@linkplain
-     * #UpstreamAssetSource(ResolvedUpstream, AccessLevel, Map) three-argument constructor} passes
+     * #UpstreamAssetSource(ResolvedUpstream, AccessLevel, Map, boolean) short constructor} passes
      * {@link AssetSource#DEFAULT_MAX_BYTES} to both, so both derive from the one shared seam.
      *
      * @param upstream             the boot-resolved upstream target (mandatory)
@@ -148,9 +155,13 @@ public final class UpstreamAssetSource implements AssetSource {
      *                             (mandatory; empty when unconfigured). Resolved once at
      *                             boot and read-only thereafter — no per-request lookup
      *                             and no shared mutable state.
+     * @param keepIdentityHeaders  whether the serving route keeps the origin's
+     *                             {@link de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders}
+     *                             ({@code keep_identity_headers: true}); {@code false} strips them
      */
     public UpstreamAssetSource(ResolvedUpstream upstream, AccessLevel access, PathConfinement confinement,
-            UpstreamFetcher fetcher, long maxBytes, Map<String, String> operatorContentTypes) {
+            UpstreamFetcher fetcher, long maxBytes, Map<String, String> operatorContentTypes,
+            boolean keepIdentityHeaders) {
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.access = Objects.requireNonNull(access, "access");
         this.confinement = Objects.requireNonNull(confinement, "confinement");
@@ -158,13 +169,14 @@ public final class UpstreamAssetSource implements AssetSource {
         this.maxBytes = maxBytes;
         this.operatorContentTypes = Map.copyOf(
                 Objects.requireNonNull(operatorContentTypes, "operatorContentTypes"));
+        this.keepIdentityHeaders = keepIdentityHeaders;
     }
 
     /**
      * The fetch seam this source will use — the one supplied to the
      * {@linkplain #UpstreamAssetSource(ResolvedUpstream, AccessLevel, PathConfinement, UpstreamFetcher,
-     * long, Map) explicit-seam constructor}, or the one the
-     * {@linkplain #UpstreamAssetSource(ResolvedUpstream, AccessLevel, Map) short constructor} built.
+     * long, Map, boolean) explicit-seam constructor}, or the one the
+     * {@linkplain #UpstreamAssetSource(ResolvedUpstream, AccessLevel, Map, boolean) short constructor} built.
      * <p>
      * It exists so the short constructor's wiring is verifiable: paired with
      * {@link HttpUpstreamFetcher}'s budget accessors it makes the timeouts that constructor actually
@@ -226,7 +238,7 @@ public final class UpstreamAssetSource implements AssetSource {
             return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
         }
         Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                filenameOf(confined.get()), access, fetched.headers(), operatorContentTypes);
+                filenameOf(confined.get()), access, fetched.headers(), operatorContentTypes, keepIdentityHeaders);
         boolean serveBody = method == HttpMethod.GET && fetched.status() < LOWEST_ERROR_STATUS;
         byte[] body = serveBody ? fetched.body() : EMPTY_BODY;
         return new Served(fetched.status(), governed, body);

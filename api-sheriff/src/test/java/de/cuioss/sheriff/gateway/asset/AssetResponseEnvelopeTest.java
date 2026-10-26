@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -30,6 +31,7 @@ import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.edge.relay.ResponseStage;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
+import de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -185,7 +187,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("Content-Type", "text/plain");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of(), false);
 
             assertAll(
                     () -> assertEquals(AssetResponseEnvelope.NOSNIFF,
@@ -203,7 +205,7 @@ class AssetResponseEnvelopeTest {
             Map<String, String> operatorTypes = Map.of("webmanifest", "application/manifest+json");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "site.webmanifest", AccessLevel.PUBLIC, sourceHeaders, operatorTypes);
+                    "site.webmanifest", AccessLevel.PUBLIC, sourceHeaders, operatorTypes, false);
 
             assertEquals("application/manifest+json", governed.get(AssetResponseEnvelope.CONTENT_TYPE),
                     "the operator addition must reach the governed header, still overriding the source");
@@ -216,7 +218,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("Cache-Control", "public, max-age=31536000");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "secret.json", AccessLevel.AUTHENTICATED, sourceHeaders, Map.of());
+                    "secret.json", AccessLevel.AUTHENTICATED, sourceHeaders, Map.of(), false);
 
             assertEquals(AssetResponseEnvelope.NO_STORE, governed.get(AssetResponseEnvelope.CACHE_CONTROL),
                     "an authenticated asset must never be cacheable, overriding the source's Cache-Control");
@@ -229,7 +231,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("Cache-Control", "public, max-age=600");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "logo.png", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+                    "logo.png", AccessLevel.PUBLIC, sourceHeaders, Map.of(), false);
 
             assertEquals("public, max-age=600", governed.get(AssetResponseEnvelope.CACHE_CONTROL),
                     "a public asset keeps the source's caching");
@@ -243,7 +245,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("X-Custom", "kept");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "app.js", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+                    "app.js", AccessLevel.PUBLIC, sourceHeaders, Map.of(), false);
 
             assertAll(
                     () -> assertFalse(governed.keySet().stream().anyMatch("Set-Cookie"::equalsIgnoreCase),
@@ -285,7 +287,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("X-Custom", "kept");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of(), true);
 
             assertAll(
                     () -> assertFalse(governed.keySet().stream().anyMatch(name::equalsIgnoreCase),
@@ -304,16 +306,16 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("Proxy-Connection", "keep-alive");
             sourceHeaders.put("Transfer-Encoding", "chunked");
             sourceHeaders.put("Content-Length", "530");
-            sourceHeaders.put("Server", "nginx");
+            sourceHeaders.put("ETag", "\"v1\"");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of(), false);
 
             assertAll(
                     () -> assertEquals(Set.of(AssetResponseEnvelope.CONTENT_TYPE,
-                                    AssetResponseEnvelope.CONTENT_TYPE_OPTIONS, "Server"), governed.keySet(),
-                            "only the gateway's own headers and the end-to-end Server header survive"),
-                    () -> assertEquals("nginx", governed.get("Server")));
+                                    AssetResponseEnvelope.CONTENT_TYPE_OPTIONS, "ETag"), governed.keySet(),
+                            "only the gateway's own headers and the end-to-end ETag header survive"),
+                    () -> assertEquals("\"v1\"", governed.get("ETag")));
         }
 
         @Test
@@ -327,7 +329,7 @@ class AssetResponseEnvelopeTest {
             sourceHeaders.put("X-Custom", "kept");
 
             Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
-                    "app.js", AccessLevel.PUBLIC, sourceHeaders, Map.of());
+                    "app.js", AccessLevel.PUBLIC, sourceHeaders, Map.of(), false);
 
             assertAll(
                     () -> assertFalse(governed.containsKey(":status"),
@@ -353,8 +355,56 @@ class AssetResponseEnvelopeTest {
             }
         }
 
-        private static String capitalized(String name) {
+        static String capitalized(String name) {
             return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        }
+    }
+
+    /**
+     * The upstream identity-header strip — the same {@link UpstreamIdentityHeaders} set the proxy relay
+     * reads, removed unless the serving route sets {@code keep_identity_headers: true}.
+     */
+    @Nested
+    @DisplayName("The upstream identity-header strip")
+    class IdentityHeaderStrip {
+
+        /** Every identity name in an origin-style spelling and in upper case, from the production set. */
+        static Stream<String> identitySpellings() {
+            return UpstreamIdentityHeaders.NAMES.stream()
+                    .flatMap(name -> Stream.of(ConnectionSpecificStrip.capitalized(name), name.toUpperCase(Locale.ROOT)));
+        }
+
+        @ParameterizedTest
+        @MethodSource("identitySpellings")
+        @DisplayName("Should strip each identity header by default, in any letter case, keeping X-Custom")
+        void shouldStripIdentityHeaderByDefault(String name) {
+            Map<String, String> sourceHeaders = new LinkedHashMap<>();
+            sourceHeaders.put(name, "probe/1.0");
+            sourceHeaders.put("X-Custom", "kept");
+
+            Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of(), false);
+
+            assertAll(
+                    () -> assertFalse(governed.keySet().stream().anyMatch(name::equalsIgnoreCase),
+                            () -> name + " discloses the origin's software and must not reach the client"),
+                    () -> assertEquals("kept", governed.get("X-Custom"),
+                            "unrelated source headers still pass through"));
+        }
+
+        @Test
+        @DisplayName("Should keep Server and X-Powered-By unchanged when the route opts out")
+        void shouldKeepIdentityHeadersOnOptOut() {
+            Map<String, String> sourceHeaders = new LinkedHashMap<>();
+            sourceHeaders.put("Server", "nginx/1.27.0");
+            sourceHeaders.put("X-Powered-By", "Express");
+
+            Map<String, String> governed = AssetResponseEnvelope.governedHeaders(
+                    "index.html", AccessLevel.PUBLIC, sourceHeaders, Map.of(), true);
+
+            assertAll("keep_identity_headers: true relays the origin's banner unchanged",
+                    () -> assertEquals("nginx/1.27.0", governed.get("Server")),
+                    () -> assertEquals("Express", governed.get("X-Powered-By")));
         }
     }
 

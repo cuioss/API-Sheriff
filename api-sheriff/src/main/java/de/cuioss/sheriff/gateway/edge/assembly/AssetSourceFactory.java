@@ -30,8 +30,10 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 public interface AssetSourceFactory {
 
     /**
-     * @param asset the resolved asset terminal action
+     * @param asset               the resolved asset terminal action
+     * @param keepIdentityHeaders the serving route's {@code keep_identity_headers} opt-out, which an
+     *                            {@code upstream} source honours when it governs the origin's headers
      * @return the built asset source
      */
-    AssetSource create(ResolvedAsset asset);
+    AssetSource create(ResolvedAsset asset, boolean keepIdentityHeaders);
 }

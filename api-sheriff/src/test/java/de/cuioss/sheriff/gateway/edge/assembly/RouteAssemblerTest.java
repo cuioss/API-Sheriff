@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -88,7 +89,7 @@ class RouteAssemblerTest {
                 SecurityConfiguration.builder().build());
         clientFactory = _ -> vertx.createHttpClient();
         guardFactory = _ -> new StoredOnlyGuard();
-        assetSourceFactory = asset -> new DirectoryAssetSource(
+        assetSourceFactory = (asset, keepIdentityHeaders) -> new DirectoryAssetSource(
                 Path.of(Objects.requireNonNullElse(asset.directory(), "/tmp")), asset.access(), asset.index(),
                 asset.fallback(), Map.of());
     }
@@ -453,9 +454,9 @@ class RouteAssemblerTest {
                 .build();
         RouteTable table = new RouteTable(List.of(assetRoute));
         List<ResolvedAsset> requestedSources = new ArrayList<>();
-        AssetSourceFactory capturingAssetSourceFactory = asset -> {
+        AssetSourceFactory capturingAssetSourceFactory = (asset, keepIdentityHeaders) -> {
             requestedSources.add(asset);
-            return assetSourceFactory.create(asset);
+            return assetSourceFactory.create(asset, keepIdentityHeaders);
         };
 
         RouteAssembler.AssembledRoutes assembled = assembler.assemble(table, securityConfigFactory, clientFactory,
@@ -473,6 +474,32 @@ class RouteAssemblerTest {
                 "the resolved index reaches the asset-source factory");
         assertEquals("index.html", requestedSources.getFirst().fallback(),
                 "the resolved fallback reaches the asset-source factory");
+    }
+
+    @Test
+    @DisplayName("Should hand each asset route's keep_identity_headers opt-out to the asset-source factory")
+    void shouldHandKeepIdentityHeadersToAssetSourceFactory() {
+        ResolvedUpstream keepingOrigin = new ResolvedUpstream("https", "keeping.example", 443, "");
+        ResolvedUpstream strippingOrigin = new ResolvedUpstream("https", "stripping.example", 443, "");
+        RouteTable table = new RouteTable(List.of(
+                ConfigFixtures.route("keeping", "/keep")
+                        .asset(ResolvedAsset.upstream(keepingOrigin, AccessLevel.PUBLIC))
+                        .keepIdentityHeaders(true).build(),
+                ConfigFixtures.route("stripping", "/strip")
+                        .asset(ResolvedAsset.upstream(strippingOrigin, AccessLevel.PUBLIC)).build()));
+        Map<ResolvedUpstream, Boolean> requestedFlags = new HashMap<>();
+        AssetSourceFactory capturingAssetSourceFactory = (asset, keepIdentityHeaders) -> {
+            requestedFlags.put(asset.upstream(), keepIdentityHeaders);
+            return assetSourceFactory.create(asset, keepIdentityHeaders);
+        };
+
+        assembler.assemble(table, securityConfigFactory, clientFactory, guardFactory, capturingAssetSourceFactory);
+
+        assertAll("the factory receives each route's own flag",
+                () -> assertEquals(Boolean.TRUE, requestedFlags.get(keepingOrigin),
+                        "a keep_identity_headers route hands true to its source"),
+                () -> assertEquals(Boolean.FALSE, requestedFlags.get(strippingOrigin),
+                        "a route without the key hands the strip default to its source"));
     }
 
     @Test
