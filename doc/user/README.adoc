@@ -288,9 +288,11 @@ validate it against real traffic before it reaches production.
 
 `strict` is genuinely strict, so a route that legitimately needs headroom must say so. If a request
 is rejected `400` -- or `413` when it is the body cap -- check it against the `strict` caps in the
-mode table above. A route-scoped rejection is answered as the unrouted `404` instead, to every
-client. That includes a client presenting a valid token, because the route's checks run before the
-gateway looks at any credential. So a `404` from a route that exists can be the same cap: read
+mode table above. A route-scoped rejection raised before the credential check is answered as the
+unrouted `404` instead, to every client. That includes a client presenting a valid token, because
+those checks run before the gateway looks at any credential. A body that overruns the cap while it
+streams, and a filter refusal raised at dispatch, come after the credential check and keep their
+honest codes. So a `404` from a route that exists can be the same cap: read
 `sheriff_errors_total{event}` for the true cause (`SECURITY_FILTER_VIOLATION`, `PATH_NOT_ALLOWED`, `CONTENT_TOO_LARGE`), as
 described in link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route
 answers 404]. Two remedies, in order of preference:

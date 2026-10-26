@@ -2198,12 +2198,14 @@ edge that each of its pre-trust rejections is byte-identical to the unrouted ans
 `Content-Type` and header set, the HTML branch included. Its rejections are a missing and a garbage
 bearer, a wrong method, an off-allowlist path, the route-scoped filter `400` and body cap, the
 session CSRF refusal, a `protocol: grpc` route, the bearer branch of a session-fallback route and a
-`match.headers` route. It also asserts that no uniform `404` leaves before the floor, that a scope
-`403` is not delayed, and that the switch set to `false` restores the honest codes.
-`ResponseDelayTest` asserts that the wait is a timer and not a held thread. `EnumerationOracleIT`
+`match.headers` route. It also asserts that a scope `403` is not delayed and that the switch set to
+`false` restores the honest codes. It times the floor for a subset only: the genuine unrouted `404`,
+a missing and a garbage bearer and an off-allowlist path, the last under `Accept: text/html` as
+well. `ResponseDelayTest` asserts that the wait is a timer and not a held thread. `EnumerationOracleIT`
 makes the same comparison against the native image on the shipped default for the bearer-route
 subset: no token, a garbage token, a wrong method, an off-allowlist path, an oversized declared body
-and a `protocol: grpc` route. It also asserts the honest `403` of a validated token lacking a scope
+and a `protocol: grpc` route. For each of those it also asserts that the resolved and the genuine
+unrouted answer both wait for the floor. It also asserts the honest `403` of a validated token lacking a scope
 and the `302` / `401` of a session route. The cookie-forwarding same-origin refusal is covered by
 status and problem type only: `GatewayEdgeCookiePolicyTest` asserts its `404`, and
 `CookieForwardingPolicyIT` asserts the `404` and the routing problem type. No test compares its
@@ -2232,8 +2234,10 @@ held while an answer waits (<<gw-07>>).
 token, a garbage token, a wrong method, an off-allowlist path, a route-scoped filter violation, an
 oversized declared body, or a cross-origin unsafe request on a session route receives the same
 status, body, `Content-Type` and header names as the unrouted address. This holds under
-`Accept: text/html` as well and on a `protocol: grpc` route. None of those answers leaves before the
-floor, and `sheriff_errors_total` carries the true event. A cross-site unsafe request carrying a
+`Accept: text/html` as well and on a `protocol: grpc` route. `sheriff_errors_total` carries the true
+event. None of those answers leaves before the floor; the floor is timed for every case of that list
+except the route-scoped filter violation and the cross-origin request on a session route, which
+inherit it from the same renderer branch untimed. A cross-site unsafe request carrying a
 forwarded cookie receives the `404` with the routing problem type; only that status and type are
 asserted for it. A validated token without the needed scope still receives `403`, and a session
 route still receives `302` / `401`. With `security_defaults.uniform_not_found: false`, every case
