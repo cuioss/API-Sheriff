@@ -59,7 +59,7 @@ are native to the Vert.x client that already runs the gateway's edge.
   *both halves of one exchange* -- the validators the client sends and the validators the
   upstream answers with -- because forwarding a precondition whose answer is then stripped
   makes the gateway ask a question it discards the answer to (see Amendment A1 for the
-  request-half membership and the one boundary that survives):
+  request-half membership):
 ** *enabled* (default) -- the RFC 9110 §13 conditional-request validators cross to the
    upstream, and upstream `304` responses plus the validator response headers (`ETag`,
    `Last-Modified`) relay untouched. `304` carries no body -- fully streaming-compatible, zero
@@ -109,15 +109,13 @@ description no longer holds in either of its two parts:
   without an operator entry -- so they reach the upstream under every mode, and the toggle
   decides whether that tier is admitted at all.
 
-*The one boundary that survives, recorded rather than resolved.* The toggle gates the protocol
-set's *admission path*; it is not a withholding rule applied to the mode copy. A forward-all or
-negative-list route therefore still carries a client's validator upstream with the flag *off* --
-the header crosses on the route's declared posture -- while the response half strips the `ETag`
-that would answer it. That is the asymmetry this toggle exists to prevent, surviving in the one
-mode the toggle does not reach. Closing it means changing what forward-all means for a class of
-client headers, which belongs with the mode model rather than here, so it is pinned by a
-characterization test and left open. A route that must withhold the validators under a
-permissive posture names them in `headers_deny`.
+*The toggle withholds the validators under every forward mode.* With the flag *off*, the
+gateway removes the five validators from the client's headers after the mode copy. A
+forward-all, negative-list or positive-list route therefore carries none of them upstream, and
+no route forwards a precondition whose answering `ETag` the response half strips. The two halves
+are one decision in every mode, so `headers_deny` is no longer needed to withhold the validators
+under a permissive posture. `set_headers` is operator configuration and stays ungated. ADR-0037
+records why narrowing forward-all for this class of client headers is deliberate.
 
 [[_amendment_a2]]
 === Amendment A2 -- the breaker is not assembled from `upstream.circuit_breaker`
