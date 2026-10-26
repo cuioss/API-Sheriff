@@ -21,8 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Locale;
-
 import de.cuioss.sheriff.gateway.bff.cookie.SessionActivityCookieCodec;
 import de.cuioss.sheriff.gateway.bff.logout.RpInitiatedLogout;
 import de.cuioss.sheriff.gateway.bff.pending.BindingCookieCodec;
@@ -154,11 +152,22 @@ class GatewayCookiesTest {
         void shouldCompareConfiguredNameCaseSensitively() {
             GatewayCookies configured = GatewayCookies.of(gatewayWithSession(OidcConfig.Session.MODE_SERVER, customName));
             String prefixVariant = "__HOST-" + customName.substring("__Host-".length());
-            String remainderVariant = "__Host-" + customName.substring("__Host-".length()).toUpperCase(Locale.ROOT);
+            String remainderVariant = "__Host-" + invertedCase(customName.substring("__Host-".length()));
 
             assertAll("a browser stores the remainder as written",
                     () -> assertTrue(configured.matchesName(prefixVariant), prefixVariant),
                     () -> assertFalse(configured.matchesName(remainderVariant), remainderVariant));
+        }
+
+        /**
+         * The letters with every case inverted, so the result differs from its input whatever case
+         * the generator produced; upper-casing alone left an all-uppercase remainder unchanged.
+         */
+        private String invertedCase(String letters) {
+            StringBuilder inverted = new StringBuilder(letters.length());
+            letters.chars().forEach(c -> inverted.appendCodePoint(
+                    Character.isUpperCase(c) ? Character.toLowerCase(c) : Character.toUpperCase(c)));
+            return inverted.toString();
         }
 
         private GatewayConfig gatewayWithSession(String mode, @Nullable String cookieName) {
