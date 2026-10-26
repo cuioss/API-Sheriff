@@ -76,6 +76,7 @@ class ConfigModelContractTest {
 
     /** The back-channel origin of the {@link #oidcConfig()} fixture: an internal address, not a secret. */
     private static final String BACK_CHANNEL_ORIGIN = "https://keycloak:8443";
+    private static final String SESSION_KEY_FILE = "/etc/sheriff/keys/session.key";
 
     private static AuthConfig auth() {
         return AuthConfig.builder().require(Require.BEARER).build();
@@ -195,7 +196,7 @@ class ConfigModelContractTest {
                 .session(OidcConfig.Session.builder()
                         .mode("cookie")
                         .cookieName("sid")
-                        .encryptionKey("${SESSION_KEY}")
+                        .keyFile(SESSION_KEY_FILE)
                         .ttlSeconds(3600)
                         .csrf(new OidcConfig.Csrf(List.of("https://app.example.com")))
                         .refresh(new OidcConfig.Refresh(true, 60, "reauthenticate"))
@@ -1846,11 +1847,15 @@ class ConfigModelContractTest {
         }
 
         @Test
-        void sessionToStringCarriesMaxSessionsAndStillRedactsKeys() {
+        void sessionToStringCarriesMaxSessionsAndRendersTheKeyFileAsIs() {
             String rendered = oidcConfig().session().toString();
-            assertTrue(rendered.contains("maxSessions="), "Session toString must surface the max_sessions bound");
-            assertTrue(rendered.contains("***REDACTED***"), "the encryption key must stay redacted");
-            assertFalse(rendered.contains("${SESSION_KEY}"), "the raw encryption-key reference must never appear");
+            assertAll(
+                    () -> assertTrue(rendered.contains("maxSessions="),
+                            "Session toString must surface the max_sessions bound"),
+                    () -> assertTrue(rendered.contains("keyFile=" + SESSION_KEY_FILE),
+                            "the sealing key file is a location, not a secret: it is rendered as it is"),
+                    () -> assertFalse(rendered.contains("***REDACTED***"),
+                            "the session block holds no secret any more, so nothing in it is redacted"));
         }
     }
 
@@ -2089,15 +2094,15 @@ class ConfigModelContractTest {
         }
 
         @Test
-        @DisplayName("renders the idle timeout in toString and still redacts the encryption key")
+        @DisplayName("renders the idle timeout and the key file in toString")
         void rendersTheIdleTimeoutInToString() {
-            String key = "resolved-cookie-encryption-key";
             String rendered = OidcConfig.Session.builder().mode(OidcConfig.Session.MODE_COOKIE)
-                    .encryptionKey(key).idleTimeoutSeconds(120).build().toString();
+                    .keyFile(SESSION_KEY_FILE).idleTimeoutSeconds(120).build().toString();
 
             assertAll(
                     () -> assertTrue(rendered.contains("idleTimeoutSeconds=120"), rendered),
-                    () -> assertFalse(rendered.contains(key), "the encryption key must never appear"));
+                    () -> assertTrue(rendered.contains("keyFile=" + SESSION_KEY_FILE),
+                            "the key file is a location and is rendered as it is: " + rendered));
         }
     }
 }

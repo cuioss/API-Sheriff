@@ -139,7 +139,8 @@ What an attacker wants, ranked by blast radius:
 
 | Session / flow secrets
 | Session-id cookie, the pending-authorization record (`state`/`nonce`/PKCE verifier), the
-  cookie encryption key(s). Forgery or replay = impersonation.
+  cookie sealing key -- read by the gateway from a key file on a mount, or generated at startup.
+  Forgery or replay = impersonation.
 
 | Client credential and signing keys (BFF variants)
 | What the gateway proves its own identity with at the identity provider, and what its access tokens are

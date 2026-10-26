@@ -15,13 +15,8 @@
  */
 package de.cuioss.sheriff.gateway.bff.client;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
 import java.security.AlgorithmParameters;
 import java.security.GeneralSecurityException;
 import java.security.Key;
@@ -55,6 +50,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
+import de.cuioss.sheriff.gateway.bff.KeyFiles;
 import de.cuioss.sheriff.token.client.auth.PrivateKeyJwtAuth;
 import de.cuioss.sheriff.token.client.dpop.DpopProofGenerator;
 import de.cuioss.sheriff.token.client.dpop.SenderConstraint;
@@ -304,33 +300,12 @@ public final class ClientSigningKey {
     }
 
     /**
-     * Reads the key file once, bounded. The I/O failure text of the JDK carries the path, so no
-     * cause is chained into the refusal.
+     * Reads the key file once, bounded, through the read the BFF key files share. Only the read is
+     * shared: the PEM parsing below stays here, so the cookie sealing-key file never reaches it.
      */
     private static String readBounded(String keyFile, Purpose purpose) {
-        Path path;
-        try {
-            path = Path.of(keyFile);
-        } catch (InvalidPathException _) {
-            // The exception text echoes the configured value — name the field, never chain the cause.
-            throw refusal(purpose, "does not name a usable file path");
-        }
-        if (Files.notExists(path)) {
-            throw refusal(purpose, "names a file that does not exist");
-        }
-        if (!Files.isRegularFile(path)) {
-            throw refusal(purpose, "does not name a regular file");
-        }
-        try (InputStream content = Files.newInputStream(path)) {
-            byte[] bytes = content.readNBytes(MAX_KEY_FILE_BYTES + 1);
-            if (bytes.length > MAX_KEY_FILE_BYTES) {
-                throw refusal(purpose, "names a file larger than the %d byte limit".formatted(MAX_KEY_FILE_BYTES));
-            }
-            return new String(bytes, StandardCharsets.ISO_8859_1);
-        } catch (IOException _) {
-            // The exception text carries the path — name the field, never chain the cause.
-            throw refusal(purpose, "names a file that cannot be read");
-        }
+        return new String(KeyFiles.readBounded(keyFile, purpose.configField(), MAX_KEY_FILE_BYTES),
+                StandardCharsets.ISO_8859_1);
     }
 
     /**

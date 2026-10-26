@@ -77,6 +77,7 @@ import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.OidcClientRules;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -161,6 +162,13 @@ import org.jspecify.annotations.Nullable;
  * client-authentication modes. A generated key lives for one process: it is replaced on every
  * restart and cannot be shared, so every instance behind one identity-provider client must be given
  * the same key files. A separate DPoP proof key is never published at the client JWKS endpoint.
+ * <p>
+ * <strong>The two signing keys are two keys (FAPI 2.0 section 6.8).</strong> In key mode the key that
+ * signs the client assertion must not also sign the DPoP proofs. Boot validation refuses the two
+ * {@code key_file} fields naming the same file; once both keys are resolved, this producer also
+ * refuses a client-authentication key and a sender-constraint key with the same key id — the same key
+ * provided in two files, a copy — with {@code CONFIG_INVALID}, naming both fields and no
+ * key id. In client-secret mode there is no client-authentication key to compare.
  * <p>
  * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
  * token-endpoint client is a {@link BoundTokenEndpointClient} over the base back-channel
@@ -320,6 +328,15 @@ public class BffRuntimeProducer {
     private static final String ON_FAILURE_REAUTHENTICATE = "reauthenticate";
     /** The {@code oidc.session.refresh.on_failure} spelling that answers {@code 401} for every request. */
     private static final String ON_FAILURE_REJECT = "reject";
+    /**
+     * The fixed detail of the boot refusal of one key provided for both client authentication and
+     * DPoP. Names both fields, and neither a path nor a key id. Its reason and remedy are the ones the
+     * boot-validation refusal of one file named for both keys carries, stated once in
+     * {@link OidcClientRules#SIGNING_KEY_SEPARATION_REASON}.
+     */
+    private static final String SHARED_SIGNING_KEY_DETAIL =
+            "oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key; "
+                    + OidcClientRules.SIGNING_KEY_SEPARATION_REASON;
 
     private final GatewayConfig gatewayConfig;
     private final RouteTable routeTable;
@@ -469,6 +486,8 @@ public class BffRuntimeProducer {
         // ADR-0058: one sender-constraint key, and the one SenderConstraint it hands out, for the whole
         // runtime. The key id is the thumbprint every accepted access token must name in cnf.jkt.
         ClientSigningKey senderConstraintKey = resolveSenderConstraintKey(oidc);
+        // FAPI 2.0 section 6.8: the client assertion and the DPoP proofs are signed with two keys.
+        refuseSharedSigningKey(clientCredential.signingKey(), senderConstraintKey);
         SenderConstraint senderConstraint = senderConstraintKey.senderConstraint();
         Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
 
@@ -844,7 +863,7 @@ public class BffRuntimeProducer {
             LOGGER.warn(ConfigLogMessages.WARN.OIDC_CLIENT_SECRET_AUTHENTICATION);
             LOGGER.debug("BFF client authentication: client_secret_basic");
             return new ClientCredential(new ClientSecretBasicAuth(clientId, clientSecret),
-                    ClientJwksEndpoint.withheld());
+                    ClientJwksEndpoint.withheld(), null);
         }
         OidcConfig.ClientAuthenticationSettings settings = oidc.clientAuthentication();
         ClientSigningKey signingKey = resolveSigningKey(settings == null ? null : settings.keyFile(),
@@ -852,7 +871,7 @@ public class BffRuntimeProducer {
         LOGGER.debug("BFF client authentication: private_key_jwt (key mode=%s, algorithm=%s)",
                 signingKey.mode().diagnosticName(), signingKey.algorithm());
         return new ClientCredential(signingKey.clientAuthentication(clientId, issuer),
-                new ClientJwksEndpoint(signingKey.publicJwk()));
+                new ClientJwksEndpoint(signingKey.publicJwk()), signingKey);
     }
 
     /**
@@ -862,8 +881,33 @@ public class BffRuntimeProducer {
      *
      * @param authentication the client authentication every authenticated back-channel leg presents
      * @param jwksEndpoint   the client JWKS endpoint in the form that goes with that authentication
+     * @param signingKey     the key the authentication signs with in key mode, {@code null} in
+     *                       client-secret mode; held so it can be compared with the sender-constraint key
      */
-    private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint) {
+    private record ClientCredential(ClientAuthentication authentication, ClientJwksEndpoint jwksEndpoint,
+    @Nullable ClientSigningKey signingKey) {
+    }
+
+    /**
+     * Refuses one key used for both purposes: in key mode, a client-authentication key and a
+     * sender-constraint key with the same key id are the same key, which FAPI 2.0 section 6.8 forbids
+     * — a key serves one purpose. Boot validation already refuses the two {@code key_file} fields
+     * naming the same file; this check catches what that file comparison cannot see, the same key
+     * provided in two different files (a copy). A generated key is fresh per boot and
+     * never equals another key, so only two provided files can trip it. The message names both fields
+     * and no key id.
+     *
+     * @param clientAuthenticationKey the resolved client-authentication key, {@code null} in
+     *                                client-secret mode, which signs no client assertion
+     * @param senderConstraintKey     the resolved sender-constraint key
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when both keys are the same key
+     */
+    private static void refuseSharedSigningKey(@Nullable ClientSigningKey clientAuthenticationKey,
+            ClientSigningKey senderConstraintKey) {
+        if (clientAuthenticationKey != null
+                && clientAuthenticationKey.keyId().equals(senderConstraintKey.keyId())) {
+            throw new GatewayException(EventType.CONFIG_INVALID, SHARED_SIGNING_KEY_DETAIL);
+        }
     }
 
     /**
@@ -1225,12 +1269,18 @@ public class BffRuntimeProducer {
      * than configured separately, so it needs no operator input and cannot be recomputed
      * off-gateway.
      * <p>
-     * Per ADR-0011 the configuration stays neutral — the key is an {@code ${ENV_VAR}} reference
-     * carrying no material — so the concrete runtime choice is named by a startup diagnostic
-     * reporting the active key mode, never any key bytes. The
-     * generate-on-startup mode additionally raises the catalogued INFO
-     * {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
+     * Per ADR-0072 the configuration carries a location and never key material: a declared
+     * {@code oidc.session.key_file} names a file holding one line of base64 that decodes to the
+     * 32-byte sealing key, and an omitted one selects a key generated at startup. The concrete
+     * runtime choice is named by a startup diagnostic reporting the active key mode only, never the
+     * path and never any key bytes. The generate-on-startup mode additionally raises the catalogued
+     * INFO {@code COOKIE_KEY_GENERATED} from {@link CookieKeyMaterial}, because its
      * sessions-die-on-restart consequence is operationally notable rather than merely diagnostic.
+     * <p>
+     * A refused key file fails the boot the way a refused signing-key file does: the refusal text
+     * {@link CookieKeyMaterial} raises names the field and the defect — never the configured path
+     * nor the file content — and is carried over as it is into a {@link GatewayException} with
+     * {@link EventType#CONFIG_INVALID}.
      * <p>
      * The codec's seal-time size budget comes from {@code oidc.session.max_cookie_size} — the single
      * declared number that also drives the edge's pre-route {@code Cookie} header-value cap, so the
@@ -1239,10 +1289,13 @@ public class BffRuntimeProducer {
      * The activity-cookie codec is built from the same key material, over a key derived for that cookie
      * alone, and handed to the binding together with the resolved idle timeout. It exists in cookie
      * mode only: server mode keeps the last access in its store.
+     *
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the sealing key file is
+     *                          refused
      */
     private static SessionBinding cookieSessionBinding(OidcConfig.Session session, String cookieName,
             Duration sessionTtl, Duration idleTimeout) {
-        CookieKeyMaterial keyMaterial = CookieKeyMaterial.resolve(session.encryptionKey());
+        CookieKeyMaterial keyMaterial = resolveSealingKey(session.keyFile());
         Integer declaredMaxCookieSize = session.maxCookieSize();
         int maxCookieSize = declaredMaxCookieSize == null
                 ? SealedSessionCookieCodec.DEFAULT_COOKIE_VALUE_BUDGET
@@ -1251,6 +1304,23 @@ public class BffRuntimeProducer {
                 keyMaterial.mode().diagnosticName(), maxCookieSize);
         return new CookieSessionBinding(keyMaterial.codec(cookieName, sessionTtl, maxCookieSize),
                 keyMaterial.identitySalt(), keyMaterial.activityCodec(cookieName), idleTimeout);
+    }
+
+    /**
+     * Resolves the cookie sealing key and translates a refusal into the boot failure every other
+     * invalid configuration raises, exactly as {@link #resolveSigningKey} does for a signing key.
+     *
+     * @param keyFile the configured {@code oidc.session.key_file}, {@code null} to generate a key
+     * @return the resolved key material
+     * @throws GatewayException with {@link EventType#CONFIG_INVALID} when the key file is refused
+     */
+    private static CookieKeyMaterial resolveSealingKey(@Nullable String keyFile) {
+        try {
+            return CookieKeyMaterial.resolve(keyFile);
+        } catch (IllegalStateException refused) {
+            throw new GatewayException(EventType.CONFIG_INVALID,
+                    Objects.requireNonNullElse(refused.getMessage(), "oidc.session.key_file is refused"), refused);
+        }
     }
 
     /**

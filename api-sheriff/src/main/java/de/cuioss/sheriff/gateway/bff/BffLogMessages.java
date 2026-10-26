@@ -115,7 +115,7 @@ public final class BffLogMessages {
                 .build();
 
         /**
-         * No {@code encryption_key} was configured, so a cookie-mode sealing key was generated at
+         * No {@code session.key_file} was configured, so a cookie-mode sealing key was generated at
          * startup. Records only the non-sensitive fact and the affected scope — never key material.
          */
         public static final LogRecord COOKIE_KEY_GENERATED = LogRecordModel.builder()

@@ -147,11 +147,14 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * {@code oidc.client_secret} and {@code oidc.client_authentication.key_file} select different client
  * authentications, so a document declaring both is refused, and so is a declared
  * {@code oidc.client_secret} that resolves to a blank value. The schema does not encode the exclusion;
- * this rule owns it, because its message has to name both keys. The back-channel origin rule
- * ({@link OidcClientRules#validateBackChannelOrigin}) holds {@code oidc.back_channel_origin} to a bare
- * {@code http}/{@code https} origin, admits an {@code http} origin only under
- * {@code oidc.back_channel_allow_insecure_http: true}, and refuses that opt-in when there is nothing to
- * opt in for — each refusal on its key's own pointer, in fixed text.
+ * this rule owns it, because its message has to name both keys. The signing-key separation rule
+ * ({@link OidcClientRules#validateSigningKeyFilesDistinct}) refuses, in the key-based mode, an
+ * {@code oidc.client_authentication.key_file} and an {@code oidc.sender_constraint.key_file} that name
+ * the same file, since FAPI 2.0 section 6.8 requires the two signing keys to be two keys. The
+ * back-channel origin rule ({@link OidcClientRules#validateBackChannelOrigin}) holds
+ * {@code oidc.back_channel_origin} to a bare {@code http}/{@code https} origin, admits an {@code http}
+ * origin only under {@code oidc.back_channel_allow_insecure_http: true}, and refuses that opt-in when
+ * there is nothing to opt in for — each refusal on its key's own pointer, in fixed text.
  * <p>
  * The reserved-path rules (owned by {@link ReservedPathRules}) add four more: the client JWKS path
  * must be a canonical reserved path that no other reserved OIDC endpoint claims, and
@@ -239,6 +242,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionMaxCookieSize(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcSessionRules.validateSessionCookieName(gateway, errors),
             (gateway, endpoints, topology, errors) -> OidcClientRules.validateClientAuthentication(gateway, errors),
+            (gateway, endpoints, topology, errors) -> OidcClientRules.validateSigningKeyFilesDistinct(gateway,
+                    errors),
             (gateway, endpoints, topology, errors) -> ReservedPathRules.validateClientJwksPath(gateway, errors),
             (gateway, endpoints, topology, errors) -> ReservedPathRules.validateUserInfo(gateway, errors),
             (gateway, endpoints, topology, errors) -> ReservedPathRules.validateLoginPath(gateway, errors),

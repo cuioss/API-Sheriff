@@ -10,8 +10,8 @@ link:02-bff-session.adoc[session-based variant]. API Sheriff is still a full OID
 client running the authorization-code + PKCE login flow, but instead of holding tokens in a
 server-side store it *encrypts the tokens (AES-256-GCM) into an `HttpOnly` cookie* and
 decrypts them per request. There is *no server-side store* -- the encrypted cookie carries the
-session state, so all gateway instances need only share key material: the encryption key and the two
-signing-key files (see <<client-controls,the client controls below>>).
+session state, so all gateway instances need only share key material: the sealing-key file and the
+two signing-key files (see <<client-controls,the client controls below>>).
 
 This is the *token-mediating backend* shape, and it is the *preferred* target
 because it preserves the gateway's stateless, self-contained posture. It is planned to follow
@@ -69,7 +69,8 @@ and shared with the session-based variant:
   gateway path, `/bff/jwks` by default, answered on every host -- and the IdP fetches it from there.
 
 Each of the two keys is either read from a PEM file the configuration names by path, or generated at
-startup when no file is named.
+startup when no file is named. In key mode the two are two keys: one file named for both, or the same
+key under two paths, is refused at boot, because FAPI 2.0 section 6.8 asks for one key per purpose.
 
 *Horizontal scaling needs the same key files on every replica.* This variant exists to run several
 replicas without a shared store, and the two signing keys join the sealing key as the material those
@@ -145,21 +146,24 @@ and the gateway holds no per-user state.
   `__Host-` prefix.
 
 | Key management
-| A single server-side symmetric key. `session.encryption_key` is *optional*: declared as an
-  environment indirection (`${SHERIFF_SESSION_KEY}`) it is shared across all gateway instances and
-  survives a restart; omitted, the gateway mints a key at boot, so sessions are dropped on every
-  restart and the key cannot be shared with another replica. There is no decrypt-only companion
-  key and no rotation window: replacing the key is a clean break, and every cookie sealed under
-  the withdrawn key is refused as "no session" so its owner logs in again.
+| A single server-side symmetric key, read from a key file
+  (link:../adr/0072-The_cookie_sealing_key_is_read_from_a_base64_key_file_the_gateway_configuration_names_by_path.adoc[ADR-0072]).
+  `session.key_file` is *optional*: declared, it names a mounted file holding one line of base64
+  that decodes to the 32-byte key, the same file is mounted on every gateway instance, and sessions
+  survive a restart; omitted, the gateway mints a key at boot, so sessions are dropped on every
+  restart and the key cannot be shared with another replica. The configuration carries the path,
+  never the key. There is no decrypt-only companion key and no rotation window: replacing the key
+  is a clean break, and every cookie sealed under the withdrawn key is refused as "no session" so
+  its owner logs in again.
 
 | Size
 | The cookie must stay within browser limits (~4 KB), enforced as a seal-time budget: an
   over-budget seal *fails* rather than being silently truncated. The budget governs the sealed
   *value* and defaults to 4019 bytes -- the 4096-byte per-cookie header guarantee less the 77 bytes
   the default name and attributes wrap around it. A session that also refreshes carries three tokens
-  and is the largest shape this variant produces; on one realm's claim set it seals to 2700 bytes,
-  leaving 32.8 % of the budget unused (measured in
-  link:../development/bff-cookie.adoc[the contributor guide]). Splitting the token set across
+  and is the largest shape this variant produces; in the integration suite, with DPoP-bound tokens
+  from the pinned Keycloak's `integration` realm, it seals to at most 2580 bytes, leaving 35.8 % of
+  the budget unused (see link:../development/bff-cookie.adoc[the contributor guide]). Splitting the token set across
   several cookies stays a deliberate non-goal -- a browser concatenates the cookies it holds for an
   origin into one request header, so chunking relocates the problem to a single header cap rather
   than dividing it. When the margin is spent, the remedies are to reduce the token set (fewer
@@ -207,7 +211,7 @@ Because the encrypted cookie carries all session state:
 * No session store, no Redis, no database -- the gateway's no-mandatory-external-dependency
   posture holds fully.
 * Any gateway instance can serve any request *of an established session* as long as it has the
-  encryption key and the same two signing-key files -- no sticky sessions, no coordination. The login leg is the one exception: it
+  same sealing-key file and the same two signing-key files -- no sticky sessions, no coordination. The login leg is the one exception: it
   holds per-instance pending state and requires affinity until the callback lands (see
   <<_stateless_after_login_not_during_it,Stateless after login, not during it>>).
 * Horizontal scaling is linear; a node can be added or removed with no session migration.
@@ -239,7 +243,8 @@ widened or refused instead, and the next request, carrying the new cookie, is re
 
 *The refresh token's cost in the seal is measured, not open.* Holding it makes the session a
 three-token payload -- the largest shape this variant carries -- and under the shipped packaging
-that seals to 2700 bytes against the 4019-byte budget. Refresh is therefore a supported cookie-mode
+that seals to at most 2580 bytes against the 4019-byte budget in the integration suite, DPoP `cnf`
+claim included. Refresh is therefore a supported cookie-mode
 posture rather than a size gamble, with a finite margin that a larger claim set or a longer
 `session.cookie_name` spends. The figures and the conditions are in
 link:../development/bff-cookie.adoc[the contributor guide]; the operator-facing consequences are in
@@ -345,7 +350,7 @@ oidc:
   session:
     mode: cookie                # encrypted cookie, no store (this variant)
     cookie_name: __Host-sheriff
-    encryption_key: ${SHERIFF_SESSION_KEY}   # AES-256-GCM key; optional -- omit to generate on startup
+    key_file: /run/secrets/session.key   # sealing-key file; optional -- omit to generate on startup
     ttl_seconds: 3600            # absolute lifetime from login
     idle_timeout_seconds: 1800   # ends a session nobody uses (the default)
     refresh: { enabled: true, leeway_seconds: 30, on_failure: reauthenticate }
@@ -376,15 +381,19 @@ endpoint:
 ----
 
 The only material difference from the link:02-bff-session.adoc[session-based] configuration is
-`session.mode: cookie`. The two `key_file` entries are optional in both variants; they are written
-out here because a deployment with more than one replica must provide them.
+`session.mode: cookie` and its sealing-key file. The two signing-key `key_file` entries are optional
+in both variants; they are written out here because a deployment with more than one replica must
+provide them, and they name two different files.
 
-`session.encryption_key` is *optional*. Declare it when sessions must be shared across replicas
-and survive a restart -- that is the only thing it buys. Omitting it selects the
-generate-on-startup key mode: the gateway mints a key at boot, so sessions are dropped on every
-restart and the key cannot be shared with another replica. There is no second, decrypt-only key --
-replacing `encryption_key` invalidates every outstanding cookie. See
-link:../configuration.adoc[the configuration reference] for the authoritative validation rules.
+`session.key_file` is *optional*. Declare it when sessions must be shared across replicas and
+survive a restart -- that is the only thing it buys -- and mount the same file on every replica.
+`openssl rand -base64 32 > session.key` creates one. Omitting it selects the generate-on-startup key
+mode: the gateway mints a key at boot, so sessions are dropped on every restart and the key cannot be
+shared with another replica. There is no second, decrypt-only key -- replacing the key file
+invalidates every outstanding cookie, but only once every replica has restarted: the file is read at
+startup alone, so a running replica keeps the key it read. See
+link:../configuration.adoc#_oidc[the configuration reference] for the authoritative validation rules
+and link:../user/bff-cookie.adoc#_key_material[the operator guide] for creating and mounting the file.
 
 == Properties
 
@@ -392,8 +401,8 @@ link:../configuration.adoc[the configuration reference] for the authoritative va
 * *No token exfiltration via script* -- `HttpOnly` cookie; the token is never readable by
   JavaScript (XSS on the page can still drive authenticated requests -- hence the fixed CSRF
   defence and short token lifetimes).
-* *Self-contained* -- instances share only key material: the encryption key and the two signing-key
-  files.
+* *Self-contained* -- instances share only key material: the sealing-key file and the two
+  signing-key files.
 * *Full OIDC RP* -- confidential-client login, transparent refresh, RFC 9470 step-up.
 * *Pushed requests and bound tokens* -- every authorization request is pushed, every access token is
   bound to one DPoP key, and the client authenticates with a key unless a client secret is configured.

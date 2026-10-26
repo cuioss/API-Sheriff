@@ -2226,10 +2226,11 @@ class ConfigLoaderTest {
     // entry lies beneath.
 
     @Test
-    void refusesAWholeObjectSubstitutionThatWouldSynthesiseTheSessionKey() throws Exception {
-        // Arrange — /oidc/session is object-typed and /oidc/session/encryption_key is secret-classified.
-        // The placeholder carries a DEFAULT, which is precisely what isBareReference refuses when the
-        // operator writes the secret field itself; supplying the enclosing object must not launder it.
+    void admitsAWholeSessionObjectSubstitutionBecauseTheKeyFileIsNotASecret() throws Exception {
+        // Arrange — /oidc/session is object-typed, and since the sealing key moved into a key file
+        // (ADR-0072) nothing beneath it is secret-classified: key_file names a location. The defaulted
+        // placeholder the secrets rule refuses at a secret field is therefore admitted for the whole
+        // session object, and the key file it carries binds as written.
         writeConfig("gateway.yaml", """
                 version: 1
                 oidc:
@@ -2237,35 +2238,23 @@ class ConfigLoaderTest {
                   client_id: "sheriff"
                   client_secret: "${OIDC_CLIENT_SECRET}"
                   redirect_uri: "https://gw.example.com/callback"
-                  session: "${SHERIFF_SESSION:-encryption_key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
+                  session: "${SHERIFF_SESSION:-key_file=/run/keys/session.key}"
                 """);
 
         // Act
-        ConfigLoader loader = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t"));
-        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load(IGNORE_DEFAULTED);
 
         // Assert
-        // The message is asserted, not just the pointer: a well-formed key=value map at an object-typed
-        // pointer BINDS (see suppliesAWholeDeclaredMapFromOneSubstitutedValue), so without the
-        // substitution-site refusal this document loads and no error is raised here at all. Pinning the
-        // rule's own wording is what keeps the guard from passing on an unrelated schema type mismatch.
-        assertTrue(exception.errors().stream()
-                        .anyMatch(error -> "gateway.yaml".equals(error.file())
-                                && "/oidc/session".equals(error.pointer())
-                                && error.message().contains("secret-classified field")),
-                () -> "supplying the whole oidc.session object from one variable must be refused at that "
-                        + "pointer BY THE SECRETS RULE: it materialises encryption_key after the "
-                        + "pre-substitution secrets pass has already run, got: " + exception.errors());
-        assertTrue(exception.errors().stream()
-                        .noneMatch(error -> error.message().contains("AAAAAAAAAAAA")),
-                () -> "the refusal must name the pointer and the rule, never the resolved key material, "
-                        + "got: " + exception.errors());
+        assertEquals("/run/keys/session.key", loaded.gateway().oidc().session().keyFile(),
+                "the session object holds no secret-classified field any more, so supplying it whole from "
+                        + "one variable must bind rather than be refused by the secrets rule");
     }
 
     @Test
     void refusesAWholeObjectSubstitutionThatWouldSynthesiseTheClientSecret() throws Exception {
-        // Arrange — the same hole one level up: /oidc is object-typed and /oidc/client_secret is the
-        // other secret-classified pointer, so the enclosing block is refused on the same terms.
+        // Arrange — /oidc is object-typed and /oidc/client_secret is the one secret-classified pointer,
+        // so the enclosing block is refused: the defaulted placeholder would otherwise launder a literal
+        // secret past the pre-substitution secrets pass.
         writeConfig("gateway.yaml", """
                 version: 1
                 oidc: "${SHERIFF_OIDC:-client_secret=s3cr3t}"
@@ -2288,8 +2277,8 @@ class ConfigLoaderTest {
 
     @Test
     void stillAcceptsABareReferenceWrittenAtTheSecretFieldItself() throws Exception {
-        // Arrange — the matched positive control for the two refusals above. The refusal is scoped to
-        // the ENCLOSING object; the supported form — a bare ${VAR} at the secret field, where the
+        // Arrange — the matched positive control for the refusal above. The refusal is scoped to the
+        // ENCLOSING object; the supported form — a bare ${VAR} at the secret field, where the
         // pre-substitution pass can see and check it — must keep working unchanged.
         writeConfig("gateway.yaml", """
                 version: 1
@@ -2298,15 +2287,10 @@ class ConfigLoaderTest {
                   client_id: "sheriff"
                   client_secret: "${OIDC_CLIENT_SECRET}"
                   redirect_uri: "https://gw.example.com/callback"
-                  session:
-                    mode: cookie
-                    encryption_key: "${SHERIFF_SESSION_KEY}"
                 """);
 
         // Act
-        ConfigLoader.LoadedConfig loaded = loader(Map.of(
-                "OIDC_CLIENT_SECRET", "s3cr3t",
-                "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")).load(IGNORE_DEFAULTED);
+        ConfigLoader.LoadedConfig loaded = loader(Map.of("OIDC_CLIENT_SECRET", "s3cr3t")).load(IGNORE_DEFAULTED);
 
         // Assert
         assertEquals("s3cr3t", loaded.gateway().oidc().clientSecret(),
@@ -2398,6 +2382,88 @@ class ConfigLoaderTest {
                                 && error.pointer().contains("/oidc/client_authentication")),
                 () -> "a misspelt key inside client_authentication must be refused at the block's own "
                         + "pointer, got: " + exception.errors());
+    }
+
+    // --- oidc.session.key_file: a location, not a secret (ADR-0072) --------------------------------
+    // The cookie sealing key is read from a file the configuration names by path, so the path is NOT
+    // secret-classified: a literal, a bare ${VAR} reference and a defaulted placeholder all bind.
+
+    /**
+     * One case per spelling of {@code oidc.session.key_file}.
+     *
+     * @return (case description, the YAML scalar written at {@code key_file}, the environment, the path
+     *         the bound session must carry)
+     */
+    static Stream<Arguments> sessionKeyFileSpellings() {
+        return Stream.of(
+                Arguments.of("a literal path", "/etc/sheriff/keys/session.key", Map.of(),
+                        "/etc/sheriff/keys/session.key"),
+                Arguments.of("a bare ${VAR} reference", "\"${SHERIFF_SESSION_KEY_FILE}\"",
+                        Map.of("SHERIFF_SESSION_KEY_FILE", "/run/keys/from-environment.key"),
+                        "/run/keys/from-environment.key"),
+                Arguments.of("a defaulted ${VAR:-default} placeholder left unset",
+                        "\"${SHERIFF_SESSION_KEY_FILE:-/run/keys/default.key}\"", Map.of(),
+                        "/run/keys/default.key"));
+    }
+
+    @ParameterizedTest(name = "session.key_file accepts {0}")
+    @MethodSource("sessionKeyFileSpellings")
+    void bindsSessionKeyFile(String description, String keyFileYaml, Map<String, String> environment,
+            String expectedPath) throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  redirect_uri: "https://gw.example.com/callback"
+                  session:
+                    mode: cookie
+                    key_file: %s
+                """.formatted(keyFileYaml));
+
+        ConfigLoader.LoadedConfig loaded = loader(environment).load(IGNORE_DEFAULTED);
+
+        assertAll(description,
+                () -> assertEquals(expectedPath, loaded.gateway().oidc().session().keyFile(),
+                        "the sealing key file is a location: it binds as written or as resolved"),
+                () -> assertTrue(loaded.gateway().oidc().session().toString().contains(expectedPath),
+                        "a location is rendered as it is, never redacted"));
+    }
+
+    /**
+     * Pins the observable break of moving the sealing key into a key file: a {@code gateway.yaml}
+     * that still declares the removed {@code oidc.session.encryption_key} does not start.
+     * <p>
+     * Like the removed {@code previous_key}, this is a schema-level refusal — {@code oidc.session}
+     * declares {@code additionalProperties: false} — and deliberately a clean break with no
+     * accept-and-ignore shim: tolerating the key would leave an operator believing sessions are sealed
+     * under the key they passed while a generated one is in force.
+     */
+    @Test
+    void rejectsRemovedEncryptionKeyAtBoot() throws Exception {
+        writeConfig("gateway.yaml", """
+                version: 1
+                oidc:
+                  issuer: "https://issuer.example.com"
+                  client_id: "sheriff"
+                  redirect_uri: "https://gw.example.com/callback"
+                  session:
+                    mode: cookie
+                    encryption_key: "${SHERIFF_SESSION_KEY}"
+                """);
+
+        ConfigLoader loader = loader(Map.of("SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="));
+        ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+        assertAll(
+                () -> assertTrue(exception.errors().stream()
+                                .anyMatch(error -> "gateway.yaml".equals(error.file())
+                                        && error.pointer().startsWith("/oidc/session")),
+                        () -> "a config still declaring the removed oidc.session.encryption_key must fail the "
+                                + "boot under additionalProperties: false, got: " + exception.errors()),
+                () -> assertTrue(exception.errors().stream()
+                                .noneMatch(error -> error.message().contains("AAAAAAAAAAAA")),
+                        () -> "the refusal must never echo the resolved key material, got: " + exception.errors()));
     }
 
     // --- Destination-type walk: $ref, patternProperties, and the numeric arms ---------------------
@@ -2686,13 +2752,12 @@ class ConfigLoaderTest {
                   redirect_uri: "https://gw.example.com/callback"
                   session:
                     mode: cookie
-                    encryption_key: "${SHERIFF_SESSION_KEY}"
+                    key_file: /run/keys/session.key
                     previous_key: "${SHERIFF_SESSION_KEY_PREVIOUS}"
                 """);
 
         ConfigLoader loader = loader(Map.of(
                 "OIDC_CLIENT_SECRET", "s3cr3t",
-                "SHERIFF_SESSION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 "SHERIFF_SESSION_KEY_PREVIOUS", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="));
         ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
 

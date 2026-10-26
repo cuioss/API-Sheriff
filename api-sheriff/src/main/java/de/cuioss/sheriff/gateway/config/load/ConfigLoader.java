@@ -184,8 +184,12 @@ public final class ConfigLoader {
      * schemas nest one level deep; the cap simply stops a malformed or cyclic reference from spinning.
      */
     private static final int MAX_SCHEMA_REF_HOPS = 10;
-    private static final List<String> SECRET_POINTERS = List.of(
-            "/oidc/client_secret", "/oidc/session/encryption_key");
+    /**
+     * The JSON pointers of the secret-classified fields. {@code oidc.session.key_file} is not one: it
+     * names the location of the cookie sealing key, not the key itself, so it may be written literally
+     * (ADR-0072).
+     */
+    private static final List<String> SECRET_POINTERS = List.of("/oidc/client_secret");
 
     private final Path configDir;
     private final EnvSecretResolver secretResolver;
@@ -568,8 +572,8 @@ public final class ConfigLoader {
      * {@link #validateSecretReferences} enforces the bare-{@code ${VAR}} secrets rule on the
      * <em>pre-substitution</em> tree, so it can only see a secret field the operator actually wrote.
      * The {@code object} arm of {@link #coerce} can synthesise one <em>after</em> that pass has already
-     * run: {@code session: "${VAR:-encryption_key=…}"} materialises
-     * {@code /oidc/session/encryption_key} out of a defaulted placeholder — precisely the form the rule
+     * run: {@code oidc: "${VAR:-client_secret=…}"} materialises
+     * {@code /oidc/client_secret} out of a defaulted placeholder — precisely the form the rule
      * exists to refuse — and the boot would then accept a literal secret written into the mounted
      * configuration file, with the rule reporting nothing. Re-running the rule after substitution
      * cannot close that gap either: post-substitution the value IS the resolved secret, so every

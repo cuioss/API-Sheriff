@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.sleepSeconds;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.SEALING_KEY_IN_CONTAINER;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
@@ -24,6 +25,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.dock
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLog;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.publishedPort;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGatewayWithSigningKeys;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeSealingKeyFile;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -49,6 +51,7 @@ import org.yaml.snakeyaml.Yaml;
 
 import de.cuioss.sheriff.gateway.integration.BffKeycloakLoginFlow.Session;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
+import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
 
 import io.restassured.http.Cookie;
 import io.restassured.response.Response;
@@ -64,8 +67,9 @@ import org.junit.jupiter.api.Timeout;
  * answered as unauthenticated although its absolute lifetime has not elapsed.
  * <p>
  * <strong>The key acts, it does not merely parse.</strong> Each test boots a gateway whose descriptor
- * differs from a committed compose descriptor in one declared key — {@value #IDLE_TIMEOUT_KEY} — and
- * in the origin it names. Remove the key from {@link #writeDerivedDescriptor} and both tests fail:
+ * differs from a committed compose descriptor in one declared key — {@value #IDLE_TIMEOUT_KEY} — in
+ * the origin it names and, in cookie mode, in the sealing key file it names. Remove the key from
+ * {@link #writeDerivedDescriptor} and both tests fail:
  * the omitted key resolves to the smaller of 1800 seconds and {@code ttl_seconds}, so no session of
  * these tests would ever be idled out, and the assertion that an idle session is refused reads
  * {@code 200}. The derivation asserts that the source descriptor declares no idle timeout of its own,
@@ -78,7 +82,10 @@ import org.junit.jupiter.api.Timeout;
  * Both gateways keep the client of their source descriptor ({@code integration-client}) and its two
  * key files, so they are started with the stack's signing-key directory mounted; Keycloak verifies
  * their client assertion against the key set the primary instance publishes, which is the public
- * half of the same key file.
+ * half of the same key file. The cookie-mode gateway does not keep the sealing key file of its
+ * source: the committed {@code cookie-sealing.key} is the one state {@code api-sheriff-cookie} and its
+ * peer share, so this gateway names a sealing key file of this suite alone, written below
+ * {@code target/} and mounted read-only beside the signing keys.
  * <p>
  * <strong>Server mode.</strong> The last access lives in the session store and moves with every
  * request let through on a session route. The idle window is {@value #SERVER_IDLE_SECONDS} seconds:
@@ -215,15 +222,22 @@ class BffSessionIdleTimeoutIT {
     /**
      * The cookie-mode gateway: the committed descriptor of the {@code api-sheriff-cookie} instance —
      * cookie mode, refresh off, so the session cookie is never re-sealed under the test — retargeted at
-     * this gateway's port. The sealing key is a fixed test value of this suite alone.
+     * this gateway's port, with its sealing key file retargeted at
+     * {@link OneOffGatewayContainers#SEALING_KEY_IN_CONTAINER}.
      */
     private static final Instance COOKIE_MODE = new Instance("sheriff-idle-timeout-cookie",
             COOKIE_MODE_APPLICATION_PORT,
             DOCKER.resolve(Path.of("sheriff-config-cookie", "gateway.yaml")),
             BffKeycloakLoginFlow.COOKIE_GATEWAY_ORIGIN, "cookie", COOKIE_IDLE_SECONDS,
-            List.of("OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem",
-                    "SESSION_ENCRYPTION_KEY=" + Base64.getEncoder().encodeToString(
-                            "idle-timeout-sealing-key-0123456".getBytes(StandardCharsets.US_ASCII))));
+            List.of("OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem"));
+
+    /**
+     * The AES-256 sealing key of the cookie-mode gateway, base64 of 32 bytes. A fixed test value of
+     * this suite alone: it seals throwaway integration-realm sessions and shares state with no other
+     * instance.
+     */
+    private static final String SEALING_KEY = Base64.getEncoder()
+            .encodeToString("idle-timeout-sealing-key-0123456".getBytes(StandardCharsets.US_ASCII));
 
     /**
      * One one-off gateway of this suite.
@@ -247,6 +261,15 @@ class BffSessionIdleTimeoutIT {
 
         Path derivedDescriptor() {
             return Path.of("target", name, "gateway.yaml");
+        }
+
+        /** Where the sealing key file of a cookie-mode gateway is written; a build output, never committed. */
+        Path sealingKeyFile() {
+            return Path.of("target", name, "cookie-sealing.key");
+        }
+
+        boolean cookieMode() {
+            return "cookie".equals(sessionMode);
         }
     }
 
@@ -377,9 +400,13 @@ class BffSessionIdleTimeoutIT {
 
     private static void start(Instance instance) throws IOException {
         writeDerivedDescriptor(instance);
+        List<ReadOnlyMount> sealingKeyMount = List.of();
+        if (instance.cookieMode()) {
+            sealingKeyMount = List.of(writeSealingKeyFile(instance.sealingKeyFile(), SEALING_KEY));
+        }
         startBffGatewayWithSigningKeys(new BffGateway(instance.name(), composeNetwork(), instance.name(),
                 instance.port(), instance.derivedDescriptor(), "localhost.crt", "localhost.key",
-                instance.environment()));
+                instance.environment()), sealingKeyMount);
         awaitReadiness(instance.name(), "https://localhost:" + publishedPort(instance.name(), 9000),
                 response -> response.statusCode() == OK, BOOT_TIMEOUT_SECONDS,
                 "the gateway " + instance.name() + " to report readiness UP");
@@ -428,7 +455,8 @@ class BffSessionIdleTimeoutIT {
 
     /**
      * Writes the descriptor of one one-off gateway: the committed source descriptor with the idle
-     * timeout declared and the origin triple retargeted at the gateway's own port. The source is
+     * timeout declared, the origin triple retargeted at the gateway's own port and, in cookie mode,
+     * the sealing key file retargeted at this suite's own. The source is
      * asserted to be what the derivation assumes — the session mode, an absolute lifetime far above
      * the test's duration, no idle timeout of its own — so a change to the committed descriptor fails
      * here instead of producing a gateway that differs from it in more than the stated ways.
@@ -446,9 +474,14 @@ class BffSessionIdleTimeoutIT {
                 () -> assertFalse(session.containsKey(IDLE_TIMEOUT_KEY),
                         "no committed descriptor of the stack declares " + IDLE_TIMEOUT_KEY),
                 () -> assertTrue(ttlSeconds >= MINIMUM_SOURCE_TTL_SECONDS, () -> "oidc.session.ttl_seconds must be at "
-                        + "least " + MINIMUM_SOURCE_TTL_SECONDS + ", was " + ttlSeconds));
+                        + "least " + MINIMUM_SOURCE_TTL_SECONDS + ", was " + ttlSeconds),
+                () -> assertEquals(instance.cookieMode(), session.containsKey("key_file"),
+                        "oidc.session.key_file is declared exactly in cookie mode"));
 
         session.put(IDLE_TIMEOUT_KEY, instance.idleTimeoutSeconds());
+        if (instance.cookieMode()) {
+            session.put("key_file", SEALING_KEY_IN_CONTAINER);
+        }
         List<?> trustedOrigins = assertInstanceOf(List.class, csrf.get("trusted_origins"),
                 "oidc.session.csrf.trusted_origins must be a list");
         csrf.put("trusted_origins", trustedOrigins.stream()

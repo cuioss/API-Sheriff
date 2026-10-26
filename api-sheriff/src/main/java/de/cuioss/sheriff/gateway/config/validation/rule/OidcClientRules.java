@@ -18,8 +18,12 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.GATEWAY_FILE;
 import static de.cuioss.sheriff.gateway.config.validation.rule.RuleSupport.renderForMessage;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
@@ -38,6 +42,15 @@ import lombok.experimental.UtilityClass;
  * two select different client authentications, and a declared {@code oidc.client_secret} that resolves
  * to a blank value. The schema does not encode the exclusion; this rule owns it, because its message has
  * to name both keys.
+ * <p>
+ * The signing-key separation rule ({@link #validateSigningKeyFilesDistinct}) refuses, in the
+ * key-based mode, a document whose {@code oidc.client_authentication.key_file} and
+ * {@code oidc.sender_constraint.key_file} name the same file: the client assertion and the DPoP proofs
+ * must be signed with different keys (FAPI 2.0 section 6.8). It reads no key material: when both
+ * files exist the file system decides whether they are one file, so a link to the other key file is
+ * refused here; when a file is missing, only a pair whose spelling proves one file is refused. The same
+ * key provided in two different files, or reached through two paths this rule cannot prove to be one
+ * file, is refused where the runtime is assembled, once both keys are read.
  * <p>
  * The back-channel origin rule ({@link #validateBackChannelOrigin}) holds
  * {@code oidc.back_channel_origin} to a bare {@code http}/{@code https} origin, admits an {@code http}
@@ -61,6 +74,9 @@ import lombok.experimental.UtilityClass;
 public class OidcClientRules {
 
     private static final String OIDC_CLIENT_SECRET_POINTER = "/oidc/client_secret";
+    // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
+    @SuppressWarnings("java:S1075")
+    private static final String OIDC_SENDER_CONSTRAINT_KEY_FILE_POINTER = "/oidc/sender_constraint/key_file";
     // java:S1075 — a fixed JSON-pointer into the config document (schema key), not a customizable URI/filesystem path.
     @SuppressWarnings("java:S1075")
     private static final String OIDC_LOGIN_DEFAULT_RETURN_URL_POINTER = "/oidc/login/default_return_url";
@@ -129,6 +145,26 @@ public class OidcClientRules {
                     + "oidc.client_secret to authenticate with private_key_jwt";
 
     /**
+     * The reason and remedy shared by both refusals of one signing key serving two purposes: this
+     * class's refusal of one file named by both key-file fields, and the runtime producer's refusal of
+     * one key provided in two files. Stated once, so the two messages cannot drift apart. Fixed text
+     * that names no path and no key id.
+     */
+    public static final String SIGNING_KEY_SEPARATION_REASON =
+            "the key that signs the client assertion must not also sign the DPoP proofs, because FAPI 2.0 "
+                    + "section 6.8 requires every key to serve one purpose — point "
+                    + "oidc.sender_constraint.key_file at a file holding a different key, or remove it to use a "
+                    + "DPoP key generated at startup";
+
+    /**
+     * The fixed detail of the refusal of one file named by both signing-key fields. Fixed text, so the
+     * boot log echoes neither configured path.
+     */
+    private static final String SIGNING_KEY_FILES_NOT_DISTINCT_DETAIL =
+            "oidc.client_authentication.key_file and oidc.sender_constraint.key_file name the same file; "
+                    + SIGNING_KEY_SEPARATION_REASON;
+
+    /**
      * Rule: the client-authentication mode must be unambiguous and usable.
      * <p>
      * The presence of {@code oidc.client_secret} selects {@code client_secret_basic}; its absence
@@ -166,6 +202,129 @@ public class OidcClientRules {
             errors.add(new ConfigError(GATEWAY_FILE, OIDC_CLIENT_SECRET_POINTER,
                     CLIENT_SECRET_WITH_KEY_FILE_DETAIL));
         }
+    }
+
+    /**
+     * Rule: the client-authentication key and the DPoP proof key must be two keys.
+     * <p>
+     * FAPI 2.0 section 6.8 requires a key to serve one purpose. In the key-based mode
+     * ({@link OidcConfig#usesClientSecret()} is {@code false}) the gateway signs its
+     * {@code private_key_jwt} client assertion with the key {@code oidc.client_authentication.key_file}
+     * names and its DPoP proofs with the key {@code oidc.sender_constraint.key_file} names; when both
+     * name the same file, one error is collected at {@code /oidc/sender_constraint/key_file}. Its
+     * detail is fixed text that names both keys and neither path. When both files exist, the file
+     * system decides whether they are one file ({@link Files#isSameFile}), so a symbolic or hard link
+     * to the other key file is refused and a {@code ..} segment behind a symbolic link is judged by the
+     * file it reaches, not by its spelling; an I/O failure while deciding refuses nothing. When either
+     * file does not exist — as on the machine running the offline check — a pair is refused only when
+     * its spelling proves one file: equal after {@link Path#normalize()}, with no {@code ..} element in
+     * either path. So {@code keys/./a.pem} and {@code keys/a.pem} are one file, while
+     * {@code keys/x/../a.pem} and {@code keys/a.pem} are left to the runtime's comparison of the two
+     * keys, because {@code x} may be a symbolic link.
+     * <p>
+     * What the rule leaves alone, and why:
+     * <ul>
+     *   <li><strong>Client-secret mode.</strong> The client-authentication key file is not read
+     *       there, and {@link #validateClientAuthentication} already refuses declaring it together
+     *       with a secret.</li>
+     *   <li><strong>Only one key file declared, or neither.</strong> A generated key is fresh per
+     *       boot and therefore never equal to a provided one.</li>
+     *   <li><strong>A path that does not parse.</strong> It is left to the runtime's own refusal of
+     *       an unusable key file, so one defect is reported once.</li>
+     *   <li><strong>A pair equal only once a {@code ..} is collapsed, while a file is missing.</strong>
+     *       The spelling does not prove one file there; the runtime producer judges the pair by the
+     *       keys it reads.</li>
+     *   <li><strong>The same key in two different files</strong> — a copy. Telling that apart
+     *       needs the key material, which this pre-boot rule never reads; the runtime producer
+     *       refuses that case once both keys are read.</li>
+     * </ul>
+     * The rule never fails fast (ADR-0009).
+     *
+     * @param gateway the bound gateway document, whose {@code oidc} block is judged
+     * @param errors  the shared violation list every refusal is appended to
+     */
+    public static void validateSigningKeyFilesDistinct(GatewayConfig gateway, List<ConfigError> errors) {
+        OidcConfig oidc = gateway.oidc();
+        if (oidc == null || oidc.usesClientSecret()) {
+            return;
+        }
+        OidcConfig.ClientAuthenticationSettings clientAuthentication = oidc.clientAuthentication();
+        OidcConfig.SenderConstraintSettings senderConstraint = oidc.senderConstraint();
+        if (clientAuthentication == null || senderConstraint == null) {
+            return;
+        }
+        String clientKeyFileValue = clientAuthentication.keyFile();
+        String dpopKeyFileValue = senderConstraint.keyFile();
+        if (clientKeyFileValue == null || dpopKeyFileValue == null) {
+            return;
+        }
+        Optional<Path> clientKeyFile = parsedPath(clientKeyFileValue);
+        Optional<Path> dpopKeyFile = parsedPath(dpopKeyFileValue);
+        if (clientKeyFile.isPresent() && dpopKeyFile.isPresent()
+                && nameSameFile(clientKeyFile.get(), dpopKeyFile.get())) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SENDER_CONSTRAINT_KEY_FILE_POINTER,
+                    SIGNING_KEY_FILES_NOT_DISTINCT_DETAIL));
+        }
+    }
+
+    /**
+     * A configured key-file path, or empty when the value does not parse as a path on this platform.
+     *
+     * @param keyFile the configured key-file path, never {@code null}
+     * @return the parsed path, or empty when it does not parse
+     */
+    private static Optional<Path> parsedPath(String keyFile) {
+        try {
+            return Optional.of(Path.of(keyFile));
+        } catch (InvalidPathException _) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Whether two configured key-file paths provably locate one file.
+     * <p>
+     * When both files exist the file system decides, through {@link Files#isSameFile}, so a symbolic or
+     * hard link to the other key file is a match. A failure to decide is not a refusal — the boot-time
+     * comparison of the two keys remains the backstop.
+     * <p>
+     * When either file is missing — the offline check runs on a machine without the deployment's key
+     * files — the paths are compared by their spelling, and only where the spelling alone proves one
+     * file: the paths must be equal after {@link Path#normalize()}, and neither may contain a {@code ..}
+     * element. Normalizing away {@code .} elements and redundant separators never changes the file a path
+     * locates; collapsing a {@code ..} does whenever the element before it is a symbolic link, so an
+     * equality that rests on that collapse is no proof. Such a pair is left to the boot-time comparison
+     * of the two keys, so the pre-boot verdict cannot depend on the machine it is reached on.
+     *
+     * @param clientKeyFile the client-authentication key-file path
+     * @param dpopKeyFile   the sender-constraint key-file path
+     * @return {@code true} when the two paths provably locate one file
+     */
+    private static boolean nameSameFile(Path clientKeyFile, Path dpopKeyFile) {
+        if (Files.exists(clientKeyFile) && Files.exists(dpopKeyFile)) {
+            try {
+                return Files.isSameFile(clientKeyFile, dpopKeyFile);
+            } catch (IOException _) {
+                return false;
+            }
+        }
+        return !containsParentElement(clientKeyFile) && !containsParentElement(dpopKeyFile)
+                && clientKeyFile.normalize().equals(dpopKeyFile.normalize());
+    }
+
+    /**
+     * Whether a path contains a {@code ..} name element.
+     *
+     * @param path the path to inspect
+     * @return {@code true} when one of its name elements is {@code ..}
+     */
+    private static boolean containsParentElement(Path path) {
+        for (Path element : path) {
+            if ("..".equals(element.toString())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

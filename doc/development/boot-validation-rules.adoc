@@ -121,9 +121,10 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 | extracted
 
 | `OidcClientRules`
-| `validateClientAuthentication`, `validateDefaultReturnUrl`, `validateBackChannelOrigin`
-| `oidc.client_secret`, `oidc.client_authentication.key_file`, `oidc.login.default_return_url`,
-  `oidc.back_channel_origin`, `oidc.back_channel_allow_insecure_http`
+| `validateClientAuthentication`, `validateSigningKeyFilesDistinct`, `validateDefaultReturnUrl`,
+  `validateBackChannelOrigin`
+| `oidc.client_secret`, `oidc.client_authentication.key_file`, `oidc.sender_constraint.key_file`,
+  `oidc.login.default_return_url`, `oidc.back_channel_origin`, `oidc.back_channel_allow_insecure_http`
 | extracted
 
 | `ReservedPathRules`

@@ -289,8 +289,8 @@ integration suites. They hold for that identity provider and that image.
   restart is then refreshed. The refresh succeeds, the session continues, and the new access token
   is bound to the new proof key.
 
-That last observation has three limits. The gateway ran in cookie mode with a passed sealing key, so
-the session itself survived the restart. Only generated keys were replaced; replacing a provided key
+That last observation has three limits. The gateway ran in cookie mode with a provided sealing key
+file, so the session itself survived the restart. Only generated keys were replaced; replacing a provided key
 file was not run. And the binding to the new proof key is shown through a `jkt` that changed on a
 gateway that refuses an unbound response -- the test cannot compute the thumbprint of a key that is
 never published.

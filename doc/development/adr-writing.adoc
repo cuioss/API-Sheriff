@@ -327,6 +327,10 @@ link:../configuration.adoc[Configuration Reference].
 | sealed session cookie
 | encrypted cookie, token cookie
 
+| The AES-256 key `oidc.session.key_file` names, which seals the session cookie
+| sealing key
+| encryption key, cookie key, session key
+
 | An OAuth scope-token in `oidc.scopes` or `endpoint.scopes`
 | OAuth scope
 | scope (unqualified), permission, role

@@ -41,7 +41,8 @@ import org.jspecify.annotations.Nullable;
  * and its companions, the bounds on the session store, the idle timeout, the sealed-cookie size budget
  * and the session cookie's name.
  * <p>
- * The mode rule ({@link #validateSessionMode}) requires a {@code store} in {@code server} mode. The
+ * The mode rule ({@link #validateSessionMode}) requires a {@code store} in {@code server} mode and
+ * refuses the cookie-mode {@code key_file} there. The
  * store bounds ({@link #validateSessionMaxSessions}, {@link #validateSessionMaxSessionsPerSubject})
  * hold {@code max_sessions} to a positive integer and {@code max_sessions_per_subject} to the range
  * {@code 1..max_sessions}, refusing the latter in cookie mode, which stores no sessions. The idle-timeout
@@ -74,6 +75,7 @@ public class OidcSessionRules {
     private static final String OIDC_SESSION_MAX_SESSIONS_PER_SUBJECT_POINTER =
             "/oidc/session/max_sessions_per_subject";
     private static final String OIDC_SESSION_COOKIE_NAME_POINTER = "/oidc/session/cookie_name";
+    private static final String OIDC_SESSION_KEY_FILE_POINTER = "/oidc/session/key_file";
 
     /**
      * The cookie-name prefix every gateway-owned cookie carries. A browser honours a
@@ -100,10 +102,15 @@ public class OidcSessionRules {
     /**
      * Rule: the session mode's mandatory companions (D1/D2b).
      * <p>
-     * {@code server} mode requires a {@code store}. {@code cookie} mode does <em>not</em> require an
-     * {@code encryption_key} — omitting it selects the generate-on-startup key mode, a first-class
+     * {@code server} mode requires a {@code store}. {@code cookie} mode does <em>not</em> require a
+     * {@code key_file} — omitting it selects the generate-on-startup key mode, a first-class
      * production option (at the cost of dropping every session on restart and being unshareable
      * across replicas).
+     * <p>
+     * {@code server} mode refuses a declared {@code key_file}: it never reads the cookie sealing key,
+     * so the key would parse and do nothing, and an operator who declared it would believe sessions
+     * are sealed under a key they provided. The refusal names the key and the remedy, never the
+     * declared path.
      *
      * @param gateway the bound gateway document, whose {@code oidc.session} block is judged
      * @param errors  the shared violation list every refusal is appended to
@@ -119,6 +126,11 @@ public class OidcSessionRules {
         if (session.isServerMode() && session.store() == null) {
             errors.add(new ConfigError(GATEWAY_FILE, "/oidc/session/store",
                     "server session mode requires a store"));
+        }
+        if (session.isServerMode() && session.keyFile() != null) {
+            errors.add(new ConfigError(GATEWAY_FILE, OIDC_SESSION_KEY_FILE_POINTER,
+                    "oidc session key_file is declared in server session mode, which never reads the cookie "
+                            + "sealing key — remove the key, or use cookie session mode"));
         }
     }
 

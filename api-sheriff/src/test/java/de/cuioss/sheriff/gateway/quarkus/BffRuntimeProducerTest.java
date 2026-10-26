@@ -261,6 +261,13 @@ class BffRuntimeProducerTest {
     private static final SignatureOnlyTokenVerifier LOGOUT_TOKEN_VERIFIER =
             new SignatureOnlyTokenVerifier(List.of(TEST_ISSUER), TOKEN_VALIDATOR.getSecurityEventCounter());
 
+    /** Numbers the sealing-key files written to {@link #sealingKeyDirectory}, so none overwrites another. */
+    private static final AtomicInteger SEALING_KEY_FILES = new AtomicInteger();
+
+    /** The directory every cookie-mode sealing-key file of this class is written to. */
+    @TempDir
+    static Path sealingKeyDirectory;
+
     @Nested
     @DisplayName("Active server-mode runtime")
     class Active {
@@ -757,7 +764,7 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should boot cookie mode without an encryption key, generating one on startup")
+        @DisplayName("Should boot cookie mode without a key_file, generating a key on startup")
         void shouldBootCookieModeWithoutKey() {
             OidcConfig noKey = OidcConfig.builder()
                     .issuer(ISSUER)
@@ -792,6 +799,23 @@ class BffRuntimeProducerTest {
                                     + "boot's cookie, which a hard-coded or absent key would"));
         }
 
+        @Test
+        @DisplayName("Should seal under the provided key file, so a second boot on the same file opens the cookie")
+        void shouldSealUnderTheProvidedKeyFile() {
+            OidcConfig provided = cookieModeOidc();
+            SealedSessionCookieCodec firstBoot = assembledCodecOf(producer(provided).bffRuntime());
+            SealedSessionCookieCodec secondBoot = assembledCodecOf(producer(provided).bffRuntime());
+            SealedSessionPayload session = cookieSession();
+
+            String sealed = assertDoesNotThrow(() -> firstBoot.seal(session));
+
+            // The matched counterpart of shouldBootCookieModeWithoutKey: a generated key cannot open the
+            // first boot's cookie, so a second boot opening it proves the key came from the file.
+            assertEquals(Optional.of(new SealedSessionCookieCodec.Unsealed(session)), secondBoot.unseal(sealed),
+                    "two boots reading the same oidc.session.key_file seal under the same key, which is what "
+                            + "lets a session survive a restart and replicas share it");
+        }
+
         /**
          * The single {@link SealedSessionCookieCodec} the cookie-mode producer wired, located by the
          * same bounded object-graph walk the query-mode assertions use.
@@ -822,15 +846,29 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should refuse an encryption key that is not a base64 AES-256 value")
-        void shouldRefuseMalformedKey() {
-            BffRuntimeProducer nonBase64 = producer(cookieModeOidcWithKey("not-base64-~~~"));
-            BffRuntimeProducer aes128 =
-                    producer(cookieModeOidcWithKey(Base64.getEncoder().encodeToString(new byte[16])));
+        @DisplayName("Should abort the build with CONFIG_INVALID for a sealing key file the resolver refuses")
+        void shouldAbortTheBuildOnARefusedSealingKeyFile() {
+            String notBase64 = "not-base64-~~~";
+            String aes128 = Base64.getEncoder().encodeToString(new byte[16]);
 
-            assertThrows(IllegalStateException.class, nonBase64::bffRuntime);
-            assertThrows(IllegalStateException.class, aes128::bffRuntime,
-                    "an AES-128 key is refused — the codec is specified as AES-256-GCM");
+            assertAll("a refused sealing key file fails the boot the way a refused signing-key file does",
+                    Stream.of(notBase64, aes128).map(content -> (Executable) () -> {
+                        OidcConfig oidc = cookieModeOidcWithKey(content);
+                        String keyFile = oidc.session().keyFile();
+                        BffRuntimeProducer producer = producer(oidc);
+
+                        GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime);
+
+                        String message = thrown.getMessage();
+                        assertAll("the refusal of a key file holding '" + content + "'",
+                                () -> assertEquals(EventType.CONFIG_INVALID, thrown.getEventType()),
+                                () -> assertTrue(message.contains("oidc.session.key_file"),
+                                        "the refusal must name the configuration field: " + message),
+                                () -> assertFalse(message.contains(keyFile),
+                                        "the configured path is never echoed: " + message),
+                                () -> assertFalse(message.contains(content),
+                                        "the file content is never echoed: " + message));
+                    }));
         }
     }
 
@@ -3416,7 +3454,7 @@ class BffRuntimeProducerTest {
         }
 
         @Test
-        @DisplayName("Should keep the published client key apart from the proof key when two keys are in use")
+        @DisplayName("Should keep the published client key apart from the proof key when both keys are generated")
         void shouldKeepThePublishedKeyApartFromTheProofKey() throws Exception {
             BffRuntime runtime = stubProducer(stubOidc().build()).bffRuntime();
 
@@ -3424,24 +3462,74 @@ class BffRuntimeProducerTest {
             String proofKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
 
             assertNotEquals(publishedKeyId, proofKey,
-                    "the client JWKS path publishes the client-authentication key, not the separate DPoP proof key");
+                    "the client JWKS path publishes the client-authentication key, not the DPoP proof key");
         }
 
+        /**
+         * FAPI 2.0 section 6.8: a key serves one purpose. One PEM written to two paths is the same key
+         * in two files — the copy the pre-boot file comparison cannot see, because it reads no key
+         * material — and the very same path names it twice. The runtime does not rely on the pre-boot
+         * rule for either: both are refused while the runtime is assembled, once both keys are read, with
+         * a message that names both fields and neither path nor key id.
+         */
         @Test
-        @DisplayName("Should publish and prove the same key when both blocks name one key file")
-        void shouldUseOneKeyForBothPurposesWhenBothBlocksNameOneFile() throws Exception {
-            Path keyFile = TestSigningKeys.writeKeyFile(keyDirectory, TestSigningKeys.ecKeyPair());
+        @DisplayName("Should abort the build with CONFIG_INVALID when one key is provided for client authentication and DPoP")
+        void shouldRefuseOneKeyForBothPurposes() {
+            KeyPair keyPair = TestSigningKeys.ecKeyPair();
+            Path clientKeyFile = TestSigningKeys.writeKeyFile(keyDirectory, keyPair);
+            Path copiedKeyFile = TestSigningKeys.writeKeyFile(keyDirectory, keyPair);
+            String keyId = new DpopProofGenerator(keyPair, KeyMode.PROVIDED_EC.algorithm).jkt();
+            Map<String, Path> dpopKeyFiles = Map.of(
+                    "the same key under a second path", copiedKeyFile,
+                    "the very same path", clientKeyFile);
+
+            assertAll("one key for both purposes is refused, however it is named",
+                    dpopKeyFiles.entrySet().stream().map(dpopKeyFile -> (Executable) () -> {
+                        BffRuntimeProducer producer = stubProducer(stubOidc()
+                                .clientAuthentication(keyFileSettings(clientKeyFile))
+                                .senderConstraint(senderConstraintSettings(dpopKeyFile.getValue()))
+                                .build());
+
+                        GatewayException thrown = assertThrows(GatewayException.class, producer::bffRuntime,
+                                dpopKeyFile.getKey());
+
+                        String message = thrown.getMessage();
+                        assertAll(dpopKeyFile.getKey(),
+                                () -> assertEquals(EventType.CONFIG_INVALID, thrown.getEventType()),
+                                () -> assertTrue(message.contains(KEY_FILE_FIELD),
+                                        "the refusal names the client-authentication field: " + message),
+                                () -> assertTrue(message.contains(SENDER_CONSTRAINT_KEY_FILE_FIELD),
+                                        "the refusal names the sender-constraint field: " + message),
+                                () -> assertTrue(message.contains("FAPI 2.0 section 6.8"),
+                                        "the refusal names the requirement it enforces: " + message),
+                                () -> assertFalse(message.contains(keyId), "no key id is echoed: " + message),
+                                () -> assertFalse(message.contains(clientKeyFile.getFileName().toString())
+                                        || message.contains(copiedKeyFile.getFileName().toString()),
+                                        "no configured path is echoed: " + message));
+                    }));
+        }
+
+        /** The matched control of {@link #shouldRefuseOneKeyForBothPurposes()}: two keys, two files. */
+        @Test
+        @DisplayName("Should build an active runtime that publishes one provided key and proves the other")
+        void shouldUseTwoProvidedKeysForTheTwoPurposes() throws Exception {
+            KeyPair clientKey = TestSigningKeys.ecKeyPair();
+            KeyPair dpopKey = TestSigningKeys.ecKeyPair();
             OidcConfig oidc = stubOidc()
-                    .clientAuthentication(keyFileSettings(keyFile))
-                    .senderConstraint(senderConstraintSettings(keyFile))
+                    .clientAuthentication(keyFileSettings(TestSigningKeys.writeKeyFile(keyDirectory, clientKey)))
+                    .senderConstraint(senderConstraintSettings(TestSigningKeys.writeKeyFile(keyDirectory, dpopKey)))
                     .build();
             BffRuntime runtime = stubProducer(oidc).bffRuntime();
 
             String publishedKeyId = publishedKeyOf(runtime).path("kid").asText();
             String proofKey = proofKeyThumbprint(proofOf(drive(Leg.CODE_EXCHANGE, runtime)));
 
-            assertEquals(publishedKeyId, proofKey,
-                    "one file is one key: its thumbprint is both the published key id and the proof key");
+            assertAll("two provided keys, each serving its own purpose",
+                    () -> assertTrue(runtime.isActive()),
+                    () -> assertEquals(new DpopProofGenerator(clientKey, KeyMode.PROVIDED_EC.algorithm).jkt(),
+                            publishedKeyId, "the client JWKS path publishes the client-authentication key"),
+                    () -> assertEquals(new DpopProofGenerator(dpopKey, KeyMode.PROVIDED_EC.algorithm).jkt(),
+                            proofKey, "the proofs are signed with the sender-constraint key"));
         }
 
         @ParameterizedTest(name = "{0}")
@@ -4774,7 +4862,7 @@ class BffRuntimeProducerTest {
                     .mode(mode)
                     .ttlSeconds(ttlSeconds)
                     .idleTimeoutSeconds(idleTimeoutSeconds)
-                    .encryptionKey("cookie".equals(mode) ? Base64.getEncoder().encodeToString(key) : null)
+                    .keyFile("cookie".equals(mode) ? sealingKeyFile(Base64.getEncoder().encodeToString(key)) : null)
                     .build();
             return OidcConfig.builder()
                     .issuer(ISSUER)
@@ -4968,17 +5056,32 @@ class BffRuntimeProducerTest {
                 .build();
     }
 
+    /**
+     * Writes {@code keyFileContent} to a fresh sealing-key file followed by a newline, as
+     * {@code openssl rand -base64 32} writes one, and returns its path.
+     */
+    private static String sealingKeyFile(String keyFileContent) {
+        Path keyFile = sealingKeyDirectory.resolve("session-" + SEALING_KEY_FILES.incrementAndGet() + ".key");
+        try {
+            Files.writeString(keyFile, keyFileContent + "\n", StandardCharsets.US_ASCII);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return keyFile.toString();
+    }
+
     private static OidcConfig cookieModeOidc() {
         byte[] key = new byte[32];
         Arrays.fill(key, (byte) 0x11);
         return cookieModeOidcWithKey(Base64.getEncoder().encodeToString(key));
     }
 
-    private static OidcConfig cookieModeOidcWithKey(String encryptionKey) {
+    /** A cookie-mode configuration whose sealing-key file holds {@code keyFileContent}. */
+    private static OidcConfig cookieModeOidcWithKey(String keyFileContent) {
         OidcConfig.Session session = OidcConfig.Session.builder()
                 .mode("cookie")
                 .ttlSeconds(3600)
-                .encryptionKey(encryptionKey)
+                .keyFile(sealingKeyFile(keyFileContent))
                 .build();
         return OidcConfig.builder()
                 .issuer(ISSUER)
