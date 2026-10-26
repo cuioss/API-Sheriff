@@ -38,7 +38,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * Two of those refusals are raised before the trust boundary — a method outside the anchor's
  * {@code allowed_methods} at the verb gate, a missing bearer at stage 4 — so the shipped default
- * answers both to the untrusted caller as the unrouted {@code 404} (ADR-0072), with the TRUE event
+ * answers both to the untrusted caller as the unrouted {@code 404} (ADR-0073), with the TRUE event
  * ({@code METHOD_NOT_ALLOWED}, {@code TOKEN_MISSING}) still metered.
  */
 class DirectoryAssetServingIT extends BaseIntegrationTest {

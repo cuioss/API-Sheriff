@@ -59,7 +59,7 @@ import org.junit.jupiter.api.Test;
  * </ul>
  * The status is identical on both legs: negotiation changes the body, never the status. The error
  * classes exercised are the ones the IT stack can reach: an unrouted address ({@code 404}), a body
- * over the route cap (answered to the untrusted caller as the unrouted {@code 404}, ADR-0072), an
+ * over the route cap (answered to the untrusted caller as the unrouted {@code 404}, ADR-0073), an
  * upstream the gateway cannot dial ({@code 502}), an upstream that
  * does not answer in time ({@code 504}), an open circuit ({@code 503}), a directory-asset miss
  * ({@code 404}), a bearer token missing the endpoint scope ({@code 403}) and a failed OIDC callback.

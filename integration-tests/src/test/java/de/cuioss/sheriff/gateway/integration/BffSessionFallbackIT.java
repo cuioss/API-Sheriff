@@ -62,7 +62,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code 403 insufficient_scope}; an invalid token, a {@code Basic} credential and an empty
  *       value are refused with no login redirect — before the trust boundary, so the shipped default
  *       answers them as the unrouted {@code 404} with no {@code WWW-Authenticate} challenge
- *       (ADR-0072). CSRF does not run.</li>
+ *       (ADR-0073). CSRF does not run.</li>
  *   <li>{@code Authorization} absent — SESSION, exactly as on a {@code require: session} route: a live
  *       session mediates its bearer upstream, a navigation without one is redirected into the IdP, an
  *       XHR without one is {@code 401 application/problem+json}, and an unsafe method is subject to the

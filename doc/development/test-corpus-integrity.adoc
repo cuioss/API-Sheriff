@@ -985,7 +985,7 @@ pass is the larger sample that says so again, from the other direction.
 | Named "rejected *before any file is read*"; nothing asserts the ordering, and from outside it
   cannot be asserted directly. It can be asserted *by contrast*, and the contrast now rests on the
   true event rather than the status: a tokenless request is answered as the unrouted `404`
-  (link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]),
+  (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]),
   which is also what a directory miss answers, so the existing file and a file that does not exist
   under `/secure-assets` must both be metered `TOKEN_MISSING` and answered identically --
   source-resolution-first would answer the missing file with the asset miss and meter no
@@ -2316,7 +2316,7 @@ subject.
 
 A rejection raised after route selection and before the trust boundary is answered to an untrusted
 caller as the unrouted `404` on the shipped default
-(link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 The tests below are named in a verdict or a per-file note above, which was written against the honest
 status they then asserted. Each was migrated to
 assert the `404` plus the true event, except `GrpcProxyIT`, whose row states the gRPC status it asserts

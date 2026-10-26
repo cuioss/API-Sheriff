@@ -50,7 +50,7 @@ import org.junit.jupiter.api.Test;
  *   <li><em>A rotated key is accepted.</em> Control first: a token signed with the stub's first key is
  *       answered {@code 200} on the bearer-gated asset route and a request without a token is refused,
  *       so the route accepts such a token and admits nothing else. A refused bearer is raised before
- *       the trust boundary, so the shipped default answers it as the unrouted {@code 404} (ADR-0072);
+ *       the trust boundary, so the shipped default answers it as the unrouted {@code 404} (ADR-0073);
  *       every refusal below is that {@value #REFUSED}. The stub's key is then replaced; the key set it
  *       serves holds the new key alone. The first request carrying a token signed with the new key is
  *       refused — the gateway does not hold that key and
@@ -110,7 +110,7 @@ class JwksKeyRotationIT {
 
     /**
      * The status a refused bearer is answered with on the shipped default: the unrouted {@code 404},
-     * because the refusal is raised before the trust boundary (ADR-0072).
+     * because the refusal is raised before the trust boundary (ADR-0073).
      */
     private static final int REFUSED = UniformNotFoundAssertions.UNROUTED_STATUS;
 

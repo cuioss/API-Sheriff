@@ -1,4 +1,4 @@
-= ADR-0072: Untrusted callers get the unrouted 404 for every rejection raised before the trust boundary
+= ADR-0073: Untrusted callers get the unrouted 404 for every rejection raised before the trust boundary
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents

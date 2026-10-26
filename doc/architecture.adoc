@@ -1726,7 +1726,7 @@ An honest status on a matched route tells an unauthenticated caller that the rou
 a `401` or a `413` answers where an unrouted address answers `404`. To close that
 endpoint-existence oracle, the edge renders every rejection raised in the *pre-trust window* exactly
 as it renders an unrouted address
-(link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+(link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 
 *The trust boundary.* A request passes it when the bearer branch of stage 4 validated a token, or
 when stage 4 completed on any branch: a live session, or an anonymous route. The pre-trust window
@@ -1756,7 +1756,7 @@ without extension members, or its negotiated HTML error page.
 |===
 
 `UniformNotFound.CLOSED_SET` is the authoritative member list, and `UniformNotFoundTest` fails for an
-`EventType` constant that is neither a member nor in its recorded exclusion table. ADR-0072 gives the
+`EventType` constant that is neither a member nor in its recorded exclusion table. ADR-0073 gives the
 reason for every exclusion.
 
 *The response-timing floor.* While the switch is on, every answer rendered as the unrouted `404` --
@@ -1764,7 +1764,7 @@ the genuine `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED` as much as a reso
 written no earlier than admission plus `UniformNotFound.RESPONSE_FLOOR` (50 ms) plus a random jitter
 below `UniformNotFound.RESPONSE_JITTER` (20 ms). `edge.end.ResponseDelay` schedules the write on a
 Vert.x timer, so no thread is held while an answer waits. The answer still holds its admission
-permit until it is written. Honest answers are never delayed. Both values are fixed constants; ADR-0072
+permit until it is written. Honest answers are never delayed. Both values are fixed constants; ADR-0073
 records how they were chosen.
 
 *The switch.* `security_defaults.uniform_not_found` (default `true`) governs the branch and the floor

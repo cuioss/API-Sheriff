@@ -59,7 +59,7 @@ import org.jspecify.annotations.Nullable;
  * cui-http rejects those unconditionally. Applied through
  * {@link SecurityConfigurations#withDeclaredCharacterPolicy}.
  * <p>
- * <strong>{@code uniform_not_found}.</strong> The switch of the trust-boundary branch (ADR-0072). On —
+ * <strong>{@code uniform_not_found}.</strong> The switch of the trust-boundary branch (ADR-0073). On —
  * the secure default — a rejection raised after route selection and before the trust boundary (a
  * validated bearer token or a completed authentication stage) is answered to the caller exactly as an
  * unrouted address is answered, so an untrusted caller cannot tell an existing route from an absent

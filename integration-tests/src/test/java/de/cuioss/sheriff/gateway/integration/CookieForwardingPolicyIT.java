@@ -51,7 +51,7 @@ import org.junit.jupiter.api.Timeout;
  *       not relayed, and a relayed line loses its {@code Domain} attribute.</li>
  *   <li><em>The same-origin check.</em> A cross-site unsafe request carrying a cookie the route would
  *       forward is refused before it reaches the upstream — before the trust boundary, so the shipped
- *       default answers the refusal as the unrouted {@code 404} (ADR-0072), the matched same-origin
+ *       default answers the refusal as the unrouted {@code 404} (ADR-0073), the matched same-origin
  *       request being the control that ties it to the check; an {@code additional_origins}
  *       entry admits its origin; {@code same_origin_check: false} admits a cross-site request; and on
  *       one route the check keys on the forwardable cookie, not on the route: the same cross-site

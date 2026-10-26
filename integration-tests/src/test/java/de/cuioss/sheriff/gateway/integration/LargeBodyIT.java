@@ -81,7 +81,7 @@ import org.junit.jupiter.api.Test;
  * The negative case asserts <strong>both</strong> halves of the error contract, and neither replaces
  * the other. The declared-length breach is refused before the trust boundary, so the shipped default
  * answers the untrusted caller as the unrouted {@code 404} with the routing problem document
- * (ADR-0072): that envelope — the {@code application/problem+json} content type, the routing problem
+ * (ADR-0073): that envelope — the {@code application/problem+json} content type, the routing problem
  * type and title, and the absence of the go-httpbin echo — is what discriminates the <em>gateway's</em>
  * refusal from the <em>framework's</em>, whose own {@code Content-Length} pre-check answers with a bare
  * {@code 413} carrying no envelope. The cause is locked by the TRUE event: the refusal moves

@@ -38,7 +38,7 @@ import org.junit.jupiter.api.Test;
  * request that violates both is refused {@code PATH_NOT_ALLOWED} and bearer validation never runs.
  * <p>
  * Both refusals are raised before the trust boundary, so the shipped default answers both to the
- * caller as the same unrouted {@code 404} (ADR-0072) — the status no longer separates them, by
+ * caller as the same unrouted {@code 404} (ADR-0073) — the status no longer separates them, by
  * design. The TRUE event does: each refusal moves {@code sheriff_errors_total} on the route under its
  * own event. The two tokenless cases below differ in <em>nothing but the path</em> and are metered
  * under different events — {@code TOKEN_MISSING} when the path is allow-listed and the request

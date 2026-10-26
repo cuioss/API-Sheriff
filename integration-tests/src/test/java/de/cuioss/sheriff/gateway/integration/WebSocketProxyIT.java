@@ -54,7 +54,7 @@ import org.junit.jupiter.api.Test;
  * route with a populated {@code allowed_origins}, while the bearer WS route is exercised through its
  * <em>rejection</em> path: a tokenless handshake is refused at the offline bearer stage before the
  * {@code Origin} gate and before any upstream dial. That refusal is raised before the trust boundary,
- * so the shipped default answers it as the unrouted {@code 404} (ADR-0072) — the same status as the
+ * so the shipped default answers it as the unrouted {@code 404} (ADR-0073) — the same status as the
  * unmatched-path handshake — while the {@code Origin} gate, which runs after the trust boundary, keeps
  * its honest {@code 403}. Together the routes cover every WS
  * behaviour: opaque relay, Origin enforcement, auth-before-dial, idle-reclaim-vs-heartbeat, and the

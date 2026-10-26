@@ -47,7 +47,7 @@ import org.junit.jupiter.api.Test;
  * and refuses with its {@code 400} whatever the address. The route-scoped checks — the relocated
  * url-parameter validation, the body cap and the allowlist — run after route selection and before the
  * trust boundary, so the shipped default answers their refusals to the untrusted caller as the
- * unrouted {@code 404} (ADR-0072). Each such case therefore asserts the TRUE event it is metered under
+ * unrouted {@code 404} (ADR-0073). Each such case therefore asserts the TRUE event it is metered under
  * in {@code sheriff_errors_total} — that event, not the status, is what proves the named check refused
  * the request.
  */

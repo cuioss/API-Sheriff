@@ -49,7 +49,7 @@ import org.junit.jupiter.api.Test;
  * <strong>Rejection scenarios.</strong> A missing token and a malformed token must both be refused at
  * the gateway and the upstream must never be reached. The caller has not passed the trust boundary,
  * so the shipped default answers either refusal as the unrouted {@code 404} with no
- * {@code WWW-Authenticate} challenge (ADR-0072); the cause stays observable as the TRUE event
+ * {@code WWW-Authenticate} challenge (ADR-0073); the cause stays observable as the TRUE event
  * ({@code TOKEN_MISSING} / {@code TOKEN_INVALID}) in {@code sheriff_errors_total}. A forwarded request
  * would carry the {@code go-httpbin} echo (a non-null {@code method}); its absence is the observable
  * proof the upstream count stayed {@code 0} on every bearer rejection.

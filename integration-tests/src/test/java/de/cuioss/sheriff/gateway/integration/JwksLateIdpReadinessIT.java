@@ -80,7 +80,7 @@ import org.junit.jupiter.api.Test;
  *       {@code jwks} {@code loading} or {@code unavailable} and {@code issuers_loaded} below
  *       {@code issuers}, and names no issuer, URL or host. The same token that is accepted later is
  *       refused here — answered as the unrouted {@code 404}, because a refused bearer is raised
- *       before the trust boundary (ADR-0072) — which is the matched control for the acceptance leg:
+ *       before the trust boundary (ADR-0073) — which is the matched control for the acceptance leg:
  *       the acceptance is caused by the loaded key set, not by a route that admits anything.</li>
  *   <li><em>The first load attempt gives up and the gateway schedules its own retry</em> — the log
  *       carries {@code WARN ApiSheriff-129}. This is awaited for
@@ -155,7 +155,7 @@ class JwksLateIdpReadinessIT {
 
     /**
      * The status a refused bearer is answered with on the shipped default: the unrouted {@code 404},
-     * because the refusal is raised before the trust boundary (ADR-0072).
+     * because the refusal is raised before the trust boundary (ADR-0073).
      */
     private static final int REFUSED = UniformNotFoundAssertions.UNROUTED_STATUS;
 

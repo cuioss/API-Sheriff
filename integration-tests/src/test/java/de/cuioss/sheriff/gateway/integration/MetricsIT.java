@@ -145,7 +145,7 @@ class MetricsIT extends BaseIntegrationTest {
         // and rejects it (SECURITY_FILTER_VIOLATION), incrementing the shared SecurityEventCounter
         // the meter is bound to. The rejection happens POST-route in ThoroughChecksStage — the
         // url-parameter validation was relocated there so it runs under the route's own profile
-        // (ADR-0024) — so the untrusted caller is answered with the unrouted 404 (ADR-0072). Both are
+        // (ADR-0024) — so the untrusted caller is answered with the unrouted 404 (ADR-0073). Both are
         // immaterial to the meter, but the /proxy route must stay non-'none' for this rejection to
         // occur at all.
         given()

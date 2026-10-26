@@ -43,7 +43,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * problem document and the absence of the go-httpbin {@code method} echo, which is the observable
  * proof that the refused request never reached the upstream. The per-route filter runs after route
  * selection and before the trust boundary, so the shipped default answers its refusals to the
- * untrusted caller as the unrouted {@code 404} (ADR-0072); that the filter, and not routing, refused
+ * untrusted caller as the unrouted {@code 404} (ADR-0073); that the filter, and not routing, refused
  * the query is asserted on its TRUE event, {@code SECURITY_FILTER_VIOLATION}, in
  * {@code sheriff_errors_total}. The header-value cap is part of the pre-route floor, which refuses with
  * its {@code 400} before any route is selected.

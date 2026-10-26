@@ -111,7 +111,7 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
             // Assert — the unrouted 404 (not the floor's 400) plus the TOKEN_INVALID event is the
             // load-bearing discriminator: the header was ADMITTED by the pre-route floor and refused
             // later, by stage-4 bearer validation, for being an invalid token — a refusal the shipped
-            // default answers to the untrusted caller as the unrouted 404 (ADR-0072). A 400 here would
+            // default answers to the untrusted caller as the unrouted 404 (ADR-0073). A 400 here would
             // mean the floor refused the header outright and the carve-out is gone or narrower than
             // declared.
             UniformNotFoundAssertions.assertUnroutedProblem(response, "an at-cap Authorization value");
@@ -209,7 +209,7 @@ class DeclaredLimitBoundaryIT extends BaseIntegrationTest {
                             .extract());
 
             // Assert — the declared-length breach is refused before the trust boundary, so the untrusted
-            // caller sees the unrouted 404 (ADR-0072); the CONTENT_TOO_LARGE event above is what ties it to
+            // caller sees the unrouted 404 (ADR-0073); the CONTENT_TOO_LARGE event above is what ties it to
             // the SIZE. The envelope, not just the status, is what proves the GATEWAY refused this. The
             // compose stack raises the framework floor to 128M (docker-compose.yml:242), far above this
             // 1 MiB cap, so the Quarkus root handler cannot shadow the gateway here — and its own

@@ -115,7 +115,7 @@ request gets `application/problem+json`. A response relayed from an upstream is 
 link:../../doc/user/portal.adoc#_error_pages[Application Portal -- Error pages],
 link:../../doc/adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]
 for the `Routing` category and
-link:../../doc/adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+link:../../doc/adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
 for the uniform `404`. The sample's rejection panel fires one request per row -- a "navigate"
 row as a `fetch` carrying `Accept: text/html` with `redirect: 'manual'`, so the `302` is observed
 rather than followed -- and shows the status, `Content-Type` and whether a redirect happened.

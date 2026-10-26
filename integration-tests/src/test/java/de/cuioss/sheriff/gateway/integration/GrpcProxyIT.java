@@ -66,7 +66,7 @@ import org.junit.jupiter.api.Test;
  * exercised through its <em>rejection</em> path (no signing key to mint a token): a tokenless call
  * is refused before any upstream dial. The refusal is raised before the trust boundary, so the shipped
  * default answers it as the unrouted HTTP {@code 404} rather than the trailers-only
- * {@code UNAUTHENTICATED} that would disclose the route (ADR-0072); the gRPC client surfaces an HTTP
+ * {@code UNAUTHENTICATED} that would disclose the route (ADR-0073); the gRPC client surfaces an HTTP
  * {@code 404} as {@code UNIMPLEMENTED}, exactly as it surfaces a call on a service no route serves
  * ({@code EnumerationOracleIT} compares the two). The trailers-only contract itself still holds for
  * every rejection past the trust boundary. The

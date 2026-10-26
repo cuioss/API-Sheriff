@@ -232,7 +232,7 @@ a cookie, every `auth.require: session` route applies *origin verification* on u
   applies). Anything else -- a non-trusted `Origin`, `Sec-Fetch-Site: cross-site`, or neither
   header present -- is rejected with a `CSRF_REJECTED` event. The defence runs before the session
   is resolved, so the caller is answered as the unrouted `404`, with the `CSRF_REJECTED` event still
-  metered (link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+  metered (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
   With `security_defaults.uniform_not_found: false` the answer is `403`.
 * The session cookie is set `SameSite=Lax` as defence-in-depth -- it blocks cross-site POSTs in
   modern browsers on its own, but origin verification remains the enforced check (older

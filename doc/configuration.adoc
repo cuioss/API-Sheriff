@@ -4524,7 +4524,7 @@ A route that answers `405`, `401` or `413` to an unauthenticated request tells t
 route exists, because an address without a route answers `404`. With `uniform_not_found` on -- the
 secure default, also when the key is omitted -- the gateway closes that endpoint-existence oracle:
 every rejection raised in the *pre-trust window* is answered exactly as an unrouted address is
-answered (link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+answered (link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 
 *The trust boundary.* A request passes it once a bearer token validated offline, or once the
 authentication stage completed on any branch -- a live session, or a `require: none` route. The
@@ -4549,7 +4549,7 @@ The answer is identical to the unrouted one in status, body (the `routing` probl
 HTML error page under `portal.error_pages`), `Content-Type` and header set: no `WWW-Authenticate`, no
 `Allow`, no route `security_headers`, no `match.headers` `Vary` and no `Set-Cookie`. Every unrouted
 `404`, genuine or resolved, leaves the edge no earlier than a fixed floor plus a random jitter after
-admission. The two values are gateway constants without a key; ADR-0072 records them.
+admission. The two values are gateway constants without a key; ADR-0073 records them.
 
 *What it never touches.* These answers keep their status with the key on:
 

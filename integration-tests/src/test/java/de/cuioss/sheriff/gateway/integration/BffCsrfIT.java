@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Test;
  * what shapes the response, proving the refusal was specifically the CSRF gate and not the auth stage.
  * <p>
  * The defence runs before the trust boundary, so the shipped default answers its refusal to the caller
- * as the unrouted {@code 404} (ADR-0072). The cause is asserted on the TRUE event,
+ * as the unrouted {@code 404} (ADR-0073). The cause is asserted on the TRUE event,
  * {@code CSRF_REJECTED}, which the refusal still moves in {@code sheriff_errors_total} on the route.
  */
 class BffCsrfIT extends BaseIntegrationTest {

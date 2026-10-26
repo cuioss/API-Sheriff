@@ -379,7 +379,7 @@ does this for you.
 
 A rejection a route raises before the caller is authenticated is answered to that caller as the
 unrouted `404`, so an unauthenticated scanner cannot tell which addresses name routes
-(link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 The operator view is in link:../user/endpoint-routes.adoc#_uniform_not_found_operator_note[Why an
 existing route answers 404]; the rendering contract is in
 link:../architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the trust
@@ -421,7 +421,7 @@ has one:
 
 When an event is raised both before and after the trust boundary -- `CONTENT_TOO_LARGE` and
 `SECURITY_FILTER_VIOLATION` are -- it belongs in the closed set, and the trust-boundary leg of the
-predicate keeps the post-trust raise honest. ADR-0072 records the reason for each existing
+predicate keeps the post-trust raise honest. ADR-0073 records the reason for each existing
 exclusion; extend it when an exclusion's reason is new.
 
 === Testing a pre-trust rejection

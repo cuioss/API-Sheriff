@@ -29,7 +29,7 @@
  * {@link de.cuioss.sheriff.gateway.edge.error.UniformNotFound#CLOSED_SET} is answered to the caller
  * exactly as an unrouted address is answered: the unrouted {@code 404}, its headers and its
  * negotiated HTML page, never a trailers-only gRPC status. The rejection is still metered and logged
- * under its true event; only the answer changes (ADR-0072).
+ * under its true event; only the answer changes (ADR-0073).
  * <p>
  * <strong>Dependencies.</strong> This package may depend on the edge packages {@code end},
  * {@code upstream}, {@code relay} and {@code request}.

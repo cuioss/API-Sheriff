@@ -718,7 +718,7 @@ same-origin refusal. Without this, an unauthenticated scanner would learn which 
 routes from the `401`, `405`, `400`, `413` or `403` it receives. The answer is the same in every
 detail: status, body, `Content-Type`, response headers -- no `WWW-Authenticate`, no `Allow` -- and
 the time it takes. A `protocol: grpc` route answers with the HTTP `404` too, not with a gRPC status
-(link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 
 *How to tell the true cause apart.* The gateway reports the real reason even though the caller does
 not see it:

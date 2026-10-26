@@ -134,7 +134,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>How a refused bearer is told from an absent route.</strong> A missing or rejected bearer is
  * raised after route selection and before the trust boundary, so on the shipped default it is
- * answered as the unrouted {@code 404} (ADR-0072, {@code security_defaults.uniform_not_found: true}),
+ * answered as the unrouted {@code 404} (ADR-0073, {@code security_defaults.uniform_not_found: true}),
  * not as a {@code 401}. Each such refusal is therefore asserted as the unrouted problem document
  * together with its true event, read from the rig's own registry through its published management
  * port: {@code TOKEN_MISSING} for the tokenless control of the second test — beside the {@code 200}

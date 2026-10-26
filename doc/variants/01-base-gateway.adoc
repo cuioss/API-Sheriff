@@ -41,7 +41,7 @@ declared body over the cap -- is answered to the caller exactly as an unrouted a
 under the `ROUTING` problem category (`urn:api-sheriff:problem:routing`, see
 link:../adr/0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059]).
 An unauthenticated caller therefore cannot tell which addresses name routes
-(link:../adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]).
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 The true cause is still counted, in `sheriff_errors_total{event}`. With
 `security_defaults.uniform_not_found: false` those rejections keep their honest status: `400` for a
 failed filter, `401` for a missing or invalid token and `405` for a method outside the allowlist. A

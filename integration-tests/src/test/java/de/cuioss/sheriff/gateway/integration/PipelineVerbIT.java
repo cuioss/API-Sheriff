@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
  * received method and body. Each allowed verb must forward and echo. The other side of the gate — a
  * method outside the allowed set is refused at the gateway <em>without</em> reaching the upstream,
  * answered to the untrusted caller as the unrouted {@code 404} and metered as
- * {@code METHOD_NOT_ALLOWED} (ADR-0072) — is asserted by
+ * {@code METHOD_NOT_ALLOWED} (ADR-0073) — is asserted by
  * {@link ErrorContractIT#disallowedMethodProblemJson()}, which drives the same {@code PATCH /proxy/get}
  * and additionally pins the problem document.
  */

@@ -69,7 +69,7 @@ endpoint:
     # Bearer-protected gRPC route on the distinct SecureEcho service path (route-level auth
     # strengthens the public anchor). A tokenless call is refused at the offline bearer stage, before
     # any upstream dial — so SecureEcho is never actually served upstream. The refusal is raised before
-    # the trust boundary, so it is answered as the unrouted HTTP 404 (ADR-0072), not trailers-only.
+    # the trust boundary, so it is answered as the unrouted HTTP 404 (ADR-0073), not trailers-only.
     - id: grpc-bearer
       protocol: grpc
       auth:

@@ -42,7 +42,7 @@ refusal of `endpoint.scopes` on an endpoint whose every route is `none`.
 [NOTE]
 ====
 *Amended for untrusted callers.*
-link:0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
 overrides the `401` a bearer route answers for a missing or invalid token. That rejection is raised
 before the trust boundary, so on the shipped default the gateway answers it as an unrouted address:
 `404`, no `WWW-Authenticate` challenge, and the true event (`TOKEN_MISSING` or `TOKEN_INVALID`)
@@ -171,7 +171,7 @@ shape what its own login asks for.
 
 == References
 
-* link:0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]: the uniform `404` that answers a missing or invalid bearer token before the trust boundary
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]: the uniform `404` that answers a missing or invalid bearer token before the trust boundary
 * link:0048-Per-request_OIDC_scope_rides_a_per-scope-set_client_configuration_on_the_unchanged_engine.adoc[ADR-0048]: how a login and a refresh carry the per-route scope set through the unchanged engine
 * link:0045-The_BFF_OIDC_back-channel_posture_is_pinned_through_the_librarys_own_passthrough_under_peer_egress-TLS_keys.adoc[ADR-0045]: the back-channel posture every scoped login configuration carries
 * link:../security-threat-model.adoc#bff-10[Threat model BFF-10] (token leakage) and link:../security-threat-model.adoc#bff-15[BFF-15] (scope over-request, under-check and session-wide scope growth)

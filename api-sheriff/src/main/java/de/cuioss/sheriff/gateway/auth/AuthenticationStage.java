@@ -83,7 +83,7 @@ import org.jspecify.annotations.Nullable;
  * is answered honestly to a caller whose credential is valid; and on every branch when the stage
  * completes without a rejection. A {@link EventType#TOKEN_MISSING} or {@link EventType#TOKEN_INVALID}
  * rejection leaves the marker unset, so the edge answers it to the caller as the unrouted
- * {@code 404} while {@code security_defaults.uniform_not_found} is on (ADR-0072).
+ * {@code 404} while {@code security_defaults.uniform_not_found} is on (ADR-0073).
  * <p>
  * The session runtime is an optional collaborator: it is wired only when the gateway serves a BFF
  * variant. A request resolved onto the session branch — a {@code require: session} route, or the

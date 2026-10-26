@@ -35,7 +35,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * A rejection raised after route selection and before the trust boundary — the verb gate, a missing
  * bearer — is answered to the untrusted caller as the unrouted {@code 404} routing problem on the
- * shipped default (ADR-0072), so the document does not disclose that the route exists. Its TRUE event
+ * shipped default (ADR-0073), so the document does not disclose that the route exists. Its TRUE event
  * stays in {@code sheriff_errors_total}, which is what still tells the two causes apart.
  */
 class ErrorContractIT extends BaseIntegrationTest {

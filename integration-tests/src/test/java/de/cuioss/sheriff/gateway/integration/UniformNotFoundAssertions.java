@@ -27,7 +27,7 @@ import io.restassured.response.Response;
 
 /**
  * The shared assertions for a rejection the shipped default answers to an untrusted caller as the
- * unrouted {@code 404} (ADR-0072, {@code security_defaults.uniform_not_found: true}).
+ * unrouted {@code 404} (ADR-0073, {@code security_defaults.uniform_not_found: true}).
  * <p>
  * A rejection raised after route selection and before the trust boundary — a missing or invalid
  * bearer, the verb gate, the route-scoped filter and body cap, the CSRF and cookie same-origin checks

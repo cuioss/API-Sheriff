@@ -82,7 +82,7 @@ import org.junit.jupiter.api.Test;
  *   <li><em>Still refused in steady state</em> — {@code WARN ApiSheriff-129} (a load attempt produced
  *       no key set and a retry was scheduled) is awaited, readiness is re-asserted {@code DOWN} after
  *       it, and a real Keycloak-minted token is refused on the bearer-gated route — answered as the
- *       unrouted {@code 404}, because a refused bearer is raised before the trust boundary (ADR-0072).
+ *       unrouted {@code 404}, because a refused bearer is raised before the trust boundary (ADR-0073).
  *       The refusal is therefore observed after a completed load attempt, not at an early instant
  *       before any attempt ran.</li>
  *   <li><em>The single-variable control</em> — the committed descriptor is parsed, the issuer's
@@ -152,7 +152,7 @@ class JwksEgressMismatchIT {
 
     /**
      * The status a refused bearer is answered with on the shipped default: the unrouted {@code 404},
-     * because the refusal is raised before the trust boundary (ADR-0072).
+     * because the refusal is raised before the trust boundary (ADR-0073).
      */
     private static final int REFUSED = UniformNotFoundAssertions.UNROUTED_STATUS;
 

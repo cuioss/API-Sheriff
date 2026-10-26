@@ -249,7 +249,7 @@ boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Confi
 | gRPC gateway rejections are emitted as trailers-only gRPC responses (a gRPC client cannot
   consume `application/problem+json`), with a canonical status mapping and h2-negotiation-failure
   to `UNAVAILABLE`. A rejection raised before the trust boundary is the HTTP `404` of
-  link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+  link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
   instead. *(Status: accepted.)*
 
 | link:adr/0017-Accept-time_SNI_split_at_a_dedicated_front_listener_passthrough_relays_opaquely_at_L4_everything_else_terminates_internally.adoc[ADR-0017]
@@ -302,7 +302,7 @@ boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Confi
   six-package gate are retired, and a narrowed gate keeps the five pre-boot configuration packages
   free of framework dependencies. *(Status: accepted.)*
 
-| link:adr/0072-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0072]
+| link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
 | A rejection raised after route selection and before the trust boundary -- the verb gate, the
   post-route stage, the CSRF defence, a missing or invalid bearer token -- is answered exactly as an
   unrouted address is answered, so an untrusted caller cannot tell an existing route from an absent

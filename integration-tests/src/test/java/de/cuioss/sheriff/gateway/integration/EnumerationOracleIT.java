@@ -62,7 +62,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * Proves against the native image on the shipped default ({@code security_defaults.uniform_not_found}
- * absent, hence on) that the endpoint-existence oracle is closed for an untrusted caller (ADR-0072):
+ * absent, hence on) that the endpoint-existence oracle is closed for an untrusted caller (ADR-0073):
  * every rejection raised after route selection and before the trust boundary is answered exactly as
  * an address no route serves, so the answer does not tell a caller whether the route exists.
  * <p>

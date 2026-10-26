@@ -111,7 +111,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <p>
  * <strong>How a refusal on the routed path is told from an absent route.</strong> The verb gate and
  * the route-scoped parameter checks run after route selection and before the trust boundary, so on
- * the shipped default both refusals are answered as the unrouted {@code 404} (ADR-0072,
+ * the shipped default both refusals are answered as the unrouted {@code 404} (ADR-0073,
  * {@code security_defaults.uniform_not_found: true}) and name neither the cause nor, for the verb gate,
  * the allowed verbs. Two signals keep each a test of the stage rather than of routing: the matched
  * control — a {@code POST} with an admitted query to the same routed path is proxied {@code 200}, so

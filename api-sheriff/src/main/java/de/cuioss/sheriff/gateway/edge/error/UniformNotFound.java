@@ -30,7 +30,7 @@ import org.jspecify.annotations.Nullable;
  * The trust-boundary branch of the rejection renderer: decides whether a rejection is answered to
  * the caller as the unrouted {@code 404} instead of its honest status, so that an untrusted caller
  * cannot tell an existing route from an absent one by the answer it gets (the endpoint-existence
- * oracle, ADR-0072).
+ * oracle, ADR-0073).
  * <p>
  * <strong>The trust boundary.</strong> A request has passed it once a bearer token validated offline
  * or the stage-4 authentication stage completed on any branch — a live session, or an anonymous
@@ -131,7 +131,7 @@ public final class UniformNotFound {
      * whose slowest arm is the offline validation of a well-formed bearer token with a wrong signature,
      * so that every rejection the window can raise has finished before the floor and an unrouted address
      * and a resolved rejection are released at the same moment. The value is a reasoned choice, not a
-     * measurement: ADR-0072 records the reasoning and that the worst-case cost has not been measured. A
+     * measurement: ADR-0073 records the reasoning and that the worst-case cost has not been measured. A
      * fixed constant of the gateway, like the hardening bounds of ADR-0060 and ADR-0064 — no
      * configuration key reaches it.
      */

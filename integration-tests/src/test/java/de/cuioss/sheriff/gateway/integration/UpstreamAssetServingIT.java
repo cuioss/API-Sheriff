@@ -167,7 +167,7 @@ class UpstreamAssetServingIT extends BaseIntegrationTest {
     @DisplayName("POST is refused by the verb gate — an asset anchor serves only GET and HEAD — as the unrouted 404")
     void postRejected() {
         // The verb gate runs before the trust boundary, so the refusal is answered to the untrusted
-        // caller exactly as an unrouted address is (ADR-0072).
+        // caller exactly as an unrouted address is (ADR-0073).
         var response = given()
                 .when()
                 .post("/assets/cdn/logo.svg")
