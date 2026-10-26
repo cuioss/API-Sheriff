@@ -44,8 +44,9 @@ key `oidc.session.encryption_key` is removed.
 The file content is one token of base64. The alphabet is the standard alphabet of RFC 4648
 section 4, the one `openssl` writes. The token decodes to exactly 32 bytes, the AES-256 key.
 
-Whitespace around the token is allowed, and the gateway strips it. That covers leading and trailing
-spaces and a trailing LF or CRLF. Nothing else is allowed in the file.
+ASCII whitespace around the token is allowed in any amount, and the gateway strips it: space, tab,
+line feed, vertical tab, form feed and carriage return, so a trailing LF or CRLF as well. Nothing else
+is allowed in the file.
 
 One command creates a valid file:
 
@@ -77,8 +78,10 @@ takes at most 257 bytes: the one byte past the limit is how a larger file is det
 the rest of it. A 32-byte key is one base64 line of 44 characters, so the bound leaves ample room for
 surrounding whitespace. The gateway refuses a larger file before it decodes anything.
 
-`CookieKeyMaterial` decodes the bytes directly and never turns them into a `String`, so every buffer
-holding key material can be zeroed once the key is built. It strips the surrounding whitespace and
+`CookieKeyMaterial` decodes the bytes directly and never turns them into a `String`, so the buffers
+it owns can be zeroed once the key is built: the file content it was handed, the stripped token copy
+and the decoded key bytes. Copies held by the JDK are not wiped: the internal buffers of the file read,
+and the copy each `getEncoded()` call returns. It strips the surrounding whitespace and
 decodes the rest with the strict base64 decoder of the JDK, which refuses a byte outside the alphabet
 and any whitespace or line break inside the token.
 
@@ -185,7 +188,7 @@ keys, or lets one parser judge two formats that must never be confused.
 * All three BFF keys reach the gateway the same way: a file on a mount, named by path.
 * No gateway configuration and no environment variable carries the sealing key.
 * One standard command creates a valid key file. A trailing newline, CRLF line endings and
-  surrounding spaces leave it valid.
+  surrounding ASCII whitespace leave it valid.
 * A deployment moves its existing key into a file unchanged, and its sealed sessions survive.
 * A malformed, oversize or unreadable file stops the boot. The message names the field and the
   defect.

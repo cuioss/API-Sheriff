@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.sleepSeconds;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.SEALING_KEY_IN_CONTAINER;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
@@ -24,6 +25,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.dock
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gatewayLog;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.publishedPort;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGatewayWithSigningKeys;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeSealingKeyFile;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -220,7 +222,8 @@ class BffSessionIdleTimeoutIT {
     /**
      * The cookie-mode gateway: the committed descriptor of the {@code api-sheriff-cookie} instance —
      * cookie mode, refresh off, so the session cookie is never re-sealed under the test — retargeted at
-     * this gateway's port, with its sealing key file retargeted at {@link #SEALING_KEY_IN_CONTAINER}.
+     * this gateway's port, with its sealing key file retargeted at
+     * {@link OneOffGatewayContainers#SEALING_KEY_IN_CONTAINER}.
      */
     private static final Instance COOKIE_MODE = new Instance("sheriff-idle-timeout-cookie",
             COOKIE_MODE_APPLICATION_PORT,
@@ -235,13 +238,6 @@ class BffSessionIdleTimeoutIT {
      */
     private static final String SEALING_KEY = Base64.getEncoder()
             .encodeToString("idle-timeout-sealing-key-0123456".getBytes(StandardCharsets.US_ASCII));
-
-    /**
-     * Where the cookie-mode gateway finds its sealing key file: outside every directory the harness
-     * mounts, and outside the mounted signing-key directory, whose committed sealing keys belong to the
-     * compose instances.
-     */
-    private static final String SEALING_KEY_IN_CONTAINER = "/app/sealing-key/cookie-sealing.key";
 
     /**
      * One one-off gateway of this suite.
@@ -406,8 +402,7 @@ class BffSessionIdleTimeoutIT {
         writeDerivedDescriptor(instance);
         List<ReadOnlyMount> sealingKeyMount = List.of();
         if (instance.cookieMode()) {
-            writeSealingKeyFile(instance.sealingKeyFile());
-            sealingKeyMount = List.of(new ReadOnlyMount(instance.sealingKeyFile(), SEALING_KEY_IN_CONTAINER));
+            sealingKeyMount = List.of(writeSealingKeyFile(instance.sealingKeyFile(), SEALING_KEY));
         }
         startBffGatewayWithSigningKeys(new BffGateway(instance.name(), composeNetwork(), instance.name(),
                 instance.port(), instance.derivedDescriptor(), "localhost.crt", "localhost.key",
@@ -456,16 +451,6 @@ class BffSessionIdleTimeoutIT {
             // Rounded up to whole seconds: every caller needs at least the stated distance.
             sleepSeconds((remainingMillis + 999) / 1000);
         }
-    }
-
-    /**
-     * Writes a sealing key file of this suite: the one line of base64 the key file format takes,
-     * readable by the gateway image's own user, which is not the uid the build runs as.
-     */
-    private static void writeSealingKeyFile(Path file) throws IOException {
-        Files.createDirectories(file.getParent());
-        Files.writeString(file, SEALING_KEY + "\n", StandardCharsets.US_ASCII);
-        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString(DESCRIPTOR_MODE));
     }
 
     /**

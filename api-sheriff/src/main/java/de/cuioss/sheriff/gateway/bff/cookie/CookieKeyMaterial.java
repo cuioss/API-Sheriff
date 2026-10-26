@@ -255,11 +255,13 @@ public final class CookieKeyMaterial {
 
     /**
      * Decodes the content of a provided key file. The token is decoded straight from the file's
-     * bytes, so the key material never becomes an immutable {@link String} that could not be wiped;
-     * every transient buffer holding it — the file content, the token and the decoded bytes — is
-     * zeroed before this method returns, and only the {@link SecretKeySpec}'s own copy survives. A
-     * byte outside ASCII lies outside the base64 alphabet. The strict standard decoder refuses any
-     * whitespace or line break inside the token, so a multi-line value or a PEM block is refused.
+     * bytes, so the key material never becomes an immutable {@link String} that could not be wiped.
+     * The buffers this class owns are zeroed before this method returns: the file content it is
+     * handed, the stripped token copy and the decoded bytes; the {@link SecretKeySpec} keeps its own
+     * copy. Copies held by the JDK are not wiped — the internal buffers of the file read, and the copy
+     * each {@link SecretKey#getEncoded()} call returns. A byte outside ASCII lies outside the base64
+     * alphabet. The strict standard decoder refuses any whitespace or line break inside the token, so
+     * a multi-line value or a PEM block is refused.
      */
     private static SecretKey decodeKey(byte[] content) {
         byte[] decoded;

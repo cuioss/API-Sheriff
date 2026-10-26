@@ -389,8 +389,9 @@ provide them, and they name two different files.
 survive a restart -- that is the only thing it buys -- and mount the same file on every replica.
 `openssl rand -base64 32 > session.key` creates one. Omitting it selects the generate-on-startup key
 mode: the gateway mints a key at boot, so sessions are dropped on every restart and the key cannot be
-shared with another replica. There is no second, decrypt-only key -- replacing the key in the file
-invalidates every outstanding cookie. See
+shared with another replica. There is no second, decrypt-only key -- replacing the key file
+invalidates every outstanding cookie, but only once every replica has restarted: the file is read at
+startup alone, so a running replica keeps the key it read. See
 link:../configuration.adoc#_oidc[the configuration reference] for the authoritative validation rules
 and link:../user/bff-cookie.adoc#_key_material[the operator guide] for creating and mounting the file.
 

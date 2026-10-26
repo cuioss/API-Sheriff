@@ -26,6 +26,7 @@ import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.mediatedCa
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.sleepSeconds;
 import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.soleKey;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.SEALING_KEY_IN_CONTAINER;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.composeNetwork;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.docker;
@@ -34,6 +35,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.gate
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.publishedPort;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.restartGateway;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGateway;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.writeSealingKeyFile;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -102,8 +104,8 @@ import org.junit.jupiter.api.Test;
  *       signing-key {@code key_file} entries removed, {@code client_id} {@value #CLIENT_ID}, a
  *       declared {@code client_authentication.jwks_path} of {@value #JWKS_PATH}, the origin triple
  *       retargeted at the fixed host port {@value #APPLICATION_PORT}, and {@code session.key_file}
- *       retargeted at {@value #SEALING_KEY_IN_CONTAINER}. Everything else — cookie mode, refresh on,
- *       the 30-second leeway — is the committed document.</li>
+ *       retargeted at {@value OneOffGatewayContainers#SEALING_KEY_IN_CONTAINER}. Everything else —
+ *       cookie mode, refresh on, the 30-second leeway — is the committed document.</li>
  *   <li>The sealing key is a file of this suite alone, written below {@code target/} and mounted
  *       read-only by itself, so the sealed session cookie survives the restart. Without it the
  *       gateway would generate a sealing key at every boot, the cookie would be undecipherable after
@@ -199,14 +201,11 @@ class BffGeneratedKeysIT {
     private static final String SEALING_KEY = Base64.getEncoder()
             .encodeToString("generated-keys-sealing-key-01234".getBytes(StandardCharsets.US_ASCII));
 
-    /** Where the sealing key file is written, in the one line of base64 the key file format takes. */
-    private static final Path SEALING_KEY_FILE = Path.of("target", "generated-keys-gateway", "cookie-sealing.key");
-
     /**
-     * Where the gateway finds the sealing key file: outside every directory the harness mounts, and
-     * outside {@code /app/signing-keys}, which this gateway does not have.
+     * Where the sealing key file is written; the gateway finds it at
+     * {@value OneOffGatewayContainers#SEALING_KEY_IN_CONTAINER}.
      */
-    static final String SEALING_KEY_IN_CONTAINER = "/app/sealing-key/cookie-sealing.key";
+    private static final Path SEALING_KEY_FILE = Path.of("target", "generated-keys-gateway", "cookie-sealing.key");
 
     /**
      * INFO — a signing key was generated at startup; names the purpose, never the key. The trailing
@@ -229,10 +228,10 @@ class BffGeneratedKeysIT {
             // Arrange — the derived descriptor and the one-off gateway, with its own sealing key file
             // and no signing-key mount
             writeDerivedDescriptor();
-            writeSealingKeyFile();
+            ReadOnlyMount sealingKeyMount = writeSealingKeyFile(SEALING_KEY_FILE, SEALING_KEY);
             startBffGateway(new BffGateway(NETWORK_ALIAS, composeNetwork(), NETWORK_ALIAS, APPLICATION_PORT,
                             DERIVED_DESCRIPTOR, CERTIFICATE, CERTIFICATE_KEY, List.of()),
-                    List.of(new ReadOnlyMount(SEALING_KEY_FILE, SEALING_KEY_IN_CONTAINER)), List.of());
+                    List.of(sealingKeyMount), List.of());
             awaitUp("https://localhost:" + publishedPort(NETWORK_ALIAS, 9000));
 
             // Assert (1) and (2) — one generated key per purpose, and the published client key
@@ -377,16 +376,6 @@ class BffGeneratedKeysIT {
                 () -> assertEquals(SEALING_KEY_IN_CONTAINER,
                         mapping(written.get("session"), "oidc.session").get("key_file"),
                         "the one key file it names is this suite's sealing key"));
-    }
-
-    /**
-     * Writes this suite's sealing key file: the one line of base64 the key file format takes, readable
-     * by the gateway image's own user, which is not the uid the build runs as.
-     */
-    private static void writeSealingKeyFile() throws IOException {
-        Files.createDirectories(SEALING_KEY_FILE.getParent());
-        Files.writeString(SEALING_KEY_FILE, SEALING_KEY + "\n", StandardCharsets.US_ASCII);
-        Files.setPosixFilePermissions(SEALING_KEY_FILE, PosixFilePermissions.fromString(DESCRIPTOR_MODE));
     }
 
     private static String retargeted(Object value, String key) {

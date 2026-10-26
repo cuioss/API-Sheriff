@@ -18,8 +18,15 @@ package de.cuioss.sheriff.gateway.config.validation.rule;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.FileSystemException;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,9 +40,11 @@ import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -271,8 +280,10 @@ class OidcClientRulesTest {
     /**
      * FAPI 2.0 section 6.8 requires a key to serve one purpose, so in the key-based mode the
      * client-authentication key file and the sender-constraint key file must be two files. A document
-     * naming one file for both — compared after path normalization — is refused at
-     * {@code /oidc/sender_constraint/key_file} with a fixed text that names both keys and neither path.
+     * naming one file for both is refused at {@code /oidc/sender_constraint/key_file} with a fixed text
+     * that names both keys and neither path. Two existing files are compared by the file system, so a
+     * {@code ..} behind a symbolic link is judged by the file it reaches; paths to files that do not
+     * exist are compared after normalization.
      */
     @Nested
     @DisplayName("oidc.client_authentication.key_file and oidc.sender_constraint.key_file must name two files")
@@ -300,6 +311,18 @@ class OidcClientRulesTest {
             return validator.validate(validGateway().oidc(oidc).build(), List.of(), topologyWith()).stream()
                     .filter(error -> POINTER.equals(error.pointer()))
                     .toList();
+        }
+
+        /**
+         * Creates {@code link} pointing at {@code target}, or aborts the calling test when the file
+         * system refuses symbolic links.
+         */
+        private static Path createSymbolicLinkOrAbort(Path link, Path target) throws IOException {
+            try {
+                return Files.createSymbolicLink(link, target);
+            } catch (UnsupportedOperationException | FileSystemException e) {
+                return Assumptions.abort("the file system refuses symbolic links: " + e.getMessage());
+            }
         }
 
         @Test
@@ -330,7 +353,7 @@ class OidcClientRulesTest {
                 "/etc/sheriff/keys/./a.pem, /etc/sheriff/./keys/a.pem",
                 "/etc/sheriff/keys/x/../a.pem, /etc/sheriff/keys/a.pem"
         })
-        @DisplayName("Should refuse two spellings of one file, compared after normalization")
+        @DisplayName("Should refuse two spellings of one absent file, compared after normalization")
         void shouldRefuseTwoSpellingsOfOneFile(String clientKeyFile, String dpopKeyFile) {
             List<ConfigError> errors = signingKeyErrors(null, clientKeyFile, dpopKeyFile);
 
@@ -341,6 +364,69 @@ class OidcClientRulesTest {
                             "the client-authentication path must not be echoed"),
                     () -> assertFalse(errors.getFirst().message().contains(dpopKeyFile),
                             "the sender-constraint path must not be echoed"));
+        }
+
+        @Test
+        @DisplayName("Should refuse one existing file named under two spellings")
+        void shouldRefuseOneExistingFileUnderTwoSpellings(@TempDir Path root) throws IOException {
+            Path keysDir = Files.createDirectories(root.resolve("keys"));
+            Path key = Files.writeString(keysDir.resolve("shared.pem"), "one key");
+            String otherSpelling = keysDir.resolve("..").resolve("keys").resolve("shared.pem").toString();
+
+            List<ConfigError> errors = signingKeyErrors(null, key.toString(), otherSpelling);
+
+            assertEquals(1, errors.size(), () -> "one file under two spellings is one key, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should refuse one existing file reached directly and through a symbolic link")
+        void shouldRefuseOneExistingFileReachedThroughALink(@TempDir Path root) throws IOException {
+            Path keysDir = Files.createDirectories(root.resolve("keys"));
+            Path key = Files.writeString(keysDir.resolve("shared.pem"), "one key");
+            Path alias = createSymbolicLinkOrAbort(root.resolve("alias"), keysDir);
+            String linkedSpelling = alias.resolve("shared.pem").toString();
+            assertNotEquals(key.normalize(), Path.of(linkedSpelling).normalize(),
+                    "precondition: the two spellings must differ lexically, so only the file system can tell");
+
+            List<ConfigError> errors = signingKeyErrors(null, key.toString(), linkedSpelling);
+
+            assertEquals(1, errors.size(), () -> "a link to the client key is the client key, got: " + errors);
+        }
+
+        @Test
+        @DisplayName("Should admit two different files even when '..' behind a symbolic link normalizes one onto the other")
+        void shouldAdmitTwoFilesThatNormalizeAlikeThroughASymlinkedParent(@TempDir Path root) throws IOException {
+            Path vaultClientDir = Files.createDirectories(root.resolve("vault").resolve("client"));
+            Path keysDir = Files.createDirectories(root.resolve("run").resolve("keys"));
+            Files.writeString(root.resolve("vault").resolve("dpop.pem"), "client-authentication key");
+            Path dpopKey = Files.writeString(keysDir.resolve("dpop.pem"), "DPoP key");
+            Path clientLink = createSymbolicLinkOrAbort(keysDir.resolve("client"), vaultClientDir);
+            String clientKeyFile = clientLink.resolve("..").resolve("dpop.pem").toString();
+            assertAll("precondition: the trap the rule must not fall into",
+                    () -> assertEquals(dpopKey.normalize(), Path.of(clientKeyFile).normalize(),
+                            "lexical normalization removes the link together with the '..'"),
+                    () -> assertFalse(Files.isSameFile(Path.of(clientKeyFile), dpopKey),
+                            "but the '..' resolves against the link target, so the files differ"));
+
+            List<ConfigError> errors = signingKeyErrors(null, clientKeyFile, dpopKey.toString());
+
+            assertEquals(List.of(), errors, "two different files hold two keys, whatever their spellings normalize to");
+        }
+
+        @Test
+        @DisplayName("Should leave an unparseable key-file path to the runtime refusal, even when both fields carry it")
+        void shouldNotJudgeAnUnparseablePath() {
+            String unparseable = "/etc/sheriff/keys/nul\0key.pem";
+            assertThrows(InvalidPathException.class, () -> Path.of(unparseable),
+                    "precondition: the value must not parse as a path");
+
+            assertAll("an unusable path is one defect, reported once by the runtime",
+                    () -> assertEquals(List.of(), signingKeyErrors(null, unparseable, unparseable),
+                            "the same unparseable value twice is not two names of one file"),
+                    () -> assertEquals(List.of(), signingKeyErrors(null, unparseable, DPOP_KEY_FILE),
+                            "an unparseable client-authentication path"),
+                    () -> assertEquals(List.of(), signingKeyErrors(null, CLIENT_KEY_FILE, unparseable),
+                            "an unparseable sender-constraint path"));
         }
 
         @Test

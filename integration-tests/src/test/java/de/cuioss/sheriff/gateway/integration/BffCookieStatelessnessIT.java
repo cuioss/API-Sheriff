@@ -34,8 +34,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Proves the defining property of the Variant 3 sealed-cookie session — <em>statelessness</em> — as a
  * literal two-instance fact: a session created against one cookie-mode gateway is served by a
- * <strong>second, separate</strong> gateway process that shares nothing with the first but the AES
- * sealing key file.
+ * <strong>second, separate</strong> gateway process that shares nothing with the first but its key
+ * files: the AES sealing key file and both signing-key files, the client-authentication key and the
+ * DPoP proof key.
  * <p>
  * <strong>Why two real instances and not one.</strong> Everything a single-instance suite can observe
  * about a sealed cookie — that it is opaque, that it round-trips, that it survives a restart — is also

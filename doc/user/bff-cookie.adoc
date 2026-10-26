@@ -127,9 +127,10 @@ declaring `session.key_file` with `mode: server` stops the boot.
 === Create the key file
 
 The key file holds *one line of base64* that decodes to *exactly 32 bytes*, the AES-256 key. The
-alphabet is the standard one of RFC 4648 section 4, the one `openssl` writes. Whitespace around the
-line is fine -- leading and trailing spaces, and a trailing newline written as LF or CRLF -- and the
-gateway strips it. Nothing else may be in the file.
+alphabet is the standard one of RFC 4648 section 4, the one `openssl` writes. ASCII whitespace before
+and after the line is fine, in any amount -- space, tab, line feed (LF), vertical tab, form feed and
+carriage return (CR), so blank lines and a trailing newline written as LF or CRLF are included -- and
+the gateway strips it. Nothing else may be in the file, and no whitespace may appear inside the line.
 
 One command creates a valid file:
 
@@ -244,8 +245,9 @@ The gateway reads the key file only at startup. Replacing the file alone changes
 gateway keeps the key it read at boot, so cookies sealed under the withdrawn key stay valid until it
 restarts. To change the key:
 
-. Write a new key file with `openssl rand -base64 32` and replace the mounted file on *every*
-  replica.
+. Generate *one* new key file, once, with `openssl rand -base64 32`, and replace the mounted file
+  on *every* replica with that same file. Do not run the command per replica: each run creates a
+  different key, and replicas holding different keys refuse each other's cookies for good.
 . *Restart every replica.* The key changes when a replica restarts, not when its file changes.
   Until the last replica has restarted, replicas hold different keys and refuse each other's
   cookies, so keep that window short.
@@ -497,9 +499,13 @@ both messages name the two configuration keys and neither a path nor a key id:
 
 * Both fields name the same file: the configuration check refuses it at
   `/oidc/sender_constraint/key_file` with `oidc.client_authentication.key_file and
-  oidc.sender_constraint.key_file name the same file`. Paths are compared after normalisation, so
-  `keys/../keys/a.pem` and `keys/a.pem` are one file. The offline check reports it too.
-* Two paths hold the same key -- a copy or a link: the boot refuses it once both keys are read, with
+  oidc.sender_constraint.key_file name the same file`. When both files exist, the file system
+  decides, so a link to the client-authentication key file counts as the same file, while
+  `client/../dpop.pem` with `client` a link to another directory is judged by the file it actually
+  reaches. When either file does not exist -- an offline check on a machine without the keys -- the
+  two paths are compared after normalisation, so `keys/../keys/a.pem` and `keys/a.pem` are one file.
+  The offline check reports it too.
+* Two files hold the same key -- a copy: the boot refuses it once both keys are read, with
   `oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key`.
 
 Either way, point `oidc.sender_constraint.key_file` at a file holding a different key, or remove it

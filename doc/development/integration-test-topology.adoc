@@ -108,8 +108,9 @@ collapsed into one annotated group that names each of them with its port pair:
 | `api-sheriff-cookie-2`
 | 10446
 | 19003
-| A peer sharing nothing with `api-sheriff-cookie` but the sealing-key file `cookie-sealing.key`,
-  so cookie portability is proved as a two-instance fact rather than an inference.
+| A peer sharing nothing with `api-sheriff-cookie` but its key files -- the sealing-key file
+  `cookie-sealing.key` and both signing-key files -- and no session store, so cookie portability is
+  proved as a two-instance fact rather than an inference.
 
 | `api-sheriff-ws-admission`
 | 10447
@@ -210,7 +211,8 @@ The two `api-sheriff-egress-verify-*` instances are one matched pair in this tab
 *together*. `api-sheriff-cookie` and `api-sheriff-cookie-2` are the other, and the two pairs are
 matched controls of opposite shape:
 
-* the *cookie-portability* pair shares only the sealing-key file and is otherwise unrelated, and its claim
+* the *cookie-portability* pair shares only its key files -- the sealing-key file and both
+  signing-key files -- and is otherwise unrelated, and its claim
   is that the two legs *agree* -- a cookie sealed by one instance is accepted by the other, which is a
   two-instance fact rather than an inference drawn from one process;
 * the *egress hostname-verification* pair is identical apart from one scalar

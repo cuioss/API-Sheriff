@@ -77,6 +77,7 @@ import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
+import de.cuioss.sheriff.gateway.config.validation.rule.OidcClientRules;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -166,7 +167,7 @@ import org.jspecify.annotations.Nullable;
  * signs the client assertion must not also sign the DPoP proofs. Boot validation refuses the two
  * {@code key_file} fields naming the same file; once both keys are resolved, this producer also
  * refuses a client-authentication key and a sender-constraint key with the same key id — the same key
- * provided under two paths, a copy or a link — with {@code CONFIG_INVALID}, naming both fields and no
+ * provided in two files, a copy — with {@code CONFIG_INVALID}, naming both fields and no
  * key id. In client-secret mode there is no client-authentication key to compare.
  * <p>
  * <strong>A token response that is not bound to the proof key is refused.</strong> The runtime's one
@@ -329,14 +330,13 @@ public class BffRuntimeProducer {
     private static final String ON_FAILURE_REJECT = "reject";
     /**
      * The fixed detail of the boot refusal of one key provided for both client authentication and
-     * DPoP. Names both fields, and neither a path nor a key id.
+     * DPoP. Names both fields, and neither a path nor a key id. Its reason and remedy are the ones the
+     * boot-validation refusal of one file named for both keys carries, stated once in
+     * {@link OidcClientRules#SIGNING_KEY_SEPARATION_REASON}.
      */
     private static final String SHARED_SIGNING_KEY_DETAIL =
-            "oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key; the "
-                    + "key that signs the client assertion must not also sign the DPoP proofs, because FAPI 2.0 "
-                    + "section 6.8 requires every key to serve one purpose — point "
-                    + "oidc.sender_constraint.key_file at a file holding a different key, or remove it to use a "
-                    + "DPoP key generated at startup";
+            "oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key; "
+                    + OidcClientRules.SIGNING_KEY_SEPARATION_REASON;
 
     private final GatewayConfig gatewayConfig;
     private final RouteTable routeTable;
@@ -892,8 +892,8 @@ public class BffRuntimeProducer {
      * Refuses one key used for both purposes: in key mode, a client-authentication key and a
      * sender-constraint key with the same key id are the same key, which FAPI 2.0 section 6.8 forbids
      * — a key serves one purpose. Boot validation already refuses the two {@code key_file} fields
-     * naming the same file; this check catches what a path comparison cannot see, the same key
-     * provided under two different paths (a copy or a link). A generated key is fresh per boot and
+     * naming the same file; this check catches what that file comparison cannot see, the same key
+     * provided in two different files (a copy). A generated key is fresh per boot and
      * never equals another key, so only two provided files can trip it. The message names both fields
      * and no key id.
      *
