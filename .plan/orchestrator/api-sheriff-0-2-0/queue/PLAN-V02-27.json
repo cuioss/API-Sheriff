@@ -2,9 +2,9 @@
   "id": "PLAN-V02-27",
   "slug": "test-simplification",
   "workstream": "WS-01",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-27-test-simplification",
-  "pr": "",
-  "landing": "",
+  "pr": "520",
+  "landing": "landings/PLAN-V02-27.md",
   "seq": 27
 }

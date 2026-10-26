@@ -122,12 +122,24 @@ would otherwise force a retrofit.
   gate. No plan outside this queue now holds `edge/**`. Every staged spec declaring `edge/**` was
   grounded before both; re-read `DispatchStage`, `GatewayEdgeRoute` and `FramingGate` at outline.
 
+- **PLAN-V02-27** — SHIPPED 2026-10-25 as PR #520 (`6b8d88f4`), see `landings/PLAN-V02-27.md`. Scope cut by the
+  operator at outline: `edge/` plus the five test gaps. Seven edge classes still have no test class named for
+  them, and the HTTP/2 late-timeout cases still call the retirement methods directly. The rest of the cleanup
+  (`config/validation/`, `config/`, `routing/`) is staged as `PLAN-V02-49`. GW-07 request body stays PARTIAL by
+  operator ruling (Watch).
+- **PLAN-V02-48** (staged 2026-10-25): the nine ADR groups `PLAN-V02-04` deferred (52 records). It starts only
+  after #521 has merged, because it applies the rubric, skeleton, term list and ceiling guard that plan delivers,
+  and it never runs beside an ADR-authoring plan (V02-06, -07, -09, -11).
+- **PLAN-V02-49** (staged 2026-10-25): the `config/validation/`, `config/` and `routing/` duplicates plus the edge
+  residue of V02-27 (FU-1 and FU-2 merged). It collides on `config/` and `edge/` tests with V02-05, -06, -07, -09
+  and -20, so it runs after them, not beside them.
+
 ## Workstreams
 
 | Workstream | Title | Plans |
 |---|---|---|
-| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27, PLAN-V02-28 and PLAN-V02-40 … PLAN-V02-43 (validator slices; V02-29 … -39 superseded), PLAN-V02-44 |
-| WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18 |
+| WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27, PLAN-V02-28 and PLAN-V02-40 … PLAN-V02-43 (validator slices; V02-29 … -39 superseded), PLAN-V02-44, PLAN-V02-49 |
+| WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18, PLAN-V02-48 |
 | WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23, PLAN-V02-45, PLAN-V02-46 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
 | WS-05 | Integration and Test Fidelity | PLAN-V02-09, PLAN-V02-10, PLAN-V02-11 |
@@ -144,6 +156,16 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-26 — free slots are filled when the running plan lands, three at a time.** Operator ruling at the
+  emit after `PLAN-V02-27` landed: with `PLAN-V02-04` running, nothing else is emitted. When it lands, the
+  orchestrator emits up to three plans (n=3) instead of filling slots one by one. Every candidate still passes the
+  disjointness gate and the overlap prompt. Recorded as the answer to the overlap prompt for V02-05, V02-20 and
+  V02-49: hold back, no overlap judged.
+- **2026-10-25 — the V02-27 follow-ups are one plan, the V02-04 follow-up is one plan with a cut line.**
+  `PLAN-V02-27` named two follow-ups (config/validation, and config plus routing); both are thin and touch one
+  fixture class, so they are merged as `PLAN-V02-49`. `PLAN-V02-04` asked for one follow-up for its nine deferred
+  groups; it is staged as `PLAN-V02-48` with eleven deliverables, one PR and a stated cut line (the three
+  repoint-heavy decisions) if the projection passes the 100-file bot cap.
 - **2026-10-22 — security findings that are not fixed stay out of git.** Operator decision. A plan
   fixes a security finding right away whenever possible. One that is not fixed is recorded only in
   the git-ignored `.plan/local/security_notes.adoc`, never in tracked text (commits, PRs, code, docs,
@@ -497,7 +519,7 @@ doc-only or build-light plan for the second and third slots.
   three, and tests sharing a wait fail together; the two operand orders of `ConfigValidator`'s
   anchor-overlap check are covered only by map iteration order (no test fixes it); the commit
   messages of three #424 commits still claim "identical" coverage from accumulated JaCoCo data,
-  which the PR body itself retracts. Fourteen tests were removed as duplicates, each with a named
+  which the PR body itself retracts. The cause is `<append>true</append>` on one `target/jacoco.exec` with no `clean` in the coverage command (corroborated 2026-10-25 from `pom.xml`); `PLAN-V02-27` hit it again and lesson `2026-10-25-22-001` records the rule (measure with `clean`). A profile that resets its own exec data would be a build change and has no plan. Fourteen tests were removed as duplicates, each with a named
   survivor in the hygiene commit message — not re-read here.
 
 - **`PLAN-V02-01` D7 RESIDUE, NONE STAGED** (added 2026-10-09, from the landing). Not found in the
@@ -680,6 +702,30 @@ doc-only or build-light plan for the second and third slots.
   cross-check` counts the plan-less sentinel `.plan/local/plans/NO_PLAN` (`"sentinel": true`) as a
   live plan with no comparable surface, so `candidate_comparison_determinate` is false on every
   `next` while it exists; the operator ruled that verdict wrong and overrode it.
+
+- **GW-07 REQUEST-BODY STATUS STAYS PARTIAL — OPERATOR-NAMED RESIDUAL** (added 2026-10-25, from `PLAN-V02-27`'s
+  landing). No test observes the public `TerminalDispatch#dispatchGrpc` handing its fixed five-minute stream-idle
+  bound to the overload the tests drive. The operator chose to hold it as the named residual: do not close it by
+  adding a test inside another plan, and do not move the threat-model status. Also open and not this plan's: the
+  `gw-07-upstream-ports` matrix row reads COVERED while naming an effect no test observes (not authored by #520).
+  `GrpcStreamIdleBound.timeoutMillis()` is a public production method added only for a test; `PLAN-V02-49`
+  D3 decides whether to remove it.
+- **ADR-0066 HAS NO TEST FOR TWO ABORTIVE-CLOSE TRIGGERS — OPERATOR RULED: REPORT, NO TEST** (added 2026-10-25, from
+  `PLAN-V02-04`'s message). No test pins the abortive HTTP/1.1 upstream close on the request-body idle-timeout trigger
+  or the 25 s deadline trigger. The gap is recorded in ADR-0066 and the GW-07 threat-model entry. Owner: none; it
+  closes only if the operator reverses the ruling.
+- **THE RELEASE SKILL'S "AN ADR IS IMMUTABLE" LINE VS THE IN-PLACE ADR REWRITES** (added 2026-10-25, from
+  `PLAN-V02-04`'s message). `.claude/skills/release/SKILL.md` lists `doc/adr/**` in the set a release-version sweep
+  must not touch, and says an ADR is immutable. `PLAN-V02-04` and `PLAN-V02-48` rewrite records in place. The line
+  sits in a list about version stamps, so the orchestrator reads it as scoped to that sweep. Unconfirmed; the plan
+  raised it with the operator. `PLAN-V02-48` reports its reading and does not edit the skill.
+- **ADR TERM-LIST RESIDUE IN RECORDS `PLAN-V02-04` REWROTE** (added 2026-10-25). "refuse" for a runtime stop, "routing"
+  for route selection, unqualified "warning" for the boot WARN, "outbound" beside "egress", and "outbound TLS" in
+  `doc/configuration.adoc`, `doc/security-threat-model.adoc` and two test sources. Owner: `PLAN-V02-48` D10.
+- **#521 (`PLAN-V02-04`) WAS `DIRTY` AGAINST `main` ON 2026-10-26** (added 2026-10-26). `main` moved by #519 and #520.
+  The plan's finalize owns the rebase (memory: long finalizes let `main` drift). Re-check when it reports its landing,
+  and check ADR ordinals and the files #520 touched (`doc/security-threat-model.adoc`,
+  `doc/development/test-corpus-integrity.adoc`).
 
 ## Inbox Drain — 2026-10-09 (sender `plan-v02-01-adr-0005-reversal-quarkus-adoption`, at its landing)
 
