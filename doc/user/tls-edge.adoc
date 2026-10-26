@@ -60,6 +60,24 @@ Operating rules:
   disposition of every key that used to live there is recorded in
   link:../configuration.adoc#_server_tls_key_verdicts[Server-TLS key verdicts].
 
+[[_tls_and_http2_fingerprints]]
+=== TLS and HTTP/2 fingerprints
+
+A client that records the gateway's TLS handshake (a JA3S / JA4S-style fingerprint) or the
+`SETTINGS` frame it opens an HTTP/2 connection with can recognise the software stack behind the
+listener without reading a single response header. Both come from the runtime, not from API Sheriff:
+the TLS handshake is built by the JDK TLS stack, the HTTP/2 connection preface by Netty.
+
+The gateway exposes no configuration that disguises them. The policy keys above narrow *what* is
+negotiated -- a floor, a cipher list, the ALPN protocols -- and a changed list can change the
+negotiated values, but the shape of the handshake and of the `SETTINGS` frame stays the shape of
+that stack. Removing the `Server` header (see
+link:endpoint-routes.adoc[`keep_identity_headers`]) does not hide it.
+
+*The mitigation is out of process.* Where the fingerprint matters, put a CDN or load balancer in
+front of the gateway that terminates TLS and HTTP/2 itself: a client then fingerprints that front
+component, and the gateway is reached only over the front component's own connection.
+
 == Serving plain HTTP
 
 *Plain HTTP is something you declare, never something the gateway infers.* Set
