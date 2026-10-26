@@ -255,7 +255,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> LimitRules.validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateAuthorizationHeaderValueLength(gateway,
                     errors),
-            (gateway, endpoints, topology, errors) -> LimitRules.validateRateLimitNotEnforced(endpoints, errors),
+            (gateway, endpoints, topology, errors) -> LimitRules.validateRateLimitNotEnforced(endpoints),
             (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypesAddOnly(gateway,
                     errors),
             (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypeValues(gateway,

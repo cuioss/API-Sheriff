@@ -259,10 +259,8 @@ public class LimitRules {
      * populated one. The WARN carries the route and endpoint ids only, never a configured limit value.
      *
      * @param endpoints the enabled endpoints, whose every route's {@code rate_limit} is inspected
-     * @param errors    the shared violation list; this rule never appends to it
      */
-    public static void validateRateLimitNotEnforced(List<EndpointConfig> endpoints,
-            List<ConfigError> errors) { // NOSONAR java:S1172 - ValidationRule seam shape; a WARN-only rule appends nothing
+    public static void validateRateLimitNotEnforced(List<EndpointConfig> endpoints) {
         for (EndpointConfig endpoint : endpoints) {
             for (RouteConfig route : endpoint.routes()) {
                 if (route.rateLimit() != null) {
