@@ -261,6 +261,13 @@ class BffRuntimeProducerTest {
     private static final SignatureOnlyTokenVerifier LOGOUT_TOKEN_VERIFIER =
             new SignatureOnlyTokenVerifier(List.of(TEST_ISSUER), TOKEN_VALIDATOR.getSecurityEventCounter());
 
+    /** Numbers the sealing-key files written to {@link #sealingKeyDirectory}, so none overwrites another. */
+    private static final AtomicInteger SEALING_KEY_FILES = new AtomicInteger();
+
+    /** The directory every cookie-mode sealing-key file of this class is written to. */
+    @TempDir
+    static Path sealingKeyDirectory;
+
     @Nested
     @DisplayName("Active server-mode runtime")
     class Active {
@@ -4774,7 +4781,7 @@ class BffRuntimeProducerTest {
                     .mode(mode)
                     .ttlSeconds(ttlSeconds)
                     .idleTimeoutSeconds(idleTimeoutSeconds)
-                    .encryptionKey("cookie".equals(mode) ? Base64.getEncoder().encodeToString(key) : null)
+                    .encryptionKey("cookie".equals(mode) ? sealingKeyFile(Base64.getEncoder().encodeToString(key)) : null)
                     .build();
             return OidcConfig.builder()
                     .issuer(ISSUER)
@@ -4968,17 +4975,32 @@ class BffRuntimeProducerTest {
                 .build();
     }
 
+    /**
+     * Writes {@code keyFileContent} to a fresh sealing-key file followed by a newline, as
+     * {@code openssl rand -base64 32} writes one, and returns its path.
+     */
+    static String sealingKeyFile(String keyFileContent) {
+        Path keyFile = sealingKeyDirectory.resolve("session-" + SEALING_KEY_FILES.incrementAndGet() + ".key");
+        try {
+            Files.writeString(keyFile, keyFileContent + "\n", StandardCharsets.US_ASCII);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        return keyFile.toString();
+    }
+
     private static OidcConfig cookieModeOidc() {
         byte[] key = new byte[32];
         Arrays.fill(key, (byte) 0x11);
         return cookieModeOidcWithKey(Base64.getEncoder().encodeToString(key));
     }
 
-    private static OidcConfig cookieModeOidcWithKey(String encryptionKey) {
+    /** A cookie-mode configuration whose sealing-key file holds {@code keyFileContent}. */
+    private static OidcConfig cookieModeOidcWithKey(String keyFileContent) {
         OidcConfig.Session session = OidcConfig.Session.builder()
                 .mode("cookie")
                 .ttlSeconds(3600)
-                .encryptionKey(encryptionKey)
+                .encryptionKey(sealingKeyFile(keyFileContent))
                 .build();
         return OidcConfig.builder()
                 .issuer(ISSUER)

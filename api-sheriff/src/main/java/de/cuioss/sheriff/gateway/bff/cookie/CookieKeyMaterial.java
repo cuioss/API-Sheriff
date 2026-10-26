@@ -26,6 +26,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
 import de.cuioss.sheriff.gateway.bff.BffLogMessages;
+import de.cuioss.sheriff.gateway.bff.KeyFiles;
 import de.cuioss.tools.logging.CuiLogger;
 import org.jspecify.annotations.Nullable;
 
@@ -33,16 +34,22 @@ import org.jspecify.annotations.Nullable;
  * The cookie-mode sealing key material (D2b, {@code session.mode: cookie}), resolved at boot into
  * one of two first-class, fully supported production modes.
  * <p>
- * <strong>(a) {@link Mode#PASSED}.</strong> The operator supplied {@code oidc.session.encryption_key}
- * as an {@code ${ENV_VAR}} reference, so no key material ever lives in a descriptor (ADR-0011). The
- * value must decode to a 256-bit key; anything else is rejected at boot with a message naming the
- * defect but never the value.
+ * <strong>(a) {@link Mode#PROVIDED}.</strong> The operator named a key file with
+ * {@code oidc.session.key_file}, so the configuration carries a location and never key material
+ * (ADR-0072). The file holds one line of base64 — the standard alphabet of RFC 4648 section 4 —
+ * that decodes to exactly 32 bytes; whitespace around that line, a trailing LF or CRLF included, is
+ * allowed and stripped, and nothing else is. One command creates a valid file:
+ * <pre>{@code openssl rand -base64 32 > session.key}</pre>
+ * The file is read once, bounded to {@value #MAX_KEY_FILE_BYTES} bytes, through the read it shares
+ * with the signing-key files ({@link KeyFiles}); the PEM parser of those files is never reached. Every
+ * refusal names the field and the defect — never the path, the file content or a decoder message.
  * <p>
  * <strong>(b) {@link Mode#GENERATED}.</strong> Cookie mode is configured with no
- * {@code encryption_key}, so a fresh AES-256 key is generated from {@link SecureRandom} at boot and
+ * {@code session.key_file}, so a fresh AES-256 key is generated from {@link SecureRandom} at boot and
  * INFO {@code COOKIE_KEY_GENERATED} records the fact — the mode only, never the material. This mode
  * carries two caveats the operator must accept: <em>every session is dropped on restart</em>, and
- * <em>the key cannot be shared across replicas</em>, so a multi-replica deployment must pass a key.
+ * <em>the key cannot be shared across replicas</em>, so a multi-replica deployment must give every
+ * replica the same key file.
  * <p>
  * Exactly one sealing key is ever active — there is no decrypt-only companion key and no in-flight
  * rotation state. Replacing the configured key is therefore a clean break: every cookie still sealed
@@ -74,7 +81,13 @@ public final class CookieKeyMaterial {
     private static final String KEY_ID_LABEL = "api-sheriff:cookie-key-id:v1";
     private static final String ACTIVITY_KEY_LABEL = "api-sheriff:cookie-session-activity-mac-key:v1";
     private static final String ACTIVITY_KEY_ALGORITHM = "HmacSHA256";
-    private static final String ENCRYPTION_KEY_FIELD = "session.encryption_key";
+    private static final String KEY_FILE_FIELD = "oidc.session.key_file";
+
+    /**
+     * The upper bound, in bytes, of a provided key file: one 44-character base64 line of a 32-byte
+     * key plus ample room for the whitespace around it.
+     */
+    static final int MAX_KEY_FILE_BYTES = 256;
 
     private final Mode mode;
     private final SecretKey currentKey;
@@ -85,20 +98,23 @@ public final class CookieKeyMaterial {
     }
 
     /**
-     * Resolves the configured key reference into the active key material.
+     * Resolves the configured key file into the active key material.
      *
-     * @param encryptionKey the already-substituted {@code session.encryption_key} value, {@code null}
-     *                      to select {@link Mode#GENERATED}
+     * @param keyFile the already-substituted {@code oidc.session.key_file} value — the path of the
+     *                key file — or {@code null} to select {@link Mode#GENERATED}
      * @return the resolved material
-     * @throws IllegalStateException when the supplied value is not a base64 AES-256 key
+     * @throws IllegalStateException when the provided file is missing, unreadable, not a regular file
+     *                               or larger than {@value #MAX_KEY_FILE_BYTES} bytes, holds no key,
+     *                               is not one line of base64, or does not decode to exactly 32 bytes
      */
-    public static CookieKeyMaterial resolve(@Nullable String encryptionKey) {
-        if (encryptionKey == null) {
+    public static CookieKeyMaterial resolve(@Nullable String keyFile) {
+        if (keyFile == null) {
             SecretKey generated = generateKey();
             LOGGER.info(BffLogMessages.INFO.COOKIE_KEY_GENERATED, Mode.GENERATED.diagnosticName());
             return new CookieKeyMaterial(Mode.GENERATED, generated);
         }
-        return new CookieKeyMaterial(Mode.PASSED, decodeKey(encryptionKey, ENCRYPTION_KEY_FIELD));
+        byte[] content = KeyFiles.readBounded(keyFile, KEY_FILE_FIELD, MAX_KEY_FILE_BYTES);
+        return new CookieKeyMaterial(Mode.PROVIDED, decodeKey(content));
     }
 
     /**
@@ -236,19 +252,56 @@ public final class CookieKeyMaterial {
         }
     }
 
-    private static SecretKey decodeKey(String encoded, String field) {
+    /**
+     * Decodes the content of a provided key file. ISO-8859-1 maps every byte to one character, so a
+     * byte outside ASCII becomes a character outside the base64 alphabet. The strict standard
+     * decoder refuses any whitespace or line break inside the token, so a multi-line value or a PEM
+     * block is refused.
+     */
+    private static SecretKey decodeKey(byte[] content) {
+        String token = stripSurroundingWhitespace(new String(content, StandardCharsets.ISO_8859_1));
+        if (token.isEmpty()) {
+            throw refusal("holds no key");
+        }
         byte[] decoded;
         try {
-            decoded = Base64.getDecoder().decode(encoded.trim());
-        } catch (IllegalArgumentException notBase64) {
-            // The offending value is key material — name the field, never echo the value.
-            throw new IllegalStateException(field + " is not valid base64", notBase64);
+            decoded = Base64.getDecoder().decode(token);
+        } catch (IllegalArgumentException _) {
+            // The decoder's text names the offending character of the key material — name the field
+            // and the defect, never chain the cause.
+            throw refusal("is not one line of base64");
         }
         if (decoded.length != AES_256_KEY_BYTES) {
-            throw new IllegalStateException("%s must decode to %d bytes (AES-256), but was %d"
-                    .formatted(field, AES_256_KEY_BYTES, decoded.length));
+            throw refusal("decodes to %d bytes; it must decode to exactly %d bytes (AES-256)"
+                    .formatted(decoded.length, AES_256_KEY_BYTES));
         }
         return new SecretKeySpec(decoded, ALGORITHM);
+    }
+
+    /**
+     * Strips the ASCII whitespace around the token — space, tab, line feed, vertical tab, form feed
+     * and carriage return. Any other character, a control character included, stays and is refused by
+     * the decoder.
+     */
+    private static String stripSurroundingWhitespace(String value) {
+        int start = 0;
+        int end = value.length();
+        while (start < end && isAsciiWhitespace(value.charAt(start))) {
+            start++;
+        }
+        while (end > start && isAsciiWhitespace(value.charAt(end - 1))) {
+            end--;
+        }
+        return value.substring(start, end);
+    }
+
+    private static boolean isAsciiWhitespace(char character) {
+        return character == ' ' || character == '\t' || character == '\n' || character == '\u000B'
+                || character == '\f' || character == '\r';
+    }
+
+    private static IllegalStateException refusal(String defect) {
+        return new IllegalStateException(KEY_FILE_FIELD + " " + defect);
     }
 
     /**
@@ -259,8 +312,8 @@ public final class CookieKeyMaterial {
      */
     public enum Mode {
 
-        /** The operator passed {@code session.encryption_key}, so sessions survive a restart. */
-        PASSED("passed key"),
+        /** The operator named {@code session.key_file}, so sessions survive a restart and replicas share them. */
+        PROVIDED("provided key file"),
 
         /** No key was configured, so one was generated at startup and is lost on restart. */
         GENERATED("generated on startup");
