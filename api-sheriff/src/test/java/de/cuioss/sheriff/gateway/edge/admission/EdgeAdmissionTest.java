@@ -27,8 +27,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
@@ -48,6 +48,11 @@ import org.junit.jupiter.api.Test;
  * an admission can pass the check, the drain can read zero in flight and return, and the admission
  * then completes after the drain has finished. The race also requires at least one admitted round: a
  * race in which no round admits observes nothing about that order and must not pass.
+ * <p>
+ * Both threads of a round are released from a spin barrier, so both are already running when the
+ * round starts. A latch wakes its waiters one at a time, and on a loaded runner the drain's single
+ * flag write then won every round, which left the control with nothing admitted. The race also keeps
+ * running rounds until enough of them admitted, up to a cap, instead of a fixed number of rounds.
  */
 @DisplayName("EdgeAdmission — admission against the shutdown drain")
 class EdgeAdmissionTest {
@@ -63,8 +68,11 @@ class EdgeAdmissionTest {
 
     private static final int REFUSED_ATTEMPTS = 1_000;
 
-    /** Each admitted round costs the drain one 50 ms poll, so the race stays well under 10 s. */
-    private static final int RACE_ROUNDS = 100;
+    /** The race runs until this many rounds admitted; an admitted round costs the drain at most one 50 ms poll. */
+    private static final int ADMITTED_ROUNDS_WANTED = 50;
+
+    /** The cap on the race's rounds. A round that admits nothing costs microseconds. */
+    private static final int MAX_RACE_ROUNDS = 5_000;
 
     private final EdgeAdmission admission = new EdgeAdmission(HARDENING);
 
@@ -117,10 +125,12 @@ class EdgeAdmissionTest {
     @DisplayName("an admission racing the drain is never admitted after the drain has returned")
     void admissionRacingTheDrainIsNeverAdmittedAfterTheDrainReturned() throws Exception {
         int admittedRounds = 0;
+        int rounds = 0;
         List<Integer> admittedAfterTheDrain = new ArrayList<>();
         List<Integer> unsettled = new ArrayList<>();
 
-        for (int round = 0; round < RACE_ROUNDS; round++) {
+        for (int round = 0; round < MAX_RACE_ROUNDS && admittedRounds < ADMITTED_ROUNDS_WANTED; round++) {
+            rounds++;
             RaceOutcome outcome = race();
             if (outcome.admitted()) {
                 admittedRounds++;
@@ -134,7 +144,7 @@ class EdgeAdmissionTest {
         }
 
         int admitted = admittedRounds;
-        assertAll("%d rounds of tryAdmit() against drain(), %d of them admitted".formatted(RACE_ROUNDS, admitted),
+        assertAll("%d rounds of tryAdmit() against drain(), %d of them admitted".formatted(rounds, admitted),
                 () -> assertTrue(admitted > 0,
                         "control: at least one round must admit, or the race never ran the case it pins"),
                 () -> assertEquals(List.of(), admittedAfterTheDrain,
@@ -144,43 +154,56 @@ class EdgeAdmissionTest {
     }
 
     /**
-     * One round: a fresh admission, a drain and an admission started together through a start gate.
+     * One round: a fresh admission, a drain and an admission released together from a spin barrier.
      * The admitting thread reads whether the drain had returned right after its admission succeeded,
      * and only then releases the request, so a drain still waiting for it cannot have returned yet.
      */
     private static RaceOutcome race() throws InterruptedException {
         EdgeAdmission racing = new EdgeAdmission(HARDENING);
-        CountDownLatch startGate = new CountDownLatch(1);
+        AtomicInteger running = new AtomicInteger();
+        AtomicBoolean go = new AtomicBoolean();
         AtomicBoolean drainReturned = new AtomicBoolean();
         AtomicBoolean admitted = new AtomicBoolean();
         AtomicBoolean admittedAfterTheDrainReturned = new AtomicBoolean();
 
         Thread drain = Thread.ofPlatform().daemon().start(() -> {
-            awaitGate(startGate);
+            awaitRelease(running, go);
             racing.drain();
             drainReturned.set(true);
         });
         Thread admit = Thread.ofPlatform().daemon().start(() -> {
-            awaitGate(startGate);
+            awaitRelease(running, go);
             if (racing.tryAdmit()) {
                 admitted.set(true);
                 admittedAfterTheDrainReturned.set(drainReturned.get());
                 racing.releaseAdmission(routingContext(), new AtomicBoolean());
             }
         });
-        startGate.countDown();
+        release(running, go);
         boolean admitSettled = admit.join(PROMPT);
         boolean drainSettled = drain.join(PROMPT);
 
         return new RaceOutcome(admitted.get(), admittedAfterTheDrainReturned.get(), admitSettled && drainSettled);
     }
 
-    private static void awaitGate(CountDownLatch startGate) {
-        try {
-            startGate.await();
-        } catch (InterruptedException _) {
-            Thread.currentThread().interrupt();
+    /** Announces the thread as running, then spins until the round is released. */
+    private static void awaitRelease(AtomicInteger running, AtomicBoolean go) {
+        running.incrementAndGet();
+        while (!go.get()) {
+            Thread.onSpinWait();
         }
+    }
+
+    /**
+     * Releases the round once both threads are running, or after {@link #PROMPT} when one never
+     * starts; the round then settles or reports itself unsettled.
+     */
+    private static void release(AtomicInteger running, AtomicBoolean go) {
+        long deadline = System.nanoTime() + PROMPT.toNanos();
+        while (running.get() < 2 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        go.set(true);
     }
 
     /**
