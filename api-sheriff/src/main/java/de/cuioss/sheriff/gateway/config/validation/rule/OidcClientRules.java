@@ -46,8 +46,11 @@ import lombok.experimental.UtilityClass;
  * The signing-key separation rule ({@link #validateSigningKeyFilesDistinct}) refuses, in the
  * key-based mode, a document whose {@code oidc.client_authentication.key_file} and
  * {@code oidc.sender_constraint.key_file} name the same file: the client assertion and the DPoP proofs
- * must be signed with different keys (FAPI 2.0 section 6.8). It judges the paths only; the same key
- * provided under two different paths is refused where the runtime is assembled, once both keys are read.
+ * must be signed with different keys (FAPI 2.0 section 6.8). It reads no key material: when both
+ * files exist the file system decides whether they are one file, so a link to the other key file is
+ * refused here; when a file is missing, only a pair whose spelling proves one file is refused. The same
+ * key provided in two different files, or reached through two paths this rule cannot prove to be one
+ * file, is refused where the runtime is assembled, once both keys are read.
  * <p>
  * The back-channel origin rule ({@link #validateBackChannelOrigin}) holds
  * {@code oidc.back_channel_origin} to a bare {@code http}/{@code https} origin, admits an {@code http}
@@ -210,11 +213,14 @@ public class OidcClientRules {
      * names and its DPoP proofs with the key {@code oidc.sender_constraint.key_file} names; when both
      * name the same file, one error is collected at {@code /oidc/sender_constraint/key_file}. Its
      * detail is fixed text that names both keys and neither path. When both files exist, the file
-     * system decides whether they are one file ({@link Files#isSameFile}), so a {@code ..} segment
-     * behind a symbolic link is judged by the file it reaches, not by its spelling; an I/O failure
-     * while deciding refuses nothing. When either file does not exist, the two paths are compared
-     * after {@link Path#normalize()}, so {@code keys/../keys/a.pem} and {@code keys/a.pem} are one
-     * file.
+     * system decides whether they are one file ({@link Files#isSameFile}), so a symbolic or hard link
+     * to the other key file is refused and a {@code ..} segment behind a symbolic link is judged by the
+     * file it reaches, not by its spelling; an I/O failure while deciding refuses nothing. When either
+     * file does not exist — as on the machine running the offline check — a pair is refused only when
+     * its spelling proves one file: equal after {@link Path#normalize()}, with no {@code ..} element in
+     * either path. So {@code keys/./a.pem} and {@code keys/a.pem} are one file, while
+     * {@code keys/x/../a.pem} and {@code keys/a.pem} are left to the runtime's comparison of the two
+     * keys, because {@code x} may be a symbolic link.
      * <p>
      * What the rule leaves alone, and why:
      * <ul>
@@ -225,6 +231,9 @@ public class OidcClientRules {
      *       boot and therefore never equal to a provided one.</li>
      *   <li><strong>A path that does not parse.</strong> It is left to the runtime's own refusal of
      *       an unusable key file, so one defect is reported once.</li>
+     *   <li><strong>A pair equal only once a {@code ..} is collapsed, while a file is missing.</strong>
+     *       The spelling does not prove one file there; the runtime producer judges the pair by the
+     *       keys it reads.</li>
      *   <li><strong>The same key in two different files</strong> — a copy. Telling that apart
      *       needs the key material, which this pre-boot rule never reads; the runtime producer
      *       refuses that case once both keys are read.</li>
@@ -273,18 +282,23 @@ public class OidcClientRules {
     }
 
     /**
-     * Whether two configured key-file paths locate one file.
+     * Whether two configured key-file paths provably locate one file.
      * <p>
-     * When both files exist the file system decides, through {@link Files#isSameFile}: a lexical
-     * comparison is wrong wherever a {@code ..} segment follows a symbolic link, because
-     * {@link Path#normalize()} then removes the link together with the {@code ..} and yields a path
-     * that locates a different file. A failure to decide is not a refusal — the boot-time comparison of
-     * the two keys remains the backstop. When either file is missing, the plain normalized paths are
-     * compared: there is no file to ask, and a missing key file is refused at boot anyway.
+     * When both files exist the file system decides, through {@link Files#isSameFile}, so a symbolic or
+     * hard link to the other key file is a match. A failure to decide is not a refusal — the boot-time
+     * comparison of the two keys remains the backstop.
+     * <p>
+     * When either file is missing — the offline check runs on a machine without the deployment's key
+     * files — the paths are compared by their spelling, and only where the spelling alone proves one
+     * file: the paths must be equal after {@link Path#normalize()}, and neither may contain a {@code ..}
+     * element. Normalizing away {@code .} elements and redundant separators never changes the file a path
+     * locates; collapsing a {@code ..} does whenever the element before it is a symbolic link, so an
+     * equality that rests on that collapse is no proof. Such a pair is left to the boot-time comparison
+     * of the two keys, so the pre-boot verdict cannot depend on the machine it is reached on.
      *
      * @param clientKeyFile the client-authentication key-file path
      * @param dpopKeyFile   the sender-constraint key-file path
-     * @return {@code true} when the two paths locate one file
+     * @return {@code true} when the two paths provably locate one file
      */
     private static boolean nameSameFile(Path clientKeyFile, Path dpopKeyFile) {
         if (Files.exists(clientKeyFile) && Files.exists(dpopKeyFile)) {
@@ -294,7 +308,23 @@ public class OidcClientRules {
                 return false;
             }
         }
-        return clientKeyFile.normalize().equals(dpopKeyFile.normalize());
+        return !containsParentElement(clientKeyFile) && !containsParentElement(dpopKeyFile)
+                && clientKeyFile.normalize().equals(dpopKeyFile.normalize());
+    }
+
+    /**
+     * Whether a path contains a {@code ..} name element.
+     *
+     * @param path the path to inspect
+     * @return {@code true} when one of its name elements is {@code ..}
+     */
+    private static boolean containsParentElement(Path path) {
+        for (Path element : path) {
+            if ("..".equals(element.toString())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

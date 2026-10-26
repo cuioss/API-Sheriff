@@ -3467,9 +3467,10 @@ class BffRuntimeProducerTest {
 
         /**
          * FAPI 2.0 section 6.8: a key serves one purpose. One PEM written to two paths is the same key
-         * under two names — the copy or link a path comparison cannot see — and the very same path names
-         * it twice. Both are refused while the runtime is assembled, once both keys are read, with a
-         * message that names both fields and neither path nor key id.
+         * in two files — the copy the pre-boot file comparison cannot see, because it reads no key
+         * material — and the very same path names it twice. The runtime does not rely on the pre-boot
+         * rule for either: both are refused while the runtime is assembled, once both keys are read, with
+         * a message that names both fields and neither path nor key id.
          */
         @Test
         @DisplayName("Should abort the build with CONFIG_INVALID when one key is provided for client authentication and DPoP")

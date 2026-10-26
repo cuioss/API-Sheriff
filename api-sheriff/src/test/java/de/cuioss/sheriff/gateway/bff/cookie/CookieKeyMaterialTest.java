@@ -147,13 +147,22 @@ class CookieKeyMaterialTest {
                 () -> assertNull(thrown.getCause(), "no cause should be chained, a decoder text names the content"));
     }
 
-    /** The whitespace forms in which one base64 line is written to a key file. */
+    /**
+     * The whitespace forms in which one base64 line is written to a key file: every ASCII whitespace
+     * byte the operator guide admits around the line — space, tab, LF, vertical tab, form feed and CR —
+     * in any amount, before and after it.
+     */
     enum AcceptedForm {
 
         TRAILING_LF(line -> line + "\n"),
         TRAILING_CRLF(line -> line + "\r\n"),
         SURROUNDING_SPACES(line -> "  " + line + " \t "),
-        NO_NEWLINE(UnaryOperator.identity());
+        NO_NEWLINE(UnaryOperator.identity()),
+        SURROUNDING_VERTICAL_TAB(line -> Character.toString(0x0B) + line + Character.toString(0x0B) + "\n"),
+        SURROUNDING_FORM_FEED(line -> "\f" + line + "\f\n"),
+        LEADING_LINE_BREAK(line -> "\n" + line + "\n"),
+        LEADING_BLANK_LINES_CRLF(line -> "\r\n \r\n" + line + "\r\n"),
+        SEVERAL_TRAILING_LINE_BREAKS(line -> line + "\n\n\r\n\n");
 
         private final UnaryOperator<String> writer;
 

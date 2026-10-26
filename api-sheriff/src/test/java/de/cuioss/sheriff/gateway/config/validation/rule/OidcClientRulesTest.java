@@ -282,8 +282,10 @@ class OidcClientRulesTest {
      * client-authentication key file and the sender-constraint key file must be two files. A document
      * naming one file for both is refused at {@code /oidc/sender_constraint/key_file} with a fixed text
      * that names both keys and neither path. Two existing files are compared by the file system, so a
-     * {@code ..} behind a symbolic link is judged by the file it reaches; paths to files that do not
-     * exist are compared after normalization.
+     * link to the other key file is refused and a {@code ..} behind a symbolic link is judged by the file
+     * it reaches. Where a file does not exist, only a pair equal after normalization with no {@code ..}
+     * element in either path is refused; a pair that meets only by collapsing a {@code ..} is left to the
+     * runtime's comparison of the two keys.
      */
     @Nested
     @DisplayName("oidc.client_authentication.key_file and oidc.sender_constraint.key_file must name two files")
@@ -348,13 +350,17 @@ class OidcClientRulesTest {
 
         @ParameterizedTest(name = "''{0}'' and ''{1}''")
         @CsvSource({
-                "keys/../shared-signing-key.pem, shared-signing-key.pem",
+                "./a.pem, a.pem",
                 "./keys/dpop.pem, keys/dpop.pem",
                 "/etc/sheriff/keys/./a.pem, /etc/sheriff/./keys/a.pem",
-                "/etc/sheriff/keys/x/../a.pem, /etc/sheriff/keys/a.pem"
+                "/etc/sheriff//keys/a.pem, /etc/sheriff/keys/a.pem"
         })
-        @DisplayName("Should refuse two spellings of one absent file, compared after normalization")
+        @DisplayName("Should refuse two spellings of one absent file that differ only by '.' elements or separators")
         void shouldRefuseTwoSpellingsOfOneFile(String clientKeyFile, String dpopKeyFile) {
+            assertAll("precondition: neither file exists, so only the spelling can be judged",
+                    () -> assertFalse(Files.exists(Path.of(clientKeyFile)), clientKeyFile),
+                    () -> assertFalse(Files.exists(Path.of(dpopKeyFile)), dpopKeyFile));
+
             List<ConfigError> errors = signingKeyErrors(null, clientKeyFile, dpopKeyFile);
 
             assertAll("one refusal echoing neither spelling",
@@ -366,9 +372,30 @@ class OidcClientRulesTest {
                             "the sender-constraint path must not be echoed"));
         }
 
+        @ParameterizedTest(name = "''{0}'' and ''{1}''")
+        @CsvSource({
+                "/etc/sheriff/keys/x/../a.pem, /etc/sheriff/keys/a.pem",
+                "keys/../shared-signing-key.pem, shared-signing-key.pem",
+                "/etc/sheriff/keys/a.pem, /etc/sheriff/keys/client/../a.pem",
+                "/etc/sheriff/a/../k.pem, /etc/sheriff/b/../k.pem"
+        })
+        @DisplayName("Should leave absent files whose spellings meet only by collapsing '..' to the runtime key comparison")
+        void shouldNotJudgeAbsentFilesEqualOnlyThroughAParentElement(String clientKeyFile, String dpopKeyFile) {
+            assertAll("precondition: absent files whose spellings normalize alike only through a '..'",
+                    () -> assertFalse(Files.exists(Path.of(clientKeyFile)), clientKeyFile),
+                    () -> assertFalse(Files.exists(Path.of(dpopKeyFile)), dpopKeyFile),
+                    () -> assertEquals(Path.of(clientKeyFile).normalize(), Path.of(dpopKeyFile).normalize(),
+                            "the pair the former lexical comparison refused"));
+
+            List<ConfigError> errors = signingKeyErrors(null, clientKeyFile, dpopKeyFile);
+
+            assertEquals(List.of(), errors, "where the files are missing, as on the machine running the offline "
+                    + "check, a '..' may follow a symbolic link, so the spelling proves no shared file");
+        }
+
         @Test
         @DisplayName("Should refuse one existing file named under two spellings")
-        void shouldRefuseOneExistingFileUnderTwoSpellings(@TempDir Path root) throws IOException {
+        void shouldRefuseOneExistingFileUnderTwoSpellings(@TempDir Path root) throws Exception {
             Path keysDir = Files.createDirectories(root.resolve("keys"));
             Path key = Files.writeString(keysDir.resolve("shared.pem"), "one key");
             String otherSpelling = keysDir.resolve("..").resolve("keys").resolve("shared.pem").toString();
@@ -380,7 +407,7 @@ class OidcClientRulesTest {
 
         @Test
         @DisplayName("Should refuse one existing file reached directly and through a symbolic link")
-        void shouldRefuseOneExistingFileReachedThroughALink(@TempDir Path root) throws IOException {
+        void shouldRefuseOneExistingFileReachedThroughALink(@TempDir Path root) throws Exception {
             Path keysDir = Files.createDirectories(root.resolve("keys"));
             Path key = Files.writeString(keysDir.resolve("shared.pem"), "one key");
             Path alias = createSymbolicLinkOrAbort(root.resolve("alias"), keysDir);
@@ -395,7 +422,7 @@ class OidcClientRulesTest {
 
         @Test
         @DisplayName("Should admit two different files even when '..' behind a symbolic link normalizes one onto the other")
-        void shouldAdmitTwoFilesThatNormalizeAlikeThroughASymlinkedParent(@TempDir Path root) throws IOException {
+        void shouldAdmitTwoFilesThatNormalizeAlikeThroughASymlinkedParent(@TempDir Path root) throws Exception {
             Path vaultClientDir = Files.createDirectories(root.resolve("vault").resolve("client"));
             Path keysDir = Files.createDirectories(root.resolve("run").resolve("keys"));
             Files.writeString(root.resolve("vault").resolve("dpop.pem"), "client-authentication key");

@@ -648,8 +648,9 @@ services:
   # The overlaid gateway.yaml names its AES-256 sealing key by literal path through
   # oidc.session.key_file: /app/signing-keys/cookie-sealing.key, on the signing-key mount. Naming a
   # key file — rather than letting the gateway generate a key per boot — is what makes the sealed
-  # cookie portable across instances that share nothing but this file, which is the property
-  # BffCookieStatelessnessIT proves. No environment variable carries the key.
+  # cookie portable across instances that share nothing but the key files on this mount (this
+  # sealing-key file and both signing-key files), which is the property BffCookieStatelessnessIT
+  # proves. No environment variable carries the key.
   api-sheriff-cookie:
     image: "api-sheriff:distroless"
     # Management-interface scheme for host-side readiness discovery (see the api-sheriff service).
@@ -723,10 +724,10 @@ services:
       - api-sheriff
     restart: unless-stopped
 
-  # --- Variant 3, second instance: the peer that shares NOTHING but the sealing key ----------------
+  # --- Variant 3, second instance: the peer that shares NOTHING but the key files -----------------
   # A literal clone of api-sheriff-cookie above — same image, same overlaid cookie gateway.yaml, and
-  # so the SAME sealing key file (cookie-sealing.key) — published on 10446 with its own management
-  # port 19003.
+  # so the SAME sealing-key file (cookie-sealing.key) and the same two signing-key files — published
+  # on 10446 with its own management port 19003.
   #
   # It exists solely so BffCookieStatelessnessIT can land the proof as an actual two-instance fact
   # rather than an inference: a session sealed by the instance on 10445 is replayed, with no sticky
@@ -772,8 +773,8 @@ services:
       # ${OIDC_DPOP_KEY_FILE} reference has to resolve here as well or the boot is refused.
       - OIDC_DPOP_KEY_FILE=/app/signing-keys/dpop-ec.pem
       # No sealing key is set here: the verbatim overlay names cookie-sealing.key on the signing-key
-      # mount below, the same file api-sheriff-cookie reads. That shared file IS the experiment: it is
-      # the only state the two instances share.
+      # mount below, the same file api-sheriff-cookie reads. That shared sealing-key file IS the
+      # experiment: it and the two signing-key files beside it are the only state the instances share.
     depends_on:
       <<: *gateway-backend-deps
       keycloak:

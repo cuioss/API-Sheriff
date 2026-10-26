@@ -60,8 +60,9 @@ import org.junit.jupiter.api.Test;
  * <strong>The sealing key files.</strong> Every cookie-mode instance reads its AES-256 sealing key
  * from the file its descriptor names through {@code oidc.session.key_file}, on the read-only
  * signing-key mount. {@code api-sheriff-cookie} and its peer {@code api-sheriff-cookie-2} mount the
- * same overlay and so read the same file, {@code cookie-sealing.key}: that shared file is the only
- * state the two share, and it is what {@code BffCookieStatelessnessIT} proves portable.
+ * same overlay and so read the same sealing-key file, {@code cookie-sealing.key}, and the same two
+ * signing-key files: those key files are the only state the two share, and the shared sealing key is
+ * what {@code BffCookieStatelessnessIT} proves portable.
  * {@code api-sheriff-cookie-refresh} names a file of its own, {@code cookie-refresh-sealing.key}, so an
  * equal key file means exactly the statelessness pair. Each file is a committed test fixture of one
  * line of base64 that decodes to 32 bytes, and no compose service passes a key through the

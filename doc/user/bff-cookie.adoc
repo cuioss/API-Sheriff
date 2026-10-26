@@ -502,10 +502,12 @@ both messages name the two configuration keys and neither a path nor a key id:
   oidc.sender_constraint.key_file name the same file`. When both files exist, the file system
   decides, so a link to the client-authentication key file counts as the same file, while
   `client/../dpop.pem` with `client` a link to another directory is judged by the file it actually
-  reaches. When either file does not exist -- an offline check on a machine without the keys -- the
-  two paths are compared after normalisation, so `keys/../keys/a.pem` and `keys/a.pem` are one file.
-  The offline check reports it too.
-* Two files hold the same key -- a copy: the boot refuses it once both keys are read, with
+  reaches. When either file does not exist -- an offline check on a machine without the keys -- only
+  two paths that are equal after normalisation and contain no `..` segment are refused, so
+  `keys/./a.pem` and `keys/a.pem` are one file, while `keys/x/../a.pem` and `keys/a.pem` are left to
+  the boot, because `x` may be a link. The offline check reports a refused pair too.
+* Two files hold the same key -- a copy, or two paths the configuration check could not prove to be
+  one file: the boot refuses it once both keys are read, with
   `oidc.client_authentication.key_file and oidc.sender_constraint.key_file hold the same key`.
 
 Either way, point `oidc.sender_constraint.key_file` at a file holding a different key, or remove it

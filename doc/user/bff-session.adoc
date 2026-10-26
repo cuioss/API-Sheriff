@@ -162,9 +162,11 @@ Each key is optional. Each names a PEM file on a mount. The two must name differ
 different keys: FAPI 2.0 section 6.8 asks for one key per purpose
 (link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]),
 and the boot refuses one key for both. In key mode one file named by both fields is refused at
-`/oidc/sender_constraint/key_file` -- a symbolic link to the other file counts as the same file -- and
-the same key in two files -- a copy -- is refused once both keys are read. Both messages name the two configuration keys and neither a path nor a key
-id. Point `oidc.sender_constraint.key_file` at a file holding a different key, or remove it to use a
+`/oidc/sender_constraint/key_file` -- when both files exist a symbolic link to the other file counts
+as the same file; when one is missing, as in an offline check, only paths that are equal after
+normalisation and contain no `..` segment do -- and the same key in two files -- a copy, or two paths
+that check could not prove to be one file -- is refused once both keys are read. Both messages name
+the two configuration keys and neither a path nor a key id. Point `oidc.sender_constraint.key_file` at a file holding a different key, or remove it to use a
 DPoP key generated at startup.
 
 === The two modes, and when to use which
