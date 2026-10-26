@@ -97,8 +97,8 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 | extracted
 
 | `TerminalActionRules`
-| `validateTerminalAction`, `validateAssetIndexAndFallback`
-| route `asset` / `redirect` / `upstream` exclusivity
+| `validateTerminalAction`, `validateAssetIndexAndFallback`, `validateKeepIdentityHeadersTarget`
+| route `asset` / `redirect` / `upstream` exclusivity, route `keep_identity_headers`
 | extracted
 
 | `EdgeRules`

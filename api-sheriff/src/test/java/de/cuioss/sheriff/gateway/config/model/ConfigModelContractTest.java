@@ -910,7 +910,7 @@ class ConfigModelContractTest {
         void routeConfigNormalizesAbsentAnchor() {
             // Positional on purpose: the canonical constructor's null round-trip is the subject.
             RouteConfig cfg = new RouteConfig("id", null, null, matchConfig(), null, null, null, null, null, null,
-                    null, null, null);
+                    null, null, null, null);
             assertNull(cfg.anchor());
             assertNull(cfg.auth());
             assertNull(cfg.securityFilter());
@@ -918,6 +918,8 @@ class ConfigModelContractTest {
             assertNull(cfg.asset());
             assertNull(cfg.redirect());
             assertNull(cfg.websocket());
+            assertNull(cfg.keepIdentityHeaders(),
+                    "an absent keep_identity_headers stays absent in the config model, not normalized to false");
         }
 
         @Test
@@ -1225,7 +1227,8 @@ class ConfigModelContractTest {
          */
         private RouteConfig routeConfigWith(String id, MatchConfig match) {
             // Positional on purpose: the canonical constructor's mandatory-field check is the subject.
-            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null, null);
+            return new RouteConfig(id, null, null, match, null, null, null, null, null, null, null, null, null,
+                    null);
         }
 
     }

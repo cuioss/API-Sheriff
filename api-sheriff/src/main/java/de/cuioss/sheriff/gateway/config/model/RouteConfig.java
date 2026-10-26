@@ -58,6 +58,14 @@ import org.jspecify.annotations.Nullable;
  * @param rateLimit      the reserved rate-limit block, {@code null} when omitted
  * @param websocket      the per-route WebSocket settings ({@code allowed_origins},
  *                       {@code idle_timeout_seconds}), {@code null} for non-WebSocket routes
+ * @param keepIdentityHeaders the per-route {@code keep_identity_headers} opt-out: {@code true}
+ *                       keeps the upstream's server-identity headers ({@code Server},
+ *                       {@code X-Powered-By} and their framework kin) on every response path of
+ *                       this route; {@code null} (absent) and {@code false} both mean they are
+ *                       stripped. A per-route scalar, not a policy block (ADR-0067): it has no
+ *                       endpoint, anchor or gateway scope. Refused at boot on a redirect, a
+ *                       directory-asset and a WebSocket route, which relay no upstream response
+ *                       header
  * @author API Sheriff Team
  * @since 1.0
  */
@@ -76,7 +84,8 @@ MatchConfig match,
 @Nullable AssetConfig asset,
 @Nullable RedirectConfig redirect,
 @Nullable RateLimitConfig rateLimit,
-@Nullable WebSocketConfig websocket) {
+@Nullable WebSocketConfig websocket,
+@Nullable Boolean keepIdentityHeaders) {
 
     /**
      * Canonical constructor requiring {@code id} and {@code match}.

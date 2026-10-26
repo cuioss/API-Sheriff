@@ -66,7 +66,7 @@ import org.jspecify.annotations.Nullable;
  *       {@code effectiveAllowedMethods}, {@code neededScopes}, {@code effectiveSecurityFilter},
  *       {@code securityHeaders}, {@code effectiveForward}, {@code effectiveCookies},
  *       {@code cookieOriginDefence}, {@code retryEnabled},
- *       {@code notModifiedEnabled}, the one terminal action {@code upstream} / {@code asset} /
+ *       {@code notModifiedEnabled}, {@code keepIdentityHeaders}, the one terminal action {@code upstream} / {@code asset} /
  *       {@code redirect}, {@code effectiveAllowedOrigins} and
  *       {@code effectiveWebSocketIdleTimeoutSeconds}) plus the pure derivation
  *       {@code locationRewriter}. The two derivations the route can make from its own values — the
@@ -154,6 +154,13 @@ import org.jspecify.annotations.Nullable;
  *                               proxy route)
  * @param notModifiedEnabled     the materialized HTTP-304 not-modified toggle (meaningful only for
  *                               a proxy route)
+ * @param keepIdentityHeaders    the materialized {@code keep_identity_headers} opt-out: {@code true}
+ *                               keeps the upstream's server-identity headers ({@code Server},
+ *                               {@code X-Powered-By} and their framework kin) on every path that
+ *                               relays upstream response headers — the HTTP relay, the gRPC relay's
+ *                               leading headers and trailers, and an upstream-backed asset route;
+ *                               the default {@code false} strips them. An absent key materializes
+ *                               to {@code false}
  * @param upstream               the resolved upstream target, present when the route's terminal
  *                               action is proxy and {@code null} for an asset or redirect route
  * @param locationRewriter       the {@code upstream.rewrite_location} mapping applied to an upstream
@@ -210,6 +217,7 @@ CookiesConfig effectiveCookies,
 @Nullable CsrfDefence cookieOriginDefence,
 boolean retryEnabled,
 boolean notModifiedEnabled,
+boolean keepIdentityHeaders,
 @Nullable ResolvedUpstream upstream,
 @Nullable LocationRewriter locationRewriter,
 @Nullable ResolvedAsset asset,
