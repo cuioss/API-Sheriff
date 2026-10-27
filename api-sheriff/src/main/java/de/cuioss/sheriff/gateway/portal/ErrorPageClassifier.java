@@ -44,7 +44,9 @@ import org.jspecify.annotations.Nullable;
  *       ({@link Exit#ORIGIN_RELAY}, {@link Exit#UPSTREAM_ASSET}): the gateway never replaces what an
  *       upstream said. {@link EventType#SOURCE_BLOCKED} keeps its shape too: a blocked source is
  *       answered {@code 429} before admission, before any pipeline request exists to negotiate
- *       with.</li>
+ *       with. {@link EventType#PRE_TRUST_INTERNAL_FAILURE} is classified here only because it is
+ *       never rendered as itself: its answer is rendered as {@link EventType#NO_ROUTE_MATCHED} and
+ *       negotiates as that event does.</li>
  * </ul>
  * <p>
  * <strong>Exhaustive by construction.</strong> {@link #classify(EventType)} is a {@code switch}
@@ -142,7 +144,10 @@ public class ErrorPageClassifier {
                 SESSION_REFRESH_FAILED, BACKCHANNEL_LOGOUT, LOGOUT_TOKEN_INVALID, WEBSOCKET_ORIGIN_REJECTED,
                 // SOURCE_BLOCKED is answered on the event loop before admission, so before any pipeline
                 // request exists to negotiate an HTML page for: the 429 keeps its problem document.
-                WEBSOCKET_IDLE_TIMEOUT, SOURCE_TRIPPED, SOURCE_BLOCKED -> Classification.KEEP_SHAPE;
+                WEBSOCKET_IDLE_TIMEOUT, SOURCE_TRIPPED, SOURCE_BLOCKED,
+                // PRE_TRUST_INTERNAL_FAILURE is never rendered as itself: its answer is the unrouted 404,
+                // which negotiates as NO_ROUTE_MATCHED does.
+                PRE_TRUST_INTERNAL_FAILURE -> Classification.KEEP_SHAPE;
         };
     }
 

@@ -2246,14 +2246,25 @@ problem body or its HTML error page, the response headers the request carried be
 selected, and never a trailers-only gRPC status. The closed set of events, every exclusion and its
 reason, and the definition of "identical" are recorded in
 link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-and in link:architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture -- rejections before the
-trust boundary]. Every unrouted `404`, genuine or resolved, leaves the edge on the same release
-rule, written from a Vert.x timer: no earlier than a fixed floor plus a random jitter after
-admission, and an answer whose processing ran past the floor is held to the next floor step after
-admission plus the jitter (`UniformNotFound.releaseAtNanos`, ADR-0073). The true event is still reported -- the event counter, the WARN and
-INFO lines and `sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is
-not shown. One switch, `security_defaults.uniform_not_found`, governs the branch and the floor and
-is on by default (link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
+and in link:architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the
+trust boundary]. An unexpected internal failure in the same window is answered the same way and
+counted under `PRE_TRUST_INTERNAL_FAILURE`, with its stack trace at `DEBUG` and no `WARN`, so a
+crafted input that makes a stage fail cannot turn a routed address into a `500`. Every unrouted
+`404`, genuine or resolved, leaves the edge on the same step rule, written from a Vert.x timer: no
+earlier than a fixed floor plus a random jitter after admission, and an answer whose processing ran
+past the floor is held to the next floor step after admission plus the jitter
+(`UniformNotFound.release`, ADR-0073). The release time is computed on the event loop at the moment
+the answer is armed -- after an HTML error page has rendered and after the hop from the virtual
+thread -- so neither moves an answer off the grid, and an answer released after the first step is
+counted on `sheriff_uniform_not_found_overruns_total`. While it waits, a held answer holds a permit of
+the held-answer sub-budget, a quarter of the effective `admission_cap`, instead of one of the general
+admission pool; a full sub-budget answers the held response `503` at once, alike for every held
+answer. The floor is measured: `EnumerationOracleIT` probes every pre-trust path a caller can drive on
+the integration stack and asserts the overrun meter did not move (ADR-0073 Amendment A1). The true
+event is still reported -- the event counter, the WARN and INFO lines and
+`sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is not shown. One
+switch, `security_defaults.uniform_not_found`, governs the branch and the floor and is on by default
+(link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
 
 *Status:* COVERED. `UniformNotFoundTest` walks every `EventType` constant and fails for one with
 neither a closed-set nor an exclusion entry. `GatewayEdgeUniformNotFoundTest` asserts over a live
@@ -2264,12 +2275,20 @@ session CSRF refusal, a `protocol: grpc` route, the bearer branch of a session-f
 `match.headers` route. It also asserts that a scope `403` is not delayed and that the switch set to
 `false` restores the honest codes. It times the floor for a subset only: the genuine unrouted `404`,
 a missing and a garbage bearer and an off-allowlist path, the last under `Accept: text/html` as
-well. `ResponseDelayTest` asserts that the wait is a timer and not a held thread. `EnumerationOracleIT`
+well. `ErrorResponseWriterTest` asserts that a pre-trust internal failure is answered as the floored
+unrouted `404` and counted under `PRE_TRUST_INTERNAL_FAILURE` while a post-trust one stays `500`, that
+the release is computed from the admission reading on the event loop for the problem document and the
+HTML page alike, and that an overrun is counted. `GatewayEdgeHeldAnswerBudgetTest` asserts over a live
+edge that held answers past the sub-budget are answered `503` alike for unrouted and routed pre-trust
+requests while an authenticated request is still admitted. `ResponseDelayTest` asserts that the wait
+is a timer and not a held thread. `EnumerationOracleIT`
 makes the same comparison against the native image on the shipped default for the bearer-route
 subset: no token, a garbage token, a wrong method, an off-allowlist path, an oversized declared body
 and a `protocol: grpc` route. For each of those it also asserts that the resolved and the genuine
 unrouted answer both wait for the floor. It also asserts the honest `403` of a validated token lacking a scope
-and the `302` / `401` of a session route. The cookie-forwarding same-origin refusal is covered by
+and the `302` / `401` of a session route, that no crafted malformed bearer token is answered `500`,
+and -- the measurement of the floor -- that `sheriff_uniform_not_found_overruns_total` is unchanged
+after a fixed number of sequential probes of every caller-drivable pre-trust path. The cookie-forwarding same-origin refusal is covered by
 status and problem type only: `GatewayEdgeCookiePolicyTest` asserts its `404`, and
 `CookieForwardingPolicyIT` asserts the `404` and the routing problem type. No test compares its
 body, header set, HTML page or timing with the unrouted answer.
@@ -2280,21 +2299,22 @@ session route answers an anonymous navigation with a `302` into login and anythi
 anonymous route discloses itself through its own success answer. The uniform answer covers their
 pre-trust rejections only.
 
-*Residual risk (accepted) -- the floor is a reasoned value, not a measured one.* The floor
-(`UniformNotFound.RESPONSE_FLOOR`, 50 ms) is meant to sit above the slowest pre-trust arm, the
-offline signature check of a well-formed token with a wrong signature. No benchmark times that arm
-against the floored answer yet. An answer whose processing runs past the floor -- a
-garbage-collection pause, an unusually large token -- is not written at once: it is held to the
-next floor step after admission plus the jitter (`RESPONSE_JITTER`, 20 ms), the step rule of
-ADR-0073.
+*Residual risk (accepted) -- the floor is measured on the integration stack, not on every
+deployment.* The floor (`UniformNotFound.RESPONSE_FLOOR`, 50 ms) is measured against every pre-trust
+path a caller can drive on the integration stack. A deployment on slower hardware, or one hit by a
+garbage-collection pause, can still see an answer run past it. Such an answer is not written at once:
+it is held to the next floor step after admission plus the jitter (`RESPONSE_JITTER`, 20 ms), the step
+rule of ADR-0073, and it is counted on `sheriff_uniform_not_found_overruns_total`, so an operator sees
+that it happened. A steady non-zero rate is the signal that the floor is too low for that deployment.
 
-*Residual risk (accepted) -- the floor costs admission under a `404` flood.* Each unrouted `404`
-holds its admission permit until it is written: an answer ready within the floor holds it for up
-to the floor plus the jitter, 70 ms after admission, and an answer held to a later floor step holds
-it until that step plus the jitter. A flood of unrouted or
-pre-trust requests therefore occupies admission permits for longer than it would without the floor,
-and past the admission cap the edge answers `503`, which is the same for every address. No thread is
-held while an answer waits (<<gw-07>>).
+*Residual risk (accepted) -- held answers share a bounded sub-budget under a `404` flood.* Each held
+answer holds a permit of the held-answer sub-budget until it is written: an answer ready within the
+floor for up to the floor plus the jitter, 70 ms after admission, and an answer held to a later floor
+step until that step plus the jitter. A flood of unrouted or pre-trust requests therefore fills the
+sub-budget, and past it every held answer is answered `503` at once, which is the same for every
+address and every caller. The general admission pool is not drawn on while an answer waits, so a
+request that passes the trust boundary is still admitted. No thread is held while an answer waits
+(<<gw-07>>).
 
 *Assertion.* For a routed address and an unrouted address on the same gateway, a request with no
 token, a garbage token, a wrong method, an off-allowlist path, a route-scoped filter violation, an
@@ -2306,8 +2326,11 @@ except the route-scoped filter violation and the cross-origin request on a sessi
 inherit it from the same renderer branch untimed. A cross-site unsafe request carrying a
 forwarded cookie receives the `404` with the routing problem type; only that status and type are
 asserted for it. A validated token without the needed scope still receives `403`, and a session
-route still receives `302` / `401`. With `security_defaults.uniform_not_found: false`, every case
-receives its honest code.
+route still receives `302` / `401`. An unexpected internal failure on a routed address before the
+trust boundary receives the floored unrouted `404` and is counted under `PRE_TRUST_INTERNAL_FAILURE`;
+after the trust boundary it receives `500`. No caller-drivable pre-trust path moves
+`sheriff_uniform_not_found_overruns_total` on the integration stack. With
+`security_defaults.uniform_not_found: false`, every case receives its honest code.
 
 == OAuth / OIDC / BFF failure catalogue
 
@@ -4008,7 +4031,7 @@ outstanding hardening work (next section).
 | <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
 | <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
-| <<gw-16>> | Every rejection raised after route selection and before the trust boundary rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released no earlier than a fixed floor plus jitter on a Vert.x timer; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `ResponseDelay`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor is a reasoned value pending a measurement, and its admission cost under a `404` flood, accepted)
+| <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` at once when it is full; the floor measured against every caller-drivable pre-trust path and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 Amendment A1 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED

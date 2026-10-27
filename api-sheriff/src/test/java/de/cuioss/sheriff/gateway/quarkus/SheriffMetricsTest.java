@@ -101,6 +101,21 @@ class SheriffMetricsTest {
             assertEquals("sheriff_auth_branch_total", SheriffMetrics.AUTH_BRANCH_TOTAL);
             assertEquals("sheriff_source_trips_total", SheriffMetrics.SOURCE_TRIPS_TOTAL);
             assertEquals("sheriff_source_untracked_total", SheriffMetrics.SOURCE_UNTRACKED_TOTAL);
+            assertEquals("sheriff_uniform_not_found_overruns_total", SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL);
+        }
+
+        @Test
+        @DisplayName("recordUniformNotFoundOverrun counts sheriff_uniform_not_found_overruns_total without a label")
+        void recordUniformNotFoundOverrunCountsWithoutLabel() {
+            metrics.recordUniformNotFoundOverrun();
+            metrics.recordUniformNotFoundOverrun();
+            metrics.recordUniformNotFoundOverrun();
+
+            var counter = registry.get(SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL).counter();
+            assertAll("sheriff_uniform_not_found_overruns_total",
+                    () -> assertEquals(3.0, counter.count(), 0.0),
+                    () -> assertTrue(counter.getId().getTags().isEmpty(),
+                            "neither the route nor the path an overrun concerns becomes a label"));
         }
 
         @Test

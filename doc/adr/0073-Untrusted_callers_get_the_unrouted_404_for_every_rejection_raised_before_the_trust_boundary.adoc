@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A rejection raised after route selection and before the trust boundary (a validated bearer token or a completed authentication stage) is answered to the caller exactly as an unrouted address is answered: status 404, the NO_ROUTE_MATCHED body or HTML page, the pre-route response headers and never a trailers-only gRPC status. Every unrouted 404 leaves the edge no earlier than a fixed floor plus a random jitter after admission, on a Vert.x timer. The true event is still metered. One switch, security_defaults.uniform_not_found, governs both and is on by default.
+// summary: A rejection raised after route selection and before the trust boundary (a validated bearer token or a completed authentication stage) is answered to the caller exactly as an unrouted address is answered: status 404, the NO_ROUTE_MATCHED body or HTML page, the pre-route response headers and never a trailers-only gRPC status. Every unrouted 404 leaves the edge no earlier than a fixed floor plus a random jitter after admission, on a Vert.x timer. The true event is still metered. One switch, security_defaults.uniform_not_found, governs both and is on by default. AMENDED (A1): an unexpected internal failure after route selection and before the trust boundary is answered as the floored unrouted 404 and counted under PRE_TRUST_INTERNAL_FAILURE, its stack trace at DEBUG; a held answer leaves the general admission pool for a derived held-answer sub-budget, and a full sub-budget answers 503 at once for every held answer alike; the release time is computed on the event loop when the answer is armed, after rendering; the floor is measured by EnumerationOracleIT against every caller-drivable pre-trust path, and an answer released after the first step is counted on sheriff_uniform_not_found_overruns_total.
 // tags: edge, error-contract, information-disclosure, enumeration, timing, security-defaults, grpc
 // affects: api-sheriff, documentation
 // supersedes:
@@ -59,9 +59,11 @@ the unrouted address is answered. The rule holds whoever the caller is. A caller
 a valid token later still gets the `404` for a wrong method, because the gateway has not
 established trust at the verb gate.
 
-The branch lives at the single rejection render point. `ErrorResponseWriter.renderRejection`
-consults `UniformNotFound.applies` before it chooses any other shape. The predicate is true exactly
-when all five legs hold:
+The branch lives at the two render points of an unanswered failure. `ErrorResponseWriter.renderRejection`
+consults `UniformNotFound.applies` before it chooses any other shape, and so does
+`ErrorResponseWriter.renderUnexpected`, which answers the edge's last-resort catch of an unexpected
+internal failure (<<amendment-a1,Amendment A1>>). The predicate is true exactly when all five legs
+hold:
 
 . the switch `security_defaults.uniform_not_found` is on;
 . the request has a selected route;
@@ -83,6 +85,8 @@ raise cannot reopen the oracle
 | `CONTENT_TOO_LARGE` | the declared-`Content-Length` fast-reject of stage 3
 | `CSRF_REJECTED` | the session CSRF defence and the cookie-forwarding same-origin check
 | `TOKEN_MISSING`, `TOKEN_INVALID` | the bearer branch of stage 4
+| `PRE_TRUST_INTERNAL_FAILURE` | an unexpected internal failure anywhere in the pre-trust window,
+answered by `ErrorResponseWriter.renderUnexpected` (<<amendment-a1,Amendment A1>>)
 |===
 
 `UniformNotFoundTest` walks every `EventType` constant. Each one must be a member or carry a
@@ -156,9 +160,14 @@ a grid of `UniformNotFound.RESPONSE_FLOOR` steps counted from admission. The ste
 leaves no earlier than the first floor step after admission that its processing has not passed, plus
 a random jitter in `[0, UniformNotFound.RESPONSE_JITTER)`. An answer ready within the floor leaves
 after one step. An answer whose processing outran the floor is held to the next step, so it leaves
-on the same step grid plus jitter, never at the moment it is ready. The genuine `NO_ROUTE_MATCHED` and
+on the same step grid plus jitter, never at the moment it is ready, and is counted as an overrun on
+`sheriff_uniform_not_found_overruns_total`. The genuine `NO_ROUTE_MATCHED` and
 `PASSTHROUGH_HOST_SMUGGLED` answers wait as much as a resolved rejection does, and so do the
 reserved-path `404`s rendered as `NO_ROUTE_MATCHED`. Honest answers do not wait.
+
+The release time is computed on the event loop at the moment the answer is armed: after an HTML error
+page has rendered and after the hop from the virtual thread, from the admission reading the edge
+stashed on the request. Neither the render nor the hop can push an answer off the step grid.
 
 [cols="1,1,3", options="header"]
 |===
@@ -173,12 +182,16 @@ this wide. It must sit above the worst-case cost of the pre-trust window.
 `SecureRandom`. It spreads the release within a step.
 |===
 
-*The values are a reasoned choice. They have not been measured.* No benchmark in this repository
-times the pre-trust arms against an unrouted answer yet. The reasoning is this: the slowest arm is
-one offline signature check of one token against a cached key set, a CPU-bound step without I/O. A
-floor of 50 ms leaves room above that step for a garbage-collection pause or an unusually large
-token. A measurement of the slowest arm against the floored `404` replaces this reasoning when it
-exists. It either confirms the constants or moves them.
+*The floor is measured.* `EnumerationOracleIT` drives every pre-trust path a caller can reach on the
+integration stack with a fixed number of sequential probes: the unrouted address, the verb gate, a
+path outside `allowed_paths`, a missing token, malformed tokens, a token at the header-size bound, a
+well-formed token naming an unknown key id, and the session branch's CSRF refusal. It then asserts
+that `sheriff_uniform_not_found_overruns_total` did not move, so every such path is answered inside
+the first step. The unknown-key-id path stays inside it because the key-set refresh it may trigger is
+scheduled off the request thread
+(link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
+An overrun that reproduces on a quiet run raises the floor in 10 ms steps until the measurement records
+none. In production the same meter shows whether any answer left on a later step.
 
 The two values are fixed constants of the gateway, like the bounds of
 link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060]
@@ -206,7 +219,9 @@ post-trust, reserved-path or stage-1 answer.
 The branch changes what the caller is shown, never what is reported. `handleGatewayRejection`
 reports the rejection under its true event before it renders it. The event counter, the WARN and
 INFO lines and `sheriff_errors_total{event}` name the real cause and its category. The rejection is
-rendered *to* the `NO_ROUTE_MATCHED` shape, never re-reported *as* `NO_ROUTE_MATCHED`.
+rendered *to* the `NO_ROUTE_MATCHED` shape, never re-reported *as* `NO_ROUTE_MATCHED`. An unexpected
+internal failure answered the same way is reported as `PRE_TRUST_INTERNAL_FAILURE`, on the event
+counter and on `sheriff_errors_total{event}`, without a `WARN`.
 
 == Alternatives rejected
 
@@ -262,17 +277,56 @@ measurement.
   `408`/`413`/`400`, upstream `5xx` and the WebSocket origin `403`. Its pre-trust mistakes, such as
   a wrong method, answer `404`. The true cause is in `sheriff_errors_total{event}` and the WARN
   lines, not in the response.
-* Every unrouted `404` waits for the floor. Under a `404` flood each such answer ready within the
-  floor holds its admission permit for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`, 70 ms, because the
-  permit is released when the response ends; an answer held to a later step holds it until that
-  step. With the default `edge_hardening.admission_cap` of 2048, the edge sustains about 2048 / 0.07 s, roughly 29,000 floored `404` answers per second, before admission answers `503`.
-  The `503` is address-independent, so it leaks nothing. No thread is held while an answer waits;
-  the cost is a permit and a timer entry.
+* Every unrouted `404` waits for the floor, and while it waits it holds a permit of the held-answer
+  sub-budget rather than of the general admission pool (<<amendment-a1,Amendment A1>>). The
+  sub-budget is a quarter of the effective `edge_hardening.admission_cap`, at least one; with the
+  default cap of 2048 it holds 512 answers, each for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`,
+  70 ms, so the edge sustains about 512 / 0.07 s, roughly 7,300 held answers per second. Above that a
+  held answer is answered `503` at once, alike for every held answer whatever its route or caller, so
+  the `503` leaks nothing, and a request that passes the trust boundary still finds the general pool.
+  No thread is held while an answer waits; the cost is a held permit and a timer entry.
 * Every edge and integration test that requests an unrouted path waits for the floor. The tests
   assert only lower bounds on timing, so the floor slows them and does not make them flaky.
-* The floor rests on reasoning, not on a measurement. An answer whose processing exceeds 50 ms is
-  held to the next step of the grid, so it leaves on a step boundary plus the jitter, not at its own
-  processing time.
+* The floor is measured against every caller-drivable pre-trust path, and an answer whose processing
+  exceeds 50 ms in production is held to the next step of the grid and counted on
+  `sheriff_uniform_not_found_overruns_total`, so it leaves on a step boundary plus the jitter, not at
+  its own processing time, and the operator sees that it happened.
+
+[[amendment-a1]]
+== Amendment A1: an internal failure, held answers and the release time join the same rule, and the floor is measured
+
+*The decision stands; four mechanisms close the gaps that would otherwise reopen the oracle.* The
+sections above are worded for the current behaviour.
+
+*An unexpected internal failure in the pre-trust window is answered as the unrouted address.* The
+edge's last-resort catch hands every unexpected failure of the per-request flow to
+`ErrorResponseWriter.renderUnexpected`. One raised after route selection and before the trust
+boundary, while the switch is on, is a member of the closed set as `PRE_TRUST_INTERNAL_FAILURE`: the
+unrouted response headers are restored and the answer is the floored unrouted `404`. Without this, a
+crafted input that made a stage fail would answer `500` on a routed address and `404` on an absent
+one. The failure is counted on the event counter and on `sheriff_errors_total{event}` under that
+event and admitted to the per-source recon ledger. Its stack trace is logged at `DEBUG` only, with no
+`WARN`, because the failure is reachable by any caller that can craft its input. Every other
+unexpected failure -- before route selection, after the trust boundary, or with the switch off --
+keeps the opaque `500`.
+
+*A held answer leaves the general admission pool.* An answer about to wait for the floor, or for the
+per-source `delay` action, moves from the general admission pool to a held-answer sub-budget derived
+from the effective `admission_cap`, a quarter of it and at least one, as the WebSocket relay
+sub-budget is derived
+(link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]).
+No configuration key reaches it. A full sub-budget answers the held response `503` at once, with no
+timer, and that answer is the same for every held response whatever its route or caller. A flood of
+probes therefore cannot fill the pool that trusted traffic is admitted from.
+
+*The release time is computed on the event loop.* It is computed when the answer is armed, after an
+HTML error page has rendered and after the hop from the virtual thread, so neither moves an answer off
+the step grid.
+
+*The floor is measured and its overruns are metered.* `EnumerationOracleIT` probes every caller-drivable
+pre-trust path and asserts that no answer was released after the first step. An answer that is, in
+any deployment, is counted on `sheriff_uniform_not_found_overruns_total`. This replaces the earlier
+statement that the floor was a reasoned choice that had not been measured.
 
 == Links
 
@@ -290,13 +344,17 @@ measurement.
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
   -- the fixed reserved-path set
 * link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]
-  -- the admission budget the floor draws on
-* link:../architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture] -- the error contract and the rejection flow
+  -- the derived sub-budget the held-answer sub-budget of Amendment A1 follows
+* link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]
+  -- the off-thread key-set refresh that keeps the unknown-key-id path inside the first floor step
+* link:../architecture.adoc[Architecture] -- the error contract and the rejection flow
 * link:../configuration.adoc[Configuration Reference] -- `security_defaults.uniform_not_found`
 * link:../security-threat-model.adoc[Security Threat Model] -- the existence-oracle entry
 * link:../user/endpoint-routes.adoc[Endpoint Routes] -- why an existing route answers `404`
 * link:../development/README.adoc[Development Guide] -- how a new `EventType` gets its disposition
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/UniformNotFound.java`,
   `ErrorResponseWriter.java` and `edge/end/ResponseDelay.java` -- the implementation
-* `UniformNotFoundTest`, `GatewayEdgeUniformNotFoundTest`, `ResponseDelayTest` and
-  `EnumerationOracleIT` -- the tests that pin the closed set, the identical answer and the floor
+* `UniformNotFoundTest`, `GatewayEdgeUniformNotFoundTest`, `ResponseDelayTest`,
+  `ErrorResponseWriterTest`, `GatewayEdgeHeldAnswerBudgetTest` and `EnumerationOracleIT` -- the tests
+  that pin the closed set, the identical answer, the internal-failure answer, the held-answer
+  sub-budget and the measured floor

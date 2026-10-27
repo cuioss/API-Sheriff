@@ -100,7 +100,7 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 
 |GW-12: rejections are problem+json category-only; secrets redacted in `toString()`
 |FULLY
-|`GatewayEdgeRoute.java:1102-1116`; `OidcConfig.java:90-91`; unexpected exceptions → opaque 500
+|`GatewayEdgeRoute.java:1102-1116`; `OidcConfig.java:90-91`; unexpected exceptions → opaque 500, except before the trust boundary on a routed address, where they are the floored unrouted 404 (GW-16)
 
 |Inbound-filter floor non-skippable; omitted profile → `strict`; `minimal` refused on authenticated/BFF routes (ADR-0024)
 |FULLY
@@ -165,6 +165,10 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 |GW-08: HTTP/2 stream-abuse bounds pinned on the transport -- 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s, never raised; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded (threat model COVERED)
 |FULLY
 |`edge/admission/EdgeHardeningOptions.apply` sets the bounds on every listener; `http/ConnectionHeaders.REQUEST_STRIP`; proven by `EdgeHardeningOptionsTest`, `GatewayEdgeHttp2AbuseTest`, `ConnectionHeadersTest`, `ForwardPolicyStageTest` and, against the native image, `Http2StreamAbuseIT`
+
+|GW-16/ADR-0073 A1: every pre-trust rejection and every pre-trust unexpected internal failure on a routed address answered as the unrouted `404`, counted under its true event (`PRE_TRUST_INTERNAL_FAILURE` for the failure, no WARN); every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed; held answers on a derived sub-budget, `503` at once when full; the floor measured against every caller-drivable pre-trust path and its overruns metered on `sheriff_uniform_not_found_overruns_total` (threat model COVERED)
+|FULLY
+|`edge/error/UniformNotFound`, `edge/error/ErrorResponseWriter.renderUnexpected` and its event-loop release, `edge/error/RejectionReporter`, `edge/end/ResponseDelay`, `edge/admission/EdgeAdmission.tryEnterHold`; proven by `UniformNotFoundTest`, `ErrorResponseWriterTest`, `GatewayEdgeUniformNotFoundTest`, `GatewayEdgeHeldAnswerBudgetTest` and, against the native image, `EnumerationOracleIT`; the floor is measured on the integration stack, not on every deployment
 
 |GW-06 behaviour tests: PARTIAL
 |CONFIRMED as claimed

@@ -27,8 +27,9 @@ import org.jspecify.annotations.Nullable;
  * counters only. <strong>Configuration events</strong> carry {@link EventCategory#CONFIGURATION}
  * but also have no HTTP mapping: they occur at boot and abort startup rather than
  * producing a response. <strong>Request-time failures</strong> carry a category and a
- * positive HTTP status, matching the error contract in
- * {@code doc/architecture/observability-and-errors.adoc}.
+ * positive HTTP status, matching the error contract in {@code doc/architecture/observability-and-errors.adoc}. The one
+ * request-time failure without a status of its own is {@link #PRE_TRUST_INTERNAL_FAILURE}: it is
+ * counted under its own name and answered as {@link #NO_ROUTE_MATCHED}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -153,6 +154,21 @@ public enum EventType {
     UPSTREAM_CIRCUIT_OPEN(EventCategory.UPSTREAM, 503),
     /** The upstream call exceeded its configured timeout. */
     UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504),
+
+    // --- Pre-trust internal failure (counted, never rendered as itself) ---
+
+    /**
+     * An unexpected internal failure after route selection and before the trust boundary, while
+     * {@code security_defaults.uniform_not_found} is on. Its single raise site is
+     * {@code ErrorResponseWriter.renderUnexpected}, reached from the trailing
+     * {@code RuntimeException} catch of the edge's per-request flow. It has no HTTP mapping of its own:
+     * the caller is answered the floored unrouted {@code 404} ({@link #NO_ROUTE_MATCHED}), so a failure
+     * on a routed address cannot be told from an absent one. It carries the {@link EventCategory#ROUTING}
+     * category because that is the answer it is rendered as, and because a category is what lets the
+     * error metric count it under its own {@code event} label. The same failure after the trust
+     * boundary, or with the switch off, keeps the uncategorized {@code 500}.
+     */
+    PRE_TRUST_INTERNAL_FAILURE(EventCategory.ROUTING, 0),
 
     // --- Per-source enumeration detection ---
 

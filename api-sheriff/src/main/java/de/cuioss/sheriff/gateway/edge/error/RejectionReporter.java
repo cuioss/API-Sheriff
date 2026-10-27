@@ -37,7 +37,10 @@ import org.jspecify.annotations.Nullable;
 /**
  * The accounting half of every rejection the edge answers: meters it on the in-process event counter
  * and on {@link SheriffMetrics}, writes the security-relevant {@code WARN} and the per-route latched
- * {@code INFO} records, and records the per-request metrics from the single end-of-response hook.
+ * {@code INFO} records, and records the per-request metrics from the single end-of-response hook. It
+ * also meters the two signals of the uniform {@code 404} that are not a {@code GatewayException}: an
+ * internal failure answered as that {@code 404} ({@link #reportPreTrustInternalFailure}) and an answer
+ * released after the first floor step ({@link #recordFloorOverrun}).
  * Rendering the answer is {@link ErrorResponseWriter}'s job.
  * <p>
  * Thread-safe: the two report latches are concurrent sets, and every other collaborator is
@@ -134,6 +137,29 @@ public final class RejectionReporter {
             }
         }
         recordError(ctx, rejected.getEventType());
+    }
+
+    /**
+     * Meters an unexpected internal failure answered as the uniform {@code 404} — one raised after route
+     * selection and before the trust boundary — under {@link EventType#PRE_TRUST_INTERNAL_FAILURE}: the
+     * event counter and {@link SheriffMetrics#ERRORS_TOTAL}. It writes no {@code WARN}: the failure is
+     * reachable by any caller that can craft its input, so a record per occurrence would let a caller
+     * drive the log volume (CWE-779). The stack trace is the writer's {@code DEBUG} diagnostic, and the
+     * rate is carried by the metric.
+     *
+     * @param ctx the failed request
+     */
+    public void reportPreTrustInternalFailure(RoutingContext ctx) {
+        gatewayEventCounter.increment(EventType.PRE_TRUST_INTERNAL_FAILURE);
+        recordError(ctx, EventType.PRE_TRUST_INTERNAL_FAILURE);
+    }
+
+    /**
+     * Counts one uniform {@code 404} answer released after the first step of the response-timing floor
+     * against {@link SheriffMetrics#UNIFORM_NOT_FOUND_OVERRUNS_TOTAL}: its processing ran past the floor.
+     */
+    public void recordFloorOverrun() {
+        sheriffMetrics.recordUniformNotFoundOverrun();
     }
 
     /**

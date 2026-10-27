@@ -57,7 +57,9 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@value #SOURCE_TRIPS_TOTAL}{@code {action}} — the per-source enumeration-detection trips,
  *       keyed by the configured action ({@code block}, {@code delay} or {@code observe});</li>
  *   <li>{@value #SOURCE_UNTRACKED_TOTAL} — the recon events the detection substrate could not count
- *       because its ledger was at the bound on tracked sources (cardinality overflow).</li>
+ *       because its ledger was at the bound on tracked sources (cardinality overflow);</li>
+ *   <li>{@value #UNIFORM_NOT_FOUND_OVERRUNS_TOTAL} — the uniform {@code 404} answers whose processing
+ *       ran past the first step of the response-timing floor and were released on a later step.</li>
  * </ul>
  * A request refused because its source is blocked is recorded on {@value #ERRORS_TOTAL} under
  * {@link EventType#SOURCE_BLOCKED}, like every other categorized rejection, with the
@@ -112,6 +114,13 @@ public class SheriffMetrics {
      * bound on tracked sources — the cardinality overflow.
      */
     public static final String SOURCE_UNTRACKED_TOTAL = "sheriff_source_untracked_total";
+    /**
+     * Counter of uniform {@code 404} answers released after the first step of the response-timing
+     * floor — an answer whose processing ran past the floor. A non-zero value means some path answered
+     * as the unrouted {@code 404} took longer than the floor, so its answer left on a later step than an
+     * absent address's.
+     */
+    public static final String UNIFORM_NOT_FOUND_OVERRUNS_TOTAL = "sheriff_uniform_not_found_overruns_total";
 
     /** The bounded label value shared by requests that matched no route. */
     public static final String NO_ROUTE = "<no-route>";
@@ -266,6 +275,15 @@ public class SheriffMetrics {
      */
     public void recordSourceUntracked() {
         registry.counter(SOURCE_UNTRACKED_TOTAL).increment();
+    }
+
+    /**
+     * Counts one uniform {@code 404} answer released after the first step of the response-timing floor
+     * against {@link #UNIFORM_NOT_FOUND_OVERRUNS_TOTAL}. The meter carries no label: neither the route
+     * nor the path an overrun concerns ever becomes a label value.
+     */
+    public void recordUniformNotFoundOverrun() {
+        registry.counter(UNIFORM_NOT_FOUND_OVERRUNS_TOTAL).increment();
     }
 
     /**

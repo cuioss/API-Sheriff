@@ -54,7 +54,10 @@ import org.jspecify.annotations.Nullable;
  *       fast-reject; the streaming cap is raised after stage 4 and is kept out by the trust leg;</li>
  *   <li>{@link EventType#CSRF_REJECTED} — a cross-site attempt before stage 4;</li>
  *   <li>{@link EventType#TOKEN_MISSING} and {@link EventType#TOKEN_INVALID} — a protected address
- *       reached without, or with a forged, credential.</li>
+ *       reached without, or with a forged, credential;</li>
+ *   <li>{@link EventType#PRE_TRUST_INTERNAL_FAILURE} — an internal failure on a routed address before
+ *       the trust boundary: it is answered as the uniform {@code 404}, so to the caller it is one more
+ *       probe of an address, and a crafted input that drives the failure on purpose is exactly that.</li>
  * </ul>
  * A new {@link EventType} constant is not a member until it is added here; {@code ReconEventsTest}
  * fails for a constant that is neither a member nor in its recorded exclusion table.
@@ -112,7 +115,8 @@ public final class ReconEvents {
             EventType.CONTENT_TOO_LARGE,
             EventType.CSRF_REJECTED,
             EventType.TOKEN_MISSING,
-            EventType.TOKEN_INVALID));
+            EventType.TOKEN_INVALID,
+            EventType.PRE_TRUST_INTERNAL_FAILURE));
 
     /**
      * The file extensions that mark a static resource, lower case and without the dot. A fixed set,

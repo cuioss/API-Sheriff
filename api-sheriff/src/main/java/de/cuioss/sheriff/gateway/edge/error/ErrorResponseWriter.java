@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.function.Consumer;
 
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
@@ -67,10 +68,20 @@ import org.jspecify.annotations.Nullable;
  * answer rendered as the unrouted {@code 404} — a resolved rejection, the genuine
  * {@link EventType#NO_ROUTE_MATCHED} and {@link EventType#PASSTHROUGH_HOST_SMUGGLED}, the problem
  * document and the HTML error page alike — is written through {@link ResponseDelay} no earlier than
- * {@link UniformNotFound#releaseAtNanos}. The release time is computed when the answer is ready, from
- * the admission reading and the current {@link System#nanoTime()}, so the unrouted path and the
- * resolved path leave on the same step grid.
+ * its {@link UniformNotFound#release release time}. That time is computed on the event loop at the
+ * moment the answer is armed — after the HTML error page has rendered and after the hop from the
+ * virtual thread — from the admission reading and the current {@link System#nanoTime()}, so neither the
+ * render nor the hop can push an answer off the step grid, and the unrouted path and the resolved path
+ * leave on the same grid. An answer released on a step above the first is an overrun and is counted on
+ * {@code sheriff_uniform_not_found_overruns_total} ({@link RejectionReporter#recordFloorOverrun}).
  * The wait is a Vert.x timer; no thread is held. Every other answer is written at once.
+ * <p>
+ * <strong>An unexpected internal failure before the trust boundary.</strong> The edge's last-resort
+ * catch hands every unexpected failure to {@link #renderUnexpected}. One raised after route selection
+ * and before the trust boundary, while the switch is on, is answered as the floored unrouted
+ * {@code 404} and counted under {@link EventType#PRE_TRUST_INTERNAL_FAILURE}, so a crafted input that
+ * makes a stage fail cannot tell a routed address from an absent one by a {@code 500}. Every other
+ * unexpected failure keeps the opaque {@code 500}.
  * <p>
  * <strong>Rendered TO, not CALLED.</strong> The branch changes only what the caller is shown. The
  * rejection is reported under its TRUE event before it is rendered ({@link #handleGatewayRejection}),
@@ -147,6 +158,21 @@ public final class ErrorResponseWriter {
     }
 
     /**
+     * When a rendered answer is written: whether it waits for the uniform {@code 404}'s floor, and the
+     * time the per-source feed holds it until. The floor's release time is deliberately not carried
+     * here: it is computed on the event loop when the answer is armed ({@link #answerAt}).
+     *
+     * @param floored        whether the answer is released on the floor's step grid
+     * @param heldUntilNanos the {@link System#nanoTime()} value the per-source feed holds the answer
+     *                       until, or empty when it holds nothing
+     */
+    private record AnswerTiming(boolean floored, OptionalLong heldUntilNanos) {
+
+        /** The timing of an answer written as soon as it is ready. */
+        static final AnswerTiming AT_ONCE = new AnswerTiming(false, OptionalLong.empty());
+    }
+
+    /**
      * A writer without per-source detection ({@link ReconFeed#NONE}): the shape of a gateway whose
      * {@code enumeration_detection} is disabled.
      *
@@ -212,6 +238,38 @@ public final class ErrorResponseWriter {
     }
 
     /**
+     * Answers an unexpected internal failure of the per-request flow — the edge's last-resort catch.
+     * <ul>
+     *   <li>A failure raised after route selection and before the trust boundary while the switch is on
+     *       ({@link UniformNotFound#applies} for {@link EventType#PRE_TRUST_INTERNAL_FAILURE}) is reported
+     *       under that event through {@link RejectionReporter#reportPreTrustInternalFailure} — the event
+     *       counter and the error metric, no {@code WARN} — admitted to the per-source feed under it, and
+     *       answered exactly as a resolved rejection: the unrouted response headers restored, rendered as
+     *       {@link EventType#NO_ROUTE_MATCHED} and released on the floor's step grid.</li>
+     *   <li>Every other failure — raised before route selection, after the trust boundary, or with the
+     *       switch off — keeps the opaque {@code 500}; it carries no category and is not counted on the
+     *       error metric.</li>
+     * </ul>
+     * The stack trace goes to the {@code DEBUG} log in both cases and never to the caller.
+     *
+     * @param ctx        the failed request
+     * @param request    the pipeline request, {@code null} for a failure raised before one was built
+     * @param unexpected the failure
+     */
+    public void renderUnexpected(RoutingContext ctx, @Nullable PipelineRequest request,
+            RuntimeException unexpected) {
+        LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
+        if (request != null && uniformNotFound.applies(request, EventType.PRE_TRUST_INTERNAL_FAILURE)) {
+            rejectionReporter.reportPreTrustInternalFailure(ctx);
+            OptionalLong heldUntilNanos = reconFeed.admit(ctx, request, EventType.PRE_TRUST_INTERNAL_FAILURE);
+            request.restoreUnroutedResponse();
+            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED, Map.of(), heldUntilNanos);
+            return;
+        }
+        renderProblem(ctx, request, null);
+    }
+
+    /**
      * The single negotiation point of the gateway-originated error writers ({@link #renderProblem},
      * the reserved-path writer for a failed callback, the buffered-asset writer for a directory-asset
      * miss): answers the error with the portal's HTML error page — and reports {@code true} — only when
@@ -243,16 +301,17 @@ public final class ErrorResponseWriter {
      */
     public boolean answeredWithErrorPage(RoutingContext ctx, @Nullable PipelineRequest request,
             ErrorPageClassifier.Classification classification, int status, List<String> extraSetCookies) {
-        return answeredWithErrorPage(ctx, request, classification, status, extraSetCookies, OptionalLong.empty());
+        return answeredWithErrorPage(ctx, request, classification, status, extraSetCookies, AnswerTiming.AT_ONCE);
     }
 
     /**
      * {@link #answeredWithErrorPage(RoutingContext, PipelineRequest, ErrorPageClassifier.Classification,
-     * int, List)} with the page written no earlier than {@code releaseAtNanos} when one is present.
+     * int, List)} with the page written according to {@code timing}, whose release time is computed on
+     * the event loop after the page has rendered.
      */
     private boolean answeredWithErrorPage(RoutingContext ctx, @Nullable PipelineRequest request,
             ErrorPageClassifier.Classification classification, int status, List<String> extraSetCookies,
-            OptionalLong releaseAtNanos) {
+            AnswerTiming timing) {
         if (request == null || !portalEndpoint.errorPagesEnabled()
                 || classification != ErrorPageClassifier.Classification.HTML_ELIGIBLE
                 || !ErrorPageClassifier.offersHtml(acceptHeader(request))) {
@@ -270,7 +329,7 @@ public final class ErrorResponseWriter {
                     renderFailure.getMessage());
             return false;
         }
-        writePortal(ctx, request, page, extraSetCookies, releaseAtNanos);
+        writePortal(ctx, request, page, extraSetCookies, answer -> answerAt(ctx, timing, answer));
         return true;
     }
 
@@ -291,19 +350,19 @@ public final class ErrorResponseWriter {
      */
     public static void writePortal(RoutingContext ctx, PipelineRequest request,
             PortalEndpoint.PortalResponse portal, List<String> extraSetCookies) {
-        writePortal(ctx, request, portal, extraSetCookies, OptionalLong.empty());
+        writePortal(ctx, request, portal, extraSetCookies, Runnable::run);
     }
 
     /**
      * {@link #writePortal(RoutingContext, PipelineRequest, PortalEndpoint.PortalResponse, List)} with
-     * the page written no earlier than {@code releaseAtNanos} when one is present.
+     * the page's write handed to {@code arm} on the event loop, which writes it at once or holds it back.
      */
     private static void writePortal(RoutingContext ctx, PipelineRequest request,
-            PortalEndpoint.PortalResponse portal, List<String> extraSetCookies, OptionalLong releaseAtNanos) {
+            PortalEndpoint.PortalResponse portal, List<String> extraSetCookies, Consumer<Runnable> arm) {
         SecurityHeadersStage.applyPortalHeaders(request);
         Map<String, String> stageHeaders = request.gatewayAuthoredResponseHeaders();
         List<String> stageSetCookies = request.responseSetCookies();
-        ctx.vertx().runOnContext(v -> answerNoEarlierThan(ctx, releaseAtNanos, () -> {
+        ctx.vertx().runOnContext(v -> arm.accept(() -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
                 return;
@@ -426,7 +485,7 @@ public final class ErrorResponseWriter {
         if (selected != null && selected.protocol() == Protocol.GRPC) {
             Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
             List<String> setCookies = request.responseSetCookies();
-            ctx.vertx().runOnContext(v -> answerNoEarlierThan(ctx, heldUntilNanos, () -> {
+            ctx.vertx().runOnContext(v -> answerAt(ctx, new AnswerTiming(false, heldUntilNanos), () -> {
                 if (ctx.response().ended()) {
                     return;
                 }
@@ -471,11 +530,8 @@ public final class ErrorResponseWriter {
             title = category != null ? category.title() : "Internal Server Error";
             classification = ErrorPageClassifier.classify(eventType);
         }
-        OptionalLong floorReleaseAtNanos = uniformNotFound.delaysAnswer(eventType)
-                ? OptionalLong.of(uniformNotFound.releaseAtNanos(admittedAtNanos(ctx), System.nanoTime()))
-                : OptionalLong.empty();
-        OptionalLong releaseAtNanos = laterOf(floorReleaseAtNanos, heldUntilNanos);
-        if (answeredWithErrorPage(ctx, request, classification, status, List.of(), releaseAtNanos)) {
+        AnswerTiming timing = new AnswerTiming(uniformNotFound.delaysAnswer(eventType), heldUntilNanos);
+        if (answeredWithErrorPage(ctx, request, classification, status, List.of(), timing)) {
             return;
         }
         String body = problemBody(gatewayJson, type, title, status, problemExtensions);
@@ -483,7 +539,7 @@ public final class ErrorResponseWriter {
         // A rejection still carries the stage's Set-Cookie values: an XHR whose refresh failed is a
         // 401 problem response, and the clearing cookie that drops the revoked session rides on it.
         List<String> setCookies = request != null ? request.responseSetCookies() : List.of();
-        ctx.vertx().runOnContext(v -> answerNoEarlierThan(ctx, releaseAtNanos, () -> {
+        ctx.vertx().runOnContext(v -> answerAt(ctx, timing, () -> {
             HttpServerResponse response = ctx.response();
             if (response.ended()) {
                 return;
@@ -498,10 +554,21 @@ public final class ErrorResponseWriter {
     }
 
     /**
-     * Runs a writer's answer on the event loop — at once when no release time is set, the honest
-     * answer's case, and otherwise no earlier than that time through {@link ResponseDelay}.
+     * Arms a writer's answer on the event loop. A floored answer's release time is computed here, at the
+     * moment it is armed, from the admission reading and the current {@link System#nanoTime()}; when it
+     * falls on a step above the first, the overrun is counted. The answer then runs at once when no
+     * release time is set — the honest answer's case — and otherwise no earlier than the later of the
+     * floor's and the per-source feed's release times, through {@link ResponseDelay}.
      */
-    private static void answerNoEarlierThan(RoutingContext ctx, OptionalLong releaseAtNanos, Runnable answer) {
+    private void answerAt(RoutingContext ctx, AnswerTiming timing, Runnable answer) {
+        OptionalLong releaseAtNanos = timing.heldUntilNanos();
+        if (timing.floored()) {
+            UniformNotFound.Release floor = uniformNotFound.release(admittedAtNanos(ctx), System.nanoTime());
+            if (floor.overran()) {
+                rejectionReporter.recordFloorOverrun();
+            }
+            releaseAtNanos = laterOf(OptionalLong.of(floor.atNanos()), releaseAtNanos);
+        }
         releaseAtNanos.ifPresentOrElse(releaseAt -> ResponseDelay.endNoEarlierThan(ctx, releaseAt, answer),
                 answer);
     }

@@ -56,7 +56,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("ReconEvents — which rejections count as reconnaissance")
 class ReconEventsTest {
 
-    /** The ten members of the recon set, written out: the literal IS the contract. */
+    /** The eleven members of the recon set, written out: the literal IS the contract. */
     private static final Set<EventType> EXPECTED_RECON_SET = EnumSet.of(
             EventType.NO_ROUTE_MATCHED,
             EventType.PASSTHROUGH_HOST_SMUGGLED,
@@ -67,7 +67,8 @@ class ReconEventsTest {
             EventType.CONTENT_TOO_LARGE,
             EventType.CSRF_REJECTED,
             EventType.TOKEN_MISSING,
-            EventType.TOKEN_INVALID);
+            EventType.TOKEN_INVALID,
+            EventType.PRE_TRUST_INTERNAL_FAILURE);
 
     /** Every constant outside the recon set, with the reason it is not counted. */
     private static final Map<EventType, String> EXCLUSIONS = exclusions();
@@ -121,9 +122,23 @@ class ReconEventsTest {
         }
 
         @Test
-        @DisplayName("the recon set is exactly the ten documented members")
-        void reconSetIsTheDocumentedTen() {
+        @DisplayName("the recon set is exactly the eleven documented members")
+        void reconSetIsTheDocumentedEleven() {
             assertEquals(EXPECTED_RECON_SET, ReconEvents.RECON_SET);
+        }
+
+        @Test
+        @DisplayName("a pre-trust internal failure counts with weight 1, and not once the trust boundary is passed")
+        void preTrustInternalFailureIsAReconSignal() {
+            PipelineRequest untrusted = routedRequest(dynamicPath(), null);
+            PipelineRequest trusted = routedRequest(dynamicPath(), null);
+            trusted.markTrustBoundaryPassed();
+
+            assertAll("PRE_TRUST_INTERNAL_FAILURE",
+                    () -> assertEquals(1, ReconEvents.weightOf(untrusted, EventType.PRE_TRUST_INTERNAL_FAILURE),
+                            "answered as the uniform 404 to an untrusted caller, so one more probe"),
+                    () -> assertEquals(0, ReconEvents.weightOf(trusted, EventType.PRE_TRUST_INTERNAL_FAILURE),
+                            "a trusted caller is never counted"));
         }
 
         @ParameterizedTest(name = "{0}")

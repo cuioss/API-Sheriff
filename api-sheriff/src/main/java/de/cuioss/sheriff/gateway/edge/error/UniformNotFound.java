@@ -63,7 +63,11 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@link EventType#CSRF_REJECTED} — the session CSRF defence and the cookie-forwarding
  *       same-origin check, both before stage 4;</li>
  *   <li>{@link EventType#TOKEN_MISSING} and {@link EventType#TOKEN_INVALID} — the bearer branch of
- *       stage 4.</li>
+ *       stage 4;</li>
+ *   <li>{@link EventType#PRE_TRUST_INTERNAL_FAILURE} — an unexpected internal failure anywhere in the
+ *       pre-trust window, reported by {@code ErrorResponseWriter.renderUnexpected}; without it a
+ *       crafted input that makes a stage fail would answer {@code 500} on a routed address and
+ *       {@code 404} on an absent one.</li>
  * </ul>
  * <p>
  * <strong>Excluded, each for a recorded reason:</strong>
@@ -102,12 +106,16 @@ import org.jspecify.annotations.Nullable;
  * every answer rendered as the unrouted {@code 404} — the genuine {@link EventType#NO_ROUTE_MATCHED}
  * and {@link EventType#PASSTHROUGH_HOST_SMUGGLED} as much as a resolved rejection — waits for a release
  * time on a grid of {@link #RESPONSE_FLOOR} steps counted from admission ({@link #delaysAnswer},
- * {@link #releaseAtNanos}). <strong>The step rule:</strong> the answer leaves no earlier than the first
+ * {@link #release}). <strong>The step rule:</strong> the answer leaves no earlier than the first
  * floor step after admission that its processing has not passed, plus a random jitter below
  * {@link #RESPONSE_JITTER}. An answer ready within the floor leaves after one step; an answer whose
  * processing ran past the floor is held to the next step instead of being written at once, so every
- * such answer leaves on the same grid. The wait is a Vert.x timer ({@code edge.end.ResponseDelay}), so
- * no thread is held while an answer waits. Honest answers are never delayed.
+ * such answer leaves on the same grid. The writer computes the release on the event loop at the moment
+ * it arms the answer — after an HTML error page has rendered and after the hop from the virtual thread —
+ * so neither can push an answer off the grid; an answer released on a step above the first is an
+ * <em>overrun</em> ({@link Release#overran()}), which the writer meters. The wait is a Vert.x timer
+ * ({@code edge.end.ResponseDelay}), so no thread is held while an answer waits. Honest answers are never
+ * delayed.
  * <p>
  * Thread-safe: besides the switch, the only state is the jitter source, a {@link SecureRandom}.
  *
@@ -130,28 +138,49 @@ public final class UniformNotFound {
             EventType.CONTENT_TOO_LARGE,
             EventType.CSRF_REJECTED,
             EventType.TOKEN_MISSING,
-            EventType.TOKEN_INVALID));
+            EventType.TOKEN_INVALID,
+            EventType.PRE_TRUST_INTERNAL_FAILURE));
 
     /**
      * The least time after admission before which no unrouted {@code 404} leaves the edge, while the
-     * switch is on, and the width of each step of the release grid ({@link #releaseAtNanos}). It is
-     * meant to sit above the worst-case processing cost of the pre-trust window, whose slowest arm is
-     * the offline validation of a well-formed bearer token with a wrong signature, so that every
-     * rejection the window can raise has finished before the first step and an unrouted address and a
-     * resolved rejection are released on the same step. An answer whose processing ran past a step is
-     * held to the next one. The value is a reasoned choice, not a measurement: ADR-0073 records the
-     * reasoning and that the worst-case cost has not been measured. A fixed constant of the gateway,
-     * like the hardening bounds of ADR-0060 and ADR-0064 — no configuration key reaches it.
+     * switch is on, and the width of each step of the release grid ({@link #release}). It sits above the
+     * processing cost of the pre-trust window, so that every rejection the window can raise has finished
+     * before the first step and an unrouted address and a resolved rejection are released on the same
+     * step. An answer whose processing ran past a step is held to the next one and counted as an overrun.
+     * The value is measured, not only reasoned: {@code EnumerationOracleIT} drives every pre-trust path a
+     * caller can reach on the compose stack — the unrouted address, the verb gate, a path outside
+     * {@code allowed_paths}, a missing, malformed, oversized or unknown-key bearer token and the session
+     * branch's CSRF refusal — and asserts that none of them recorded an overrun on
+     * {@code sheriff_uniform_not_found_overruns_total}. A fixed constant of the gateway, like the
+     * hardening bounds of ADR-0060 and ADR-0064 — no configuration key reaches it.
      */
     public static final Duration RESPONSE_FLOOR = Duration.ofMillis(50);
 
     /**
      * The exclusive upper bound of the random jitter added on top of the floor step an answer is
-     * released on ({@link #releaseAtNanos}). The jitter is drawn afresh for every answer, so the
+     * released on ({@link #release}). The jitter is drawn afresh for every answer, so the
      * release time within a step is not a fixed offset. A fixed constant like the floor; no
      * configuration key reaches it.
      */
     public static final Duration RESPONSE_JITTER = Duration.ofMillis(20);
+
+    /**
+     * The release of one unrouted {@code 404} under the step rule ({@link UniformNotFound#release}).
+     *
+     * @param atNanos the {@link System#nanoTime()} value before which the answer is not written
+     * @param step    the floor step the answer is released on, counted from admission; {@code 1} for an
+     *                answer ready within the floor
+     */
+    public record Release(long atNanos, long step) {
+
+        /**
+         * @return {@code true} when the answer is released on a step above the first — its processing ran
+         *         past the floor
+         */
+        public boolean overran() {
+            return step > 1;
+        }
+    }
 
     private final boolean enabled;
     /** Draws the jitter; a predictable jitter could be subtracted out by a caller that learned it. */
@@ -191,7 +220,7 @@ public final class UniformNotFound {
      *
      * @param renderedAs the event the answer is rendered as, {@code null} for an unexpected internal
      *                   failure
-     * @return {@code true} when the answer is released no earlier than {@link #releaseAtNanos}
+     * @return {@code true} when the answer is released no earlier than {@link #release}
      */
     public boolean delaysAnswer(@Nullable EventType renderedAs) {
         return enabled && (renderedAs == EventType.NO_ROUTE_MATCHED
@@ -199,30 +228,29 @@ public final class UniformNotFound {
     }
 
     /**
-     * The release time of an unrouted {@code 404} under the step rule: the first {@link #RESPONSE_FLOOR}
+     * The release of an unrouted {@code 404} under the step rule: the first {@link #RESPONSE_FLOOR}
      * step after admission that the processing has not passed, plus a fresh random jitter in
-     * {@code [0, RESPONSE_JITTER)}.
+     * {@code [0, RESPONSE_JITTER)}, together with the index of that step.
      * <p>
      * With {@code elapsed = max(0, nowNanos - admittedAtNanos)}, the answer is released after
-     * {@code steps = max(1, ceil(elapsed / RESPONSE_FLOOR))} floor steps. An elapsed time within the
-     * floor gives one step, admission plus the floor. An elapsed time that lands exactly on a step
+     * {@code step = max(1, ceil(elapsed / RESPONSE_FLOOR))} floor steps. An elapsed time within the
+     * floor gives step {@code 1}, admission plus the floor. An elapsed time that lands exactly on a step
      * boundary stays on that step; one nanosecond past it moves to the next. A {@code nowNanos} read
-     * before {@code admittedAtNanos} counts as no elapsed time. Without the jitter, the result is never
-     * earlier than {@code nowNanos}.
+     * before {@code admittedAtNanos} counts as no elapsed time. Without the jitter, the release time is
+     * never earlier than {@code nowNanos}.
      * <p>
      * The arithmetic runs on the difference of the two readings, never on their absolute values, so it
      * holds across the wrap of {@link System#nanoTime()}.
      *
      * @param admittedAtNanos the {@link System#nanoTime()} reading taken when the request was admitted
-     * @param nowNanos        the {@link System#nanoTime()} reading taken when the answer is ready to be
-     *                        written
-     * @return the {@link System#nanoTime()} value before which the answer is not written
+     * @param nowNanos        the {@link System#nanoTime()} reading taken when the answer is armed
+     * @return the release time and the step it falls on
      */
-    public long releaseAtNanos(long admittedAtNanos, long nowNanos) {
+    public Release release(long admittedAtNanos, long nowNanos) {
         long floorNanos = RESPONSE_FLOOR.toNanos();
         long elapsedNanos = Math.max(0L, nowNanos - admittedAtNanos);
-        long steps = Math.max(1L, Math.ceilDiv(elapsedNanos, floorNanos));
-        return admittedAtNanos + Math.multiplyExact(steps, floorNanos)
-                + jitterSource.nextLong(RESPONSE_JITTER.toNanos());
+        long step = Math.max(1L, Math.ceilDiv(elapsedNanos, floorNanos));
+        return new Release(admittedAtNanos + Math.multiplyExact(step, floorNanos)
+                + jitterSource.nextLong(RESPONSE_JITTER.toNanos()), step);
     }
 }

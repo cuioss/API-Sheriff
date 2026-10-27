@@ -764,9 +764,18 @@ not see it:
   `TOKEN_MISSING`, `TOKEN_INVALID`, `METHOD_NOT_ALLOWED`, `PATH_NOT_ALLOWED`,
   `SECURITY_FILTER_VIOLATION`, `CONTENT_TOO_LARGE` or `CSRF_REJECTED` -- with the route id and the
   category, never `NO_ROUTE_MATCHED`. A rising `NO_ROUTE_MATCHED` count is a request for an address
-  that has no route; any of the others is a request a route refused.
+  that has no route; any of the others is a request a route refused. `PRE_TRUST_INTERNAL_FAILURE` is
+  the gateway failing on a request before authentication completed: it writes no WARN, because a
+  caller who found an input that triggers it could otherwise fill the log, so its stack trace is
+  logged at `DEBUG` only. A count that keeps rising is worth a `DEBUG` look at that route.
 * The WARN and INFO lines the gateway logs for a rejection name the true event as well (see
   link:../LogMessages.adoc[Log Messages]).
+* `sheriff_uniform_not_found_overruns_total` counts the `404` answers that took longer than the
+  response floor to prepare and were therefore released one floor step later than an absent address
+  is. It should stay at zero. A non-zero value means some path answered this way is slower than the
+  floor on this deployment, so its `404` can be told from an absent address's by its timing; a
+  steady rate is a reason to report it, together with the routes involved, so the floor can be
+  re-measured.
 
 *Who still gets the honest code.* The uniform `404` covers only what is raised before the trust
 boundary. A client with a valid token keeps every answer raised after authentication: the
@@ -1157,8 +1166,10 @@ deployment that never writes it keeps the behaviour shown here.
 | While `security_defaults.uniform_not_found` is on, every answer rendered as the unrouted `404` is
   written no earlier than this after the request was admitted, so the answer time does not tell an
   existing route from an absent one (<<_uniform_not_found_operator_note>>). A Vert.x timer holds the
-  answer; no thread waits. The answer keeps its admission permit until it is written. Not
-  configurable.
+  answer; no thread waits. While it waits, the answer holds a permit of the held-answer sub-budget,
+  a quarter of the effective `admission_cap`, instead of its general admission permit; when that
+  sub-budget is full the answer is a `503` at once. An answer released after the first floor step is
+  counted on `sheriff_uniform_not_found_overruns_total`. Not configurable.
 
 | Admission cap (in-flight requests) +
   [`edge_hardening.admission_cap`]

@@ -200,9 +200,12 @@ import org.jspecify.annotations.Nullable;
  * on: the {@code 404}, the unrouted response headers and the negotiated HTML page, never a
  * trailers-only gRPC status (see {@link ErrorResponseWriter} and
  * {@link de.cuioss.sheriff.gateway.edge.error.UniformNotFound}). A caller past the boundary keeps the
- * honest answer. Every unrouted {@code 404}, genuine or resolved, also leaves the edge no earlier than
- * the response-timing floor after admission: the edge stashes its admission reading on the context
- * ({@link ResponseDelay#ADMITTED_AT_KEY}), and the writer holds the answer back on a Vert.x timer.
+ * honest answer. An unexpected internal failure in that same window is answered the same way and
+ * counted under {@link EventType#PRE_TRUST_INTERNAL_FAILURE}; anywhere else it is an opaque {@code 500}.
+ * Every unrouted {@code 404}, genuine or resolved, also leaves the edge no earlier than the
+ * response-timing floor after admission: the edge stashes its admission reading on the context
+ * ({@link ResponseDelay#ADMITTED_AT_KEY}), and the writer computes the release on the event loop as it
+ * arms the answer and holds it back on a Vert.x timer.
  * A held answer moves from the general admission pool to the held-answer sub-budget through the
  * {@link ResponseDelay.Hold} the edge stashes beside it ({@link ResponseDelay#HOLD_KEY}); when that
  * sub-budget is full the answer is a {@code 503} at once instead.
@@ -599,8 +602,11 @@ public class GatewayEdgeRoute {
         // unexpected-failure type is genuinely unknowable and no narrower catch is correct. Letting a
         // RuntimeException escape would abandon the response without ending it (the client hangs until
         // timeout) and strand the admission permit, since the end handler never fires. Every escape is
-        // therefore translated into an opaque 500 here — the stack trace goes to the debug log and
-        // never to the client.
+        // therefore handed to ErrorResponseWriter.renderUnexpected: one raised after route selection and
+        // before the trust boundary is answered as the floored unrouted 404 and counted under
+        // PRE_TRUST_INTERNAL_FAILURE, so a crafted input that makes a stage fail cannot tell a routed
+        // address from an absent one; every other escape is an opaque 500. Either way the stack trace
+        // goes to the debug log and never to the client.
         // cui-rewrite:disable InvalidExceptionUsageRecipe
         try {
             HttpServerRequest raw = ctx.request();
@@ -706,8 +712,7 @@ public class GatewayEdgeRoute {
         } catch (GatewayException rejected) {
             errorResponseWriter.handleGatewayRejection(ctx, request, rejected);
         } catch (RuntimeException unexpected) {
-            LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
-            errorResponseWriter.renderProblem(ctx, request, null);
+            errorResponseWriter.renderUnexpected(ctx, request, unexpected);
         }
     }
 
