@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=../../../../../api-sheriff/src/main/resources/schema/gateway.schema.json
+# Global gateway document for the enumeration-detection gateway that EnumerationDetectionIT starts as
+# a one-off `docker run` container. It is NOT a compose service: its point is a trip response the
+# shared stack must never carry. The whole IT suite reaches the compose gateways from one docker
+# source address and runs rejection corpora against them, so a declared `block` there would refuse
+# every suite that runs after the first scan. The shared base document therefore declares no
+# enumeration_detection block and runs the shipped default, `observe`, which records a trip and
+# changes no answer.
+#
+# It is a STANDALONE document, not an overlay of the shared sheriff-config directory, built on the
+# shape of sheriff-config-late-idp/gateway.yaml. The test mounts it as /app/sheriff-config/gateway.yaml
+# together with exactly one shared endpoint file, sheriff-config/endpoints/assets-secure.yaml, and no
+# topology.properties, so its route set is that single bearer-gated directory asset route and every
+# other address is unrouted. The test's honest caller fetches the asset with a real token; its scan
+# probes addresses no route serves, each of which is a pre-trust recon rejection.
+version: 1
+metadata:
+  config_version: "integration-test-enumeration"
+allowed_methods: ["GET"]
+# The strict preset is pinned for the same reason the base document pins it. The
+# max_authorization_header_value_length carve-out lets a Keycloak-minted bearer token reach bearer
+# validation instead of being rejected 400 at the pre-route floor, so the honest caller's fetch is
+# answered 200 by the asset route rather than refused before routing.
+security_defaults:
+  profile: strict
+  max_authorization_header_value_length: 8192
+# --- The point of this instance: a declared `block` with a reachable trip and a short block -------
+# action: block is the operator opt-in the shipped default is not. A source whose pre-trust recon
+# rejections reach the threshold is answered 429 with Retry-After, before admission, for
+# block_seconds; EnumerationDetectionActivationWiringTest pins all three values against this file.
+#
+# threshold: 20 is low enough for a scan of a few dozen requests to trip it, and high enough above
+# what the honest leg spends that it never trips: every request of the test reaches the gateway from
+# the same docker source address, so the honest leg's own misses — and the readiness harness's
+# application-port probe, which is an unrouted request too — count against the same bucket.
+#
+# block_seconds: 5 keeps the wait for the block to expire short. When it has expired the source is
+# TRIPPED, not BLOCKED, and is served again; only a further recon rejection while the level is still
+# at the threshold would block it once more.
+#
+# window_seconds is not declared and resolves to the default, 60: the level drains at a third of an
+# event per second, so a scan of the size the test sends cannot drain away between its requests.
+enumeration_detection:
+  action: block
+  threshold: 20
+  block_seconds: 5
+anchors:
+  # The bearer-gated asset surface the mounted assets-secure endpoint rides (ADR-0014). access:
+  # authenticated enforces the bearer floor BEFORE the directory source is resolved, so a request
+  # without a token is refused and never reads a file. That refusal is not counted by the detection
+  # substrate: a request whose selected route carries the asset terminal action is a static-resource
+  # request, which the recon set excludes.
+  assets-secure:
+    path_prefix: /secure-assets
+    type: asset
+    access: authenticated
+    allowed_methods: ["GET", "HEAD"]
+    auth:
+      require: bearer
+token_validation:
+  issuers:
+    - name: integration-keycloak
+      issuer: https://localhost:1443/realms/integration
+      jwks:
+        source: http
+        url: https://keycloak:8443/realms/integration/protocol/openid-connect/certs
+        # allowed_egress_hosts omitted: the allowance is derived from the jwks.url host. The container
+        # joins the compose network, where `keycloak` resolves to the bridge address the SSRF egress
+        # guard refuses unless that host is allowed.
+        #
+        # Keycloak serves the IT's self-signed certificate; the benchmark-idp profile binds the stack's
+        # trust store through the mounted benchmark-idp-trust.properties.
+        tls_profile: benchmark-idp

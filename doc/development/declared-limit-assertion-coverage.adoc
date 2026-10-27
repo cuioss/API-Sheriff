@@ -40,7 +40,7 @@ carries the third as well.
 
 == The Enumerated Surface
 
-The declared surface is *thirty-two files* under `integration-tests/src/main/docker/`.
+The declared surface is *thirty-three files* under `integration-tests/src/main/docker/`.
 
 The table below is not decoration. `DescriptorInventoryWiringTest` parses the marked block at
 runtime and takes every monospaced path spelled inside it -- glob patterns excluded -- as its
@@ -53,11 +53,12 @@ disk without touching this table and the guard fails.
 | Surface | Count | Files
 
 | `sheriff-config*/gateway.yaml`
-| 12
+| 13
 | `sheriff-config/gateway.yaml` (base), `sheriff-config-cookie/gateway.yaml`,
   `sheriff-config-cookie-refresh/gateway.yaml`,
   `sheriff-config-egress-verify-off/gateway.yaml`,
   `sheriff-config-egress-verify-on/gateway.yaml`,
+  `sheriff-config-enumeration/gateway.yaml`,
   `sheriff-config-jwks-egress-mismatch/gateway.yaml`,
   `sheriff-config-late-idp/gateway.yaml`,
   `sheriff-config-mtls/gateway.yaml`, `sheriff-config-passthrough-empty/gateway.yaml`,
@@ -103,9 +104,10 @@ service. The ninth, `sheriff-config-tls-relaxation/gateway.yaml`, backs none: `B
 mounts it over the shared directory of a one-off gateway, in the way a compose instance mounts its
 overlay, and it is described under the citation notation below.
 
-`sheriff-config-late-idp/gateway.yaml` is one of the two descriptors that are *not* overlays -- the
-other, `sheriff-config-jwks-egress-mismatch/gateway.yaml`, is built on the same shape and is
-described under the citation notation below. It backs
+`sheriff-config-late-idp/gateway.yaml` is one of the three descriptors that are *not* overlays -- the
+other two, `sheriff-config-jwks-egress-mismatch/gateway.yaml` and
+`sheriff-config-enumeration/gateway.yaml`, are built on the same shape and are described under the
+citation notation below. It backs
 `JwksLateIdpReadinessIT`, which boots it as a one-off container rather than as a compose service --
 that gateway is `DOWN` by design until the test starts its identity provider, and the compose
 readiness gate would refuse it. It is a standalone, deliberately minimal document: the test mounts it
@@ -118,7 +120,7 @@ a shared endpoint on its new anchor would force that anchor into every committed
 gateway document derived from `sheriff-config-passthrough-empty/gateway.yaml` with that one anchor
 added. It is part of the surface all the same: `DescriptorInventoryWiringTest` sweeps the
 `reserved-path-overlap` directory by name beside the `sheriff-config*` directories, so the file is
-counted in the thirty-two and held to the same exact-set rule as every other descriptor. It declares
+counted in the thirty-three and held to the same exact-set rule as every other descriptor. It declares
 `allowed_methods`, which the sweep below matches, so it is limit-bearing; that list is asserted on
 the wire under the `allowed_methods` row of the Coverage Matrix -- a `GET` on the routed path is
 refused, answered as the unrouted `404` and metered `METHOD_NOT_ALLOWED`.
@@ -131,7 +133,7 @@ cannot manufacture a hit:
 `max|min|limit|cap|_bytes|_seconds|timeout|ttl|leeway|length|allow|deny|threshold|budget|quota|window|depth`
 // end::limit-key-regex[]
 
-Over all thirty-two files it returns hits in exactly twenty of them:
+Over all thirty-three files it returns hits in exactly twenty-one of them:
 
 // tag::limit-bearing[]
 * `sheriff-config/gateway.yaml`
@@ -139,6 +141,7 @@ Over all thirty-two files it returns hits in exactly twenty of them:
 * `sheriff-config-cookie-refresh/gateway.yaml`
 * `sheriff-config-egress-verify-off/gateway.yaml`
 * `sheriff-config-egress-verify-on/gateway.yaml`
+* `sheriff-config-enumeration/gateway.yaml`
 * `sheriff-config-jwks-egress-mismatch/gateway.yaml`
 * `sheriff-config-late-idp/gateway.yaml`
 * `sheriff-config-mtls/gateway.yaml`
@@ -163,7 +166,7 @@ The remaining twelve -- `sheriff-config/endpoints/assets.yaml`,
 `sheriff-config/endpoints/secure-scoped.yaml`, `sheriff-config/endpoints/untrusted.yaml`,
 `sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` and `sheriff-config/topology.properties` -- declare none.
-That complement is the other half of the same claim, so asserting the twenty exactly asserts both
+That complement is the other half of the same claim, so asserting the twenty-one exactly asserts both
 halves at once.
 
 `sheriff-config/endpoints/bff-unassigned-scope.yaml` is limit-free for the same reason as
@@ -222,13 +225,13 @@ Coverage Matrix row "`cookies` -- the per-route cookie policy" below.
 *Both claims above are machine-checked against this note itself*, not merely asserted here in
 prose. `DescriptorInventoryWiringTest` (in
 `integration-tests/src/test/java/.../gateway/integration/`) reads the three marked blocks above at
-runtime -- the inventory table, the sweep pattern and the twenty limit-bearing paths -- and uses them
+runtime -- the inventory table, the sweep pattern and the twenty-one limit-bearing paths -- and uses them
 as its expected values. It hardcodes none of them, so editing the test's expectations without
 editing this note is not possible: the note *is* the expectation. It then asserts the committed
 inventory equals the parsed inventory as an *exact set* -- so an added descriptor fails as loudly
 as a removed one, unlike the *at-least* floor the sibling wiring guards use -- and re-runs the
 parsed sweep over that inventory, asserting the set of limit-declaring files equals the parsed
-twenty. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
+twenty-one. If this note cannot be located, or a marked block is missing or empty, the guard fails loudly
 rather than deriving an empty expectation and passing.
 
 === Citation notation
@@ -249,8 +252,8 @@ stand alone, declare further base-cited keys; each paragraph says which.
 instances. The block sits after every key a row cites, so no `cookie:N` citation moved. It declares
 `path`, `title` and `error_pages` -- none of which matches the sweep pattern -- and omits
 `cache_seconds`, so the base-only `portal.cache_seconds` row does not derive onto it, and the file
-stays limit-bearing on exactly the keys it declared before. The inventory, the limit-bearing list
-and the nineteen are unchanged.
+stays limit-bearing on exactly the keys it declared before. Neither the inventory nor the
+limit-bearing list changes with it.
 
 `sheriff-config-passthrough-empty/gateway.yaml` is deliberately *outside* that `×N` notation, and
 the `×4` rows are **not** re-cited as `×5`. It is not an independently authored descriptor: it is a
@@ -395,6 +398,24 @@ name and asserts the inverse instead -- the list is non-empty and does *not* con
 host -- so the fixture cannot silently degrade into a matching or derived list and turn the refusal
 it exists for into a pass.
 
+`sheriff-config-enumeration/gateway.yaml` is the third standalone descriptor, outside the `×N`
+notation for the same reason as the other two. It backs `EnumerationDetectionIT`, which boots it as a
+one-off container on the compose network rather than as a compose service: its point is a declared
+`enumeration_detection` trip response, and the compose stack must not carry one, because the whole
+suite reaches the compose gateways from one source address and runs rejection corpora against them.
+It copies the late-idp shape -- the single bearer-gated `assets-secure` anchor beside
+`sheriff-config/endpoints/assets-secure.yaml`, no `topology.properties` -- with one issuer,
+`integration-keycloak`, at the base's values and with the base's derived egress allowance, so it
+declares no `jwks.allowed_egress_hosts`. Its limit-shaped keys are `allowed_methods` (global
+`["GET"]`, and the base's `["GET", "HEAD"]` on the anchor),
+`security_defaults.max_authorization_header_value_length: 8192` (the *G1* carve-out, at the base's
+value), and the two that are new to the matrix: `enumeration_detection.threshold` and
+`enumeration_detection.block_seconds`. The third key of that block, `action`, matches no alternative
+of the sweep, and is indexed all the same, because it is the key that turns the trip response on.
+`window_seconds` and `delay_millis` are not declared and resolve to their defaults. The two rows the
+block owes cite this file alone. A third row records the default every other gateway of the stack
+runs instead, `action: observe`, which no descriptor declares.
+
 `sheriff-config-tls-relaxation/gateway.yaml` is outside the `×N` notation as well, and the `×4` rows
 are **not** re-cited to include it. It backs `BffTlsRelaxationIT`, which mounts it over the shared
 directory of a one-off gateway on a dedicated network; no compose service loads it. It is built on
@@ -436,10 +457,11 @@ because the pair is a declared security posture with a runtime boundary, in the 
 Citing the passthrough-empty overlay per row would add a *fifth* line number to each of the seven
 `×4` rows and a *second* to nine of the ten base-only rows -- *sixteen* rows, restating one fact
 sixteen times where it is better stated once: *derive it from the base citation.*
-The three remaining `gateway.yaml` rows in the matrix cite an overlay only
+The five remaining `gateway.yaml` rows in the matrix cite another descriptor only
 (`sheriff-config-mtls/gateway.yaml`, `sheriff-config-ws-admission/gateway.yaml`,
-`sheriff-config-tls-relaxation/gateway.yaml`) and declare keys the base does not, so they are outside
-this derivation entirely.
+`sheriff-config-tls-relaxation/gateway.yaml`, and `sheriff-config-enumeration/gateway.yaml` in two
+rows) and declare keys the base does not, so they are outside this derivation entirely. The row for
+the undeclared `enumeration_detection.action` default cites no descriptor line at all.
 
 The sixteenth-versus-seventeenth row is not an off-by-one: the base-only row that would gain *no*
 citation is `tls.passthrough_sni` itself, the one key this overlay does **not** carry -- and that
@@ -575,6 +597,48 @@ declaration's *existence* is proven while its *boundary* is not.
   plus `WsAdmissionActivationWiringTest`, whose `overlayCapsEqualTheHeldCountsOfTheNegativeControls`
   is the equality guard binding both caps to the counts the controls hold, read from the IT rather
   than copied
+
+| `enumeration_detection.action: block`
+  `sheriff-config-enumeration/gateway.yaml:44`
+| `SourceGate` (the `429` before admission) over the recon `SourceLedger` the edge builds from the
+  block
+| COVERED
+| `EnumerationDetectionIT` on the native image -- a scan of unrouted and pre-trust-rejected addresses
+  trips the source, and the next request is answered `429` with `Retry-After` and the
+  `rate-limiting` problem document, while an honest caller below the threshold is served throughout.
+  The matched control is the same test's leg against the shared compose gateway, which declares no
+  block: the same scan is answered with the uniform `404` and no `429` (the undeclared-default row
+  below). Delete the key and the one-off gateway runs that default, so the `429` leg goes red.
+  `EnumerationDetectionActivationWiringTest` is the descriptor half: it asserts this file declares
+  `action: block` and the threshold the scan is sized against.
+
+| `enumeration_detection.threshold: 20` / `block_seconds: 5`
+  `sheriff-config-enumeration/gateway.yaml:45,46`
+| `SourceLedger` (the trip level, and how long a tripped source stays `BLOCKED`)
+| PARTIAL
+| `EnumerationDetectionIT` -- the honest leg stays below the threshold and is never tripped, the scan
+  leg goes past it and is, and once the block has expired the source is served again. Each key has a
+  leg that goes red if it is deleted: without `threshold` the default `100` is out of the scan's
+  reach and no `429` comes, and without `block_seconds` the default `60` outlasts the wait for the
+  source to be served again. Neither is asserted *at* its boundary, though -- not the request that
+  reaches the twentieth event, nor the fifth second -- because every request of the run shares one
+  bucket from one source address and the level drains between requests. The exact trip at the
+  threshold and the exact block expiry are pinned at unit level, with a controllable clock, by
+  `SourceLedgerTest`. `EnumerationDetectionActivationWiringTest` asserts both declared values.
+
+| `enumeration_detection.action: observe` -- the undeclared default
+  undeclared -- `EnumerationDetectionConfig.DEFAULT_ACTION`, in no yaml
+| `EnumerationDetectionConfig.effectiveAction()`, read where the edge builds its recon ledger
+| COVERED
+| `ConfigModelContractTest` -- an omitted block, and a block that omits `action`, both resolve to
+  `observe`. `GatewayEdgeSourceDetectionTest` -- through the real edge with no block declared, a scan
+  trips the source (the trip event, `sheriff_source_trips_total{action="observe"}` and the trip
+  `WARN`) while every answer stays byte-for-byte what it was before the trip. The observe leg of
+  `EnumerationDetectionIT` -- on the native image, against the shared compose gateway, every scan
+  answer is the uniform `404` with no `429` and `sheriff_source_trips_total{action="observe"}` reads
+  at least `1`. Change the default to `block` or `delay` and all three go red.
+  `EnumerationDetectionActivationWiringTest` asserts that `sheriff-config/gateway.yaml` declares no
+  `enumeration_detection` block, so the observe leg really runs the default and not a declared value.
 
 | `tls.passthrough_sni`
   `sheriff-config/gateway.yaml:89-91`
@@ -982,11 +1046,11 @@ enlarge exactly the hole this note has chosen to report.
 
 `DescriptorInventoryWiringTest#limitShapedKeysLiveOnlyInTheRecordedSurfaces` builds a set of *file
 paths* -- those for which `declaresLimitShapedKey` returns `true` -- and asserts it equals the
-twenty paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
+twenty-one paths parsed from the `limit-bearing` block. `declaresLimitShapedKey` is a per-file
 *boolean* predicate ("does this file declare at least one limit-shaped key"), not a key enumeration,
 so the assertion's granularity is the file and never the key.
 
-The consequence: adding a limit-shaped key to one of the *twenty already limit-bearing* files
+The consequence: adding a limit-shaped key to one of the *twenty-one already limit-bearing* files
 leaves the computed set identical to the parsed one. The build stays green and no Coverage Matrix
 row is forced. Only a key that makes one of the remaining twelve --
 `sheriff-config/endpoints/assets.yaml`, `sheriff-config/endpoints/assets-secure.yaml`,
@@ -996,8 +1060,8 @@ row is forced. Only a key that makes one of the remaining twelve --
 `sheriff-config/endpoints/untrusted.yaml`, `sheriff-config/endpoints/upstream-fault.yaml`,
 `sheriff-config/portal/portal.html` or
 `sheriff-config/topology.properties` -- limit-bearing crosses the partition and fails the build.
-Twenty of thirty-two is the *majority* of the surface,
-so this is the ordinary case rather than an edge one: for those twenty files the "add its row here
+Twenty-one of thirty-three is the *majority* of the surface,
+so this is the ordinary case rather than an edge one: for those twenty-one files the "add its row here
 in the same change" instruction that closes this note rests on contributor convention, not on the
 guard. The routing plan that added the base document's `security_headers` block is a worked instance:
 `hsts.max_age` and the CORS allow lists are limit-shaped, the base file was already limit-bearing, and
@@ -1023,18 +1087,22 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   Declaration Layers" -- carry the marker "Layer 2 -- resolved, in no yaml" in that slot instead,
   because there is no descriptor line to cite. That marker is a claim rather than an excuse: it
   asserts the value appears in *no* committed descriptor, which is precisely why such a limit is the
-  one most likely to lose its assertion unnoticed. A row carrying neither a citation nor that marker
-  is the drift this property exists to catch.
-. *The enumerated surface is stated explicitly* (thirty-two files, named) *and machine-checked against
+  one most likely to lose its assertion unnoticed. One further row records an *undeclared default*
+  rather than a declared value -- `enumeration_detection.action: observe`, the response every
+  gateway of the stack but one runs -- and carries the marker "undeclared" in that slot, naming the
+  constant the default is read from; it is indexed because the shared stack's behaviour rests on a
+  value no descriptor states. A row carrying neither a citation nor one of those two markers is the
+  drift this property exists to catch.
+. *The enumerated surface is stated explicitly* (thirty-three files, named) *and machine-checked against
   this note*. `DescriptorInventoryWiringTest` parses the marked blocks in "The Enumerated Surface"
-  -- the inventory table, the sweep pattern and the twenty limit-bearing paths -- and uses them as its
+  -- the inventory table, the sweep pattern and the twenty-one limit-bearing paths -- and uses them as its
   expected values instead of carrying its own copy. Both of its assertions are *file-level set
   equalities*, and the guarantee is exactly that: a new `sheriff-config*` directory, a new file under
   an enumerated root (`sheriff-config*`, `reserved-path-overlap`) or a new `endpoints/*.yaml` breaks
   the exact-inventory equality and fails the build until this note is updated -- a descriptor
   committed under any other directory is outside both assertions until that directory is added to
   the test's `INVENTORY_ROOTS` -- and a limit-shaped key fails the build *only when it makes a previously
-  non-limit-bearing file limit-bearing* -- when it moves a file across the twenty/twelve partition.
+  non-limit-bearing file limit-bearing* -- when it moves a file across the twenty-one/twelve partition.
   Adding one to a file that already declares a limit changes neither set; see the report-only
   finding above. Updating the test alone cannot make the build green: the test has no expectation of
   its own to update.
@@ -1043,7 +1111,7 @@ This table is prose, and prose drifts the moment a descriptor changes. Three pro
   vacuous or mis-rooted glob fails loudly instead of passing over an empty set. This note indexes
   those guards; it does not replace them.
 
-When you add a limit-shaped key to any of the thirty-two files, add its row here in the same change --
+When you add a limit-shaped key to any of the thirty-three files, add its row here in the same change --
 and give it a status that is honest, including `GAP`.
 
 == Declared Is Not Asserted: Three Rules Behind the Matrix
