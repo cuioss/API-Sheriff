@@ -65,6 +65,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.LogoutEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.UserInfoEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -262,7 +263,11 @@ import org.jspecify.annotations.Nullable;
  * unit-testable) without a live IdP. The discovery-dependent {@code end_session_endpoint} is read
  * by the logout leg per request, after the local session has been ended: a provider that publishes
  * none, or metadata that cannot be obtained, leaves the logout a local one that lands on
- * {@code final_redirect}.
+ * {@code final_redirect}. The memoized supplier caches a resolved value only: an attempt that throws
+ * leaves nothing cached, so the next engine use retries the resolution. Every attempt records its
+ * outcome into the one {@link DiscoveryStatus} this producer also publishes, as a non-fetching view
+ * the readiness probe reports under {@code oidc_discovery}; boot never calls the supplier, so a fresh
+ * runtime reports {@code not-attempted}. A bearer-only gateway gets the inert view.
  * <p>
  * <strong>The identity-provider back-channel carries a pinned TLS posture (ADR-0045).</strong> The
  * {@link ClientConfiguration} every engine seam dials the identity provider with — discovery, the
@@ -365,6 +370,12 @@ public class BffRuntimeProducer {
      * entirely" and "block present, key omitted" are the same posture — verification ON.
      */
     private final EgressTlsConfig egressTls;
+    /**
+     * The one provider-metadata outcome view of the active runtime. The discovery supplier the runtime
+     * assembles records into it, and {@link #discoveryStatus()} publishes it; created here so both
+     * producer methods share it whichever runs first.
+     */
+    private final DiscoveryStatus discoveryStatus = DiscoveryStatus.tracking();
 
     /**
      * @param gatewayConfig         the bound global gateway document carrying the {@code oidc} block and
@@ -429,6 +440,23 @@ public class BffRuntimeProducer {
     }
 
     /**
+     * Produces the non-fetching view of the most recent OIDC provider-metadata resolution.
+     * <p>
+     * {@link Singleton} because the view is final and fixed once chosen. On an active BFF runtime it
+     * is the view the runtime's discovery supplier records into; producing it never resolves the
+     * metadata and never builds the runtime. A bearer-only gateway gets the inert view.
+     *
+     * @return the tracking view for a recognised {@code session.mode}, or the inert view for a
+     *         bearer-only gateway
+     */
+    @Produces
+    @Singleton
+    public DiscoveryStatus discoveryStatus() {
+        OidcConfig oidc = gatewayConfig.oidc();
+        return oidc != null && isBffMode(oidc) ? discoveryStatus : DiscoveryStatus.inert();
+    }
+
+    /**
      * The mode-aware activation predicate: a BFF runtime is built for either recognised
      * {@code session.mode} — {@code server} or {@code cookie} — provided a {@code redirect_uri} is
      * configured. An unrecognised or absent mode leaves the gateway bearer-only.
@@ -489,7 +517,10 @@ public class BffRuntimeProducer {
         // FAPI 2.0 section 6.8: the client assertion and the DPoP proofs are signed with two keys.
         refuseSharedSigningKey(clientCredential.signingKey(), senderConstraintKey);
         SenderConstraint senderConstraint = senderConstraintKey.senderConstraint();
-        Supplier<ProviderMetadata> metadata = memoize(() -> new DiscoveryResolver(clientConfiguration).resolve());
+        // Every attempt records its outcome into the published DiscoveryStatus; memoize caches a
+        // resolved value only, so a failed attempt is recorded and the next engine use retries.
+        Supplier<ProviderMetadata> metadata = memoize(
+                discoveryStatus.recording(() -> new DiscoveryResolver(clientConfiguration).resolve()));
 
         TokenValidator validator = tokenValidator.get();
         TokenValidationBridge tokenBridge = new TokenValidationBridge(validator);

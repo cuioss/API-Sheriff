@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -42,6 +43,8 @@ import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus.KeySetState;
+import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
+import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus.State;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
@@ -70,9 +73,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
  * names named in {@code architecture.adoc} § Metrics (including the BFF session-lifecycle counter and
  * the bounded {@code session_fallback} authentication-branch counter),
- * and {@link GatewayReadinessCheck} reflects configuration, JWKS status, and — for a BFF
- * {@code mode: server} deployment — an {@code issuer_reachability} datum that is always
- * {@code unverified}, because cached key-set state is not a reachability signal.
+ * and {@link GatewayReadinessCheck} reflects configuration, JWKS status, and — for an active BFF
+ * runtime in {@code server} or {@code cookie} mode — an {@code oidc=<mode>} datum beside an
+ * {@code oidc_discovery} datum read from the non-fetching {@link DiscoveryStatus}, which is reported
+ * but never changes the UP/DOWN verdict.
  */
 class SheriffMetricsTest {
 
@@ -477,7 +481,7 @@ class SheriffMetricsTest {
     }
 
     @Nested
-    @DisplayName("GatewayReadinessCheck reflects config and JWKS status, and never claims issuer reachability")
+    @DisplayName("GatewayReadinessCheck reflects config and JWKS status, and reports oidc_discovery without letting it gate")
     class Readiness {
 
         private static final String PRIMARY_ISSUER = "corp-main";
@@ -497,8 +501,10 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("loaded", data.get("config"));
             assertEquals("not-applicable", data.get("jwks"));
-            assertNull(data.get("oidc"), "a non-server-mode probe carries no oidc datum");
-            assertNull(data.get("issuer_reachability"), "a non-server-mode probe carries no issuer_reachability datum");
+            assertNull(data.get("oidc"), "a probe without an active BFF runtime carries no oidc datum");
+            assertNull(data.get("oidc_discovery"),
+                    "a probe without an active BFF runtime carries no oidc_discovery datum");
+            assertNull(data.get("issuer_reachability"), "the retired issuer_reachability datum is never emitted");
         }
 
         @Test
@@ -514,7 +520,7 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("ready", data.get("jwks"));
             assertEquals(0L, data.get("issuers"));
-            assertNull(data.get("oidc"), "a non-server-mode probe carries no oidc datum");
+            assertNull(data.get("oidc"), "a probe without an active BFF runtime carries no oidc datum");
         }
 
         @Test
@@ -567,11 +573,11 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("server mode UP reports oidc=server and issuer_reachability=unverified, never reachable")
-        void serverModeUpReportsIssuerUnverified() {
+        @DisplayName("server mode UP reports oidc=server and oidc_discovery=not-attempted before any engine use")
+        void serverModeUpReportsDiscoveryNotAttempted() {
             GatewayConfig config = configWith(null,
-                    new TokenValidationConfig(List.of()), serverMode());
-            GatewayReadinessCheck check = checkWith(config, NO_ISSUERS);
+                    new TokenValidationConfig(List.of()), bffMode(OidcConfig.Session.MODE_SERVER));
+            GatewayReadinessCheck check = checkWith(config, NO_ISSUERS, discovery(State.NOT_ATTEMPTED));
 
             HealthCheckResponse response = check.call();
 
@@ -579,17 +585,18 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("server", data.get("oidc"));
             assertEquals("ready", data.get("jwks"));
-            assertEquals("unverified", data.get("issuer_reachability"),
-                    "a resolved key set is not evidence the issuer is reachable now");
+            assertEquals("not-attempted", data.get("oidc_discovery"),
+                    "a fresh instance has not resolved the provider metadata, and the probe does not make it");
+            assertNull(data.get("issuer_reachability"), "the retired issuer_reachability datum is never emitted");
         }
 
         @Test
-        @DisplayName("server mode construction-failure DOWN reports issuer_reachability=unverified, never unreachable")
-        void serverModeDownReportsIssuerUnverified() {
+        @DisplayName("server mode construction-failure DOWN still reports oidc_discovery beside the jwks verdict")
+        void serverModeDownStillReportsDiscovery() {
             GatewayConfig config = configWith(null,
-                    new TokenValidationConfig(List.of()), serverMode());
+                    new TokenValidationConfig(List.of()), bffMode(OidcConfig.Session.MODE_SERVER));
             GatewayException failure = new GatewayException(EventType.CONFIG_INVALID, "issuer JWKS unreachable");
-            GatewayReadinessCheck check = failingCheck(config, failure);
+            GatewayReadinessCheck check = failingCheck(config, failure, discovery(State.RESOLVED));
 
             HealthCheckResponse response = check.call();
 
@@ -597,23 +604,74 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("server", data.get("oidc"));
             assertEquals("unavailable", data.get("jwks"));
-            assertEquals("unverified", data.get("issuer_reachability"),
-                    "a validator that failed to build says nothing about the issuer's network reachability");
+            assertEquals("resolved", data.get("oidc_discovery"),
+                    "resolved metadata does not lift a validator construction failure to UP");
         }
 
         @Test
-        @DisplayName("server mode without token_validation reports issuer_reachability=unverified but stays UP")
-        void serverModeWithoutValidationReportsUnverified() {
-            GatewayConfig config = configWith(null, null, serverMode());
-            GatewayReadinessCheck check = notApplicableCheck(config);
+        @DisplayName("server mode without token_validation reports oidc_discovery=failed but stays UP")
+        void serverModeWithoutValidationStaysUpWhileDiscoveryFailed() {
+            GatewayConfig config = configWith(null, null, bffMode(OidcConfig.Session.MODE_SERVER));
+            GatewayReadinessCheck check = notApplicableCheck(config, discovery(State.FAILED));
+
+            HealthCheckResponse response = check.call();
+
+            assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
+                    "a provider-metadata failure stops the identity-provider legs only, not the instance");
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertEquals("server", data.get("oidc"));
+            assertEquals("not-applicable", data.get("jwks"));
+            assertEquals("failed", data.get("oidc_discovery"));
+        }
+
+        @Test
+        @DisplayName("cookie mode reports oidc=cookie and its oidc_discovery datum")
+        void cookieModeReportsItsModeAndDiscovery() {
+            GatewayConfig config = configWith(null, twoIssuers(), bffMode(OidcConfig.Session.MODE_COOKIE));
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.LOADED),
+                    discovery(State.FAILED));
 
             HealthCheckResponse response = check.call();
 
             assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
             Map<String, Object> data = response.getData().orElseThrow();
-            assertEquals("server", data.get("oidc"));
-            assertEquals("not-applicable", data.get("jwks"));
-            assertEquals("unverified", data.get("issuer_reachability"));
+            assertEquals("cookie", data.get("oidc"), "cookie mode is a BFF mode and reports its own label");
+            assertEquals("failed", data.get("oidc_discovery"));
+            assertNothingDisclosed(data);
+        }
+
+        @Test
+        @DisplayName("a session mode whose runtime is inactive carries neither the oidc nor the oidc_discovery datum")
+        void inactiveRuntimeCarriesNoDiscoveryDatum() {
+            // The producer hands out the inert view when it builds no runtime (no redirect_uri, say), so the
+            // probe reads applicability off the view rather than off the bare presence of a mode.
+            GatewayConfig config = configWith(null, null, bffMode(OidcConfig.Session.MODE_SERVER));
+            GatewayReadinessCheck check = notApplicableCheck(config, DiscoveryStatus.inert());
+
+            Map<String, Object> data = check.call().getData().orElseThrow();
+
+            assertNull(data.get("oidc"));
+            assertNull(data.get("oidc_discovery"));
+        }
+
+        @Test
+        @DisplayName("the probe only reads the discovery view and never triggers the fetch")
+        void probeNeverTriggersTheFetch() {
+            DiscoveryStatus status = DiscoveryStatus.tracking();
+            AtomicInteger fetches = new AtomicInteger();
+            status.recording(() -> {
+                fetches.incrementAndGet();
+                return "provider-metadata";
+            });
+            GatewayConfig config = configWith(null, null, bffMode(OidcConfig.Session.MODE_SERVER));
+            GatewayReadinessCheck check = notApplicableCheck(config, status);
+
+            for (int poll = 0; poll < 5; poll++) {
+                check.call();
+            }
+
+            assertEquals(0, fetches.get(), "polling readiness sends no discovery request");
+            assertEquals("not-attempted", check.call().getData().orElseThrow().get("oidc_discovery"));
         }
 
         @Test
@@ -657,7 +715,8 @@ class SheriffMetricsTest {
             assertEquals(2L, data.get("issuers"));
             assertEquals(1L, data.get("issuers_loaded"));
             assertNull(data.get("error"), "a live key-set DOWN is not a validator construction failure");
-            assertNull(data.get("issuer_reachability"), "a non-server-mode probe carries no issuer_reachability datum");
+            assertNull(data.get("oidc_discovery"),
+                    "a probe without an active BFF runtime carries no oidc_discovery datum");
             assertNothingDisclosed(data);
         }
 
@@ -692,10 +751,11 @@ class SheriffMetricsTest {
         }
 
         @Test
-        @DisplayName("server mode stays DOWN while an issuer has no key set, with issuer_reachability=unverified")
-        void serverModeKeySetDownReportsIssuerUnverified() {
-            GatewayConfig config = configWith(null, twoIssuers(), serverMode());
-            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.NOT_LOADED));
+        @DisplayName("server mode stays DOWN while an issuer has no key set, even with oidc_discovery=resolved")
+        void serverModeKeySetDownIsNotLiftedByResolvedDiscovery() {
+            GatewayConfig config = configWith(null, twoIssuers(), bffMode(OidcConfig.Session.MODE_SERVER));
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.NOT_LOADED),
+                    discovery(State.RESOLVED));
 
             HealthCheckResponse response = check.call();
 
@@ -703,40 +763,49 @@ class SheriffMetricsTest {
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("server", data.get("oidc"));
             assertEquals("loading", data.get("jwks"));
-            assertEquals("unverified", data.get("issuer_reachability"),
-                    "a missing key set is not evidence the issuer is unreachable");
+            assertEquals("resolved", data.get("oidc_discovery"),
+                    "the datum is reported beside the key-set verdict, never in its place");
             assertNothingDisclosed(data);
         }
 
         @Test
-        @DisplayName("server mode is UP once every issuer has a key set, and still reports issuer_reachability=unverified")
-        void serverModeKeySetUpReportsIssuerUnverified() {
-            GatewayConfig config = configWith(null, twoIssuers(), serverMode());
-            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.LOADED));
+        @DisplayName("server mode is UP once every issuer has a key set, while oidc_discovery reads failed")
+        void serverModeKeySetUpStaysUpWhileDiscoveryFailed() {
+            GatewayConfig config = configWith(null, twoIssuers(), bffMode(OidcConfig.Session.MODE_SERVER));
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.LOADED),
+                    discovery(State.FAILED));
 
             HealthCheckResponse response = check.call();
 
-            assertEquals(HealthCheckResponse.Status.UP, response.getStatus());
+            assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
+                    "bearer-only and public routes keep working through an identity-provider outage");
             Map<String, Object> data = response.getData().orElseThrow();
             assertEquals("ready", data.get("jwks"));
-            assertEquals("unverified", data.get("issuer_reachability"),
-                    "a loaded key set survives later refresh failures, so it cannot prove reachability");
+            assertEquals("failed", data.get("oidc_discovery"));
+            assertNothingDisclosed(data);
         }
 
-        @ParameterizedTest(name = "second issuer {0}")
-        @EnumSource(KeySetState.class)
-        @DisplayName("server mode never reports a reachability verdict, whatever the key-set state")
-        void serverModeNeverReportsReachabilityVerdict(KeySetState state) {
-            // Arrange
-            GatewayConfig config = configWith(null, twoIssuers(), serverMode());
-            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, state));
+        @ParameterizedTest(name = "mode {0}, discovery {1}")
+        @CsvSource({"server, NOT_ATTEMPTED", "server, RESOLVED", "server, FAILED",
+                "cookie, NOT_ATTEMPTED", "cookie, RESOLVED", "cookie, FAILED"})
+        @DisplayName("oidc=<mode> and oidc_discovery are reported for both modes, and the verdict ignores the datum")
+        void discoveryNeverChangesTheVerdict(String mode, State discoveryState) {
+            // Arrange — every issuer has a key set, so the key-set verdict alone is UP
+            GatewayConfig config = configWith(null, twoIssuers(), bffMode(mode));
+            GatewayReadinessCheck check = checkWith(config, keySets(KeySetState.LOADED, KeySetState.LOADED),
+                    discovery(discoveryState));
 
             // Act
-            Map<String, Object> data = check.call().getData().orElseThrow();
+            HealthCheckResponse response = check.call();
 
             // Assert
-            assertEquals("unverified", data.get("issuer_reachability"),
-                    "cached key-set state must not be reported as a reachability verdict");
+            Map<String, Object> data = response.getData().orElseThrow();
+            assertAll("mode " + mode + " with discovery " + discoveryState,
+                    () -> assertEquals(HealthCheckResponse.Status.UP, response.getStatus(),
+                            "the provider-metadata datum never flips readiness"),
+                    () -> assertEquals(mode, data.get("oidc")),
+                    () -> assertEquals(discoveryState.token(), data.get("oidc_discovery")),
+                    () -> assertNull(data.get("issuer_reachability")));
         }
 
         @Test
@@ -793,26 +862,71 @@ class SheriffMetricsTest {
             return IssuerKeySetStatus.of(states);
         }
 
-        /** A probe whose validator resolves and whose key-set view is {@code keySets}. */
+        /** A probe without an active BFF runtime whose validator resolves and whose key-set view is {@code keySets}. */
         private GatewayReadinessCheck checkWith(GatewayConfig config, IssuerKeySetStatus keySets) {
-            return new GatewayReadinessCheck(config, FakeInstance.resolving(null), FakeInstance.resolving(keySets));
+            return checkWith(config, keySets, DiscoveryStatus.inert());
         }
 
-        /** A probe whose validator resolution throws {@code failure}; the key-set view must stay unresolved. */
-        private GatewayReadinessCheck failingCheck(GatewayConfig config, RuntimeException failure) {
-            return new GatewayReadinessCheck(config, FakeInstance.failing(failure), FakeInstance.mustNotResolve());
+        /** A probe whose validator resolves, whose key-set view is {@code keySets} and whose discovery view is {@code discovery}. */
+        private GatewayReadinessCheck checkWith(GatewayConfig config, IssuerKeySetStatus keySets,
+                DiscoveryStatus discovery) {
+            return new GatewayReadinessCheck(config, FakeInstance.resolving(null), FakeInstance.resolving(keySets),
+                    discovery);
         }
 
         /**
-         * A probe for a gateway without {@code token_validation}: neither the validator nor the key-set
-         * view may be resolved on that leg.
+         * A probe without an active BFF runtime whose validator resolution throws {@code failure}; the
+         * key-set view must stay unresolved.
          */
-        private GatewayReadinessCheck notApplicableCheck(GatewayConfig config) {
-            return new GatewayReadinessCheck(config, FakeInstance.mustNotResolve(), FakeInstance.mustNotResolve());
+        private GatewayReadinessCheck failingCheck(GatewayConfig config, RuntimeException failure) {
+            return failingCheck(config, failure, DiscoveryStatus.inert());
         }
 
-        private OidcConfig serverMode() {
-            OidcConfig.Session session = OidcConfig.Session.builder().mode("server").build();
+        /** A probe whose validator resolution throws {@code failure}; the key-set view must stay unresolved. */
+        private GatewayReadinessCheck failingCheck(GatewayConfig config, RuntimeException failure,
+                DiscoveryStatus discovery) {
+            return new GatewayReadinessCheck(config, FakeInstance.failing(failure), FakeInstance.mustNotResolve(),
+                    discovery);
+        }
+
+        /**
+         * A probe for a gateway without {@code token_validation} and without an active BFF runtime:
+         * neither the validator nor the key-set view may be resolved on that leg.
+         */
+        private GatewayReadinessCheck notApplicableCheck(GatewayConfig config) {
+            return notApplicableCheck(config, DiscoveryStatus.inert());
+        }
+
+        /**
+         * A probe for a gateway without {@code token_validation} whose discovery view is
+         * {@code discovery}: neither the validator nor the key-set view may be resolved on that leg.
+         */
+        private GatewayReadinessCheck notApplicableCheck(GatewayConfig config, DiscoveryStatus discovery) {
+            return new GatewayReadinessCheck(config, FakeInstance.mustNotResolve(), FakeInstance.mustNotResolve(),
+                    discovery);
+        }
+
+        /**
+         * @return the tracking view of an active BFF runtime, driven through real attempts of a recorded
+         *         fetch into {@code state}
+         */
+        private DiscoveryStatus discovery(State state) {
+            DiscoveryStatus status = DiscoveryStatus.tracking();
+            switch (state) {
+                case NOT_ATTEMPTED -> {
+                    // no attempt
+                }
+                case RESOLVED -> status.recording(() -> "provider-metadata").get();
+                case FAILED -> assertThrows(IllegalStateException.class, () -> status.recording(() -> {
+                    throw new IllegalStateException("discovery refused");
+                }).get());
+            }
+            assertEquals(state, status.state(), "precondition: the view reached the state under test");
+            return status;
+        }
+
+        private OidcConfig bffMode(String mode) {
+            OidcConfig.Session session = OidcConfig.Session.builder().mode(mode).build();
             return OidcConfig.builder().session(session).build();
         }
 
