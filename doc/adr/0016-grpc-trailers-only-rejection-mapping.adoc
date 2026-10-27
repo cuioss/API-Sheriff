@@ -74,10 +74,11 @@ limiting is planned, not implemented, and no `429` is produced today.
 
 link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
 overrides the trailers-only answer for a rejection raised before the trust boundary. On the shipped
-default, the security-filter violation, the missing or invalid bearer token, the failed CSRF check
-and the verb gate are answered as an unrouted address is answered: the HTTP `404`, never a
-`grpc-status` trailer. A trailers-only status names the address as a gRPC route, and that is the
-disclosure ADR-0073 closes. A gRPC client surfaces the HTTP `404` as `UNIMPLEMENTED`. The mapping
+default, the route-scoped security-filter violation of stage 3, the missing or invalid bearer token, the failed CSRF check and the verb gate are answered as an unrouted address
+is answered: the HTTP `404`, never a `grpc-status` trailer. A trailers-only status names the
+address as a gRPC route, and that is the disclosure ADR-0073 closes. A gRPC client surfaces the
+HTTP `404` as `UNIMPLEMENTED`. A stage-1 security-filter violation is outside this amendment: it is
+raised before route selection, so it is already identical whether a route exists or not. The mapping
 table above still holds for every rejection past the trust boundary -- `PERMISSION_DENIED` for a
 missing scope, `UNAVAILABLE` and `DEADLINE_EXCEEDED` at dispatch -- and for every row when
 `security_defaults.uniform_not_found` is `false`.

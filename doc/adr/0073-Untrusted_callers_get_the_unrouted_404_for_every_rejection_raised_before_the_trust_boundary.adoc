@@ -154,8 +154,8 @@ slowest of them is the offline validation of a well-formed token with a wrong si
 So while the switch is on, every answer rendered as the unrouted `404` waits for one release time:
 admission plus `UniformNotFound.RESPONSE_FLOOR` plus a random jitter in
 `[0, UniformNotFound.RESPONSE_JITTER)`. The genuine `NO_ROUTE_MATCHED` and
-`PASSTHROUGH_HOST_SMUGGLED` answers wait as much as a resolved rejection does. Honest answers do not
-wait.
+`PASSTHROUGH_HOST_SMUGGLED` answers wait as much as a resolved rejection does, and so do the
+reserved-path `404`s rendered as `NO_ROUTE_MATCHED`. Honest answers do not wait.
 
 [cols="1,1,3", options="header"]
 |===
@@ -191,8 +191,12 @@ writer ended, or whose connection closed, is not written when the timer fires.
 
 `security_defaults.uniform_not_found` governs the branch and the floor together. It is on when the
 key is absent, which is the secure default. `false` restores the honest codes, the trailers-only gRPC
-status and the undelayed `404`. The switch reaches pre-trust, route-matched rejections only. It
-never changes a post-trust answer, a reserved-path answer or a stage-1 answer.
+status and the undelayed `404`. The two halves reach different answers. The branch reaches
+pre-trust, route-matched rejections only. The floor reaches every answer rendered as the unrouted
+`404`, and that includes the two reserved-path `404`s rendered that way: the carve-out of a reserved
+path while the BFF runtime is inactive, and the withheld client JWKS. Their delay keeps them
+identical in time to an unrouted path. The switch never changes the status, body or headers of a
+post-trust, reserved-path or stage-1 answer.
 
 === What is still reported
 

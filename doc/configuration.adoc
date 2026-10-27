@@ -1818,10 +1818,14 @@ below exactly as an anchor or route block is. The block maps onto `cui-http`'s
   pipeline ("body content validation should be handled at application layer"), so the gateway
   enforces the cap itself while reading the request body; `SecurityConfiguration.maxBodySize` is
   not wired. The cap only takes effect *below the framework floor* described immediately below.
-  The `413` for a declared `Content-Length` over the cap is raised before authentication, so it is
-  answered as the unrouted `404` to an untrusted caller while `security_defaults.uniform_not_found`
-  is on; the true event stays in `sheriff_errors_total{event}` (see <<_uniform_not_found>>). The
-  `413` of a body that crosses the cap while it streams is raised after dispatch and stays.
+  When a declared `Content-Length` over the cap reaches the gateway's own enforcement -- it is over
+  the route's cap but not over the framework floor -- the `413` is raised before authentication, so
+  it is answered as the unrouted `404` to an untrusted caller while
+  `security_defaults.uniform_not_found` is on; the true event stays in `sheriff_errors_total{event}`
+  (see <<_uniform_not_found>>). A declared `Content-Length` over the framework floor never gets
+  that far: the framework's bare `413` is raised before route selection and stays, which is the
+  shadowing case of a cap set equal to the floor. The `413` of a body that crosses the cap while it
+  streams is raised after dispatch and stays.
 
 | `max_header_count` / `max_query_params`
 | `maxHeaderCount` / `maxParameterCount` (`RequestCollectionValidator`)
@@ -4539,7 +4543,7 @@ network position.
 
 | `401` (missing or invalid token) | `auth.require: bearer`, and the bearer branch of `auth.session_fallback`
 | `405` | the effective `allowed_methods` verb gate
-| `413` (declared `Content-Length`) | `security_filter.max_body_bytes`
+| `413` (declared `Content-Length`, not over the framework floor) | `security_filter.max_body_bytes`
 | `400` | `allowed_paths` and the per-route `security_filter` validation
 | `403` | the `cookies` same-origin check and the `oidc.session.csrf` defence
 | trailers-only gRPC status | any of the above on a `protocol: grpc` route -- answered as the HTTP `404`
@@ -4555,6 +4559,9 @@ admission. The two values are gateway constants without a key; ADR-0073 records 
 
 * the pre-route floor and framing-gate `400`s -- they run before route selection and are the same
   for every address;
+* the framework's bare `413` for a declared `Content-Length` over
+  `quarkus.http.limits.max-body-size` -- it is raised before route selection (see "Shadowing at the
+  boundary" under <<_security_filtering,`security_filter`>>);
 * the reserved paths -- the OIDC paths, the portal and the client JWKS path;
 * the scope `403` of a validated token or a live session;
 * the session branch's login negotiation -- `302` for a navigation, `401` otherwise;

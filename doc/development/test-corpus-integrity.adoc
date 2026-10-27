@@ -2318,11 +2318,18 @@ A rejection raised after route selection and before the trust boundary is answer
 caller as the unrouted `404` on the shipped default
 (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 The tests below are named in a verdict or a per-file note above, which was written against the honest
-status they then asserted. Each was migrated to
-assert the `404` plus the true event, except `GrpcProxyIT`, whose row states the gRPC status it asserts
-in place of an event. Where the stage's own status is the claim, it is read on an edge built with
-`security_defaults.uniform_not_found: false` -- a switch-off control. No verdict above is rewritten;
-the bodies changed.
+status they then asserted. The table holds two kinds of assertion: the uniform `404` a migrated
+refusal now answers, and the retained controls that still assert an honest status. Where the stage's
+own status is the claim, it is read on an edge built with `security_defaults.uniform_not_found: false`
+-- a switch-off control. Not every row asserts the true event. Three assert none:
+
+* the `GatewayEdgePipelineTest` row -- `rejectsDisallowedVerb` asserts the `405` on the switch-off
+  edge, and its sibling `answersDisallowedVerbAsTheUnrouted404` asserts the `404`, no `Allow` and the
+  unrouted body, with no event;
+* the `BffCsrfIT` trusted-`Origin` control, which asserts only the session branch's `401`;
+* the `GrpcProxyIT` row, which states the gRPC status it asserts in place of an event.
+
+Every other row asserts the true event. No verdict above is rewritten; the bodies changed.
 
 [cols="3,4",options="header"]
 |===

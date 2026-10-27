@@ -62,6 +62,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.ext.web.Router;
@@ -354,7 +355,7 @@ class ErrorResponseWriterTest {
                     .setPort(server.actualPort()).setMethod(io.vertx.core.http.HttpMethod.POST)
                     .setURI("/" + routeId + "/call");
             CompletableFuture<Response> future = client.request(options)
-                    .compose(request -> request.send())
+                    .compose(HttpClientRequest::send)
                     .compose(response -> {
                         Map<String, String> headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
                         response.headers().forEach(entry -> headers.putIfAbsent(entry.getKey(), entry.getValue()));
