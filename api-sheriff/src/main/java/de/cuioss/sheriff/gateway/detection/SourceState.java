@@ -40,7 +40,7 @@ import java.util.Objects;
  * @since 1.0
  */
 public record SourceState(SourceKey key, Status status, double level, int threshold, long blockedUntilNanos,
-        Map<Enum<?>, Long> contributions) {
+Map<Enum<?>, Long> contributions) {
 
     /**
      * The states of the per-source state machine; see {@link SourceLedger} for the transitions.

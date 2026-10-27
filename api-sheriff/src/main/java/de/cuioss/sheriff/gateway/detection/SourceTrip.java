@@ -39,7 +39,7 @@ import java.util.Objects;
  * @since 1.0
  */
 public record SourceTrip(SourceKey key, double levelAtTrip, int threshold, Duration window,
-        Map<Enum<?>, Long> contributions, SourceLedger.Action action, long trippedAtNanos) {
+Map<Enum<?>, Long> contributions, SourceLedger.Action action, long trippedAtNanos) {
 
     /**
      * Canonical constructor rejecting an absent component and copying the contributions.

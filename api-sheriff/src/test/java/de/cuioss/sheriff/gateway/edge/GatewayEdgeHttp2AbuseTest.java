@@ -221,7 +221,7 @@ class GatewayEdgeHttp2AbuseTest {
         for (int i = 0; i < count; i++) {
             int streamId = 2 * i + 1;
             frames.appendBuffer(RawHttp2Connection.headers(streamId,
-                            connection.requestHead("GET", "/echo" + HELD + "-flood-" + i), true))
+                    connection.requestHead("GET", "/echo" + HELD + "-flood-" + i), true))
                     .appendBuffer(RawHttp2Connection.rstStream(streamId, RawHttp2Connection.CANCEL));
         }
         return frames;
