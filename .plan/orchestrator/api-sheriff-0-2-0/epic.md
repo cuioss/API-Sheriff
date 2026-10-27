@@ -163,6 +163,7 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-27 — `PLAN-V02-50` and `PLAN-V02-09` are running** (operator confirmed the starts); with `PLAN-V02-05` all three slots are taken.
 - **2026-10-27 — emitted `PLAN-V02-50` and `PLAN-V02-09` into the two free slots.** Operator ruling of 2026-10-26
   (fill up to three at once when `PLAN-V02-06` lands), overlap prompt answered "V02-50, V02-09". The gate shows
   V02-50/V02-05 sharing 13 files, V02-09/V02-05 26 and V02-50/V02-09 10 (config and edge sources and tests); the operator
