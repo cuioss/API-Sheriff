@@ -88,9 +88,9 @@ class ErrorContractIT extends BaseIntegrationTest {
             Pattern.CASE_INSENSITIVE);
 
     /**
-     * A bare dotted version token such as {@code 3.40.1}, matched in header values only: a problem body
-     * carries no number with a dot in it, while a header value is where a {@code Server}-style product
-     * version would land.
+     * A bare dotted version token such as {@code 3.40.1}, matched in header values and in the body: a
+     * problem document carries only its type, title and status, so a dotted number anywhere in an
+     * error answer is a version leak.
      */
     private static final Pattern DOTTED_VERSION = Pattern.compile("\\b\\d+(?:\\.\\d+)+\\b");
 
@@ -240,8 +240,8 @@ class ErrorContractIT extends BaseIntegrationTest {
 
     /**
      * Asserts that a gateway-originated error names nothing of the runtime: no {@code Server} and no
-     * {@code X-Powered-By} header, no {@link #RUNTIME_NAME} and no {@link #DOTTED_VERSION} in any
-     * header value, and no {@link #RUNTIME_NAME} in the body.
+     * {@code X-Powered-By} header, and no {@link #RUNTIME_NAME} and no {@link #DOTTED_VERSION} in any
+     * header value or in the body.
      */
     private static void assertDisclosesNothing(ExtractableResponse<Response> response) {
         String body = response.asString();
@@ -257,7 +257,8 @@ class ErrorContractIT extends BaseIntegrationTest {
                                 () -> header.getName() + " carries a version token: " + value);
                     }
                 },
-                () -> assertFalse(RUNTIME_NAME.matcher(body).find(), () -> "the body names the runtime: " + body));
+                () -> assertFalse(RUNTIME_NAME.matcher(body).find(), () -> "the body names the runtime: " + body),
+                () -> assertFalse(DOTTED_VERSION.matcher(body).find(), () -> "the body carries a version token: " + body));
     }
 
     /**

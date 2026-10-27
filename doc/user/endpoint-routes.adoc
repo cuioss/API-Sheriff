@@ -310,9 +310,10 @@ neither protocol carries a redirect the gateway could rewrite.
 [[_keep_identity_headers]]
 === Keeping an upstream's identity headers (`keep_identity_headers`)
 
-By default the gateway removes the upstream's `Server` and `X-Powered-By` headers before a response
-reaches the client, so a client cannot read which server software or framework runs behind the
-gateway. The strip applies to proxied HTTP responses, to gRPC leading headers and trailers, and to an
+By default the gateway removes the upstream's `Server` and `X-Powered-By` headers -- the two
+standard software banners -- before a response reaches the client. Only these two are removed: any
+other header an upstream sets still reaches the client, so an upstream that discloses its software
+elsewhere (a framework header such as `X-AspNet-Version`, or its body) must be configured not to. The strip applies to proxied HTTP responses, to gRPC leading headers and trailers, and to an
 asset route with `source: upstream`. The headers are dropped, not replaced with a neutral value.
 
 Set `keep_identity_headers: true` on a route only when a client of that upstream depends on its

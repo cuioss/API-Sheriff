@@ -194,7 +194,7 @@ public final class ForwardPolicyStage {
      * and no operator should have to enumerate. Why the three preconditions sit here rather than in
      * the gated tier is explained on {@link #CONDITIONAL_HEADERS}.
      */
-    private static final List<String> UNCONDITIONAL_PROTOCOL_HEADERS = List.of(
+    static final List<String> UNCONDITIONAL_PROTOCOL_HEADERS = List.of(
             "Accept", "Accept-Encoding", "Accept-Language", "Content-Type", "Range", "If-Range",
             "If-Match", "If-Unmodified-Since");
 
