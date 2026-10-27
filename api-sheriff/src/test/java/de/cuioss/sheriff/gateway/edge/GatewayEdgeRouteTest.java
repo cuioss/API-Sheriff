@@ -42,6 +42,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -517,16 +518,25 @@ class GatewayEdgeRouteTest {
         /**
          * The upstream response is received and paused exactly as {@code DispatchStage} leaves it, over
          * an upstream client holding at most one HTTP/1.1 connection, and its body is far larger than
-         * what the transport buffers. A released response is therefore observable twice over: the stub
-         * upstream sees its connection closed, and the next request on the same client is served.
+         * what the transport buffers. A released response is therefore observable three times over: the
+         * gateway's upstream client sees that connection closed, the stub upstream sees it closed, and
+         * the next request on the same client is served whole on a different connection.
+         * <p>
+         * The follow-up request is sent only after both sides have observed the close, and the client
+         * side is observed one event-loop task after its close handler ran, so the connection has left
+         * the client's pool by then. Nothing is left to timing: an upstream connection returned to the
+         * pool with the unread response still on it would serve the follow-up on the same connection,
+         * and the assertion on the connection identity reports exactly that.
          */
         @Test
         @DisplayName("a relay that fails to start releases the upstream response: its connection closes and the client serves the next request")
         void relayThatFailsToStartReleasesTheUpstreamResponse() throws Exception {
             // Arrange
             List<String> closedConnections = new CopyOnWriteArrayList<>();
+            Map<String, Integer> clientPortByPath = new ConcurrentHashMap<>();
             HttpServer upstream = Awaits.connect(vertx.createHttpServer().requestHandler(request -> {
                         String path = request.path();
+                        clientPortByPath.put(path, request.connection().remoteAddress().port());
                         request.connection().closeHandler(_ -> closedConnections.add(path));
                         if (LARGE_PATH.equals(path)) {
                             request.response().end(Buffer.buffer(new byte[LARGE_BODY_BYTES]));
@@ -538,6 +548,7 @@ class GatewayEdgeRouteTest {
             HttpClient upstreamClient = vertx.createHttpClient(new HttpClientOptions(),
                     new PoolOptions().setHttp1MaxSize(1));
             AtomicReference<@Nullable HttpClientResponse> pausedUpstream = new AtomicReference<>();
+            CompletableFuture<Void> upstreamConnectionClosed = new CompletableFuture<>();
             Router router = Router.router(vertx);
             router.route().handler(ctx -> upstreamClient
                     .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS, LARGE_PATH)
@@ -547,6 +558,10 @@ class GatewayEdgeRouteTest {
                     }))
                     .onSuccess(received -> {
                         pausedUpstream.set(received);
+                        // Completed one task after the close handler, on the connection's own event
+                        // loop, so the closing connection has been taken out of the pool by then.
+                        received.request().connection().closeHandler(_ -> vertx.getOrCreateContext()
+                                .runOnContext(_ -> upstreamConnectionClosed.complete(null)));
                         TerminalDispatch.relayOnEventLoop(ctx, List.of(), received, _ -> {
                             throw new IllegalStateException("the relay could not be started");
                         });
@@ -563,6 +578,8 @@ class GatewayEdgeRouteTest {
                                 .compose(response -> response.body()
                                         .map(body -> response.statusCode() + " [" + body + "]")),
                         "the answer to a relay that could not start");
+                Awaits.connect(upstreamConnectionClosed,
+                        "the gateway's upstream client to see the connection of the unrelayed response closed");
                 Awaits.until(() -> closedConnections.contains(LARGE_PATH),
                         "the upstream to see the connection of the unrelayed response closed",
                         Awaits.CONNECT_CEILING_SECONDS);
@@ -570,7 +587,8 @@ class GatewayEdgeRouteTest {
                                 .request(HttpMethod.GET, upstream.actualPort(), LoopbackHost.ADDRESS,
                                         ANSWERING_PATH)
                                 .compose(HttpClientRequest::send)
-                                .compose(response -> response.body().map(body -> response.statusCode() + " " + body)),
+                                .compose(response -> response.body()
+                                        .map(body -> response.statusCode() + " " + describeBody(body))),
                         "the next request on the single pooled upstream connection to be answered");
 
                 // Assert
@@ -580,6 +598,9 @@ class GatewayEdgeRouteTest {
                         () -> assertEquals("502 []", answer, "the client is answered with an empty 502"),
                         () -> assertTrue(closedConnections.contains(LARGE_PATH),
                                 "the upstream connection of the unrelayed response must be closed"),
+                        () -> assertNotEquals(clientPortByPath.get(LARGE_PATH), clientPortByPath.get(ANSWERING_PATH),
+                                "the next request must not be sent on the connection that still carried the "
+                                        + "unread response"),
                         () -> assertEquals("200 " + ANSWER, next,
                                 "the single pooled upstream connection must be free again for the next request"));
             } finally {
@@ -588,6 +609,15 @@ class GatewayEdgeRouteTest {
                 Awaits.teardown(upstreamClient.close(), "the upstream client to close");
                 Awaits.teardown(upstream.close(), "the stub upstream to close");
             }
+        }
+
+        /**
+         * A short body as itself, a long one by its length: a follow-up answered with the unrelayed
+         * response would otherwise put four mebibytes of NUL characters into the failure message, which
+         * a report renders as an empty body.
+         */
+        private static String describeBody(Buffer body) {
+            return body.length() <= ANSWER.length() * 8 ? body.toString() : "<" + body.length() + " bytes>";
         }
     }
 
