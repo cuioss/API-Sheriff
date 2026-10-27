@@ -363,8 +363,9 @@ reserved-path namespace is a broken contract rather than a partial one.
   authorization request, binds its tokens with DPoP and authenticates with `private_key_jwt` unless
   a client secret is configured. Build D1 against that `oidc` block, `OidcConfig` and
   `BffRuntimeProducer` as they now stand, and keep the RFC 9207 `iss` constraint it relies on.
-- Never concurrent with `PLAN-V02-09` or `PLAN-V02-20`: all three write the `oidc` block and
-  `BffRuntimeProducer`. This plan goes before `PLAN-V02-09`.
+- Never concurrent with `PLAN-V02-09`: both write the `oidc` block and `BffRuntimeProducer`. This plan goes before
+  `PLAN-V02-09`. `PLAN-V02-20` has landed (#527): `oidc.session.encryption_key` is gone and `oidc.session.key_file`
+  replaces it, so build against `OidcConfig` and `BffRuntimeProducer` as they now stand.
 - Depended on by: `PLAN-V02-15` (bff-compose-sample), which applies this plan's D1 verdict to the
   sample's browser-versus-container issuer address rather than settling it there.
 - Not concurrent with `PLAN-V02-04` (ADR corpus audit): D5 adds a record while that plan audits the

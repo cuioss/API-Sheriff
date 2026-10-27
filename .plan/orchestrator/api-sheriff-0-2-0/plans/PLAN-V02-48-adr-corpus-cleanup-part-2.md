@@ -32,7 +32,10 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
    about 18 files, so decide it on content overlap, and state the boundary if the two stay apart.
 2. **BFF identity-provider legs.** `0043`, `0046`, `0050`, `0051`, `0058`, `0069`. `0046`: move the amendment
    note out of Status into the body. `0058`'s ceiling cut is done (780 → 497, Accepted); it has no Alternatives
-   heading, its alternatives are inline, so the skeleton rewrite is owed.
+   heading, its alternatives are inline, so the skeleton rewrite is owed. `0058` decision 2 now requires two
+   different key files holding two different keys (the amendment shipped in #527, with `0072` as the sibling record
+   for the cookie sealing key). Keep that decision as it stands, state it as current fact, and drop the
+   `AMENDED (A1)` marker from the `summary:` line, which reads as bookkeeping.
 3. **Scopes and session routes.** `0048`, `0049`, `0055`, `0057`. `0049`'s session half is superseded by `0057`:
    mark that cleanly in place of the 16-line note inside Status. `0057` is already Accepted; its three amendment
    notes sit inside Status (a 58-line meta block) and move into the body. Moving notes raises the body count:
@@ -72,10 +75,18 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
     the failed-dial answer and omits the relayed upgrade refusal.
 11. **Report.** Before and after line count per record, plus corpus total and mean before and after, as
     `PLAN-V02-04` did. The ceiling stays enforced by `AdrRecordLengthContractTest`; the plan changes no ceiling.
-    The corpus stood at 65 records, 15,289 lines and a mean of 235 per file on `main` at `f5826465`; the early
-    records average about 136. Say where the result lands against that and why.
-12. **Documentation residue of `PLAN-V02-04`.** Four statements outside `doc/adr/` that the WebSocket pre-upgrade
-    end-rule fix or the rebase left untrue. Re-read each at outline; one that no longer holds is dropped.
+    The corpus stood at 65 records, 15,289 lines and a mean of 235 per file on `main` at `f5826465`; `0072` (new in
+    #527, Accepted, 226 lines, outside the 52) makes it 66 records on `main` at `6ec1393b`. Measure the before figure
+    from the branch base, count `0072` in both totals, and say so. The early records average about 136. Say where the
+    result lands against that and why.
+12. **Documentation residue of `PLAN-V02-04` and `PLAN-V02-20`.** Six statements outside `doc/adr/` that the
+    WebSocket pre-upgrade end-rule fix, the rebase or the key-file change left untrue. Re-read each at outline; one
+    that no longer holds is dropped. Two come from #527 and are confirmed on `main` at `6ec1393b`: the
+    `OidcClientRules.nameSameFile` Javadoc (near line 297) says the pre-boot verdict cannot depend on the machine it is
+    reached on, and `doc/user/offline-config-validation.adoc` (near line 262) says the offline verdict never differs
+    from the boot's. Both are false in one direction: with both key files present `Files.isSameFile` decides, and a
+    pair that reaches one file through `..` or a link can pass offline and be refused at boot. Reword both so the
+    offline check is a subset of the boot check. The other four:
     `doc/architecture.adoc` (near line 587) says the end rule leaves the WebSocket path unaffected and omits the
     pre-upgrade answer from its list of end-rule writers. `benchmarks/README.adoc` (near line 514) says Methodology
     lists every parity condition, but the list omits the shared auth realm and tokens. `doc/development/bff-session.adoc`
@@ -83,7 +94,7 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
     in entry 4. The `ResponseEnds` Javadoc names the failed-dial answer only; add the relayed upgrade refusal.
 
 Split guard: 12 deliverables, one PR (the 12 the operator authorised per plan). The footprint is the 52
-rewrites, deliverable 12 (three documentation files and one Javadoc), plus the repointed files of three decisions: the `0022` relocation (about 15 files), the `0030` relocation
+rewrites, deliverable 12 (four documentation files and two Javadocs), plus the repointed files of three decisions: the `0022` relocation (about 15 files), the `0030` relocation
 (5) and the `0036`/`0047` merge (about 18). That sums to about 90 files against the 100-file review-bot cap. Measure
 the projection at outline. If it exceeds 90 files, deliverables 1, 6 and 8 carry the repoint-heavy decisions: cut
 there, ship the rest, and report the remainder to the orchestrator as a finding so a successor can be staged.
@@ -116,8 +127,9 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
   - verdict: corroborated | checked_at: e087e5cec0ac2a48443e5df02882163bd38ecd53 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: adr-writing.adoc is 385 lines on main; AdrRecordLengthContractTest has MAX_BODY_LINES = 500 and a fixture control at 500 and 501
 - HYPOTHESIS: the verdict table of `PLAN-V02-04` deliverable 2 holds for every record named above — read it in the
   #521 body; refutation per record re-scopes that record (verify-at-outline)
-- OBSERVED: `doc/adr/` holds `0001`–`0071` on `main` at `6b8d88f4`, and `0027-*` is Proposed and owned by
-  `PLAN-V02-09` — `git ls-tree --name-only 6b8d88f4 doc/adr/`
+- OBSERVED: `doc/adr/` holds 66 records on `main` at `6ec1393b` (the 65 left by #521 plus `0072`, Accepted), and
+  `0027-*` is Proposed and owned by `PLAN-V02-09` — `git ls-tree --name-only origin/main doc/adr/`
+  - verdict: corroborated | checked_at: 6ec1393bfc029d81fa13ee344d2cc402b0634eae | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: git ls-tree on origin/main doc/adr/ lists 66 records; 0027 is Proposed, 0058 and 0072 are Accepted
 - OBSERVED: the destinations `doc/technical_aspects.adoc`, `doc/configuration.adoc`,
   `doc/development/README.adoc`, `doc/development/test-corpus-integrity.adoc` and `doc/user/tls-edge.adoc` exist on
   `main` at `6b8d88f4`
@@ -135,7 +147,9 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
   `doc/development/test-corpus-integrity.adoc` — destinations of relocated content
 - OBSERVED: `doc/security-threat-model.adoc` — "outbound TLS" wording and the `0066` gap entry (deliverable 10)
 - HYPOTHESIS: `doc/architecture.adoc`, `benchmarks/README.adoc`, `doc/development/bff-session.adoc` and the
-  `ResponseEnds` Javadoc — the four statements of deliverable 12 (verify-at-outline)
+  `ResponseEnds` Javadoc — four statements of deliverable 12 (verify-at-outline)
+- OBSERVED: `doc/user/offline-config-validation.adoc` and the `OidcClientRules.nameSameFile` Javadoc — the two
+  statements of deliverable 12 that #527 left overstated; the Javadoc is a comment-only change
 - HYPOTHESIS: `api-sheriff/src/test/java/de/cuioss/sheriff/gateway/arch/` — the ArchUnit tests that cite `0030`, and
   the two test sources that say "outbound TLS" (repointed or reworded only)
 - OBSERVED: every inbound `ADR-00NN` reference and `link:…adr/…adoc` across `doc/`, `api-sheriff/src/**`,
@@ -147,8 +161,9 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 - Depends on: `PLAN-V02-04` merged (#521, `f5826465`, done). It delivers the rubric, the skeleton, the term list and
   the ceiling guard this plan applies.
 - **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-05` (if its strip policy needs one),
-  `PLAN-V02-06`, `PLAN-V02-07`, `PLAN-V02-09` (re-opens `0027`), `PLAN-V02-11` and `PLAN-V02-20`. A relocation or merge here moves the ground under a record
-  being written there, and the ceiling guard fails a concurrent plan that lands an over-long record.
+  `PLAN-V02-06`, `PLAN-V02-07`, `PLAN-V02-09` (re-opens `0027`) and `PLAN-V02-11` (`PLAN-V02-20` landed as #527).
+  A relocation or merge here moves the ground under a record being written there, and the ceiling guard fails a
+  concurrent plan that lands an over-long record.
 - `PLAN-V02-09` re-examines `0027`; kidicap `PLAN-29` D6 owns `0008`'s timeout sentence. Neither is settled here.
 - Merges and relocations break links in released versions' documentation. Report every removed or merged record
   with its replacement so the break is traceable.

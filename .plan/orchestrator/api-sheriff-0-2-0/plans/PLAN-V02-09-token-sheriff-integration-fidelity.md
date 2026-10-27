@@ -215,8 +215,9 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
   back-channel override and `oidc.back_channel_origin` (`OidcConfig.backChannelOrigin`) is on `main`.
   Only V02-12's D3 (the `/auth`-fronted sample variant) is still held. Re-anchor D3's discovery probe
   against `BffRuntimeProducer` as it stands after #492. `PLAN-V02-08` (FAPI 2.0) has landed (#377, ADR-0058); scope D3's discovery probe
-  against the PAR-and-DPoP login it introduced. Never concurrent with `PLAN-V02-20`, which writes the
-  same block.
+  against the PAR-and-DPoP login it introduced. `PLAN-V02-20` has landed (#527, ADR-0072): the cookie sealing key
+  is now `oidc.session.key_file`, read through `KeyFiles`; build against `OidcConfig` and `BffRuntimeProducer` as they
+  now stand.
 - `PLAN-V02-01` (ADR-0005 reversal) has landed. ADR-0062 sets the standing rule D2 applies: a
   platform mechanism is preferred, and a hand-rolled equivalent stays only with a recorded reason.
   Its stays-hand-rolled table lists `EnvSecretResolver`, the session store, `ClientHelloSniParser`

@@ -43,9 +43,10 @@ would otherwise force a retrofit.
 - **PLAN-V02-08** — SHIPPED 2026-10-02 as PR #377 (`e8db85bf`, code and ADR-0058) plus PR #378
   (`3a1182e5`, documentation), see `landings/PLAN-V02-08.md`. `PLAN-V02-12`, `PLAN-V02-09` and
   `PLAN-V02-15` no longer wait on it. Its held follow-up is staged as `PLAN-V02-20`.
-- **PLAN-V02-20** (staged 2026-10-03): the cookie sealing key provided as a file, like the two
-  signing keys. It writes the `oidc` block and `BffRuntimeProducer`, so it is never concurrent with
-  `PLAN-V02-12` or `PLAN-V02-09`.
+- **PLAN-V02-20** — SHIPPED 2026-10-26 as PR #527 (`6ec1393b`, ADR-0072), see `landings/PLAN-V02-20.md`. The cookie
+  sealing key is `oidc.session.key_file` (base64 text, 32 bytes, bounded read shared with the signing keys through
+  `KeyFiles`); `oidc.session.encryption_key` is gone. The boot refuses one key for both client authentication and DPoP
+  (ADR-0058 decision 2 amended). `PLAN-V02-12` and `PLAN-V02-09` no longer wait on it.
 - **PLAN-V02-13** — SHIPPED 2026-10-03 as PR #383 (`5ddf8081`, ADR-0059), see
   `landings/PLAN-V02-13.md`. `PLAN-V02-06` no longer waits on it; `PLAN-V02-07` now waits on
   `PLAN-V02-06` alone.
@@ -162,6 +163,13 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-27 — `PLAN-V02-20` landed as #527; analyzed.** Verified on `main` at `6ec1393b`: Maven Build, Integration
+  Tests, Config Validation, Demo Client E2E, Scorecard and the PR benchmark are green; the retired-name sweep finds only
+  the deliberate residuals. The corpus is 66 records (`0072` added). Two overstated "offline verdict never differs from
+  the boot's" statements (an `OidcClientRules` Javadoc and `offline-config-validation.adoc`) are owned by `PLAN-V02-48`
+  D12, which also states the `0058` amendment as current fact (D2). Fourteen candidate lessons: seven were project
+  lessons and became three local lessons (2026-10-27-05-001 to -003); seven were plan-marshall tooling and went to
+  `lessons-routing` as four findings. The `PLAN-V02-09`/`-12` sequencing constraint on `PLAN-V02-20` is retired.
 - **2026-10-26 — the stale local plan `plan-v02-23-cookie-forwarding-policy` was discarded** by operator instruction
   (`manage-status delete-plan`, 14 files, no lesson to carry back). It was the first, paused attempt at `PLAN-V02-23`
   (stopped at 4-plan on 2026-10-14 for the refactor chain); `plan-v02-23-cookie-forwarding-policy-r2` shipped as #515.
@@ -566,7 +574,7 @@ doc-only or build-light plan for the second and third slots.
   not in this ledger; read it in that plan's archived findings. `DispatchStage` is shared with live
   work, so decide before another plan touches the edge relay.
 
-- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08` — FOLDED 2026-10-06: the refresh-revocation, nonce-retry and two status-code items into `PLAN-V02-01` D7; the same-key-file refusal and the `cnf` cookie size into `PLAN-V02-20` D3a; the canonical-form check into `PLAN-V02-12` D4; login rate limiting to kidicap `PLAN-21`; the three imprecise texts and the conformance-suite run stay here, unstaged** (added 2026-10-03; the plan's claims,
+- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08` — FOLDED 2026-10-06: the refresh-revocation, nonce-retry and two status-code items into `PLAN-V02-01` D7; the same-key-file refusal and the `cnf` cookie size into `PLAN-V02-20` D3a (shipped in #527); the canonical-form check into `PLAN-V02-12` D4; login rate limiting to kidicap `PLAN-21`; the three imprecise texts and the conformance-suite run stay here, unstaged** (added 2026-10-03; the plan's claims,
   each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
   which now drives one outbound pushed request per call (threat model `BFF-20`) — owned by the sibling
   epic `kidicap-gateway-requirements` as its staged `PLAN-21` (login-flood pending records), so not a
