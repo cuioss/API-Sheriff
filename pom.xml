@@ -110,28 +110,27 @@
             <!-- Token Sheriff BOM: supplies token-sheriff-client / -client-quarkus / -validation-quarkus
                  versions. Declared after quarkus-bom on purpose: quarkus-bom is imported first, so it wins
                  every artifact the two BOMs both manage. Re-measured against the resolved dependency graph
-                 at token-sheriff 0.9.5 / Quarkus 3.39.3 (cui-quarkus-parent 1.7.4): the two Quarkus lines
-                 have DIVERGED. token-sheriff 0.9.5 was built against 3.39.2 - its parent sits on
-                 cui-quarkus-parent 1.7.3 - while this project inherits 3.39.3. The resolved graph lands
-                 token-sheriff's Quarkus artifacts (quarkus-config-yaml, quarkus-hibernate-validator) on
-                 3.39.3, this project's line, and io.smallrye.config still converges on a single 3.17.2
-                 across the whole reactor at compile scope, because both Quarkus patches expect that same
-                 smallrye-config release.
+                 at token-sheriff 0.9.8 / Quarkus 3.40.1 (cui-quarkus-parent 1.7.7): the two Quarkus lines
+                 AGREE. token-sheriff-parent 0.9.8 declares no version.quarkus of its own; it inherits it
+                 from the same cui-quarkus-parent 1.7.7 this project inherits, so both sides are on 3.40.1.
+                 The resolved graph lands token-sheriff's Quarkus artifacts (quarkus-config-yaml,
+                 quarkus-hibernate-validator) on 3.40.1, and io.smallrye.config converges on a single
+                 3.17.2 at compile scope.
 
-                 The lines agreed while both parents matched, and now differ by one patch; that is the
-                 normal state between a cui-quarkus-parent bump here and the next token-sheriff release,
-                 not an exception. Keep the ordering: it is what keeps ONE Quarkus line in the build, and a
-                 second line entering it can split smallrye-config, which breaks Quarkus config-mapping
-                 augmentation. Today the split is avoided twice over - the ordering, and the two patches
-                 expecting the same smallrye-config - and only the first of those is under this
-                 project's control.
+                 The lines agree while both parents match, and drift apart by a patch between a
+                 cui-quarkus-parent bump here and the next token-sheriff release; that drift is the normal
+                 state, not an exception. Keep the ordering: it is what keeps ONE Quarkus line in the
+                 build, and a second line entering it can split smallrye-config, which breaks Quarkus
+                 config-mapping augmentation. Today the split is avoided twice over - the ordering, and
+                 the shared Quarkus line - and only the first of those is under this project's control.
 
                  Re-measure this paragraph on every ${version.token-sheriff} bump. The numbers above are an
                  observation of ONE resolved graph, not a standing invariant: the upstream Quarkus line moves
                  independently of ours, so a stale paragraph would keep asserting a convergence nobody has
                  checked. Measure with
                  `dependency:tree -pl api-sheriff -Dincludes=io.smallrye.config:*,io.quarkus:quarkus-config-yaml,io.quarkus:quarkus-hibernate-validator`
-                 and read the upstream-declared version off token-sheriff-parent's version.quarkus. -->
+                 and read the upstream-declared version off token-sheriff-parent's version.quarkus, or off
+                 the cui-quarkus-parent it inherits that property from when it declares none. -->
             <dependency>
                 <groupId>de.cuioss.sheriff.token</groupId>
                 <artifactId>token-sheriff-bom</artifactId>
