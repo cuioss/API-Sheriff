@@ -36,7 +36,9 @@ import io.vertx.ext.web.RoutingContext;
  * <p>
  * The uniform {@code 404}'s response-timing floor writes through here (see
  * {@code edge.error.UniformNotFound}); a later per-source delay reuses the same primitive rather than
- * writing its own.
+ * writing its own. This primitive applies no policy of its own: the caller computes the release time,
+ * and the uniform {@code 404}'s caller computes one that is never in the past at the moment it is
+ * computed.
  * <p>
  * Stateless; {@link #endNoEarlierThan} runs on the event loop of the response it is handed.
  *

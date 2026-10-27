@@ -27,6 +27,8 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -43,13 +45,16 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * The trust-boundary predicate: which rejections are answered to an untrusted caller as the unrouted
  * {@code 404}. Every {@link EventType} constant carries a recorded disposition — a member of the closed
  * set, or an exclusion with its reason — so a constant added without one turns this test red instead
- * of silently staying honest.
+ * of silently staying honest. The release-time step rule of {@link UniformNotFound#releaseAtNanos} is
+ * pinned here as well.
  */
 @EnableGeneratorController
 @DisplayName("UniformNotFound — the trust-boundary predicate of the rejection renderer")
@@ -68,6 +73,18 @@ class UniformNotFoundTest {
 
     /** Every constant outside the closed set, with the reason it keeps its honest answer. */
     private static final Map<EventType, String> EXCLUSIONS = exclusions();
+
+    /** The fixed admission reading the release-step cases are measured from. */
+    private static final long ADMITTED_AT_NANOS = 1_000_000_000L;
+
+    /** The floor, which is also the width of one release step. */
+    private static final long FLOOR_NANOS = UniformNotFound.RESPONSE_FLOOR.toNanos();
+
+    /** The exclusive upper bound of the jitter on top of a step. */
+    private static final long JITTER_NANOS = UniformNotFound.RESPONSE_JITTER.toNanos();
+
+    /** Draws per case, enough to spread the jitter across its range. */
+    private static final int DRAWS = 200;
 
     private static Map<EventType, String> exclusions() {
         Map<EventType, String> table = new EnumMap<>(EventType.class);
@@ -236,6 +253,87 @@ class UniformNotFoundTest {
             assertTrue(new UniformNotFound(true).applies(request, eventType),
                     "the session branch keeps only its authentication answers; its CSRF refusal hides the route");
         }
+    }
+
+    @Nested
+    @DisplayName("releaseAtNanos places the answer on the next floor step its processing has not passed")
+    class ReleaseSteps {
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("de.cuioss.sheriff.gateway.edge.error.UniformNotFoundTest#releaseStepCases")
+        @DisplayName("the release offset is the step count times the floor, plus a jitter below its bound")
+        void releaseLandsOnTheExpectedStep(String label, long elapsedNanos, long expectedSteps) {
+            UniformNotFound uniformNotFound = new UniformNotFound(true);
+            long nowNanos = ADMITTED_AT_NANOS + elapsedNanos;
+
+            long[] offsets = releaseOffsets(uniformNotFound, ADMITTED_AT_NANOS, nowNanos);
+
+            assertOffsetsOnStep(label, offsets, expectedSteps);
+        }
+
+        @Test
+        @DisplayName("a now reading taken before admission counts as no elapsed time: the first step")
+        void nowBeforeAdmissionCountsAsNoElapsedTime() {
+            UniformNotFound uniformNotFound = new UniformNotFound(true);
+            long nowNanos = ADMITTED_AT_NANOS - FLOOR_NANOS / 2;
+
+            long[] offsets = releaseOffsets(uniformNotFound, ADMITTED_AT_NANOS, nowNanos);
+
+            assertOffsetsOnStep("now before admission", offsets, 1);
+        }
+
+        @Test
+        @DisplayName("the step is computed on the difference of the readings, so it holds across the nanoTime wrap")
+        void stepHoldsAcrossTheNanoTimeWrap() {
+            UniformNotFound uniformNotFound = new UniformNotFound(true);
+            long admittedAtNanos = Long.MAX_VALUE - FLOOR_NANOS / 2;
+            long nowNanos = admittedAtNanos + FLOOR_NANOS * 7 / 2;
+
+            long[] offsets = releaseOffsets(uniformNotFound, admittedAtNanos, nowNanos);
+
+            assertOffsetsOnStep("admission just below the wrap, 3.5 floors elapsed", offsets, 4);
+        }
+
+        @Test
+        @DisplayName("the jitter is drawn afresh per answer and spreads across its range")
+        void jitterSpreadsAcrossItsRange() {
+            UniformNotFound uniformNotFound = new UniformNotFound(true);
+
+            long[] offsets = releaseOffsets(uniformNotFound, ADMITTED_AT_NANOS, ADMITTED_AT_NANOS);
+
+            long halfJitter = JITTER_NANOS / 2;
+            assertAll("jitter of " + DRAWS + " draws on the first step",
+                    () -> assertTrue(LongStream.of(offsets).anyMatch(offset -> offset - FLOOR_NANOS < halfJitter),
+                            "some draw lands in the lower half of the jitter range"),
+                    () -> assertTrue(LongStream.of(offsets).anyMatch(offset -> offset - FLOOR_NANOS >= halfJitter),
+                            "some draw lands in the upper half of the jitter range"));
+        }
+
+        private static long[] releaseOffsets(UniformNotFound uniformNotFound, long admittedAtNanos, long nowNanos) {
+            long[] offsets = new long[DRAWS];
+            for (int draw = 0; draw < DRAWS; draw++) {
+                offsets[draw] = uniformNotFound.releaseAtNanos(admittedAtNanos, nowNanos) - admittedAtNanos;
+            }
+            return offsets;
+        }
+
+        private static void assertOffsetsOnStep(String label, long[] offsets, long expectedSteps) {
+            long lowerBound = expectedSteps * FLOOR_NANOS;
+            long upperBound = lowerBound + JITTER_NANOS;
+            for (long offset : offsets) {
+                assertTrue(offset >= lowerBound && offset < upperBound, label + ": offset " + offset
+                        + " ns must lie in [" + lowerBound + ", " + upperBound + ") for step " + expectedSteps);
+            }
+        }
+    }
+
+    static Stream<Arguments> releaseStepCases() {
+        return Stream.of(
+                Arguments.of("elapsed 0: step 1", 0L, 1L),
+                Arguments.of("elapsed just under the floor: step 1", FLOOR_NANOS - 1, 1L),
+                Arguments.of("elapsed exactly one floor: step 1", FLOOR_NANOS, 1L),
+                Arguments.of("elapsed one floor plus 1 ns: step 2", FLOOR_NANOS + 1, 2L),
+                Arguments.of("elapsed 3.5 floors: step 4", FLOOR_NANOS * 7 / 2, 4L));
     }
 
     private static PipelineRequest routedRequest() {

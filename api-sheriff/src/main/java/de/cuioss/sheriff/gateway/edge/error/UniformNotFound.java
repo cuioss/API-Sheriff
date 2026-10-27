@@ -96,11 +96,14 @@ import org.jspecify.annotations.Nullable;
  * takes still tells the two paths apart: an unrouted address is answered straight after route
  * selection, a resolved rejection only after the stages before it ran. So while the switch is on,
  * every answer rendered as the unrouted {@code 404} — the genuine {@link EventType#NO_ROUTE_MATCHED}
- * and {@link EventType#PASSTHROUGH_HOST_SMUGGLED} as much as a resolved rejection — leaves the edge no
- * earlier than {@link #RESPONSE_FLOOR} plus a random jitter below {@link #RESPONSE_JITTER} after the
- * request was admitted ({@link #delaysAnswer}, {@link #releaseAtNanos}). The wait is a Vert.x timer
- * ({@code edge.end.ResponseDelay}), so no thread is held while an answer waits. Honest answers are
- * never delayed.
+ * and {@link EventType#PASSTHROUGH_HOST_SMUGGLED} as much as a resolved rejection — waits for a release
+ * time on a grid of {@link #RESPONSE_FLOOR} steps counted from admission ({@link #delaysAnswer},
+ * {@link #releaseAtNanos}). <strong>The step rule:</strong> the answer leaves no earlier than the first
+ * floor step after admission that its processing has not passed, plus a random jitter below
+ * {@link #RESPONSE_JITTER}. An answer ready within the floor leaves after one step; an answer whose
+ * processing ran past the floor is held to the next step instead of being written at once, so every
+ * such answer leaves on the same grid. The wait is a Vert.x timer ({@code edge.end.ResponseDelay}), so
+ * no thread is held while an answer waits. Honest answers are never delayed.
  * <p>
  * Thread-safe: besides the switch, the only state is the jitter source, a {@link SecureRandom}.
  *
@@ -127,21 +130,22 @@ public final class UniformNotFound {
 
     /**
      * The least time after admission before which no unrouted {@code 404} leaves the edge, while the
-     * switch is on. It is meant to sit above the worst-case processing cost of the pre-trust window,
-     * whose slowest arm is the offline validation of a well-formed bearer token with a wrong signature,
-     * so that every rejection the window can raise has finished before the floor and an unrouted address
-     * and a resolved rejection are released at the same moment. The value is a reasoned choice, not a
-     * measurement: ADR-0073 records the reasoning and that the worst-case cost has not been measured. A
-     * fixed constant of the gateway, like the hardening bounds of ADR-0060 and ADR-0064 — no
-     * configuration key reaches it.
+     * switch is on, and the width of each step of the release grid ({@link #releaseAtNanos}). It is
+     * meant to sit above the worst-case processing cost of the pre-trust window, whose slowest arm is
+     * the offline validation of a well-formed bearer token with a wrong signature, so that every
+     * rejection the window can raise has finished before the first step and an unrouted address and a
+     * resolved rejection are released on the same step. An answer whose processing ran past a step is
+     * held to the next one. The value is a reasoned choice, not a measurement: ADR-0073 records the
+     * reasoning and that the worst-case cost has not been measured. A fixed constant of the gateway,
+     * like the hardening bounds of ADR-0060 and ADR-0064 — no configuration key reaches it.
      */
     public static final Duration RESPONSE_FLOOR = Duration.ofMillis(50);
 
     /**
-     * The exclusive upper bound of the random jitter added on top of {@link #RESPONSE_FLOOR}. Should
-     * processing overrun the floor — a garbage-collection pause, an unusually large token — the
-     * residual difference is blurred by a jitter drawn afresh for every answer instead of showing up as
-     * a fixed offset. A fixed constant like the floor; no configuration key reaches it.
+     * The exclusive upper bound of the random jitter added on top of the floor step an answer is
+     * released on ({@link #releaseAtNanos}). The jitter is drawn afresh for every answer, so the
+     * release time within a step is not a fixed offset. A fixed constant like the floor; no
+     * configuration key reaches it.
      */
     public static final Duration RESPONSE_JITTER = Duration.ofMillis(20);
 
@@ -191,13 +195,30 @@ public final class UniformNotFound {
     }
 
     /**
-     * The release time of an unrouted {@code 404}: admission plus {@link #RESPONSE_FLOOR} plus a fresh
-     * random jitter in {@code [0, RESPONSE_JITTER)}.
+     * The release time of an unrouted {@code 404} under the step rule: the first {@link #RESPONSE_FLOOR}
+     * step after admission that the processing has not passed, plus a fresh random jitter in
+     * {@code [0, RESPONSE_JITTER)}.
+     * <p>
+     * With {@code elapsed = max(0, nowNanos - admittedAtNanos)}, the answer is released after
+     * {@code steps = max(1, ceil(elapsed / RESPONSE_FLOOR))} floor steps. An elapsed time within the
+     * floor gives one step, admission plus the floor. An elapsed time that lands exactly on a step
+     * boundary stays on that step; one nanosecond past it moves to the next. A {@code nowNanos} read
+     * before {@code admittedAtNanos} counts as no elapsed time. Without the jitter, the result is never
+     * earlier than {@code nowNanos}.
+     * <p>
+     * The arithmetic runs on the difference of the two readings, never on their absolute values, so it
+     * holds across the wrap of {@link System#nanoTime()}.
      *
      * @param admittedAtNanos the {@link System#nanoTime()} reading taken when the request was admitted
+     * @param nowNanos        the {@link System#nanoTime()} reading taken when the answer is ready to be
+     *                        written
      * @return the {@link System#nanoTime()} value before which the answer is not written
      */
-    public long releaseAtNanos(long admittedAtNanos) {
-        return admittedAtNanos + RESPONSE_FLOOR.toNanos() + jitterSource.nextLong(RESPONSE_JITTER.toNanos());
+    public long releaseAtNanos(long admittedAtNanos, long nowNanos) {
+        long floorNanos = RESPONSE_FLOOR.toNanos();
+        long elapsedNanos = Math.max(0L, nowNanos - admittedAtNanos);
+        long steps = Math.max(1L, Math.ceilDiv(elapsedNanos, floorNanos));
+        return admittedAtNanos + Math.multiplyExact(steps, floorNanos)
+                + jitterSource.nextLong(RESPONSE_JITTER.toNanos());
     }
 }

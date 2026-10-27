@@ -66,11 +66,13 @@ import org.jspecify.annotations.Nullable;
  * <strong>One release rule for every unrouted {@code 404}.</strong> While the switch is on, every
  * answer rendered as the unrouted {@code 404} — a resolved rejection, the genuine
  * {@link EventType#NO_ROUTE_MATCHED} and {@link EventType#PASSTHROUGH_HOST_SMUGGLED}, the problem
- * document and the HTML error page alike — is written through {@link ResponseDelay} no earlier than
- * the request's admission plus {@link UniformNotFound#RESPONSE_FLOOR} plus a random jitter below
- * {@link UniformNotFound#RESPONSE_JITTER} ({@link UniformNotFound#releaseAtNanos}), so the unrouted
- * path and the resolved path cannot be told apart by when they answer either. The wait is a Vert.x
- * timer; no thread is held. Every other answer is written at once.
+ * document and the HTML error page alike — is written through {@link ResponseDelay} under the step
+ * rule of {@link UniformNotFound#releaseAtNanos}: no earlier than the first
+ * {@link UniformNotFound#RESPONSE_FLOOR} step after the request's admission that its processing has
+ * not passed, plus a random jitter below {@link UniformNotFound#RESPONSE_JITTER}. The release time is
+ * computed when the answer is ready, from the admission reading and the current
+ * {@link System#nanoTime()}, so the unrouted path and the resolved path leave on the same step grid.
+ * The wait is a Vert.x timer; no thread is held. Every other answer is written at once.
  * <p>
  * <strong>Rendered TO, not CALLED.</strong> The branch changes only what the caller is shown. The
  * rejection is reported under its TRUE event before it is rendered ({@link #handleGatewayRejection}),
@@ -391,7 +393,7 @@ public final class ErrorResponseWriter {
             classification = ErrorPageClassifier.classify(eventType);
         }
         OptionalLong releaseAtNanos = uniformNotFound.delaysAnswer(eventType)
-                ? OptionalLong.of(uniformNotFound.releaseAtNanos(admittedAtNanos(ctx)))
+                ? OptionalLong.of(uniformNotFound.releaseAtNanos(admittedAtNanos(ctx), System.nanoTime()))
                 : OptionalLong.empty();
         if (answeredWithErrorPage(ctx, request, classification, status, List.of(), releaseAtNanos)) {
             return;

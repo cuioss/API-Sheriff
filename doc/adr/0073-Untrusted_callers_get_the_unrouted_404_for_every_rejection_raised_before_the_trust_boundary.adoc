@@ -151,9 +151,12 @@ An identical answer still leaks while its timing differs. The unrouted address i
 after route selection. A resolved rejection is answered only after the stages before it ran. The
 slowest of them is the offline validation of a well-formed token with a wrong signature.
 
-So while the switch is on, every answer rendered as the unrouted `404` waits for one release time:
-admission plus `UniformNotFound.RESPONSE_FLOOR` plus a random jitter in
-`[0, UniformNotFound.RESPONSE_JITTER)`. The genuine `NO_ROUTE_MATCHED` and
+So while the switch is on, every answer rendered as the unrouted `404` waits for a release time on
+a grid of `UniformNotFound.RESPONSE_FLOOR` steps counted from admission. The step rule: the answer
+leaves no earlier than the first floor step after admission that its processing has not passed, plus
+a random jitter in `[0, UniformNotFound.RESPONSE_JITTER)`. An answer ready within the floor leaves
+after one step. An answer whose processing outran the floor is held to the next step, so it leaves
+on the same step grid plus jitter, never at the moment it is ready. The genuine `NO_ROUTE_MATCHED` and
 `PASSTHROUGH_HOST_SMUGGLED` answers wait as much as a resolved rejection does, and so do the
 reserved-path `404`s rendered as `NO_ROUTE_MATCHED`. Honest answers do not wait.
 
@@ -162,12 +165,12 @@ reserved-path `404`s rendered as `NO_ROUTE_MATCHED`. Honest answers do not wait.
 | Constant | Value | Role
 
 | `RESPONSE_FLOOR` | 50 ms
-| No unrouted `404` leaves the edge earlier after admission. It must sit above the worst-case cost
-of the pre-trust window.
+| No unrouted `404` leaves the edge earlier after admission, and each step of the release grid is
+this wide. It must sit above the worst-case cost of the pre-trust window.
 
 | `RESPONSE_JITTER` | 20 ms
-| The exclusive upper bound of a fresh random delay on top of the floor, drawn from a
-`SecureRandom`. It blurs the residual when processing overruns the floor.
+| The exclusive upper bound of a fresh random delay on top of the step, drawn from a
+`SecureRandom`. It spreads the release within a step.
 |===
 
 *The values are a reasoned choice. They have not been measured.* No benchmark in this repository
@@ -193,9 +196,9 @@ writer ended, or whose connection closed, is not written when the timer fires.
 key is absent, which is the secure default. `false` restores the honest codes, the trailers-only gRPC
 status and the undelayed `404`. The two halves reach different answers. The branch reaches
 pre-trust, route-matched rejections only. The floor reaches every answer rendered as the unrouted
-`404`, and that includes the two reserved-path `404`s rendered that way: the carve-out of a reserved
-path while the BFF runtime is inactive, and the withheld client JWKS. Their delay keeps them
-identical in time to an unrouted path. The switch never changes the status, body or headers of a
+`404`. That includes every reserved-path answer `ErrorResponseWriter.renderProblem` renders with
+`NO_ROUTE_MATCHED`, such as the carve-out of a reserved path while the BFF runtime is inactive and
+the withheld client JWKS. Their delay keeps them identical in time to an unrouted path. The switch never changes the status, body or headers of a
 post-trust, reserved-path or stage-1 answer.
 
 === What is still reported
@@ -258,16 +261,17 @@ measurement.
   `408`/`413`/`400`, upstream `5xx` and the WebSocket origin `403`. Its pre-trust mistakes, such as
   a wrong method, answer `404`. The true cause is in `sheriff_errors_total{event}` and the WARN
   lines, not in the response.
-* Every unrouted `404` waits for the floor. Under a `404` flood each such answer holds its admission
-  permit for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`, 70 ms, because the permit is released when
-  the response ends. With the default `edge_hardening.admission_cap` of 2048, the edge sustains about
+* Every unrouted `404` waits for the floor. Under a `404` flood each such answer ready within the
+  floor holds its admission permit for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`, 70 ms, because the
+  permit is released when the response ends; an answer held to a later step holds it until that step. With the default `edge_hardening.admission_cap` of 2048, the edge sustains about
   2048 / 0.07 s, roughly 29,000 floored `404` answers per second, before admission answers `503`.
   The `503` is address-independent, so it leaks nothing. No thread is held while an answer waits;
   the cost is a permit and a timer entry.
 * Every edge and integration test that requests an unrouted path waits for the floor. The tests
   assert only lower bounds on timing, so the floor slows them and does not make them flaky.
-* The floor rests on reasoning, not on a measurement. If the slowest pre-trust arm ever exceeds
-  50 ms, the jitter blurs the excess only partly, and the timing signal reopens for that arm.
+* The floor rests on reasoning, not on a measurement. An answer whose processing exceeds 50 ms is
+  held to the next step of the grid, so it leaves on a step boundary plus the jitter, not at its own
+  processing time.
 
 == Links
 
