@@ -55,6 +55,7 @@ import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SchemaRegistryConfig;
 import com.networknt.schema.SpecificationVersion;
 import de.cuioss.sheriff.gateway.asset.AssetResponseEnvelope;
+import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.config.model.CookieAllow;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
@@ -70,7 +71,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * Binds the operator-facing documents and the bundled JSON Schema back to the code that
  * <em>authoritatively</em> defines the sets they enumerate.
  * <p>
- * <strong>Why this test exists.</strong> Thirteen shipped surfaces restate a set whose definition lives
+ * <strong>Why this test exists.</strong> Sixteen shipped surfaces restate a set whose definition lives
  * in Java: three of them list the built-in asset extensions carried by
  * {@link AssetResponseEnvelope#builtInExtensions()}, five list the inbound-filter mode set carried by
  * {@link SecurityProfile} — {@code doc/configuration.adoc} and {@code doc/user/README.adoc} plus the
@@ -80,7 +81,10 @@ import org.junit.jupiter.params.provider.MethodSource;
  * keywords carried by {@link CookieAllow#NONE_KEYWORD} and {@link CookieAllow#ALL_KEYWORD}, and the
  * boot-validation list of
  * {@code doc/configuration.adoc} names the JWKS refresh keys and the range each admits, carried by
- * {@link JwksRefreshKey}. A restated list has no mechanical tie to its source, so
+ * {@link JwksRefreshKey}, and three documents restate the {@code oidc_discovery} readiness tokens
+ * carried by {@link DiscoveryStatus.State#token()}: the value table of {@code doc/configuration.adoc},
+ * the parenthesised list of {@code doc/security-threat-model.adoc} and the readiness prose of
+ * {@code doc/architecture.adoc}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
  * still reads as authoritative while describing a gateway that no longer exists. The project's own review policy
  * treats a hardcoded list mirroring a set defined elsewhere as a defect unless it is derived from
@@ -177,6 +181,39 @@ class DocumentedSetsContractTest {
     private static final Path CONFIGURATION_ADOC = repoRoot().resolve("doc/configuration.adoc");
     private static final Path USER_README_ADOC = repoRoot().resolve("doc/user/README.adoc");
     private static final Path BFF_COOKIE_ADOC = repoRoot().resolve("doc/user/bff-cookie.adoc");
+    private static final Path ARCHITECTURE_ADOC = repoRoot().resolve("doc/architecture.adoc");
+    private static final Path THREAT_MODEL_ADOC = repoRoot().resolve("doc/security-threat-model.adoc");
+
+    /**
+     * Anchor for the {@code oidc_discovery} value table of {@code doc/configuration.adoc}: the bullet that
+     * introduces the datum. The table that follows it gives every state a definition row of its own — a
+     * line holding nothing but {@code | `token`} — and ends at its closing {@link #ASCIIDOC_TABLE_DELIMITER}.
+     */
+    private static final String CONFIG_DISCOVERY_ANCHOR = "`oidc_discovery` -- what the most recent";
+
+    /**
+     * Anchor for the threat model's parenthesised {@code oidc_discovery} token list ("…and
+     * `oidc_discovery` (`not-attempted`, `resolved` or `failed`)"). The anchor ends with the parenthesis
+     * that opens the backticked list.
+     */
+    private static final String THREAT_MODEL_DISCOVERY_ANCHOR = "and `oidc_discovery` (";
+
+    /**
+     * Anchor for {@code doc/architecture.adoc}'s prose enumeration of the {@code oidc_discovery} tokens
+     * ("…metadata (`.well-known/openid-configuration`) last did: `not-attempted` until …, `resolved` when
+     * …, and `failed` when … threw."). The backticked list runs from the anchor to the sentence's own full
+     * stop, which no token can contain.
+     */
+    private static final String ARCHITECTURE_DISCOVERY_ANCHOR = "(`.well-known/openid-configuration`) last did:";
+
+    /** The AsciiDoc delimiter opening and closing a table. */
+    private static final String ASCIIDOC_TABLE_DELIMITER = "|===";
+
+    /**
+     * A table line that is one definition row: a cell holding nothing but a backticked token, the same
+     * row shape {@link #modeDefinitionRow(String)} requires per mode.
+     */
+    private static final Pattern DEFINITION_ROW = Pattern.compile("\\| `([^`]+)`");
 
     /** The bundled schema, read off the classpath so the assertion sees the shipped copy. */
     private static final String GATEWAY_SCHEMA_RESOURCE = "/schema/gateway.schema.json";
@@ -786,6 +823,75 @@ class DocumentedSetsContractTest {
                             + " newly added mode gets the guidance that tells an operator when to choose it"
                             + " and a removed one has its entry deleted");
         }
+    }
+
+    @Test
+    @DisplayName("doc/configuration.adoc's oidc_discovery table has exactly one row per DiscoveryStatus.State token")
+    void configurationAdocTabulatesTheDiscoveryTokens() throws Exception {
+        // Arrange
+        String document = read(CONFIGURATION_ADOC);
+
+        // Act
+        TokenList documented = discoveryTableRows(document, CONFIGURATION_ADOC.toString());
+
+        // Assert
+        assertDiscoveryTokensMatch(documented, CONFIGURATION_ADOC.toString());
+    }
+
+    @Test
+    @DisplayName("doc/security-threat-model.adoc lists exactly the DiscoveryStatus.State tokens for oidc_discovery")
+    void threatModelListsTheDiscoveryTokens() throws Exception {
+        // Arrange
+        String document = read(THREAT_MODEL_ADOC);
+        Span anchor = anchorSpan(document, THREAT_MODEL_DISCOVERY_ANCHOR, THREAT_MODEL_ADOC.toString());
+
+        // Act
+        TokenList documented = backtickedTokens(
+                parenthesised(document, anchor.start(), THREAT_MODEL_ADOC.toString(), THREAT_MODEL_DISCOVERY_ANCHOR));
+
+        // Assert
+        assertDiscoveryTokensMatch(documented, THREAT_MODEL_ADOC.toString());
+    }
+
+    @Test
+    @DisplayName("doc/architecture.adoc names exactly the DiscoveryStatus.State tokens for oidc_discovery")
+    void architectureAdocNamesTheDiscoveryTokens() throws Exception {
+        // Arrange
+        String document = read(ARCHITECTURE_ADOC);
+        Span anchor = anchorSpan(document, ARCHITECTURE_DISCOVERY_ANCHOR, ARCHITECTURE_ADOC.toString());
+
+        // Act — the sentence names one token per clause and ends at its own full stop
+        TokenList documented = backtickedTokens(segmentUntil(document, anchor.end(), ".",
+                ARCHITECTURE_ADOC.toString(), ARCHITECTURE_DISCOVERY_ANCHOR));
+
+        // Assert
+        assertDiscoveryTokensMatch(documented, ARCHITECTURE_ADOC.toString());
+    }
+
+    @Test
+    @DisplayName("the oidc_discovery table extraction detects a token row removed from the document")
+    void removedDiscoveryRowIsDetectedAgainstTheStateTokens() throws Exception {
+        // Arrange — the negative control: the shipped document with the row of one state deleted
+        String document = read(CONFIGURATION_ADOC);
+        String removedToken = DiscoveryStatus.State.FAILED.token();
+        String removedRow = "\n" + modeDefinitionRow(removedToken) + "\n";
+        assertTrue(document.contains(removedRow), CONFIGURATION_ADOC + " carries no definition row for '"
+                + removedToken + "', so the negative control has nothing to remove");
+        String mutated = document.replace(removedRow, "\n");
+        String label = CONFIGURATION_ADOC + " without the '" + removedToken + "' row";
+
+        // Act
+        TokenList shipped = discoveryTableRows(document, CONFIGURATION_ADOC.toString());
+        TokenList documented = discoveryTableRows(mutated, label);
+
+        // Assert — the precondition first: the shipped document matches, so the mismatch below is caused
+        // by the removal alone
+        assertEquals(discoveryTokens(), sorted(shipped.tokens()),
+                "the negative control needs the shipped table and DiscoveryStatus.State to agree before"
+                        + " removing a row; they already disagree, which the table guard reports in detail");
+        assertNotEquals(discoveryTokens(), sorted(documented.tokens()),
+                "removing the '" + removedToken + "' row left the extracted token set unchanged, so the table"
+                        + " guard could not see a state the documentation stopped describing");
     }
 
     @Test
@@ -1773,7 +1879,8 @@ class DocumentedSetsContractTest {
 
     /**
      * One mode's own definition row in the mode-set table — an AsciiDoc cell holding nothing but the
-     * backticked mode name.
+     * backticked mode name. The {@code oidc_discovery} value table uses the same row shape per token,
+     * which is what {@link #DEFINITION_ROW} matches.
      *
      * @param mode the lower-cased mode name
      * @return the exact row text the document must carry for that mode
@@ -2409,6 +2516,71 @@ class DocumentedSetsContractTest {
      */
     private static Set<String> cookieAllowKeywords() {
         return new TreeSet<>(Set.of(CookieAllow.NONE_KEYWORD, CookieAllow.ALL_KEYWORD));
+    }
+
+    /**
+     * The definition rows of the {@code oidc_discovery} value table: the table following
+     * {@link #CONFIG_DISCOVERY_ANCHOR}, bounded by its opening and closing
+     * {@link #ASCIIDOC_TABLE_DELIMITER}, and within it every line that is exactly a
+     * {@link #DEFINITION_ROW}. The header row and the free-form meaning cells match no such line.
+     *
+     * @param document the configuration document
+     * @param label    the document label used in every failure message
+     * @return the de-duplicated tokens and the number of definition rows that produced them
+     */
+    private static TokenList discoveryTableRows(String document, String label) {
+        Span anchor = anchorSpan(document, CONFIG_DISCOVERY_ANCHOR, label);
+        int open = document.indexOf(ASCIIDOC_TABLE_DELIMITER, anchor.end());
+        if (open < 0) {
+            return fail(label + ": no table opened by '" + ASCIIDOC_TABLE_DELIMITER + "' follows the anchor \""
+                    + CONFIG_DISCOVERY_ANCHOR + "\"; the anchor no longer describes the document");
+        }
+        String table = segmentUntil(document, open + ASCIIDOC_TABLE_DELIMITER.length(), ASCIIDOC_TABLE_DELIMITER,
+                label, CONFIG_DISCOVERY_ANCHOR);
+        Set<String> tokens = new LinkedHashSet<>();
+        int rawCount = 0;
+        for (String line : table.lines().map(String::strip).toList()) {
+            Matcher row = DEFINITION_ROW.matcher(line);
+            if (row.matches()) {
+                tokens.add(row.group(1));
+                rawCount++;
+            }
+        }
+        return new TokenList(tokens, rawCount);
+    }
+
+    /**
+     * Asserts that a documented {@code oidc_discovery} token list names exactly the tokens
+     * {@link DiscoveryStatus.State} publishes, each once.
+     *
+     * @param documented the extracted tokens
+     * @param document   the document label used in every failure message
+     */
+    private static void assertDiscoveryTokensMatch(TokenList documented, String document) {
+        assertFalse(documented.tokens().isEmpty(), document + ": the oidc_discovery token list yielded no"
+                + " tokens — the guard would pass vacuously");
+        assertEquals(discoveryTokens(), sorted(documented.tokens()),
+                document + " enumerates the oidc_discovery readiness tokens, which are authoritatively"
+                        + " defined by DiscoveryStatus.State#token(), and has drifted from them. An operator"
+                        + " alerting on a token the gateway never reports would never be paged");
+        assertEquals(DiscoveryStatus.State.values().length, documented.rawCount(),
+                document + " lists a different number of oidc_discovery tokens than DiscoveryStatus.State"
+                        + " declares. The count is taken over the raw entries rather than over the"
+                        + " de-duplicated set, so a token listed twice fails here even though the set"
+                        + " equality above still holds");
+    }
+
+    /**
+     * The readiness tokens {@link DiscoveryStatus.State} publishes, sorted for comparison.
+     *
+     * @return every state's {@link DiscoveryStatus.State#token()}
+     */
+    private static Set<String> discoveryTokens() {
+        Set<String> tokens = new TreeSet<>();
+        for (DiscoveryStatus.State state : DiscoveryStatus.State.values()) {
+            tokens.add(state.token());
+        }
+        return tokens;
     }
 
     private static Set<String> modeNames() {
