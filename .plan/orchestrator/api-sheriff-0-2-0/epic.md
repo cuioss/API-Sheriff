@@ -147,7 +147,7 @@ would otherwise force a retrofit.
 |---|---|---|
 | WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27, PLAN-V02-28 and PLAN-V02-40 … PLAN-V02-43 (validator slices; V02-29 … -39 superseded), PLAN-V02-44, PLAN-V02-49 |
 | WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18, PLAN-V02-48 |
-| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23, PLAN-V02-45, PLAN-V02-46 |
+| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23, PLAN-V02-45, PLAN-V02-46, PLAN-V02-50 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
 | WS-05 | Integration and Test Fidelity | PLAN-V02-09, PLAN-V02-10, PLAN-V02-11 |
 
@@ -163,6 +163,19 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-27 — `PLAN-V02-06` landed as #528, partly; `PLAN-V02-50` staged for the rest.** #528 (`c957ee51`, ADR-0073,
+  98 files) shipped spec D1 (the uniform `404` for untrusted callers), D2 (the response-timing floor and its step rule)
+  and D9 (the `rate_limit` boot WARN and the wording), with their tests and docs. The operator split the other four
+  deliverables off at outline because nine deliverables in one PR would have passed the 100-file cap: D3 (per-source
+  detection substrate), D4 (response on trip), D7 (substrate contract) and D8 (HTTP/2 stream-abuse bounds). They are
+  `PLAN-V02-50` (`enumeration-detection-substrate`, WS-03), with the unwritten ADR for the kept-but-inert `rate_limit`
+  key, five documentation advisories, the findings deferred to the follow-up (recorded in the git-ignored security
+  notes) and a flaky test. `PLAN-V02-07` now waits on `PLAN-V02-50`. The sibling epics' references to V02-06's
+  substrate (`PLAN-V03-01`; kidicap `PLAN-21`, `PLAN-30`) point at a plan that no longer owns it. Verified green on
+  `main` at `c957ee51`: Maven Build, Integration Tests, Config Validation, Demo Client E2E, Scorecard and the PR
+  benchmark. #529 (`c9c8479c`), an operator docs fix, closed the two overstated offline-check statements that #527
+  left (they are no longer owed to `PLAN-V02-48`). `PLAN-V02-48` also learned that #528 amended seven ADRs in place.
+  Lessons: one project lesson (2026-10-27-14-001) and three plan-marshall findings routed to `lessons-routing`.
 - **2026-10-27 — `PLAN-V02-20` landed as #527; analyzed.** Verified on `main` at `6ec1393b`: Maven Build, Integration
   Tests, Config Validation, Demo Client E2E, Scorecard and the PR benchmark are green; the retired-name sweep finds only
   the deliberate residuals. The corpus is 66 records (`0072` added). Two overstated "offline verdict never differs from
@@ -336,7 +349,7 @@ needs no translation.
   Operator ruling. The key stays in the endpoint schema, still not implemented, but setting it logs a
   boot WARN, and every document says the same thing: planned, not implemented, no `429` today. This
   replaces both wordings on `main` ("out of scope", from `6acbadac`, and "deferred"). Its future
-  implementation builds on `PLAN-V02-06`'s per-source mechanism, as its own plan after V02-06 lands;
+  implementation builds on the per-source mechanism of `PLAN-V02-50` (moved there from `PLAN-V02-06`), as its own plan after that lands;
   none is staged yet. Rejected: removing the key now (the PLAN-29 / ADR-0064 route), and wiring it into
   V02-06 (which already carries eight deliverables).
 
@@ -453,6 +466,12 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **FLAKY `GatewayEdgeRouteTest$RelayStartFailure.relayThatFailsToStartReleasesTheUpstreamResponse` — OWNED BY `PLAN-V02-50` D8**
+  (added 2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`). Failed once in the CI sonar-build isolated fork (run
+  40504680597) and passed on rerun; the branch did not touch the test. Make it deterministic and confirm it under
+  `-XX:ActiveProcessorCount=1`. Do not answer a red run with a retry. If it recurs before that plan runs, fix it as a side
+  fix the way #522 did. Other open flakes: `GatewayEdgeFramingCorpusTest` and `Http2EarlyResponseResetIT`.
 
 - > ↪ Relocated to `settled.md` § "Watch — superseded reviewer cuioss-review-bot (closed 2026-10-22 by #505)" — PR-Agent prose retired by #505 (PLAN-V02-43), guarded by ReviewerRosterDocsContractTest
 
