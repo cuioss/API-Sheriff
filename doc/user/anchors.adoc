@@ -315,8 +315,9 @@ route is selected carries the global block, because no anchor is known yet: a st
 
 One group of answers carries the global block although a route was selected. A rejection raised
 before authentication completed -- the verb gate's `405`, a bearer `401`, a filter `400`, a declared
-body over the cap, a CSRF refusal -- is answered to an unauthenticated caller as the unrouted `404`,
-and the gateway restores the headers the request carried before its route was selected, so that the
+body over the cap, a CSRF refusal, an unexpected internal failure of the gateway -- is answered as the
+unrouted `404` to every caller that has not passed the trust boundary, one with a valid credential
+included, and the gateway restores the headers the request carried before its route was selected, so that the
 answer matches the unrouted one header for header (see
 link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). With
 `security_defaults.uniform_not_found: false` those rejections carry the route's block.

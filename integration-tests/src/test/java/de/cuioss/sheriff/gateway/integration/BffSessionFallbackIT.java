@@ -308,8 +308,10 @@ class BffSessionFallbackIT extends BaseIntegrationTest {
     }
 
     /**
-     * The {@code Authorization} values the BEARER branch must refuse with {@code 401}, each crossed
-     * with the absence and the presence of a live session cookie.
+     * The {@code Authorization} values the BEARER branch must refuse, each crossed with the absence and
+     * the presence of a live session cookie. The refusal is raised before the trust boundary, so the
+     * shipped default answers each of them as the unrouted {@code 404}, with no
+     * {@code WWW-Authenticate} challenge and no login redirect (ADR-0073).
      *
      * @return {@code (description, Authorization value, session cookie present)} triples
      */

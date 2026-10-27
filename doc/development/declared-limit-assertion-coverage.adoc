@@ -554,7 +554,7 @@ declaration's *existence* is proven while its *boundary* is not.
 | `allowed_methods`
   `sheriff-config/gateway.yaml:20` (global), `:176` (graphql), `:181` (upload), `:210`
   (assets-public), `:220` (assets-secure);
-  `reserved-path-overlap/bff-overlap.yaml:37` (endpoint, `["POST"]`)
+  `reserved-path-overlap/bff-overlap.yaml:38` (endpoint, `["POST"]`)
 | Route selection / method gate
 | COVERED
 | `PipelineVerbIT` (four positive controls) with `ErrorContractIT` (`disallowedMethodProblemJson`:

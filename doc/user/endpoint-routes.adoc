@@ -745,12 +745,14 @@ convention nothing validates.
 === Why an existing route answers 404
 
 A request to a route that exists can be answered `404`, exactly as an address without any route is
-answered. That is deliberate. When a caller has not authenticated yet, every rejection a route
-raises before authentication completes is answered as the unrouted `404`: a missing or invalid
+answered. That is deliberate. Every rejection a route raises before authentication has completed --
+before the trust boundary -- is answered as the unrouted `404` to every caller, one with a valid
+credential included: a missing or invalid
 bearer token, a method outside `allowed_methods`, a path outside `allowed_paths`, a refusal of the
-route's `security_filter`, a declared `Content-Length` over `max_body_bytes`, and a CSRF or
-same-origin refusal. Without this, an unauthenticated scanner would learn which addresses name
-routes from the `401`, `405`, `400`, `413` or `403` it receives. The answer is the same in every
+route's `security_filter`, a declared `Content-Length` over `max_body_bytes`, a CSRF or
+same-origin refusal, and an unexpected internal failure of the gateway while it handles the request.
+Without this, an unauthenticated scanner would learn which addresses name routes from the `401`,
+`405`, `400`, `413`, `403` or `500` it receives. The answer is the same in every
 detail: status, body, `Content-Type`, response headers -- no `WWW-Authenticate`, no `Allow` -- and
 the time it takes. A `protocol: grpc` route answers with the HTTP `404` too, not with a gRPC status
 (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
@@ -766,8 +768,8 @@ not see it:
 * The WARN and INFO lines the gateway logs for a rejection name the true event as well (see
   link:../LogMessages.adoc[Log Messages]).
 
-*Who still gets the honest code.* The uniform `404` is for callers that have not passed
-authentication. A client with a valid token keeps every answer raised after authentication: the
+*Who still gets the honest code.* The uniform `404` covers only what is raised before the trust
+boundary. A client with a valid token keeps every answer raised after authentication: the
 `403 insufficient_scope` of a token lacking a scope, the dispatch `408` and `413`, and upstream
 `5xx`. A session route keeps its own answers too: a navigation without a session is redirected into
 the login, and any other request receives `401` `application/problem+json`. Rejections raised before
