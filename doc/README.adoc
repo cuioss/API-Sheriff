@@ -313,6 +313,17 @@ boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Confi
   one. Every unrouted `404` leaves the edge no earlier than a fixed floor plus a random jitter, the
   true event stays metered, and `security_defaults.uniform_not_found` (default `true`) governs both.
   *(Status: accepted.)*
+
+| link:adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]
+| The token-validation extension's metrics collector is kept: at token-sheriff 0.9.8 it resolves its
+  validator through the extension's observed-validator resolver and so publishes
+  `sheriff.token.validation.*` for the gateway's own `@GatewayValidator` validator. Its two health
+  probes stay excluded by `quarkus.arc.exclude-types`, because they would report `UP` while observing
+  nothing this gateway does. No `sheriff.token.issuers.*` projection is introduced and the extension
+  dependency stays. Supersedes
+  link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027],
+  whose live per-issuer key-set readiness (Amendment A1) carries forward unchanged.
+  *(Status: accepted.)*
 |===
 
 NOTE: This index is *not exhaustive* -- most records in link:adr/[`doc/adr/`] have no row here.

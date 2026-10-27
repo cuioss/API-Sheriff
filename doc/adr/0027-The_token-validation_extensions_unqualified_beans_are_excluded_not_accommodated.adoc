@@ -20,7 +20,8 @@
 
 == Status
 
-Proposed
+Superseded by link:0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074].
+The body below is kept as the record of the original decision.
 
 == Context
 
@@ -267,15 +268,13 @@ that one line of bean exclusion solves exactly.
 Report upstream that a bean gating on a namespace a consumer may legitimately never populate should
 neither force aggregate readiness DOWN nor throw on a schedule, and adopt the fix when it lands.
 
-Rejected as the sole remedy, on timing rather than on merit -- the observation is sound and is worth
-raising, and the scheduled collector makes the stronger version of the case: a metrics collector that
-finds no property-based issuers should warn once and go idle rather than fail hard on every tick, for
-any embedder in this position. But it puts this gateway's readiness and its log on another project's
-release cycle. ADR-0022 directs that a tightened upstream default the gateway cannot accommodate is
+Rejected as the sole remedy, on timing rather than on merit -- the scheduled collector makes the
+stronger version of the case: a metrics collector that finds no property-based issuers should warn
+once and go idle rather than fail hard on every tick, for any embedder in this position. But it puts
+this gateway's readiness and its log on another project's release cycle. ADR-0022 directs that a tightened upstream default the gateway cannot accommodate is
 escalated rather than patched around; that posture governs *security defaults*, and this is not one.
 These are observability beans reporting on a mechanism this consumer deliberately does not use, and
-declining to instantiate them narrows nothing the product relies on. Raising it upstream and
-excluding here are complementary, not alternatives.
+declining to instantiate them narrows nothing the product relies on.
 
 The unifying principle: the first two alternatives try to make an uninformative bean *work*, and the
 last two try to make it *someone else's problem*. An observability surface is composed by the

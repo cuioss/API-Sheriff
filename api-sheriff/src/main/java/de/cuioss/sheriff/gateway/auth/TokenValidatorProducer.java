@@ -51,9 +51,12 @@ import org.jspecify.annotations.Nullable;
  * {@code token_validation} block of {@code gateway.yaml}.
  * <p>
  * The produced validator carries the {@link GatewayValidator} qualifier so it coexists with the
- * unqualified validator the {@code token-sheriff-validation-quarkus} extension produces from its
- * {@code sheriff.token.*} property surface — the gateway drives issuers from its own YAML model, not
- * the extension's properties. Each gateway {@link IssuerConfig} maps to a token-sheriff
+ * unqualified validator the {@code token-sheriff-validation-quarkus} extension's own producer declares
+ * for its {@code sheriff.token.*} property surface — the gateway drives issuers from its own YAML
+ * model, not the extension's properties, and nothing here creates the extension's validator. The
+ * extension's accommodated metrics collector observes the validator this class produces, through
+ * its {@code ObservedValidatorResolver}, and publishes {@code sheriff.token.validation.*} for it
+ * (ADR-0074). Each gateway {@link IssuerConfig} maps to a token-sheriff
  * {@link de.cuioss.sheriff.token.validation.IssuerConfig}: an {@code http} JWKS source becomes an
  * {@link HttpJwksLoaderConfig}, a {@code file} source becomes a JWKS file path. Validation is fully
  * offline once the key material has loaded.

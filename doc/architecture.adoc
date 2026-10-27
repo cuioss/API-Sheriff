@@ -1981,6 +1981,26 @@ The manifest requires *paths, errors, and average timing*. These map to:
   checks, before CSRF and authentication), so a request later rejected is still counted. `branch` has
   exactly two values, `bearer` and `session`; `route` is the config-fixed route id. Only
   `session_fallback` routes record it -- a route without the key never produces a series.
+
+| `sheriff_token_validation_errors_total{event_type,result,category}`
+| Counter of token-validation failures of the gateway's bearer-token validator, one series per
+  security event type. Gateway code does not register it: the token-validation extension's metrics
+  collector publishes it. The collector observes the `@GatewayValidator` validator and exports the
+  deltas of its `SecurityEventCounter` once per collection interval (default 10 s), so the series
+  appears within one interval after boot
+  (link:adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
+  `event_type` is the library's event-type name (for example `SIGNATURE_VALIDATION_FAILED`,
+  `TOKEN_EXPIRED`, `ISSUER_MISMATCH`), `result` is always `failure`, and `category` is one of
+  `INVALID_STRUCTURE`, `INVALID_SIGNATURE` and `SEMANTIC_ISSUES`. Every value comes from a closed
+  enumeration, and no series carries an issuer, a subject or a token.
+
+| `sheriff_token_validation_success_operations_total{event_type,result}`
+| The success-side counter of the same collector, one series per success event type (for example
+  `ACCESS_TOKEN_CREATED`, `ACCESS_TOKEN_CACHE_HIT`); `result` is always `success`. The meter is named
+  `sheriff.token.validation.success` with the base unit `operations`, and the Prometheus naming
+  convention appends the base unit before `_total`. The error meter's base unit is `errors`, which
+  already ends its name, so that series carries no such infix. The names and tags are owned by the
+  extension: a release that renames them changes the series this gateway exports.
 |===
 
 OpenTelemetry tracing is a planned (post-MVP) hook per the manifest and is not part of the
@@ -2006,15 +2026,29 @@ scheduler rather than by requests or probes, so an identity provider that comes 
 is picked up within seconds. Readiness reports key-set *availability*, not *freshness*: once a key set
 has loaded, a later refresh failure keeps the held keys in service and readiness `UP` (see
 link:configuration.adoc#_jwks_readiness[Key-set loading and readiness]). A deployment with no
-`token_validation` block has no key set to wait for. A BFF `mode: server` deployment adds an
-`oidc: server` datum and an `issuer_reachability` datum that is *always* `unverified`, whether or not
-it configures `token_validation` and whether the probe is `UP` or `DOWN`; a bearer-only deployment
-emits no `issuer_reachability` datum at all. The probe holds no live reachability signal and sends no
-network request, and key-set state is not one: a loaded key set survives later refresh failures, so
-it would claim `reachable` for an issuer that has since gone offline, and a missing one would claim
-`unreachable` for an issuer that answered with unusable keys. What the key-set state does prove is
-reported by `jwks` and `issuers_loaded`, which alone drive the verdict. A server-mode deployment
-reaches its issuer lazily on the first login, which does not gate boot readiness.
+`token_validation` block has no key set to wait for.
+
+A deployment with an active BFF runtime -- `mode: server` or `mode: cookie` -- adds two data,
+whether or not it configures `token_validation` and whether the probe is `UP` or `DOWN`. `oidc`
+names the mode. `oidc_discovery` reports what the BFF's lazy resolution of the identity provider's
+metadata (`.well-known/openid-configuration`) last did: `not-attempted` until the first engine use
+asks for it, `resolved` when the most recent attempt produced it, and `failed` when the most recent
+attempt threw. A failed attempt is not memoised, so the next engine use tries again. The probe reads
+the datum from a *non-fetching* view and sends no network request of its own. A deployment without
+an active BFF runtime -- bearer-only, or a session mode that built no runtime -- emits neither datum.
+
+`oidc_discovery` never changes the verdict. A failed provider-metadata resolution stops only the
+identity-provider legs (login, refresh, step-up); bearer-only and public routes keep working, so
+taking the instance out of rotation for it would turn an identity-provider outage into a full
+outage. The datum is a state token and nothing else: it names no issuer, URL or cause. Key-set
+state is not a reachability signal either: a loaded key set survives later refresh failures, and a
+missing one says nothing about whether the issuer answered. What the key-set state does prove is
+reported by `jwks` and `issuers_loaded`, which alone drive the verdict.
+
+The token-validation extension's own health probes are not part of this payload. They are excluded
+from the bean set because, against this gateway's validator, they would report `UP` while observing
+nothing the gateway does; `GatewayReadinessCheck` is the only JWKS readiness coverage
+(link:adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
 
 The *construction-failure* leg of the probe is, in the shipped topology, unreachable rather than a
 routine outcome. `TokenValidatorProducer.onStartup` forces the same eager contextual-instance

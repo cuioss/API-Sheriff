@@ -1,0 +1,339 @@
+= ADR-0074: The token-validation extension's metrics collector observes the gateway validator and its health probes stay excluded
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: At token-sheriff 0.9.8 every observability bean of the token-validation extension resolves its validator through ObservedValidatorResolver, which observes the @GatewayValidator validator while the extension's own sheriff.token.issuers.* namespace is empty. The gateway therefore keeps the extension's metrics collector, which publishes sheriff.token.validation.errors and sheriff.token.validation.success for the gateway validator, and keeps excluding only the two health probes, which would report UP while observing nothing this gateway does. No sheriff.token.issuers.* projection is introduced and the extension dependency stays. ADR-0027's Amendment A1, the eager-boot fail-closed assembly and the fail-closed jwks.tls_profile resolution carry forward unchanged.
+// tags: health-checks, readiness, metrics, scheduler, cdi, bean-exclusion, observability, extension-boundary, native-image, token-validation
+// affects: api-sheriff
+// supersedes: 27
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Accepted. Supersedes link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027].
+
+== Decision
+
+=== The question
+
+The gateway depends on the `token-sheriff-validation-quarkus` extension. ADR-0027 removed three of
+its beans from the bean set: two health probes and a scheduled metrics collector. At the time, each
+of them read the extension's own issuer namespace, `sheriff.token.issuers.*`. This gateway never
+populates that namespace. It builds its validator from the `token_validation` block of the gateway
+configuration and injects it under the `@GatewayValidator` qualifier.
+
+The extension has changed since. Upstream `cuioss/TokenSheriff#641` asked the beans to observe the
+validator actually in use and to degrade honestly on an empty namespace. Upstream
+`cuioss/TokenSheriff#617` moved the native-image metadata of the validation library into the library
+jar. Both are released, and both are in the pinned 0.9.8 artifacts.
+
+This record settles three things at 0.9.8:
+
+* which extension beans the gateway keeps,
+* whether the gateway projects its issuers onto the extension's namespace,
+* whether the extension dependency stays.
+
+=== How the extension resolves its validator at 0.9.8
+
+The observability beans no longer read the issuer namespace themselves. They ask
+`observability.ObservedValidatorResolver` which validator to observe. The resolver works in three
+steps:
+
+. It probes the configuration for an enabled `sheriff.token.issuers.*` issuer. The probe reads
+  configuration only and creates no bean.
+. With no enabled issuer, it enumerates `@Any Instance<TokenValidator>`. It skips the handle whose
+  bean class is the extension's own `producer.TokenValidatorProducer`. Reading bean metadata creates
+  no bean, so the extension's producer never runs.
+. Exactly one remaining handle gives the outcome `EXTERNAL_VALIDATOR`. Several handles give
+  `NOT_CONFIGURED` and one WARN that names the candidates. No handle gives `NOT_CONFIGURED`. A
+  `NOT_CONFIGURED` outcome is resolved again on every call; the other outcomes are memoised.
+
+On this gateway exactly one handle remains: the `@GatewayValidator` validator that
+`de.cuioss.sheriff.gateway.auth.TokenValidatorProducer` produces. The resolver therefore observes
+the validator the request path uses.
+
+=== What each extension bean does at 0.9.8
+
+Read from the 0.9.8 `token-sheriff-validation-quarkus` sources and its deployment processor. The
+list covers every bean of the runtime jar, not only the three ADR-0027 named.
+
+[cols="3,2,3,3,4", options="header"]
+|===
+| Bean | Driven by | Reads | Fails when | Observes the gateway validator?
+
+| `health.JwksEndpointHealthCheck` (`@Readiness`, check `jwks-endpoints`)
+| readiness endpoint
+| the observed validator's issuer configurations, through the resolver
+| Never on an empty list. `DOWN` only when an observed issuer's loader is not `OK`.
+| *No.* The core validator exposes no issuer list, so on `EXTERNAL_VALIDATOR` the list is empty.
+  The check reports `UP` with `checkedEndpoints=0`. That is a vacuous signal.
+
+| `health.TokenValidatorHealthCheck` (`@Liveness`, check `jwt-validator`)
+| liveness endpoint
+| the resolver outcome and the size of the observed issuer list
+| Never. It is always `UP`.
+| *No.* It names the outcome and reports `issuerCount=0`. It is a construction fact, not a
+  live signal.
+
+| `metrics.JwtMetricsCollector` (`@Scheduled`, default every 10 s, `@Unremovable`)
+| scheduler
+| the observed validator's `SecurityEventCounter`
+| Never. With nothing observed it returns without work. It re-baselines when the observed
+  validator changes.
+| *Yes.* It exports live counter deltas of the gateway validator's security events.
+
+| `observability.ObservedValidatorResolver`
+| the three beans above and the DevUI service
+| configuration and `@Any Instance<TokenValidator>`
+| Never. It WARNs once per distinct ambiguous candidate set.
+| *Yes.* The outcome here is `EXTERNAL_VALIDATOR`.
+
+| `producer.TokenValidatorProducer`
+| any injection point of an unqualified `TokenValidator`
+| the `sheriff.token.issuers.*` namespace
+| On creation, when no issuer is enabled.
+| *No.* It stays registered as unremovable. Nothing here creates it.
+
+| `producer.BearerTokenProducer`, `interceptor.BearerTokenInterceptor`,
+  `servlet.VertxServletObjectsResolver`
+| `@BearerToken` injection points and `@BearerAuth` methods
+| the unqualified validator
+| On creation, through the extension's producer.
+| *No.* The gateway declares neither annotation, so none of them is created.
+
+| `logging.CustomAccessLogFilter`, `config.AccessLogFilterConfigResolver`
+| JAX-RS requests
+| `cui.http.access-log.filter.*`
+| Never. The filter is off unless enabled.
+| Not a validator observer.
+
+| `runtime.TokenSheriffDevUIRuntimeService`
+| DevUI JSON-RPC, development mode only
+| the resolver
+| Never.
+| *Yes*, through the resolver. It does not exist in the production artifact.
+
+| `mapper.ClaimMapperRegistry`, `mapper.keycloak.KeycloakRolesMapperBean`,
+  `mapper.keycloak.KeycloakGroupsMapperBean`, `validation.TokenValidationRuleRegistry`
+| the extension's producer
+| `sheriff.token.keycloak.*` and discovered beans
+| On a duplicate claim name.
+| *No.* They feed only the extension's producer.
+|===
+
+Three further facts come from the same reading:
+
+* *The collector's log cost is bounded.* It logs at INFO twice when it is created. Every tick logs at
+  DEBUG only. The resolver logs INFO once per outcome change. No category log level is needed.
+* *The collector's meters are bounded.* It registers one counter per event type at creation:
+  `sheriff.token.validation.errors` with the tags `event_type`, `result` and `category`, and
+  `sheriff.token.validation.success` with `event_type` and `result`. Every tag value comes from a
+  closed enumeration. No meter carries an issuer, a subject or a token.
+* *The exclusion still wins over the build step.* `TokenSheriffProcessor` registers the resolver, the
+  collector and both probes as unremovable additional beans. `quarkus.arc.exclude-types` removes an
+  excluded type regardless. `DefaultProfileReadinessTest` pins this for the probes, paired with a
+  control that their classes are on the classpath.
+
+=== The health-probe account, corrected
+
+ADR-0027 records that the extension's probes report `DOWN`. The account holds for the versions that
+decision was taken on. It does not hold at 0.9.8.
+
+* *Up to 0.9.4 the probes reported `DOWN`.* Both injected the issuer list the extension's producer
+  produces. Creating that list fails when no issuer is enabled. The runtime jar carries a Jandex
+  index, so Quarkus discovered both probes as beans although the deployment processor did not list
+  them. The readiness payload therefore carried the cause "No issuer configurations found in
+  properties", as recorded on 0.9.3. Only `jwks-endpoints` is a readiness probe; `jwt-validator` is a
+  liveness probe and failed liveness the same way.
+* *Up to 0.9.4 the collector failed on every tick.* It constructor-injected the extension's produced
+  `SecurityEventCounter`, which needs the same failing producer.
+* *From 0.9.5 on all three read through the resolver.* On this gateway the probes report `UP` and the
+  collector observes the gateway validator. 0.9.7 also lists the probes as unremovable additional
+  beans. At 0.9.8 neither probe can report `DOWN` here; each reports a vacuous `UP`.
+
+=== The decision
+
+*The gateway keeps the extension's metrics collector and keeps excluding its two health probes.*
+
+* *`metrics.*` is accommodated.* The collector observes the gateway validator, so it closes the
+  token-validation metrics gap. The gateway adds no second binding of the validator's
+  `SecurityEventCounter`.
+* *`health.*` stays excluded.* `quarkus.arc.exclude-types` names
+  `de.cuioss.sheriff.token.quarkus.health.*` and nothing else. Both probes would report `UP` while
+  they observe nothing this gateway does. ADR-0027's principle stands unchanged for them: a bean that
+  observes machinery the product does not use is removed, not configured into a working state.
+* *No projection onto `sheriff.token.issuers.*`.* The gateway configuration stays the only issuer
+  source. The extension's namespace stays empty in every profile.
+* *The extension dependency stays.* The collector the gateway now uses lives in it.
+
+The exclusion is still declared unconditionally and in no profile
+(link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]).
+It is still named per package and never as a global switch
+(link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]).
+
+=== The fitness function follows the new scope
+
+ADR-0027's fitness function asserted that no scheduled job names the extension's Quarkus wiring. That
+rule now contradicts the decision, because the collector is such a job. The rule becomes: *every
+scheduled job the extension owns is the metrics collector, and one collector tick completes without
+throwing.* The matched positive and negative control over the job filter stays.
+`ExtensionUnqualifiedBeanExclusionTest` carries the rule. It also asserts that the resolver reports
+`EXTERNAL_VALIDATOR` and observes the `@GatewayValidator` instance, and that a rejected token moves a
+`sheriff.token.validation.errors` counter after a collector tick.
+
+ADR-0027 section 2 records why the scope cannot be derived from the extension's CDI registrations.
+That reasoning still holds and is not repeated here.
+
+=== Native image
+
+The validation library jar ships its own `reflect-config.json` and `native-image.properties`. At
+0.9.8 the extension's build step adds reflection for `MeterRegistry`, the MicroProfile `JsonWebToken`
+adapter and the claim-mapper constructors. It also registers the DSL-JSON service providers. Whether
+the library's own metadata alone carries this gateway's native image was not measured. The decision
+does not depend on it, because the dependency stays. `MetricsIT` proves on the native image that the
+collector is registered and publishes for the gateway validator.
+
+=== Carried forward unchanged
+
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc#amendment-a1[ADR-0027 Amendment A1]:
+  readiness reads a live, non-fetching per-issuer key-set state and reports `DOWN` while any issuer
+  has no key set. `GatewayReadinessCheck` stays the only JWKS readiness coverage. The operator-facing
+  contract is in link:../configuration.adoc#_jwks_readiness[the configuration reference].
+* The eager-boot, fail-closed assembly: `TokenValidatorProducer.onStartup` forces the validator into
+  existence at boot, and a misconfigured issuer is a boot refusal.
+* The fail-closed `jwks.tls_profile` resolution: `JwksTrustProfileResolver` refuses a name it cannot
+  resolve rather than falling back to default trust.
+
+=== Upstream
+
+ADR-0027 recommended raising the configuration-model finding upstream. That was done and answered:
+`cuioss/TokenSheriff#641` gave the beans the resolver, and `cuioss/TokenSheriff#617` moved the
+native metadata into the library. No upstream escalation is owed. The 0.9.8 reading found no gap
+that affects this gateway, so no new upstream issue is filed.
+
+== Alternatives rejected
+
+=== Adopt the upstream fix and delete the exclusion
+
+Remove `quarkus.arc.exclude-types` entirely and let all extension beans run.
+
+Rejected for the health half. Both probes would join the health payload and report `UP` with
+`checkedEndpoints=0` and `issuerCount=0`. They would observe nothing this gateway does, while a
+reader would take them as JWKS coverage. That is the uninformative-green failure ADR-0027 removed.
+The resolver cannot fix it: the core validator exposes no issuer list, so the probe has nothing to
+check on `EXTERNAL_VALIDATOR`. The metrics half of this option is what the decision keeps.
+
+=== Project the gateway configuration onto `sheriff.token.issuers.*` through a `ConfigSource`
+
+Re-read the `token_validation` block before CDI starts and emit the extension's issuer keys, so the
+extension builds a working validator and its probes see real issuers.
+
+Rejected on four counts:
+
+* *A live CDI seam exists.* `NeutralTlsConfigSource` projects configuration only where no live seam
+  can reach. Its own javadoc declines to project the `tls` block for exactly that reason.
+  `TokenValidatorProducer` is such a seam for token validation, and the resolver already observes
+  what it builds.
+* *It builds a second validator.* The extension's producer would build its own JWKS loaders for the
+  same issuers. That doubles the key fetches and lets two copies of the key sets drift apart, unless
+  the gateway's producer is removed as well.
+* *It bypasses the gateway's guarantees.* The extension's producer knows none of the gateway's own
+  loader wrapper, the live key-set readiness of Amendment A1, the derived egress allowance or the
+  fail-closed `jwks.tls_profile` resolution. Each would have to be re-expressed in the extension's
+  property model or lost.
+* *It closes no gap.* The collector already publishes for the gateway validator without it.
+
+=== Project the configuration and drop the extension
+
+Depend on the plain validation library only, now that it carries its own native metadata, and keep or
+project the issuer configuration by other means.
+
+Rejected under
+link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062].
+Dropping the extension drops the collector, so the gateway would have to bind the validator's
+`SecurityEventCounter` by hand. A hand-rolled equivalent of a working platform mechanism needs a
+recorded reason, and there is none. The option also rests on the unmeasured claim that the library's
+metadata alone carries the native image.
+
+=== Keep the full exclusion and bind the counter in gateway code
+
+Keep excluding `health.*` and `metrics.*`, and add a second binding beside
+`SheriffMetrics.bindSecurityEventCounter` for the gateway validator's counter.
+
+Rejected under ADR-0062 for the same reason: it hand-rolls what the accommodated collector does,
+without a property the collector lacks. It would also keep a second package on the exclusion list,
+and with it a second package to re-read on every upgrade.
+
+== Consequences
+
+=== Positive
+
+* The gateway publishes token-validation meters for the validator the request path uses. Signature
+  failures, expiries, issuer mismatches and key-set failures become observable per event type.
+* No gateway code duplicates the collector. The binding is maintained upstream, beside the counter it
+  reads.
+* The exclusion shrinks to one package. The re-read obligation on every upgrade shrinks with it.
+* Readiness and liveness are unchanged. The health payload carries no extension check.
+
+=== Negative
+
+* *The scheduler now runs in production.* The collector is the first scheduled job, so Quarkus starts
+  the scheduler. One tick runs per collection interval and logs at DEBUG only.
+* *The meters appear after the collector is created.* The collector is created on its first tick, so
+  the meters appear within one collection interval after boot. Events recorded before that are
+  exported on the first update.
+* *The meter names and tags are owned upstream.* An extension release that renames them changes the
+  series this gateway exports. `MetricsIT` asserts the error series on the native image, so a rename
+  turns that suite red.
+* *The exclusion is still a type pattern over another project's package.* A reorganisation of the
+  extension's health package would stop matching silently. `DefaultProfileReadinessTest` turns that
+  red, because it asserts the probes are absent while their classes are present.
+
+=== Risks
+
+* *A second foreign validator stops the meters silently.* A further `TokenValidator` bean outside the
+  extension makes the resolver ambiguous. It WARNs once, reports `NOT_CONFIGURED`, and the collector
+  goes idle. `ExtensionUnqualifiedBeanExclusionTest` asserts the resolver observes the
+  `@GatewayValidator` instance, so the build turns red before such a change ships.
+* *A populated extension namespace redirects the collector.* A deployment that sets an enabled
+  `sheriff.token.issuers.*` issuer switches the resolver to the extension's own validator. The
+  collector would then report on a validator the request path never touches. The shipped artifact
+  sets none, and `DefaultProfileReadinessTest` asserts that the effective configuration carries no
+  such key. A deployment can still set one through the environment, and nothing detects that.
+* *The list lags the extension.* A release that adds an eagerly-driven bean outside the two packages
+  read here reproduces the defect class ADR-0027 describes. The mitigation stays the same: read the
+  extension's bean set on every upgrade, as this record does for 0.9.8.
+
+== Links
+
+* link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]
+  -- the superseded decision, its Amendment A1 and the reasons the exclusion scope cannot be derived
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+  -- the platform-preferred rule that decides between the collector and a gateway binding
+* link:0032-The_shipped_artifact_declares_nothing_test-shaped_the_deployment_supplies_what_it_names.adoc[ADR-0032]
+  -- the rule under which the exclusion is unconditional
+* link:0022-Upstream_security-hardening_default_changes_are_adopted_and_documented_never_locally_reverted.adoc[ADR-0022]
+  -- the posture that forbids a global switch in place of the per-package exclusion
+* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  -- the fitness-function rule the rewritten scheduled-job assertion follows
+* link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
+  -- the `token_validation` surface the gateway validator is built from
+* link:../configuration.adoc#_jwks_readiness[Configuration reference] -- the readiness contract
+* link:../architecture.adoc[Architecture] -- the metrics and health surfaces
+* `api-sheriff/src/main/resources/application.properties` -- the exclusion and its rationale
+* `ExtensionUnqualifiedBeanExclusionTest`, `DefaultProfileReadinessTest` -- the in-process pins
+* `MetricsIT` -- the native-image proof of the token-validation meters
+* Upstream `cuioss/TokenSheriff#641` -- the resolver that lets the beans observe a foreign validator
+* Upstream `cuioss/TokenSheriff#617` -- the native metadata in the plain validation library

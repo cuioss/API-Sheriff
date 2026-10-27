@@ -145,8 +145,8 @@ A key declared unconditionally *because* a profile-scoped declaration would be a
 working, not an exception to it. The gateway ships exactly such a declaration: the key-less TLS
 bucket that marks the plain-HTTP management opt-out
 (`quarkus.tls.plain-management.reload-period`) is declared in no profile, and the bean-exclusion key
-that removes the unused extension health and metrics beans (`quarkus.arc.exclude-types`, see
-link:0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027])
+that removes the extension's health beans (`quarkus.arc.exclude-types`, see
+link:0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074])
 likewise. Both carry a comment citing this rule as the reason they are unconditional. Neither is
 test-shaped: both are product configuration that happens to be inert until a deployment selects the
 behaviour it enables.

@@ -1145,10 +1145,16 @@ key id no held key set contains. Diagnose that class of failure from the contain
 green readiness probe.
 ====
 
-The token-validation extension's two unqualified health probes stay excluded from the bean set
-(link:../adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]),
-because they observe an issuer namespace this gateway never populates; the per-issuer signal is
-carried by the gateway's own probe instead.
+Of the token-validation extension's observability beans, only the metrics collector runs in this
+stack (link:../adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
+Its two health probes, `jwks-endpoints` and `jwt-validator`, stay excluded from the bean set: against
+the gateway's own validator they see no issuer list and would report a vacuous `UP`, so the health
+payload of every instance here carries `GatewayReadinessCheck` alone, and the per-issuer signal is
+the gateway's own. The collector observes the `@GatewayValidator` validator and publishes its
+security events as `sheriff_token_validation_errors_total` and
+`sheriff_token_validation_success_operations_total`; `MetricsIT` asserts the error series on the
+native image. The extension's own issuer namespace stays empty, so its own validator producer never
+runs and the stack holds exactly one validator.
 
 [#baked-container-check]
 === The baked container check: what it proves, and what it deliberately does not

@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.quarkus;
 
 import de.cuioss.sheriff.gateway.auth.GatewayValidator;
 import de.cuioss.sheriff.gateway.auth.IssuerKeySetStatus;
+import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
@@ -33,6 +34,7 @@ import org.eclipse.microprofile.health.HealthCheck;
 import org.eclipse.microprofile.health.HealthCheckResponse;
 import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
 import org.eclipse.microprofile.health.Readiness;
+import org.jspecify.annotations.Nullable;
 
 /**
  * SmallRye {@code @Readiness} probe served on the management port, reporting whether the gateway is
@@ -74,17 +76,17 @@ import org.eclipse.microprofile.health.Readiness;
  *       issuer, a URL, a hostname or a cause; causes reach the operator through the log.
  *       A gateway with no {@code token_validation} block needs no bearer validation, so JWKS is
  *       reported {@code not-applicable} and does not gate readiness.</li>
- *   <li><strong>Issuer reachability (mode: server)</strong> — when the gateway runs a BFF
- *       {@code oidc.session.mode: server} deployment, the probe adds an {@code oidc=server} datum and
- *       an {@code issuer_reachability} datum that is <em>always</em> {@code unverified}. The probe
- *       has no live reachability signal and deliberately sends no network request, and the key-set
- *       state is not one: once an issuer's key set has loaded it stays loaded through later refresh
- *       failures, so a loaded key set would claim {@code reachable} for an issuer that has since gone
- *       offline, and a missing one would claim {@code unreachable} for an issuer that answered with
- *       unusable keys. What the key-set state <em>does</em> prove is reported by the {@code jwks}
- *       and {@code issuers_loaded} data above, which drive the verdict unchanged. The
- *       confidential-client engine reaches the issuer lazily on the first login, which does not gate
- *       boot readiness.</li>
+ *   <li><strong>OIDC provider metadata (BFF, both session modes)</strong> — when the gateway runs an
+ *       active BFF runtime, {@code oidc.session.mode: server} or {@code cookie}, the probe adds an
+ *       {@code oidc=<mode>} datum and an {@code oidc_discovery} datum read from the non-fetching
+ *       {@link DiscoveryStatus}: {@code not-attempted} (no engine use has asked for the provider
+ *       metadata yet), {@code resolved} (the most recent resolution produced it) or {@code failed} (the
+ *       most recent resolution threw). The probe sends no network request; discovery stays lazy, so a
+ *       fresh instance reports {@code not-attempted}. <strong>The datum never changes the UP/DOWN
+ *       verdict.</strong> A provider-metadata failure stops the BFF's identity-provider legs only —
+ *       login, refresh, step-up — while bearer-only and public routes keep working; flipping readiness would take the whole instance out of rotation for an
+ *       identity-provider outage those routes do not depend on. The datum names no issuer, URL or
+ *       cause; the engine's own failure logging carries the cause.</li>
  * </ul>
  * The validator and the key-set view are resolved lazily through {@link Instance}s, together and
  * only on the {@code token_validation} leg: the view is published by the validator's assembly, so a
@@ -114,15 +116,8 @@ public class GatewayReadinessCheck implements HealthCheck {
     /** At least one issuer's most recent load attempt failed, or the validator could not be built. */
     private static final String JWKS_UNAVAILABLE = "unavailable";
     private static final String DATA_OIDC = "oidc";
-    private static final String DATA_ISSUER_REACHABILITY = "issuer_reachability";
-
-    /** The readiness payload's mode label — the same canonical spelling the config model owns. */
-    private static final String MODE_SERVER = OidcConfig.Session.MODE_SERVER;
-    /**
-     * The only value the {@code issuer_reachability} datum carries: readiness holds no live
-     * reachability signal, and cached key-set state is not one (see the class Javadoc).
-     */
-    private static final String ISSUER_UNVERIFIED = "unverified";
+    /** The provider-metadata datum, one of the fixed {@link DiscoveryStatus.State} tokens. */
+    private static final String DATA_OIDC_DISCOVERY = "oidc_discovery";
 
     /**
      * The fixed, non-disclosing value of the {@code error} datum on a DOWN response.
@@ -131,7 +126,7 @@ public class GatewayReadinessCheck implements HealthCheck {
      * internal hostnames, TLS/trust detail and filesystem paths, and this payload is served on the
      * management interface — which has exactly one port and may legitimately be plain HTTP (ADR-0025),
      * so it must be treated as reachable by anything that can reach that port. Readiness owes the
-     * caller a <em>state</em>, not a cause (ADR-0027): the datum is now a bounded constant, and the
+     * caller a <em>state</em>, not a cause (ADR-0027, carried forward by ADR-0074): the datum is now a bounded constant, and the
      * cause reaches the operator through {@code WARN ApiSheriff-116} instead.
      */
     private static final String ERROR_VALIDATION_UNAVAILABLE = "validation-unavailable";
@@ -139,6 +134,7 @@ public class GatewayReadinessCheck implements HealthCheck {
     private final GatewayConfig gatewayConfig;
     private final Instance<TokenValidator> gatewayValidator;
     private final Instance<IssuerKeySetStatus> issuerKeySetStatus;
+    private final DiscoveryStatus discoveryStatus;
 
     /**
      * @param gatewayConfig      the bound, boot-validated gateway document
@@ -146,14 +142,17 @@ public class GatewayReadinessCheck implements HealthCheck {
      * @param issuerKeySetStatus the lazily-resolved, non-fetching per-issuer key-set view published by
      *                           the validator's assembly; resolved only when {@code token_validation}
      *                           is configured
+     * @param discoveryStatus    the non-fetching view of the most recent OIDC provider-metadata
+     *                           resolution; the inert view on a gateway without an active BFF runtime
      */
     @Inject
     public GatewayReadinessCheck(GatewayConfig gatewayConfig,
             @GatewayValidator Instance<TokenValidator> gatewayValidator,
-            Instance<IssuerKeySetStatus> issuerKeySetStatus) {
+            Instance<IssuerKeySetStatus> issuerKeySetStatus, DiscoveryStatus discoveryStatus) {
         this.gatewayConfig = gatewayConfig;
         this.gatewayValidator = gatewayValidator;
         this.issuerKeySetStatus = issuerKeySetStatus;
+        this.discoveryStatus = discoveryStatus;
     }
 
     /**
@@ -174,12 +173,13 @@ public class GatewayReadinessCheck implements HealthCheck {
             builder.withData(DATA_CONFIG_VERSION, configVersion);
         }
 
-        if (isServerSessionMode()) {
-            // Reachability is never inferred from key-set state: a loaded key set survives later refresh
-            // failures and a missing one says nothing about the network. With no live signal to report,
-            // the datum says so, on UP and DOWN alike.
-            builder.withData(DATA_OIDC, MODE_SERVER)
-                    .withData(DATA_ISSUER_REACHABILITY, ISSUER_UNVERIFIED);
+        String bffMode = activeBffMode();
+        if (bffMode != null) {
+            // A non-fetching read of what the lazy discovery last did, on UP and DOWN alike. It is
+            // reported beside the verdict and never feeds it: a provider-metadata outage stops the
+            // identity-provider legs only, not the bearer-only and public routes.
+            builder.withData(DATA_OIDC, bffMode)
+                    .withData(DATA_OIDC_DISCOVERY, discoveryStatus.state().token());
         }
 
         TokenValidationConfig tokenValidation = gatewayConfig.tokenValidation();
@@ -199,7 +199,7 @@ public class GatewayReadinessCheck implements HealthCheck {
             // deliberately retained. TokenValidatorProducer.onStartup forces the validator (and with
             // it the key-set view) into existence at StartupEvent, so a construction-failing JWKS
             // source aborts boot non-zero and this probe is never called. The eager-boot coupling is
-            // a fail-CLOSED security property (ADR-0027): a misconfigured issuer must abort startup
+            // a fail-CLOSED security property (ADR-0027, carried forward by ADR-0074): a misconfigured issuer must abort startup
             // rather than let the gateway serve traffic and fail at the first bearer request.
             //
             // Kept because removing the catch would not remove the failure path, only move its
@@ -230,8 +230,8 @@ public class GatewayReadinessCheck implements HealthCheck {
     /**
      * The single DOWN renderer both the construction-failure leg and the live key-set leg use: a fixed
      * {@code jwks} status token beside whatever fixed data the caller already gathered — never an
-     * issuer name, URL, hostname or cause. It adds no reachability claim; a server-mode payload keeps
-     * the {@code unverified} datum recorded before either leg ran.
+     * issuer name, URL, hostname or cause. It leaves the {@code oidc} and {@code oidc_discovery} data
+     * recorded before either leg ran untouched.
      *
      * @param builder    the response builder carrying the data gathered so far
      * @param jwksStatus the fixed {@code jwks} status token
@@ -242,14 +242,19 @@ public class GatewayReadinessCheck implements HealthCheck {
     }
 
     /**
-     * @return {@code true} when the gateway runs a BFF {@code oidc.session.mode: server} deployment,
-     *         so the {@code oidc} and {@code issuer_reachability} data are part of readiness
+     * @return the canonical mode label ({@code server} or {@code cookie}) when the gateway runs an
+     *         active BFF runtime, so the {@code oidc} and {@code oidc_discovery} data are part of
+     *         readiness; {@code null} otherwise
      */
-    private boolean isServerSessionMode() {
-        // The SHARED predicate on the config model, identical to the one boot validation, the edge
-        // cap and the runtime binding selection read — never a locally-declared constant.
+    private @Nullable String activeBffMode() {
+        // The runtime producer decides activation and hands out the tracking view only for an active
+        // runtime, so applicability is read from the view rather than re-derived here. The mode label
+        // comes from the SHARED predicate on the config model — never a locally-declared constant.
         OidcConfig oidc = gatewayConfig.oidc();
         OidcConfig.Session session = oidc == null ? null : oidc.session();
-        return session != null && session.isServerMode();
+        if (!discoveryStatus.isApplicable() || session == null) {
+            return null;
+        }
+        return session.isCookieMode() ? OidcConfig.Session.MODE_COOKIE : OidcConfig.Session.MODE_SERVER;
     }
 }

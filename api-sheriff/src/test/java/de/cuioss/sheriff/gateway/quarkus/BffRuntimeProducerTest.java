@@ -119,6 +119,7 @@ import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry;
 import de.cuioss.sheriff.gateway.bff.reserved.ReservedPathRegistry.ReservedEndpoint;
 import de.cuioss.sheriff.gateway.bff.reserved.StepUpEndpoint;
 import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
+import de.cuioss.sheriff.gateway.bff.runtime.DiscoveryStatus;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionAuthenticationStage;
 import de.cuioss.sheriff.gateway.bff.session.InMemorySessionStore;
@@ -143,8 +144,10 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
+import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
 import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
+import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
 import de.cuioss.sheriff.token.client.config.ClientConfiguration;
 import de.cuioss.sheriff.token.client.discovery.DiscoveryResolver;
@@ -207,7 +210,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * stage are wired) only when a global {@code oidc} block with {@code session.mode=server} and a
  * {@code redirect_uri} is configured, and inert (bearer-only) otherwise. Assembly resolves no OIDC
  * discovery (that is deferred to first engine use), so the producer builds a working runtime without
- * a live IdP. The requests a produced runtime sends on its back-channel — discovery, the pushed
+ * a live IdP, and the {@link DiscoveryStatus} it publishes for readiness stays {@code not-attempted}
+ * until an engine use asks for the provider metadata. The requests a produced runtime sends on its back-channel — discovery, the pushed
  * authorization request, the code exchange, the refresh grant and revocation — are asserted against
  * {@link StubIdentityProvider}; the round-trips that need a real grant are covered by the Keycloak
  * integration tests.
@@ -869,6 +873,84 @@ class BffRuntimeProducerTest {
                                 () -> assertFalse(message.contains(content),
                                         "the file content is never echoed: " + message));
                     }));
+        }
+    }
+
+    /**
+     * The {@link DiscoveryStatus} the producer publishes for readiness: an active runtime in either
+     * session mode gets the tracking view, which runtime assembly leaves {@code not-attempted} because
+     * boot never resolves the provider metadata; a gateway without an active runtime gets the inert
+     * view. The transitions to {@code resolved} and {@code failed} need an engine use and are driven
+     * against the stub identity provider in {@code StubIdentityProviderRuntime}.
+     */
+    @Nested
+    @DisplayName("Discovery status — the non-fetching provider-metadata view the producer publishes")
+    class DiscoveryStatusPublication {
+
+        @Test
+        @DisplayName("runtime assembly leaves the view not-attempted in server and cookie mode")
+        void assemblyLeavesTheViewNotAttempted() {
+            assertAll("boot does not depend on the identity provider",
+                    Stream.of(serverModeOidc(), cookieModeOidc()).map(oidc -> (Executable) () -> {
+                        BffRuntimeProducer producer = producer(oidc);
+
+                        BffRuntime runtime = producer.bffRuntime();
+                        DiscoveryStatus status = producer.discoveryStatus();
+
+                        assertAll("the view of a freshly assembled runtime for " + oidc.session(),
+                                () -> assertTrue(runtime.isActive(), "precondition: the runtime is active"),
+                                () -> assertTrue(status.isApplicable(), "an active runtime gets the tracking view"),
+                                () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, status.state(),
+                                        "assembly resolves no provider metadata"));
+                    }));
+        }
+
+        @Test
+        @DisplayName("producing the view first builds no runtime and resolves nothing; the runtime then records into it")
+        void theViewIsTheOneTheRuntimeRecordsInto() {
+            BffRuntimeProducer producer = producer(serverModeOidc());
+
+            DiscoveryStatus before = producer.discoveryStatus();
+            producer.bffRuntime();
+            DiscoveryStatus after = producer.discoveryStatus();
+
+            assertAll("one view per producer, whichever producer method runs first",
+                    () -> assertSame(before, after, "the readiness probe and the runtime share one view"),
+                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, after.state()));
+        }
+
+        @Test
+        @DisplayName("a bearer-only gateway gets the inert view")
+        void bearerOnlyGetsTheInertView() {
+            RecordingProducer producer = new RecordingProducer(GatewayConfig.builder().version(1).build(),
+                    TOKEN_VALIDATOR, LOGOUT_TOKEN_VERIFIER);
+
+            DiscoveryStatus status = producer.discoveryStatus();
+
+            assertAll("no oidc block, no BFF runtime, no discovery datum",
+                    () -> assertFalse(producer.bffRuntime().isActive(), "precondition: the runtime is inert"),
+                    () -> assertFalse(status.isApplicable()),
+                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, status.state()));
+        }
+
+        @Test
+        @DisplayName("a session mode without a redirect_uri builds no runtime and gets the inert view")
+        void inactiveModeGetsTheInertView() {
+            OidcConfig withoutRedirect = OidcConfig.builder()
+                    .issuer(ISSUER)
+                    .clientId("gateway-client")
+                    .clientSecret("secret")
+                    .scopes(List.of("openid"))
+                    .session(OidcConfig.Session.builder().mode("server").build())
+                    .build();
+            BffRuntimeProducer producer = producer(withoutRedirect);
+
+            DiscoveryStatus status = producer.discoveryStatus();
+
+            assertAll("the view follows the activation predicate, not the mere presence of a mode",
+                    () -> assertFalse(producer.bffRuntime().isActive(), "precondition: the runtime is inert"),
+                    () -> assertFalse(status.isApplicable(),
+                            "an inactive runtime never resolves metadata, so it reports no discovery datum"));
         }
     }
 
@@ -2569,6 +2651,63 @@ class BffRuntimeProducerTest {
                                     + "chain its I/O failure as the cause"),
                     () -> assertEquals(List.of(), stub.received(StubIdentityProvider.Endpoint.DISCOVERY),
                             "the stub records no request"));
+        }
+
+        @Test
+        @DisplayName("Should record resolved in the published discovery view once a login resolves the metadata")
+        void discoveryStatusRecordsResolvedOnFirstEngineUse() {
+            BffRuntimeProducer producer = stubProducer(stubOidc().build());
+            BffRuntime runtime = producer.bffRuntime();
+            DiscoveryStatus.State afterAssembly = producer.discoveryStatus().state();
+
+            BffRuntime.ReservedHttpResponse answer = login(runtime, "/");
+
+            assertAll("the first engine use resolves the metadata and records it",
+                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, afterAssembly,
+                            "precondition: assembly asked the stub for nothing"),
+                    () -> assertEquals(302, answer.status(), "precondition: the login went through"),
+                    () -> assertEquals(1, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
+                            "the login is what fetched the discovery document"),
+                    () -> assertEquals(DiscoveryStatus.State.RESOLVED, producer.discoveryStatus().state()));
+        }
+
+        @Test
+        @DisplayName("Should record failed in the published discovery view when the issuer is unreachable")
+        void discoveryStatusRecordsFailedForAnUnreachableIssuer() throws Exception {
+            String unreachableIssuer = "https://" + LoopbackHost.ADDRESS + ":" + UnreachablePort.pick();
+            BffRuntimeProducer producer = stubProducer(stubOidc().issuer(unreachableIssuer).build());
+            BffRuntime runtime = producer.bffRuntime();
+            DiscoveryStatus.State afterAssembly = producer.discoveryStatus().state();
+
+            assertThrows(RuntimeException.class, () -> login(runtime, "/"),
+                    "a login cannot start without the provider metadata");
+
+            assertAll("the failed resolution is recorded, not swallowed",
+                    () -> assertEquals(DiscoveryStatus.State.NOT_ATTEMPTED, afterAssembly,
+                            "precondition: an unreachable issuer still assembles, because discovery is deferred"),
+                    () -> assertEquals(DiscoveryStatus.State.FAILED, producer.discoveryStatus().state()));
+        }
+
+        @Test
+        @DisplayName("Should retry a failed resolution on the next engine use and record resolved")
+        void discoveryStatusRecordsTheRetryAfterAFailure() {
+            BffRuntimeProducer producer = stubProducer(stubOidc().build());
+            BffRuntime runtime = producer.bffRuntime();
+            stub.script(StubIdentityProvider.Endpoint.DISCOVERY,
+                    StubIdentityProvider.Answer.json(503, "{\"error\":\"temporarily_unavailable\"}"));
+
+            assertThrows(RuntimeException.class, () -> login(runtime, "/"),
+                    "the first login meets a discovery endpoint that refuses");
+            DiscoveryStatus.State afterRefusal = producer.discoveryStatus().state();
+            BffRuntime.ReservedHttpResponse retried = login(runtime, "/");
+
+            assertAll("a failed resolution is not cached: the next engine use fetches again",
+                    () -> assertEquals(DiscoveryStatus.State.FAILED, afterRefusal),
+                    () -> assertEquals(302, retried.status(), "the second login resolved the metadata"),
+                    () -> assertEquals(2, stub.received(StubIdentityProvider.Endpoint.DISCOVERY).size(),
+                            "each attempt asked the stub once"),
+                    () -> assertEquals(DiscoveryStatus.State.RESOLVED, producer.discoveryStatus().state(),
+                            "the last attempt wins"));
         }
 
         @Test

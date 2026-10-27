@@ -34,9 +34,14 @@ import jakarta.inject.Qualifier;
  * extension produces from its {@code sheriff.token.*} property surface.
  * <p>
  * The gateway configures issuers through its own YAML model, not the extension's MicroProfile
- * properties, so the two producers must coexist without an ambiguous-dependency clash. The gateway
- * request pipeline injects {@code @GatewayValidator TokenValidator}; the extension's own beans keep
- * their unqualified default.
+ * properties. The extension's {@code producer.TokenValidatorProducer} still declares its unqualified
+ * validator, so the two producers must coexist without an ambiguous-dependency clash: the qualifier
+ * keeps the gateway request pipeline's {@code @GatewayValidator TokenValidator} injection unambiguous.
+ * <p>
+ * The extension's accommodated metrics collector observes this qualified validator: its
+ * {@code observability.ObservedValidatorResolver} skips the extension's own producer and resolves
+ * the one remaining {@code TokenValidator} bean, which is this one. The extension's health probes
+ * stay excluded from the bean set (ADR-0074).
  *
  * @author API Sheriff Team
  * @since 1.0

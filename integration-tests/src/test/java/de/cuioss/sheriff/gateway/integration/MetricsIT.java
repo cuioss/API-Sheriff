@@ -17,10 +17,15 @@ package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
+import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
+import de.cuioss.sheriff.token.commons.events.EventCategory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +47,11 @@ import org.junit.jupiter.api.Test;
  * {@code session_fallback} route. The stack declares two such routes; the second,
  * {@code bff-unassigned-scope-fallback}, is driven by {@link BffSessionScopeParityIT} against this
  * same gateway instance, so its series may or may not be present when this suite scrapes.
+ * <p>
+ * {@code sheriff_token_validation_errors_total} is not registered by gateway code: the
+ * token-validation extension's metrics collector publishes it for the {@code @GatewayValidator}
+ * validator (ADR-0074). A rejected bearer token moving that series on the native image is the proof
+ * that the collector is registered in the image and observes the validator the request path uses.
  */
 class MetricsIT extends BaseIntegrationTest {
 
@@ -67,6 +77,32 @@ class MetricsIT extends BaseIntegrationTest {
 
     /** A path on the plain {@code require: bearer} route of the {@code secure} anchor. */
     private static final String BEARER_ROUTE_PATH = "/secure/get";
+
+    /**
+     * The token-validation error counter the token-validation extension's metrics collector publishes
+     * for the gateway validator (ADR-0074). Its base unit {@code errors} already ends the meter name,
+     * so the exposed name carries no unit infix.
+     */
+    private static final String TOKEN_VALIDATION_ERRORS_TOTAL = "sheriff_token_validation_errors_total";
+    private static final String FAILURE_RESULT_LABEL = "result=\"failure\"";
+
+    /**
+     * The closed set of {@code category} labels the error counter carries, one per failure category.
+     * Derived from the library's {@link EventCategory} rather than restated: the collector tags each
+     * error series with {@code EventCategory#name()} of its event type (ADR-0074), so a category the
+     * library adds or renames moves this set with it instead of leaving a hand-written copy stale.
+     */
+    private static final Set<String> TOKEN_VALIDATION_CATEGORY_LABELS = Arrays.stream(EventCategory.values())
+            .map(category -> "category=\"" + category.name() + "\"")
+            .collect(Collectors.toUnmodifiableSet());
+
+    /**
+     * How long a rejected token may take to reach the error counter. The collector exports the gateway
+     * validator's counts once per collection interval (10 s by default), so the bound covers two ticks
+     * plus scrape latency on a loaded host.
+     */
+    private static final Duration TOKEN_VALIDATION_EXPORT_BOUND = Duration.ofSeconds(45);
+    private static final long POLL_INTERVAL_MILLIS = 500;
 
     @Test
     @DisplayName("the management metrics endpoint serves the Prometheus exposition format")
@@ -236,5 +272,70 @@ class MetricsIT extends BaseIntegrationTest {
         assertTrue(foreignBranch.isEmpty(),
                 "sheriff_auth_branch_total must carry only branch=\"bearer\" or branch=\"session\", but exposes "
                         + foreignBranch);
+    }
+
+    @Test
+    @DisplayName("sheriff_token_validation_errors_total moves after a rejected bearer token, exported by the extension's collector")
+    void tokenValidationErrorsMeterMovesAfterRejectedBearerToken() {
+        // Arrange — the collector registers one series per failure event type when it is created, and it
+        // is created on its first scheduled tick, so on a fresh instance the meter may still be absent
+        // and sums to 0.0.
+        double baseline = PrometheusScrape.sum(PrometheusScrape.scrape(), TOKEN_VALIDATION_ERRORS_TOTAL,
+                FAILURE_RESULT_LABEL);
+
+        // Act — a malformed bearer token on the plain require: bearer route reaches the gateway validator
+        // and is rejected there. The caller has not passed the trust boundary, so the shipped default
+        // answers with the unrouted 404 (ADR-0073); the validator still records the failure event.
+        given()
+                .header("Authorization", "Bearer not-a-real-jwt")
+                .when()
+                .get(BEARER_ROUTE_PATH)
+                .then()
+                .statusCode(404);
+
+        // Assert — the series MOVED once the collector exported the validator's counts. Movement, not
+        // presence, is the proof: the collector registers its series at creation, so only a strictly
+        // greater sum shows it observes the validator the request path used.
+        String after = awaitTokenValidationErrorsAbove(baseline);
+
+        // Assert — the labels are the bounded set ADR-0074 names: every sample is a failure, carries an
+        // event_type, and names one of the library's EventCategory values.
+        List<String> samples = PrometheusScrape.samples(after, TOKEN_VALIDATION_ERRORS_TOTAL);
+        List<String> unbounded = samples.stream()
+                .filter(line -> !line.contains(FAILURE_RESULT_LABEL) || !line.contains("event_type=\"")
+                        || TOKEN_VALIDATION_CATEGORY_LABELS.stream().noneMatch(line::contains))
+                .toList();
+        assertTrue(unbounded.isEmpty(),
+                "sheriff_token_validation_errors_total must carry only result=\"failure\", an event_type and a "
+                        + "known category, but exposes " + unbounded);
+    }
+
+    /**
+     * Scrapes until the summed failure series of {@value #TOKEN_VALIDATION_ERRORS_TOTAL} exceeds
+     * {@code baseline}, bounded by {@link #TOKEN_VALIDATION_EXPORT_BOUND}.
+     *
+     * @param baseline the sum observed before the rejected request
+     * @return the first exposition body whose sum exceeds {@code baseline}
+     */
+    @SuppressWarnings("java:S2925") // NOSONAR java:S2925 - bounded poll for a scheduled exporter's next tick
+    private static String awaitTokenValidationErrorsAbove(double baseline) {
+        long deadline = System.nanoTime() + TOKEN_VALIDATION_EXPORT_BOUND.toNanos();
+        double observed = baseline;
+        while (System.nanoTime() < deadline) {
+            String body = PrometheusScrape.scrape();
+            observed = PrometheusScrape.sum(body, TOKEN_VALIDATION_ERRORS_TOTAL, FAILURE_RESULT_LABEL);
+            if (observed > baseline) {
+                return body;
+            }
+            try {
+                Thread.sleep(POLL_INTERVAL_MILLIS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while awaiting the token-validation export",
+                        interrupted);
+            }
+        }
+        return fail("a rejected bearer token must move " + TOKEN_VALIDATION_ERRORS_TOTAL + " within "
+                + TOKEN_VALIDATION_EXPORT_BOUND.toSeconds() + "s: before=" + baseline + ", last=" + observed);
     }
 }
