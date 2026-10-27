@@ -31,10 +31,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
-import de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders;
 
 /**
  * Binds the header inventories {@code doc/configuration.adoc} enumerates by hand to the Java sets that
@@ -81,7 +80,7 @@ class DocumentedHeaderSetsContractTest {
 
     @Test
     @DisplayName("the identity set in configuration.adoc names exactly UpstreamIdentityHeaders.NAMES")
-    void identitySetMatchesTheStrippedNames() throws IOException {
+    void identitySetMatchesTheStrippedNames() throws Exception {
         // Arrange
         String document = configurationAdoc();
 
@@ -95,7 +94,7 @@ class DocumentedHeaderSetsContractTest {
 
     @Test
     @DisplayName("the unconditional protocol tier in configuration.adoc names exactly UNCONDITIONAL_PROTOCOL_HEADERS")
-    void unconditionalTierMatchesTheConstant() throws IOException {
+    void unconditionalTierMatchesTheConstant() throws Exception {
         // Arrange
         String document = configurationAdoc();
 
@@ -110,7 +109,7 @@ class DocumentedHeaderSetsContractTest {
 
     @Test
     @DisplayName("the conditional protocol tier in configuration.adoc names exactly CONDITIONAL_HEADERS")
-    void conditionalTierMatchesTheConstant() throws IOException {
+    void conditionalTierMatchesTheConstant() throws Exception {
         // Arrange
         String document = configurationAdoc();
 
