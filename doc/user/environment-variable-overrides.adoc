@@ -505,17 +505,23 @@ Read it as a map of what you can and cannot change, and of where the answer is "
 validator from `gateway.yaml` and qualifies it with `@GatewayValidator`, so it coexists with the
 unqualified validator the token-validation extension builds from its own `sheriff.token.issuers.*`
 property surface. This gateway never uses that second validator and configures no issuer on that
-surface in *any* profile. The question this note once left open -- what the extension's readiness
-check reports when nothing configures it -- no longer arises: every extension bean that reads that
-surface is removed from the bean set by `quarkus.arc.exclude-types`. That is both probes
-(`JwksEndpointHealthCheck` and `TokenValidatorHealthCheck`), which therefore contribute nothing to
-the readiness endpoint beneath the configured management context path
-(link:context-path.adoc[The Context Path]), and the `JwtMetricsCollector`, whose ten-second schedule
-otherwise failed on every
-tick and wrote a stack trace to the log each time. Excluding them costs no observability: the probes
-iterated the extension's own issuer list -- empty here -- and so never reached this gateway's JWKS
-loaders, and the collector failed before publishing a single meter. JWKS readiness is reported by the
-gateway's own `GatewayReadinessCheck`, against the validator that is actually on the request path.
+surface in *any* profile, and projects nothing onto it. The extension's observability beans do not
+read that surface any more: they ask a resolver which validator to observe, and with the surface
+empty the resolver picks the one validator the gateway produces. That settles both of them
+(link:../adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]):
+
+* *The two health probes are excluded.* `quarkus.arc.exclude-types` names
+  `de.cuioss.sheriff.token.quarkus.health.*` and nothing else, so `JwksEndpointHealthCheck` and
+  `TokenValidatorHealthCheck` contribute nothing to the readiness endpoint beneath the configured
+  management context path (link:context-path.adoc[The Context Path]). Against the gateway's
+  validator they see no issuer list and would report `UP` while checking nothing. JWKS readiness is
+  reported by the gateway's own `GatewayReadinessCheck`, against the validator that is actually on
+  the request path.
+* *The metrics collector is kept.* `JwtMetricsCollector` observes that same validator and publishes
+  its security events as `sheriff_token_validation_errors_total` and
+  `sheriff_token_validation_success_operations_total` (see
+  link:../architecture.adoc#_metrics[Metrics]). Its schedule is the reason the Quarkus scheduler
+  runs in production; each tick logs at `DEBUG` only.
 
 Read that `jwks` datum for what it is: whether *every configured issuer has a loaded key set*. The
 probe reads a non-fetching per-issuer state kept by the gateway's own JWKS loaders, so it reports
@@ -526,8 +532,9 @@ link:../configuration.adoc#_jwks_readiness[Key-set loading and readiness]). It i
 signal, not a *freshness* one: once a key set has loaded, an IdP whose JWKS endpoint later goes
 unreachable, a stalled key rotation, or an expired signing key do *not* take readiness DOWN. Monitor
 those from the IdP side; do not infer them from a green readiness probe. The comment block above
-`quarkus.arc.exclude-types` in `application.properties` carries the full reasoning for the exclusion,
-including why the extension *dependency* itself stays.
+`quarkus.arc.exclude-types` in `application.properties` carries the full reasoning for the
+single-package exclusion, including why the extension *dependency* itself stays: the collector the
+gateway uses lives in it.
 ====
 
 === Inbound filter modes

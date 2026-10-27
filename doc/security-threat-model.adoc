@@ -2464,9 +2464,13 @@ still fetched only from the configured `jwks.url`; the allowance decides which *
 URL may resolve to, never which URL is fetched.
 
 *Key-set availability is the gateway's -- readiness and a bounded retry.* The library's own
-JWKS-readiness health check does not serve this gateway: its extension beans are excluded
-(link:adr/0027-The_token-validation_extensions_unqualified_beans_are_excluded_not_accommodated.adoc[ADR-0027]),
-and its loader status is not truthful after a failed first fetch -- an HTTP loader whose first fetch
+JWKS-readiness health check does not serve this gateway. The extension's two health probes are
+excluded from the bean set, because against this gateway's validator they would report `UP` while
+checking no issuer at all; the extension's metrics collector is kept, because it observes the
+gateway's own validator, and the extension's own issuer namespace stays empty, so no second
+validator and no second set of key fetches exist
+(link:adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
+The library's loader status is not truthful after a failed first fetch -- an HTTP loader whose first fetch
 failed never reports `OK`, even once a background refresh has installed keys, and its issuer cache
 re-admits an issuer only on `OK`. A gateway that booted before its identity provider answered
 therefore reported ready while it could validate no token, and retried the fetch only after a whole
@@ -2475,8 +2479,10 @@ public loader seam. The wrapper records the outcome of each load attempt itself 
 exactly when a key set is loaded, which also repairs the library's re-admission path. Readiness is
 `DOWN` while any configured issuer has no key set, with a non-disclosing payload -- a fixed `jwks`
 status token and the bounded counts `issuers` / `issuers_loaded`, never an issuer name, URL or host --
-so an orchestrator holds traffic back from an instance that would reject every bearer token. A failed
-load is retried after 1 s, doubling per attempt and capped at 30 s (never above the refresh
+so an orchestrator holds traffic back from an instance that would reject every bearer token. A BFF
+deployment adds the fixed tokens `oidc=<mode>` and `oidc_discovery` (`not-attempted`, `resolved` or
+`failed`); they never change the verdict, and the payload still discloses no issuer, URL or cause.
+A failed load is retried after 1 s, doubling per attempt and capped at 30 s (never above the refresh
 interval), driven by a scheduler only: neither bearer requests nor the readiness probe can trigger a
 fetch, and at most one attempt is in flight per issuer, so the retry cannot be turned into a fetch
 storm. Each scheduled retry logs `WARN ApiSheriff-129` and a recovery logs `INFO ApiSheriff-18`,
