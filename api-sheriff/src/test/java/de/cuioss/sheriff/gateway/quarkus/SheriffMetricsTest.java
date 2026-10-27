@@ -488,6 +488,13 @@ class SheriffMetricsTest {
         private static final String SECONDARY_ISSUER = "corp-partner";
         /** The key-set view of a {@code token_validation} block with no issuers: vacuously all loaded. */
         private static final IssuerKeySetStatus NO_ISSUERS = IssuerKeySetStatus.of(Map.of());
+        /**
+         * The complete data key set of an UP probe with {@code token_validation} configured and an active
+         * BFF runtime, without {@code config_version} metadata. Asserting the whole set, rather than the
+         * absence of one key, also proves that no retired datum is emitted.
+         */
+        private static final Set<String> BFF_VALIDATING_UP_KEYS =
+                Set.of("config", "oidc", "oidc_discovery", "issuers", "issuers_loaded", "jwks");
 
         @Test
         @DisplayName("UP with jwks=not-applicable when no token_validation is configured")
@@ -504,7 +511,8 @@ class SheriffMetricsTest {
             assertNull(data.get("oidc"), "a probe without an active BFF runtime carries no oidc datum");
             assertNull(data.get("oidc_discovery"),
                     "a probe without an active BFF runtime carries no oidc_discovery datum");
-            assertNull(data.get("issuer_reachability"), "the retired issuer_reachability datum is never emitted");
+            assertEquals(Set.of("config", "jwks"), data.keySet(),
+                    "a probe without token_validation or a BFF runtime carries exactly these data, nothing retired");
         }
 
         @Test
@@ -587,7 +595,8 @@ class SheriffMetricsTest {
             assertEquals("ready", data.get("jwks"));
             assertEquals("not-attempted", data.get("oidc_discovery"),
                     "a fresh instance has not resolved the provider metadata, and the probe does not make it");
-            assertNull(data.get("issuer_reachability"), "the retired issuer_reachability datum is never emitted");
+            assertEquals(BFF_VALIDATING_UP_KEYS, data.keySet(),
+                    "an UP probe with an active BFF runtime carries exactly these data, nothing retired");
         }
 
         @Test
@@ -805,7 +814,8 @@ class SheriffMetricsTest {
                             "the provider-metadata datum never flips readiness"),
                     () -> assertEquals(mode, data.get("oidc")),
                     () -> assertEquals(discoveryState.token(), data.get("oidc_discovery")),
-                    () -> assertNull(data.get("issuer_reachability")));
+                    () -> assertEquals(BFF_VALIDATING_UP_KEYS, data.keySet(),
+                            "the payload carries exactly these data, nothing retired"));
         }
 
         @Test
