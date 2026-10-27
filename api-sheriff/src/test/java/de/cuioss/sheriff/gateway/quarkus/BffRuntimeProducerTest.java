@@ -144,8 +144,8 @@ import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
 import de.cuioss.sheriff.gateway.testsupport.Awaits;
-import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.LoopbackHost;
+import de.cuioss.sheriff.gateway.testsupport.SheriffDebugCapture;
 import de.cuioss.sheriff.gateway.testsupport.StubIdentityProvider;
 import de.cuioss.sheriff.gateway.testsupport.UnreachablePort;
 import de.cuioss.sheriff.token.client.auth.ClientAuthentication;
@@ -2673,7 +2673,7 @@ class BffRuntimeProducerTest {
 
         @Test
         @DisplayName("Should record failed in the published discovery view when the issuer is unreachable")
-        void discoveryStatusRecordsFailedForAnUnreachableIssuer() throws IOException {
+        void discoveryStatusRecordsFailedForAnUnreachableIssuer() throws Exception {
             String unreachableIssuer = "https://" + LoopbackHost.ADDRESS + ":" + UnreachablePort.pick();
             BffRuntimeProducer producer = stubProducer(stubOidc().issuer(unreachableIssuer).build());
             BffRuntime runtime = producer.bffRuntime();

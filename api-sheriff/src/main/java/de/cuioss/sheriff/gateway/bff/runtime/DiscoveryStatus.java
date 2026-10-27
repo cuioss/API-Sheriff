@@ -140,6 +140,9 @@ public final class DiscoveryStatus {
             throw new IllegalStateException("the inert discovery view records no fetch");
         }
         return () -> {
+            // Record-and-rethrow: whatever the engine raises while fetching ends in FAILED and reaches
+            // the caller unchanged, so a narrower catch would let an unlisted failure skip the record.
+            // cui-rewrite:disable InvalidExceptionUsageRecipe
             try {
                 T result = fetch.get();
                 state.set(State.RESOLVED);
