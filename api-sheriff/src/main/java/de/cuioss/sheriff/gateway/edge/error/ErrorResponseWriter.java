@@ -66,12 +66,10 @@ import org.jspecify.annotations.Nullable;
  * <strong>One release rule for every unrouted {@code 404}.</strong> While the switch is on, every
  * answer rendered as the unrouted {@code 404} — a resolved rejection, the genuine
  * {@link EventType#NO_ROUTE_MATCHED} and {@link EventType#PASSTHROUGH_HOST_SMUGGLED}, the problem
- * document and the HTML error page alike — is written through {@link ResponseDelay} under the step
- * rule of {@link UniformNotFound#releaseAtNanos}: no earlier than the first
- * {@link UniformNotFound#RESPONSE_FLOOR} step after the request's admission that its processing has
- * not passed, plus a random jitter below {@link UniformNotFound#RESPONSE_JITTER}. The release time is
- * computed when the answer is ready, from the admission reading and the current
- * {@link System#nanoTime()}, so the unrouted path and the resolved path leave on the same step grid.
+ * document and the HTML error page alike — is written through {@link ResponseDelay} no earlier than
+ * {@link UniformNotFound#releaseAtNanos}. The release time is computed when the answer is ready, from
+ * the admission reading and the current {@link System#nanoTime()}, so the unrouted path and the
+ * resolved path leave on the same step grid.
  * The wait is a Vert.x timer; no thread is held. Every other answer is written at once.
  * <p>
  * <strong>Rendered TO, not CALLED.</strong> The branch changes only what the caller is shown. The

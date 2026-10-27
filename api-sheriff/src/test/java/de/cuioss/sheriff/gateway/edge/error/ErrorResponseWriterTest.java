@@ -28,8 +28,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.LongUnaryOperator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
@@ -41,6 +44,7 @@ import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
 import de.cuioss.sheriff.gateway.events.EventCategory;
@@ -84,7 +88,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  * pre-trust rejection on a selected route is rendered as the unrouted {@code 404} — its response headers
  * restored to the set taken at route selection, its stage cookies dropped, a gRPC route answered as an
  * HTTP {@code 404}, the HTML page negotiated under the {@code NO_ROUTE_MATCHED} classification — while it
- * is still reported under its true event.
+ * is still reported under its true event. Its release is counted from the request's admission reading
+ * ({@link ResponseDelay#ADMITTED_AT_KEY}) under {@link UniformNotFound#releaseAtNanos}.
  */
 @EnableGeneratorController
 @DisplayName("ErrorResponseWriter — Retry-After of an open circuit and the trust-boundary branch")
@@ -101,6 +106,12 @@ class ErrorResponseWriterTest {
     private static final String VARY = "Vary";
     private static final String SET_COOKIE = "Set-Cookie";
     private static final String CACHE_CONTROL = "Cache-Control";
+    /** The floor, which is also the width of one release step. */
+    private static final long FLOOR_NANOS = UniformNotFound.RESPONSE_FLOOR.toNanos();
+    /** The exclusive upper bound of the jitter on top of a step. */
+    private static final long JITTER_NANOS = UniformNotFound.RESPONSE_JITTER.toNanos();
+    /** Room for timer and event-loop scheduling under machine load before an upper bound is reached. */
+    private static final long SCHEDULING_SLACK_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     @Test
     @DisplayName("an open circuit is given Retry-After: 5, the seconds the breaker stays open")
@@ -292,6 +303,61 @@ class ErrorResponseWriterTest {
                     () -> assertEquals("DENY", response.headers().get(FRAME_OPTIONS)));
         }
 
+        @Test
+        @DisplayName("an admission reading 1.5 floors old: the answer is written no earlier than the second floor step")
+        void olderAdmissionIsHeldToTheSecondFloorStep() throws Exception {
+            Timed timed = rejectAdmittedAt(nowNanos -> nowNanos - FLOOR_NANOS * 3 / 2);
+
+            long writtenAfterAdmission = timed.writtenAfterAdmissionNanos();
+            assertAll("released on the step grid measured from the admission reading",
+                    () -> assertEquals(404, timed.status()),
+                    () -> assertTrue(writtenAfterAdmission >= 2 * FLOOR_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, before the second step of "
+                                    + 2 * FLOOR_NANOS + " ns"),
+                    () -> assertTrue(writtenAfterAdmission < 2 * FLOOR_NANOS + JITTER_NANOS + SCHEDULING_SLACK_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, far past the second step"));
+        }
+
+        @Test
+        @DisplayName("an admission reading one floor ahead of the writer's clock: the step is counted from that reading")
+        void releaseIsCountedFromTheAdmissionReading() throws Exception {
+            Timed timed = rejectAdmittedAt(nowNanos -> nowNanos + FLOOR_NANOS);
+
+            long writtenAfterAdmission = timed.writtenAfterAdmissionNanos();
+            assertAll("the first step after the admission reading, not after the writer's own reading",
+                    () -> assertEquals(404, timed.status()),
+                    () -> assertTrue(writtenAfterAdmission >= FLOOR_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, before the first step of "
+                                    + FLOOR_NANOS + " ns"),
+                    () -> assertTrue(writtenAfterAdmission < FLOOR_NANOS + JITTER_NANOS + SCHEDULING_SLACK_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, far past the first step"));
+        }
+
+        /**
+         * Hands a pre-trust rejection to the writer with {@link ResponseDelay#ADMITTED_AT_KEY} set to the
+         * admission reading {@code admissionFromNow} derives from the handler's own {@link System#nanoTime()},
+         * and records when the response ended.
+         */
+        private Timed rejectAdmittedAt(LongUnaryOperator admissionFromNow) throws Exception {
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert());
+            AtomicLong admittedAtNanos = new AtomicLong();
+            CompletableFuture<Long> endedAtNanos = new CompletableFuture<>();
+            handler.set(ctx -> {
+                long admittedAt = admissionFromNow.applyAsLong(System.nanoTime());
+                admittedAtNanos.set(admittedAt);
+                ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                ctx.addEndHandler(result -> endedAtNanos.complete(System.nanoTime()));
+                writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new GatewayException(EventType.TOKEN_MISSING));
+            });
+
+            Response response = send();
+
+            long endedAt = Awaits.connect(endedAtNanos, "the held answer to end");
+            return new Timed(response.status(), endedAt - admittedAtNanos.get());
+        }
+
         private ErrorResponseWriter writer(boolean uniformNotFound, PortalEndpoint portal) {
             RejectionReporter reporter = new RejectionReporter(eventCounter, new SheriffMetrics(meterRegistry),
                     1_000L, 1_000L);
@@ -369,5 +435,9 @@ class ErrorResponseWriterTest {
 
     /** The terminal response, captured once its body has fully arrived. */
     private record Response(int status, Map<String, String> headers, String body) {
+    }
+
+    /** A held answer's status and how long after its admission reading the response ended. */
+    private record Timed(int status, long writtenAfterAdmissionNanos) {
     }
 }

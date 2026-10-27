@@ -275,11 +275,13 @@ class UniformNotFoundTest {
         @DisplayName("a now reading taken before admission counts as no elapsed time: the first step")
         void nowBeforeAdmissionCountsAsNoElapsedTime() {
             UniformNotFound uniformNotFound = new UniformNotFound(true);
-            long nowNanos = ADMITTED_AT_NANOS - FLOOR_NANOS / 2;
+            // More than one floor before admission: the signed difference counts as zero and lands on
+            // the first step, where its magnitude of 3.5 floors would land on the fourth.
+            long nowNanos = ADMITTED_AT_NANOS - FLOOR_NANOS * 7 / 2;
 
             long[] offsets = releaseOffsets(uniformNotFound, ADMITTED_AT_NANOS, nowNanos);
 
-            assertOffsetsOnStep("now before admission", offsets, 1);
+            assertOffsetsOnStep("now 3.5 floors before admission", offsets, 1);
         }
 
         @Test

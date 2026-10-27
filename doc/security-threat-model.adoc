@@ -2186,9 +2186,10 @@ selected, and never a trailers-only gRPC status. The closed set of events, every
 reason, and the definition of "identical" are recorded in
 link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
 and in link:architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the
-trust boundary]. Every unrouted `404`, genuine or resolved, leaves the edge no earlier than a fixed
-floor plus a random jitter after admission, written from a Vert.x timer, so the two paths cannot be
-told apart by timing either. The true event is still reported -- the event counter, the WARN and
+trust boundary]. Every unrouted `404`, genuine or resolved, leaves the edge on the same release
+rule, written from a Vert.x timer: no earlier than a fixed floor plus a random jitter after
+admission, and an answer whose processing ran past the floor is held to the next floor step after
+admission plus the jitter (`UniformNotFound.releaseAtNanos`, ADR-0073). The true event is still reported -- the event counter, the WARN and
 INFO lines and `sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is
 not shown. One switch, `security_defaults.uniform_not_found`, governs the branch and the floor and
 is on by default (link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
@@ -2227,7 +2228,9 @@ next floor step after admission plus the jitter (`RESPONSE_JITTER`, 20 ms), the 
 ADR-0073.
 
 *Residual risk (accepted) -- the floor costs admission under a `404` flood.* Each unrouted `404`
-holds its admission permit until it is written, up to 70 ms after admission. A flood of unrouted or
+holds its admission permit until it is written: an answer ready within the floor holds it for up
+to the floor plus the jitter, 70 ms after admission, and an answer held to a later floor step holds
+it until that step plus the jitter. A flood of unrouted or
 pre-trust requests therefore occupies admission permits for longer than it would without the floor,
 and past the admission cap the edge answers `503`, which is the same for every address. No thread is
 held while an answer waits (<<gw-07>>).
