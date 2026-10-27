@@ -2220,10 +2220,11 @@ pre-trust rejections only.
 
 *Residual risk (accepted) -- the floor is a reasoned value, not a measured one.* The floor
 (`UniformNotFound.RESPONSE_FLOOR`, 50 ms) is meant to sit above the slowest pre-trust arm, the
-offline signature check of a well-formed token with a wrong signature; the jitter
-(`RESPONSE_JITTER`, 20 ms) blurs a residual overrun. No benchmark times that arm against the floored
-answer yet. An arm that exceeds the floor -- a garbage-collection pause, an unusually large token --
-reopens a timing signal the jitter blurs only partly.
+offline signature check of a well-formed token with a wrong signature. No benchmark times that arm
+against the floored answer yet. An answer whose processing runs past the floor -- a
+garbage-collection pause, an unusually large token -- is not written at once: it is held to the
+next floor step after admission plus the jitter (`RESPONSE_JITTER`, 20 ms), the step rule of
+ADR-0073.
 
 *Residual risk (accepted) -- the floor costs admission under a `404` flood.* Each unrouted `404`
 holds its admission permit until it is written, up to 70 ms after admission. A flood of unrouted or

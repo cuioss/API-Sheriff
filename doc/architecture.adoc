@@ -1762,8 +1762,10 @@ reason for every exclusion.
 *The response-timing floor.* While the switch is on, every answer rendered as the unrouted `404` --
 the genuine `NO_ROUTE_MATCHED` and `PASSTHROUGH_HOST_SMUGGLED` as much as a resolved rejection -- is
 written no earlier than admission plus `UniformNotFound.RESPONSE_FLOOR` (50 ms) plus a random jitter
-below `UniformNotFound.RESPONSE_JITTER` (20 ms). `edge.end.ResponseDelay` schedules the write on a
-Vert.x timer, so no thread is held while an answer waits. The answer still holds its admission
+below `UniformNotFound.RESPONSE_JITTER` (20 ms). The release follows a grid of floor steps counted
+from admission: an answer whose processing ran past the floor is held to the next step plus the
+jitter instead of being written at once (`UniformNotFound.releaseAtNanos`). `edge.end.ResponseDelay`
+schedules the write on a Vert.x timer, so no thread is held while an answer waits. The answer still holds its admission
 permit until it is written. Honest answers are never delayed. Both values are fixed constants; ADR-0073
 records how they were chosen.
 

@@ -252,7 +252,8 @@ measurement.
 == Consequences
 
 * An untrusted caller cannot tell an existing route from an absent one by status, body,
-  `Content-Type`, header set or answer time, within the residual the jitter blurs.
+  `Content-Type` or header set, and every such answer leaves the edge under the same step rule of
+  the response-timing floor.
 * Session routes still disclose that they exist: their login negotiation is their purpose. A
   deployment that must hide a session route has to place it where no anonymous caller reaches it.
 * An anonymous route still discloses that it exists through its success answer. The uniform answer
@@ -263,8 +264,8 @@ measurement.
   lines, not in the response.
 * Every unrouted `404` waits for the floor. Under a `404` flood each such answer ready within the
   floor holds its admission permit for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`, 70 ms, because the
-  permit is released when the response ends; an answer held to a later step holds it until that step. With the default `edge_hardening.admission_cap` of 2048, the edge sustains about
-  2048 / 0.07 s, roughly 29,000 floored `404` answers per second, before admission answers `503`.
+  permit is released when the response ends; an answer held to a later step holds it until that
+  step. With the default `edge_hardening.admission_cap` of 2048, the edge sustains about 2048 / 0.07 s, roughly 29,000 floored `404` answers per second, before admission answers `503`.
   The `503` is address-independent, so it leaks nothing. No thread is held while an answer waits;
   the cost is a permit and a timer entry.
 * Every edge and integration test that requests an unrouted path waits for the floor. The tests
