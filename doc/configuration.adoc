@@ -3787,9 +3787,10 @@ links here rather than restating it
 *Request direction.* These client headers are withheld under *every* forward mode, whatever a
 route declares: `Authorization`, `Connection`, `Proxy-Connection`, `Keep-Alive`,
 `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`,
-`Content-Length`, `Host`, `Origin`, `Referer` and `Date` -- the credential the gateway terminates
-or mediates, the hop the gateway terminates rather than the message it forwards, the framing the
-gateway re-establishes, and the names the gateway itself owns.
+`HTTP2-Settings`, `Content-Length`, `Host`, `Origin`, `Referer` and `Date` -- the credential the
+gateway terminates or mediates, the hop the gateway terminates rather than the message it forwards
+(`HTTP2-Settings` is the settings payload of a cleartext `h2c` upgrade, which belongs to that hop
+alone), the framing the gateway re-establishes, and the names the gateway itself owns.
 
 The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
 vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and

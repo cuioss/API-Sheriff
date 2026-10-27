@@ -376,6 +376,153 @@ class EdgeHardeningOptionsTest {
     }
 
     /**
+     * The inbound HTTP/2 header-list bound: the decoded header block of one request, {@code CONTINUATION}
+     * frames included, is bounded like the HTTP/1.1 header block. An unbounded or larger announced value
+     * is lowered to 16 KiB, a lower one is kept.
+     */
+    @Nested
+    @DisplayName("inbound HTTP/2 header-list bound")
+    class HeaderListBound {
+
+        /** The largest value a SETTINGS parameter can carry (2^32-1): no header-list limit at all. */
+        private static final long UNBOUNDED_HEADER_LIST_SIZE = 0xFFFFFFFFL;
+
+        private static HttpServerOptions listenerAnnouncing(long maxHeaderListSize) {
+            return new HttpServerOptions()
+                    .setInitialSettings(new Http2Settings().setMaxHeaderListSize(maxHeaderListSize));
+        }
+
+        @ParameterizedTest(name = "{0} bytes")
+        @ValueSource(longs = {UNBOUNDED_HEADER_LIST_SIZE, 32_768L, MAX_HEADER_SIZE_BYTES + 1L})
+        @DisplayName("lowers an unbounded or larger announced header list to the 16 KiB header-block bound")
+        void lowersAnUnboundedOrLargerValueToTheBound(long maxHeaderListSize) {
+            HttpServerOptions options = listenerAnnouncing(maxHeaderListSize);
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(MAX_HEADER_SIZE_BYTES, options.getInitialSettings().getMaxHeaderListSize(),
+                    "A header list of " + maxHeaderListSize + " bytes is lowered to the 16 KiB bound");
+        }
+
+        @ParameterizedTest(name = "{0} bytes")
+        @ValueSource(longs = {1_024L, 8_192L, MAX_HEADER_SIZE_BYTES})
+        @DisplayName("keeps an announced header list at or below 16 KiB")
+        void keepsAValueAtOrBelowTheBound(long maxHeaderListSize) {
+            HttpServerOptions options = listenerAnnouncing(maxHeaderListSize);
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(maxHeaderListSize, options.getInitialSettings().getMaxHeaderListSize(),
+                    "A value at or below the bound is never raised");
+        }
+
+        @Test
+        @DisplayName("never announces more than 16 KiB on a listener left at the Vert.x defaults")
+        void boundsTheVertxDefaultListener() {
+            long vertxDefault = new HttpServerOptions().getInitialSettings().getMaxHeaderListSize();
+            HttpServerOptions options = new HttpServerOptions();
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertEquals(Math.min(vertxDefault, MAX_HEADER_SIZE_BYTES),
+                    options.getInitialSettings().getMaxHeaderListSize(),
+                    "The default listener keeps its own value when lower and is lowered to 16 KiB otherwise");
+        }
+
+        @Test
+        @DisplayName("bounds the TLS listener's header list exactly as the plaintext listener's")
+        void boundsTheTlsListenerIdentically() {
+            HttpServerOptions unbounded = listenerAnnouncing(UNBOUNDED_HEADER_LIST_SIZE);
+            HttpServerOptions lower = listenerAnnouncing(4_096L);
+
+            new EdgeHardeningOptions().customizeHttpsServer(unbounded);
+            new EdgeHardeningOptions().customizeHttpsServer(lower);
+
+            assertAll("an unbounded and a lower TLS listener",
+                    () -> assertEquals(MAX_HEADER_SIZE_BYTES, unbounded.getInitialSettings().getMaxHeaderListSize(),
+                            "The TLS listener is lowered to the 16 KiB bound identically"),
+                    () -> assertEquals(4_096L, lower.getInitialSettings().getMaxHeaderListSize(),
+                            "The TLS listener keeps a lower value identically"));
+        }
+    }
+
+    /**
+     * The per-connection Rapid-Reset guard: pinned at the transport's own default of 200 client-sent
+     * {@code RST_STREAM} frames per 30-second window, set explicitly so a change of that default cannot
+     * move it, and never raised.
+     */
+    @Nested
+    @DisplayName("inbound HTTP/2 Rapid-Reset guard")
+    class RapidResetGuard {
+
+        /** The pinned values, restated as literals so that a change to them is noticed here. */
+        private static final int MAX_RST_FRAMES_PER_WINDOW = 200;
+        private static final int WINDOW_SECONDS = 30;
+
+        @Test
+        @DisplayName("pins 200 client resets per 30-second window on the plaintext and the TLS listener")
+        void pinsTheGuardOnEveryListener() {
+            HttpServerOptions plaintext = new HttpServerOptions();
+            HttpServerOptions tls = new HttpServerOptions();
+
+            new EdgeHardeningOptions().customizeHttpServer(plaintext);
+            new EdgeHardeningOptions().customizeHttpsServer(tls);
+
+            assertAll("the pinned Rapid-Reset guard",
+                    () -> assertEquals(MAX_RST_FRAMES_PER_WINDOW, plaintext.getHttp2RstFloodMaxRstFramePerWindow(),
+                            "The plaintext listener allows at most 200 client resets per window"),
+                    () -> assertEquals(WINDOW_SECONDS, plaintext.getHttp2RstFloodWindowDuration(),
+                            "The plaintext listener counts resets over a 30-unit window"),
+                    () -> assertEquals(TimeUnit.SECONDS, plaintext.getHttp2RstFloodWindowDurationTimeUnit(),
+                            "The plaintext listener's window unit is seconds"),
+                    () -> assertEquals(MAX_RST_FRAMES_PER_WINDOW, tls.getHttp2RstFloodMaxRstFramePerWindow(),
+                            "The TLS listener allows at most 200 client resets per window"),
+                    () -> assertEquals(WINDOW_SECONDS, tls.getHttp2RstFloodWindowDuration(),
+                            "The TLS listener counts resets over a 30-unit window"),
+                    () -> assertEquals(TimeUnit.SECONDS, tls.getHttp2RstFloodWindowDurationTimeUnit(),
+                            "The TLS listener's window unit is seconds"));
+        }
+
+        @Test
+        @DisplayName("keeps the guard at the transport's own default rather than a raised limit (ADR-0066)")
+        void pinsTheTransportDefault() {
+            HttpServerOptions options = new HttpServerOptions();
+
+            new EdgeHardeningOptions().customizeHttpServer(options);
+
+            assertAll("the guard equals the transport default",
+                    () -> assertEquals(HttpServerOptions.DEFAULT_HTTP2_RST_FLOOD_MAX_RST_FRAME_PER_WINDOW,
+                            options.getHttp2RstFloodMaxRstFramePerWindow(),
+                            "The reset count is the transport's own default"),
+                    () -> assertEquals(HttpServerOptions.DEFAULT_HTTP2_RST_FLOOD_WINDOW_DURATION,
+                            options.getHttp2RstFloodWindowDuration(),
+                            "The window length is the transport's own default"),
+                    () -> assertEquals(HttpServerOptions.DEFAULT_HTTP2_RST_FLOOD_WINDOW_DURATION_TIME_UNIT,
+                            options.getHttp2RstFloodWindowDurationTimeUnit(),
+                            "The window unit is the transport's own default"));
+        }
+
+        @Test
+        @DisplayName("lowers a listener configured with a raised reset limit and a longer window back to the pin")
+        void overridesARaisedListenerConfiguration() {
+            HttpServerOptions raised = new HttpServerOptions()
+                    .setHttp2RstFloodMaxRstFramePerWindow(10_000)
+                    .setHttp2RstFloodWindowDuration(5)
+                    .setHttp2RstFloodWindowDurationTimeUnit(TimeUnit.MINUTES);
+
+            new EdgeHardeningOptions().customizeHttpServer(raised);
+
+            assertAll("a raised listener configuration is pinned back",
+                    () -> assertEquals(MAX_RST_FRAMES_PER_WINDOW, raised.getHttp2RstFloodMaxRstFramePerWindow(),
+                            "A raised reset limit is pinned back to 200"),
+                    () -> assertEquals(WINDOW_SECONDS, raised.getHttp2RstFloodWindowDuration(),
+                            "A changed window length is pinned back to 30"),
+                    () -> assertEquals(TimeUnit.SECONDS, raised.getHttp2RstFloodWindowDurationTimeUnit(),
+                            "A changed window unit is pinned back to seconds"));
+        }
+    }
+
+    /**
      * The inbound HTTP/2 connection window, derived from the stream settings the listener announces so
      * every stream it admits at once can fill its own window.
      */

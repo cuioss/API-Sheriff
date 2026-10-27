@@ -1427,6 +1427,50 @@ class ForwardPolicyStageTest {
                             "control: the positive-list really did admit its other entry"));
         }
 
+        /** An h2c settings payload (base64url SETTINGS frame body) no fixture header carries. */
+        private static final String H2C_SETTINGS = "AAMAAABkAARAAAAAAAIAAAAA";
+
+        @ParameterizedTest
+        @ValueSource(strings = {"HTTP2-Settings", "http2-settings", "HTTP2_Settings", "Http2-Settings"})
+        @DisplayName("a client HTTP2-Settings header crosses under no forward mode, not even when a positive-list names it")
+        void http2SettingsNeverCrossesUnderAnyMode(String name) {
+            // Arrange — the h2c upgrade's settings payload describes the one connection the Upgrade
+            // names (RFC 9113 §3.2); the gateway never relays that upgrade, so the header has no
+            // meaning to the upstream. It rides beside an unowned header that is the matched positive
+            // control: each mode really did copy the client's headers, so the absence is a decision.
+            Map<String, List<String>> headers = Map.of(
+                    name, List.of(H2C_SETTINGS),
+                    "X-Api-Version", List.of("v2"));
+
+            // Act
+            ForwardPolicyStage.Result forwardAllResult = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), forwardAll(), CookiesConfig.NONE, false);
+            ForwardPolicyStage.Result negativeListResult = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), deny(List.of("X-Unrelated")), CookiesConfig.NONE,
+                            false);
+            ForwardPolicyStage.Result positiveListResult = stage(EMIT_XFORWARDED, List.of(), Set.of())
+                    .process(request(UNTRUSTED_PEER, headers), allow(List.of(name, "X-Api-Version")),
+                            CookiesConfig.NONE, false);
+
+            // Assert — containsValue rather than a name lookup, so the payload crossing under any
+            // spelling at all still fails. The gateway never emits this value itself.
+            assertAll("HTTP2-Settings is connection-specific under every forward mode",
+                    () -> assertFalse(forwardAllResult.headers().containsValue(H2C_SETTINGS),
+                            () -> name + " must not reach the upstream under forward-all"),
+                    () -> assertEquals("v2", forwardAllResult.headers().get("x-api-version"),
+                            "control: forward-all really did copy the client's unowned header"),
+                    () -> assertFalse(negativeListResult.headers().containsValue(H2C_SETTINGS),
+                            () -> name + " must not reach the upstream under a negative-list that does"
+                                    + " not name it — no deny entry should be needed"),
+                    () -> assertEquals("v2", negativeListResult.headers().get("x-api-version"),
+                            "control: the negative-list copy carried the undenied header through"),
+                    () -> assertFalse(positiveListResult.headers().containsValue(H2C_SETTINGS),
+                            () -> name + " must not cross even when a positive-list names it —"
+                                    + " Authorization is the single re-admittable member"),
+                    () -> assertEquals("v2", positiveListResult.headers().get("X-Api-Version"),
+                            "control: the positive-list really did admit its other entry"));
+        }
+
         @Test
         @DisplayName("an operator's set_headers still places a provenance variant deliberately")
         void setHeadersStillPlacesAProvenanceVariant() {

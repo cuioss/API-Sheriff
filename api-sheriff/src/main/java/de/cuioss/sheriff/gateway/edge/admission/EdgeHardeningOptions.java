@@ -64,6 +64,22 @@ import io.vertx.core.http.HttpServerOptions;
  * let such streams use it up and leave the ones being forwarded unable to send a byte. The window is
  * derived from the listener's stream settings after the stream bound is applied, not configured.
  * <p>
+ * <strong>The inbound HTTP/2 header block and stream-reset rate are transport bounds as well.</strong>
+ * The listener announces a {@code SETTINGS_MAX_HEADER_LIST_SIZE} of at most 16 KiB — the same bound
+ * the HTTP/1.1 header block has: a listener announcing more, or announcing no limit, is lowered to it,
+ * and a lower value is kept. The bound covers the whole decoded header block, {@code CONTINUATION}
+ * frames included, so a header block spread over many frames is refused by the codec once it passes
+ * that size. The per-connection Rapid-Reset guard is pinned at 200 {@code RST_STREAM} frames per
+ * 30-second window, the transport's own default: a connection whose client resets more streams than
+ * that inside one window is ended with {@code GOAWAY ENHANCE_YOUR_CALM}. The values are set explicitly
+ * so a change of the transport default cannot move them, and they are never raised (ADR-0066). The
+ * guard counts only the resets a client sends on its connection, so the gateway's own
+ * {@code RST_STREAM(NO_ERROR)} — the early-response reset of ADR-0066 and the request-body and
+ * stream-idle resets of ADR-0060 A2 — can never feed it. The per-source detection substrate
+ * ({@code de.cuioss.sheriff.gateway.detection}) is deliberately not used for these bounds: its key is a
+ * source address, while stream creation and reset state belong to one connection, so per-source
+ * keying would neither see a single abusive connection sooner nor bound its memory.
+ * <p>
  * <strong>Transport bounds are fixed; the admission budget is operator-configurable.</strong> The
  * codec limits above are deliberate secure defaults chosen to keep the abuse surface bounded while
  * comfortably serving ordinary API traffic, and the drain timeout is kept below the Quarkus default
@@ -139,6 +155,25 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * window stays a finite multiple of the stream window.
      */
     private static final long MAX_CONCURRENT_STREAMS_PER_CONNECTION = 100L;
+
+    /**
+     * Upper bound on the decoded HTTP/2 header block of one request, announced as the listener's
+     * initial {@code SETTINGS_MAX_HEADER_LIST_SIZE}. Defined as {@link #MAX_HEADER_SIZE_BYTES} so the
+     * HTTP/2 header block, {@code CONTINUATION} frames included, has the same 16 KiB bound as the
+     * HTTP/1.1 one.
+     */
+    private static final long MAX_HEADER_LIST_SIZE_BYTES = MAX_HEADER_SIZE_BYTES;
+
+    /**
+     * Number of {@code RST_STREAM} frames a client may send on one HTTP/2 connection within
+     * {@link #RST_FLOOD_WINDOW_SECONDS} before the transport ends the connection with
+     * {@code GOAWAY ENHANCE_YOUR_CALM} — pinned at the transport's own default, never raised
+     * (ADR-0066).
+     */
+    private static final int RST_FLOOD_MAX_RST_FRAMES_PER_WINDOW = 200;
+
+    /** Length of the Rapid-Reset counting window in seconds — pinned at the transport's own default. */
+    private static final int RST_FLOOD_WINDOW_SECONDS = 30;
 
     private final int admissionCap;
     private final int webSocketRelayCap;
@@ -222,13 +257,29 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static void apply(HttpServerOptions options) {
         Http2Settings settings = options.getInitialSettings();
         boundConcurrentStreams(settings);
+        boundHeaderListSize(settings);
         options.setMaxHeaderSize(MAX_HEADER_SIZE_BYTES)
                 .setMaxInitialLineLength(MAX_INITIAL_LINE_LENGTH_BYTES)
                 .setMaxChunkSize(MAX_CHUNK_SIZE_BYTES)
                 .setIdleTimeout(IDLE_TIMEOUT_SECONDS)
                 .setIdleTimeoutUnit(TimeUnit.SECONDS)
                 .setInitialSettings(settings)
-                .setHttp2ConnectionWindowSize(connectionWindowSize(settings));
+                .setHttp2ConnectionWindowSize(connectionWindowSize(settings))
+                .setHttp2RstFloodMaxRstFramePerWindow(RST_FLOOD_MAX_RST_FRAMES_PER_WINDOW)
+                .setHttp2RstFloodWindowDuration(RST_FLOOD_WINDOW_SECONDS)
+                .setHttp2RstFloodWindowDurationTimeUnit(TimeUnit.SECONDS);
+    }
+
+    /**
+     * Lowers the listener's announced header-list size to {@link #MAX_HEADER_LIST_SIZE_BYTES} when it
+     * is unbounded or above that bound; a lower value is left as it is.
+     *
+     * @param settings the initial HTTP/2 settings of the listener, updated in place
+     */
+    private static void boundHeaderListSize(Http2Settings settings) {
+        if (settings.getMaxHeaderListSize() > MAX_HEADER_LIST_SIZE_BYTES) {
+            settings.setMaxHeaderListSize(MAX_HEADER_LIST_SIZE_BYTES);
+        }
     }
 
     /**

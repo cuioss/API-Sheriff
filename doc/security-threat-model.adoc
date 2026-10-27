@@ -544,15 +544,15 @@ enforces it and the test that pins it:
 | Clause | Enforced by | Pinned by
 
 | `Content-Length` beside `Transfer-Encoding: chunked`, in either order (CL.TE, TE.CL)
-| transport
+| transport; on HTTP/2 the transport refuses `Transfer-Encoding` as connection-specific
 | `GatewayEdgeFramingCorpusTest` (`contentLengthThenTransferEncoding`,
-  `transferEncodingThenContentLength`)
+  `transferEncodingThenContentLength`, `contentLengthBesideTransferEncodingIsRefusedOnHttp2`)
 
 | `Content-Length` beside a coding list that names `chunked`, or beside a repeated
-  `Transfer-Encoding` field
+  `Transfer-Encoding` field (TE.TE)
 | transport
 | `GatewayEdgeFramingCorpusTest` (`obfuscatedTransferEncodingTheTransportReadsAsChunked`,
-  `repeatedTransferEncoding`)
+  `repeatedTransferEncoding`, `repeatedTransferEncodingIsRefusedOnHttp2`)
 
 | `Content-Length` beside a coding whose final coding is not `chunked` (e.g. `xchunked`)
 | transport, with `FramingGate` as backstop
@@ -564,9 +564,10 @@ enforces it and the test that pins it:
 | `GatewayEdgeFramingCorpusTest` (`soleTransferEncodingNotExactlyChunked`);
   `FramingGateTest.AmbiguousTransferEncoding`
 
-| More than one `Content-Length`, or a comma-separated `Content-Length` value
-| `FramingGate`
-| `FramingGateTest` (`rejectsMultipleContentLength`, `rejectsCommaSeparatedContentLength`)
+| More than one `Content-Length` (CL.CL), or a comma-separated `Content-Length` value
+| `FramingGate`; on HTTP/2 the transport refuses `Content-Length` fields declaring different lengths
+| `GatewayEdgeFramingCorpusTest` (`repeatedContentLengthIsRefusedOnHttp2`); `FramingGateTest`
+  (`rejectsMultipleContentLength`, `rejectsCommaSeparatedContentLength`)
 
 | A single `Content-Length` that is not a decimal number fitting a `long` -- empty, signed,
   carrying a character other than an ASCII digit, or overflowing; leading zeros are admitted
@@ -606,15 +607,18 @@ enforces it and the test that pins it:
   before dispatch sees it
 | `GatewayEdgeFramingCorpusTest` (`optInGetIsForwardedFramedByItsDeclaredLength`,
   `declaredLengthRequestIsForwardedFramedByItsLength`, `zeroDeclaredLengthIsForwardedFramedAsZero`,
-  `bodyLongerThanItsDeclaredLengthIsRefused`, `undeclaredLengthKeepsTheTransportFraming`);
+  `bodyLongerThanItsDeclaredLengthIsRefused`, `undeclaredLengthKeepsTheTransportFraming`,
+  `declaredLengthHttp2BodyReachesAnHttp1UpstreamWithThatLength`,
+  `undeclaredLengthHttp2BodyCarriesNoClientLength`);
   `DispatchStageTest` (`forwardsABodyOfExactlyItsDeclaredLength`,
   `refusesAChunkCrossingTheDeclaredLength`, `abortsAnEndShortOfTheDeclaredLength`,
   `appliesNoLengthBoundWithoutADeclaredLength`)
 
 | A `Connection` token naming a framing header (`Content-Length`, `Transfer-Encoding`, `Host`)
   or a trust header (`Authorization`, `Forwarded`, `X-Forwarded-For`, `-Host`, `-Proto`, `-Port`)
-| `FramingGate`
-| `GatewayEdgeFramingCorpusTest` (`connectionStripsContentLength`); `FramingGateTest`
+| `FramingGate`; on HTTP/2 the transport refuses `Connection` as connection-specific
+| `GatewayEdgeFramingCorpusTest` (`connectionStripsContentLength`,
+  `connectionFramingStripIsRefusedOnHttp2`); `FramingGateTest`
   (`rejectsFramingHeaderStrip`, `rejectsTrustHeaderStrip`)
 
 | A bare-LF chunk terminator
@@ -640,7 +644,8 @@ enforces it and the test that pins it:
   and is recorded by it as a success
 | edge (`DispatchStage`, `RejectionReporter`, `UpstreamGuards`)
 | `GatewayEdgeFramingCorpusTest` (`inboundFramingFailureAfterDispatchResetsTheUpstreamRequest`,
-  `bareLineFeedChunkTerminator`, `clientDisconnectMidUploadIsNotASecurityWarning`);
+  `bareLineFeedChunkTerminator`, `clientDisconnectMidUploadIsNotASecurityWarning`,
+  `clientResetMidUploadResetsTheUpstreamRequestOnHttp2`);
   `DispatchStageTest.BreakerAttribution`
 |===
 
@@ -670,14 +675,13 @@ starts admitting one of those shapes. Every HTTP/1.1 corpus entry writes raw byt
 socket, and every entry asserts both the status of each response and the exact list of requests
 the upstream saw.
 
-The row is off COVERED because the assertion below is not pinned in full. Over HTTP/2 the corpus
-pins that a gate rejection ends only its own stream, that a declared body on `HEAD` is refused,
-that a non-decimal `Content-Length` refuses only its own stream, the bodyless-method rule, and the
-framing of a body with and without a declared length. The smuggling entries speak HTTP/1.1, and
-the upstream side of the corpus is HTTP/1.1 throughout: no test drives the remaining gate clauses
-or an inbound body failure after dispatch over HTTP/2, and none drives the upstream reset against
-an HTTP/2 upstream. One clause is pinned by `FramingGateTest` alone and by no corpus entry: a
-repeated or comma-separated `Content-Length`.
+Over HTTP/2 the corpus pins CL+TE, CL.CL with differing lengths, TE.TE and the `Connection`
+framing strip -- each is refused and nothing of it reaches the upstream -- together with an inbound body
+failure after dispatch (a client `RST_STREAM` mid-upload resets the upstream request, is reported as
+`INBOUND_BODY_ABORTED`, and the upstream connection is not reused), and the h2->h1 framing of a body
+with and without a declared length. The row stays off COVERED for one part of the assertion: the
+upstream side of the corpus is HTTP/1.1 throughout, so the upstream reset is pinned against an
+HTTP/1.1 upstream only. A comma-separated `Content-Length` is pinned by `FramingGateTest` alone.
 
 *Assertion.* A request with both `Content-Length` and `Transfer-Encoding`, a HEAD/GET with a
 body, or a `Connection: Content-Length` cleanup attempt is rejected (400) and never produces
@@ -1653,6 +1657,34 @@ over-limit connections; re-derive Content-Length on any downgrade; never forward
 proxies gRPC over upstream h2 -- both the terminated and forced-h2-upstream sides
 inherit this requirement.
 
+API Sheriff holds these bounds on the inbound HTTP/2 transport, set by `EdgeHardeningOptions` on every
+listener as fixed gateway constants that no configuration key reaches:
+
+* *Concurrent streams.* A connection announces at most 100 concurrent streams; a listener announcing
+  more, or no limit, is lowered to that bound.
+* *Stream resets.* The per-connection Rapid-Reset guard is pinned at 200 client-sent `RST_STREAM`
+  frames per 30-second window -- the transport's own default, set explicitly so a change of that
+  default cannot move it, and never raised (ADR-0066). A connection past it is ended with
+  `GOAWAY ENHANCE_YOUR_CALM`; every other connection is served on.
+* *Header block.* A connection announces a `SETTINGS_MAX_HEADER_LIST_SIZE` of at most 16 KiB, the
+  bound the HTTP/1.1 header block has. It covers the whole decoded header block, `CONTINUATION`
+  frames included, so a header block grown past it over any number of frames ends the connection.
+* *h2c and connection-specific headers.* A client's `Upgrade`, `Connection` and `HTTP2-Settings`
+  headers are members of the request-direction never-forward set (<<gw-03>>), so no forward mode
+  relays them; the gateway itself never performs an `h2c` upgrade towards an upstream.
+* *Downgrade framing.* A request forwarded from HTTP/2 to an HTTP/1.1 upstream is framed by dispatch,
+  never by a client-supplied header: a declared length becomes exactly the upstream
+  `Content-Length`, an undeclared one keeps the framing the upstream client chooses
+  (link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060],
+  <<gw-02>>).
+
+The per-source detection substrate does not key these bounds. Its key is a source address, while
+stream and reset state belong to one connection, so each bound is a property of the connection
+that carries the abuse. The gRPC path inherits all of them: its inbound streams arrive over the same
+listeners, and the forced-h2 upstream leg opens at most one upstream stream per admitted inbound
+request, so the stream and reset rates it can produce towards an upstream are bounded by the inbound
+ones.
+
 *Note -- early-answered uploads do not feed the reset count.* The Rapid-Reset guard counts the
 resets a client sends per connection, so a legitimate client that resets every upload stream answered
 before its body was sent -- as a Go client does -- would reach the guard's limit on an ordinary
@@ -1666,9 +1698,7 @@ connection's flow-control window is used up, or the client ended or lost the str
 has not changed for 50 ms, or 1 s has passed. Only the first shows that no more of the body can
 arrive. The 50 ms quiet period infers it from a client that is not sending, and the 1 s cap is a
 separate exit that ends the wait even while request data may still be in flight. The guard itself is
-untouched: no
-`quarkus.http.limits.rst-flood-*` key is set or changed, and this note does not change the status
-below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
+pinned at the transport default and never raised, and this note does not change the status below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
 availability threat of its own: it is recorded, with its control, under
 <<gw-07-upstream-ports,GW-07>>.
 
@@ -1681,13 +1711,23 @@ stream-idle bound ends with trailers, its stream reset with `NO_ERROR` when its 
 Each is a reset the gateway sends, so none counts towards the client's Rapid-Reset limit, and none
 ends the connection or its other streams. The status below is unchanged.
 
-*Status:* GAP. Quarkus/Netty ship some Rapid-Reset mitigation, but stream-reset rate limiting
-and CONTINUATION bounds must be verified and pinned, and h2c-upgrade non-forwarding asserted.
-This spans both the terminated h2 edge and the forced-h2 gRPC upstream.
+*Status:* COVERED. `EdgeHardeningOptionsTest` pins the reset-guard constants and the header-list
+bound (lowered when the listener announces more, kept when it announces less).
+`GatewayEdgeHttp2AbuseTest` drives the real edge with a raw HTTP/2 frame writer: a create-then-reset
+flood past the pinned window ends its connection with `GOAWAY ENHANCE_YOUR_CALM` while a fresh
+connection is served; early-answered uploads the gateway resets with `NO_ERROR` never trip the
+guard; a `CONTINUATION` flood past the header-list bound drops its connection; and a flood of
+zero-length `CONTINUATION` frames ends its connection before the stream is answered. `ConnectionHeadersTest` and
+`ForwardPolicyStageTest` pin that `HTTP2-Settings`, `Upgrade` and `Connection` are withheld under
+every forward mode, and the HTTP/2 legs of `GatewayEdgeFramingCorpusTest` pin the h2->h1
+declared-length framing. `GatewayEdgeEarlyResponseResetTest` keeps proving that the gateway's own
+resets are not counted. Against the native image `Http2StreamAbuseIT` drives the same floods,
+the `HTTP2-Settings` withholding and the h2->h1 framing over TLS and ALPN.
 
 *Assertion.* A Rapid-Reset / CONTINUATION-flood load against the gateway does not exhaust
-CPU/memory (bounded, connection dropped); client `Upgrade: h2c`/`Connection` headers are not
-forwarded upstream; an h2->h1 path re-derives framing.
+CPU/memory (bounded, connection dropped); client `Upgrade: h2c`/`Connection`/`HTTP2-Settings`
+headers are not forwarded upstream; an h2->h1 path re-derives framing; a reset the gateway sends
+never counts towards a client's Rapid-Reset limit.
 
 [#gw-09]
 === GW-09 -- WebSocket cross-site hijacking (CSWSH) / missing Origin check on upgrade
@@ -3951,7 +3991,7 @@ outstanding hardening work (next section).
 | ID | Control (short) | Owner | Status
 
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
-| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; on HTTP/2 the stream-scoped gate rejection, a declared body on `HEAD`, the refusal of a non-decimal `Content-Length`, the bodyless-method rule and declared-length framing are pinned, the other gate clauses and an inbound body failure after dispatch are not)
+| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1 and HTTP/2, the h2->h1 declared-length framing included; the upstream reset is pinned against an HTTP/1.1 upstream only)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED
@@ -3960,7 +4000,7 @@ outstanding hardening work (next section).
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
-| <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
+| <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
@@ -4010,9 +4050,9 @@ down. Closing them is the whole point of this exercise. Each is a small, additiv
   encoded-traversal/encoded-slash/matrix-param corpus proves no authorize-as-public /
   dispatch-to-protected divergence (upstream count = 0). Dominant gateway CVE class; the
   direct fix for the code-review raw-vs-normalized finding.
-. *GW-08 -- pin HTTP/2 abuse bounds.* Verify and assert stream-creation/reset
-  rate limiting (Rapid Reset), CONTINUATION frame count/size bounds, and non-forwarding of
-  client `Upgrade: h2c`/`Connection` to the upstream.
+. *GW-02 -- pin the upstream reset against an HTTP/2 upstream.* Every framing clause is pinned
+  over HTTP/1.1 and HTTP/2; the reset of an upstream request whose inbound body failed is driven
+  against an HTTP/1.1 upstream only.
 . *GW-06 -- fail-closed SNI + behaviour tests.* Make explicit: empty/fragmented SNI
   takes the strict policy or rejects (never a permissive default); the full ClientHello is
   reassembled before SNI routing; every security-gating boolean has a *behaviour* test (a real
