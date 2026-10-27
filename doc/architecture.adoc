@@ -2038,7 +2038,7 @@ the datum from a *non-fetching* view and sends no network request of its own. A 
 an active BFF runtime -- bearer-only, or a session mode that built no runtime -- emits neither datum.
 
 `oidc_discovery` never changes the verdict. A failed provider-metadata resolution stops only the
-identity-provider legs (login, refresh, logout); bearer-only and public routes keep working, so
+identity-provider legs (login, refresh, step-up); bearer-only and public routes keep working, so
 taking the instance out of rotation for it would turn an identity-provider outage into a full
 outage. The datum is a state token and nothing else: it names no issuer, URL or cause. Key-set
 state is not a reachability signal either: a loaded key set survives later refresh failures, and a

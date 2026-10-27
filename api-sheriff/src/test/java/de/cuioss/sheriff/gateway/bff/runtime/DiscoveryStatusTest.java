@@ -140,8 +140,9 @@ class DiscoveryStatusTest {
         @DisplayName("a later successful attempt replaces a failure: the last attempt wins")
         void resolvedAfterFailed() {
             DiscoveryStatus status = DiscoveryStatus.tracking();
-            assertThrows(IllegalStateException.class,
-                    () -> status.recording(failingWith(new IllegalStateException("first attempt"))).get());
+            Supplier<String> firstAttempt =
+                    status.recording(failingWith(new IllegalStateException("first attempt")));
+            assertThrows(IllegalStateException.class, firstAttempt::get);
             State afterFailure = status.state();
 
             status.recording(new CountingFetch()).get();
@@ -157,9 +158,10 @@ class DiscoveryStatusTest {
             DiscoveryStatus status = DiscoveryStatus.tracking();
             status.recording(new CountingFetch()).get();
             State afterResolution = status.state();
+            Supplier<String> secondAttempt =
+                    status.recording(failingWith(new IllegalStateException("second attempt")));
 
-            assertThrows(IllegalStateException.class,
-                    () -> status.recording(failingWith(new IllegalStateException("second attempt"))).get());
+            assertThrows(IllegalStateException.class, secondAttempt::get);
 
             assertAll("a resolution followed by a failure",
                     () -> assertEquals(State.RESOLVED, afterResolution, "precondition: the first attempt resolved"),

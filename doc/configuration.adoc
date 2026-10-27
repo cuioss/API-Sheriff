@@ -2312,7 +2312,7 @@ deployment with an active BFF runtime -- `oidc.session.mode: server` or `oidc.se
 |===
 
 `oidc_discovery` never changes the `UP`/`DOWN` verdict. A failed resolution stops only the
-identity-provider legs -- login, refresh and logout -- while bearer-only and public routes keep
+identity-provider legs -- login, refresh and step-up -- while bearer-only and public routes keep
 working, so an orchestrator that pulled the instance for it would turn an identity-provider outage
 into a full outage. Alert on `failed` instead. The datum is read from a view that records each
 resolution attempt and never triggers one, so polling readiness sends no discovery request. It is a

@@ -927,9 +927,12 @@ class SheriffMetricsTest {
                     // no attempt
                 }
                 case RESOLVED -> status.recording(() -> "provider-metadata").get();
-                case FAILED -> assertThrows(IllegalStateException.class, () -> status.recording(() -> {
-                    throw new IllegalStateException("discovery refused");
-                }).get());
+                case FAILED -> {
+                    var failingAttempt = status.recording(() -> {
+                        throw new IllegalStateException("discovery refused");
+                    });
+                    assertThrows(IllegalStateException.class, failingAttempt::get);
+                }
             }
             assertEquals(state, status.state(), "precondition: the view reached the state under test");
             return status;
