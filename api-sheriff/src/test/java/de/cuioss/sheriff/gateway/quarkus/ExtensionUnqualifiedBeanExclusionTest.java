@@ -94,8 +94,19 @@ class ExtensionUnqualifiedBeanExclusionTest {
      */
     private static final String EXTENSION_QUARKUS_PACKAGE = "de.cuioss.sheriff.token.quarkus.";
 
-    /** The one extension-owned scheduled method this gateway accepts: the collector's tick. */
+    /**
+     * The one extension-owned scheduled method this gateway accepts: the collector's tick. Matched
+     * exactly against the trigger's method description, never as a substring, so a future extension
+     * method that merely starts with this name (say {@code #updateCountersExtra}) is not mistaken for
+     * the collector.
+     */
     private static final String COLLECTOR_JOB = JwtMetricsCollector.class.getName() + "#updateCounters";
+
+    /**
+     * The collector's method description as {@link #describe(Trigger)} renders it: parenthesised at
+     * the end of the identity, which is what makes an exact suffix match possible.
+     */
+    private static final String COLLECTOR_METHOD_SUFFIX = "(" + COLLECTOR_JOB + ")";
 
     /** The Micrometer name of the extension's validation-error counters. */
     private static final String VALIDATION_ERRORS = "sheriff.token.validation.errors";
@@ -196,7 +207,7 @@ class ExtensionUnqualifiedBeanExclusionTest {
                 .toList());
 
         // Assert — the collector's job is there, and it is the only extension-owned job.
-        assertTrue(extensionJobs.stream().anyMatch(job -> job.contains(COLLECTOR_JOB)),
+        assertTrue(extensionJobs.stream().anyMatch(ExtensionUnqualifiedBeanExclusionTest::isCollectorJob),
                 "the collector's tick " + COLLECTOR_JOB + " must be a registered scheduled job; "
                         + "registered extension jobs: " + extensionJobs);
         assertEquals(List.of(), nonCollectorJobsAmong(extensionJobs),
@@ -242,7 +253,8 @@ class ExtensionUnqualifiedBeanExclusionTest {
     @DisplayName("The filters flag a non-collector extension job and accept the collector and gateway jobs")
     void filtersFlagNonCollectorExtensionJobsOnly() {
         // Arrange — real trigger identities: the collector's tick, a hypothetical second extension job,
-        // the gateway's own job, and the near miss in the validation library this gateway does use.
+        // the gateway's own job, the near miss in the validation library this gateway does use, and
+        // the near miss inside the collector itself: a method whose name merely starts with the tick's.
         String collectorJob = "1_" + COLLECTOR_JOB + " (" + COLLECTOR_JOB + ")";
         String otherExtensionJob = "2_de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck#poll "
                 + "(de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck#poll)";
@@ -250,20 +262,22 @@ class ExtensionUnqualifiedBeanExclusionTest {
                 + "(de.cuioss.sheriff.gateway.quarkus.SheriffMetrics#sweep)";
         String validationLibraryJob = "4_de.cuioss.sheriff.token.validation.SomeJob#run "
                 + "(de.cuioss.sheriff.token.validation.SomeJob#run)";
+        String collectorPrefixJob = "5_" + COLLECTOR_JOB + "Extra (" + COLLECTOR_JOB + "Extra)";
 
         // Act
         List<String> extensionJobs = extensionJobsAmong(
-                List.of(gatewayJob, collectorJob, otherExtensionJob, validationLibraryJob));
+                List.of(gatewayJob, collectorJob, otherExtensionJob, validationLibraryJob, collectorPrefixJob));
         List<String> flagged = nonCollectorJobsAmong(extensionJobs);
 
         // Assert — the extension filter selects the extension's Quarkus wiring only; the validation
         // library shares the de.cuioss.sheriff.token prefix and must not be over-selected. The second
-        // filter flags every extension job except the collector's tick.
-        assertEquals(List.of(collectorJob, otherExtensionJob), extensionJobs,
+        // filter flags every extension job except the collector's tick — including a method that only
+        // shares the tick's name as a prefix, which a substring match would wrongly accept.
+        assertEquals(List.of(collectorJob, otherExtensionJob, collectorPrefixJob), extensionJobs,
                 "the extension filter must select jobs under " + EXTENSION_QUARKUS_PACKAGE + " and leave "
                         + "the gateway's own package and the validation library alone");
-        assertEquals(List.of(otherExtensionJob), flagged,
-                "the collector filter must flag every extension job except " + COLLECTOR_JOB);
+        assertEquals(List.of(otherExtensionJob, collectorPrefixJob), flagged,
+                "the collector filter must flag every extension job except exactly " + COLLECTOR_JOB);
     }
 
     /** @return the summed count of every {@code sheriff.token.validation.errors} counter */
@@ -283,8 +297,16 @@ class ExtensionUnqualifiedBeanExclusionTest {
     /** @return the entries of {@code extensionJobs} that are not the collector's tick */
     private static List<String> nonCollectorJobsAmong(List<String> extensionJobs) {
         return extensionJobs.stream()
-                .filter(description -> !description.contains(COLLECTOR_JOB))
+                .filter(description -> !isCollectorJob(description))
                 .toList();
+    }
+
+    /**
+     * @return whether {@code description}, as rendered by {@link #describe(Trigger)}, names exactly the
+     *         collector's tick as its method — a method that only starts with that name does not count
+     */
+    private static boolean isCollectorJob(String description) {
+        return description.endsWith(COLLECTOR_METHOD_SUFFIX);
     }
 
     /** @return an identity for {@code trigger} that names the bean class whichever field carries it */
