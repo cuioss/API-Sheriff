@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -33,6 +34,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Named;
@@ -323,11 +326,19 @@ class ConfigModelContractTest {
         private static SecurityDefaultsConfig securityDefaults(@Nullable String profile,
                 @Nullable Integer maxAuthorizationHeaderValueLength, @Nullable Boolean allowGetWithContentLengthBody,
                 @Nullable Boolean allowExtendedAscii) {
+            return securityDefaults(profile, maxAuthorizationHeaderValueLength, allowGetWithContentLengthBody,
+                    allowExtendedAscii, null);
+        }
+
+        private static SecurityDefaultsConfig securityDefaults(@Nullable String profile,
+                @Nullable Integer maxAuthorizationHeaderValueLength, @Nullable Boolean allowGetWithContentLengthBody,
+                @Nullable Boolean allowExtendedAscii, @Nullable Boolean uniformNotFound) {
             return SecurityDefaultsConfig.builder()
                     .profile(profile)
                     .maxAuthorizationHeaderValueLength(maxAuthorizationHeaderValueLength)
                     .allowGetWithContentLengthBody(allowGetWithContentLengthBody)
                     .allowExtendedAscii(allowExtendedAscii)
+                    .uniformNotFound(uniformNotFound)
                     .build();
         }
 
@@ -375,11 +386,11 @@ class ConfigModelContractTest {
                             new SecurityHeadersConfig.Cors(false, List.of("b"), List.of("POST"),
                                     List.of("Authorization"), true)),
                     // One case per component, so the record contract is proven to discriminate on ALL
-                    // FOUR: a single unequal instance differing only in 'profile' would leave
-                    // max_authorization_header_value_length, allow_get_with_content_length_body and
-                    // allow_extended_ascii silently out of equals(). Each case varies exactly one
-                    // component and holds the other three fixed, so a component dropped from equals()
-                    // fails its own case alone.
+                    // FIVE: a single unequal instance differing only in 'profile' would leave
+                    // max_authorization_header_value_length, allow_get_with_content_length_body,
+                    // allow_extended_ascii and uniform_not_found silently out of equals(). Each case varies
+                    // exactly one component and holds the other four fixed, so a component dropped from
+                    // equals() fails its own case alone.
                     voCase("SecurityDefaultsConfig (profile)",
                             securityDefaults("strict", 8192, null, null),
                             securityDefaults("strict", 8192, null, null),
@@ -396,6 +407,10 @@ class ConfigModelContractTest {
                             securityDefaults("strict", 8192, null, false),
                             securityDefaults("strict", 8192, null, false),
                             securityDefaults("strict", 8192, null, true)),
+                    voCase("SecurityDefaultsConfig (uniform_not_found)",
+                            securityDefaults("strict", 8192, null, null, true),
+                            securityDefaults("strict", 8192, null, null, true),
+                            securityDefaults("strict", 8192, null, null, false)),
                     voCase("AnchorConfig", anchorConfig(), anchorConfig(),
                             AnchorConfig.builder().name("bff").pathPrefix("/bff").type(AnchorType.BFF)
                                     .access(AccessLevel.AUTHENTICATED).build()),
@@ -815,6 +830,38 @@ class ConfigModelContractTest {
             assertTrue(cfg.effectiveErrorPages());
             assertFalse(new PortalConfig("/", "Applications", null, 0, false).effectiveErrorPages(),
                     "a declared error_pages: false stays false");
+        }
+
+        @Test
+        @DisplayName("security_defaults.uniform_not_found resolves an omitted key and an omitted block to on")
+        void uniformNotFoundDefaultsToOn() {
+            assertAll("the trust-boundary branch is the secure default",
+                    () -> assertNull(SecurityDefaultsConfig.builder().build().uniformNotFound(),
+                            "an omitted key stays absent on the model"),
+                    () -> assertTrue(SecurityDefaultsConfig.builder().build().effectiveUniformNotFound(),
+                            "an omitted key resolves to true"),
+                    () -> assertTrue(SecurityDefaultsConfig.builder().uniformNotFound(true).build()
+                            .effectiveUniformNotFound(), "a declared true stays true"),
+                    () -> assertFalse(SecurityDefaultsConfig.builder().uniformNotFound(false).build()
+                            .effectiveUniformNotFound(), "a declared false restores the honest codes"));
+        }
+
+        @Test
+        @DisplayName("the schema declares security_defaults.uniform_not_found as a boolean defaulting to true")
+        void schemaDeclaresUniformNotFound() throws Exception {
+            JsonNode schema;
+            try (InputStream in = ConfigModelContractTest.class.getResourceAsStream("/schema/gateway.schema.json")) {
+                assertNotNull(in, "the bundled gateway schema is on the classpath");
+                schema = new ObjectMapper().readTree(in);
+            }
+            JsonNode property = schema.at("/properties/security_defaults/properties/uniform_not_found");
+
+            assertAll("the model key and the schema key agree",
+                    () -> assertFalse(property.isMissingNode(), "the schema declares the key"),
+                    () -> assertEquals("boolean", property.path("type").asText()),
+                    () -> assertTrue(property.path("default").asBoolean(false), "the documented default is true"),
+                    () -> assertFalse(schema.at("/properties/security_defaults/additionalProperties").asBoolean(true),
+                            "the block still refuses an unknown key"));
         }
 
         @Test

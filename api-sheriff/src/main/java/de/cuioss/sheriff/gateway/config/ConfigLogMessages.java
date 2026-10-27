@@ -576,6 +576,24 @@ public final class ConfigLogMessages {
                 .identifier(139)
                 .template("Route '%s' forwards browser cookies with cookies.same_origin_check: false — the gateway does not refuse cross-site unsafe requests carrying a forwarded cookie on it, so the upstream must defend itself against cross-site request forgery")
                 .build();
+
+        /**
+         * A route declares the per-route {@code rate_limit} block, which the gateway parses but does
+         * not enforce: no rate limit is applied to the route and no request is answered {@code 429}.
+         * <p>
+         * It is a {@code WARN} and never a boot refusal: refusing would break every descriptor that
+         * already carries the block, and the block itself does no harm. What must not happen is an
+         * operator reading the block as a control in force. Emitted once per such route at boot by
+         * {@code LimitRules.validateRateLimitNotEnforced}, whatever the block holds.
+         * <p>
+         * The template arguments are, in order: the route id and the id of the endpoint owning the
+         * route. The template never carries a configured limit value.
+         */
+        public static final LogRecord RATE_LIMIT_NOT_ENFORCED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(140)
+                .template("Route '%s' of endpoint '%s' declares rate_limit, which the gateway does not implement — no rate limit is applied to the route and no request is answered 429. Remove rate_limit from the route, or accept that nothing is enforced")
+                .build();
     }
 
     /**

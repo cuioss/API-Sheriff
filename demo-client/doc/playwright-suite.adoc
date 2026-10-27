@@ -392,8 +392,11 @@ prohibition this section carries is the testing consequence: no spec may assert 
 endpoint varies on `Accept`, and none may send an `Accept` header to it expecting a redirect.
 
 It does not cover the gateway's own rejections or a session route's floor. Those DO negotiate on
-`Accept` by design -- an unrouted path or a method outside a route's allowlist answers an explicit
-`text/html` request with the HTML error page and keeps its status, and a `require: session` route
+`Accept` by design -- an unrouted path answers an explicit `text/html` request with the HTML error
+page and keeps its status, a method outside a route's allowlist is answered to an untrusted caller
+exactly as an unrouted path is, the uniform `404` page
+(link:../../doc/adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]),
+and a `require: session` route
 answers an explicit `text/html` request with a `302` into login and any other with a `401` -- and
 `tests/06-rejection-panel.spec.js` asserts that split by `Accept` on purpose. Its info-endpoint row
 sends JSON only and expects the `401`, so it stays inside the prohibition.

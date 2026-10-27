@@ -42,6 +42,14 @@ import org.jspecify.annotations.Nullable;
  * Set-Cookie accumulator}, and an optional {@linkplain #shortCircuitStatus() short-circuit status}
  * (e.g. a CORS preflight answered at stage 0 before auth).
  * <p>
+ * <strong>The trust boundary.</strong> Three further derived fields let the edge answer a rejection
+ * raised before the trust boundary exactly as an unrouted address is answered: the
+ * {@linkplain #restoreUnroutedResponse() unrouted response-header snapshot} taken when the route is
+ * selected, the {@linkplain #trustBoundaryPassed() trust-boundary marker} the authentication stage
+ * sets, and the {@linkplain #onSessionBranch() session-branch marker} the edge sets when it resolves
+ * the request onto the session branch. All three are plain data: this package knows nothing of how
+ * authentication decides them.
+ * <p>
  * Header lookups are case-insensitive: header names are normalized to lower case when the
  * instance is built, matching RFC 7230 field-name semantics.
  *
@@ -72,6 +80,10 @@ public final class PipelineRequest {
     private @Nullable Integer shortCircuitStatus;
     private @Nullable String mediatedBearer;
     private @Nullable AdmittingSession admittingSession;
+    private @Nullable Map<String, String> unroutedResponseHeaders;
+    private @Nullable Map<String, String> unroutedResponseDefaultHeaders;
+    private boolean trustBoundaryPassed;
+    private boolean sessionBranch;
 
     private PipelineRequest(Builder builder) {
         this.method = Objects.requireNonNull(builder.method, "method");
@@ -262,12 +274,75 @@ public final class PipelineRequest {
     }
 
     /**
-     * Records the route selected by stage 2.
+     * Records the route selected by stage 2, and snapshots the gateway-authored response headers —
+     * the set-mode and the default-mode map alike — as the header set of the unrouted answer, before
+     * stage 2a replaces the global security headers with the route's own block. An unrouted address is
+     * answered with exactly these headers, so {@link #restoreUnroutedResponse()} can answer a pre-trust
+     * rejection with them too.
      *
      * @param selectedRoute the matched, boot-assembled {@link Route}
      */
     public void selectedRoute(Route selectedRoute) {
         this.selectedRoute = Objects.requireNonNull(selectedRoute, "selectedRoute");
+        this.unroutedResponseHeaders = new LinkedHashMap<>(responseHeaders);
+        this.unroutedResponseDefaultHeaders = new LinkedHashMap<>(responseDefaultHeaders);
+    }
+
+    /**
+     * Puts the response back into the state an unrouted address is answered in: both response-header
+     * maps are replaced by the snapshot {@link #selectedRoute(Route)} took, which drops every header a
+     * later stage added — the route's {@code security_headers}, {@code WWW-Authenticate},
+     * {@code Allow}, {@code Vary}, the {@code Cache-Control} a cookie forces — and the
+     * {@code Set-Cookie} accumulator is cleared. Every name, value and the insertion order of both
+     * maps are restored as they were at selection.
+     *
+     * @throws IllegalStateException when no route has been selected, so there is no snapshot to restore
+     */
+    public void restoreUnroutedResponse() {
+        Map<String, String> headersAtSelection = unroutedResponseHeaders;
+        Map<String, String> defaultHeadersAtSelection = unroutedResponseDefaultHeaders;
+        if (headersAtSelection == null || defaultHeadersAtSelection == null) {
+            throw new IllegalStateException("No route selected: there is no unrouted response to restore");
+        }
+        responseHeaders.clear();
+        responseHeaders.putAll(headersAtSelection);
+        responseDefaultHeaders.clear();
+        responseDefaultHeaders.putAll(defaultHeadersAtSelection);
+        responseSetCookies.clear();
+    }
+
+    /**
+     * @return {@code true} once the request has passed the trust boundary — a validated bearer token
+     *         or a completed authentication stage; {@code false} before
+     */
+    public boolean trustBoundaryPassed() {
+        return trustBoundaryPassed;
+    }
+
+    /**
+     * Records that the request has passed the trust boundary. The authentication stage is the only
+     * writer: right after a bearer token validated, and when the stage completes on any branch. The
+     * marker is never cleared.
+     */
+    public void markTrustBoundaryPassed() {
+        this.trustBoundaryPassed = true;
+    }
+
+    /**
+     * @return {@code true} when the edge resolved the request onto the session branch — a
+     *         {@code require: session} route, or the {@code Authorization}-less request on a
+     *         {@code session_fallback} route; {@code false} otherwise
+     */
+    public boolean onSessionBranch() {
+        return sessionBranch;
+    }
+
+    /**
+     * Records that the edge resolved the request onto the session branch, at the one point it resolves
+     * the branch and before the CSRF defence runs. The marker is never cleared.
+     */
+    public void markSessionBranch() {
+        this.sessionBranch = true;
     }
 
     /**

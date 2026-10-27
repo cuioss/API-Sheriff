@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.edge;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -39,6 +40,7 @@ import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
 import de.cuioss.sheriff.gateway.routing.Route;
@@ -93,7 +95,10 @@ import org.junit.jupiter.params.provider.EnumSource;
  * <p>
  * A route that forwards cookies also carries the gateway-side same-origin check, attached here exactly
  * as route-table assembly attaches it: an unsafe request carrying a cookie the route would forward is
- * refused unless it comes from the edge's own origin or an additional origin.
+ * refused unless it comes from the edge's own origin or an additional origin. The refusal is raised
+ * before the trust boundary, so the untrusted caller is answered the unrouted {@code 404} — an HTTP
+ * {@code 404} on a gRPC route too; an edge built with {@code security_defaults.uniform_not_found: false}
+ * pins the honest {@code 403} and the trailers-only {@code PERMISSION_DENIED}.
  */
 @DisplayName("GatewayEdgeRoute — the upstream Cookie header follows the route's cookies policy on every dispatch path")
 @Tag("isolated-fork")
@@ -173,6 +178,8 @@ class GatewayEdgeCookiePolicyTest {
     private ExecutorService virtualThreadExecutor;
     private HttpServer upstream;
     private @Nullable HttpServer front;
+    /** The same routes behind an edge with {@code security_defaults.uniform_not_found: false}. */
+    private @Nullable HttpServer honestFront;
     private HttpClient client;
     private HttpClient http2Client;
     private WebSocketClient wsClient;
@@ -208,6 +215,9 @@ class GatewayEdgeCookiePolicyTest {
         Awaits.teardown(http2Client.close(), "the HTTP/2 client to close");
         if (front != null) {
             Awaits.teardown(front.close(), "the edge front server to close");
+        }
+        if (honestFront != null) {
+            Awaits.teardown(honestFront.close(), "the honest edge front server to close");
         }
         Awaits.teardown(upstream.close(), "the stub upstream server to close");
         virtualThreadExecutor.close();
@@ -393,8 +403,10 @@ class GatewayEdgeCookiePolicyTest {
     /**
      * The gateway-side same-origin check of a route that forwards browser cookies: an unsafe request
      * carrying a cookie the route would forward must come from the origin the edge was reached on or
-     * from one of the route's {@code additional_origins}, or it is refused {@code 403} before it reaches
-     * the upstream. A request carrying no forwardable cookie and a safe method are never checked.
+     * from one of the route's {@code additional_origins}, or it is refused before it reaches the
+     * upstream — answered to the untrusted caller as the unrouted {@code 404}, and as the honest
+     * {@code 403} only with {@code security_defaults.uniform_not_found: false}. A request carrying no
+     * forwardable cookie and a safe method are never checked.
      */
     @Nested
     @DisplayName("the same-origin check of a cookie-forwarding route")
@@ -409,11 +421,22 @@ class GatewayEdgeCookiePolicyTest {
         }
 
         @Test
-        @DisplayName("a cross-site POST carrying a forwarded cookie is refused 403 and never reaches the upstream")
+        @DisplayName("a cross-site POST carrying a forwarded cookie is refused as the unrouted 404 and never reaches the upstream")
         void crossSitePostWithForwardedCookieRefused() throws Exception {
             int status = post(CHECKED_PATH, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES));
 
             assertAll("the forged request is stopped at the edge",
+                    () -> assertEquals(404, status, "the untrusted caller is not told the route exists"),
+                    () -> assertTrue(upstreamCookieFields.isEmpty(), "the upstream must record no request"));
+        }
+
+        @Test
+        @DisplayName("switch off: the same cross-site POST is refused with the honest 403")
+        void switchOffRefusesCrossSitePostWith403() throws Exception {
+            int status = exchangeAnswerOn(requireHonestFront(), client, io.vertx.core.http.HttpMethod.POST,
+                    CHECKED_PATH, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES), null).status();
+
+            assertAll("the honest edge names the CSRF refusal",
                     () -> assertEquals(403, status),
                     () -> assertTrue(upstreamCookieFields.isEmpty(), "the upstream must record no request"));
         }
@@ -456,7 +479,8 @@ class GatewayEdgeCookiePolicyTest {
 
             assertAll("a non-browser client passes until it carries a forwarded cookie without a proof",
                     () -> assertEquals(200, withoutCookie, "no cookie, no check"),
-                    () -> assertEquals(403, withCookie, "a forwarded cookie with no origin proof is refused"),
+                    () -> assertEquals(404, withCookie,
+                            "a forwarded cookie with no origin proof is refused, answered as the unrouted 404"),
                     () -> assertEquals(List.of(List.of()), List.copyOf(upstreamCookieFields),
                             "only the cookieless request reached the upstream"));
         }
@@ -518,7 +542,19 @@ class GatewayEdgeCookiePolicyTest {
         void grpcCrossSiteCallWithForwardedCookieRefused() throws Exception {
             Answer answer = grpcCallWith(Mode.ALL, Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES));
 
-            assertAll("the refusal is a trailers-only PERMISSION_DENIED",
+            assertAll("the refusal is the unrouted answer, an HTTP 404 rather than a trailers-only status",
+                    () -> assertEquals(404, answer.status(), "the untrusted caller is not told the route exists"),
+                    () -> assertNull(answer.headerGrpcStatus(), "no grpc-status leading header is sent"),
+                    () -> assertTrue(upstreamCookieFields.isEmpty(), "the upstream must record no request"));
+        }
+
+        @Test
+        @DisplayName("switch off: on a gRPC route the same call is refused with a trailers-only PERMISSION_DENIED")
+        void switchOffRefusesGrpcCrossSiteCallTrailersOnly() throws Exception {
+            Answer answer = grpcCallWith(requireHonestFront(), Mode.ALL,
+                    Map.of("Origin", CROSS_SITE_ORIGIN, COOKIE, BROWSER_COOKIES));
+
+            assertAll("the honest refusal is a trailers-only PERMISSION_DENIED",
                     () -> assertEquals(200, answer.status(), "a gRPC rejection is carried in grpc-status"),
                     () -> assertEquals(Integer.toString(GrpcStatusMapper.PERMISSION_DENIED), answer.headerGrpcStatus()),
                     () -> assertTrue(upstreamCookieFields.isEmpty(), "the upstream must record no request"));
@@ -578,12 +614,24 @@ class GatewayEdgeCookiePolicyTest {
 
     private void startFront() throws Exception {
         front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(new RouteTable(routes())).serve();
+        honestFront = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(new RouteTable(routes()))
+                .gatewayConfig(ConfigFixtures.gateway()
+                        .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(false).build()).build())
+                .serve();
     }
 
     private HttpServer requireFront() {
         HttpServer started = front;
         if (started == null) {
             throw new IllegalStateException("the edge front server is not started");
+        }
+        return started;
+    }
+
+    private HttpServer requireHonestFront() {
+        HttpServer started = honestFront;
+        if (started == null) {
+            throw new IllegalStateException("the honest edge front server is not started");
         }
         return started;
     }
@@ -600,9 +648,14 @@ class GatewayEdgeCookiePolicyTest {
 
     private Answer exchangeAnswer(HttpClient via, io.vertx.core.http.HttpMethod method, String uri,
             Map<String, String> headers, @Nullable Buffer body) throws Exception {
+        return exchangeAnswerOn(requireFront(), via, method, uri, headers, body);
+    }
+
+    private Answer exchangeAnswerOn(HttpServer target, HttpClient via, io.vertx.core.http.HttpMethod method,
+            String uri, Map<String, String> headers, @Nullable Buffer body) throws Exception {
         RequestOptions options = new RequestOptions()
-                .setServer(SocketAddress.inetSocketAddress(requireFront().actualPort(), LoopbackHost.ADDRESS))
-                .setHost(LoopbackHost.ADDRESS).setPort(requireFront().actualPort())
+                .setServer(SocketAddress.inetSocketAddress(target.actualPort(), LoopbackHost.ADDRESS))
+                .setHost(LoopbackHost.ADDRESS).setPort(target.actualPort())
                 .setMethod(method).setURI(uri);
         return Awaits.connect(via.request(options)
                         .compose(request -> {
@@ -623,10 +676,14 @@ class GatewayEdgeCookiePolicyTest {
     }
 
     private Answer grpcCallWith(Mode mode, Map<String, String> extraHeaders) throws Exception {
+        return grpcCallWith(requireFront(), mode, extraHeaders);
+    }
+
+    private Answer grpcCallWith(HttpServer target, Mode mode, Map<String, String> extraHeaders) throws Exception {
         Map<String, String> headers = new HashMap<>(extraHeaders);
         headers.put("Content-Type", GRPC_CONTENT_TYPE);
         headers.put("TE", "trailers");
-        return exchangeAnswer(http2Client, io.vertx.core.http.HttpMethod.POST, mode.grpcService() + "/Call",
+        return exchangeAnswerOn(target, http2Client, io.vertx.core.http.HttpMethod.POST, mode.grpcService() + "/Call",
                 headers, Buffer.buffer(new byte[5]));
     }
 

@@ -82,6 +82,12 @@ import org.junit.jupiter.api.io.TempDir;
  * selection and the verb gate, the per-route thorough checks, bearer authentication, streamed
  * upstream dispatch, and the streamed response relay. These complement the boot-time and lifecycle
  * assertions in {@link GatewayEdgeRouteTest}.
+ * <p>
+ * Two edges serve the same route table: the default one, on which a rejection raised after route
+ * selection and before the trust boundary is answered to the untrusted caller as the unrouted
+ * {@code 404}, and an <em>honest</em> one built with {@code security_defaults.uniform_not_found: false},
+ * on which the same rejection keeps its own status. A case that asserts what a stage decided reads it
+ * on the honest edge; each such case is paired with the uniform {@code 404} the default edge answers.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — end-to-end request pipeline over a live Vert.x server")
@@ -126,8 +132,11 @@ class GatewayEdgePipelineTest {
     private RouteTable routeTable;
     private HttpServer upstreamServer;
     private HttpServer frontServer;
+    /** The same routes behind an edge with {@code security_defaults.uniform_not_found: false}. */
+    private HttpServer honestServer;
     private HttpClient client;
     private int frontPort;
+    private int honestPort;
     /** A bearer token the fixture's validator accepts, so a {@code require: bearer} route can be reached. */
     private String validBearerToken;
     /** Held rather than discarded so a test can read back the labels the edge metered a request under. */
@@ -186,6 +195,9 @@ class GatewayEdgePipelineTest {
 
         frontServer = startFront(ConfigFixtures.gateway().securityHeaders(globalHeaders()).build());
         frontPort = frontServer.actualPort();
+        honestServer = startFront(ConfigFixtures.gateway().securityHeaders(globalHeaders())
+                .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(false).build()).build());
+        honestPort = honestServer.actualPort();
 
         client = vertx.createHttpClient();
     }
@@ -200,6 +212,7 @@ class GatewayEdgePipelineTest {
     void tearDown() throws Exception {
         Awaits.teardown(client.close(), "the HTTP client to close");
         Awaits.teardown(frontServer.close(), "the edge front server to close");
+        Awaits.teardown(honestServer.close(), "the honest edge front server to close");
         Awaits.teardown(upstreamServer.close(), "the stub upstream server to close");
         virtualThreadExecutor.close();
         Awaits.teardown(vertx.close(), "Vert.x to close");
@@ -233,10 +246,25 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("rejects a verb outside the route's allowed_methods 405 with an Allow header")
-    void rejectsDisallowedVerb() throws Exception {
+    @DisplayName("answers a verb outside the route's allowed_methods as the unrouted 404, without an Allow header")
+    void answersDisallowedVerbAsTheUnrouted404() throws Exception {
         // Act — the echo route allows GET and POST, never DELETE
         Response response = send(io.vertx.core.http.HttpMethod.DELETE, "/echo/orders", Map.of(), null);
+        Response unrouted = send(io.vertx.core.http.HttpMethod.DELETE, "/nowhere", Map.of(), null);
+
+        // Assert
+        assertAll("an untrusted caller cannot tell the refused verb from an absent route",
+                () -> assertEquals(404, response.status()),
+                () -> assertNull(response.headers().get("Allow"), "no Allow header discloses the route's verbs"),
+                () -> assertEquals(unrouted.body(), response.body(), "the body is the unrouted problem document"),
+                () -> assertEquals(0, upstreamHits.get(), "the refused verb never reaches the upstream"));
+    }
+
+    @Test
+    @DisplayName("switch off: rejects a verb outside the route's allowed_methods 405 with an Allow header")
+    void rejectsDisallowedVerb() throws Exception {
+        // Act — the echo route allows GET and POST, never DELETE
+        Response response = send(honestPort, io.vertx.core.http.HttpMethod.DELETE, "/echo/orders", Map.of(), null);
 
         // Assert
         assertEquals(405, response.status());
@@ -247,17 +275,18 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("meters a verb-gate 405 under the selected route, not under <no-route>")
+    @DisplayName("meters a verb-gate refusal under the selected route, not under <no-route>")
     void metersDisallowedVerbUnderItsRoute() throws Exception {
-        // Act — same refusal as above, read through the meter rather than the response
-        assertEquals(405, send(io.vertx.core.http.HttpMethod.DELETE, "/echo/orders", Map.of(), null).status());
+        // Act — same refusal as above, read through the meter rather than the response; the caller is
+        // shown the unrouted 404, the server-side series keeps the route
+        assertEquals(404, send(io.vertx.core.http.HttpMethod.DELETE, "/echo/orders", Map.of(), null).status());
         // The edge meters from RoutingContext.addEndHandler, which runs asynchronously with respect to
         // the client receiving the response, so wait for it; find(..) keeps the poll read-only.
         Awaits.until(() -> {
             var counter = meterRegistry.find(SheriffMetrics.REQUESTS_TOTAL)
                     .tags("route", "echo", "method", "DELETE", "status_family", "4xx").counter();
             return counter != null && counter.count() >= 1.0;
-        }, "the edge end handler to meter the 405 under route echo", Awaits.CONNECT_CEILING_SECONDS);
+        }, "the edge end handler to meter the refusal under route echo", Awaits.CONNECT_CEILING_SECONDS);
 
         // Assert — the route WAS selected; the verb gate refused afterwards. Metering that under
         // <no-route> would hide it from the per-route view an operator uses to find a client calling a
@@ -265,7 +294,7 @@ class GatewayEdgePipelineTest {
         // route selection").
         assertEquals(1.0, meterRegistry.counter(SheriffMetrics.REQUESTS_TOTAL,
                         "route", "echo", "method", "DELETE", "status_family", "4xx").count(),
-                "a 405 refused after route selection is metered under that route");
+                "a verb refused after route selection is metered under that route");
         assertNull(meterRegistry.find(SheriffMetrics.REQUESTS_TOTAL)
                         .tag("route", SheriffMetrics.NO_ROUTE).counter(),
                 "no request in this test is unrouted, so the <no-route> series must not exist at all");
@@ -355,10 +384,33 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("rejects a bearer route without a token 401 carrying WWW-Authenticate")
-    void rejectsMissingBearerToken() throws Exception {
+    @DisplayName("answers a bearer route without a token as the unrouted 404, without WWW-Authenticate")
+    void answersMissingBearerTokenAsTheUnrouted404() throws Exception {
         // Act
         Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure/data", Map.of(), null);
+
+        // Assert
+        assertAll("an untrusted caller is not told the route exists",
+                () -> assertEquals(404, response.status()),
+                () -> assertNull(response.headers().get("WWW-Authenticate"), "no challenge discloses the route"));
+    }
+
+    @Test
+    @DisplayName("answers a bearer route with an invalid token as the unrouted 404")
+    void answersInvalidBearerTokenAsTheUnrouted404() throws Exception {
+        // Act — a syntactically-bogus token is rejected offline by the validator
+        Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure/data",
+                Map.of("Authorization", "Bearer not-a-real-token"), null);
+
+        // Assert
+        assertEquals(404, response.status());
+    }
+
+    @Test
+    @DisplayName("switch off: rejects a bearer route without a token 401 carrying WWW-Authenticate")
+    void rejectsMissingBearerToken() throws Exception {
+        // Act
+        Response response = send(honestPort, io.vertx.core.http.HttpMethod.GET, "/secure/data", Map.of(), null);
 
         // Assert
         assertEquals(401, response.status());
@@ -367,10 +419,10 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("rejects a bearer route with an invalid token 401")
+    @DisplayName("switch off: rejects a bearer route with an invalid token 401")
     void rejectsInvalidBearerToken() throws Exception {
         // Act — a syntactically-bogus token is rejected offline by the validator
-        Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure/data",
+        Response response = send(honestPort, io.vertx.core.http.HttpMethod.GET, "/secure/data",
                 Map.of("Authorization", "Bearer not-a-real-token"), null);
 
         // Assert
@@ -448,17 +500,27 @@ class GatewayEdgePipelineTest {
     void minimalRouteStillEnforcesBodyCapAndAllowedPaths() throws Exception {
         // Arrange — the two per-route enforcements the operator deliberately retained under 'minimal'
 
-        // Act
-        Response overCapBody = send(io.vertx.core.http.HttpMethod.POST, "/open/allowed", Map.of(),
+        // Act — read on the honest edge, where each stage's own status reaches the caller
+        Response overCapBody = send(honestPort, io.vertx.core.http.HttpMethod.POST, "/open/allowed", Map.of(),
                 "a".repeat(MINIMAL_ROUTE_BODY_CAP + 1));
-        Response outsideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/elsewhere", Map.of(), null);
-        Response insideAllowlist = send(io.vertx.core.http.HttpMethod.GET, "/open/allowed", Map.of(), null);
+        Response outsideAllowlist = send(honestPort, io.vertx.core.http.HttpMethod.GET, "/open/elsewhere",
+                Map.of(), null);
+        Response insideAllowlist = send(honestPort, io.vertx.core.http.HttpMethod.GET, "/open/allowed",
+                Map.of(), null);
+        Response overCapBodyUniform = send(io.vertx.core.http.HttpMethod.POST, "/open/allowed", Map.of(),
+                "a".repeat(MINIMAL_ROUTE_BODY_CAP + 1));
+        Response outsideAllowlistUniform = send(io.vertx.core.http.HttpMethod.GET, "/open/elsewhere",
+                Map.of(), null);
 
         // Assert — the body cap is the gateway's own 413, the allowlist miss a 400; 'minimal' changes neither
         assertEquals(413, overCapBody.status(), "'minimal' is a validation statement, never a limits statement");
         assertEquals(400, outsideAllowlist.status(), "the path allowlist survives 'minimal'");
         assertEquals(200, insideAllowlist.status(),
                 "a benign in-allowlist request on the minimal route is served");
+        assertAll("on the default edge both refusals are answered to the untrusted caller as the unrouted 404",
+                () -> assertEquals(404, overCapBodyUniform.status()),
+                () -> assertEquals(404, outsideAllowlistUniform.status()),
+                () -> assertEquals(1, upstreamHits.get(), "only the in-allowlist request reached the upstream"));
     }
 
     @Test
@@ -499,12 +561,18 @@ class GatewayEdgePipelineTest {
     @Test
     @DisplayName("challenges an unauthenticated request on an authenticated redirect route before disclosing the location")
     void challengesAuthenticatedRedirectRouteBeforeRedirecting() throws Exception {
-        Response response = send(io.vertx.core.http.HttpMethod.GET, "/secure-moved/old-page", Map.of(), null);
+        Response response = send(honestPort, io.vertx.core.http.HttpMethod.GET, "/secure-moved/old-page",
+                Map.of(), null);
+        Response uniform = send(io.vertx.core.http.HttpMethod.GET, "/secure-moved/old-page", Map.of(), null);
 
         assertEquals(401, response.status(), "the authentication stage runs before the redirect terminal");
         assertEquals("Bearer", response.headers().get("WWW-Authenticate"),
                 "the missing bearer token is challenged");
         assertNull(response.headers().get("Location"), "the location must not be disclosed before authentication");
+        assertAll("on the default edge the challenge is the unrouted 404",
+                () -> assertEquals(404, uniform.status()),
+                () -> assertNull(uniform.headers().get("WWW-Authenticate")),
+                () -> assertNull(uniform.headers().get("Location"), "the location is still not disclosed"));
         assertEquals(0, upstreamHits.get(), "a challenged redirect route never contacts the upstream");
     }
 
@@ -559,10 +627,12 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("applies the anchor block to route-scoped rejections: the verb gate 405 and the bearer 401")
+    @DisplayName("switch off: applies the anchor block to route-scoped rejections: the verb gate 405 and the bearer 401")
     void appliesAnchorBlockToRouteScopedRejections() throws Exception {
-        Response verbRejected = send(io.vertx.core.http.HttpMethod.DELETE, "/frontend-open/page", Map.of(), null);
-        Response challenged = send(io.vertx.core.http.HttpMethod.GET, "/frontend-secure/data", Map.of(), null);
+        Response verbRejected = send(honestPort, io.vertx.core.http.HttpMethod.DELETE, "/frontend-open/page",
+                Map.of(), null);
+        Response challenged = send(honestPort, io.vertx.core.http.HttpMethod.GET, "/frontend-secure/data",
+                Map.of(), null);
 
         assertAll("every response after route selection carries the route's block",
                 () -> assertEquals(405, verbRejected.status()),
@@ -578,18 +648,42 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("applies the anchor frame_deny to every response kind under the anchor: proxy, asset, redirect, rejection, gRPC trailers-only and WebSocket handshake failure")
+    @DisplayName("answers the route-scoped rejections under the anchor with the unrouted header set: the global block, no challenge")
+    void answersRouteScopedRejectionsUnderTheAnchorWithTheUnroutedHeaders() throws Exception {
+        Response verbRejected = send(io.vertx.core.http.HttpMethod.DELETE, "/frontend-open/page", Map.of(), null);
+        Response challenged = send(io.vertx.core.http.HttpMethod.GET, "/frontend-secure/data", Map.of(), null);
+        Response unrouted = send(io.vertx.core.http.HttpMethod.GET, "/nowhere", Map.of(), null);
+
+        assertAll("the uniform 404 carries what an unrouted address is answered with, not the route's block",
+                () -> assertEquals(404, verbRejected.status()),
+                () -> assertEquals(404, challenged.status()),
+                () -> assertEquals(unrouted.headers().keySet(), verbRejected.headers().keySet(),
+                        "the verb refusal carries exactly the unrouted header names"),
+                () -> assertEquals(unrouted.headers().keySet(), challenged.headers().keySet(),
+                        "the bearer refusal carries exactly the unrouted header names"),
+                () -> assertEquals(GLOBAL_HSTS_VALUE, challenged.headers().get(HSTS),
+                        "the global block of the unrouted answer is restored"),
+                () -> assertNull(challenged.headers().get(FRAME_OPTIONS), "the anchor block does not survive"),
+                () -> assertNull(challenged.headers().get("WWW-Authenticate"), "no challenge discloses the route"),
+                () -> assertNull(verbRejected.headers().get("Allow"), "no Allow discloses the route's verbs"));
+    }
+
+    @Test
+    @DisplayName("switch off: applies the anchor frame_deny to every response kind under the anchor: proxy, asset, redirect, rejection, gRPC trailers-only and WebSocket handshake failure")
     void appliesAnchorFrameDenyToEveryResponseKindUnderTheAnchor() throws Exception {
         Map<String, Response> responses = new LinkedHashMap<>();
-        responses.put("proxy", send(io.vertx.core.http.HttpMethod.GET, "/frontend-open/page", Map.of(), null));
-        responses.put("asset", send(io.vertx.core.http.HttpMethod.GET, "/frontend-assets/" + ASSET_FILE,
+        responses.put("proxy", send(honestPort, io.vertx.core.http.HttpMethod.GET, "/frontend-open/page",
                 Map.of(), null));
-        responses.put("redirect", send(io.vertx.core.http.HttpMethod.GET, "/frontend-moved/old", Map.of(), null));
-        responses.put("rejection", send(io.vertx.core.http.HttpMethod.GET, "/frontend-secure/data", Map.of(), null));
-        responses.put("grpc-trailers-only", send(io.vertx.core.http.HttpMethod.POST, "/frontend-grpc/Svc/Call",
-                Map.of("Content-Type", "application/grpc"), null));
-        responses.put("websocket-handshake-failure", send(io.vertx.core.http.HttpMethod.GET, "/frontend-ws/socket",
+        responses.put("asset", send(honestPort, io.vertx.core.http.HttpMethod.GET,
+                "/frontend-assets/" + ASSET_FILE, Map.of(), null));
+        responses.put("redirect", send(honestPort, io.vertx.core.http.HttpMethod.GET, "/frontend-moved/old",
                 Map.of(), null));
+        responses.put("rejection", send(honestPort, io.vertx.core.http.HttpMethod.GET, "/frontend-secure/data",
+                Map.of(), null));
+        responses.put("grpc-trailers-only", send(honestPort, io.vertx.core.http.HttpMethod.POST,
+                "/frontend-grpc/Svc/Call", Map.of("Content-Type", "application/grpc"), null));
+        responses.put("websocket-handshake-failure", send(honestPort, io.vertx.core.http.HttpMethod.GET,
+                "/frontend-ws/socket", Map.of(), null));
 
         assertExpectedStatuses(responses);
         assertAll("every response produced after selecting an anchored route carries the anchor block",
@@ -603,17 +697,19 @@ class GatewayEdgePipelineTest {
     }
 
     @Test
-    @DisplayName("keeps frame_deny off every response kind outside the anchor, which carries the global block instead")
+    @DisplayName("switch off: keeps frame_deny off every response kind outside the anchor, which carries the global block instead")
     void keepsFrameDenyOffEveryResponseKindOutsideTheAnchor() throws Exception {
         Map<String, Response> responses = new LinkedHashMap<>();
-        responses.put("proxy", send(io.vertx.core.http.HttpMethod.GET, "/echo/orders", Map.of(), null));
-        responses.put("asset", send(io.vertx.core.http.HttpMethod.GET, "/assets/" + ASSET_FILE, Map.of(), null));
-        responses.put("redirect", send(io.vertx.core.http.HttpMethod.GET, "/moved/old", Map.of(), null));
-        responses.put("rejection", send(io.vertx.core.http.HttpMethod.GET, "/secure/data", Map.of(), null));
-        responses.put("grpc-trailers-only", send(io.vertx.core.http.HttpMethod.POST, "/grpc/Svc/Call",
-                Map.of("Content-Type", "application/grpc"), null));
-        responses.put("websocket-handshake-failure", send(io.vertx.core.http.HttpMethod.GET, "/ws/socket",
+        responses.put("proxy", send(honestPort, io.vertx.core.http.HttpMethod.GET, "/echo/orders", Map.of(), null));
+        responses.put("asset", send(honestPort, io.vertx.core.http.HttpMethod.GET, "/assets/" + ASSET_FILE,
                 Map.of(), null));
+        responses.put("redirect", send(honestPort, io.vertx.core.http.HttpMethod.GET, "/moved/old", Map.of(), null));
+        responses.put("rejection", send(honestPort, io.vertx.core.http.HttpMethod.GET, "/secure/data",
+                Map.of(), null));
+        responses.put("grpc-trailers-only", send(honestPort, io.vertx.core.http.HttpMethod.POST, "/grpc/Svc/Call",
+                Map.of("Content-Type", "application/grpc"), null));
+        responses.put("websocket-handshake-failure", send(honestPort, io.vertx.core.http.HttpMethod.GET,
+                "/ws/socket", Map.of(), null));
 
         assertExpectedStatuses(responses);
         assertAll("THE CONTROL: the identical response kinds outside the anchor never carry its frame_deny",

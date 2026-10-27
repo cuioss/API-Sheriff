@@ -32,6 +32,11 @@ import org.junit.jupiter.api.Test;
  * and the HTTP status. A forwarded request would carry the {@code go-httpbin} echo (a non-null
  * {@code method}); its absence on every rejection is the observable proof the upstream count stayed
  * {@code 0}.
+ * <p>
+ * A rejection raised after route selection and before the trust boundary — the verb gate, a missing
+ * bearer — is answered to the untrusted caller as the unrouted {@code 404} routing problem on the
+ * shipped default (ADR-0073), so the document does not disclose that the route exists. Its TRUE event
+ * stays in {@code sheriff_errors_total}, which is what still tells the two causes apart.
  */
 class ErrorContractIT extends BaseIntegrationTest {
 
@@ -53,36 +58,30 @@ class ErrorContractIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a disallowed method is rejected 405 as a routing problem, not forwarded")
+    @DisplayName("a disallowed method is refused as the unrouted 404 routing problem, metered METHOD_NOT_ALLOWED, not forwarded")
     void disallowedMethodProblemJson() {
-        var response = given()
-                .when()
-                .patch("/proxy/get")
-                .then()
-                .statusCode(405)
-                .contentType("application/problem+json")
-                .extract();
+        var response = UniformNotFoundAssertions.assertTrueEventMetered("httpbin-proxy", "METHOD_NOT_ALLOWED",
+                () -> given()
+                        .when()
+                        .patch("/proxy/get")
+                        .then()
+                        .extract());
 
-        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:routing"));
-        assertEquals("Routing", response.path("title"));
-        assertEquals(Integer.valueOf(405), response.path("status"));
-        assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a disallowed method");
+        assertEquals(Integer.valueOf(404), response.path("status"));
     }
 
     @Test
-    @DisplayName("a bearer rejection renders an authentication problem, not forwarded")
+    @DisplayName("a bearer rejection is refused as the unrouted 404 routing problem, metered TOKEN_MISSING, not forwarded")
     void bearerRejectionProblemJson() {
-        var response = given()
-                .when()
-                .get("/secure/get")
-                .then()
-                .statusCode(401)
-                .contentType("application/problem+json")
-                .extract();
+        var response = UniformNotFoundAssertions.assertTrueEventMetered("secure-proxy", "TOKEN_MISSING",
+                () -> given()
+                        .when()
+                        .get("/secure/get")
+                        .then()
+                        .extract());
 
-        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:authentication"));
-        assertEquals("Authentication", response.path("title"));
-        assertEquals(Integer.valueOf(401), response.path("status"));
-        assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a bearer rejection");
+        assertEquals(Integer.valueOf(404), response.path("status"));
     }
 }

@@ -41,7 +41,12 @@ import org.junit.jupiter.params.provider.MethodSource;
  * written here, and every accepted case asserts that go-httpbin's {@code url} echo ends with that same
  * spelling — never decoded, never re-encoded. Every rejected case asserts the gateway's RFC 9457
  * problem document and the absence of the go-httpbin {@code method} echo, which is the observable
- * proof that the refused request never reached the upstream.
+ * proof that the refused request never reached the upstream. The per-route filter runs after route
+ * selection and before the trust boundary, so the shipped default answers its refusals to the
+ * untrusted caller as the unrouted {@code 404} (ADR-0073); that the filter, and not routing, refused
+ * the query is asserted on its TRUE event, {@code SECURITY_FILTER_VIOLATION}, in
+ * {@code sheriff_errors_total}. The header-value cap is part of the pre-route floor, which refuses with
+ * its {@code 400} before any route is selected.
  * <p>
  * <strong>Route.</strong> {@value #STRICT_ECHO_ROUTE} is the {@code httpbin-forward-all} route of
  * {@code endpoints/httpbin.yaml}: it declares no {@code security_filter.profile}, so it resolves the
@@ -63,6 +68,9 @@ class StrictQueryAcceptanceIT extends BaseIntegrationTest {
 
     /** The strict, forward-all echo route; go-httpbin reaches it as {@code /anything/forward-all}. */
     private static final String STRICT_ECHO_ROUTE = "/proxy/forward-all";
+
+    /** The config-fixed id of the route {@link #STRICT_ECHO_ROUTE} selects, the {@code route} metric label. */
+    private static final String STRICT_ECHO_ROUTE_ID = "httpbin-forward-all";
 
     /** The upstream path go-httpbin reports in its {@code url} echo for {@link #STRICT_ECHO_ROUTE}. */
     private static final String UPSTREAM_PATH = "/anything/forward-all";
@@ -218,20 +226,16 @@ class StrictQueryAcceptanceIT extends BaseIntegrationTest {
 
     private static void assertRejectedAtGateway(String query) {
         // Act
-        var response = given()
-                .urlEncodingEnabled(false)
-                .when()
-                .get(STRICT_ECHO_ROUTE + "?" + query)
-                .then()
-                .statusCode(400)
-                .contentType("application/problem+json")
-                .extract();
+        var response = UniformNotFoundAssertions.assertTrueEventMetered(STRICT_ECHO_ROUTE_ID,
+                "SECURITY_FILTER_VIOLATION",
+                () -> given()
+                        .urlEncodingEnabled(false)
+                        .when()
+                        .get(STRICT_ECHO_ROUTE + "?" + query)
+                        .then()
+                        .extract());
 
         // Assert
-        assertAll(query,
-                () -> assertEquals(Integer.valueOf(400), response.path("status"),
-                        "the gateway renders the rejection as its own problem document"),
-                () -> assertNull(response.path("method"),
-                        "a refused query must never reach the go-httpbin upstream"));
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "the refused query " + query);
     }
 }

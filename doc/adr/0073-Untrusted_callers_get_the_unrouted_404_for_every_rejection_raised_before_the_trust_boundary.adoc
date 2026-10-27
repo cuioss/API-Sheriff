@@ -1,0 +1,302 @@
+= ADR-0073: Untrusted callers get the unrouted 404 for every rejection raised before the trust boundary
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: A rejection raised after route selection and before the trust boundary (a validated bearer token or a completed authentication stage) is answered to the caller exactly as an unrouted address is answered: status 404, the NO_ROUTE_MATCHED body or HTML page, the pre-route response headers and never a trailers-only gRPC status. Every unrouted 404 leaves the edge no earlier than a fixed floor plus a random jitter after admission, on a Vert.x timer. The true event is still metered. One switch, security_defaults.uniform_not_found, governs both and is on by default.
+// tags: edge, error-contract, information-disclosure, enumeration, timing, security-defaults, grpc
+// affects: api-sheriff, documentation
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+The gateway answers an address that names no route with `404`. It answers an address that names a
+route, but carries the wrong method, no token or an oversized body, with `405`, `401` or `413`. The
+difference is an *endpoint-existence oracle*. A caller with no credentials can map every route of a
+deployment by sending requests and reading the status codes. The same holds for the response
+headers (`Allow`, `WWW-Authenticate`, a route's `security_headers`) and for the time an answer
+takes.
+
+This record settles which callers may learn that a route exists, and how the answer to every other
+caller is made indistinguishable from the unrouted one.
+
+=== The trust boundary
+
+A request has passed the *trust boundary* at one of two points:
+
+* the bearer branch of the authentication stage (stage 4) validated a token offline, or
+* the authentication stage completed on any branch: a live session, or an anonymous route that
+  authenticates nothing.
+
+The trust boundary is identity, not network position. No address range is trusted.
+
+The *pre-trust window* runs from route selection to the trust boundary. It covers the per-route
+verb gate (stage 2b), the post-route stage (stage 3), the CSRF defence and the cookie-forwarding
+same-origin check, and the bearer branch up to a validated token.
+
+=== The rule
+
+A rejection raised in the pre-trust window, for an event of the closed set below, is answered as
+the unrouted address is answered. The rule holds whoever the caller is. A caller that would present
+a valid token later still gets the `404` for a wrong method, because the gateway has not
+established trust at the verb gate.
+
+The branch lives at the single rejection render point. `ErrorResponseWriter.renderRejection`
+consults `UniformNotFound.applies` before it chooses any other shape. The predicate is true exactly
+when all five legs hold:
+
+. the switch `security_defaults.uniform_not_found` is on;
+. the request has a selected route;
+. the request has not passed the trust boundary;
+. the event is a member of the closed set;
+. the request is not on the session branch with an `AUTHENTICATION`-category event.
+
+=== The closed set
+
+[cols="2,3", options="header"]
+|===
+| Event | Raise site
+
+| `METHOD_NOT_ALLOWED` | the per-route verb gate, stage 2b
+| `PATH_NOT_ALLOWED` | the route's `allowed_paths` check, stage 3
+| `SECURITY_FILTER_VIOLATION` | the route-scoped security-filter run, stage 3
+| `PARAMETER_LIMIT_EXCEEDED` | stage 1 only today, so inert; listed so that a later route-scoped
+raise cannot reopen the oracle
+| `CONTENT_TOO_LARGE` | the declared-`Content-Length` fast-reject of stage 3
+| `CSRF_REJECTED` | the session CSRF defence and the cookie-forwarding same-origin check
+| `TOKEN_MISSING`, `TOKEN_INVALID` | the bearer branch of stage 4
+|===
+
+`UniformNotFoundTest` walks every `EventType` constant. Each one must be a member or carry a
+recorded exclusion, so a new constant without a disposition fails the build.
+
+=== The exclusions
+
+[cols="2,3", options="header"]
+|===
+| Event or answer | Why it stays as it is
+
+| `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`
+| They are the unrouted answer. Both are raised before route selection, and
+link:0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059] keeps
+them identical on the wire.
+
+| `SCOPE_MISSING`
+| The token validated. The caller is trusted, so the `403` is honest.
+
+| `TOKEN_MISSING` on the session branch
+| The session branch negotiates login: `302` for a navigation, `401` otherwise
+(link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]).
+A browser must reach the login, so this answer discloses its route by design.
+
+| `WEBSOCKET_ORIGIN_REJECTED`, `INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`, the streaming
+`CONTENT_TOO_LARGE`, the dispatch-time `SECURITY_FILTER_VIOLATION` for an undeclared body on a
+bodyless method, the asset action's dispatch-path `405`, `UPSTREAM_ERROR`,
+`UPSTREAM_CIRCUIT_OPEN`, `UPSTREAM_TIMEOUT`
+| Raised after stage 4 completed. The caller is trusted, or the route is anonymous and its own
+success answer already discloses that it exists. The trust-boundary leg of the predicate, not the
+closed set, keeps the two shared constants honest here.
+
+| `RESERVED_BODY_TOO_LARGE`, `LOGOUT_TOKEN_INVALID`
+| The reserved paths are answered before route selection. They are a fixed, public set
+(link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]).
+
+| Every stage-1 rejection, the framing gate included, and the `405` of an unparseable method
+| Address-independent. The answer is the same whether a route exists or not.
+
+| Boot and informational events
+| They have no HTTP mapping.
+|===
+
+=== "Identical" defined
+
+The resolved answer is identical to the unrouted answer on the same gateway in four properties:
+
+* the status, `404`;
+* the body: the `NO_ROUTE_MATCHED` problem document without extension members, or its negotiated
+  HTML error page when `portal.error_pages` is on and `Accept` lists `text/html`;
+* the `Content-Type`;
+* the response header set.
+
+`PipelineRequest.selectedRoute` snapshots the gateway-authored response headers before stage 2a
+applies the route's own. `restoreUnroutedResponse` puts the snapshot back and clears the
+`Set-Cookie` accumulator. No route `security_headers`, `WWW-Authenticate`, `Allow`, `Vary` or
+`Set-Cookie` line survives.
+
+A `protocol: grpc` route is answered with the HTTP `404` as well. The trailers-only status of
+link:0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] would itself name the route as a gRPC
+route.
+
+=== The response-timing floor
+
+An identical answer still leaks while its timing differs. The unrouted address is answered straight
+after route selection. A resolved rejection is answered only after the stages before it ran. The
+slowest of them is the offline validation of a well-formed token with a wrong signature.
+
+So while the switch is on, every answer rendered as the unrouted `404` waits for a release time on
+a grid of `UniformNotFound.RESPONSE_FLOOR` steps counted from admission. The step rule: the answer
+leaves no earlier than the first floor step after admission that its processing has not passed, plus
+a random jitter in `[0, UniformNotFound.RESPONSE_JITTER)`. An answer ready within the floor leaves
+after one step. An answer whose processing outran the floor is held to the next step, so it leaves
+on the same step grid plus jitter, never at the moment it is ready. The genuine `NO_ROUTE_MATCHED` and
+`PASSTHROUGH_HOST_SMUGGLED` answers wait as much as a resolved rejection does, and so do the
+reserved-path `404`s rendered as `NO_ROUTE_MATCHED`. Honest answers do not wait.
+
+[cols="1,1,3", options="header"]
+|===
+| Constant | Value | Role
+
+| `RESPONSE_FLOOR` | 50 ms
+| No unrouted `404` leaves the edge earlier after admission, and each step of the release grid is
+this wide. It must sit above the worst-case cost of the pre-trust window.
+
+| `RESPONSE_JITTER` | 20 ms
+| The exclusive upper bound of a fresh random delay on top of the step, drawn from a
+`SecureRandom`. It spreads the release within a step.
+|===
+
+*The values are a reasoned choice. They have not been measured.* No benchmark in this repository
+times the pre-trust arms against an unrouted answer yet. The reasoning is this: the slowest arm is
+one offline signature check of one token against a cached key set, a CPU-bound step without I/O. A
+floor of 50 ms leaves room above that step for a garbage-collection pause or an unusually large
+token. A measurement of the slowest arm against the floored `404` replaces this reasoning when it
+exists. It either confirms the constants or moves them.
+
+The two values are fixed constants of the gateway, like the bounds of
+link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060]
+and
+link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064].
+No configuration key reaches them.
+
+The wait is `edge.end.ResponseDelay.endNoEarlierThan`. It schedules the write with
+`Vertx#setTimer` and holds neither the event loop nor a virtual thread. A response that another
+writer ended, or whose connection closed, is not written when the timer fires.
+
+=== The switch
+
+`security_defaults.uniform_not_found` governs the branch and the floor together. It is on when the
+key is absent, which is the secure default. `false` restores the honest codes, the trailers-only gRPC
+status and the undelayed `404`. The two halves reach different answers. The branch reaches
+pre-trust, route-matched rejections only. The floor reaches every answer rendered as the unrouted
+`404`. That includes every reserved-path answer `ErrorResponseWriter.renderProblem` renders with
+`NO_ROUTE_MATCHED`, such as the carve-out of a reserved path while the BFF runtime is inactive and
+the withheld client JWKS. Their delay keeps them identical in time to an unrouted path. The switch never changes the status, body or headers of a
+post-trust, reserved-path or stage-1 answer.
+
+=== What is still reported
+
+The branch changes what the caller is shown, never what is reported. `handleGatewayRejection`
+reports the rejection under its true event before it renders it. The event counter, the WARN and
+INFO lines and `sheriff_errors_total{event}` name the real cause and its category. The rejection is
+rendered *to* the `NO_ROUTE_MATCHED` shape, never re-reported *as* `NO_ROUTE_MATCHED`.
+
+== Alternatives rejected
+
+=== A uniform 404 without the timing floor
+
+The status, body and headers would match, and the time would not. An unrouted address is answered
+after route selection. A bearer route with a garbage token is answered after a signature check. A
+caller that repeats each probe a few times separates the two distributions and recovers the oracle.
+The floor is the part of the decision that makes "identical" hold for the one property a caller can
+always measure.
+
+=== Reordering the stages
+
+Authentication could run before the verb gate and the post-route stage, so that every rejection in
+the pre-trust window becomes a post-trust rejection. That moves the most expensive step, a signature
+check, in front of the cheapest ones. Every malformed request then costs a validation, which turns
+junk traffic into CPU load. It also does not close the oracle: the bearer `401` for a missing or
+invalid token is itself the answer that names the route.
+
+=== Validating the credential on the reject path
+
+When a pre-trust rejection fires, the gateway could validate any presented token first and answer
+the honest code to a valid one. That adds a signature check to every rejection an attacker can
+trigger at will, so the reject path becomes an amplifier. It also brings back a timing difference:
+a rejection with a token answers later than one without. The rule "whoever the caller is" avoids
+both by not looking at the credential before trust is established in the normal stage order.
+
+=== A network trust list
+
+A CIDR list could exempt internal callers from the uniform answer. Network position is not identity.
+Behind a NAT, a load balancer or a shared egress, one address range covers callers that the gateway
+cannot tell apart. A compromised host inside the range gets the oracle back. The trust boundary
+stays a validated token or a completed authentication stage, and the switch is the only way to turn
+the answer off for a whole gateway.
+
+=== A configurable floor
+
+The floor could be a configuration key. An operator would then have to size it against a cost no
+operator can observe, and a floor set too low reopens the timing signal without any visible effect.
+A fixed constant is set once, beside the code whose cost it bounds, and moves only with a
+measurement.
+
+== Consequences
+
+* An untrusted caller cannot tell an existing route from an absent one by status, body,
+  `Content-Type` or header set, and every such answer leaves the edge under the same step rule of
+  the response-timing floor.
+* Session routes still disclose that they exist: their login negotiation is their purpose. A
+  deployment that must hide a session route has to place it where no anonymous caller reaches it.
+* An anonymous route still discloses that it exists through its success answer. The uniform answer
+  covers its pre-trust rejections, so a wrong method on a public asset route answers `404`.
+* A trusted client keeps honest codes for every post-trust answer: the scope `403`, the dispatch
+  `408`/`413`/`400`, upstream `5xx` and the WebSocket origin `403`. Its pre-trust mistakes, such as
+  a wrong method, answer `404`. The true cause is in `sheriff_errors_total{event}` and the WARN
+  lines, not in the response.
+* Every unrouted `404` waits for the floor. Under a `404` flood each such answer ready within the
+  floor holds its admission permit for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`, 70 ms, because the
+  permit is released when the response ends; an answer held to a later step holds it until that
+  step. With the default `edge_hardening.admission_cap` of 2048, the edge sustains about 2048 / 0.07 s, roughly 29,000 floored `404` answers per second, before admission answers `503`.
+  The `503` is address-independent, so it leaks nothing. No thread is held while an answer waits;
+  the cost is a permit and a timer entry.
+* Every edge and integration test that requests an unrouted path waits for the floor. The tests
+  assert only lower bounds on timing, so the floor slows them and does not make them flaky.
+* The floor rests on reasoning, not on a measurement. An answer whose processing exceeds 50 ms is
+  held to the next step of the grid, so it leaves on a step boundary plus the jitter, not at its own
+  processing time.
+
+== Links
+
+* link:0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] -- the trailers-only gRPC mapping,
+  overridden here for an untrusted caller
+* link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023]
+  -- the declared-`Content-Length` `413`, overridden here for an untrusted caller
+* link:0049-Route_scope_policy_bearer_routes_enforce_oidcscopes_union_endpointscopes_session_routes_only_request_them.adoc[ADR-0049]
+  -- the bearer `401`, overridden here for an untrusted caller; the scope `403` stays
+* link:0055-A_session_fallback_route_carries_two_authentication_branches_selected_by_Authorization_header_presence.adoc[ADR-0055]
+  -- the session-fallback branches; the bearer branch's terminal `401` is overridden here
+* link:0059-Routing_rejections_report_under_their_own_ROUTING_problem_category.adoc[ADR-0059] --
+  the `ROUTING` category and the HTML-eligible verb-gate `405`, overridden here for an untrusted
+  caller
+* link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
+  -- the fixed reserved-path set
+* link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]
+  -- the admission budget the floor draws on
+* link:../architecture.adoc[Architecture] -- the error contract and the rejection flow
+* link:../configuration.adoc[Configuration Reference] -- `security_defaults.uniform_not_found`
+* link:../security-threat-model.adoc[Security Threat Model] -- the existence-oracle entry
+* link:../user/endpoint-routes.adoc[Endpoint Routes] -- why an existing route answers `404`
+* link:../development/README.adoc[Development Guide] -- how a new `EventType` gets its disposition
+* `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/UniformNotFound.java`,
+  `ErrorResponseWriter.java` and `edge/end/ResponseDelay.java` -- the implementation
+* `UniformNotFoundTest`, `GatewayEdgeUniformNotFoundTest`, `ResponseDelayTest` and
+  `EnumerationOracleIT` -- the tests that pin the closed set, the identical answer and the floor

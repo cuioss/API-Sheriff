@@ -24,6 +24,7 @@ import static de.cuioss.sheriff.gateway.integration.BffFapiControlsIT.sleepSecon
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.CERTIFICATES;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.DOCKER;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.RETRY_SCHEDULED_RECORD;
+import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.SECURE_ASSET;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.assertApplicationPortAnswers;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitLogRecord;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.awaitReadiness;
@@ -42,6 +43,7 @@ import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.remo
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.securedAssetStatus;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startAuxiliaryContainerOnNetworks;
 import static de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.startBffGateway;
+import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -75,6 +77,7 @@ import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
 
 import io.restassured.path.json.JsonPath;
+import io.restassured.response.ExtractableResponse;
 import io.restassured.response.Response;
 
 import org.junit.jupiter.api.DisplayName;
@@ -129,6 +132,16 @@ import org.junit.jupiter.api.Test;
  *       a login is refused. Neither relaxation reached chain trust.</li>
  * </ol>
  * <p>
+ * <strong>How a refused bearer is told from an absent route.</strong> A missing or rejected bearer is
+ * raised after route selection and before the trust boundary, so on the shipped default it is
+ * answered as the unrouted {@code 404} (ADR-0073, {@code security_defaults.uniform_not_found: true}),
+ * not as a {@code 401}. Each such refusal is therefore asserted as the unrouted problem document
+ * together with its true event, read from the rig's own registry through its published management
+ * port: {@code TOKEN_MISSING} for the tokenless control of the second test — beside the {@code 200}
+ * the realm's token is answered with on the same route, the matched control — and
+ * {@code TOKEN_INVALID} for the realm's token in the third, each moving {@code sheriff_errors_total}
+ * on the route {@value #SECURE_ASSET_ROUTE_ID} while {@code NO_ROUTE_MATCHED} on that route does not.
+ * <p>
  * <strong>What this suite does NOT prove.</strong> It does not exercise
  * {@code egress_tls.upstream_verify_hostname}, which {@code UpstreamHostnameVerificationIT} covers on
  * the compose pair, nor the refusal of a relaxation beside a named trust profile, which is a boot
@@ -174,6 +187,12 @@ class BffTlsRelaxationIT {
     private static final int APPLICATION_PORT = 10463;
 
     private static final String ORIGIN = "https://localhost:" + APPLICATION_PORT;
+
+    /**
+     * The route of the shared configuration that serves {@link OneOffGatewayContainers#SECURE_ASSET}
+     * behind a bearer, the {@code route} label its refusals are metered under.
+     */
+    private static final String SECURE_ASSET_ROUTE_ID = "assets-secure-directory";
 
     private static final String NETWORK = "sheriff-tls-relaxation";
     private static final String PROXY = "sheriff-tls-relaxation-idp";
@@ -318,10 +337,13 @@ class BffTlsRelaxationIT {
                             () -> "the back-channel relaxation must not be in effect. " + gatewayLog(GATEWAY)));
 
             String bearer = mintIntegrationRealmToken();
+            int accepted = securedAssetStatus(ORIGIN, bearer);
+            ExtractableResponse<Response> tokenless = UniformNotFoundAssertions.assertTrueEventMetered(rig::metrics,
+                    SECURE_ASSET_ROUTE_ID, "TOKEN_MISSING", () -> securedAsset(null));
             assertAll("the key set fetched through the mismatching certificate validates the realm's token",
-                    () -> assertEquals(200, securedAssetStatus(ORIGIN, bearer),
+                    () -> assertEquals(200, accepted,
                             () -> "a bearer token of the realm must be accepted. " + gatewayLog(GATEWAY)),
-                    () -> assertEquals(401, securedAssetStatus(ORIGIN, null),
+                    () -> UniformNotFoundAssertions.assertUnroutedProblem(tokenless,
                             "control: the route still refuses a request without a token"));
 
             assertLoginRefusedBeforeAnyRedirect("with the back-channel verifying the host name, a certificate "
@@ -348,13 +370,16 @@ class BffTlsRelaxationIT {
                             + "announced by WARN " + RETRY_SCHEDULED_RECORD);
             assertApplicationPortAnswers(GATEWAY, ORIGIN);
             Response down = rig.awaitAnswer();
-            String bearer = mintIntegrationRealmToken();
             assertAll("no key set of the identity provider loaded",
                     () -> assertEquals(503, down.statusCode(), () -> down.asString()),
                     () -> assertEquals("DOWN", down.path("status"), () -> down.asString()),
-                    () -> assertTrue(issuersLoaded(down) < issuers(down), () -> down.asString()),
-                    () -> assertEquals(401, securedAssetStatus(ORIGIN, bearer),
-                            () -> "without its key set the realm's token must be rejected. " + gatewayLog(GATEWAY)));
+                    () -> assertTrue(issuersLoaded(down) < issuers(down), () -> down.asString()));
+
+            String bearer = mintIntegrationRealmToken();
+            ExtractableResponse<Response> rejected = UniformNotFoundAssertions.assertTrueEventMetered(rig::metrics,
+                    SECURE_ASSET_ROUTE_ID, "TOKEN_INVALID", () -> securedAsset(bearer));
+            UniformNotFoundAssertions.assertUnroutedProblem(rejected,
+                    "without its key set the realm's token must be rejected");
 
             assertLoginRefusedBeforeAnyRedirect("a certificate the trust store does not hold must refuse the "
                     + "login, whatever the two hostname keys say");
@@ -381,6 +406,23 @@ class BffTlsRelaxationIT {
                         () -> "expected a server-error answer, was " + status + ". " + gatewayLog(GATEWAY)),
                 () -> assertNull(navigation.getHeader("Location"),
                         "a refused login must not redirect the browser"));
+    }
+
+    /**
+     * Fetches the bearer-gated asset from the rig's gateway, keeping the whole answer — unlike
+     * {@link OneOffGatewayContainers#securedAssetStatus(String, String)} — so a refusal can be held to
+     * the unrouted problem document.
+     *
+     * @param bearer the access token to present, or {@code null} to send no {@code Authorization}
+     * @return the answer
+     */
+    private static ExtractableResponse<Response> securedAsset(String bearer) {
+        var request = given().relaxedHTTPSValidation().baseUri(ORIGIN).basePath("")
+                .header("Accept", "application/json");
+        if (bearer != null) {
+            request = request.header("Authorization", "Bearer " + bearer);
+        }
+        return request.when().get(SECURE_ASSET).then().extract();
     }
 
     private static int issuers(Response readiness) {
@@ -717,6 +759,13 @@ class BffTlsRelaxationIT {
         Response awaitAnswer() {
             return awaitReadiness(GATEWAY, managementOrigin, response -> true, BOOT_TIMEOUT_SECONDS,
                     "the TLS-relaxation gateway's management interface to answer");
+        }
+
+        /**
+         * @return the gateway's own Prometheus exposition, read through its published management port
+         */
+        String metrics() {
+            return PrometheusScrape.scrape(managementOrigin);
         }
 
         /**

@@ -59,7 +59,8 @@ import org.junit.jupiter.api.Test;
  * </ul>
  * The status is identical on both legs: negotiation changes the body, never the status. The error
  * classes exercised are the ones the IT stack can reach: an unrouted address ({@code 404}), a body
- * over the route cap ({@code 413}), an upstream the gateway cannot dial ({@code 502}), an upstream that
+ * over the route cap (answered to the untrusted caller as the unrouted {@code 404}, ADR-0073), an
+ * upstream the gateway cannot dial ({@code 502}), an upstream that
  * does not answer in time ({@code 504}), an open circuit ({@code 503}), a directory-asset miss
  * ({@code 404}), a bearer token missing the endpoint scope ({@code 403}) and a failed OIDC callback.
  * <p>
@@ -217,11 +218,14 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a body over the route cap: HTML for a navigation, problem+json for JSON, same 413")
+    @DisplayName("a body over the route cap: the unrouted 404 — HTML for a navigation, problem+json for JSON")
     void bodyOverRouteCap() {
+        // The declared Content-Length is refused before the trust boundary, so the untrusted caller is
+        // answered exactly as an unrouted address is, on both legs; the TRUE event CONTENT_TOO_LARGE
+        // stays in sheriff_errors_total (asserted by SecurityProfileModeIT on the same route).
         String overCapBody = "x".repeat(MINIMAL_ROUTE_BODY_CAP + 1);
 
-        assertNegotiated(413, true,
+        assertNegotiated(404, true,
                 spec -> spec.contentType("text/plain").body(overCapBody).when().post(BODY_CAPPED_PATH));
     }
 

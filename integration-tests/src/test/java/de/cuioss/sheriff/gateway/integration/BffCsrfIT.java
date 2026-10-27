@@ -16,7 +16,6 @@
 package de.cuioss.sheriff.gateway.integration;
 
 import static io.restassured.RestAssured.given;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,51 +23,61 @@ import org.junit.jupiter.api.Test;
 /**
  * Exercises the fixed CSRF defence on the require:session {@code /app} route. The defence has no
  * disable knob and runs <em>before</em> session resolution, so an unsafe-method request with a foreign
- * {@code Origin} is rejected {@code 403} regardless of whether a session cookie is present — no login is
- * required to prove the rejection. A trusted {@code Origin} passes the CSRF gate, after which the
- * (missing) session is what shapes the response, proving the {@code 403} was specifically the CSRF gate
- * and not the auth stage.
+ * {@code Origin} is refused regardless of whether a session cookie is present — no login is required to
+ * prove the refusal. A trusted {@code Origin} passes the CSRF gate, after which the (missing) session is
+ * what shapes the response, proving the refusal was specifically the CSRF gate and not the auth stage.
+ * <p>
+ * The defence runs before the trust boundary, so the shipped default answers its refusal to the caller
+ * as the unrouted {@code 404} (ADR-0073). The cause is asserted on the TRUE event,
+ * {@code CSRF_REJECTED}, which the refusal still moves in {@code sheriff_errors_total} on the route.
  */
 class BffCsrfIT extends BaseIntegrationTest {
 
+    /** The config-fixed id of the {@code /app} session route, the {@code route} label of its error series. */
+    private static final String SESSION_ROUTE_ID = "bff-session-mediated";
+
+    private static final String UNSAFE_PATH = "/app/post";
+
     @Test
-    @DisplayName("an unsafe method with a foreign Origin is rejected 403 by the CSRF defence")
+    @DisplayName("an unsafe method with a foreign Origin is refused by the CSRF defence as the unrouted 404")
     void unsafeMethodForeignOriginRejected() {
-        var response = given()
-                .header("Origin", "https://evil.example.com")
-                .header("Accept", "application/json")
-                .when()
-                .post("/app/post")
-                .then()
-                .statusCode(403)
-                .extract();
+        var response = UniformNotFoundAssertions.assertTrueEventMetered(SESSION_ROUTE_ID, "CSRF_REJECTED",
+                () -> given()
+                        .header("Origin", "https://evil.example.com")
+                        .header("Accept", "application/json")
+                        .when()
+                        .post(UNSAFE_PATH)
+                        .then()
+                        .extract());
 
-        assertTrue(response.contentType().contains("application/problem+json"),
-                "a CSRF rejection must render RFC 9457 problem+json");
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a cross-origin unsafe request");
     }
 
     @Test
-    @DisplayName("an unsafe method with no Origin and no Sec-Fetch-Site proof is rejected 403")
+    @DisplayName("an unsafe method with no Origin and no Sec-Fetch-Site proof is refused by the CSRF defence")
     void unsafeMethodNoOriginProofRejected() {
-        given()
-                .header("Accept", "application/json")
-                .when()
-                .post("/app/post")
-                .then()
-                .statusCode(403);
+        var response = UniformNotFoundAssertions.assertTrueEventMetered(SESSION_ROUTE_ID, "CSRF_REJECTED",
+                () -> given()
+                        .header("Accept", "application/json")
+                        .when()
+                        .post(UNSAFE_PATH)
+                        .then()
+                        .extract());
+
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "an unsafe request without an Origin proof");
     }
 
     @Test
-    @DisplayName("a trusted Origin passes the CSRF gate and then requires a session (401, not 403)")
+    @DisplayName("a trusted Origin passes the CSRF gate and then requires a session (401, not the CSRF refusal)")
     void trustedOriginPassesCsrfThenRequiresSession() {
         // The CSRF gate accepts the trusted gateway origin, so control reaches the session stage; with no
-        // session cookie the non-navigation request is challenged 401 — distinguishing the CSRF 403 above
-        // from the downstream auth 401.
+        // session cookie the non-navigation request is challenged 401 — the session branch keeps its own
+        // negotiation — distinguishing the CSRF refusal above from the downstream auth 401.
         given()
                 .header("Origin", BffKeycloakLoginFlow.GATEWAY_ORIGIN)
                 .header("Accept", "application/json")
                 .when()
-                .post("/app/post")
+                .post(UNSAFE_PATH)
                 .then()
                 .statusCode(401);
     }

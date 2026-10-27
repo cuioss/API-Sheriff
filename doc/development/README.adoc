@@ -374,6 +374,73 @@ endpoint-declared block. Before widening a block, find every production reader o
 component that names its scopes itself, and give each one a test at the new scope; no contract test
 does this for you.
 
+[[_rejections_before_the_trust_boundary]]
+== Rejections Before the Trust Boundary
+
+A rejection a route raises before the caller is authenticated is answered to that caller as the
+unrouted `404`, so an unauthenticated scanner cannot tell which addresses name routes
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
+The operator view is in link:../user/endpoint-routes.adoc#_uniform_not_found_operator_note[Why an
+existing route answers 404]; the rendering contract is in
+link:../architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the trust
+boundary]. This section is what a contributor touching that path needs.
+
+=== Where the branch lives
+
+There is one branch point, and it is the render, not the raise site:
+
+* `edge.error.UniformNotFound` holds the closed set of events and the five-leg predicate `applies`,
+  and the two timing constants `RESPONSE_FLOOR` and `RESPONSE_JITTER`.
+* `edge.error.ErrorResponseWriter.renderRejection` consults `UniformNotFound.applies` before it picks
+  any other shape, the gRPC trailers-only status included. On a hit it calls
+  `PipelineRequest.restoreUnroutedResponse` and renders through the `NO_ROUTE_MATCHED` path.
+* `edge.end.ResponseDelay.endNoEarlierThan` writes every answer rendered as the unrouted `404` no
+  earlier than its release time, from a Vert.x timer.
+* `PipelineRequest` carries the three facts the predicate reads: the header snapshot taken in
+  `selectedRoute`, the trust marker `trustBoundaryPassed`, and the session-branch marker.
+  `AuthenticationStage` sets the trust marker right after a bearer token validates -- before the
+  scope check, so `SCOPE_MISSING` stays honest -- and when it completes on any branch.
+
+A stage raising a rejection does nothing special: it throws its `GatewayException` with the true
+event as before. `handleGatewayRejection` reports that event first and renders afterwards, so the
+event counter, the log lines and `sheriff_errors_total` never see the uniform shape. Do not add a
+second branch point at a raise site, and do not re-report a rejection as `NO_ROUTE_MATCHED`.
+
+=== Giving a new `EventType` its disposition
+
+Every `EventType` constant needs exactly one disposition, and `UniformNotFoundTest` fails until it
+has one:
+
+* *A member of `UniformNotFound.CLOSED_SET`* when the event can be raised after route selection and
+  before the trust boundary -- the verb gate, the post-route stage, the CSRF and same-origin checks,
+  the bearer branch. Add it with its raise site to the class Javadoc, and to the expected set in the
+  test.
+* *An entry in the test's `EXCLUSIONS` table*, with the reason it keeps its honest answer: raised
+  before route selection (the same for every address), on a reserved path, after authentication
+  completed, at boot only, or informational.
+
+When an event is raised both before and after the trust boundary -- `CONTENT_TOO_LARGE` and
+`SECURITY_FILTER_VIOLATION` are -- it belongs in the closed set, and the trust-boundary leg of the
+predicate keeps the post-trust raise honest. ADR-0073 records the reason for each existing
+exclusion; extend it when an exclusion's reason is new.
+
+=== Testing a pre-trust rejection
+
+A test of a pre-trust rejection asserts two things, because the status alone no longer names the
+cause:
+
+. *The answer is the unrouted one*: status `404`, the `routing` problem document, no
+  `WWW-Authenticate`, no `Allow`, and no contact with the upstream.
+. *The true event was counted*: `sheriff_errors_total` moved for the true event on the route the
+  request selected, and the `NO_ROUTE_MATCHED` series of that route did not move.
+
+The integration suite carries both as `UniformNotFoundAssertions` (`assertUnroutedProblem`,
+`assertTrueEventMetered`). An edge test that pins the honest status the stage itself produces builds
+its gateway with `security_defaults.uniform_not_found: false` -- a *switch-off control* -- next to
+the assertion of the uniform answer, so the stage's own verdict stays observable and deleting the
+switch turns a test red. `GatewayEdgeUniformNotFoundTest` is the reference for both legs. Timing
+assertions on the floor are lower bounds only, never upper bounds, so they are not flaky.
+
 == Artifact Purity: No Test-Shaped Configuration in the Shipped File
 
 === The invariant

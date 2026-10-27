@@ -329,7 +329,7 @@ class TerminalDispatchGrpcStreamIdleTest {
         return new TerminalDispatch(clients(), 1024L * 1024L, hardening, failureMapper, metrics, eventCounter,
                 BffRuntime.inert(), new EdgeAdmission(hardening), new ConnectionRetirement(new FramingGate(false)),
                 rejectionReporter, new ErrorResponseWriter(PortalEndpoint.inert(), new GatewayJson(new ObjectMapper()),
-                        new GrpcStatusMapper(), rejectionReporter),
+                        new GrpcStatusMapper(), rejectionReporter, true),
                 new ResponseStage(GatewayCookies.of(ConfigFixtures.gateway().build())),
                 new OriginValidationStage(),
                 new WebSocketRelayStage(vertx.createWebSocketClient(), failureMapper, eventCounter,

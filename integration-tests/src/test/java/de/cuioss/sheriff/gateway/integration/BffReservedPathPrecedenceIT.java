@@ -58,6 +58,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.BffGateway;
 import de.cuioss.sheriff.gateway.integration.OneOffGatewayContainers.ReadOnlyMount;
 
+import io.restassured.response.ExtractableResponse;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 
@@ -98,16 +99,27 @@ import org.junit.jupiter.params.provider.MethodSource;
  *   <li><em>The baseline filter applies to a reserved path.</em> One query parameter above the strict
  *       preset's count cap is rejected {@code 400} on the client JWKS path, which answers {@code 200}
  *       without it, and is rejected {@code 400} with the same problem type on the routed path.</li>
- *   <li><em>The route's verb gate does not.</em> A {@code GET} is refused {@code 405} on the routed
- *       path, naming {@code POST} as the allowed verb, and is answered {@code 200} with the key set
- *       on the client JWKS path.</li>
+ *   <li><em>The route's verb gate does not.</em> A {@code GET} is refused on the routed path and is
+ *       answered {@code 200} with the key set on the client JWKS path.</li>
  *   <li><em>The route's post-route parameter checks do not.</em> A doubly encoded parameter value is
- *       rejected {@code 400} on the routed path — where an ordinary value under the same name is
- *       forwarded — and is answered {@code 200} with the key set on the client JWKS path.</li>
+ *       refused on the routed path — where an ordinary value under the same name is forwarded — and is
+ *       answered {@code 200} with the key set on the client JWKS path.</li>
  * </ul>
  * The three stage pairs use the client JWKS path as their reserved path because it is the one
  * reserved endpoint that answers an anonymous {@code GET} with {@code 200} and reads no input, so an
  * answer other than the key set is attributable to a pipeline stage and to nothing else.
+ * <p>
+ * <strong>How a refusal on the routed path is told from an absent route.</strong> The verb gate and
+ * the route-scoped parameter checks run after route selection and before the trust boundary, so on
+ * the shipped default both refusals are answered as the unrouted {@code 404} (ADR-0073,
+ * {@code security_defaults.uniform_not_found: true}) and name neither the cause nor, for the verb gate,
+ * the allowed verbs. Two signals keep each a test of the stage rather than of routing: the matched
+ * control — a {@code POST} with an admitted query to the same routed path is proxied {@code 200}, so
+ * the route is there and selected — and the true event, {@code METHOD_NOT_ALLOWED} respectively
+ * {@code SECURITY_FILTER_VIOLATION}, which moves {@code sheriff_errors_total} on the route
+ * {@value #ROUTE_ID} in the rig's own registry, read through its published management port, while
+ * {@code NO_ROUTE_MATCHED} on that route does not. The baseline filter runs before route selection, so
+ * its refusal is address-independent and keeps its honest {@code 400}.
  * <p>
  * <strong>What this suite does NOT prove.</strong> It says nothing about what each reserved endpoint
  * answers — only that the answer is not the upstream's. It runs on the OIDC host; that six of the
@@ -148,6 +160,9 @@ class BffReservedPathPrecedenceIT {
 
     /** A path below the route's prefix that is not reserved. */
     private static final String ROUTED_PATH = "/bff/overlap-control";
+
+    /** The fixture's one route, the {@code route} label its refusals are metered under. */
+    private static final String ROUTE_ID = "bff-overlap-proxy";
 
     private static final String GATEWAY = "sheriff-reserved-path-overlap";
 
@@ -208,6 +223,9 @@ class BffReservedPathPrecedenceIT {
 
     private static final long BOOT_TIMEOUT_SECONDS = 90L;
 
+    /** The rig's published management origin, where its own metrics are read; set once it is started. */
+    private static String managementOrigin = "";
+
     @BeforeAll
     static void startTheGateway() {
         assertTheCommittedConfigurationHoldsNoFixture("before the rig starts");
@@ -219,8 +237,8 @@ class BffReservedPathPrecedenceIT {
                         "localhost.key", List.of(PROOF_KEY_VARIABLE + "=" + SIGNING_KEYS_MOUNT + "/" + PROOF_KEY_FILE)),
                 List.of(new ReadOnlyMount(DOCKER.resolve("signing-keys"), SIGNING_KEYS_MOUNT)),
                 List.of());
-        awaitReadiness(GATEWAY, "https://localhost:" + publishedPort(GATEWAY, 9000),
-                response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
+        managementOrigin = "https://localhost:" + publishedPort(GATEWAY, 9000);
+        awaitReadiness(GATEWAY, managementOrigin, response -> response.statusCode() == 200, BOOT_TIMEOUT_SECONDS,
                 "the reserved-path gateway, a container of " + OneOffGatewayContainers.IMAGE
                         + ", to report readiness UP");
         OneOffGatewayContainers.assertApplicationPortAnswers(GATEWAY, ORIGIN);
@@ -237,7 +255,7 @@ class BffReservedPathPrecedenceIT {
     void aPathBelowTheOverlapThatIsNotReservedIsProxied() {
         String probe = probe();
 
-        Response echoed = post(ROUTED_PATH, probe);
+        ExtractableResponse<Response> echoed = post(ROUTED_PATH, probe);
 
         assertAll("the routed path reaches the echo upstream",
                 () -> assertEquals(200, echoed.statusCode(), () -> echoed.asString() + " " + gatewayLog(GATEWAY)),
@@ -287,7 +305,7 @@ class BffReservedPathPrecedenceIT {
     void aReservedPathIsNotProxied(String reservedPath) {
         String probe = probe();
 
-        Response answered = post(reservedPath, probe);
+        ExtractableResponse<Response> answered = post(reservedPath, probe);
 
         assertFalse(answered.asString().contains(probe),
                 () -> "a request to " + reservedPath + " was echoed by the upstream of the /bff route (status "
@@ -329,10 +347,10 @@ class BffReservedPathPrecedenceIT {
                 .mapToObj(index -> "p" + index + "=v")
                 .collect(Collectors.joining("&"));
 
-        Response reservedWithin = get(CLIENT_JWKS_PATH, probe());
-        Response reservedOver = get(CLIENT_JWKS_PATH + "?" + overCap, probe());
-        Response routedWithin = post(ROUTED_PATH, probe());
-        Response routedOver = post(ROUTED_PATH + "?" + overCap, probe());
+        ExtractableResponse<Response> reservedWithin = get(CLIENT_JWKS_PATH, probe());
+        ExtractableResponse<Response> reservedOver = get(CLIENT_JWKS_PATH + "?" + overCap, probe());
+        ExtractableResponse<Response> routedWithin = post(ROUTED_PATH, probe());
+        ExtractableResponse<Response> routedOver = post(ROUTED_PATH + "?" + overCap, probe());
 
         assertAll("one query parameter above the strict count cap",
                 () -> assertServesTheClientKeySet(reservedWithin, "control: the reserved path without the violation"),
@@ -349,30 +367,40 @@ class BffReservedPathPrecedenceIT {
     }
 
     @Test
-    @DisplayName("the verb gate of the overlapping route refuses the routed path and does not apply to a reserved path")
+    @DisplayName("the verb gate of the overlapping route refuses the routed path as the unrouted 404, metered METHOD_NOT_ALLOWED, and does not apply to a reserved path")
     void theVerbGateDoesNotApplyToAReservedPath() {
-        Response routed = get(ROUTED_PATH, probe());
-        Response reserved = get(CLIENT_JWKS_PATH, probe());
+        String refusedProbe = probe();
+        ExtractableResponse<Response> routedAllowed = post(ROUTED_PATH, probe());
+        ExtractableResponse<Response> routed = UniformNotFoundAssertions.assertTrueEventMetered(
+                () -> PrometheusScrape.scrape(managementOrigin), ROUTE_ID, "METHOD_NOT_ALLOWED",
+                () -> get(ROUTED_PATH, refusedProbe));
+        ExtractableResponse<Response> reserved = get(CLIENT_JWKS_PATH, probe());
 
         assertAll("a GET, which the overlapping route does not allow",
-                () -> assertEquals(405, routed.statusCode(),
-                        () -> "the route's verb gate must refuse the routed path. " + routed.asString()),
-                () -> assertEquals("POST", routed.getHeader("Allow"), "the refusal names the route's allowed verb"),
+                () -> assertEquals(200, routedAllowed.statusCode(),
+                        () -> "matched control: the route's allowed verb is proxied on the same path. "
+                                + routedAllowed.asString()),
+                () -> UniformNotFoundAssertions.assertUnroutedProblem(routed,
+                        "the route's verb gate refusing a GET on the routed path"),
+                () -> assertFalse(routed.asString().contains(refusedProbe),
+                        () -> "the refused GET must not reach the upstream: " + routed.asString()),
                 () -> assertServesTheClientKeySet(reserved, "the reserved endpoint answers the same verb"));
     }
 
     @Test
-    @DisplayName("the post-route parameter checks of the overlapping route refuse the routed path and do not apply to a reserved path")
+    @DisplayName("the post-route parameter checks of the overlapping route refuse the routed path as the unrouted 404, metered SECURITY_FILTER_VIOLATION, and do not apply to a reserved path")
     void thePostRouteParameterChecksDoNotApplyToAReservedPath() {
-        Response routedAdmitted = post(ROUTED_PATH + "?" + ADMITTED_PARAMETER_QUERY, probe());
-        Response routedRefused = post(ROUTED_PATH + "?" + REFUSED_PARAMETER_QUERY, probe());
-        Response reserved = get(CLIENT_JWKS_PATH + "?" + REFUSED_PARAMETER_QUERY, probe());
+        ExtractableResponse<Response> routedAdmitted = post(ROUTED_PATH + "?" + ADMITTED_PARAMETER_QUERY, probe());
+        ExtractableResponse<Response> routedRefused = UniformNotFoundAssertions.assertTrueEventMetered(
+                () -> PrometheusScrape.scrape(managementOrigin), ROUTE_ID, "SECURITY_FILTER_VIOLATION",
+                () -> post(ROUTED_PATH + "?" + REFUSED_PARAMETER_QUERY, probe()));
+        ExtractableResponse<Response> reserved = get(CLIENT_JWKS_PATH + "?" + REFUSED_PARAMETER_QUERY, probe());
 
         assertAll("a parameter value the strict profile refuses after route selection",
                 () -> assertEquals(200, routedAdmitted.statusCode(),
-                        () -> "control: the parameter itself is forwarded. " + routedAdmitted.asString()),
-                () -> assertEquals(400, routedRefused.statusCode(),
-                        () -> "the route's parameter checks must refuse the value. " + routedRefused.asString()),
+                        () -> "matched control: the parameter itself is forwarded. " + routedAdmitted.asString()),
+                () -> UniformNotFoundAssertions.assertUnroutedProblem(routedRefused,
+                        "the route's parameter checks refusing the value on the routed path"),
                 () -> assertNotEquals(400, reserved.statusCode(),
                         () -> "no parameter check of a route may judge a reserved path. " + reserved.asString()),
                 () -> assertServesTheClientKeySet(reserved, "the reserved endpoint answers, whatever the query says"));
@@ -397,18 +425,18 @@ class BffReservedPathPrecedenceIT {
                 .header(PROBE_HEADER, probe);
     }
 
-    private static Response post(String pathAndQuery, String probe) {
+    private static ExtractableResponse<Response> post(String pathAndQuery, String probe) {
         return request(probe).contentType("text/plain").body("reserved-path-precedence")
                 .when().post(pathAndQuery)
-                .then().extract().response();
+                .then().extract();
     }
 
-    private static Response get(String pathAndQuery, String probe) {
-        return request(probe).when().get(pathAndQuery).then().extract().response();
+    private static ExtractableResponse<Response> get(String pathAndQuery, String probe) {
+        return request(probe).when().get(pathAndQuery).then().extract();
     }
 
     /** The answer of the client JWKS endpoint: {@code 200} and a key set holding at least one key. */
-    private static void assertServesTheClientKeySet(Response response, String why) {
+    private static void assertServesTheClientKeySet(ExtractableResponse<Response> response, String why) {
         assertEquals(200, response.statusCode(), () -> why + " — expected the client key set, was "
                 + response.statusCode() + ": " + response.asString() + " " + gatewayLog(GATEWAY));
         List<Object> keys = response.jsonPath().getList("keys");

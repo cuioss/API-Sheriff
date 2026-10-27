@@ -982,9 +982,14 @@ pass is the larger sample that says so again, from the other direction.
 | `authenticatedAssetRejectsWithoutToken`
   (`DirectoryAssetServingIT`)
 | 91 | (d)
-| Named "rejected 401 *before any file is read*"; nothing asserts the ordering, and from outside it
-  cannot be asserted directly. It can be asserted *by contrast*: a request for a file that does not
-  exist under `/secure-assets` must also answer `401` -- source-resolution-first would answer `404`.
+| Named "rejected *before any file is read*"; nothing asserts the ordering, and from outside it
+  cannot be asserted directly. It can be asserted *by contrast*, and the contrast now rests on the
+  true event rather than the status: a tokenless request is answered as the unrouted `404`
+  (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]),
+  which is also what a directory miss answers, so the existing file and a file that does not exist
+  under `/secure-assets` must both be metered `TOKEN_MISSING` and answered identically --
+  source-resolution-first would answer the missing file with the asset miss and meter no
+  `TOKEN_MISSING`.
 
 | `sheriffMetersAppearAndMoveAfterProxyTraffic`
   (`MetricsIT`)
@@ -1107,7 +1112,7 @@ column means the file was read and nothing in it met F1, F2 or F3 -- never that 
 | `BffCookieBackchannelDisabledIT.java`           | 2  | 0 | matched 404/400 pair discriminated by `Cache-Control`
 | `BffCookieSessionIT.java`                       | 6  | 3 | one `strengthen`, two shape-(e) `keep`
 | `BffCookieStatelessnessIT.java`                 | 3  | 1 | shape-(e) `keep`
-| `BffCsrfIT.java`                                | 3  | 0 | 403 / 403 / 401 triple separates CSRF from auth
+| `BffCsrfIT.java`                                | 3  | 0 | two refusals (the uniform 404, metered `CSRF_REJECTED`) and a 401 separate CSRF from auth
 | `BffKeycloakLoginFlow.java`                     | 0  | 0 | support class; the (e)-1 site, and the seam that closes it
 | `BffLoginInitiationIT.java`                     | 2  | 0 | `:78-80` states why the exact target is asserted
 | `BffLogoutIT.java`                              | 2  | 0 | replays the stale jar and asserts the 401
@@ -1130,7 +1135,7 @@ column means the file was read and nothing in it met F1, F2 or F3 -- never that 
 | `GetWithBodyActivationWiringTest.java`          | 4  | 0 | fail-closed carve-out with its own negative control
 | `GetWithBodyIT.java`                            | 3  | 0 | one test asserts the constructed request bytes
 | `GracefulShutdownIT.java`                       | 3  | 0 | see <<class-name-overclaim>>
-| `GrpcProxyIT.java`                              | 4  | 0 | unary, streaming, status relay, trailers-only rejection
+| `GrpcProxyIT.java`                              | 4  | 0 | unary, streaming, status relay, pre-trust rejection as the HTTP 404 (`UNIMPLEMENTED`)
 | `HostSmuggleGuardIT.java`                       | 2  | 0 | matched smuggled/benign pair; see <<census-evasion>>
 | `ImageLabelActivationWiringTest.java`           | 1  | 0 | expectation derived from the Dockerfile, two vacuity guards
 | `ImageLabelInspector.java`                      | 0  | 0 | support class
@@ -2210,7 +2215,8 @@ The three passes record verdicts against the commits they read. Nine of the meth
 have changed since -- fourteen classification rows between them, because the first pass and
 <<unit-lane-audit>> each classified the five `edge/GatewayEdgeRouteTest` methods -- and each method is
 named here so that a verdict above is never read as a description of a method that no longer has that
-body. The passes' own totals are unchanged: they count verdicts, and later work does not rewrite a
+body. The migration to the uniform `404` changed the asserted status of further classified and
+per-file rows; those are listed in their own subsection below. The passes' own totals are unchanged: they count verdicts, and later work does not rewrite a
 verdict.
 
 === Six `keep` methods strengthened
@@ -2305,6 +2311,96 @@ concurrent resolve and ran on one thread. It now resolves from a second thread b
 store write a `persist` makes, and asserts both resolves find the session. What it reaches is the
 binding's own sequence of store calls; that one store call is atomic is `InMemorySessionStoreTest`'s
 subject.
+
+=== Tests whose rejections now answer the uniform 404
+
+A rejection raised after route selection and before the trust boundary is answered to an untrusted
+caller as the unrouted `404` on the shipped default
+(link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
+The tests below are named in a verdict or a per-file note above, which was written against the honest
+status they then asserted. The table holds two kinds of assertion: the uniform `404` a migrated
+refusal now answers, and the retained controls that still assert an honest status. Where the stage's
+own status is the claim, it is read on an edge built with `security_defaults.uniform_not_found: false`
+-- a switch-off control. Not every row asserts the true event. Three assert none:
+
+* the `GatewayEdgePipelineTest` row -- `rejectsDisallowedVerb` asserts the `405` on the switch-off
+  edge, and its sibling `answersDisallowedVerbAsTheUnrouted404` asserts the `404`, no `Allow` and the
+  unrouted body, with no event;
+* the `BffCsrfIT` trusted-`Origin` control, which asserts only the session branch's `401`;
+* the `GrpcProxyIT` row, which states the gRPC status it asserts in place of an event.
+
+Every other row asserts the true event. No verdict above is rewritten; the bodies changed.
+
+[cols="3,4",options="header"]
+|===
+| Method (file) | What it asserts now
+
+| `GatewayEdgePipelineTest.rejectsDisallowedVerb`
+| The `405` with `Allow: GET, POST`, on the switch-off edge. The strengthened `Allow` leg and its
+  observed RED in <<unit-lane-inversion-audit>> stand. The sibling
+  `answersDisallowedVerbAsTheUnrouted404` asserts the default edge's `404`, no `Allow` and the unrouted
+  body.
+
+| `DirectoryAssetServingIT.authenticatedAssetRejectsWithoutToken`
+| An existing and a missing file under `/secure-assets` both answered as the unrouted `404`, both
+  metered `TOKEN_MISSING`, with identical bodies. The `401`-by-contrast discriminator the
+  <<pro-forma-audit>> row describes no longer separates the two orders, because a directory miss also
+  answers `404`; the true event does.
+
+| `BffCsrfIT` (all three methods)
+| The two CSRF refusals as the unrouted `404` metered `CSRF_REJECTED`; the trusted-`Origin` control
+  still answers the session branch's `401`.
+
+| `GrpcProxyIT.unauthenticatedBearerGrpcRejected`
+| The tokenless call answered as the unrouted HTTP `404`, which the gRPC client surfaces as
+  `UNIMPLEMENTED` -- never the trailers-only `UNAUTHENTICATED`.
+
+| `ErrorContractIT.disallowedMethodProblemJson`, `.bearerRejectionProblemJson`
+| The routing problem document with status `404`, metered `METHOD_NOT_ALLOWED` and `TOKEN_MISSING`.
+|===
+
+The integration lane's other migrated suites are not rows of the table above. `MetricsIT` is named
+in a verdict above, for `sheriffMetersAppearAndMoveAfterProxyTraffic`, a method the migration did
+not change; its migrated method is the sibling that verdict cites as the shape to copy. The other
+suites do not assert the same thing, and the difference is what a reader of a green run may rely
+on.
+
+*The unrouted problem document plus the true event.* These refusals assert both signals:
+`UniformNotFoundAssertions.assertUnroutedProblem` and `assertTrueEventMetered`, which also checks
+that `NO_ROUTE_MATCHED` did not move on the route. A refusal raised by a different stage, or a
+path that is genuinely unrouted, turns them red.
+
+* `BearerValidationIT`, `BearerSecurityFilterInteractionIT`, `DeclaredLimitBoundaryIT`,
+  `SecurityProfileModeIT` and `StrictQueryAcceptanceIT`, on the primary instance;
+* `BffReservedPathPrecedenceIT` and `BffTlsRelaxationIT`, through each one-off gateway's own
+  management origin;
+* `BffSessionFallbackIT.unsafeMethodWithoutAuthorizationForeignOriginCsrfRejected`, the CSRF
+  refusal, and only that method of the suite.
+
+`LargeBodyIT.bodyOverTheRouteCapIsRejectedByTheGateway` asserts the same two signals without the
+helper. It checks the `404`, the routing problem type and title, and no upstream echo, and it reads
+the `CONTENT_TOO_LARGE` delta directly through `PrometheusScrape`. It does not check
+`NO_ROUTE_MATCHED`.
+
+*The `404` without the true event.* These refusals stay green if the refusal is raised by another
+stage that also answers the unrouted `404`, a route-table regression included:
+
+* `UpstreamAssetServingIT.postRejected` -- the unrouted problem document, no event;
+* `CookieForwardingPolicyIT` (`assertRefused`) -- the `404`, the routing problem type and no
+  upstream echo; `CSRF_REJECTED` is not read;
+* `BffSessionFallbackIT.rejectedAuthorizationAnswers404WithoutSessionFallback` -- the `404`, the
+  HTML error page, no challenge and no `Location`; no event;
+* `HtmlErrorPageIT.bodyOverRouteCap` -- the `404` on both negotiated legs; it defers the
+  `CONTENT_TOO_LARGE` event to `SecurityProfileModeIT`, on the same route;
+* `MetricsIT.securityEventsMeterAppearsAndMovesAfterRejection` -- the `404`, beside the
+  `sheriff_security_events_total` delta that is its own subject; `sheriff_errors_total` is not
+  read;
+* `WebSocketProxyIT.unauthenticatedBearerHandshakeRejected` and the three `Jwks*IT` suites -- the
+  bare status, compared against `UniformNotFoundAssertions.UNROUTED_STATUS`.
+
+`PipelineVerbIT` has no refusal test. Only its class Javadoc changed: it now names
+`ErrorContractIT.disallowedMethodProblemJson` (table above) as the test that asserts the verb
+gate's refusal.
 
 [[backlog]]
 == The Countable Backlog
