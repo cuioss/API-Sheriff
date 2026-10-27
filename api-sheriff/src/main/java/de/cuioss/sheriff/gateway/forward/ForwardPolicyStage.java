@@ -120,9 +120,11 @@ import org.jspecify.annotations.Nullable;
  *       {@code HEAD} is withheld under forward-all, under a negative-list that does not name it, and
  *       under a positive-list that names it in {@code headers_allow}. Gating both halves on one
  *       flag, in every mode, is what stops the gateway asking a question whose answer it then
- *       discards. On every other method the two are write preconditions answered with {@code 412},
- *       never {@code 304}, so they cross with the unconditional tier whatever the flag says — a
- *       create-only {@code PUT} carrying {@code If-None-Match: *} keeps its guard. The other three
+ *       discards. On every other method no {@code 304} can answer them, so they cross with the
+ *       unconditional tier whatever the flag says: {@code If-None-Match} is there a write
+ *       precondition answered {@code 412} — a create-only {@code PUT} carrying
+ *       {@code If-None-Match: *} keeps its guard — and {@code If-Modified-Since}, defined only for
+ *       {@code GET} and {@code HEAD}, is ignored by the origin. The other three
  *       RFC 9110 §13 validators — {@code If-Match}, {@code If-Unmodified-Since} and
  *       {@code If-Range} — are not gated on any method: withholding them would not discard an
  *       answer but change what the request means. {@code set_headers} is operator configuration
@@ -211,11 +213,12 @@ public final class ForwardPolicyStage {
      * direction would then answer without its {@code ETag} / {@code Last-Modified}.
      * <p>
      * <strong>The gate is method-aware.</strong> RFC 9110 §13.1.2 and §13.1.3 give these two a
-     * {@code 304} answer only on {@code GET} and {@code HEAD}; on any other method a failed
-     * {@code If-None-Match} or {@code If-Modified-Since} is answered {@code 412}, because there it is
-     * a write precondition — {@code If-None-Match: *} is how a {@code PUT} says "create, never
-     * overwrite". No {@code 304} can come back from such a request, so there is no discarded answer
-     * to prevent; the validators cross on those methods exactly as the unconditional tier does.
+     * {@code 304} answer only on {@code GET} and {@code HEAD}. On any other method a failed
+     * {@code If-None-Match} is answered {@code 412}, because there it is a write precondition —
+     * {@code If-None-Match: *} is how a {@code PUT} says "create, never overwrite" — and
+     * {@code If-Modified-Since} is ignored, because RFC 9110 §13.1.3 defines it only for {@code GET}
+     * and {@code HEAD}. No {@code 304} can come back from such a request, so there is no discarded
+     * answer to prevent; the validators cross on those methods exactly as the unconditional tier does.
      * <p>
      * The other three RFC 9110 §13 validators are deliberately <em>not</em> in this tier; they sit in
      * the unconditional tier and cross whatever the toggle says, because withholding them would not

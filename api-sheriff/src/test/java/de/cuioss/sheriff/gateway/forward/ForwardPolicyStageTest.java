@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
@@ -589,6 +590,30 @@ class ForwardPolicyStageTest {
         }
 
         /**
+         * Every non-canonical {@code -}/{@code _} spelling of every conditional validator, derived from
+         * the production list: each separator position independently takes either character, so the
+         * stream covers the whole equivalence class {@link ConnectionHeaders#separatorFolded} folds,
+         * mixed spellings such as {@code If_None-Match} included.
+         */
+        static Stream<String> nonCanonicalValidatorSpellings() {
+            return ForwardPolicyStage.CONDITIONAL_HEADERS.stream()
+                    .flatMap(ProtocolHeaderSet::separatorSpellings)
+                    .filter(spelling -> !ForwardPolicyStage.CONDITIONAL_HEADERS.contains(spelling));
+        }
+
+        private static Stream<String> separatorSpellings(String name) {
+            String[] parts = name.split("-");
+            int separators = parts.length - 1;
+            return IntStream.range(0, 1 << separators).mapToObj(mask -> {
+                StringBuilder spelling = new StringBuilder(parts[0]);
+                for (int i = 0; i < separators; i++) {
+                    spelling.append((mask & (1 << i)) == 0 ? '-' : '_').append(parts[i + 1]);
+                }
+                return spelling.toString();
+            });
+        }
+
+        /**
          * The three RFC 9110 §13 validators the not_modified gate deliberately leaves alone. They sit in
          * the unconditional tier because withholding them would change what the request means rather
          * than discard an answer, so every mode must carry them whatever the toggle says.
@@ -970,8 +995,8 @@ class ForwardPolicyStageTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"If_None_Match", "If-None_Match", "If_Modified-Since", "If_Modified_Since"})
-        @DisplayName("an underscore spelling of a 304 validator is withheld while not_modified is off")
+        @MethodSource("nonCanonicalValidatorSpellings")
+        @DisplayName("every underscore spelling of a 304 validator is withheld while not_modified is off")
         void underscoreSpelledValidatorIsWithheldWhenToggleOff(String spelling) {
             // Arrange — a CGI-folding backend resolves every -/_ spelling of a validator to one
             // HTTP_IF_* variable, so the toggle must close the whole equivalence class, exactly as the
@@ -1143,8 +1168,9 @@ class ForwardPolicyStageTest {
 
     /**
      * The {@code not_modified} gate withholds the two 304 validators only on {@code GET} and
-     * {@code HEAD}. On every other method they are write preconditions (RFC 9110 §13.1.2, §13.1.3 —
-     * answered {@code 412}, never {@code 304}) and cross whatever the toggle says.
+     * {@code HEAD}. On every other method no {@code 304} can answer them ({@code If-None-Match} is a
+     * write precondition answered {@code 412}, and RFC 9110 §13.1.3 makes the origin ignore
+     * {@code If-Modified-Since}), so they cross whatever the toggle says.
      */
     @Nested
     @DisplayName("the not_modified gate is method-aware")

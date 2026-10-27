@@ -1289,9 +1289,10 @@ route's `cookies` policy (<<_cookie_policy>>).
   link:configuration.adoc#_upstream_defaults[`not_modified`] toggle -- with the toggle off those two
   are also removed from the mode copy of a `GET` or `HEAD`, in every `-`/`_` spelling, so no
   forward mode carries one there. The gate is method-aware because only `GET` and `HEAD` are
-  answered `304` (RFC 9110 §13.1.2, §13.1.3); on every other method the two are write
-  preconditions answered `412` and cross like the unconditional tier, so a create-only `PUT` with
-  `If-None-Match: *` keeps its guard. The three preconditions are
+  answered `304` (RFC 9110 §13.1.2, §13.1.3); on every other method the two cross like the
+  unconditional tier -- `If-None-Match` is there a write precondition answered `412`, so a
+  create-only `PUT` with `If-None-Match: *` keeps its guard, and `If-Modified-Since`, defined only
+  for `GET` and `HEAD`, is ignored by the origin. The three preconditions are
   not gated because withholding them changes the request -- a lost update, a mixed-version `206`
   -- rather than discarding an answer. Membership answers *"does the
   gateway know what this header means?"* -- not "does a backend need it", a rule that would
@@ -1518,8 +1519,9 @@ The upstream client is split by plane
   *every* forward mode: `ForwardPolicyStage` drops them from the client-sourced copy after the
   mode copy and the never-forward strip, so neither forward-all, a negative-list nor a
   positive-list naming one in `headers_allow` carries a validator upstream while the response half
-  strips the `ETag` that would answer it. On every other method no `304` can answer the request:
-  the two validators are write preconditions answered `412` and cross in either state.
+  strips the `ETag` that would answer it. On every other method no `304` can answer the request,
+  so the two validators cross in either state: `If-None-Match` is a write precondition answered
+  `412` there, and the origin ignores `If-Modified-Since`.
   `If-Match`, `If-Unmodified-Since` and `If-Range` cross in either state on every method, so a
   conditional write keeps its `412` and `If-Range` stays paired with `Range`. An operator's
   `set_headers` entry is configuration, not client input, and stays

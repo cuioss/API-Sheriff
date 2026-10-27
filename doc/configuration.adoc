@@ -3809,9 +3809,10 @@ enumerates HTTP mechanics to make an ordinary backend work:
   a `GET` or `HEAD` they are admitted only when the route's
   link:#_upstream_defaults[`not_modified`] toggle is enabled; with the toggle disabled they are
   withheld there under every mode and every `-`/`_` spelling, even where a forward list would admit
-  them. On every other method they are write preconditions answered `412`, never `304` (RFC 9110
-  §13.1.2, §13.1.3), so they cross like the unconditional tier whatever the toggle says -- a
-  create-only `PUT` carrying `If-None-Match: *` keeps its guard.
+  them. On every other method no `304` can answer them (RFC 9110 §13.1.2, §13.1.3), so they cross
+  like the unconditional tier whatever the toggle says: `If-None-Match` is there a write
+  precondition answered `412` -- a create-only `PUT` carrying `If-None-Match: *` keeps its guard --
+  and the origin ignores `If-Modified-Since`, which is defined only for `GET` and `HEAD`.
 
 Membership answers *"does the gateway know what this header means?"*, not "does a backend need
 it" -- the latter rule would admit `Cookie` and `Authorization`. `User-Agent` is deliberately

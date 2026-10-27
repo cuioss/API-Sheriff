@@ -65,7 +65,8 @@ are native to the Vert.x client that already runs the gateway's edge.
    `Last-Modified`) relay untouched. `304` carries no body -- fully streaming-compatible, zero
    gateway state.
 ** *disabled* -- those two validators are withheld from `GET` and `HEAD` (on every other
-   method they are `412` write preconditions and cross) and the response-direction `ETag` /
+   method they cross: `If-None-Match` is a `412` write precondition there, and `If-Modified-Since`
+   is ignored) and the response-direction `ETag` /
    `Last-Modified` are stripped, deliberately forcing full `200` exchanges -- the hardening
    knob for upstreams whose ETags are inconsistent across nodes or leak inode/version
    information.

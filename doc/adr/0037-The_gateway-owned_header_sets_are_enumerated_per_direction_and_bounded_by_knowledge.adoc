@@ -4,7 +4,7 @@
 :sectnums:
 
 // adr-metadata
-// summary: The gateway owns four header sets — a request-direction never-forward set, a response-direction strip, a response-direction identity set (UpstreamIdentityHeaders: Server, X-Powered-By, removed rather than rewritten on the HTTP relay, the gRPC relay and the upstream asset envelope unless the route sets keep_identity_headers: true), and a gateway-understood protocol set that crosses without an operator entry — each enumerated in full per direction rather than derived from a sibling; membership answers "does the gateway know what this header means?" rather than "is it technically necessary", and the value- or mode-dependent behaviours (TE: trailers, the single re-admittable Authorization) live in the application rather than in a set literal. With not_modified off the two 304 validators (If-None-Match, If-Modified-Since) are withheld from GET and HEAD under every forward mode (on every other method they are 412 write preconditions and cross), so the toggle governs both halves of the exchange everywhere, while If-Match, If-Unmodified-Since and If-Range cross unchanged because withholding them would change the request rather than discard an answer. The browser Cookie is not a set member: a per-route cookies block (allow none | all | list, same_origin_check, additional_origins; four scopes, whole-block replacement, default none) decides which cookies reach the upstream and which upstream Set-Cookie lines reach the client, the gateway's own cookies never cross under any block (one GatewayCookies definition), and a cookie-forwarding route refuses a cross-site unsafe request that carries a forwarded cookie.
+// summary: The gateway owns four header sets — a request-direction never-forward set, a response-direction strip, a response-direction identity set (UpstreamIdentityHeaders: Server, X-Powered-By, removed rather than rewritten on the HTTP relay, the gRPC relay and the upstream asset envelope unless the route sets keep_identity_headers: true), and a gateway-understood protocol set that crosses without an operator entry — each enumerated in full per direction rather than derived from a sibling; membership answers "does the gateway know what this header means?" rather than "is it technically necessary", and the value- or mode-dependent behaviours (TE: trailers, the single re-admittable Authorization) live in the application rather than in a set literal. With not_modified off the two 304 validators (If-None-Match, If-Modified-Since) are withheld from GET and HEAD under every forward mode (on every other method they cross: If-None-Match is a 412 write precondition, If-Modified-Since is ignored), so the toggle governs both halves of the exchange everywhere, while If-Match, If-Unmodified-Since and If-Range cross unchanged because withholding them would change the request rather than discard an answer. The browser Cookie is not a set member: a per-route cookies block (allow none | all | list, same_origin_check, additional_origins; four scopes, whole-block replacement, default none) decides which cookies reach the upstream and which upstream Set-Cookie lines reach the client, the gateway's own cookies never cross under any block (one GatewayCookies definition), and a cookie-forwarding route refuses a cross-site unsafe request that carries a forwarded cookie.
 // tags: header-policy, forward-policy, connection-headers, zero-trust, rfc9110, rfc9113, conditional-requests, protocol-set, cookie-policy, csrf, identity-headers, fingerprinting
 // affects: api-sheriff
 // supersedes:
@@ -298,10 +298,10 @@ halves, and a test that names both stages asserts the coupling. `If-Match`,
 `If-Unmodified-Since` and `If-Range` are not gated: withholding them changes the
 request (a lost update, a mixed-version `206`) rather than discarding an answer.
 
-With the flag off, `ForwardPolicyStage` removes the two from a `GET` or `HEAD`
-after the mode copy, so no mode carries one there; elsewhere they are `412` write
-preconditions and cross, and `set_headers` stays operator configuration. The
-mode decides which client headers cross; only the toggle knows the answer is stripped.
+With the flag off, `ForwardPolicyStage` removes the two from a `GET` or `HEAD` after the
+mode copy. Elsewhere they cross: `If-None-Match` is a `412` write precondition, and the
+origin ignores `If-Modified-Since`. `set_headers` stays operator configuration. The mode
+decides which client headers cross; only the toggle knows the answer is stripped.
 
 == Consequences
 
