@@ -250,6 +250,15 @@ class RouteTest {
         }
 
         @Test
+        @DisplayName("Should default keepIdentityHeaders to false, the identity-strip posture")
+        void shouldDefaultKeepIdentityHeadersToFalse() {
+            Route route = proxyRoute().build();
+
+            assertFalse(route.keepIdentityHeaders(),
+                    "A route built without the opt-out strips the upstream identity headers");
+        }
+
+        @Test
         @DisplayName("Should default an absent securityProfile to the fail-closed STRICT")
         void shouldDefaultSecurityProfileToStrict() {
             Route omitted = proxyRoute().build();
@@ -385,6 +394,22 @@ class RouteTest {
                             "The materialized forward allowlist is carried"),
                     () -> assertNotNull(route.locationRewriter(),
                             "The rewrite_location mapping is carried when the route opts in"));
+        }
+
+        @Test
+        @DisplayName("Should carry the keepIdentityHeaders opt-out through toBuilder() and into equality")
+        void shouldCarryKeepIdentityHeadersThroughCopy() {
+            Route optedOut = proxyRoute().keepIdentityHeaders(true).build();
+
+            Route copy = optedOut.toBuilder().securityProfile(SecurityProfile.LENIENT).build();
+            Route stripping = optedOut.toBuilder().keepIdentityHeaders(false).build();
+
+            assertAll("identity-header opt-out",
+                    () -> assertTrue(optedOut.keepIdentityHeaders(), "A materialized opt-out is held as given"),
+                    () -> assertTrue(copy.keepIdentityHeaders(),
+                            "A toBuilder() copy keeps the opt-out, so the boot pass cannot drop it"),
+                    () -> assertFalse(stripping.keepIdentityHeaders(), "A copy may turn the opt-out off"),
+                    () -> assertNotEquals(optedOut, stripping, "The opt-out takes part in route equality"));
         }
     }
 

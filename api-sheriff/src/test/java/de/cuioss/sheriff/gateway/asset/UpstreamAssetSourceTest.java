@@ -89,8 +89,13 @@ class UpstreamAssetSourceTest {
 
     private UpstreamAssetSource source(AccessLevel access, UpstreamFetcher fetcher,
             Map<String, String> operatorContentTypes) {
+        return source(access, fetcher, operatorContentTypes, false);
+    }
+
+    private UpstreamAssetSource source(AccessLevel access, UpstreamFetcher fetcher,
+            Map<String, String> operatorContentTypes, boolean keepIdentityHeaders) {
         return new UpstreamAssetSource(HTTPS_UPSTREAM, access, new PathConfinement(), fetcher, MAX_BYTES,
-                operatorContentTypes);
+                operatorContentTypes, keepIdentityHeaders);
     }
 
     private static Map<String, String> headers(String... pairs) {
@@ -144,7 +149,7 @@ class UpstreamAssetSourceTest {
                 "Proxy-Connection", "keep-alive",
                 "Transfer-Encoding", "chunked",
                 "Content-Length", String.valueOf(BODY.length),
-                "Server", "nginx"), BODY);
+                "ETag", "\"v1\""), BODY);
 
         AssetSource.Served served = source(AccessLevel.PUBLIC, fetcher).serve(HttpMethod.GET, "app.js");
 
@@ -162,9 +167,32 @@ class UpstreamAssetSourceTest {
                         "the client's framing is the edge's to choose, never the upstream's"),
                 () -> assertFalse(served.headers().keySet().stream().anyMatch("Content-Length"::equalsIgnoreCase),
                         "the edge recomputes the length from the buffer it writes"),
-                () -> assertEquals("nginx", served.headers().get("Server"),
+                () -> assertEquals("\"v1\"", served.headers().get("ETag"),
                         "an end-to-end upstream header still passes through"),
                 () -> assertArrayEqualsBody(BODY, served.body()));
+    }
+
+    @Test
+    @DisplayName("Should strip Server and X-Powered-By by default and keep both on the opt-out")
+    void shouldStripIdentityHeadersUnlessTheRouteOptsOut() {
+        UpstreamFetcher fetcher = cannedFetcher(OK, headers("Server", "nginx/1.27", "X-Powered-By", "Express",
+                "X-Keep", "yes"), BODY);
+
+        AssetSource.Served stripped = source(AccessLevel.PUBLIC, fetcher, Map.of(), false)
+                .serve(HttpMethod.GET, "app.js");
+        AssetSource.Served kept = source(AccessLevel.PUBLIC, fetcher, Map.of(), true)
+                .serve(HttpMethod.GET, "app.js");
+
+        assertAll("the identity strip follows the route's keep_identity_headers opt-out",
+                () -> assertFalse(stripped.headers().keySet().stream().anyMatch("Server"::equalsIgnoreCase),
+                        "the origin's Server banner must not reach the client by default"),
+                () -> assertFalse(stripped.headers().keySet().stream().anyMatch("X-Powered-By"::equalsIgnoreCase),
+                        "the origin's framework banner must not reach the client by default"),
+                () -> assertEquals("yes", stripped.headers().get("X-Keep"), "the control header crosses"),
+                () -> assertEquals("nginx/1.27", kept.headers().get("Server"),
+                        "the opt-out relays the origin's Server banner unchanged"),
+                () -> assertEquals("Express", kept.headers().get("X-Powered-By"),
+                        "the opt-out relays the origin's framework banner unchanged"));
     }
 
     @Test
@@ -235,7 +263,7 @@ class UpstreamAssetSourceTest {
     void shouldRefuseNonAllowlistedScheme() {
         ResolvedUpstream fileScheme = new ResolvedUpstream("file", "assets.internal", 0, "/static");
         UpstreamAssetSource source = new UpstreamAssetSource(
-                fileScheme, AccessLevel.PUBLIC, new PathConfinement(), mustNotFetch(), MAX_BYTES, Map.of());
+                fileScheme, AccessLevel.PUBLIC, new PathConfinement(), mustNotFetch(), MAX_BYTES, Map.of(), false);
 
         AssetSource.Served served = source.serve(HttpMethod.GET, "app.js");
 
@@ -379,7 +407,7 @@ class UpstreamAssetSourceTest {
     @Test
     @DisplayName("Should wire the default confinement, the verb gate and the declared timeout budgets")
     void shouldConstructWithDefaultFetcher() {
-        UpstreamAssetSource source = new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of());
+        UpstreamAssetSource source = new UpstreamAssetSource(HTTPS_UPSTREAM, AccessLevel.PUBLIC, Map.of(), false);
 
         // The budgets are read off the seam the constructor actually built, not off the constants it is
         // supposed to pass. Re-reading DEFAULT_CONNECT_TIMEOUT.toSeconds() would assert a constant

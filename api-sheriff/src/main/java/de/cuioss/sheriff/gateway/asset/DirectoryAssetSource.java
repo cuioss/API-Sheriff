@@ -364,8 +364,11 @@ public final class DirectoryAssetSource implements AssetSource {
             if (body.length > maxBytes) {
                 return new Served(PAYLOAD_TOO_LARGE, Map.of(), EMPTY_BODY);
             }
+            // A filesystem source proposes no header at all, so no identity header exists to keep:
+            // the strip default (false) changes nothing here, and boot validation refuses
+            // keep_identity_headers on a directory route.
             Map<String, String> headers = AssetResponseEnvelope.governedHeaders(
-                    file.getFileName().toString(), access, Map.of(), operatorContentTypes);
+                    file.getFileName().toString(), access, Map.of(), operatorContentTypes, false);
             return new Served(OK, headers, body);
         } catch (IOException _) {
             return new Served(SERVER_ERROR, Map.of(), EMPTY_BODY);

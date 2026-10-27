@@ -313,6 +313,36 @@ class RouteTableBuilderTest {
     }
 
     @Nested
+    @DisplayName("Route-level keep_identity_headers materialization")
+    class KeepIdentityHeadersMaterialization {
+
+        private Route buildRoute(@Nullable Boolean keepIdentityHeaders) {
+            RouteConfig route = RouteConfig.builder().id("r").match(match("/r"))
+                    .keepIdentityHeaders(keepIdentityHeaders).build();
+            EndpointConfig endpoint = endpoint("orders", "ORDERS").routes(List.of(route)).build();
+            return find(builder.build(gateway().build(), List.of(endpoint), topologyWith("ORDERS")), "r");
+        }
+
+        @Test
+        @DisplayName("Should materialize an absent key as false, the strip default")
+        void shouldMaterializeAbsentAsFalse() {
+            assertFalse(buildRoute(null).keepIdentityHeaders(), "an absent key strips the identity headers");
+        }
+
+        @Test
+        @DisplayName("Should materialize a declared false as false")
+        void shouldMaterializeDeclaredFalse() {
+            assertFalse(buildRoute(false).keepIdentityHeaders(), "a declared false strips the identity headers");
+        }
+
+        @Test
+        @DisplayName("Should materialize a declared true as true")
+        void shouldMaterializeDeclaredTrue() {
+            assertTrue(buildRoute(true).keepIdentityHeaders(), "a declared true must reach the resolved route");
+        }
+    }
+
+    @Nested
     @DisplayName("Route-level upstream.rewrite_location materialization")
     class RewriteLocationMaterialization {
 

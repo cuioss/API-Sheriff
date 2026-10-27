@@ -57,14 +57,16 @@ are native to the Vert.x client that already runs the gateway's edge.
   is control-plane only, permanently.
 * *`not_modified.enabled` means end-to-end conditional pass-through*, nothing more. It gates
   *both halves of one exchange* -- the validators the client sends and the validators the
-  upstream answers with -- because forwarding a precondition whose answer is then stripped
+  upstream answers with -- because forwarding a validator whose answer is then stripped
   makes the gateway ask a question it discards the answer to (see Amendment A1 for the
-  request-half membership and the one boundary that survives):
-** *enabled* (default) -- the RFC 9110 §13 conditional-request validators cross to the
-   upstream, and upstream `304` responses plus the validator response headers (`ETag`,
+  request-half membership):
+** *enabled* (default) -- the `304` validators `If-None-Match` and `If-Modified-Since` cross to
+   the upstream, and upstream `304` responses plus the validator response headers (`ETag`,
    `Last-Modified`) relay untouched. `304` carries no body -- fully streaming-compatible, zero
    gateway state.
-** *disabled* -- the validators are withheld and the response-direction `ETag` /
+** *disabled* -- those two validators are withheld from `GET` and `HEAD` (on every other
+   method they cross: `If-None-Match` is a `412` write precondition there, and `If-Modified-Since`
+   is ignored) and the response-direction `ETag` /
    `Last-Modified` are stripped, deliberately forcing full `200` exchanges -- the hardening
    knob for upstreams whose ETags are inconsistent across nodes or leak inode/version
    information.
@@ -87,7 +89,7 @@ are native to the Vert.x client that already runs the gateway's edge.
   `ConfigValidator` rule and its documentation entries are removed (pre-1.0: break freely).
 
 [[_amendment_a1]]
-=== Amendment A1 -- the request half is the protocol set's gated tier, and it carries five validators
+=== Amendment A1 -- the request half is the protocol set's gated tier, and it carries the two `304` validators
 
 The decision above is unchanged in substance; the *mechanism* of its request half was restated
 by
@@ -96,12 +98,16 @@ and this amendment records the difference so the original wording is not read as
 
 *What changed.* This ADR originally described the request half as making `If-None-Match` and
 `If-Modified-Since` "implicitly part of the route's effective `forward.headers_allow`". That
-description no longer holds in either of its two parts:
+description needs two corrections:
 
-* *The membership is five, not two.* RFC 9110 §13 defines `If-None-Match`,
-  `If-Modified-Since`, `If-Match`, `If-Unmodified-Since` and `If-Range`. A route honouring
-  conditional requests needs all of them; the two originally named were an arbitrary subset, so
-  `If-Range` and `If-Unmodified-Since` did not work on a route whose toggle was on.
+* *The two are the whole gated set, not an arbitrary subset.* RFC 9110 §13 defines
+  `If-None-Match`, `If-Modified-Since`, `If-Match`, `If-Unmodified-Since` and `If-Range`. Only
+  the first two are answered by a `304`, so only they ride the toggle. The other three cross with
+  the protocol set's unconditional tier whatever the toggle says, because withholding them would
+  change the request rather than discard an answer: without `If-Match` or
+  `If-Unmodified-Since` a conditional write becomes unconditional (a lost update), and without
+  `If-Range` a `Range` request is answered with a `206` slice of a newer representation instead
+  of the full `200`.
 * *The mechanism is not the allow-list.* Since
   link:0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036] a
   route resolves one of three forward modes, and `headers_allow` is only one of them. The
@@ -109,15 +115,16 @@ description no longer holds in either of its two parts:
   without an operator entry -- so they reach the upstream under every mode, and the toggle
   decides whether that tier is admitted at all.
 
-*The one boundary that survives, recorded rather than resolved.* The toggle gates the protocol
-set's *admission path*; it is not a withholding rule applied to the mode copy. A forward-all or
-negative-list route therefore still carries a client's validator upstream with the flag *off* --
-the header crosses on the route's declared posture -- while the response half strips the `ETag`
-that would answer it. That is the asymmetry this toggle exists to prevent, surviving in the one
-mode the toggle does not reach. Closing it means changing what forward-all means for a class of
-client headers, which belongs with the mode model rather than here, so it is pinned by a
-characterization test and left open. A route that must withhold the validators under a
-permissive posture names them in `headers_deny`.
+*The toggle withholds the validators under every forward mode.* With the flag *off*, the
+gateway removes the two `304` validators from the client's headers of a `GET` or `HEAD` after
+the mode copy. A forward-all, negative-list or positive-list route therefore carries none of
+them upstream there, and no route forwards a validator whose answering `ETag` the response half
+strips. Only `GET` and `HEAD` are answered `304` (RFC 9110 §13.1.2, §13.1.3); on every other
+method the two cross in either state: `If-None-Match` is a write precondition answered `412`,
+and the origin ignores `If-Modified-Since`, which is defined only for `GET` and `HEAD`.
+The two halves are one decision in every mode, so `headers_deny` is no longer needed to withhold
+the validators under a permissive posture. `set_headers` is operator configuration and stays
+ungated. ADR-0037 records why narrowing forward-all for this class of client headers is deliberate.
 
 [[_amendment_a2]]
 === Amendment A2 -- the breaker is not assembled from `upstream.circuit_breaker`

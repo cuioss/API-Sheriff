@@ -51,7 +51,8 @@ import org.jspecify.annotations.Nullable;
  *       ({@code null} being its own shape). The posture is resolved for <em>every</em> route,
  *       including one that declares no {@code security_filter} block at all, so a gateway-wide
  *       {@code profile} reaches a block-less route;</li>
- *   <li>{@code assetSource}, for an asset route only.</li>
+ *   <li>{@code assetSource}, for an asset route only, built with the route's
+ *       {@code keep_identity_headers} opt-out.</li>
  * </ul>
  * <p>
  * <strong>Upstream clients.</strong> The Vert.x {@link HttpClient} and the SmallRye Fault-Tolerance
@@ -105,7 +106,8 @@ public final class RouteAssembler {
      * @param clientFactory         builds one {@link HttpClient} per upstream target tuple
      * @param guardFactory          builds one {@link Guard} per resilience shape
      * @param assetSourceFactory    builds the live {@link AssetSource} for an asset route's
-     *                              terminal action
+     *                              terminal action, handed the route's {@code keep_identity_headers}
+     *                              opt-out
      * @return the assembled routes, in the table's exact-first then longest-prefix-first order,
      *         together with the upstream clients lookup
      * @throws de.cuioss.sheriff.gateway.events.GatewayException when a route declares an unsupported
@@ -140,7 +142,7 @@ public final class RouteAssembler {
                     .securityConfiguration(posture.configuration());
             ResolvedAsset asset = route.asset();
             if (asset != null) {
-                completed.assetSource(assetSourceFactory.create(asset));
+                completed.assetSource(assetSourceFactory.create(asset, route.keepIdentityHeaders()));
             }
 
             // A route resolves exactly one terminal action (ADR-0014 and its Amendment A1). Only a proxy

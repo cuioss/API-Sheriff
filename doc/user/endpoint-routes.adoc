@@ -126,8 +126,9 @@ endpoint:
                                    #   dimension is REFUSED AT BOOT at either scope
         headers_allow: [x-tenant]  # positive-list. The gateway-understood protocol headers
                                    #   (Accept, Accept-Encoding, Accept-Language, Content-Type,
-                                   #   Range, + the conditional validators) cross WITHOUT being
-                                   #   listed -- do not enumerate HTTP mechanics here
+                                   #   Range, If-Range, If-Match, If-Unmodified-Since, + the
+                                   #   two 304 validators when not_modified is on) cross
+                                   #   WITHOUT being listed -- do not enumerate HTTP mechanics here
         query_deny: [debug]        # negative-list on the OTHER dimension: every other client
                                    #   parameter crosses. The two dimensions are independent
         set_headers:               # additional STATIC gateway-set headers only. Injected
@@ -140,6 +141,9 @@ endpoint:
                                    #   token); never on a plain require: bearer route.
                                    #   set_headers WINS over a client header of the same name
                                    #   (case-insensitively) -- operator config beats client input
+      # keep_identity_headers: true  # OPTIONAL, route only. Absent => the upstream's Server and
+                                   #   X-Powered-By are stripped from its responses; true keeps
+                                   #   them (see "Keeping an upstream's identity headers" below)
       upstream:
         path: /orders              # APPENDED to the alias base path; the request-path
                                    #   remainder after the match key follows it (see
@@ -302,6 +306,37 @@ With the alias `APP1=https://app1.internal:8443/app1` and `upstream.path: /order
 The key defaults to `false` -- `Location` is relayed exactly as the upstream sent it. It is valid on
 `http` and `graphql` routes only; declaring it on a `grpc` or `websocket` route fails the boot, since
 neither protocol carries a redirect the gateway could rewrite.
+
+[[_keep_identity_headers]]
+=== Keeping an upstream's identity headers (`keep_identity_headers`)
+
+By default the gateway removes the upstream's `Server` and `X-Powered-By` headers -- the two
+standard software banners -- before a response reaches the client. Only these two are removed: any
+other header an upstream sets still reaches the client, so an upstream that discloses its software
+elsewhere (a framework header such as `X-AspNet-Version`, or its body) must be configured not to. The strip applies to proxied HTTP responses, to gRPC leading headers and trailers, and to an
+asset route with `source: upstream`. The headers are dropped, not replaced with a neutral value.
+
+Set `keep_identity_headers: true` on a route only when a client of that upstream depends on its
+banner -- for example a monitoring probe or a legacy client that branches on the `Server` value:
+
+[source,yaml]
+----
+- id: legacy-portal
+  match: { path_prefix: /legacy }
+  keep_identity_headers: true      # this route only; every other route keeps the default strip
+  upstream: { path: /portal }
+----
+
+* *Default.* Leave the key out. An absent key strips, and so does `false`.
+* *Per route only.* There is no endpoint, anchor or gateway form: the exception is scoped to the one
+  upstream that needs it.
+* *Refused where it cannot act.* A `redirect` route, an asset route with `source: directory` and a
+  `protocol: websocket` route relay no upstream response header, so declaring the key there -- with
+  either value -- fails the boot.
+
+The field reference is link:../configuration.adoc#_keep_identity_headers[`keep_identity_headers`].
+Removing the banner does not hide the TLS and HTTP/2 fingerprint of the gateway itself; see
+link:tls-edge.adoc#_tls_and_http2_fingerprints[TLS and HTTP/2 fingerprints].
 
 [[_base_url_only_with_proxy_routes]]
 === `base_url` is mandatory only with a proxy route

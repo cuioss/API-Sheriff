@@ -209,13 +209,26 @@ link:doc/adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and
 
 Upstream response headers are relayed except for gateway-owned names::
 Both directions carry a *gateway-owned never-relay set* -- the connection-specific and framing
-names, plus, on the request side, the credentials and provenance headers the gateway owns. Beyond
-those sets the two directions differ: a route can *narrow* what crosses on the request side
-(`headers_deny` / `headers_allow`), while on the response side the gateway does not strip
-identifying headers an upstream emits -- `ConnectionHeaders.RESPONSE_STRIP` holds only
-connection-specific and framing names, so `Server`, `X-Powered-By` and their kin reach the client
-unchanged. `Set-Cookie` is the one response header a route's policy decides (see above). There is no response-header allowlist and no configuration knob suppresses them.
-Terminate such fingerprinting at the upstream, or in front of the gateway, if it matters to you.
+names, plus, on the request side, the credentials and provenance headers the gateway owns. The
+response side also strips the upstream's identity headers, `Server` and `X-Powered-By`, by default --
+on the HTTP relay, the gRPC relay and an asset route with `source: upstream`. A route keeps them only
+by setting `keep_identity_headers: true` (see
+link:doc/configuration.adoc#_identity_set[Configuration -- the identity set]). Beyond those sets the
+two directions differ: a route can *narrow* what crosses on the request side (`headers_deny` /
+`headers_allow`), while on the HTTP and gRPC relays every other upstream response header -- a
+framework header outside the identity set, such as `X-AspNet-Version` -- reaches the client
+unchanged. Two places do change origin headers: an asset route with `source: upstream` answers
+through the asset envelope, which sets its own `Content-Type`, `X-Content-Type-Options` and, for an
+authenticated asset, `Cache-Control: no-store`, and drops `Set-Cookie`; and a `security_headers`
+entry in `set` mode overwrites the origin's value. Only a few named route
+keys act on a response header: `keep_identity_headers` (above), the cookie policy for `Set-Cookie`
+(see above), `not_modified: false`, which strips `ETag` and `Last-Modified`, and
+`upstream.rewrite_location: true`, which rewrites `Location`. There is no response-header allowlist
+or denylist.
+Strip such headers at the upstream, or in front of the gateway, if they matter to you.
++
+The TLS and HTTP/2 fingerprint of the listener is a separate residual that no gateway key disguises
+(link:doc/user/tls-edge.adoc#_tls_and_http2_fingerprints[TLS and HTTP/2 fingerprints]).
 
 The server-mode session store is single-node and in-memory::
 `InMemorySessionStore` is the only implementation of the `SessionStore` seam, and `session.store`

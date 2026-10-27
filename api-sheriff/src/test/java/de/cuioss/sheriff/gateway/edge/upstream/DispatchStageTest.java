@@ -1944,7 +1944,7 @@ class DispatchStageTest {
                             SecurityConfiguration.builder().build()),
                     _ -> vertx.createHttpClient(),
                     _ -> guard,
-                    _ -> {
+                    (_, _) -> {
                         throw new UnsupportedOperationException("no asset route in this test");
                     });
             route = assembled.routes().getFirst();
@@ -2601,7 +2601,7 @@ class DispatchStageTest {
                     200, Map.of("Content-Type", "text/plain", "Cache-Control", "public"),
                     "PNGDATA".getBytes(StandardCharsets.UTF_8), false);
             UpstreamAssetSource source = new UpstreamAssetSource(upstream, AccessLevel.AUTHENTICATED,
-                    new PathConfinement(), fetcher, 1024L, Map.of());
+                    new PathConfinement(), fetcher, 1024L, Map.of(), false);
 
             AssetSource.Served served = DispatchStage.serveAsset(source, HttpMethod.GET, "/logo.png");
 
@@ -2712,8 +2712,8 @@ class DispatchStageTest {
             }
             clientContext.runOnContext(_ -> {
                 try {
-                    responseStage.relay(response, request.response(), false, null, CookiesConfig.NONE, Map.of(),
-                            Map.of(), Supplier::get)
+                    responseStage.relay(response, request.response(), false, null, CookiesConfig.NONE, false,
+                            Map.of(), Map.of(), Supplier::get)
                             .onFailure(failure -> abandon(request, failure));
                 } catch (IllegalStateException relayStartFailure) {
                     abandon(request, relayStartFailure);

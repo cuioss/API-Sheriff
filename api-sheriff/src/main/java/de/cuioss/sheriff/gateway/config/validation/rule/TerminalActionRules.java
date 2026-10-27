@@ -47,8 +47,9 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The boot-time {@link ValidationRule}s that judge a route's terminal action: whether it resolves
- * exactly one of upstream, asset or redirect, whether an asset action is well-sourced, and whether a
- * redirect target survives the open-redirect review.
+ * exactly one of upstream, asset or redirect, whether an asset action is well-sourced, whether a
+ * redirect target survives the open-redirect review, and whether the terminal action relays the
+ * upstream response headers a {@code keep_identity_headers} key would govern.
  * <p>
  * The terminal-action rule ({@link #validateTerminalAction}, ADR-0014 and its Amendment A1) holds
  * every route to exactly one of upstream, asset or redirect, holds the anchor type and the terminal
@@ -63,6 +64,10 @@ import org.jspecify.annotations.Nullable;
  * The asset file-name rule ({@link #validateAssetIndexAndFallback}, AS-12) confines
  * {@code asset.index} and {@code asset.fallback} to a {@code source: directory} action and to a single
  * file-name segment.
+ * <p>
+ * The identity-header target rule ({@link #validateKeepIdentityHeadersTarget}) refuses
+ * {@code keep_identity_headers} on a redirect, a directory-asset and a WebSocket route, none of which
+ * relays an upstream response header for the key to govern.
  * <p>
  * Every rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and never
  * fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of this
@@ -397,6 +402,59 @@ public class TerminalActionRules {
                 }
             }
         }
+    }
+
+    /**
+     * Rule: {@code keep_identity_headers} is refused, whatever its declared value, on a route whose
+     * terminal action relays no upstream response header. The key governs the paths that do — the
+     * HTTP relay, the gRPC relay's leading headers and trailers, and a {@code source: upstream} asset
+     * action — and would be silently ignored on the three that do not:
+     * <ul>
+     *   <li>a <strong>redirect</strong> route, answered at the gateway without contacting any
+     *       upstream;</li>
+     *   <li>a <strong>{@code source: directory}</strong> asset route, served from the local
+     *       filesystem, which proposes no upstream header;</li>
+     *   <li>a <strong>{@code protocol: websocket}</strong> route, whose upgrade hands the connection to
+     *       the opaque relay, which forwards no upstream response header.</li>
+     * </ul>
+     * A declared {@code false} is refused as well: it states an intent the route cannot act on. One
+     * error is collected per offending route, naming the route; the rule never fails fast
+     * (ADR-0009).
+     *
+     * @param endpoints the enabled endpoints, whose every route's {@code keep_identity_headers} is judged
+     * @param errors    the shared violation list every refusal is appended to
+     */
+    public static void validateKeepIdentityHeadersTarget(List<EndpointConfig> endpoints, List<ConfigError> errors) {
+        for (EndpointConfig endpoint : endpoints) {
+            for (RouteConfig route : endpoint.routes()) {
+                if (route.keepIdentityHeaders() != null) {
+                    identityHeadersIgnoredReason(route).ifPresent(reason -> errors.add(
+                            new ConfigError(endpointFile(endpoint), ENDPOINT_ROUTES_POINTER,
+                                    "route '%s' declares keep_identity_headers but %s, which relays no upstream response header; the key would be silently ignored"
+                                            .formatted(route.id(), reason))));
+                }
+            }
+        }
+    }
+
+    /**
+     * Why a route relays no upstream response header, or empty when it relays them.
+     *
+     * @param route the route declaring {@code keep_identity_headers}
+     * @return the route kind that makes {@code keep_identity_headers} meaningless, or empty
+     */
+    private static Optional<String> identityHeadersIgnoredReason(RouteConfig route) {
+        if (route.redirect() != null) {
+            return Optional.of("it is a redirect route");
+        }
+        AssetConfig asset = route.asset();
+        if (asset != null && asset.source() == AssetConfig.Source.DIRECTORY) {
+            return Optional.of("it is an asset route with source: directory");
+        }
+        if (effectiveProtocol(route) == Protocol.WEBSOCKET) {
+            return Optional.of("it is a protocol: websocket route");
+        }
+        return Optional.empty();
     }
 
     private static void validateAssetFileName(EndpointConfig endpoint, RouteConfig route, AssetConfig asset,

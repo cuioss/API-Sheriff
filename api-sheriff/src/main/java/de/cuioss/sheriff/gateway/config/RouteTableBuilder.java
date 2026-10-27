@@ -77,7 +77,8 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The builder materializes each route's effective auth, effective {@code allowed_methods},
  * effective {@code security_filter} / {@code security_headers}, effective retry
- * / not-modified toggles, the effective {@code forward} filter (whose
+ * / not-modified toggles, the per-route {@code keep_identity_headers} opt-out (absent meaning
+ * strip, no inheritance), the effective {@code forward} filter (whose
  * per-dimension positive-list / negative-list / forward-all posture is carried
  * wholesale, deny lists included), the effective {@code cookies} block (the nothing-crosses
  * {@code allow: none} for an asset or redirect route, which has no upstream), the effective upstream
@@ -283,6 +284,10 @@ public final class RouteTableBuilder {
                 .securityHeaders(securityHeaders)
                 .retryEnabled(retryEnabled)
                 .notModifiedEnabled(notModifiedEnabled)
+                // A per-route scalar with no inheritance chain: an absent key means strip, exactly
+                // like an explicit false. Boot validation refuses it on the route kinds that relay no
+                // upstream response header, so every route that carries true honours it.
+                .keepIdentityHeaders(Boolean.TRUE.equals(route.keepIdentityHeaders()))
                 .effectiveForward(effectiveForward)
                 .effectiveCookies(effectiveCookies)
                 .cookieOriginDefence(cookieOriginDefence)

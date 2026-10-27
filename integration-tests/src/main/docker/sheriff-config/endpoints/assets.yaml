@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../../../../../../api-sheriff/src/main/resources/schema/endpoint.schema.json
 # Public asset endpoint (ADR-0014) exercised by DirectoryAssetServingIT and
-# UpstreamAssetServingIT. It carries four asset terminal-action routes under the
+# UpstreamAssetServingIT. It carries five asset terminal-action routes under the
 # 'assets-public' anchor (/assets, access: public):
 #
 #   * /assets/static/*  -> source: directory, root /app/assets (the read-only
@@ -14,6 +14,9 @@
 #     static server 'asset-origin'). The gateway fetches the confined remainder over
 #     the same SSRF-controlled egress the proxy uses and re-serves it under
 #     gateway-owned response governance.
+#   * /assets/cdn-keep-identity/* -> the same upstream source with
+#     keep_identity_headers: true, so the origin's Server header is kept rather than
+#     stripped — the opt-out control for the asset identity-header strip.
 #   * /assets/demo/*    -> source: directory, root /app/demo (the read-only bind
 #     mount of demo-client/src/main/resources/spa). Serves the demo SPA and its
 #     post-logout landing page same-origin with the reserved /bff paths, which is
@@ -70,6 +73,9 @@ endpoint:
         directory: /app/assets
         index: index.html
         fallback: index.html
+    # Also the DEFAULT-STRIP half of the asset identity-header pair (UpstreamAssetServingIT): the
+    # asset-origin is stock nginx with its default server_tokens, so it sends Server on every answer,
+    # and this route declares no keep_identity_headers, so the envelope removes it.
     - id: assets-upstream
       anchor: assets-public
       match:
@@ -77,6 +83,19 @@ endpoint:
       asset:
         source: upstream
         upstream: ASSET_ORIGIN
+    # The OPT-OUT half of that pair: the same ASSET_ORIGIN with keep_identity_headers: true, so the
+    # origin's Server header reaches the client unchanged — the matched control proving the origin
+    # really sends what assets-upstream withholds. It rides the existing 'assets-public' anchor for the
+    # reason recorded above: this file is mounted into all six instances, and a new anchor would have to
+    # be declared in every gateway.yaml overlay.
+    - id: assets-upstream-keep-identity
+      anchor: assets-public
+      match:
+        path_prefix: /assets/cdn-keep-identity
+      asset:
+        source: upstream
+        upstream: ASSET_ORIGIN
+      keep_identity_headers: true
     # The demo SPA (demo-client module, authored by plan-11 deliverable 4). The same route
     # also serves the post-logout landing page at /assets/demo/landing.html, so the landing
     # target needs no second route, no second anchor and no second mount. This route

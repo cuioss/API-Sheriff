@@ -168,7 +168,10 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * {@code location} for open-redirect spellings at boot — a redirect is written verbatim at request
  * time, so this review is the only place its target is ever judged — and refuses
  * {@code keep_query} together with {@code allow_external}, the pair that would hand the inbound
- * query to a foreign origin.
+ * query to a foreign origin. A third rule of the same owner (its second is the asset file-name rule)
+ * refuses {@code keep_identity_headers}
+ * on a redirect, a directory-asset and a WebSocket route, none of which relays an upstream response
+ * header the key could govern.
  * <p>
  * The session-and-scope rules add three more: a route resolving {@code auth.token_relay: false}
  * must not re-admit {@code Authorization} through the {@code forward.headers_allow} of its effective
@@ -256,6 +259,8 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> ProtocolRules.validateWebSocketConfig(gateway, endpoints, errors),
             (gateway, endpoints, topology, errors) -> ProtocolRules.validateRewriteLocationProtocol(endpoints, errors),
             (gateway, endpoints, topology, errors) -> TerminalActionRules.validateAssetIndexAndFallback(endpoints,
+                    errors),
+            (gateway, endpoints, topology, errors) -> TerminalActionRules.validateKeepIdentityHeadersTarget(endpoints,
                     errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateAuthorizationHeaderValueLength(gateway,

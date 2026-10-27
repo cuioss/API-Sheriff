@@ -25,11 +25,26 @@ endpoint:
     # Content-Security-Policy on demand and observes what survives the relay: the 'api' anchor
     # declares frame_deny in header_modes default (the origin value is kept) and
     # content_security_policy in the default set mode (the origin value is overwritten).
+    #
+    # This route is also the DEFAULT-STRIP half of the identity-header pair: it declares no
+    # keep_identity_headers, so a Server or X-Powered-By the origin is asked to send is removed on
+    # the relay, while any other echoed header crosses.
     - id: origin-headers
       match:
         path_prefix: /proxy/origin-headers
       upstream:
         path: /response-headers
+
+    # The OPT-OUT half of the identity-header pair (RoutingAndResponseHeadersIT). The same
+    # go-httpbin /response-headers echo as origin-headers above, with keep_identity_headers: true, so
+    # the Server and X-Powered-By the origin is asked to send reach the client unchanged. It is the
+    # matched control that proves the origin really sent what the default-strip half withholds.
+    - id: origin-headers-keep-identity
+      match:
+        path_prefix: /proxy/origin-headers-keep-identity
+      upstream:
+        path: /response-headers
+      keep_identity_headers: true
 
     # AS-11 Location rewrite. go-httpbin's /redirect-to answers 302 with the Location named by its
     # `url` query parameter, so the IT drives both legs of the rewrite rule from one route: a Location

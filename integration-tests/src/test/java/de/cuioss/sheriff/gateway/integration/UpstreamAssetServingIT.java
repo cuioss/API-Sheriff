@@ -18,6 +18,8 @@ package de.cuioss.sheriff.gateway.integration;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
@@ -27,6 +29,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import javax.net.ssl.SSLContext;
 
 import org.junit.jupiter.api.AfterAll;
@@ -55,6 +58,13 @@ import org.junit.jupiter.api.Test;
  * while this suite stayed green. {@link #getOverHttp2ServesGovernedUpstreamAsset()} closes that
  * gap, with the directory-source control beside it holding the fault to the upstream source rather
  * than to h2 support at large.
+ * <p>
+ * <strong>The identity-header pair.</strong> {@code asset-origin} is stock nginx with its default
+ * {@code server_tokens}, so it answers every request with a {@code Server: nginx…} banner. The
+ * {@code /assets/cdn} route declares no {@code keep_identity_headers}, so the envelope must remove that
+ * banner; the {@code /assets/cdn-keep-identity} route is the same {@code ASSET_ORIGIN} with
+ * {@code keep_identity_headers: true}, so the banner must arrive. The kept half is the matched control:
+ * it proves the origin really sends what the default half withholds.
  */
 class UpstreamAssetServingIT extends BaseIntegrationTest {
 
@@ -161,6 +171,41 @@ class UpstreamAssetServingIT extends BaseIntegrationTest {
                 () -> assertEquals(HttpClient.Version.HTTP_2, response.version()),
                 () -> assertEquals(200, response.statusCode()),
                 () -> assertTrue(response.body().contains("color"), "the mounted file's content arrives over h2"));
+    }
+
+    @Test
+    @DisplayName("an upstream asset route without keep_identity_headers removes the origin's identity headers")
+    void defaultRouteStripsIdentityHeaders() {
+        var response = given()
+                .when()
+                .get("/assets/cdn/logo.svg")
+                .then()
+                .statusCode(200)
+                .extract();
+
+        assertAll("the envelope removes the identity set from the origin's answer",
+                () -> assertNull(response.header("Server"),
+                        "the asset origin's nginx banner must not reach the client: " + response.header("Server")),
+                () -> assertNull(response.header("X-Powered-By")));
+    }
+
+    @Test
+    @DisplayName("an upstream asset route declaring keep_identity_headers: true relays the origin's Server header")
+    void optOutRouteKeepsIdentityHeaders() {
+        var response = given()
+                .when()
+                .get("/assets/cdn-keep-identity/logo.svg")
+                .then()
+                .statusCode(200)
+                .header("X-Content-Type-Options", "nosniff")
+                .extract();
+
+        String server = response.header("Server");
+        assertAll("THE CONTROL: the same origin and asset, with the opt-out, carries the banner",
+                () -> assertNotNull(server, "the opt-out keeps the asset origin's Server header"),
+                () -> assertTrue(server != null && server.toLowerCase(Locale.ROOT).startsWith("nginx"),
+                        "the kept header is the stock nginx origin's own banner, not a gateway value: " + server),
+                () -> assertTrue(response.asString().contains("<svg"), "the same asset is served"));
     }
 
     @Test

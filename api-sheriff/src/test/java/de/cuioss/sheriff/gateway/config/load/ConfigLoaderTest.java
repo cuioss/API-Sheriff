@@ -301,6 +301,64 @@ class ConfigLoaderTest {
         }
     }
 
+    /**
+     * The per-route {@code keep_identity_headers} scalar through the schema-validating loader: a
+     * declared boolean binds onto the route, an omitted key stays absent, and a non-boolean value is
+     * refused by the endpoint schema.
+     */
+    @Nested
+    class KeepIdentityHeaders {
+
+        private static String endpointWithRouteMember(String routeMember) {
+            return """
+                    endpoint:
+                      id: app
+                      base_url: APP
+                      auth: { require: none }
+                      routes:
+                        - id: proxied
+                          match: { path_prefix: /app }
+                          %s
+                    """.formatted(routeMember);
+        }
+
+        @Test
+        void bindsADeclaredTrue() throws Exception {
+            writeConfig("gateway.yaml", "version: 1\n");
+            writeConfig("endpoints/app.yaml", endpointWithRouteMember("keep_identity_headers: true"));
+
+            RouteConfig route = loader(Map.of()).load(IGNORE_DEFAULTED).endpoints().getFirst().routes().getFirst();
+
+            assertEquals(Boolean.TRUE, route.keepIdentityHeaders(),
+                    "keep_identity_headers binds through the SNAKE_CASE strategy onto the route record");
+        }
+
+        @Test
+        void leavesAnOmittedKeyAbsent() throws Exception {
+            writeConfig("gateway.yaml", "version: 1\n");
+            writeConfig("endpoints/app.yaml", endpointWithRouteMember("protocol: http"));
+
+            RouteConfig route = loader(Map.of()).load(IGNORE_DEFAULTED).endpoints().getFirst().routes().getFirst();
+
+            assertNull(route.keepIdentityHeaders(), "control: nothing is bound when the key is not declared");
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"keep_identity_headers: \"true\"", "keep_identity_headers: 1",
+                "keep_identity_headers: [true]"})
+        void schemaRefusesANonBooleanValue(String routeMember) throws Exception {
+            writeConfig("gateway.yaml", "version: 1\n");
+            writeConfig("endpoints/app.yaml", endpointWithRouteMember(routeMember));
+
+            ConfigLoader loader = loader(Map.of());
+            ConfigLoadException exception = assertThrows(ConfigLoadException.class, () -> loader.load(IGNORE_DEFAULTED));
+
+            assertTrue(exception.errors().stream().anyMatch(error -> "endpoints/app.yaml".equals(error.file())
+                            && error.pointer().contains("keep_identity_headers")),
+                    () -> "expected a schema error pointing at the key, got: " + exception.errors());
+        }
+    }
+
     /** One {@code http} issuer whose {@code jwks} block ends with {@code jwksMembers}. */
     private static String gatewayWithJwksMembers(String jwksMembers) {
         return """

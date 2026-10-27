@@ -337,6 +337,72 @@ in `set` mode whatever the global block says.
 policy block follows (see <<_policy_block_resolution>>), not a special case for headers.
 ====
 
+[[_security_headers_opt_in]]
+==== Every header is opt-in -- what to configure
+
+A `security_headers` block emits a header *only when the operator configures it*. No configurable
+header is on by default: an absent or empty `security_headers` block emits none of the headers below.
+Gateway-authored answers -- an asset, a portal page, an HTML error page -- keep their own fixed
+headers, listed after the table. Each row is one key of the block, the header it produces, a
+recommended starting value and why:
+
+[cols="2,3,3,4"]
+|===
+| Key | Header produced | Recommended value | Rationale
+
+| `hsts` (`max_age`, `include_subdomains`)
+| `Strict-Transport-Security: max-age=<max_age>[; includeSubDomains]`
+| `max_age: 31536000`, `include_subdomains: true` -- the latter only when every subdomain serves HTTPS
+| Once a browser has stored the policy, it reaches the host only over HTTPS for a year, so a later
+  visit cannot be downgraded to plain HTTP. The first visit, before the policy is stored, is not
+  covered.
+
+| `content_type_nosniff`
+| `X-Content-Type-Options: nosniff`
+| `true`
+| Stops the browser from sniffing a response into an executable type the server did not declare.
+
+| `frame_deny`
+| `X-Frame-Options: DENY`
+| `true`, unless the routes serve content meant to be embedded
+| Blocks clickjacking: no other page can frame the response.
+
+| `content_security_policy`
+| `Content-Security-Policy: <value>`, served verbatim
+| `"default-src 'self'"` as the starting point, tightened or widened for the application behind it
+| Limits where the page may load scripts and resources from; only the operator knows what the
+  application needs.
+
+| `header_modes`
+| None of its own -- decides whether each header above replaces (`set`) or yields to (`default`) the
+  origin's own value
+| Omit it, so every header is `set`; declare `default` only for an upstream trusted to manage that
+  header itself
+| `default` hands the final value to the upstream, including a weaker one (see below).
+
+| `cors` _(global block only)_
+| `Access-Control-Allow-Origin`, plus `-Credentials`, `-Methods` and `-Headers`, for an allow-listed
+  origin only
+| `enabled: false` unless a browser calls cross-origin; then exact `allowed_origins` and
+  `allow_credentials: false` unless cookies must cross
+| An exact origin list never reflects an arbitrary caller, and credentials stay off by default.
+|===
+
+*Why nothing is applied automatically.* The operator owns the response policy, and the gateway
+neither guesses it nor fills it in:
+
+* *The policy belongs to the deployment.* What is right depends on the application behind the
+  gateway -- whether it is framed, whether every subdomain speaks HTTPS, which origins call it.
+* *A silent default would differ per deployment.* A header the gateway added on its own would be part
+  of the effective posture without appearing in any configuration file, so two deployments with the
+  same documents could not be told apart by reading them.
+* *A guessed `Content-Security-Policy` is wrong either way.* One strict enough to matter breaks an
+  application it was not written for, and one loose enough never to break protects nothing.
+
+Two gateway-*authored* answers are outside this block and keep their own fixed headers: an asset
+served through the response envelope always carries `X-Content-Type-Options: nosniff`, and a portal
+page or HTML error page carries the portal's fixed `Content-Security-Policy` and `nosniff`.
+
 *`content_security_policy`.* The value is served *verbatim* as the `Content-Security-Policy` header;
 the gateway does not parse or compose it. Omitting the key emits no policy. A value that is blank or
 carries a CR, LF or any other control character fails the boot, on the global block and on every

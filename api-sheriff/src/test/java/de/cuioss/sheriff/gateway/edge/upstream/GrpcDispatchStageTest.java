@@ -228,7 +228,7 @@ class GrpcDispatchStageTest {
                             "/svc.Service/Method")
                     .compose(upReq -> upReq.send())
                     .onSuccess(upResp -> responseStage
-                            .relayWithTrailers(upResp, clientReq.response(), false, CookiesConfig.NONE, Map.of(),
+                            .relayWithTrailers(upResp, clientReq.response(), false, CookiesConfig.NONE, false, Map.of(),
                                     Map.of(FRAME_OPTIONS, "DENY", CSP, GATEWAY_POLICY), Supplier::get,
                                     ResponseStage.GrpcStreamIdleBound.on(vertx))
                             .onFailure(failure -> clientReq.response().setStatusCode(502).end()))
@@ -448,8 +448,8 @@ class GrpcDispatchStageTest {
                 HttpClientResponse upstream = stage.dispatch(route, HttpMethod.POST, path, Map.of(),
                         idleBound.watch(inbound), -1L);
                 TerminalDispatch.relayOnEventLoop(ctx, List.of(), upstream, end -> responseStage
-                        .relayWithTrailers(upstream, ctx.response(), false, route.effectiveCookies(), Map.of(),
-                                Map.of(), end, idleBound));
+                        .relayWithTrailers(upstream, ctx.response(), false, route.effectiveCookies(),
+                                route.keepIdentityHeaders(), Map.of(), Map.of(), end, idleBound));
             });
         }
 

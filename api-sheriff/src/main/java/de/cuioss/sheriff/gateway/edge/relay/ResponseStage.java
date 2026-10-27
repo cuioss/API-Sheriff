@@ -26,6 +26,7 @@ import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.edge.end.ResponseEnd;
 import de.cuioss.sheriff.gateway.http.ConnectionHeaders;
 import de.cuioss.sheriff.gateway.http.GatewayCookies;
+import de.cuioss.sheriff.gateway.http.UpstreamIdentityHeaders;
 import de.cuioss.sheriff.gateway.routing.LocationRewriter;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
@@ -49,6 +50,11 @@ import org.jspecify.annotations.Nullable;
  *   <li><strong>Connection-specific headers</strong> plus the length/framing headers Vert.x
  *       recomputes are stripped in the response direction, per the shared
  *       {@link ConnectionHeaders} policy the asset envelope reads too.</li>
+ *   <li><strong>Upstream identity headers</strong> — {@code Server}, {@code X-Powered-By} and the
+ *       other {@link UpstreamIdentityHeaders} members — are removed, never rewritten to a neutral value,
+ *       unless the route sets {@code keep_identity_headers: true}. The rule holds on the HTTP relay, on
+ *       the gRPC leading headers and on the gRPC trailers alike; the asset envelope reads the same
+ *       set.</li>
  *   <li><strong>Conditional-response headers</strong> ({@code ETag} / {@code Last-Modified}) pass
  *       through only when the route enables {@code not_modified}; on a disabled route they are
  *       stripped so no validator ever reaches the client. A {@code 304} on an enabled route relays
@@ -76,8 +82,9 @@ import org.jspecify.annotations.Nullable;
  * <strong>One predicate judges every upstream header.</strong> The leading headers of {@link #relay},
  * the leading headers of {@link #relayWithTrailers} and the trailers it copies all pass
  * {@link #relayedUpstreamHeader}, which answers the value to relay or {@code null} for a header that
- * does not cross. It is the single seam a further response-header rule extends ({@code PLAN-V02-05}
- * D1): a rule added there holds on every relay path at once, and no path keeps a copy of its own.
+ * does not cross. It is the single seam every response-header rule lives in — the identity-header
+ * strip among them: a rule added there holds on every relay path at once, and no path keeps a copy
+ * of its own.
  * <p>
  * The gRPC relay ({@link #relayWithTrailers}) additionally ends a call that carried no frame in either
  * direction for its {@linkplain GrpcStreamIdleBound stream-idle bound}.
@@ -112,19 +119,27 @@ public final class ResponseStage {
     /**
      * The one judgement every upstream response header — leading header or trailer, on the HTTP relay
      * and on the gRPC relay — passes before it crosses back to the client: it must be
-     * {@linkplain #isForwardableResponseHeader forwardable}, and a {@code Set-Cookie} line must be one
-     * the route's {@code cookies} policy relays, which then crosses with its {@code Domain} attribute
-     * removed.
+     * {@linkplain #isForwardableResponseHeader forwardable}, it must not be an
+     * {@linkplain UpstreamIdentityHeaders identity header} unless the route keeps them, and a
+     * {@code Set-Cookie} line must be one the route's {@code cookies} policy relays, which then crosses
+     * with its {@code Domain} attribute removed.
      *
      * @param name               the upstream header name
      * @param value              the upstream header value
-     * @param notModifiedEnabled whether the route honours conditional requests / responses
-     * @param cookies            the route's effective {@code cookies} block
+     * @param notModifiedEnabled  whether the route honours conditional requests / responses
+     * @param cookies             the route's effective {@code cookies} block
+     * @param keepIdentityHeaders whether the route opts out of the identity-header strip
+     *                            ({@code keep_identity_headers: true}); with {@code false} an
+     *                            {@link UpstreamIdentityHeaders} member does not cross
      * @return the value to relay, or {@code null} when the header does not cross
      */
     @Nullable
-    String relayedUpstreamHeader(String name, String value, boolean notModifiedEnabled, CookiesConfig cookies) {
+    String relayedUpstreamHeader(String name, String value, boolean notModifiedEnabled, CookiesConfig cookies,
+            boolean keepIdentityHeaders) {
         if (!isForwardableResponseHeader(name, notModifiedEnabled)) {
+            return null;
+        }
+        if (!keepIdentityHeaders && UpstreamIdentityHeaders.isIdentityHeader(name)) {
             return null;
         }
         return upstreamSetCookies.relayedValue(name, value, cookies);
@@ -158,6 +173,9 @@ public final class ResponseStage {
      *                           {@code null} to relay {@code Location} unchanged
      * @param cookies            the route's effective {@code cookies} block, deciding which upstream
      *                           {@code Set-Cookie} lines are relayed
+     * @param keepIdentityHeaders whether the route keeps the upstream's {@link UpstreamIdentityHeaders}
+     *                           ({@code keep_identity_headers: true}); with {@code false} they are
+     *                           stripped
      * @param setHeaders         the set-mode gateway headers, overwriting an upstream value of the same name
      * @param defaultHeaders     the default-mode gateway headers, added only for a name the upstream
      *                           response did not carry
@@ -167,7 +185,8 @@ public final class ResponseStage {
     @SuppressWarnings("java:S107") // the relay's route inputs, passed through by the terminal dispatch
     public Future<Void> relay(HttpClientResponse upstream, HttpServerResponse client,
             boolean notModifiedEnabled, @Nullable LocationRewriter locationRewriter, CookiesConfig cookies,
-            Map<String, String> setHeaders, Map<String, String> defaultHeaders, ResponseEnd end) {
+            boolean keepIdentityHeaders, Map<String, String> setHeaders, Map<String, String> defaultHeaders,
+            ResponseEnd end) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(client, "client");
         Objects.requireNonNull(cookies, "cookies");
@@ -178,7 +197,8 @@ public final class ResponseStage {
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
             String name = header.getKey();
-            String relayed = relayedUpstreamHeader(name, header.getValue(), notModifiedEnabled, cookies);
+            String relayed = relayedUpstreamHeader(name, header.getValue(), notModifiedEnabled, cookies,
+                    keepIdentityHeaders);
             if (relayed != null) {
                 // add (not set) so multi-valued headers such as Set-Cookie are all preserved.
                 client.headers().add(name, relayedHeaderValue(name, relayed, locationRewriter));
@@ -270,6 +290,8 @@ public final class ResponseStage {
      * @param notModifiedEnabled whether the route honours conditional requests / responses
      * @param cookies            the route's effective {@code cookies} block, deciding which upstream
      *                           {@code Set-Cookie} lines — leading header or trailer — are relayed
+     * @param keepIdentityHeaders whether the route keeps the upstream's {@link UpstreamIdentityHeaders}
+     *                           — leading header or trailer; with {@code false} they are stripped
      * @param setHeaders         the set-mode gateway headers, overwriting an upstream value of the same name
      * @param defaultHeaders     the default-mode gateway headers, added only for a name the upstream
      *                           response did not carry in its leading headers
@@ -280,8 +302,9 @@ public final class ResponseStage {
      */
     @SuppressWarnings("java:S107") // the relay's route inputs, passed through by the terminal dispatch
     public Future<Void> relayWithTrailers(HttpClientResponse upstream, HttpServerResponse client,
-            boolean notModifiedEnabled, CookiesConfig cookies, Map<String, String> setHeaders,
-            Map<String, String> defaultHeaders, ResponseEnd end, GrpcStreamIdleBound idleBound) {
+            boolean notModifiedEnabled, CookiesConfig cookies, boolean keepIdentityHeaders,
+            Map<String, String> setHeaders, Map<String, String> defaultHeaders, ResponseEnd end,
+            GrpcStreamIdleBound idleBound) {
         Objects.requireNonNull(upstream, "upstream");
         Objects.requireNonNull(client, "client");
         Objects.requireNonNull(cookies, "cookies");
@@ -292,7 +315,8 @@ public final class ResponseStage {
 
         client.setStatusCode(upstream.statusCode());
         for (Map.Entry<String, String> header : upstream.headers()) {
-            String relayed = relayedUpstreamHeader(header.getKey(), header.getValue(), notModifiedEnabled, cookies);
+            String relayed = relayedUpstreamHeader(header.getKey(), header.getValue(), notModifiedEnabled, cookies,
+                    keepIdentityHeaders);
             if (relayed != null) {
                 client.headers().add(header.getKey(), relayed);
             }
@@ -312,7 +336,7 @@ public final class ResponseStage {
                 .onComplete(piped -> {
                     idleBound.stop();
                     if (piped.succeeded()) {
-                        relayTrailers(upstream, client, notModifiedEnabled, cookies);
+                        relayTrailers(upstream, client, notModifiedEnabled, cookies, keepIdentityHeaders);
                     } else if (idleExpired.get()) {
                         client.putTrailer(GRPC_STATUS_TRAILER, Integer.toString(GrpcStatusMapper.DEADLINE_EXCEEDED));
                         client.putTrailer(GRPC_MESSAGE_TRAILER, STREAM_IDLE_MESSAGE);
@@ -332,9 +356,10 @@ public final class ResponseStage {
      * each added as its own trailer so several {@code Set-Cookie} trailers are all kept.
      */
     private void relayTrailers(HttpClientResponse upstream, HttpServerResponse client, boolean notModifiedEnabled,
-            CookiesConfig cookies) {
+            CookiesConfig cookies, boolean keepIdentityHeaders) {
         for (Map.Entry<String, String> trailer : upstream.trailers()) {
-            String relayed = relayedUpstreamHeader(trailer.getKey(), trailer.getValue(), notModifiedEnabled, cookies);
+            String relayed = relayedUpstreamHeader(trailer.getKey(), trailer.getValue(), notModifiedEnabled, cookies,
+                    keepIdentityHeaders);
             if (relayed != null) {
                 client.trailers().add(trailer.getKey(), relayed);
             }

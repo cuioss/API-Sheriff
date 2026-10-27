@@ -16,6 +16,7 @@
 package de.cuioss.sheriff.gateway.config.validation.rule;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
@@ -33,6 +34,8 @@ import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.Protocol;
+import de.cuioss.sheriff.gateway.config.model.RedirectConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -44,13 +47,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the terminal-action rules the {@link ConfigValidator} runs through
  * {@link TerminalActionRules}: the terminal-action / anchor-type consistency matrix and the
  * asset-source fields (ADR-0014), and the {@code asset.index} / {@code asset.fallback} file-name
- * confinement (AS-12). The redirect half of the terminal-action rule is covered by
+ * confinement (AS-12), and the {@code keep_identity_headers} target rule. The redirect half of the terminal-action rule is covered by
  * {@link TerminalActionRulesRedirectTest}.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
@@ -316,6 +321,95 @@ class TerminalActionRulesTest {
 
             assertTrue(errors.stream().noneMatch(error -> error.message().contains("etc/passwd")),
                     () -> "the refused value must not reach the operator log, got: " + errors);
+        }
+    }
+
+    @Nested
+    @DisplayName("keep_identity_headers target")
+    class KeepIdentityHeadersTarget {
+
+        private static final String ROUTE_ID = "subject";
+
+        private static final String REFUSAL = "route '" + ROUTE_ID + "' declares keep_identity_headers but ";
+
+        /**
+         * Every route kind the key is judged on: the four that relay upstream response headers and
+         * accept it, and the three that relay none and refuse it.
+         */
+        enum RouteKind {
+            HTTP_PROXY,
+            GRAPHQL_PROXY,
+            GRPC_PROXY,
+            UPSTREAM_ASSET,
+            REDIRECT,
+            DIRECTORY_ASSET,
+            WEBSOCKET
+        }
+
+        private List<ConfigError> validateRoute(RouteKind kind, @Nullable Boolean keepIdentityHeaders) {
+            RouteConfig.RouteConfigBuilder route = RouteConfig.builder()
+                    .id(ROUTE_ID)
+                    .keepIdentityHeaders(keepIdentityHeaders);
+            boolean assetRoute = kind == RouteKind.UPSTREAM_ASSET || kind == RouteKind.DIRECTORY_ASSET;
+            switch (kind) {
+                case HTTP_PROXY -> route.match(match("/api", HttpMethod.GET));
+                case GRAPHQL_PROXY -> route.match(match("/graphql", HttpMethod.POST)).protocol(Protocol.GRAPHQL);
+                case GRPC_PROXY -> route.match(match("/grpc", HttpMethod.POST)).protocol(Protocol.GRPC);
+                case WEBSOCKET -> route.match(match("/ws", HttpMethod.GET)).protocol(Protocol.WEBSOCKET);
+                case REDIRECT -> route.match(match("/old", HttpMethod.GET))
+                        .redirect(RedirectConfig.builder().location("/new").status(302).build());
+                case UPSTREAM_ASSET -> route.match(match("/assets", HttpMethod.GET)).anchor("assets")
+                        .asset(upstreamAsset("SECONDARY"));
+                case DIRECTORY_ASSET -> route.match(match("/assets", HttpMethod.GET)).anchor("assets")
+                        .asset(directoryAsset("/srv/assets"));
+            }
+            GatewayConfig gateway = gatewayWithAnchors(Map.of("assets",
+                    matrixAnchor("assets", "/assets", AnchorType.ASSET, AccessLevel.PUBLIC, null)));
+            EndpointConfig endpoint = EndpointConfig.builder()
+                    .id("web").enabled(true).baseUrl("WEB")
+                    .anchor(assetRoute ? "assets" : null)
+                    .auth(auth(Require.NONE))
+                    .routes(List.of(route.build()))
+                    .build();
+            return validator.validate(gateway, List.of(endpoint), topologyWith("WEB", "SECONDARY"));
+        }
+
+        @ParameterizedTest(name = "keep_identity_headers: true on {0}")
+        @EnumSource(value = RouteKind.class, names = {"HTTP_PROXY", "GRAPHQL_PROXY", "GRPC_PROXY", "UPSTREAM_ASSET"})
+        @DisplayName("Should accept the key on every route that relays upstream response headers")
+        void shouldAcceptOnRelayingRoute(RouteKind kind) {
+            List<ConfigError> errors = validateRoute(kind, true);
+
+            assertTrue(errors.isEmpty(), () -> kind + " relays upstream headers, so the key is accepted, got: "
+                    + errors);
+        }
+
+        @ParameterizedTest(name = "keep_identity_headers: {1} on {0}")
+        @CsvSource({"REDIRECT, true", "REDIRECT, false", "DIRECTORY_ASSET, true", "DIRECTORY_ASSET, false",
+                "WEBSOCKET, true", "WEBSOCKET, false"})
+        @DisplayName("Should refuse any declared value on a route that relays no upstream response header")
+        void shouldRefuseOnNonRelayingRoute(RouteKind kind, boolean declared) {
+            List<ConfigError> errors = validateRoute(kind, declared);
+
+            String reason = switch (kind) {
+                case REDIRECT -> "it is a redirect route";
+                case DIRECTORY_ASSET -> "it is an asset route with source: directory";
+                default -> "it is a protocol: websocket route";
+            };
+            assertAll("exactly one refusal naming the route and why the key would be ignored",
+                    () -> assertHasError(errors, "/endpoint/routes", REFUSAL + reason),
+                    () -> assertEquals(1, errors.stream()
+                                    .filter(error -> error.message().contains("keep_identity_headers")).count(),
+                            () -> "expected one keep_identity_headers refusal, got: " + errors));
+        }
+
+        @ParameterizedTest(name = "no key on {0}")
+        @EnumSource(RouteKind.class)
+        @DisplayName("Should raise no error on any route kind when the key is undeclared")
+        void shouldAcceptUndeclaredKeyOnEveryRouteKind(RouteKind kind) {
+            List<ConfigError> errors = validateRoute(kind, null);
+
+            assertTrue(errors.isEmpty(), () -> "the control: " + kind + " is valid without the key, got: " + errors);
         }
     }
 }

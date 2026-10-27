@@ -232,8 +232,8 @@ public final class TerminalDispatch {
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         relayOnEventLoop(ctx, stageSetCookies, upstream, end -> responseStage.relay(upstream, ctx.response(),
-                route.notModifiedEnabled(), route.locationRewriter(), route.effectiveCookies(), setHeaders,
-                defaultHeaders, end));
+                route.notModifiedEnabled(), route.locationRewriter(), route.effectiveCookies(),
+                route.keepIdentityHeaders(), setHeaders, defaultHeaders, end));
     }
 
     /**
@@ -408,8 +408,8 @@ public final class TerminalDispatch {
         Map<String, String> setHeaders = Map.copyOf(request.responseHeaders());
         Map<String, String> defaultHeaders = Map.copyOf(request.responseDefaultHeaders());
         relayOnEventLoop(ctx, stageSetCookies, upstream, end -> responseStage.relayWithTrailers(upstream,
-                ctx.response(), route.notModifiedEnabled(), route.effectiveCookies(), setHeaders, defaultHeaders,
-                end, idleBound));
+                ctx.response(), route.notModifiedEnabled(), route.effectiveCookies(), route.keepIdentityHeaders(),
+                setHeaders, defaultHeaders, end, idleBound));
     }
 
     /**

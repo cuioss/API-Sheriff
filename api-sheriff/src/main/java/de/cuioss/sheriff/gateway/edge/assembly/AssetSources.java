@@ -50,13 +50,18 @@ public final class AssetSources {
      * upstream source rides its own SSRF-guarded fetch seam (ADR-0014), not the proxy data plane.
      *
      * @param asset             the route's resolved asset terminal action
-     * @param assetContentTypes the gateway-wide add-only content-type additions (see
-     *                          {@link #assetContentTypesOf})
+     * @param assetContentTypes   the gateway-wide add-only content-type additions (see
+     *                            {@link #assetContentTypesOf})
+     * @param keepIdentityHeaders the route's {@code keep_identity_headers} opt-out, handed to an
+     *                            {@code upstream} source; a {@code directory} source ignores it, since
+     *                            it proposes no upstream header and boot validation refuses the key
+     *                            on a directory route
      * @return the live asset source
      * @throws IllegalStateException when the resolved asset lacks the directory root or the upstream
      *                               its source kind requires
      */
-    public static AssetSource assetSourceFor(ResolvedAsset asset, Map<String, String> assetContentTypes) {
+    public static AssetSource assetSourceFor(ResolvedAsset asset, Map<String, String> assetContentTypes,
+            boolean keepIdentityHeaders) {
         return switch (asset.source()) {
             case DIRECTORY -> {
                 String directory = asset.directory();
@@ -71,7 +76,7 @@ public final class AssetSources {
                 if (upstream == null) {
                     throw new IllegalStateException("upstream asset source requires a resolved upstream");
                 }
-                yield new UpstreamAssetSource(upstream, asset.access(), assetContentTypes);
+                yield new UpstreamAssetSource(upstream, asset.access(), assetContentTypes, keepIdentityHeaders);
             }
         };
     }

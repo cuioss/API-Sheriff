@@ -49,6 +49,14 @@ import lombok.experimental.UtilityClass;
  * <em>observation</em> about the two lists as they stand — not a derivation and not an invariant.
  * A name added to one direction does not join the other: the directions answer different
  * questions, so each list is maintained on its own terms and neither is computed from its sibling.
+ * <p>
+ * <strong>The response direction carries a second, independent gateway-owned set.</strong>
+ * {@link UpstreamIdentityHeaders} names the headers that identify the upstream's server software or
+ * framework ({@code Server}, {@code X-Powered-By}, …). The same response paths read it, but it is
+ * deliberately <em>not</em> a {@link #RESPONSE_STRIP} member: those names are wrong on the client's
+ * connection and no route may keep them, whereas an identity header is well-formed anywhere and is
+ * removed only for what it discloses — which a route may opt out of with
+ * {@code keep_identity_headers: true}.
  *
  * @author API Sheriff Team
  * @since 1.0
