@@ -64,6 +64,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -794,9 +795,19 @@ class SheriffMetricsTest {
             assertNothingDisclosed(data);
         }
 
+        /**
+         * @return one case per (session mode, discovery state) pair, the states taken from
+         *         {@link State#values()} so a state added to the enum is covered without editing this
+         *         list — and turns {@code discoveryNeverChangesTheVerdict} red at the
+         *         {@code discovery(State)} precondition until that helper can drive it
+         */
+        static Stream<Arguments> modeAndDiscoveryState() {
+            return Stream.of(OidcConfig.Session.MODE_SERVER, OidcConfig.Session.MODE_COOKIE)
+                    .flatMap(mode -> Arrays.stream(State.values()).map(state -> Arguments.of(mode, state)));
+        }
+
         @ParameterizedTest(name = "mode {0}, discovery {1}")
-        @CsvSource({"server, NOT_ATTEMPTED", "server, RESOLVED", "server, FAILED",
-                "cookie, NOT_ATTEMPTED", "cookie, RESOLVED", "cookie, FAILED"})
+        @MethodSource("modeAndDiscoveryState")
         @DisplayName("oidc=<mode> and oidc_discovery are reported for both modes, and the verdict ignores the datum")
         void discoveryNeverChangesTheVerdict(String mode, State discoveryState) {
             // Arrange — every issuer has a key set, so the key-set verdict alone is UP
