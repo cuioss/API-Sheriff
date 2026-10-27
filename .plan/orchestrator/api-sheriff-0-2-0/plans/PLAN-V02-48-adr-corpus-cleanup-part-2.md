@@ -97,7 +97,8 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 ## Standing Constraints
 
 - **Records amended by recent plans keep their content.** #527 amended `0058`; #528 amended `0007`, `0016`, `0023`,
-  `0037`, `0049`, `0055` and `0059` with the uniform-`404` rule (ADR-0073). Rewrite each to the skeleton and state the
+  `0037`, `0049`, `0055` and `0059` with the uniform-`404` rule (ADR-0073); #526 amended `0008` and `0037` for the identity-header
+  strip and the `not_modified` close. Rewrite each to the skeleton and state the
   amended rule as current fact, with no amendment marker or history. Re-read each against `main` at outline.
 - **No production behaviour change.** If the audit finds an ADR that contradicts shipped behaviour, report it: the
   ADR is corrected, the code is not.
@@ -156,9 +157,8 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 
 - Depends on: `PLAN-V02-04` merged (#521, `f5826465`, done). It delivers the rubric, the skeleton, the term list and
   the ceiling guard this plan applies.
-- **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-05` (if its strip policy needs one),
-  `PLAN-V02-07`, `PLAN-V02-09` (re-opens `0027`), `PLAN-V02-11` and `PLAN-V02-50` (`PLAN-V02-20` and `PLAN-V02-06`
-  landed as #527 and #528).
+- **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-07`, `PLAN-V02-09` (re-opens `0027`), `PLAN-V02-11` and `PLAN-V02-50` (`PLAN-V02-20`, `PLAN-V02-06` and
+  `PLAN-V02-05` landed as #527, #528 and #526).
   A relocation or merge here moves the ground under a record being written there, and the ceiling guard fails a
   concurrent plan that lands an over-long record.
 - `PLAN-V02-09` re-examines `0027`; kidicap `PLAN-29` D6 owns `0008`'s timeout sentence. Neither is settled here.

@@ -163,6 +163,16 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-27 — `PLAN-V02-05` landed as #526; analyzed.** Verified: Maven Build, Config Validation, Demo Client E2E and
+  Scorecard, Integration Tests (40551758384) and the PR benchmark (40551763060) green on `main` at `be7034ac`. Shipped: the
+  identity-header strip (`Server`, `X-Powered-By`) on the HTTP relay, the gRPC relay and the upstream asset action with a
+  per-route `keep_identity_headers` opt-out; the `not_modified` close narrowed by two operator decisions to the two 304
+  validators on `GET`/`HEAD`; `headers_deny` folded over `_`/`-`; the fingerprint documentation. **Spec D2 (security
+  headers default-on) was not delivered: the operator ruled at refine that no header is default-on and every header is
+  configured explicitly; D2 became documentation.** If default-on headers are wanted, they are a new plan. Open Defect 1
+  is closed. `PLAN-V02-48` also keeps ADR-0008 and ADR-0037, amended in place. Lessons: three project lessons
+  (2026-10-27-17-001 to -003) and four plan-marshall findings routed to `lessons-routing`; the `finalize-main-drift`
+  memory was extended.
 - **2026-10-27 — `PLAN-V02-50` and `PLAN-V02-09` are running** (operator confirmed the starts); with `PLAN-V02-05` all three slots are taken.
 - **2026-10-27 — emitted `PLAN-V02-50` and `PLAN-V02-09` into the two free slots.** Operator ruling of 2026-10-26
   (fill up to three at once when `PLAN-V02-06` lands), overlap prompt answered "V02-50, V02-09". The gate shows
@@ -434,12 +444,7 @@ doc-only or build-light plan for the second and third slots.
 12. > ↪ Relocated to `settled.md` § "Open Defect 12 — RouteRuntimeAssembler dead WebSocket allocation (resolved by #476)" — resolved by #476 (PLAN-V02-44)
 13. > ↪ Relocated to `settled.md` § "Open Defect 13 — applyJwks orphan, folded into PLAN-V02-09 (closed 2026-08-09)" — closed; the method no longer exists
 
-1. **MEDIUM — upstream stack-identity leak.** `edge/ResponseStage` `isForwardableResponseHeader`
-   (:63) filters only hop-by-hop and conditional headers, so an upstream emitting `Server` or
-   `X-Powered-By` leaks its stack identity through the gateway. The orchestrator recommended fixing
-   it inside 0.1.0; the operator ruled it out of the release track 2026-07-27. **0.1.0 and 0.1.1 both
-   ship with this leak.** OWNER: `PLAN-V02-05` D1. *Re-grounded 2026-08-08: still present, and the
-   fix must cover **both** relay paths — `relay`:84 and `relayWithTrailers`:118.*
+1. > ↪ Relocated to `settled.md` § "Open Defect 1 — upstream stack-identity leak (closed 2026-10-27 by #526)" — `Server` and `X-Powered-By` stripped on all three upstream-header paths
 2. > ↪ Relocated to `settled.md` § "Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512"
 3. > ↪ Relocated to `settled.md` § "Open Defect 3 — demo start script readiness contract (closed 2026-10-09)" — already fixed since #341
 4. **LOW, not release-gating** — the test-corpus integrity backlog PLAN-43 left as a countable
@@ -474,6 +479,11 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
+- **HAND-MAINTAINED INVENTORIES NOT BOUND BY A TEST — NO OWNER** (added 2026-10-27, inbox
+  `plan-v02-05-response-hygiene-012`). `DocumentedHeaderSetsContractTest` binds the identity set and both protocol tiers to
+  their constants. The route-field inventory (`doc/configuration.adoc`, `endpoint.schema.json`) and the never-forward and
+  response-strip sets are still hand-maintained, and the repository's review bot re-raises such lists until a test binds
+  them. Bind them in whichever plan next touches those sets.
 - **FLAKY `GatewayEdgeRouteTest$RelayStartFailure.relayThatFailsToStartReleasesTheUpstreamResponse` — OWNED BY `PLAN-V02-50` D8**
   (added 2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`). Failed once in the CI sonar-build isolated fork (run
   40504680597) and passed on rerun; the branch did not touch the test. Make it deterministic and confirm it under

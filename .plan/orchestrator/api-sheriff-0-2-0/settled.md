@@ -395,3 +395,11 @@ _Relocated 2026-10-13 by `analyze`: the fix is confirmed on five consecutive run
 2. **CLOSED 2026-10-22 — `start-dev-environment.sh` now prints `(cd demo-client && PLAYWRIGHT_BASE_URL_SERVER=… PLAYWRIGHT_BASE_URL_COOKIE=… npm run test)`, with both values taken from the gateway rows it started and a refusal when a row supplies none (`abf911dc`, line 366).** Was: MEDIUM developer trap, `playwright.config.js` routes two variables through `required()` at module scope while only the Maven execution supplied them, so the printed `cd demo-client && npm run test` aborted at config load. **Keep the generalizable check**: for any doc offering run-it-directly beside run-it-through-the-build, enumerate what the build supplies that the direct path does not — environment, working directory, classpath.
 
 - **ISSUE #189 REMAINDER — CLOSED 2026-10-22 by #512 (`abf911dc`).** The demo client has a rejection panel (`spa/app.js`, `spa/index.html`) covered by `demo-client/tests/06-rejection-panel.spec.js`; `doc/variants/01-base-gateway.adoc`, `demo-client/doc/integration-sample.adoc` and the PROHIBITED ASSERTION scope in `demo-client/doc/playwright-suite.adoc` are corrected. `doc/plan/04-request-pipeline.adoc` no longer exists. Issue #189 was closed against the PR at 2026-10-22T19:21:54Z.
+
+## Open Defect 1 — upstream stack-identity leak (closed 2026-10-27 by #526)
+
+1. **CLOSED 2026-10-27 by #526 (`be7034ac`, `PLAN-V02-05` D1) — an upstream `Server` or `X-Powered-By` header no longer reaches the client.** Was: MEDIUM, the relay forwarded
+   upstream stack-identity headers on both relay paths (`relay` and `relayWithTrailers`), so 0.1.0 and 0.1.1 shipped with the leak and the operator ruled it out of the
+   release track on 2026-07-27. Now `http/UpstreamIdentityHeaders.NAMES` (`server`, `x-powered-by`) is applied on the HTTP relay, the gRPC relay (leading headers and
+   trailers) and the upstream asset action; a route opts out with `keep_identity_headers`, which the boot refuses on redirect, directory-asset and websocket routes.
+   `ErrorContractIT` pins that gateway-originated errors carry no version string.
