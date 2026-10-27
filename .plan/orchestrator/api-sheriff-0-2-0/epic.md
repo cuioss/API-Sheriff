@@ -170,6 +170,8 @@ needs no translation.
   D12, which also states the `0058` amendment as current fact (D2). Fourteen candidate lessons: seven were project
   lessons and became three local lessons (2026-10-27-05-001 to -003); seven were plan-marshall tooling and went to
   `lessons-routing` as four findings. The `PLAN-V02-09`/`-12` sequencing constraint on `PLAN-V02-20` is retired.
+  Free slot: the operator chose to hold it until `PLAN-V02-06` lands (both running plans are in finalize), then fill
+  up to three slots at once. Nothing was emitted.
 - **2026-10-26 — the stale local plan `plan-v02-23-cookie-forwarding-policy` was discarded** by operator instruction
   (`manage-status delete-plan`, 14 files, no lesson to carry back). It was the first, paused attempt at `PLAN-V02-23`
   (stopped at 4-plan on 2026-10-14 for the refactor chain); `plan-v02-23-cookie-forwarding-policy-r2` shipped as #515.
