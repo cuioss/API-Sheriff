@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.ArrayList;
 import java.util.List;
 
+import de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck;
+import de.cuioss.sheriff.token.quarkus.health.TokenValidatorHealthCheck;
 import io.quarkus.test.junit.QuarkusTest;
 import io.smallrye.health.SmallRyeHealth;
 import io.smallrye.health.SmallRyeHealthReporter;
@@ -45,36 +47,44 @@ import org.junit.jupiter.api.Test;
  * configured key rather than the default literal, because the path is a declared, rebuild-time
  * choice and not a constant of the product.
  * <p>
- * This class previously <em>characterized a defect</em>. The deciding spike asked whether the
- * token-sheriff-validation extension — which requires at least one enabled issuer — drags aggregate
- * readiness DOWN when the shipped configuration names no issuer, and the observed answer was
- * <em>yes</em>: its {@code health.JwksEndpointHealthCheck} reported DOWN with
- * {@code "No issuer configurations found in properties"} while the gateway's own probe reported
- * {@code jwks: ready} in the very same payload. A deployment could therefore be fully and correctly
- * configured for token validation and still never reach ready.
+ * <strong>Which token-sheriff version showed which behaviour</strong> (the per-bean evidence is in
+ * ADR-0074). The deciding spike ran on token-sheriff 0.9.3 and asked whether the
+ * token-sheriff-validation extension drags aggregate readiness DOWN when the shipped configuration
+ * names no issuer. The observed answer was <em>yes</em>: its {@code health.JwksEndpointHealthCheck}
+ * reported DOWN with {@code "No issuer configurations found in properties"} while the gateway's own
+ * probe reported {@code jwks: ready} in the very same payload. Up to 0.9.4 both extension probes
+ * injected the issuer list the extension's own producer builds from its
+ * {@code sheriff.token.issuers.*} namespace, and that producer fails on an empty namespace. From
+ * 0.9.5 on both probes read through the extension's {@code ObservedValidatorResolver}, which observes
+ * the {@code @GatewayValidator} validator here. The core validator exposes no issuer list, so at
+ * 0.9.8 the probes would report a <em>vacuous</em> UP: {@code jwks-endpoints} with
+ * {@code checkedEndpoints=0} and {@code jwt-validator} with {@code issuerCount=0}.
  * <p>
- * <strong>That defect is now fixed, and this class pins the fix.</strong> The two extension probes
- * ({@code health.JwksEndpointHealthCheck}, {@code health.TokenValidatorHealthCheck}) report on the
- * extension's <em>unqualified</em> {@code TokenValidator}, built from its own
- * {@code sheriff.token.issuers.*} Quarkus namespace. This gateway bypasses that validator entirely:
- * the request path injects the {@code @GatewayValidator}-qualified validator built from
- * {@code gateway.yaml}'s {@code token_validation} block. The probes' DOWN was therefore a false
- * negative about machinery the product does not use, so both beans are excluded from bean discovery
- * by a single unconditional entry in the shipped {@code application.properties}:
+ * <strong>This class pins why both probes stay excluded.</strong> A probe that reports UP while it
+ * observes nothing this gateway does reads like JWKS coverage and is not. Both beans are therefore
+ * excluded from bean discovery by a single unconditional entry in the shipped
+ * {@code application.properties}, whose actual shipped value is:
  *
  * <pre>
  * quarkus.arc.exclude-types=de.cuioss.sheriff.token.quarkus.health.*
  * </pre>
  *
- * The exclusion is deliberately scoped to those two beans in that one package — it is <em>not</em>
+ * The exclusion is deliberately scoped to that one package — it is <em>not</em>
  * {@code quarkus.health.extensions.enabled=false} or any other global switch, because
- * blanket-disabling a security-relevant readiness check is forbidden. No coverage is lost: both
- * excluded probes iterate the <em>extension's</em> issuer list, empty here, so neither ever observed
- * this gateway's JWKS loaders, while {@link GatewayReadinessCheck} reports {@code jwks} for the real
- * validator. That datum is a live, non-fetching key-set read: {@code ready} only once every
- * configured issuer's loader holds a key set. The boot fixture's single issuer reads an offline JWKS
- * file, which loads during validator assembly, so the assertions below pin {@code ready} together with
+ * blanket-disabling a security-relevant readiness check is forbidden. The extension's metrics
+ * collector is not excluded; {@link ExtensionUnqualifiedBeanExclusionTest} pins that half. No
+ * coverage is lost: {@link GatewayReadinessCheck} reports {@code jwks} for the real validator. That
+ * datum is a live, non-fetching key-set read: {@code ready} only once every configured issuer's
+ * loader holds a key set. The boot fixture's single issuer reads an offline JWKS file, which loads
+ * during validator assembly, so the assertions below pin {@code ready} together with
  * {@code issuers_loaded == issuers}.
+ * <p>
+ * <strong>The exclusion is proven, not inferred from absence.</strong> The extension's build step
+ * registers both probes as unremovable additional beans, so their absence here is caused by
+ * {@code quarkus.arc.exclude-types} only if their classes are actually present.
+ * {@code shouldExcludeExtensionHealthChecksFromBeanDiscovery} therefore pairs the absence with a
+ * classpath-presence control over both probe classes, which also ties {@code EXTENSION_HEALTH_PACKAGE}
+ * to the package the classes really live in.
  * <p>
  * <strong>Anti-false-negative guard.</strong> A bare "aggregate is UP" assertion is worthless on its
  * own, because a run in which the health subsystem contributed <em>nothing</em> would also fold to UP
@@ -140,8 +150,21 @@ class DefaultProfileReadinessTest {
     @Test
     @DisplayName("Should exclude both extension health probes from bean discovery entirely")
     void shouldExcludeExtensionHealthChecksFromBeanDiscovery() {
-        // Arrange + Act — every HealthCheck bean, not just the @Readiness-qualified ones, so the
-        // assertion covers both probes regardless of which health qualifier each carries.
+        // Arrange — the positive control: both probe classes are on the classpath, are health checks,
+        // and live in exactly the package the exclusion names. Without this leg, a probe class that a
+        // token-sheriff upgrade removed or moved would make the absence below vacuous.
+        for (Class<?> probe : List.of(JwksEndpointHealthCheck.class, TokenValidatorHealthCheck.class)) {
+            assertTrue(HealthCheck.class.isAssignableFrom(probe),
+                    "control: " + probe.getName() + " must be a HealthCheck — otherwise its absence from "
+                            + "the HealthCheck beans below proves nothing about the exclusion");
+            assertTrue(probe.getName().startsWith(EXTENSION_HEALTH_PACKAGE),
+                    "control: " + probe.getName() + " must live in " + EXTENSION_HEALTH_PACKAGE
+                            + " — the package quarkus.arc.exclude-types names. A moved probe would no "
+                            + "longer match the exclusion pattern");
+        }
+
+        // Act — every HealthCheck bean, not just the @Readiness-qualified ones, so the assertion
+        // covers both probes regardless of which health qualifier each carries.
         List<String> allChecks = beanClassNames(healthChecks);
 
         // Assert — the exclusion took effect: neither extension probe is a bean at all.

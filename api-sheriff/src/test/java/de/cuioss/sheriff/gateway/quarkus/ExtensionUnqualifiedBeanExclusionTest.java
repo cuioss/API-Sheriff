@@ -15,13 +15,25 @@
  */
 package de.cuioss.sheriff.gateway.quarkus;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
+import de.cuioss.sheriff.gateway.auth.GatewayValidator;
+import de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck;
+import de.cuioss.sheriff.token.quarkus.health.TokenValidatorHealthCheck;
 import de.cuioss.sheriff.token.quarkus.metrics.JwtMetricsCollector;
+import de.cuioss.sheriff.token.quarkus.observability.ObservedValidatorResolver;
+import de.cuioss.sheriff.token.validation.TokenValidator;
+import de.cuioss.sheriff.token.validation.domain.context.AccessTokenRequest;
+import de.cuioss.sheriff.token.validation.exception.TokenValidationException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.scheduler.Scheduler;
 import io.quarkus.scheduler.Trigger;
 import io.quarkus.test.junit.QuarkusTest;
@@ -32,70 +44,73 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * Pins the <em>scope</em> of the token-validation extension's bean exclusion: no extension bean that
- * reaches the extension's <em>unqualified</em> {@code TokenValidator} survives into the running
- * application.
+ * Pins the <em>split</em> ADR-0074 decides for the token-validation extension's beans: its two
+ * {@code health.*} probes stay excluded from the bean set, and its {@code metrics.JwtMetricsCollector}
+ * is accommodated because it observes this gateway's own validator.
  * <p>
- * {@link DefaultProfileReadinessTest} pins the readiness half of the same decision — the two
- * {@code health.*} probes. This class pins the other half, and it exists because the health probes
- * were not the only bean in that position. The extension's {@code metrics.JwtMetricsCollector}
- * constructor-injects a {@code SecurityEventCounter} produced by the same unqualified
- * {@code producer.TokenValidatorProducer}, which resolves issuers from the extension's
- * {@code sheriff.token.issuers.<name>.*} namespace. This gateway never populates that namespace — the
- * request path runs off the {@code @GatewayValidator}-qualified validator built from
- * {@code gateway.yaml} — so the producer throws
- * {@code IllegalStateException: No issuer configurations found in properties} on every attempt to
- * create it.
- * <p>
- * That bean is {@code @Scheduled(every = "10s")}, which turns a latent misfit into a continuous one:
- * the collector is re-created on every tick, fails on every tick, and the scheduler logs a full stack
- * trace each time. The gateway itself stays healthy and token validation keeps working — the damage
- * is roughly sixty lines of stack trace every ten seconds, which buries every other log line the
- * operator needs.
- * <p>
- * <strong>Two assertions, because either alone would be weak.</strong>
+ * <strong>This class was rewritten deliberately, not loosened.</strong> It used to assert that the
+ * collector is <em>not</em> a bean and that <em>no</em> scheduled job comes from the extension. That
+ * held while the collector constructor-injected the {@code SecurityEventCounter} of the extension's
+ * own unqualified producer, which fails on the empty {@code sheriff.token.issuers.*} namespace — up
+ * to token-sheriff 0.9.4 the collector failed on every tick. From 0.9.5 on the collector reads
+ * through the extension's {@code ObservedValidatorResolver}. With the namespace empty, the resolver
+ * skips the extension's producer and observes the single remaining {@code TokenValidator} bean: the
+ * {@code @GatewayValidator} validator built from {@code gateway.yaml}. The collector therefore
+ * publishes {@code sheriff.token.validation.*} for the validator the request path uses, and each
+ * assertion below pins one property of that new contract:
  * <ul>
- * <li>The <em>specific</em> one — {@code JwtMetricsCollector} is not a bean — pins the exclusion
- * entry that fixes the reported defect. Paired with {@link SheriffMetrics} being resolvable, so a run
- * in which CDI contributed nothing at all cannot masquerade as a successful exclusion.</li>
- * <li>The <em>general</em> one — no scheduled job anywhere names the extension's Quarkus package —
- * is the fitness function. The exclusion is a type pattern over another project's packages, and the
- * failure mode it guards is a <em>future</em> extension bean landing in the same position: eagerly
- * driven, reaching the unqualified producer, failing on a schedule. A bean-by-bean assertion would
- * only ever catch the beans someone already knew about.</li>
+ * <li>The collector <em>is</em> a bean, and the resolver reports {@code EXTERNAL_VALIDATOR} while
+ * observing the {@code @GatewayValidator} validator. A second foreign {@code TokenValidator} bean
+ * would make the resolver ambiguous and silently stop the meters; this assertion turns that red.</li>
+ * <li>Both {@code health.*} probes stay unresolvable, paired with {@link SheriffMetrics} resolvable,
+ * so a container that contributed nothing cannot masquerade as a successful exclusion.
+ * {@link DefaultProfileReadinessTest} pins the readiness consequence of the same exclusion.</li>
+ * <li>The fitness function: every scheduled job the extension's Quarkus wiring owns is the
+ * collector, the collector's job is registered, and one collector tick completes without throwing.
+ * A future extension bean that lands eagerly driven by the scheduler fails this the moment it
+ * lands.</li>
+ * <li>The token-validation metrics proof: after the gateway validator rejects a malformed token, a
+ * collector tick moves a {@code sheriff.token.validation.errors} counter in the
+ * {@link MeterRegistry}.</li>
  * </ul>
  * <p>
- * Note what the general assertion does <em>not</em> claim. It observes registered scheduled jobs, so
- * it catches an eagerly-driven extension bean only when the scheduler is what drives it. An extension
- * bean driven by a startup observer or by an HTTP endpoint would pass it. The exclusion remains a
- * deliberate, reviewed decision rather than something these assertions can derive.
- * <p>
- * With the exclusion in place nothing in this application schedules anything, so Quarkus does not
- * start the scheduler at all and the assertion passes over an empty set. That is the intended resting
- * state and it is not vacuous for the purpose: the moment a bean under the extension's Quarkus
- * package registers a {@code @Scheduled} method the scheduler starts, the job appears, and the
- * assertion fires — which is exactly the regression it exists to catch. Because that resting state
- * makes the assertion green over an empty input, the filter it depends on carries its own matched
- * positive/negative control, so a filter that had stopped matching anything could not pass for a
- * gateway that schedules nothing.
+ * The fitness function observes registered scheduled jobs only, so it catches an eagerly-driven
+ * extension bean only when the scheduler is what drives it. An extension bean driven by a startup
+ * observer or by an HTTP endpoint would pass it. The exclusion remains a reviewed decision rather
+ * than something these assertions can derive. The job filter carries its own matched
+ * positive/negative control, so a filter that had stopped matching could not pass unnoticed.
  *
  * @author API Sheriff Team
  * @since 1.0
  */
 @QuarkusTest
-@DisplayName("Token-validation extension: unqualified bean exclusion")
+@DisplayName("Token-validation extension: health probes excluded, metrics collector accommodated")
 @Tag("quarkus-fork")
 class ExtensionUnqualifiedBeanExclusionTest {
 
     /**
-     * Package prefix of the extension's Quarkus wiring — the whole surface that reads the
-     * {@code sheriff.token.issuers.*} namespace this gateway never populates. Matched as a substring
-     * because a scheduled job is identified by {@code <bean class>#<method>} with a generated prefix.
+     * Package prefix of the extension's Quarkus wiring. Matched as a substring because a scheduled job
+     * is identified by {@code <bean class>#<method>} with a generated prefix.
      */
     private static final String EXTENSION_QUARKUS_PACKAGE = "de.cuioss.sheriff.token.quarkus.";
 
+    /** The one extension-owned scheduled method this gateway accepts: the collector's tick. */
+    private static final String COLLECTOR_JOB = JwtMetricsCollector.class.getName() + "#updateCounters";
+
+    /** The Micrometer name of the extension's validation-error counters. */
+    private static final String VALIDATION_ERRORS = "sheriff.token.validation.errors";
+
     @Inject
     Instance<JwtMetricsCollector> extensionMetricsCollector;
+
+    @Inject
+    Instance<ObservedValidatorResolver> observedValidatorResolver;
+
+    @Inject
+    Instance<JwksEndpointHealthCheck> extensionJwksHealthCheck;
+
+    @Inject
+    Instance<TokenValidatorHealthCheck> extensionValidatorHealthCheck;
 
     @Inject
     Instance<SheriffMetrics> gatewayMetrics;
@@ -103,88 +118,172 @@ class ExtensionUnqualifiedBeanExclusionTest {
     @Inject
     Instance<Scheduler> scheduler;
 
+    @Inject
+    @GatewayValidator
+    TokenValidator gatewayValidator;
+
+    @Inject
+    MeterRegistry meterRegistry;
+
     @Test
-    @DisplayName("Should exclude the extension's JwtMetricsCollector from bean discovery")
-    void shouldExcludeExtensionMetricsCollectorFromBeanDiscovery() {
-        // Arrange — the paired guard: the gateway's own metrics bean proves CDI and the metrics
-        // subsystem genuinely ran, so the absence asserted below is an exclusion rather than a
-        // container that contributed nothing.
+    @DisplayName("Should resolve the metrics collector observing the @GatewayValidator validator")
+    void shouldResolveMetricsCollectorObservingTheGatewayValidator() {
+        // Arrange
+        assertTrue(extensionMetricsCollector.isResolvable(),
+                JwtMetricsCollector.class.getName() + " must be a bean — ADR-0074 accommodates it, so "
+                        + "quarkus.arc.exclude-types must no longer name the extension's metrics package");
+        assertTrue(observedValidatorResolver.isResolvable(),
+                "guard: the collector reads through " + ObservedValidatorResolver.class.getSimpleName()
+                        + ", which must resolve for the observation below to mean anything");
+        ObservedValidatorResolver resolver = observedValidatorResolver.get();
+
+        // Act
+        ObservedValidatorResolver.Outcome outcome = resolver.outcome();
+        TokenValidator observed = resolver.observedValidator()
+                .orElseThrow(() -> new AssertionError("the resolver observes no validator; outcome: " + outcome));
+
+        // Assert — the resolver skipped the extension's own producer and found exactly one foreign
+        // validator. Several candidates would read NOT_CONFIGURED and silently stop the meters.
+        assertEquals(ObservedValidatorResolver.Outcome.EXTERNAL_VALIDATOR, outcome,
+                "with no sheriff.token.issuers.* issuer the resolver must observe the single foreign "
+                        + "validator, which is the @GatewayValidator one");
+        // Both handles are client proxies over the same contextual instance, so the counter the
+        // collector reads is the very object the gateway validator counts into.
+        assertSame(gatewayValidator.getSecurityEventCounter(), observed.getSecurityEventCounter(),
+                "the observed validator must be the @GatewayValidator instance — otherwise the "
+                        + "collector publishes counts of a validator the request path never touches");
+    }
+
+    @Test
+    @DisplayName("Should keep both extension health probes out of the bean set")
+    void shouldKeepExtensionHealthProbesUnresolvable() {
+        // Arrange — the paired guard: the gateway's own metrics bean proves CDI genuinely ran, so the
+        // absence asserted below is an exclusion rather than a container that contributed nothing.
         assertTrue(gatewayMetrics.isResolvable(),
                 "guard: the gateway's own " + SheriffMetrics.class.getSimpleName() + " must resolve — "
                         + "without it the absence asserted below would prove nothing about the exclusion");
 
-        // Act + Assert — the exclusion took effect: the extension's collector is not a bean at all.
-        assertFalse(extensionMetricsCollector.isResolvable(),
-                "quarkus.arc.exclude-types must remove " + JwtMetricsCollector.class.getName()
-                        + " from bean discovery. It constructor-injects the SecurityEventCounter produced by the "
-                        + "extension's UNQUALIFIED TokenValidatorProducer, which resolves issuers from the "
-                        + "sheriff.token.issuers.* namespace this gateway never populates — so every @Scheduled "
-                        + "tick fails with 'No issuer configurations found in properties'");
+        // Act
+        boolean jwksProbeResolvable = extensionJwksHealthCheck.isResolvable();
+        boolean validatorProbeResolvable = extensionValidatorHealthCheck.isResolvable();
+
+        // Assert — quarkus.arc.exclude-types still removes both, although the extension registers them
+        // as unremovable additional beans.
+        assertFalse(jwksProbeResolvable,
+                JwksEndpointHealthCheck.class.getName() + " must stay excluded: on this gateway it would "
+                        + "report UP with checkedEndpoints=0 while observing nothing");
+        assertFalse(validatorProbeResolvable,
+                TokenValidatorHealthCheck.class.getName() + " must stay excluded: on this gateway it "
+                        + "would report UP with issuerCount=0 while observing nothing");
     }
 
     @Test
-    @DisplayName("Should register no scheduled job from the token-validation extension")
-    void shouldRegisterNoScheduledJobFromTheExtension() {
-        // Arrange — without a resolvable Scheduler there is nothing to inspect and the assertion
-        // below would be vacuously green.
+    @DisplayName("Should register only the metrics collector as an extension scheduled job, and tick cleanly")
+    void shouldRegisterOnlyTheCollectorAsExtensionJob() {
+        // Arrange — without a resolvable, started Scheduler the job set is unobservable. The collector
+        // carries a @Scheduled method, so Quarkus must have started the scheduler.
         assertTrue(scheduler.isResolvable(),
                 "guard: the Quarkus Scheduler must resolve — otherwise the registered-job set is "
-                        + "unobservable and the assertion below proves nothing");
-
-        // Act — a not-started scheduler is the expected state here and is STRONGER than an empty
-        // filtered set: Quarkus starts the scheduler only once some bean registers a @Scheduled
-        // method, so "not started" means nothing is scheduled anywhere in the application, extension
-        // or otherwise. Reading getScheduledJobs() in that state throws rather than returning empty.
+                        + "unobservable and the assertions below prove nothing");
         Scheduler resolved = scheduler.get();
-        List<String> extensionJobs = resolved.isStarted()
-                ? extensionJobsAmong(resolved.getScheduledJobs().stream()
-                .map(ExtensionUnqualifiedBeanExclusionTest::describe)
-                .toList())
-                : List.of();
+        assertTrue(resolved.isStarted(),
+                "the accommodated collector registers a @Scheduled method, so the scheduler must be "
+                        + "started; a stopped scheduler means the collector's job never registered");
 
-        // Assert — nothing from the extension's Quarkus wiring runs on a schedule in this gateway.
-        assertTrue(extensionJobs.isEmpty(),
-                "no scheduled job may come from " + EXTENSION_QUARKUS_PACKAGE + "* — every bean there reads "
-                        + "the extension's empty sheriff.token.issuers.* namespace, so a scheduled one fails on "
-                        + "every tick and floods the log. Registered extension jobs: " + extensionJobs
-                        + ". Extend quarkus.arc.exclude-types in application.properties rather than relaxing "
-                        + "this assertion");
+        // Act
+        List<String> extensionJobs = extensionJobsAmong(resolved.getScheduledJobs().stream()
+                .map(ExtensionUnqualifiedBeanExclusionTest::describe)
+                .toList());
+
+        // Assert — the collector's job is there, and it is the only extension-owned job.
+        assertTrue(extensionJobs.stream().anyMatch(job -> job.contains(COLLECTOR_JOB)),
+                "the collector's tick " + COLLECTOR_JOB + " must be a registered scheduled job; "
+                        + "registered extension jobs: " + extensionJobs);
+        assertEquals(List.of(), nonCollectorJobsAmong(extensionJobs),
+                "every scheduled job from " + EXTENSION_QUARKUS_PACKAGE + "* must be the metrics "
+                        + "collector — any other one is an eagerly-driven extension bean ADR-0074 did not "
+                        + "review. Read it and extend quarkus.arc.exclude-types rather than relaxing this "
+                        + "assertion");
+        // One tick completes without throwing — the collector goes idle or exports deltas, but never
+        // fails on a schedule the way it did up to token-sheriff 0.9.4.
+        JwtMetricsCollector collector = extensionMetricsCollector.get();
+        assertDoesNotThrow(collector::updateCounters,
+                "one collector tick must complete without throwing");
+    }
+
+    @Test
+    @DisplayName("Should move a sheriff.token.validation.errors counter after the gateway validator rejects a token")
+    void shouldMoveValidationErrorCounterAfterRejectedToken() {
+        // Arrange — create the collector and settle its baseline, so the measurement below sees only
+        // the delta this test causes.
+        JwtMetricsCollector collector = extensionMetricsCollector.get();
+        collector.updateCounters();
+        double before = validationErrorTotal();
+        AccessTokenRequest malformed = AccessTokenRequest.of("not-a-jwt");
+
+        // Act — the gateway validator rejects the token and counts the event; one tick exports it.
+        assertThrows(TokenValidationException.class, () -> gatewayValidator.createAccessToken(malformed),
+                "a malformed bearer token must be rejected by the @GatewayValidator validator");
+        collector.updateCounters();
+        double after = validationErrorTotal();
+
+        // Assert
+        assertTrue(after > before,
+                "a collector tick after a rejected token must move a " + VALIDATION_ERRORS + " counter; "
+                        + "before=" + before + ", after=" + after);
     }
 
     /**
-     * Matched positive/negative control over the filter the assertion above depends on. Without it
-     * that assertion is unfalsifiable-by-inspection: it is green today because nothing is scheduled,
-     * and it would be equally green if the filter matched nothing at all — which is precisely the
-     * state it must detect when a future extension bean lands.
+     * Matched positive/negative control over both filters the scheduled-job assertion depends on.
+     * Without it that assertion is unfalsifiable-by-inspection: a filter that matched nothing would
+     * pass a gateway whose extension schedules anything at all.
      */
     @Test
-    @DisplayName("The filter flags an extension-owned job and ignores a gateway-owned one")
-    void filterFlagsExtensionJobsAndIgnoresGatewayJobs() {
-        // Arrange — the extension-owned entry is the real trigger identity observed on a gateway
-        // running without the exclusion; the gateway-owned one is the near miss it must not flag.
-        String extensionJob = "1_de.cuioss.sheriff.token.quarkus.metrics.JwtMetricsCollector#updateCounters "
-                + "(de.cuioss.sheriff.token.quarkus.metrics.JwtMetricsCollector#updateCounters)";
-        String gatewayJob = "2_de.cuioss.sheriff.gateway.quarkus.SheriffMetrics#sweep "
+    @DisplayName("The filters flag a non-collector extension job and accept the collector and gateway jobs")
+    void filtersFlagNonCollectorExtensionJobsOnly() {
+        // Arrange — real trigger identities: the collector's tick, a hypothetical second extension job,
+        // the gateway's own job, and the near miss in the validation library this gateway does use.
+        String collectorJob = "1_" + COLLECTOR_JOB + " (" + COLLECTOR_JOB + ")";
+        String otherExtensionJob = "2_de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck#poll "
+                + "(de.cuioss.sheriff.token.quarkus.health.JwksEndpointHealthCheck#poll)";
+        String gatewayJob = "3_de.cuioss.sheriff.gateway.quarkus.SheriffMetrics#sweep "
                 + "(de.cuioss.sheriff.gateway.quarkus.SheriffMetrics#sweep)";
-        String validationLibraryJob = "3_de.cuioss.sheriff.token.validation.SomeJob#run "
+        String validationLibraryJob = "4_de.cuioss.sheriff.token.validation.SomeJob#run "
                 + "(de.cuioss.sheriff.token.validation.SomeJob#run)";
 
         // Act
-        List<String> flagged = extensionJobsAmong(List.of(gatewayJob, extensionJob, validationLibraryJob));
+        List<String> extensionJobs = extensionJobsAmong(
+                List.of(gatewayJob, collectorJob, otherExtensionJob, validationLibraryJob));
+        List<String> flagged = nonCollectorJobsAmong(extensionJobs);
 
-        // Assert — the filter selects the extension's Quarkus wiring and only that. The validation
-        // library entry is the near miss that matters: it shares the de.cuioss.sheriff.token prefix
-        // but is the library this gateway genuinely uses, so a prefix trimmed one segment too short
-        // would over-select it.
-        assertEquals(List.of(extensionJob), flagged,
-                "the filter must flag a job under " + EXTENSION_QUARKUS_PACKAGE + " and leave both the "
-                        + "gateway's own package and the validation library the gateway does use alone");
+        // Assert — the extension filter selects the extension's Quarkus wiring only; the validation
+        // library shares the de.cuioss.sheriff.token prefix and must not be over-selected. The second
+        // filter flags every extension job except the collector's tick.
+        assertEquals(List.of(collectorJob, otherExtensionJob), extensionJobs,
+                "the extension filter must select jobs under " + EXTENSION_QUARKUS_PACKAGE + " and leave "
+                        + "the gateway's own package and the validation library alone");
+        assertEquals(List.of(otherExtensionJob), flagged,
+                "the collector filter must flag every extension job except " + COLLECTOR_JOB);
+    }
+
+    /** @return the summed count of every {@code sheriff.token.validation.errors} counter */
+    private double validationErrorTotal() {
+        return meterRegistry.find(VALIDATION_ERRORS).counters().stream()
+                .mapToDouble(Counter::count)
+                .sum();
     }
 
     /** @return the entries of {@code jobDescriptions} owned by the extension's Quarkus wiring */
     private static List<String> extensionJobsAmong(List<String> jobDescriptions) {
         return jobDescriptions.stream()
                 .filter(description -> description.contains(EXTENSION_QUARKUS_PACKAGE))
+                .toList();
+    }
+
+    /** @return the entries of {@code extensionJobs} that are not the collector's tick */
+    private static List<String> nonCollectorJobsAmong(List<String> extensionJobs) {
+        return extensionJobs.stream()
+                .filter(description -> !description.contains(COLLECTOR_JOB))
                 .toList();
     }
 
