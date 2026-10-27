@@ -52,8 +52,11 @@ import org.junit.jupiter.api.Test;
  * the {@link BearerValidationIT} precedent — the black-box suite holds no signing key, so it cannot
  * mint a valid bearer token — the <em>successful</em> echo round-trip is driven over a public WS
  * route with a populated {@code allowed_origins}, while the bearer WS route is exercised through its
- * <em>rejection</em> path: a tokenless handshake is rejected {@code 401} at the offline bearer stage
- * before the {@code Origin} gate and before any upstream dial. Together the routes cover every WS
+ * <em>rejection</em> path: a tokenless handshake is refused at the offline bearer stage before the
+ * {@code Origin} gate and before any upstream dial. That refusal is raised before the trust boundary,
+ * so the shipped default answers it as the unrouted {@code 404} (ADR-0073) — the same status as the
+ * unmatched-path handshake — while the {@code Origin} gate, which runs after the trust boundary, keeps
+ * its honest {@code 403}. Together the routes cover every WS
  * behaviour: opaque relay, Origin enforcement, auth-before-dial, idle-reclaim-vs-heartbeat, and the
  * unmatched-path {@code 404}. The remaining fail-closed contract — a bearer WS route booting with an
  * empty {@code allowed_origins} — cannot coexist with a bootable stack (it aborts boot fail-fast), so
@@ -173,11 +176,12 @@ class WebSocketProxyIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a tokenless handshake on a bearer WS route is rejected 401 before any upstream dial")
+    @DisplayName("a tokenless handshake on a bearer WS route is refused as the unrouted 404 before any upstream dial")
     void unauthenticatedBearerHandshakeRejected() {
         WebSocketHandshakeException failure = expectHandshakeFailure("/ws/bearer", ALLOWED_ORIGIN);
-        assertEquals(401, failure.getResponse().statusCode(),
-                "a bearer WS route must reject a missing token 401 at the auth stage, before the Origin gate and dial");
+        assertEquals(UniformNotFoundAssertions.UNROUTED_STATUS, failure.getResponse().statusCode(),
+                "a bearer WS route must refuse a missing token at the auth stage, before the Origin gate and dial, "
+                        + "answered as the unrouted 404 so the handshake cannot tell the route exists");
     }
 
     @Test

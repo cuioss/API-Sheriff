@@ -19,8 +19,17 @@
  * error page of the portal.
  * <p>
  * <strong>Contents.</strong> The {@link de.cuioss.sheriff.gateway.edge.error.RejectionReporter} that
- * meters and logs a rejection and records the per-request metrics, and the
- * {@link de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter} that renders it.
+ * meters and logs a rejection and records the per-request metrics, the
+ * {@link de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter} that renders it, and the
+ * {@link de.cuioss.sheriff.gateway.edge.error.UniformNotFound} predicate behind the renderer's
+ * trust-boundary branch.
+ * <p>
+ * <strong>The trust-boundary branch.</strong> A rejection raised after route selection and before
+ * the trust boundary — a validated bearer or a completed stage 4 — for an event of the closed set
+ * {@link de.cuioss.sheriff.gateway.edge.error.UniformNotFound#CLOSED_SET} is answered to the caller
+ * exactly as an unrouted address is answered: the unrouted {@code 404}, its headers and its
+ * negotiated HTML page, never a trailers-only gRPC status. The rejection is still metered and logged
+ * under its true event; only the answer changes (ADR-0073).
  * <p>
  * <strong>Dependencies.</strong> This package may depend on the edge packages {@code end},
  * {@code upstream}, {@code relay} and {@code request}.

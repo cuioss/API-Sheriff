@@ -45,12 +45,17 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code method}); its absence on every rejection is the observable proof the upstream count stayed
  * {@code 0}.
  * <p>
+ * A rejection raised after route selection and before the trust boundary — the verb gate, a missing
+ * bearer — is answered to the untrusted caller as the unrouted {@code 404} routing problem on the
+ * shipped default (ADR-0073), so the document does not disclose that the route exists. Its TRUE event
+ * stays in {@code sheriff_errors_total}, which is what still tells the two causes apart.
+ * <p>
  * <strong>No identity, no version, one shape.</strong> Every error answer exercised here — the
- * routing {@code 404} and {@code 405}, the authentication {@code 401} and one gateway-originated
- * {@code 5xx} — carries no {@code Server} and no {@code X-Powered-By} header, names no framework or
- * product version in a header value or in the body, and renders the same problem member-name set
- * under {@code application/problem+json}. A fingerprinting client therefore learns nothing about the
- * runtime from the gateway's own errors, and cannot tell the error classes apart by their shape.
+ * unrouted {@code 404}, the same {@code 404} a disallowed method and a missing bearer receive, and
+ * one gateway-originated {@code 5xx} — carries no {@code Server} and no {@code X-Powered-By} header,
+ * names no framework or product version in a header value or in the body, and renders the same
+ * problem member-name set under {@code application/problem+json}. A fingerprinting client therefore
+ * learns nothing about the runtime from the gateway's own errors.
  * <p>
  * <strong>The 5xx.</strong> The {@code untrusted-chain-control} route ({@code /proxy/untrusted}) dials
  * an upstream whose self-signed certificate no truststore of the primary instance anchors, so the
@@ -105,26 +110,24 @@ class ErrorContractIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a disallowed method is rejected 405 as a routing problem, not forwarded")
+    @DisplayName("a disallowed method is refused as the unrouted 404 routing problem, metered METHOD_NOT_ALLOWED, not forwarded")
     void disallowedMethodProblemJson() {
-        var response = disallowedMethod();
+        var response = UniformNotFoundAssertions.assertTrueEventMetered("httpbin-proxy", "METHOD_NOT_ALLOWED",
+                ErrorContractIT::disallowedMethod);
 
-        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:routing"));
-        assertEquals("Routing", response.path("title"));
-        assertEquals(Integer.valueOf(405), response.path("status"));
-        assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a disallowed method");
+        assertEquals(Integer.valueOf(404), response.path("status"));
         assertDisclosesNothing(response);
     }
 
     @Test
-    @DisplayName("a bearer rejection renders an authentication problem, not forwarded")
+    @DisplayName("a bearer rejection is refused as the unrouted 404 routing problem, metered TOKEN_MISSING, not forwarded")
     void bearerRejectionProblemJson() {
-        var response = bearerRejection();
+        var response = UniformNotFoundAssertions.assertTrueEventMetered("secure-proxy", "TOKEN_MISSING",
+                ErrorContractIT::bearerRejection);
 
-        assertTrue(response.path("type").toString().contains("urn:api-sheriff:problem:authentication"));
-        assertEquals("Authentication", response.path("title"));
-        assertEquals(Integer.valueOf(401), response.path("status"));
-        assertNull(response.path("method"), "a rejected request must not reach the go-httpbin upstream");
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a bearer rejection");
+        assertEquals(Integer.valueOf(404), response.path("status"));
         assertDisclosesNothing(response);
     }
 
@@ -151,14 +154,14 @@ class ErrorContractIT extends BaseIntegrationTest {
     @DisplayName("the 4xx and 5xx problem documents share one member-name set under application/problem+json")
     void errorClassesShareOneProblemShape() {
         var notFound = unmatchedPath();
-        var methodNotAllowed = disallowedMethod();
-        var unauthorized = bearerRejection();
+        var disallowed = disallowedMethod();
+        var missingBearer = bearerRejection();
         var upstreamFailure = refusedDial();
 
         assertAll("one shape for every gateway-originated error class",
                 () -> assertEquals(PROBLEM_MEMBERS, memberNames(notFound), "404 routing"),
-                () -> assertEquals(PROBLEM_MEMBERS, memberNames(methodNotAllowed), "405 routing"),
-                () -> assertEquals(PROBLEM_MEMBERS, memberNames(unauthorized), "401 authentication"),
+                () -> assertEquals(PROBLEM_MEMBERS, memberNames(disallowed), "uniform 404, disallowed method"),
+                () -> assertEquals(PROBLEM_MEMBERS, memberNames(missingBearer), "uniform 404, missing bearer"),
                 () -> assertEquals(PROBLEM_MEMBERS, memberNames(upstreamFailure),
                         () -> upstreamFailure.statusCode() + " upstream"));
     }
@@ -208,7 +211,7 @@ class ErrorContractIT extends BaseIntegrationTest {
                 .when()
                 .patch("/proxy/get")
                 .then()
-                .statusCode(405)
+                .statusCode(404)
                 .contentType(PROBLEM_JSON)
                 .extract();
     }
@@ -218,7 +221,7 @@ class ErrorContractIT extends BaseIntegrationTest {
                 .when()
                 .get("/secure/get")
                 .then()
-                .statusCode(401)
+                .statusCode(404)
                 .contentType(PROBLEM_JSON)
                 .extract();
     }

@@ -88,6 +88,7 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
+import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
 import de.cuioss.sheriff.gateway.routing.RouteTable;
@@ -304,6 +305,8 @@ public class GatewayEdgeRouteBffWiringTest {
         private Vertx vertx;
         private ExecutorService virtualThreadExecutor;
         private HttpServer front;
+        /** The same route behind an edge with {@code security_defaults.uniform_not_found: false}. */
+        private HttpServer honestFront;
         private HttpClient client;
 
         @BeforeEach
@@ -313,6 +316,10 @@ public class GatewayEdgeRouteBffWiringTest {
             front = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(rejectEverythingRoute())
                     .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc()).build())
                     .runtime(activeRuntime(serverBinding(newStore()))).serve();
+            honestFront = EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(rejectEverythingRoute())
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc())
+                            .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(false).build()).build())
+                    .runtime(activeRuntime(serverBinding(newStore()))).serve();
             client = vertx.createHttpClient();
         }
 
@@ -320,6 +327,7 @@ public class GatewayEdgeRouteBffWiringTest {
         void tearDown() throws Exception {
             Awaits.teardown(client.close(), "the HTTP client to close");
             Awaits.teardown(front.close(), "the edge front server to close");
+            Awaits.teardown(honestFront.close(), "the honest edge front server to close");
             virtualThreadExecutor.close();
             Awaits.teardown(vertx.close(), "Vert.x to close");
         }
@@ -341,19 +349,27 @@ public class GatewayEdgeRouteBffWiringTest {
         @Test
         @DisplayName("a non-reserved path under the same prefix IS routed and hits the allowed_paths gate")
         void nonReservedPathStillReachesThoroughChecks() throws Exception {
-            // Act — the control case that makes the assertion above meaningful
-            int status = statusOf("/auth/not-reserved");
+            // Act — the control case that makes the assertion above meaningful. The allowed_paths refusal
+            // is pre-trust, so the default edge answers it as the unrouted 404; the honest edge names it.
+            int honest = statusOf(honestFront, "/auth/not-reserved");
+            int uniform = statusOf(front, "/auth/not-reserved");
 
             // Assert
-            assertEquals(400, status, "an ordinary path is routed and rejected by the route's allowed_paths");
+            assertAll("the ordinary path is routed and refused by the route's allowed_paths",
+                    () -> assertEquals(400, honest, "the honest edge reports the allowed_paths refusal"),
+                    () -> assertEquals(404, uniform, "the untrusted caller is shown the unrouted 404"));
         }
 
         private int statusOf(String uri) throws Exception {
+            return statusOf(front, uri);
+        }
+
+        private int statusOf(HttpServer target, String uri) throws Exception {
             // Connect to the local front server but present the OIDC host in the authority: the
             // reserved-path registry is keyed on (host, canonicalPath).
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
-                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setServer(SocketAddress.inetSocketAddress(target.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(target.actualPort())
                     .setMethod(io.vertx.core.http.HttpMethod.GET).setURI(uri);
             return Awaits.connect(client.request(options).compose(HttpClientRequest::send),
                     "the edge response to GET " + uri).statusCode();
@@ -1269,6 +1285,8 @@ public class GatewayEdgeRouteBffWiringTest {
         private static final String ROUTE_TAG = "route";
         private static final String BRANCH_TAG = "branch";
         private static final int CSRF_REJECTED = 403;
+        /** What an untrusted caller is shown for a pre-trust refusal: the unrouted answer. */
+        private static final int UNIFORM_NOT_FOUND = 404;
 
         /** Counts the requests that actually reached the stub upstream. */
         private final AtomicInteger upstreamHits = new AtomicInteger();
@@ -1345,11 +1363,43 @@ public class GatewayEdgeRouteBffWiringTest {
                     Map.of("Cookie", sessionCookie, "Origin", FOREIGN_ORIGIN));
 
             assertAll(
-                    () -> assertEquals(CSRF_REJECTED, response.statusCode(),
-                            "the session branch carries an ambient credential, so the CSRF defence runs"),
+                    () -> assertEquals(UNIFORM_NOT_FOUND, response.statusCode(),
+                            "the session branch carries an ambient credential, so the CSRF defence runs and its "
+                                    + "pre-trust refusal is answered as the unrouted 404"),
                     () -> assertEquals(0, upstreamHits.get(), "a CSRF rejection never reaches the upstream"),
                     () -> assertEquals(1.0, branchCount(FALLBACK_ROUTE, AuthBranch.SESSION),
-                            "the branch is metered before the CSRF defence decides, so a rejection is counted too"));
+                            "the branch is metered before the CSRF defence decides, so a rejection is counted too"),
+                    () -> assertEquals(1.0, csrfRejectionCount(),
+                            "the true CSRF event is metered, so the 404 is the CSRF defence's own"));
+        }
+
+        @Test
+        @DisplayName("switch off: the same session-branch request is refused with the honest CSRF 403")
+        void sessionBranchEnforcesCsrfDefenceSwitchOff() throws Exception {
+            HttpServer honest = EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .routes(bearerRoute(FALLBACK_ROUTE, "/fallback", Boolean.TRUE, upstream.actualPort()))
+                    .gatewayConfig(ConfigFixtures.gateway().oidc(fullOidc())
+                            .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(false).build()).build())
+                    .tokenValidator(EdgeFixtures.tokenValidator())
+                    .runtime(activeRuntime(serverBinding(newStore()))).serve();
+            try {
+                HttpClientResponse response = send(honest, io.vertx.core.http.HttpMethod.POST, "/fallback/orders",
+                        Map.of("Cookie", sessionCookie, "Origin", FOREIGN_ORIGIN));
+
+                assertAll(
+                        () -> assertEquals(CSRF_REJECTED, response.statusCode()),
+                        () -> assertEquals(0, upstreamHits.get(), "a CSRF rejection never reaches the upstream"));
+            } finally {
+                Awaits.teardown(honest.close(), "the honest edge front server to close");
+            }
+        }
+
+        /** The {@code sheriff_errors_total} count of the CSRF event on the session_fallback route. */
+        private double csrfRejectionCount() {
+            Counter counter = meterRegistry.find(SheriffMetrics.ERRORS_TOTAL)
+                    .tags(ROUTE_TAG, FALLBACK_ROUTE, "event", EventType.CSRF_REJECTED.name()).counter();
+            assertNotNull(counter, "no " + SheriffMetrics.ERRORS_TOTAL + " series for the CSRF event");
+            return counter.count();
         }
 
         @Test
@@ -1414,9 +1464,14 @@ public class GatewayEdgeRouteBffWiringTest {
 
         private HttpClientResponse send(io.vertx.core.http.HttpMethod method, String uri, Map<String, String> headers)
                 throws Exception {
+            return send(front, method, uri, headers);
+        }
+
+        private HttpClientResponse send(HttpServer target, io.vertx.core.http.HttpMethod method, String uri,
+                Map<String, String> headers) throws Exception {
             RequestOptions options = new RequestOptions()
-                    .setServer(SocketAddress.inetSocketAddress(front.actualPort(), LoopbackHost.ADDRESS))
-                    .setHost(OIDC_HOST).setPort(front.actualPort())
+                    .setServer(SocketAddress.inetSocketAddress(target.actualPort(), LoopbackHost.ADDRESS))
+                    .setHost(OIDC_HOST).setPort(target.actualPort())
                     .setMethod(method).setURI(uri);
             return Awaits.connect(client.request(options).compose(request -> {
                 headers.forEach(request::putHeader);

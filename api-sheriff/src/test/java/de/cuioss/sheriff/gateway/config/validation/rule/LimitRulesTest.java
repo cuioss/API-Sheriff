@@ -24,7 +24,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.LogRecord;
 
+import de.cuioss.sheriff.gateway.config.ConfigLogMessages;
 import de.cuioss.sheriff.gateway.config.load.ConfigError;
 import de.cuioss.sheriff.gateway.config.model.AccessLevel;
 import de.cuioss.sheriff.gateway.config.model.AnchorConfig;
@@ -36,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
+import de.cuioss.sheriff.gateway.config.model.RateLimitConfig;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedTopology;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
@@ -44,7 +47,12 @@ import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
 import de.cuioss.sheriff.gateway.config.validation.ConfigValidator;
+import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
+import de.cuioss.test.juli.LogAsserts;
+import de.cuioss.test.juli.TestLogLevel;
+import de.cuioss.test.juli.TestLoggerFactory;
+import de.cuioss.test.juli.junit5.EnableTestLogger;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -57,12 +65,14 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code edge_hardening} admission budget, the {@code security_defaults.max_authorization_header_value_length}
  * carve-out bound, and the fail-closed ADR-0024 {@code profile: minimal} refusal on effectively-authenticated
  * and BFF routes — plus the fail-closed default of the GET-body opt-in that shares the
- * {@code security_defaults} block.
+ * {@code security_defaults} block, and the boot WARN for every route declaring the unenforced
+ * {@code rate_limit} block.
  * <p>
  * Every case drives the full default validator, so a rule dropped from its registration fails here as
  * surely as a rule whose body is removed.
  */
 @EnableGeneratorController
+@EnableTestLogger
 @DisplayName("ConfigValidator — inbound limits")
 class LimitRulesTest {
 
@@ -683,6 +693,121 @@ class LimitRulesTest {
 
             assertFalse(anyMessageContains(errors, MINIMAL_REFUSAL),
                     () -> "the route-level block replaces the endpoint 'minimal' wholesale, got: " + errors);
+        }
+    }
+
+    /**
+     * The per-route {@code rate_limit} block is parsed but never enforced, so every route declaring it
+     * is announced at boot with {@link ConfigLogMessages.WARN#RATE_LIMIT_NOT_ENFORCED} — a WARN, never
+     * a refusal. Each warning case is paired with a control in which the block is absent and no such
+     * WARN is emitted.
+     */
+    @Nested
+    @DisplayName("The unenforced per-route rate_limit block")
+    class RateLimitNotEnforced {
+
+        private static final String ENDPOINT_ID = "orders";
+        private static final String ALIAS = "ORDERS";
+        private static final String LIMITED_ROUTE = "orders-throttled";
+        private static final String PLAIN_ROUTE = "orders-plain";
+
+        private static RouteConfig limitedRoute(String id, RateLimitConfig rateLimit) {
+            return RouteConfig.builder().id(id).match(match("/" + id, HttpMethod.GET)).rateLimit(rateLimit)
+                    .build();
+        }
+
+        private static String identifier() {
+            return ConfigLogMessages.WARN.RATE_LIMIT_NOT_ENFORCED.resolveIdentifierString();
+        }
+
+        private static List<String> rateLimitWarnings() {
+            return TestLoggerFactory.getTestHandler().resolveLogMessagesContaining(TestLogLevel.WARN, identifier())
+                    .stream()
+                    .map(LogRecord::getMessage)
+                    .toList();
+        }
+
+        private List<ConfigError> validate(EndpointConfig endpoint) {
+            return validator.validate(validGateway().build(), List.of(endpoint), topologyWith(ALIAS));
+        }
+
+        @Test
+        @DisplayName("Should warn for a route declaring rate_limit, naming the route and its endpoint, and boot on")
+        void shouldWarnForDeclaredRateLimit() {
+            RateLimitConfig rateLimit = new RateLimitConfig(Generators.integers(1, 10_000).next(),
+                    Generators.integers(1, 10_000).next());
+            EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(), limitedRoute(LIMITED_ROUTE, rateLimit));
+
+            List<ConfigError> errors = validate(endpoint);
+
+            assertTrue(errors.isEmpty(), () -> "the unenforced rate_limit refuses nothing, but got: " + errors);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, identifier());
+            LogAsserts.assertLogMessagePresentContaining(TestLogLevel.WARN,
+                    "Route '" + LIMITED_ROUTE + "' of endpoint '" + ENDPOINT_ID + "' declares rate_limit");
+        }
+
+        @Test
+        @DisplayName("Should warn for an empty rate_limit block, which enforces as little as a populated one")
+        void shouldWarnForEmptyRateLimitBlock() {
+            EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(),
+                    limitedRoute(LIMITED_ROUTE, new RateLimitConfig(null, null)));
+
+            List<ConfigError> errors = validate(endpoint);
+
+            assertTrue(errors.isEmpty(), () -> "an empty rate_limit refuses nothing, but got: " + errors);
+            LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, identifier());
+        }
+
+        @Test
+        @DisplayName("Should not warn when no route declares rate_limit")
+        void shouldNotWarnWithoutRateLimit() {
+            EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(), route(PLAIN_ROUTE, HttpMethod.GET));
+
+            List<ConfigError> errors = validate(endpoint);
+
+            assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors);
+            assertTrue(rateLimitWarnings().isEmpty(),
+                    () -> "a route without rate_limit must not emit " + identifier() + ", got: "
+                            + rateLimitWarnings());
+        }
+
+        @Test
+        @DisplayName("Should warn once for the declaring route only, never for its block-less sibling")
+        void shouldWarnOnlyForDeclaringRoute() {
+            EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(),
+                    route(PLAIN_ROUTE, HttpMethod.GET),
+                    limitedRoute(LIMITED_ROUTE, new RateLimitConfig(Generators.integers(1, 10_000).next(), null)));
+
+            List<ConfigError> errors = validate(endpoint);
+
+            List<String> warnings = rateLimitWarnings();
+            assertAll(
+                    () -> assertTrue(errors.isEmpty(), () -> "expected no violations, got: " + errors),
+                    () -> assertEquals(1, warnings.size(), () -> "expected one WARN per declaring route, got: "
+                            + warnings),
+                    () -> assertTrue(warnings.getFirst().contains("'" + LIMITED_ROUTE + "'"),
+                            "the WARN names the declaring route"),
+                    () -> assertFalse(warnings.getFirst().contains("'" + PLAIN_ROUTE + "'"),
+                            "the WARN never names the block-less sibling"));
+        }
+
+        @Test
+        @DisplayName("Should echo no configured limit value in the WARN")
+        void shouldNotEchoConfiguredLimitValues() {
+            int requestsPerSecond = Generators.integers(100_000, 999_999).next();
+            int burst = Generators.integers(100_000, 999_999).next();
+            EndpointConfig endpoint = endpoint(ENDPOINT_ID, ALIAS, List.of(),
+                    limitedRoute(LIMITED_ROUTE, new RateLimitConfig(requestsPerSecond, burst)));
+
+            validate(endpoint);
+
+            List<String> warnings = rateLimitWarnings();
+            assertAll(
+                    () -> assertEquals(1, warnings.size(), () -> "expected the WARN, got: " + warnings),
+                    () -> assertFalse(warnings.getFirst().contains(String.valueOf(requestsPerSecond)),
+                            "the WARN never carries requests_per_second"),
+                    () -> assertFalse(warnings.getFirst().contains(String.valueOf(burst)),
+                            "the WARN never carries burst"));
         }
     }
 }

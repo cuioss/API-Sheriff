@@ -79,8 +79,9 @@ import org.junit.jupiter.api.Test;
  *   <li><em>DOWN while the provider is absent</em> — the readiness payload reports {@code DOWN} with
  *       {@code jwks} {@code loading} or {@code unavailable} and {@code issuers_loaded} below
  *       {@code issuers}, and names no issuer, URL or host. The same token that is accepted later is
- *       rejected {@code 401} here, which is the matched control for the acceptance leg: the
- *       acceptance is caused by the loaded key set, not by a route that admits anything.</li>
+ *       refused here — answered as the unrouted {@code 404}, because a refused bearer is raised
+ *       before the trust boundary (ADR-0073) — which is the matched control for the acceptance leg:
+ *       the acceptance is caused by the loaded key set, not by a route that admits anything.</li>
  *   <li><em>The first load attempt gives up and the gateway schedules its own retry</em> — the log
  *       carries {@code WARN ApiSheriff-129}. This is awaited for
  *       {@value #RETRY_SCHEDULED_TIMEOUT_SECONDS}s, not for a few seconds, because a load attempt is
@@ -152,6 +153,12 @@ class JwksLateIdpReadinessIT {
     /** INFO — the key set was loaded by a retry, closing the episode. */
     private static final String LOADED_AFTER_RETRY_RECORD = "ApiSheriff-18";
 
+    /**
+     * The status a refused bearer is answered with on the shipped default: the unrouted {@code 404},
+     * because the refusal is raised before the trust boundary (ADR-0073).
+     */
+    private static final int REFUSED = UniformNotFoundAssertions.UNROUTED_STATUS;
+
     /** Upper bound for the gateway's management interface to answer at all after {@code docker run}. */
     private static final long BOOT_TIMEOUT_SECONDS = 90L;
 
@@ -206,8 +213,8 @@ class JwksLateIdpReadinessIT {
                     "the late gateway's management interface to answer");
             assertReportsDown(gateway, down, UNDISCLOSED);
             assertApplicationPortAnswers(gateway, applicationOrigin);
-            assertEquals(401, securedAssetStatus(applicationOrigin, bearer), () -> "matched control: with no key "
-                    + "set loaded the gateway cannot validate the provider's token, so it must be rejected 401. "
+            assertEquals(REFUSED, securedAssetStatus(applicationOrigin, bearer), () -> "matched control: with no "
+                    + "key set loaded the gateway cannot validate the provider's token, so it must be rejected. "
                     + gatewayLog(gateway));
             awaitLogRecord(gateway, RETRY_SCHEDULED_RECORD, RETRY_SCHEDULED_TIMEOUT_SECONDS,
                     "once the first load attempt has spent the HTTP client's own retries it must fail and the "
@@ -237,7 +244,7 @@ class JwksLateIdpReadinessIT {
             // Act + Assert (3) — the provider's token is accepted, and the route still refuses no token
             assertEquals(200, securedAssetStatus(applicationOrigin, bearer), () -> "once the key set is loaded "
                     + "the provider's token must be accepted on the bearer-gated route. " + gatewayLog(gateway));
-            assertEquals(401, securedAssetStatus(applicationOrigin, null),
+            assertEquals(REFUSED, securedAssetStatus(applicationOrigin, null),
                     "control: the route still refuses a request without a token");
         } finally {
             dockerQuietly("rm", "-f", gateway, proxy);

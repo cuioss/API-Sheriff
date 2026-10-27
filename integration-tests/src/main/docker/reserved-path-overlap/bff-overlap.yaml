@@ -16,8 +16,9 @@
 # below /bff is its own. The test asserts both sides, and which pipeline stages a reserved path does
 # and does not pass:
 #   * allowed_methods is restricted to POST, so the route's verb gate has something to refuse: a GET
-#     below /bff is refused 405 on the routed path, while a GET on a reserved path is answered by the
-#     reserved endpoint. It is the endpoint's allowed_methods and not a match.methods matcher on
+#     below /bff is refused on the routed path — answered as the unrouted 404 on the shipped default
+#     (uniform_not_found, ADR-0073) and metered METHOD_NOT_ALLOWED on this route — while a GET on a
+#     reserved path is answered by the reserved endpoint. It is the endpoint's allowed_methods and not a match.methods matcher on
 #     purpose: a matcher decides whether the route is selected at all, the allowed list is what the
 #     verb gate enforces on the selected route;
 #   * the route declares no security_filter, so it resolves the gateway-wide strict profile and its

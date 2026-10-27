@@ -3,8 +3,9 @@
 # the 'assets-secure' anchor (/secure-assets, type: asset, access: authenticated,
 # require: bearer), so the endpoint declares no auth block of its own and inherits
 # the anchor's bearer floor. DirectoryAssetServingIT drives the auth-before-source
-# ordering against it: an unauthenticated request is rejected 401 at stage 4 and
-# never reaches the filesystem, proving no byte is read before authorization.
+# ordering against it: an unauthenticated request is refused at stage 4 (answered as
+# the unrouted 404 to the untrusted caller, metered TOKEN_MISSING) and never reaches
+# the filesystem, proving no byte is read before authorization.
 #
 # The endpoint declares NO base_url: base_url is mandatory only on an endpoint carrying a
 # proxy route, and its single route is an asset route (AS-4).

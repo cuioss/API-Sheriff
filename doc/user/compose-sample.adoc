@@ -738,8 +738,11 @@ exactly what it always was.
 ====
 . Replace the identity provider with your own, updating the issuer URL, the JWKS URL and the
   `allowed_egress_hosts` entry in `docker/sheriff-config/gateway.yaml` together -- the issuer value
-  must match the `iss` your tokens actually carry, or every request fails with a 401 that looks like
-  a signature problem and is not. The `allowed_egress_hosts` list is authoritative: the exemption
+  must match the `iss` your tokens actually carry, or every request fails as a rejected token that
+  looks like a signature problem and is not. On a bearer route the client sees that rejection as a
+  `404`, the answer an untrusted caller gets for every rejection raised before authentication; the
+  true cause, `TOKEN_INVALID`, is counted in `sheriff_errors_total{event}` (see
+  link:endpoint-routes.adoc#_uniform_not_found_operator_note[Why an existing route answers 404]). The `allowed_egress_hosts` list is authoritative: the exemption
   does not follow the JWKS URL to a new host, so a provider on a private address whose host the list
   still does not name is refused and its key set never loads. Update the entry, or delete the list to
   take the allowance derived from the JWKS URL's host. Rebind the `jwks.tls_profile` it names to your provider's CA at the

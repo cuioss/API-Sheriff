@@ -158,7 +158,7 @@ anchors:
   # Bearer-protected namespace exercised by BearerValidationIT. The gateway's own
   # token_validation issuer loads its key set from the mounted static JWKS file
   # (no Keycloak dependency), so the validator is ready offline at boot. The IT
-  # only drives rejection scenarios (missing / malformed token -> 401), which never
+  # drives rejection scenarios (missing / malformed token -> the unrouted 404), which never
   # reach the upstream — proving upstream count = 0 on every bearer rejection.
   secure:
     path_prefix: /secure
@@ -210,7 +210,7 @@ anchors:
     allowed_methods: ["GET", "HEAD"]
   # A bearer-gated asset surface (directory source). access: authenticated forces
   # the envelope to Cache-Control: no-store and, crucially, enforces auth BEFORE the
-  # source is resolved — an unauthenticated request is rejected 401 and never reads
+  # source is resolved — an unauthenticated request is refused (the unrouted 404) and never reads
   # a file (auth-before-source, ADR-0014). The bearer floor reuses the same offline
   # token_validation issuers the 'secure' anchor relies on.
   assets-secure:

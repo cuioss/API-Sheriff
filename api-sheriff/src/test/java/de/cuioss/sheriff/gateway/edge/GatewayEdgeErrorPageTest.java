@@ -41,6 +41,7 @@ import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedAsset;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityFilterConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityHeadersConfig;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
@@ -82,6 +83,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  * — and once more to an identical edge whose {@code portal.error_pages} is off: only the first answers
  * the portal's HTML error page, and all four answer the <em>same</em> status. A response relayed from
  * the origin, a keep-shape rejection and a gRPC trailers-only rejection are never negotiated.
+ * <p>
+ * A rejection raised after route selection and before the trust boundary — the verb gate, the route's
+ * body cap, the session CSRF defence, the bearer branch — is answered to the untrusted caller as the
+ * unrouted {@code 404}, so it negotiates exactly as an unrouted address does, a gRPC route included. A
+ * third edge with error pages on and {@code security_defaults.uniform_not_found: false} pins each
+ * stage's own status.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — negotiated HTML error pages for gateway-originated errors")
@@ -112,6 +119,8 @@ class GatewayEdgeErrorPageTest {
     private HttpServer upstreamServer;
     private HttpServer enabledFront;
     private HttpServer disabledFront;
+    /** Error pages on, {@code security_defaults.uniform_not_found: false}: every stage's own status. */
+    private HttpServer honestFront;
     private HttpClient client;
     private String validBearerToken;
 
@@ -141,12 +150,13 @@ class GatewayEdgeErrorPageTest {
         TokenValidator tokenValidator = TokenValidator.builder().issuerConfig(tokenHolder.getIssuerConfig()).build();
         // Below the ephemeral range: a released ephemeral probe port could be handed to an edge itself,
         // which then proxies /dead into itself and relays its own 400 instead of answering 502.
-        int[] unreachable = UnreachablePort.pick(3);
+        int[] unreachable = UnreachablePort.pick(4);
         int deadPort = unreachable[0];
         // Each edge gets its own breaker target: the breaker name derives from the target, and a second
         // edge in the same JVM whose breaker carries an already-used name was observed never to open.
-        enabledFront = startFront(routes(deadPort, unreachable[1]), tokenValidator, true);
-        disabledFront = startFront(routes(deadPort, unreachable[2]), tokenValidator, false);
+        enabledFront = startFront(routes(deadPort, unreachable[1]), tokenValidator, true, true);
+        disabledFront = startFront(routes(deadPort, unreachable[2]), tokenValidator, false, true);
+        honestFront = startFront(routes(deadPort, unreachable[3]), tokenValidator, true, false);
         client = vertx.createHttpClient();
     }
 
@@ -180,6 +190,7 @@ class GatewayEdgeErrorPageTest {
         Awaits.teardown(client.close(), "the HTTP client to close");
         Awaits.teardown(enabledFront.close(), "the enabled edge front server to close");
         Awaits.teardown(disabledFront.close(), "the disabled edge front server to close");
+        Awaits.teardown(honestFront.close(), "the honest edge front server to close");
         Awaits.teardown(upstreamServer.close(), "the stub upstream server to close");
         virtualThreadExecutor.close();
         Awaits.teardown(vertx.close(), "Vert.x to close");
@@ -192,10 +203,16 @@ class GatewayEdgeErrorPageTest {
     }
 
     @Test
-    @DisplayName("a method the route does not allow negotiates 405")
+    @DisplayName("a method the route does not allow negotiates the unrouted 404")
     void methodNotAllowed() throws Exception {
-        assertNegotiates(405, Shape.PROBLEM, io.vertx.core.http.HttpMethod.DELETE, "/echo/resource", Map.of(), null,
+        assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.DELETE, "/echo/resource", Map.of(), null,
                 null);
+    }
+
+    @Test
+    @DisplayName("switch off: a method the route does not allow negotiates its own 405")
+    void methodNotAllowedSwitchOff() throws Exception {
+        assertHonestNegotiates(405, io.vertx.core.http.HttpMethod.DELETE, "/echo/resource", Map.of(), null);
     }
 
     /**
@@ -283,17 +300,30 @@ class GatewayEdgeErrorPageTest {
     }
 
     @Test
-    @DisplayName("a cross-origin unsafe request on a session route negotiates the CSRF 403")
+    @DisplayName("a cross-origin unsafe request on a session route negotiates the unrouted 404")
     void csrfRejection() throws Exception {
-        assertNegotiates(403, Shape.PROBLEM, io.vertx.core.http.HttpMethod.POST, "/s/submit",
+        assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.POST, "/s/submit",
                 Map.of("Origin", "https://evil.example"), "payload", null);
     }
 
     @Test
-    @DisplayName("a body over the route cap negotiates 413")
+    @DisplayName("switch off: a cross-origin unsafe request on a session route negotiates the CSRF 403")
+    void csrfRejectionSwitchOff() throws Exception {
+        assertHonestNegotiates(403, io.vertx.core.http.HttpMethod.POST, "/s/submit",
+                Map.of("Origin", "https://evil.example"), "payload");
+    }
+
+    @Test
+    @DisplayName("a body over the route cap negotiates the unrouted 404")
     void bodyOverCap() throws Exception {
-        assertNegotiates(413, Shape.PROBLEM, io.vertx.core.http.HttpMethod.POST, "/capped/upload", Map.of(),
+        assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.POST, "/capped/upload", Map.of(),
                 CAPPED_BODY, null);
+    }
+
+    @Test
+    @DisplayName("switch off: a body over the route cap negotiates 413")
+    void bodyOverCapSwitchOff() throws Exception {
+        assertHonestNegotiates(413, io.vertx.core.http.HttpMethod.POST, "/capped/upload", Map.of(), CAPPED_BODY);
     }
 
     @Test
@@ -337,9 +367,16 @@ class GatewayEdgeErrorPageTest {
     }
 
     @Test
-    @DisplayName("a keep-shape rejection (the bearer 401) is never negotiated")
+    @DisplayName("a pre-trust bearer 401 is answered as the unrouted 404 and negotiates its HTML page")
+    void preTrustBearerRejectionNegotiatesTheUnrouted404() throws Exception {
+        assertNegotiates(404, Shape.PROBLEM, io.vertx.core.http.HttpMethod.GET, "/scoped/data", Map.of(), null,
+                null);
+    }
+
+    @Test
+    @DisplayName("switch off: a keep-shape rejection (the bearer 401) is never negotiated")
     void keepShapeRejectionStaysProblem() throws Exception {
-        Response response = send(enabledFront, io.vertx.core.http.HttpMethod.GET, "/scoped/data",
+        Response response = send(honestFront, io.vertx.core.http.HttpMethod.GET, "/scoped/data",
                 Map.of("Accept", TEXT_HTML), null, null);
 
         assertProblem(response, 401);
@@ -360,9 +397,20 @@ class GatewayEdgeErrorPageTest {
     }
 
     @Test
-    @DisplayName("a gRPC route rejection stays trailers-only even for an explicit text/html")
-    void grpcRejectionStaysTrailersOnly() throws Exception {
+    @DisplayName("a pre-trust gRPC route rejection is the unrouted HTTP 404, never a trailers-only status")
+    void preTrustGrpcRejectionIsTheUnroutedHttp404() throws Exception {
         Response response = send(enabledFront, io.vertx.core.http.HttpMethod.POST, "/grpc/Svc/Call",
+                Map.of("Accept", TEXT_HTML, CONTENT_TYPE, "application/grpc"), null, null);
+
+        assertAll(
+                () -> assertHtmlPage(response, 404),
+                () -> assertFalse(response.headers().containsKey("grpc-status"), "no trailers-only status"));
+    }
+
+    @Test
+    @DisplayName("switch off: a gRPC route rejection stays trailers-only even for an explicit text/html")
+    void grpcRejectionStaysTrailersOnly() throws Exception {
+        Response response = send(honestFront, io.vertx.core.http.HttpMethod.POST, "/grpc/Svc/Call",
                 Map.of("Accept", TEXT_HTML, CONTENT_TYPE, "application/grpc"), null, null);
 
         assertAll(
@@ -388,6 +436,20 @@ class GatewayEdgeErrorPageTest {
         assertCurrentShape(json, status, shape);
         assertCurrentShape(wildcard, status, shape);
         assertCurrentShape(disabled, status, shape);
+    }
+
+    /**
+     * On the edge whose {@code security_defaults.uniform_not_found} is off: an explicit {@code text/html}
+     * answers the HTML page and {@code application/json} the problem document, both with {@code status}.
+     */
+    private void assertHonestNegotiates(int status, io.vertx.core.http.HttpMethod method, String uri,
+            Map<String, String> headers, @Nullable String body) throws Exception {
+        Response html = send(honestFront, method, uri, withAccept(headers, "text/html,application/xhtml+xml"), body,
+                null);
+        Response json = send(honestFront, method, uri, withAccept(headers, "application/json"), body, null);
+
+        assertHtmlPage(html, status);
+        assertProblem(json, status);
     }
 
     private static void assertHtmlPage(Response response, int status) {
@@ -430,12 +492,13 @@ class GatewayEdgeErrorPageTest {
         return merged;
     }
 
-    private HttpServer startFront(RouteTable routes, TokenValidator tokenValidator, boolean errorPages)
-            throws Exception {
+    private HttpServer startFront(RouteTable routes, TokenValidator tokenValidator, boolean errorPages,
+            boolean uniformNotFound) throws Exception {
         OidcConfig oidc = OidcConfig.builder().redirectUri("https://" + OIDC_HOST + CALLBACK_PATH)
                 .userInfo(OidcConfig.UserInfo.builder().path(USER_INFO_PATH).build()).build();
         GatewayConfig gatewayConfig = ConfigFixtures.gateway().securityHeaders(globalHeaders()).oidc(oidc)
                 .tls(TlsConfig.builder().passthroughSni(Map.of(PASSTHROUGH_SNI, "backend")).build())
+                .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(uniformNotFound).build())
                 .build();
         PortalConfig portal = PortalConfig.builder().path("/portal").title("Portal").errorPages(errorPages).build();
         BffRuntime runtime = GatewayEdgeRouteBffWiringTest.activeRuntime(

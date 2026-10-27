@@ -56,7 +56,8 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * configuration version, endpoint and route id uniqueness, base-URL resolvability),
  * {@link RouteMatchingRules} (route disjointness, header matchers, effective-method membership),
  * {@link AnchorRules} (the anchors), {@link AuthRules} (the {@code auth} blocks and endpoint scopes),
- * {@link LimitRules} (the security-filter profile and the edge limits), {@link TerminalActionRules}
+ * {@link LimitRules} (the security-filter profile, the edge limits and the unenforced
+ * {@code rate_limit}), {@link TerminalActionRules}
  * (upstream, asset or redirect), {@link EdgeRules} (forwarded trust and TLS passthrough),
  * {@link HeaderRules} (CORS, Content-Security-Policy and the security-header modes),
  * {@link OidcSessionRules} (the BFF session), {@link OidcClientRules} (the OIDC client),
@@ -109,7 +110,9 @@ import de.cuioss.sheriff.gateway.config.validation.rule.ValidationRule;
  * a route whose effective {@code profile} resolves to {@code minimal} must be neither effectively
  * authenticated nor anchored under a {@code type: bff} anchor. The {@code profile} <em>value
  * range</em> is owned by the bundled JSON Schema, so no post-binding range rule exists — only this
- * posture refusal.
+ * posture refusal. A further {@link LimitRules} entry refuses nothing: every route declaring the
+ * {@code rate_limit} block is reported with a boot WARN, because the block is parsed but never
+ * enforced, and the boot continues.
  * <p>
  * The forward-mode exclusivity refusal (owned by {@link ForwardingRules}) adds one more: neither an
  * endpoint nor a route may declare both {@code *_allow} and {@code *_deny} for the same {@code forward}
@@ -262,6 +265,7 @@ public final class ConfigValidator {
             (gateway, endpoints, topology, errors) -> LimitRules.validateEdgeHardening(gateway, errors),
             (gateway, endpoints, topology, errors) -> LimitRules.validateAuthorizationHeaderValueLength(gateway,
                     errors),
+            (gateway, endpoints, topology, errors) -> LimitRules.validateRateLimitNotEnforced(endpoints),
             (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypesAddOnly(gateway,
                     errors),
             (gateway, endpoints, topology, errors) -> AssetDefaultsRules.validateAssetContentTypeValues(gateway,

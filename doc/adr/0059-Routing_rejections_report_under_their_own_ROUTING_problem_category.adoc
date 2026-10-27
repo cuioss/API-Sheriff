@@ -24,6 +24,20 @@
 
 Proposed
 
+[NOTE]
+====
+*Amended for untrusted callers.*
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+overrides the answer of the verb gate. The verb gate runs before the trust boundary, so on the
+shipped default its rejection is answered as an unrouted address is answered: `404`, no `Allow`
+header, the routing problem document, or the HTML page for a browser navigation. The wire identity
+this record requires of the two `404`s is extended to that third answer. The event stays
+`METHOD_NOT_ALLOWED` in `ROUTING`, and the `event` label still separates it for the operator. The
+`405` with `Allow` and its HTML eligibility return with `security_defaults.uniform_not_found:
+false`. The `405` for a method the gateway cannot parse is raised before route selection and is
+unchanged.
+====
+
 == Context
 
 Every rejection the gateway originates names a category. The category is read in three places: it is
@@ -287,6 +301,8 @@ never sees.
   the body-cap `413`, which stays in `INPUT_VALIDATION`
 * link:0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053]:
   the negotiated HTML error page and its exhaustive classification
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]:
+  the uniform `404` that answers the verb gate before the trust boundary
 * link:../architecture.adoc#_error_contract[Architecture -- Error Contract]: the consolidated status
   mapping
 * link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML error pages]

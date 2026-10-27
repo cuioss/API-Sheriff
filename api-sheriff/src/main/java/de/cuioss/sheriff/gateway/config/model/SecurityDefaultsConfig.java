@@ -58,6 +58,15 @@ import org.jspecify.annotations.Nullable;
  * controls (U+0080-U+009F), non-ASCII in header names or cookies, or Unicode above U+00FF in a URL —
  * cui-http rejects those unconditionally. Applied through
  * {@link SecurityConfigurations#withDeclaredCharacterPolicy}.
+ * <p>
+ * <strong>{@code uniform_not_found}.</strong> The switch of the trust-boundary branch (ADR-0073). On —
+ * the secure default — a rejection raised after route selection and before the trust boundary (a
+ * validated bearer token or a completed authentication stage) is answered to the caller exactly as an
+ * unrouted address is answered, so an untrusted caller cannot tell an existing route from an absent
+ * one. Its scope is exactly that: pre-trust rejections on a matched route. It never touches a
+ * rejection raised before route selection, a reserved path, a caller past the trust boundary, the
+ * session branch's authentication answers, or what is metered and logged — the true event is always
+ * reported. See {@link #effectiveUniformNotFound()}.
  *
  * @param profile the baseline security-filter profile, {@code null} when omitted
  * @param maxAuthorizationHeaderValueLength the {@code Authorization} header-value cap, {@code null}
@@ -70,13 +79,18 @@ import org.jspecify.annotations.Nullable;
  *                                      reading this component directly
  * @param allowExtendedAscii whether extended ASCII and non-ASCII header values are admitted,
  *                           {@code null} when omitted — the resolved profile's preset then decides
+ * @param uniformNotFound whether a pre-trust rejection on a matched route is answered as the unrouted
+ *                        {@code 404}, {@code null} when omitted — resolve it through
+ *                        {@link #effectiveUniformNotFound()} rather than reading this component
+ *                        directly
  * @author API Sheriff Team
  * @since 1.0
  */
 // cui-rewrite:disable AnnotationNewlineFormat
 @Builder
 public record SecurityDefaultsConfig(@Nullable String profile, @Nullable Integer maxAuthorizationHeaderValueLength,
-@Nullable Boolean allowGetWithContentLengthBody, @Nullable Boolean allowExtendedAscii) {
+@Nullable Boolean allowGetWithContentLengthBody, @Nullable Boolean allowExtendedAscii,
+@Nullable Boolean uniformNotFound) {
 
     /**
      * The {@code Authorization} header-value cap an omitted
@@ -132,5 +146,20 @@ public record SecurityDefaultsConfig(@Nullable String profile, @Nullable Integer
      */
     public boolean effectiveAllowGetWithContentLengthBody() {
         return allowGetWithContentLengthBody != null && allowGetWithContentLengthBody;
+    }
+
+    /**
+     * Resolves whether the trust-boundary branch answers a pre-trust rejection on a matched route as
+     * the unrouted {@code 404}.
+     * <p>
+     * The scope is pre-trust, route-matched rejections only: a rejection raised after route selection
+     * and before a bearer token validated or the authentication stage completed. A caller past that
+     * boundary keeps its honest answer either way.
+     *
+     * @return the declared {@code uniform_not_found}, or {@code true} when the key is omitted — the
+     *         secure default
+     */
+    public boolean effectiveUniformNotFound() {
+        return uniformNotFound == null || uniformNotFound;
     }
 }

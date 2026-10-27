@@ -296,6 +296,95 @@ class AuthenticationStageTest {
                 "only the bearer branch of a session_fallback route forwards the client token");
     }
 
+    /**
+     * The trust-boundary marker the edge's uniform-{@code 404} branch reads: set once a bearer token
+     * validated — before the scope check, so a {@code SCOPE_MISSING} is answered honestly — and when the
+     * stage completes on any branch; never set by a missing or invalid token.
+     */
+    @Nested
+    @DisplayName("the trust-boundary marker")
+    class TrustBoundaryMarker {
+
+        @Test
+        @DisplayName("a validated bearer token marks the boundary passed")
+        void validatedBearerMarksTheBoundary() {
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            PipelineRequest request = bearerRequest(holder.getRawToken(), Set.of());
+
+            stageFor(holder).process(request);
+
+            assertTrue(request.trustBoundaryPassed());
+        }
+
+        @Test
+        @DisplayName("a validated token lacking a scope is marked before the scope check refuses it")
+        void markedBeforeTheScopeCheck() {
+            TestTokenHolder holder = TestTokenGenerators.accessTokens().next();
+            AuthenticationStage stage = stageFor(holder);
+            PipelineRequest request = bearerRequest(holder.getRawToken(), Set.of(ABSENT_ENDPOINT_SCOPE));
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll("the credential is valid, so the scope refusal stays honest",
+                    () -> assertEquals(EventType.SCOPE_MISSING, thrown.getEventType()),
+                    () -> assertTrue(request.trustBoundaryPassed()));
+        }
+
+        @Test
+        @DisplayName("a missing bearer token leaves the boundary unpassed")
+        void missingTokenLeavesTheBoundaryUnpassed() {
+            AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
+            PipelineRequest request = request(Require.BEARER, Set.of(), Map.of());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll("TOKEN_MISSING is a pre-trust rejection",
+                    () -> assertEquals(EventType.TOKEN_MISSING, thrown.getEventType()),
+                    () -> assertFalse(request.trustBoundaryPassed()));
+        }
+
+        @Test
+        @DisplayName("an invalid bearer token leaves the boundary unpassed")
+        void invalidTokenLeavesTheBoundaryUnpassed() {
+            AuthenticationStage stage = stageFor(TestTokenGenerators.accessTokens().next());
+            PipelineRequest request = bearerRequest("not.a.valid.jwt", Set.of());
+
+            GatewayException thrown = assertThrows(GatewayException.class, () -> stage.process(request));
+
+            assertAll("TOKEN_INVALID is a pre-trust rejection",
+                    () -> assertEquals(EventType.TOKEN_INVALID, thrown.getEventType()),
+                    () -> assertFalse(request.trustBoundaryPassed()));
+        }
+
+        @Test
+        @DisplayName("a require:none route marks the boundary when the stage completes")
+        void anonymousRouteMarksOnCompletion() {
+            AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider());
+            PipelineRequest request = request(Require.NONE, Set.of(), Map.of());
+
+            stage.process(request);
+
+            assertTrue(request.trustBoundaryPassed());
+        }
+
+        @Test
+        @DisplayName("a session route marks the boundary when its live session completes the stage")
+        void sessionRouteMarksOnCompletion() {
+            AuthenticationStage stage = new AuthenticationStage(failingValidatorProvider(), sessionStage());
+            PipelineRequest request = sessionRequest(Set.of());
+
+            stage.process(request);
+
+            assertTrue(request.trustBoundaryPassed());
+        }
+
+        @Test
+        @DisplayName("control: a request the stage has not processed carries no marker")
+        void unprocessedRequestCarriesNoMarker() {
+            assertFalse(request(Require.BEARER, Set.of(), Map.of()).trustBoundaryPassed());
+        }
+    }
+
     @Nested
     @DisplayName("require:bearer with session_fallback — dispatch by Authorization presence")
     class SessionFallbackRoute {
@@ -366,6 +455,7 @@ class AuthenticationStageTest {
             // Assert
             assertAll(description,
                     () -> assertEquals(expectedEvent, thrown.getEventType()),
+                    () -> assertFalse(request.trustBoundaryPassed(), "a non-validating Authorization is pre-trust"),
                     () -> assertEquals("Bearer", request.responseHeaders().get(WWW_AUTHENTICATE)),
                     () -> assertTrue(request.mediatedBearer().isEmpty(), "the session stage was never reached"),
                     () -> assertTrue(request.shortCircuitStatus().isEmpty(), "no short-circuit is set"));

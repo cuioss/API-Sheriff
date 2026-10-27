@@ -16,16 +16,20 @@
 /**
  * The one end rule for a response and the early-answer path (ADR-0066): how a response the edge
  * writes is ended, how an HTTP/2 response answered while its request body is still open is
- * ended once request data stops arriving or a time cap passes, and how an HTTP/1.x connection whose
- * request boundaries can no longer be trusted is retired.
+ * ended once request data stops arriving or a time cap passes, how an answer is held back until a
+ * release time without holding a thread, and how an HTTP/1.x connection whose request boundaries can
+ * no longer be trusted is retired.
  * <p>
  * <strong>Contents.</strong> {@link de.cuioss.sheriff.gateway.edge.end.ResponseEnds}, holding the one
  * end rule every response end passes and the response-writing helpers every writer shares, the
  * {@link de.cuioss.sheriff.gateway.edge.end.ResponseEnd} seam a relay ends its response through, the
- * package-private {@code EarlyResponseEnd} that ends an early answer once request data stops arriving
- * or a time cap passes, the package-private {@code InboundStreamWindow} it reads the stream's
- * transport state from, and the {@link de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement} that
- * retires a connection after a framing rejection or a reserved-body {@code 413}.
+ * {@link de.cuioss.sheriff.gateway.edge.end.ResponseDelay} delay primitive that writes an answer no
+ * earlier than its release time from a Vert.x timer — the uniform {@code 404}'s response-timing floor
+ * writes through it — the package-private {@code EarlyResponseEnd} that ends an early answer once
+ * request data stops arriving or a time cap passes, the package-private {@code InboundStreamWindow} it
+ * reads the stream's transport state from, and the
+ * {@link de.cuioss.sheriff.gateway.edge.end.ConnectionRetirement} that retires a connection after a
+ * framing rejection or a reserved-body {@code 413}.
  * <p>
  * <strong>Dependencies.</strong> This package may depend on
  * {@link de.cuioss.sheriff.gateway.edge.upstream} only.

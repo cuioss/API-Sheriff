@@ -209,13 +209,17 @@ class UpstreamAssetServingIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("POST is rejected 405 — an asset action serves only GET and HEAD")
+    @DisplayName("POST is refused by the verb gate — an asset anchor serves only GET and HEAD — as the unrouted 404")
     void postRejected() {
-        given()
+        // The verb gate runs before the trust boundary, so the refusal is answered to the untrusted
+        // caller exactly as an unrouted address is (ADR-0073).
+        var response = given()
                 .when()
                 .post("/assets/cdn/logo.svg")
                 .then()
-                .statusCode(405);
+                .extract();
+
+        UniformNotFoundAssertions.assertUnroutedProblem(response, "a POST to a GET/HEAD asset route");
     }
 
     /**

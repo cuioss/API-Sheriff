@@ -42,6 +42,14 @@ import org.junit.jupiter.api.Test;
  * the body cap and the path allowlist all keep rejecting. A test that only proved "the minimal route
  * accepts what strict rejects" would pass equally well against a total bypass, which is why the
  * still-rejects cases below are the load-bearing ones.
+ * <p>
+ * <strong>Two kinds of refusal, two answers.</strong> The pre-route floor runs before route selection
+ * and refuses with its {@code 400} whatever the address. The route-scoped checks — the relocated
+ * url-parameter validation, the body cap and the allowlist — run after route selection and before the
+ * trust boundary, so the shipped default answers their refusals to the untrusted caller as the
+ * unrouted {@code 404} (ADR-0073). Each such case therefore asserts the TRUE event it is metered under
+ * in {@code sheriff_errors_total} — that event, not the status, is what proves the named check refused
+ * the request.
  */
 class SecurityProfileModeIT extends BaseIntegrationTest {
 
@@ -71,6 +79,10 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
 
     private static final String MINIMAL_ROUTE_PATH = "/proxy/minimal-mode/echo";
 
+    /** The config-fixed ids of the two routes, the {@code route} labels of their error series. */
+    private static final String PROXY_ROUTE_ID = "httpbin-proxy";
+    private static final String MINIMAL_ROUTE_ID = "httpbin-minimal-mode";
+
     @Nested
     @DisplayName("the gateway-wide security_defaults profile governs a route that omits one")
     class GlobalProfileFallback {
@@ -90,16 +102,20 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
         }
 
         @Test
-        @DisplayName("a parameter value the resolved strict preset refuses is rejected 400")
+        @DisplayName("a parameter value the resolved strict preset refuses is refused, metered SECURITY_FILTER_VIOLATION")
         void rejectedParameterValueIsRejectedOnInheritingRoute() {
             // The /proxy route declares no profile, so it resolves security_defaults.profile: strict
-            // and the relocated url-parameter validation runs under the strict preset.
-            given()
-                    .urlEncodingEnabled(false)
-                    .when()
-                    .get("/proxy/get?return_to=" + REJECTED_PARAMETER_VALUE_WIRE)
-                    .then()
-                    .statusCode(400);
+            // and the relocated url-parameter validation runs under the strict preset — after route
+            // selection, so its refusal is answered as the unrouted 404.
+            var response = UniformNotFoundAssertions.assertTrueEventMetered(PROXY_ROUTE_ID, "SECURITY_FILTER_VIOLATION",
+                    () -> given()
+                            .urlEncodingEnabled(false)
+                            .when()
+                            .get("/proxy/get?return_to=" + REJECTED_PARAMETER_VALUE_WIRE)
+                            .then()
+                            .extract());
+
+            UniformNotFoundAssertions.assertUnroutedProblem(response, "a refused parameter value on the strict route");
         }
     }
 
@@ -111,7 +127,7 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
         @DisplayName("the minimal route accepts and forwards a parameter value the strict route rejects")
         void minimalRouteAcceptsRejectedParameterValue() {
             // The control for this assertion is rejectedParameterValueIsRejectedOnInheritingRoute
-            // above: the SAME parameter value on the strict route returns 400. The echo proves the
+            // above: the SAME parameter value on the strict route is refused. The echo proves the
             // request was forwarded, not merely un-rejected.
             String rawQuery = "return_to=" + REJECTED_PARAMETER_VALUE_WIRE;
             var response = given()
@@ -169,21 +185,25 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
         }
 
         @Test
-        @DisplayName("the route body cap still rejects a declared body above max_body_bytes")
+        @DisplayName("the route body cap still refuses a declared body above max_body_bytes, metered CONTENT_TOO_LARGE")
         void bodyCapStillRejectsOverCapBody() {
             // A resource guard is not an injection defence, so it does not ride the mode switch. The
             // declared Content-Length is fast-rejected before the body is read. The route cap sits far
-            // below the framework floor the IT stack raises, so the GATEWAY renders the rejection —
-            // a 413 CONTENT_TOO_LARGE, not the 400 the other floor rejections carry.
+            // below the framework floor the IT stack raises, so the GATEWAY renders the refusal — the
+            // unrouted 404 to the untrusted caller, metered CONTENT_TOO_LARGE, not the 400 the floor
+            // rejections carry.
             String overCapBody = "x".repeat(MINIMAL_ROUTE_BODY_CAP + 1);
 
-            given()
-                    .contentType("text/plain")
-                    .body(overCapBody)
-                    .when()
-                    .post(MINIMAL_ROUTE_PATH)
-                    .then()
-                    .statusCode(413);
+            var response = UniformNotFoundAssertions.assertTrueEventMetered(MINIMAL_ROUTE_ID, "CONTENT_TOO_LARGE",
+                    () -> given()
+                            .contentType("text/plain")
+                            .body(overCapBody)
+                            .when()
+                            .post(MINIMAL_ROUTE_PATH)
+                            .then()
+                            .extract());
+
+            UniformNotFoundAssertions.assertUnroutedProblem(response, "an over-cap body on the minimal route");
         }
 
         @Test
@@ -205,15 +225,18 @@ class SecurityProfileModeIT extends BaseIntegrationTest {
         }
 
         @Test
-        @DisplayName("the route allowed_paths allowlist still rejects a path outside it")
+        @DisplayName("the route allowed_paths allowlist still refuses a path outside it, metered PATH_NOT_ALLOWED")
         void allowedPathsStillRejectsPathOutsideAllowlist() {
             // The allowlist pattern admits exactly one wildcard segment, so a deeper path is a
-            // segment-count mismatch and is rejected 400 — under 'minimal' exactly as under 'strict'.
-            given()
-                    .when()
-                    .get("/proxy/minimal-mode/deep/path")
-                    .then()
-                    .statusCode(400);
+            // segment-count mismatch and is refused — under 'minimal' exactly as under 'strict'.
+            var response = UniformNotFoundAssertions.assertTrueEventMetered(MINIMAL_ROUTE_ID, "PATH_NOT_ALLOWED",
+                    () -> given()
+                            .when()
+                            .get("/proxy/minimal-mode/deep/path")
+                            .then()
+                            .extract());
+
+            UniformNotFoundAssertions.assertUnroutedProblem(response, "a path outside the minimal route's allowlist");
         }
     }
 }

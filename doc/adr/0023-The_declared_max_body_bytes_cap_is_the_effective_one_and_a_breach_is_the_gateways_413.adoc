@@ -14,7 +14,7 @@
 
 == Status
 
-Accepted
+Accepted. Amended for untrusted callers by ADR-0073 -- see <<amendment-adr-0073>>.
 
 == Decision
 
@@ -120,9 +120,25 @@ behaviour cannot diverge.
 * The boot check reads every scope that can declare `security_filter`. A new policy scope must be
   mapped there, or the check fails loudly; it must never skip that scope's caps.
 
+[[amendment-adr-0073]]
+== Amendment -- the declared-Content-Length fast-reject before the trust boundary
+
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+overrides the answer this record states for one of its two enforcement paths. The post-route stage
+rejects a declared `Content-Length` above the cap before authentication runs. On the shipped
+default the gateway answers that rejection as it answers an unrouted address: the `404` routing
+problem, not the `413`, and never `RESOURCE_EXHAUSTED` on gRPC. The `413` would tell an
+unauthenticated caller that the route exists. The event is still `CONTENT_TOO_LARGE`, and
+`sheriff_errors_total` still meters it. The streaming byte counter enforces the cap after the trust
+boundary, so its breach keeps the `413` envelope and the gRPC mapping. With
+`security_defaults.uniform_not_found: false` both paths answer `413`. The cap in force and the boot
+check are unchanged; so is the shadowing case, because the framework's bare `413` is raised before
+route selection.
+
 == Links
 
 * link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- keeps this body cap in force under the `minimal` inbound-filter profile.
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073 -- The uniform 404] -- answers the declared-`Content-Length` fast-reject as the unrouted `404` before the trust boundary.
 * link:0003-forwarded-headers.adoc[ADR-0003 -- Forwarded headers] -- the immediate-TCP-peer trust gate this enforcement sits behind.
 * link:../configuration.adoc[Configuration Reference] -- the `max_body_bytes` key, the framework floor, the shadowing case and the chunked-request case.
 * link:../architecture.adoc[Architecture] -- the error contract: the HTTP status and category tables and the gRPC status mapping.

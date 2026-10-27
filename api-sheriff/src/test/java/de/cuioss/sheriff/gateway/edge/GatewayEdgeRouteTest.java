@@ -1757,9 +1757,26 @@ class GatewayEdgeRouteTest {
         }
 
         @Test
-        @DisplayName("a disallowed method answers 405 under the routing problem type and counts METHOD_NOT_ALLOWED")
+        @DisplayName("a disallowed method answers the unrouted 404 under the routing problem type and still counts METHOD_NOT_ALLOWED")
         void disallowedMethodAnswersRoutingProblem() throws Exception {
             HttpServer front = startFront(PASSTHROUGH_SNI);
+            HttpClient client = vertx.createHttpClient();
+            try {
+                Rejection rejection = send(client, front.actualPort(), HttpMethod.DELETE,
+                        LoopbackHost.ADDRESS, "/" + ROUTE_ID + "/resource", Map.of());
+
+                assertRoutingProblem(404, rejection);
+                awaitSingleRoutingSeries(ROUTE_ID, "METHOD_NOT_ALLOWED");
+            } finally {
+                Awaits.teardown(client.close(), "the HTTP client to close");
+                Awaits.teardown(front.close(), "the edge front server to close");
+            }
+        }
+
+        @Test
+        @DisplayName("switch off: a disallowed method answers 405 under the routing problem type and counts METHOD_NOT_ALLOWED")
+        void disallowedMethodAnswersRoutingProblemSwitchOff() throws Exception {
+            HttpServer front = startFront(PASSTHROUGH_SNI, PortalEndpoint.inert(), false);
             HttpClient client = vertx.createHttpClient();
             try {
                 Rejection rejection = send(client, front.actualPort(), HttpMethod.DELETE,
@@ -1930,8 +1947,15 @@ class GatewayEdgeRouteTest {
 
         /** As {@link #startFront(String)}, with {@code portal} answering the gateway's error pages. */
         private HttpServer startFront(String passthroughSni, PortalEndpoint portal) throws Exception {
+            return startFront(passthroughSni, portal, true);
+        }
+
+        /** As {@link #startFront(String, PortalEndpoint)}, with the resolved {@code uniform_not_found} switch. */
+        private HttpServer startFront(String passthroughSni, PortalEndpoint portal, boolean uniformNotFound)
+                throws Exception {
             GatewayConfig config = ConfigFixtures.gateway()
                     .tls(TlsConfig.builder().passthroughSni(Map.of(passthroughSni, "backend")).build())
+                    .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(uniformNotFound).build())
                     .build();
             return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(route(ROUTE_ID, Protocol.HTTP, Require.NONE))
                     .gatewayConfig(config).metrics(new SheriffMetrics(registry)).portal(portal).serve();

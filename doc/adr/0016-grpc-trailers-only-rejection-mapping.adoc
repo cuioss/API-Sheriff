@@ -4,7 +4,7 @@
 
 == Status
 
-Accepted.
+Accepted. Amended for untrusted callers by ADR-0073 -- see <<amendment-adr-0073>>.
 
 == Context
 
@@ -48,8 +48,8 @@ same PR as the code:
 |===
 
 The trailers carry the category name only, never internal detail -- the same no-leak rule the
-problem+json contract enforces for HTTP routes. The reserved `429` (rate limiting, out of scope)
-has no mapping.
+problem+json contract enforces for HTTP routes. The `429` (rate limiting) has no mapping: rate
+limiting is planned, not implemented, and no `429` is produced today.
 
 == Consequences
 
@@ -69,9 +69,30 @@ has no mapping.
 * *Close the stream / connection on rejection* -- indistinguishable from a network failure and
   loses the reason entirely. Rejected.
 
+[[amendment-adr-0073]]
+== Amendment -- rejections before the trust boundary
+
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+overrides the trailers-only answer for a rejection raised before the trust boundary. On the shipped
+default, every rejection of the
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#_the_closed_set[ADR-0073 closed set]
+that is raised after route selection and before the trust boundary gets the answer of an unrouted
+address: the HTTP `404`, never a `grpc-status` trailer. Today these are the verb gate, the
+`allowed_paths` check, the stage-3 security filter, the declared-`Content-Length` fast-reject, the
+CSRF check and the missing or invalid bearer token. A trailers-only status names the address as a
+gRPC route, and that is the disclosure ADR-0073 closes. A gRPC client surfaces the HTTP `404` as
+`UNIMPLEMENTED`. A stage-1 security-filter violation and `PARAMETER_LIMIT_EXCEEDED`, which only
+stage 1 raises today, are outside this amendment: they are raised before route selection, so they
+are already identical whether a route exists or not. The mapping
+table above still holds for every rejection past the trust boundary -- `PERMISSION_DENIED` for a
+missing scope, `UNAVAILABLE` and `DEADLINE_EXCEEDED` at dispatch -- and for every row when
+`security_defaults.uniform_not_found` is `false`.
+
 == References
 
 * link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)]
   -- the doc-first mapping table this decision records.
 * link:../architecture.adoc#_error_contract[Architecture -- Error Contract] -- the HTTP-route
   problem+json envelope this decision translates for gRPC.
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+  -- the uniform `404` that answers a pre-trust rejection on a gRPC route.

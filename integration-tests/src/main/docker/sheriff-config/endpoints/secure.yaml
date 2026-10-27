@@ -2,7 +2,7 @@
 # Bearer-protected endpoint anchored to the 'secure' namespace (/secure). It routes
 # to the same go-httpbin echo backend the 'api' proxy uses (the UPSTREAM topology
 # alias), but under the anchor's require: bearer posture. BearerValidationIT drives
-# only rejection scenarios against it (missing / malformed token -> 401), so the
+# rejection scenarios against it (missing / malformed token -> the unrouted 404), so the
 # upstream is never reached — the echo backend is present purely so a successful
 # forward would be observable, making a rejection's absence-of-echo the upstream=0 proof.
 endpoint:

@@ -81,15 +81,16 @@ import org.junit.jupiter.api.Test;
  *       host, URL or allowlist entry.</li>
  *   <li><em>Still refused in steady state</em> — {@code WARN ApiSheriff-129} (a load attempt produced
  *       no key set and a retry was scheduled) is awaited, readiness is re-asserted {@code DOWN} after
- *       it, and a real Keycloak-minted token is rejected {@code 401} on the bearer-gated route. The
- *       refusal is therefore observed after a completed load attempt, not at an early instant before
- *       any attempt ran.</li>
+ *       it, and a real Keycloak-minted token is refused on the bearer-gated route — answered as the
+ *       unrouted {@code 404}, because a refused bearer is raised before the trust boundary (ADR-0073).
+ *       The refusal is therefore observed after a completed load attempt, not at an early instant
+ *       before any attempt ran.</li>
  *   <li><em>The single-variable control</em> — the committed descriptor is parsed, the issuer's
  *       {@code allowed_egress_hosts} key is removed, the result is asserted to equal the parsed
  *       original minus exactly that key, and it is written under {@code target/}. A control gateway
  *       that is otherwise identical — same image, network, environment and mounts — then reaches
  *       readiness {@code UP} with the key set {@code ready}, and the <em>same</em> token is answered
- *       {@code 200} while no token is still answered {@code 401}. With the list gone the gateway
+ *       {@code 200} while no token is still refused. With the list gone the gateway
  *       derives the allowance from the {@code jwks.url} host, so this leg also proves the derived
  *       allowance end to end.</li>
  * </ol>
@@ -149,12 +150,18 @@ class JwksEgressMismatchIT {
      */
     private static final long RETRY_SCHEDULED_TIMEOUT_SECONDS = 60L;
 
+    /**
+     * The status a refused bearer is answered with on the shipped default: the unrouted {@code 404},
+     * because the refusal is raised before the trust boundary (ADR-0073).
+     */
+    private static final int REFUSED = UniformNotFoundAssertions.UNROUTED_STATUS;
+
     /** What the DOWN payload must never name: the issuer, the host and port fetched from, the URL, the entry. */
     private static final List<String> UNDISCLOSED =
             List.of(ISSUER_NAME, "keycloak:8443", "realms/integration", "https://", DECLARED_HOST);
 
     @Test
-    @DisplayName("DOWN and 401 while the explicit list names another host; UP and 200 once that key alone is removed")
+    @DisplayName("DOWN and refused while the explicit list names another host; UP and 200 once that key alone is removed")
     void explicitAllowlistNamingAnotherHostKeepsTheKeySetRefused() throws Exception {
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         String mismatch = "jwks-egress-mismatch-gateway-" + suffix;
@@ -179,8 +186,8 @@ class JwksEgressMismatchIT {
             assertReportsDown(mismatch, awaitReadiness(mismatch, managementOrigin, response -> true,
                     BOOT_TIMEOUT_SECONDS, "the mismatch gateway's readiness after the failed attempt"), UNDISCLOSED);
             assertApplicationPortAnswers(mismatch, applicationOrigin);
-            assertEquals(401, securedAssetStatus(applicationOrigin, bearer), () -> "the explicit list names "
-                    + "another host, so the key set must stay refused and the token must be rejected 401 on "
+            assertEquals(REFUSED, securedAssetStatus(applicationOrigin, bearer), () -> "the explicit list names "
+                    + "another host, so the key set must stay refused and the token must be rejected on "
                     + SECURE_ASSET + ". A 200 here means the derived jwks.url host was merged into the list. "
                     + gatewayLog(mismatch));
 
@@ -202,7 +209,7 @@ class JwksEgressMismatchIT {
             assertEquals(200, securedAssetStatus(controlApplicationOrigin, bearer), () -> "matched control: the "
                     + "same token must be accepted once only the allowlist key is removed, or the refusal above "
                     + "is not attributable to the explicit list. " + gatewayLog(control));
-            assertEquals(401, securedAssetStatus(controlApplicationOrigin, null),
+            assertEquals(REFUSED, securedAssetStatus(controlApplicationOrigin, null),
                     "control: the route still refuses a request without a token");
         } finally {
             dockerQuietly("rm", "-f", mismatch, control);

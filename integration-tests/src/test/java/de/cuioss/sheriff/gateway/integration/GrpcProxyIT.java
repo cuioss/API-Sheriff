@@ -64,7 +64,12 @@ import org.junit.jupiter.api.Test;
  * round-trips faithfully with both metadata surfaces active — proving the metadata path does not
  * corrupt the relay. Following the {@link BearerValidationIT} precedent, the bearer gRPC route is
  * exercised through its <em>rejection</em> path (no signing key to mint a token): a tokenless call
- * is rejected {@code UNAUTHENTICATED} as a trailers-only gRPC response before any upstream dial. The
+ * is refused before any upstream dial. The refusal is raised before the trust boundary, so the shipped
+ * default answers it as the unrouted HTTP {@code 404} rather than the trailers-only
+ * {@code UNAUTHENTICATED} that would disclose the route (ADR-0073); the gRPC client surfaces an HTTP
+ * {@code 404} as {@code UNIMPLEMENTED}, exactly as it surfaces a call on a service no route serves
+ * ({@code EnumerationOracleIT} compares the two). The trailers-only contract itself still holds for
+ * every rejection past the trust boundary. The
  * bearer route rides a distinct {@code SecureEcho} service path (a bearer route on the same
  * {@code Echo} path would not be statically disjoint from the public route and would fail the boot),
  * driven by the stock generated {@link SecureEchoGrpc} stub.
@@ -137,16 +142,18 @@ class GrpcProxyIT extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("a tokenless call on a bearer gRPC route is rejected UNAUTHENTICATED (trailers-only)")
+    @DisplayName("a tokenless call on a bearer gRPC route is refused as the unrouted HTTP 404, surfacing as UNIMPLEMENTED")
     void unauthenticatedBearerGrpcRejected() {
-        SecureEchoGrpc.SecureEchoBlockingStub bearerStub = SecureEchoGrpc.newBlockingStub(channel);
+        SecureEchoGrpc.SecureEchoBlockingStub bearerStub = SecureEchoGrpc.newBlockingStub(channel)
+                .withDeadlineAfter(CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 
         StatusRuntimeException failure = assertThrows(StatusRuntimeException.class,
                 () -> bearerStub.unary(EchoRequest.newBuilder().setMessage("no-token").build()),
                 "a tokenless bearer gRPC call must be rejected before any upstream dial");
 
-        assertEquals(Status.Code.UNAUTHENTICATED, failure.getStatus().getCode(),
-                "a gateway-generated gRPC rejection maps 401 to UNAUTHENTICATED as a trailers-only response");
+        assertEquals(Status.Code.UNIMPLEMENTED, failure.getStatus().getCode(),
+                "a pre-trust refusal on a gRPC route is the unrouted HTTP 404, which a gRPC client surfaces as "
+                        + "UNIMPLEMENTED — never the trailers-only UNAUTHENTICATED that would name the bearer route");
     }
 
     /**

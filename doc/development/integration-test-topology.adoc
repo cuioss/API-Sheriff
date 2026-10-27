@@ -1124,7 +1124,8 @@ provider, `UP` within a minute of it appearing, and that the provider's token is
 *not* a compose instance: its gateway is `DOWN` by design for its whole life, because its single
 issuer's explicit `allowed_egress_hosts` names a host other than its `jwks.url` host. It joins the
 compose network so `keycloak` resolves to the same site-local address the compose instances dial,
-asserts `DOWN` without disclosure and a `401` for a real token, and then starts a second one-off
+asserts `DOWN` without disclosure and, for a real token, the refusal a bearer gets before the trust
+boundary -- the unrouted `404` -- and then starts a second one-off
 control that differs only by that key's removal and must reach `UP` and accept the same token
 through the derived allowance. Neither suite adds a service or a row to the table or the diagram
 above; the host ports their gateways take are listed under <<test-started-host-ports>>.
@@ -1136,8 +1137,9 @@ be assumed wrong:
 ====
 Readiness reports key-set *availability*, not *freshness*. Once an issuer's key set has loaded, an
 IdP whose JWKS endpoint becomes unreachable *after* that, a stalled key rotation, and an expired
-signing key do *not* take readiness `DOWN` -- the held keys stay in service. They surface as `401`s on
-the request path and as fetch errors in the container's stdout. A stalled rotation has a record of its
+signing key do *not* take readiness `DOWN` -- the held keys stay in service. They surface as
+rejected bearer tokens on the request path -- the unrouted `404` on the shipped default, metered as
+`TOKEN_INVALID` in `sheriff_errors_total{event}` -- and as fetch errors in the container's stdout. A stalled rotation has a record of its
 own: `WARN ApiSheriff-136` reports, at most once per issuer per refresh window, that a token named a
 key id no held key set contains. Diagnose that class of failure from the container log, never from a
 green readiness probe.

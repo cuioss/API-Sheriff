@@ -4,10 +4,11 @@ import { captureState, expect, test } from '../fixtures/test-fixtures.js';
  * The gateway's own rejections, as the SPA's rejection panel observes them while anonymous.
  *
  * Unlike the reserved endpoints, these DO negotiate on `Accept`, and that is the point of the
- * panel: an unrouted path and a method outside a route's allowlist keep their status and answer an
- * explicit `text/html` request with the HTML error page and anything else with
- * `application/problem+json`; a session route's floor answers the same split with a `302` into
- * login versus a `401`. The info endpoint row stays `Accept`-blind and is only ever asked for JSON,
+ * panel: an unrouted path keeps its `404` and answers an explicit `text/html` request with the HTML
+ * error page and anything else with `application/problem+json`; a session route's floor answers the
+ * same split with a `302` into login versus a `401`. A method outside a route's allowlist is refused
+ * before the trust boundary, so it is answered exactly as the unrouted path is -- `404` and the HTML
+ * error page, never a `405` that would disclose the route. The info endpoint row stays `Accept`-blind and is only ever asked for JSON,
  * so nothing here contradicts the PROHIBITED ASSERTION of `01-anonymous-contract.spec.js`.
  *
  * Both demo instances negotiate identically, so every expectation holds in both session-mode
@@ -23,7 +24,7 @@ const EXPECTATIONS = [
   { id: 'session-navigation', redirected: 'yes' },
   { id: 'unrouted-navigation', status: '404', contentType: 'text/html', redirected: 'no' },
   { id: 'unrouted-xhr', status: '404', contentType: 'application/problem+json', redirected: 'no' },
-  { id: 'method-navigation', status: '405', contentType: 'text/html', redirected: 'no' },
+  { id: 'method-navigation', status: '404', contentType: 'text/html', redirected: 'no' },
 ];
 
 test.describe('gateway rejection panel', () => {

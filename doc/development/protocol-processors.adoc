@@ -146,11 +146,15 @@ then relays the upstream response -- including its `grpc-status` / `grpc-message
   enforced by the shared inbound transport (`EdgeHardeningOptions`), not per-protocol.
 * *Trailer relay and rejection mapping.* `ResponseStage.relayWithTrailers` streams the body with
   the client response held open, then copies the upstream trailers onto the client and ends it, so
-  the client observes the gRPC status. A gateway-generated rejection on a gRPC route is rendered by
-  `GrpcStatusMapper` as a *trailers-only* gRPC response (HTTP `200`, `application/grpc`,
-  `grpc-status` / `grpc-message`) rather than problem+json -- an h2-negotiation failure maps to
-  `UNAVAILABLE`. See link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC
-  rejections].
+  the client observes the gRPC status. The branch order of a gateway-generated rejection on a gRPC
+  route is fixed in `ErrorResponseWriter.renderRejection`: it consults `UniformNotFound` *before*
+  `GrpcStatusMapper`. A rejection raised before the trust boundary is therefore answered to an
+  untrusted caller as the unrouted HTTP `404` -- a trailers-only status would name the address as a
+  gRPC route (link:README.adoc#_rejections_before_the_trust_boundary[Rejections Before the Trust
+  Boundary]). `GrpcStatusMapper` renders every other gateway rejection as a *trailers-only* gRPC
+  response (HTTP `200`, `application/grpc`, `grpc-status` / `grpc-message`) rather than
+  problem+json -- an h2-negotiation failure maps to `UNAVAILABLE`. See
+  link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections].
 
 === HTTP / GraphQL -- streamed relay
 

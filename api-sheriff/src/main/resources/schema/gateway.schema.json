@@ -269,6 +269,11 @@
         "allow_extended_ascii": {
           "type": "boolean",
           "description": "Overrides the resolved profile's extended-ASCII policy gateway-wide. Omitted = the profile decides (strict rejects, lenient admits). true admits U+00A0-U+00FF in paths, query-parameter values and header values, plus all Unicode above U+00FF in header values; false rejects them. It never admits the C1 controls U+0080-U+009F, non-ASCII in header names or cookies, or Unicode above U+00FF in a URL - those are rejected unconditionally. Gateway-wide because the pre-route floor validates the path and every header value before route selection; it applies to the baseline and to every route alike."
+        },
+        "uniform_not_found": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether a rejection raised after route selection and before the trust boundary is answered to the caller exactly as an unrouted address is answered: status 404, the NO_ROUTE_MATCHED problem body or its negotiated HTML page, the response headers of the unrouted answer, and never a gRPC trailers-only status (ADR-0073). The trust boundary is a bearer token that validated, or a completed authentication stage (a live session, or an anonymous route). Covered: the per-route verb gate 405, the route-scoped 400 and declared Content-Length 413 of the thorough checks, the CSRF and cookie same-origin 403, and the bearer 401 for a missing or invalid token. Never touched: rejections raised before route selection, reserved paths, a caller past the trust boundary (a missing scope stays 403), the session branch's 302 / 401, and what is metered and logged - the true event is always reported in sheriff_errors_total. Defaults to true when omitted, the secure default; false restores the honest codes."
         }
       }
     },
