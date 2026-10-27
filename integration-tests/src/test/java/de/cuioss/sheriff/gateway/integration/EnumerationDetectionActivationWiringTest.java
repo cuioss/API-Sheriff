@@ -74,7 +74,7 @@ class EnumerationDetectionActivationWiringTest {
 
     @Test
     @DisplayName("the one-off descriptor declares action block and the threshold and block the IT is sized against")
-    void oneOffDescriptorDeclaresTheBlockTheItReliesOn() throws IOException {
+    void oneOffDescriptorDeclaresTheBlockTheItReliesOn() throws Exception {
         Map<String, Object> block = enumerationDetectionBlock();
 
         assertAll("the declared enumeration_detection block",
@@ -113,7 +113,7 @@ class EnumerationDetectionActivationWiringTest {
 
     @Test
     @DisplayName("the shared base descriptor declares no enumeration_detection block")
-    void sharedBaseDescriptorRunsTheDefault() throws IOException {
+    void sharedBaseDescriptorRunsTheDefault() throws Exception {
         Map<String, Object> document = loadYaml(BASE_GATEWAY);
 
         assertFalse(document.isEmpty(), "the base descriptor must parse to a document");
@@ -123,13 +123,13 @@ class EnumerationDetectionActivationWiringTest {
 
     @Test
     @DisplayName("no compose descriptor declares a trip response, and no compose service mounts the one-off one")
-    void noComposeGatewayCarriesATripResponse() throws IOException {
+    void noComposeGatewayCarriesATripResponse() throws Exception {
         List<Path> composeDescriptors;
         try (Stream<Path> directories = Files.list(DOCKER)) {
             composeDescriptors = directories
                     .filter(Files::isDirectory)
                     .filter(directory -> directory.getFileName().toString().startsWith("sheriff-config"))
-                    .filter(directory -> !directory.getFileName().toString().equals(ENUMERATION_DIRECTORY))
+                    .filter(directory -> !ENUMERATION_DIRECTORY.equals(directory.getFileName().toString()))
                     .map(directory -> directory.resolve("gateway.yaml"))
                     .filter(Files::isRegularFile)
                     .sorted()

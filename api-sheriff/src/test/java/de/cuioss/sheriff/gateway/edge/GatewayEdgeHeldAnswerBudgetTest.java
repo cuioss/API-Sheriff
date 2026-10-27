@@ -183,7 +183,7 @@ class GatewayEdgeHeldAnswerBudgetTest {
                 () -> assertEquals(HELD_ANSWER_CAP, second.stream().filter(answer -> answer.response().status() == 404)
                         .count(), () -> "the held permit is back for the next burst: " + second),
                 () -> assertEquals(ADMISSION_CAP - HELD_ANSWER_CAP, second.stream()
-                        .filter(answer -> answer.response().status() == 503).count(),
+                                .filter(answer -> answer.response().status() == 503).count(),
                         () -> "and the rest of the next burst is refused again: " + second));
     }
 
