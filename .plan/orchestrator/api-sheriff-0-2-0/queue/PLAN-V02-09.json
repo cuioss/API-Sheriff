@@ -2,8 +2,8 @@
   "id": "PLAN-V02-09",
   "slug": "token-sheriff-integration-fidelity",
   "workstream": "WS-05",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
+  "status": "launched",
+  "plan_marshall_plan_id": "plan-v02-09-token-sheriff-integration-fidelity",
   "pr": "",
   "landing": "",
   "seq": 9

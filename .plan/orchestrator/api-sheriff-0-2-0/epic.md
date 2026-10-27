@@ -163,6 +163,12 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-27 — emitted `PLAN-V02-50` and `PLAN-V02-09` into the two free slots.** Operator ruling of 2026-10-26
+  (fill up to three at once when `PLAN-V02-06` lands), overlap prompt answered "V02-50, V02-09". The gate shows
+  V02-50/V02-05 sharing 13 files, V02-09/V02-05 26 and V02-50/V02-09 10 (config and edge sources and tests); the operator
+  accepted them. Both rows are `launched`; `launched → running` stays with the operator. `PLAN-V02-09` gained the ADR
+  guidance (`adr-writing.adoc`, the 500-line guard, next ordinal `0074`). Held back: V02-07 (waits for V02-50), V02-11
+  (held earlier), V02-48 (never beside an ADR-writing plan) and V02-49 (last).
 - **2026-10-27 — `PLAN-V02-06` landed as #528, partly; `PLAN-V02-50` staged for the rest.** #528 (`c957ee51`, ADR-0073,
   98 files) shipped spec D1 (the uniform `404` for untrusted callers), D2 (the response-timing floor and its step rule)
   and D9 (the `rate_limit` boot WARN and the wording), with their tests and docs. The operator split the other four

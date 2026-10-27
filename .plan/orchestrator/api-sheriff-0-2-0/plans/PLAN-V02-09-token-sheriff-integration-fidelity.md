@@ -218,6 +218,9 @@ D1+D2 (what the extension does and the decision that follows) | D3+D4+D5.
   against the PAR-and-DPoP login it introduced. `PLAN-V02-20` has landed (#527, ADR-0072): the cookie sealing key
   is now `oidc.session.key_file`, read through `KeyFiles`; build against `OidcConfig` and `BffRuntimeProducer` as they
   now stand.
+- Any ADR this plan writes or re-opens (`0027`) follows `doc/development/adr-writing.adoc` and the 500-line body guard
+  (`AdrRecordLengthContractTest`). Derive a new ordinal from `doc/adr/` on the branch, and again against `origin/main`
+  before the push (the next free one on `main` at `c957ee51` is `0074`). It is never concurrent with `PLAN-V02-48`.
 - `PLAN-V02-01` (ADR-0005 reversal) has landed. ADR-0062 sets the standing rule D2 applies: a
   platform mechanism is preferred, and a hand-rolled equivalent stays only with a recorded reason.
   Its stays-hand-rolled table lists `EnvSecretResolver`, the session store, `ClientHelloSniParser`
