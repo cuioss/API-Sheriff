@@ -203,6 +203,9 @@ import org.jspecify.annotations.Nullable;
  * honest answer. Every unrouted {@code 404}, genuine or resolved, also leaves the edge no earlier than
  * the response-timing floor after admission: the edge stashes its admission reading on the context
  * ({@link ResponseDelay#ADMITTED_AT_KEY}), and the writer holds the answer back on a Vert.x timer.
+ * A held answer moves from the general admission pool to the held-answer sub-budget through the
+ * {@link ResponseDelay.Hold} the edge stashes beside it ({@link ResponseDelay#HOLD_KEY}); when that
+ * sub-budget is full the answer is a {@code 503} at once instead.
  * <p>
  * <strong>Per-source enumeration detection.</strong> Unless {@code enumeration_detection} is disabled
  * — an omitted block runs it with its defaults — the constructor builds a {@link SourceGate} over the
@@ -465,8 +468,8 @@ public class GatewayEdgeRoute {
                 ? declaredDetection : EnumerationDetectionConfig.defaults();
         this.sourceGate = detection.effectiveEnabled()
                 ? new SourceGate(detection, new SourceKeyResolver(declaredHosts(routes)), peerGate,
-                        new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()), gatewayEventCounter,
-                        sheriffMetrics, gatewayJson)
+                new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()), gatewayEventCounter,
+                sheriffMetrics, gatewayJson)
                 : null;
         this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
                 rejectionReporter, uniformNotFound,
@@ -539,8 +542,11 @@ public class GatewayEdgeRoute {
         // callback (see TerminalDispatch.dispatchWebSocket / WebSocketRelayStage); the guard is stashed
         // on the context under ADMISSION_GUARD_KEY because the virtual-thread hop carries only the
         // RoutingContext.
-        AtomicBoolean admissionReleased = new AtomicBoolean();
-        ctx.put(EdgeAdmission.ADMISSION_GUARD_KEY, admissionReleased);
+        AtomicBoolean admissionReleased = edgeAdmission.armReleaseGuards(ctx);
+        // An answer held back on a timer — the uniform 404's floor, the delay action — leaves the general
+        // pool for the held-answer sub-budget through this hold; the writers that hold answers are built
+        // without the admission, so the hold rides on the context to them.
+        ctx.put(ResponseDelay.HOLD_KEY, (ResponseDelay.Hold) () -> edgeAdmission.tryEnterHold(ctx));
         // This handler runs on the client connection's event loop, so the current context IS that
         // connection's context. It is captured here, before the virtual-thread hop, because a WebSocket
         // relay must run its upstream dial and client upgrade on it (see TerminalDispatch.dispatchWebSocket).

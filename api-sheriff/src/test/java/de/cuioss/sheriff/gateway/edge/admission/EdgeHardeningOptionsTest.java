@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -141,6 +142,30 @@ class EdgeHardeningOptionsTest {
         // Assert
         assertEquals(64, hardening.admissionCap(), "The declared admission_cap is carried through");
         assertEquals(8, hardening.webSocketRelayCap(), "The declared websocket_relay_cap is carried through");
+    }
+
+    @ParameterizedTest(name = "admission_cap {0} -> held-answer cap {1}")
+    @CsvSource({"2048, 512", "64, 16", "8, 2", "7, 1", "4, 1", "3, 1", "1, 1"})
+    @DisplayName("derives the held-answer sub-budget as a quarter of the admission cap, never below one")
+    void derivesTheHeldAnswerCapFromTheAdmissionCap(int admissionCap, int expectedHeldAnswerCap) {
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions(new EdgeHardeningConfig(admissionCap, null));
+
+        int heldAnswerCap = hardening.heldAnswerCap();
+
+        assertAll("the held-answer sub-budget of admission_cap " + admissionCap,
+                () -> assertEquals(expectedHeldAnswerCap, heldAnswerCap, "a quarter of the admission cap, at least 1"),
+                () -> assertTrue(heldAnswerCap <= admissionCap, "the sub-budget stays inside the pool it leaves"));
+    }
+
+    @Test
+    @DisplayName("derives the held-answer sub-budget from the admission cap alone, whatever relay cap is declared")
+    void heldAnswerCapIgnoresTheDeclaredRelayCap() {
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions(new EdgeHardeningConfig(64, 2));
+
+        assertAll("a declared relay cap beside the admission cap",
+                () -> assertEquals(2, hardening.webSocketRelayCap(), "precondition: the relay cap is declared"),
+                () -> assertEquals(16, hardening.heldAnswerCap(),
+                        "the held-answer sub-budget has no key of its own and follows the admission cap"));
     }
 
     @Test

@@ -48,7 +48,9 @@ import org.junit.jupiter.api.Test;
  * passed is written at once, inside the call; an answer not yet due is written from a Vert.x timer no
  * earlier than its release time, while the calling event-loop thread returns at once; and a held
  * answer is dropped when another writer ended the response, or the connection closed, before the
- * release.
+ * release. An answer that has to wait first enters the hold the edge stashed under
+ * {@link ResponseDelay#HOLD_KEY}: an entered hold arms the timer, a refused one is answered {@code 503}
+ * at once with no timer, and a request that carries no hold waits as before.
  * <p>
  * Every negative is observed by a probe timer scheduled on the same event loop for after the release,
  * so it is decided by timer order rather than by a sleep.
@@ -172,6 +174,75 @@ class ResponseDelayTest {
 
         assertEquals(0, Awaits.connect(answersAfterTheRelease, "the probe after the release"),
                 "the held answer was not run on a closed connection");
+    }
+
+    @Test
+    @DisplayName("an answer not yet due enters the hold once, then is written from a timer after its release")
+    void enteredHoldArmsTheTimer() throws Exception {
+        AtomicInteger holdsEntered = new AtomicInteger();
+        CompletableFuture<Long> heldForNanos = new CompletableFuture<>();
+        behaviour = ctx -> {
+            ctx.put(ResponseDelay.HOLD_KEY, (ResponseDelay.Hold) () -> {
+                holdsEntered.incrementAndGet();
+                return true;
+            });
+            long calledAt = System.nanoTime();
+            ResponseDelay.endNoEarlierThan(ctx, calledAt + TimeUnit.MILLISECONDS.toNanos(holdMillis), () -> {
+                heldForNanos.complete(System.nanoTime() - calledAt);
+                answer(ctx);
+            });
+        };
+
+        int status = get();
+
+        long held = Awaits.connect(heldForNanos, "the held answer to run");
+        assertAll("an answer that entered the hold",
+                () -> assertEquals(200, status, "the held answer is written"),
+                () -> assertEquals(1, holdsEntered.get(), "the hold is entered exactly once, before the timer"),
+                () -> assertTrue(held >= TimeUnit.MILLISECONDS.toNanos(holdMillis),
+                        () -> "the answer ran " + held + " ns after the call, before its release of " + holdMillis + " ms"));
+    }
+
+    @Test
+    @DisplayName("a refused hold is answered 503 at once, inside the call, and the held answer never runs")
+    void refusedHoldIsAnswered503AtOnce() throws Exception {
+        CompletableFuture<Boolean> endedInsideTheCall = new CompletableFuture<>();
+        CompletableFuture<Integer> answersAfterTheRelease = new CompletableFuture<>();
+        behaviour = ctx -> {
+            ctx.put(ResponseDelay.HOLD_KEY, (ResponseDelay.Hold) () -> false);
+            ResponseDelay.endNoEarlierThan(ctx, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(holdMillis),
+                    () -> answer(ctx));
+            endedInsideTheCall.complete(ctx.response().ended());
+            probeAfterTheRelease(answersAfterTheRelease);
+        };
+
+        int status = get();
+
+        assertAll("an answer refused a held permit",
+                () -> assertEquals(503, status, "the full sub-budget is answered 503"),
+                () -> assertTrue(Awaits.connect(endedInsideTheCall, "the handler to return"),
+                        "the 503 was written before endNoEarlierThan returned: no timer was armed"),
+                () -> assertEquals(0, Awaits.connect(answersAfterTheRelease, "the probe after the release"),
+                        "the held answer never runs"));
+    }
+
+    @Test
+    @DisplayName("an answer already due is written at once without entering the hold")
+    void dueAnswerDoesNotEnterTheHold() throws Exception {
+        AtomicInteger holdsEntered = new AtomicInteger();
+        behaviour = ctx -> {
+            ctx.put(ResponseDelay.HOLD_KEY, (ResponseDelay.Hold) () -> {
+                holdsEntered.incrementAndGet();
+                return false;
+            });
+            ResponseDelay.endNoEarlierThan(ctx, System.nanoTime() - 1, () -> answer(ctx));
+        };
+
+        int status = get();
+
+        assertAll("a due answer beside a hold that would refuse",
+                () -> assertEquals(200, status, "the due answer is written, not refused"),
+                () -> assertEquals(0, holdsEntered.get(), "nothing waits, so no hold is entered"));
     }
 
     /** The held answer: counts itself and ends the response through the one end rule. */

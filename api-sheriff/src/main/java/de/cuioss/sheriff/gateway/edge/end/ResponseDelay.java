@@ -43,6 +43,14 @@ import io.vertx.ext.web.RoutingContext;
  * and the uniform {@code 404}'s caller computes one that is never in the past at the moment it is
  * computed.
  * <p>
+ * <strong>The held-answer sub-budget.</strong> A held answer must not keep its general admission
+ * permit for the length of its wait, or a caller producing nothing but held answers could fill the
+ * general pool. Before it arms a timer, this primitive therefore enters the hold through the
+ * {@link Hold} the edge root stashed on the request ({@link #HOLD_KEY}), which moves the request onto
+ * the held-answer sub-budget. A refused hold — the sub-budget is full — is answered {@code 503} at
+ * once, with no timer, and that answer is the same for every held response whatever its route or
+ * caller.
+ * <p>
  * Stateless; {@link #endNoEarlierThan} runs on the event loop of the response it is handed.
  *
  * @author API Sheriff Team
@@ -57,18 +65,54 @@ public final class ResponseDelay {
      * writer.
      */
     public static final String ADMITTED_AT_KEY = "sheriff.admittedat";
+
+    /**
+     * The {@link Hold} of the request, stashed on the {@link RoutingContext} by the edge root when it
+     * admits the request: how an answer about to wait enters the held-answer sub-budget. Carried on the
+     * context because the writers that hold answers are built without the admission, and the
+     * virtual-thread hop carries only the {@link RoutingContext}.
+     */
+    public static final String HOLD_KEY = "sheriff.hold";
+
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    private static final int SERVICE_UNAVAILABLE = 503;
+
+    /**
+     * Entry into the held-answer sub-budget for one admitted request — the edge root binds it to the
+     * admission's {@code tryEnterHold} for that request.
+     */
+    @FunctionalInterface
+    public interface Hold {
+
+        /**
+         * Moves the request from the general admission pool to the held-answer sub-budget.
+         *
+         * @return {@code true} when the request may wait; {@code false} when the sub-budget is full and
+         *         nothing changed
+         */
+        boolean tryEnter();
+    }
 
     private ResponseDelay() {
         // static helpers only
     }
 
     /**
-     * Runs {@code answer} no earlier than {@code releaseAtNanos}: at once when that time has passed,
-     * otherwise from a Vert.x timer scheduled for the remaining time, rounded up to the next whole
-     * millisecond so the answer is never written early. A deferred answer leaves the calling thread
-     * free at once — it returns before the release — and is dropped when its response has been ended
-     * by another writer or has closed by the time the timer fires.
+     * Runs {@code answer} no earlier than {@code releaseAtNanos}. Three cases:
+     * <ul>
+     *   <li><strong>The release time has passed</strong> — the answer runs at once; no hold is
+     *       entered.</li>
+     *   <li><strong>The answer has to wait, and the hold is entered</strong> — the answer runs from a
+     *       Vert.x timer scheduled for the remaining time, rounded up to the next whole millisecond so it
+     *       is never written early. A request whose context carries no {@link Hold} waits the same way;
+     *       the hold is then not entered.</li>
+     *   <li><strong>The answer has to wait, and the hold is refused</strong> — the answer is replaced by
+     *       a bare {@code 503} written at once through {@link ResponseEnds#reject}; no timer is
+     *       armed.</li>
+     * </ul>
+     * A deferred answer leaves the calling thread free at once — it returns before the release — and is
+     * dropped when its response has been ended by another writer or has closed by the time the timer
+     * fires.
      *
      * @param ctx            the request whose answer is held back
      * @param releaseAtNanos the {@link System#nanoTime()} value before which the answer is not written
@@ -79,6 +123,13 @@ public final class ResponseDelay {
         long remainingNanos = releaseAtNanos - System.nanoTime();
         if (remainingNanos <= 0) {
             answer.run();
+            return;
+        }
+        Hold hold = ctx.get(HOLD_KEY);
+        if (hold != null && !hold.tryEnter()) {
+            // The marked connection is retired as the held answer would have retired it.
+            ConnectionRetirement.retireMarkedConnection(ctx);
+            ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE);
             return;
         }
         long delayMillis = Math.ceilDiv(remainingNanos, NANOS_PER_MILLI);

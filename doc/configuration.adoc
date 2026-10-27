@@ -400,6 +400,15 @@ edge_hardening:                    # OPTIONAL admission budget for the public da
                                    #   QUARTER of the effective admission_cap (>= 1), so lowering
                                    #   admission_cap alone stays valid. See "Sizing the WebSocket
                                    #   relay budget" in the protocol-routes guide.
+                                   # NO KEY for the held-answer sub-budget: an answer held back on
+                                   #   a timer -- the uniform 404 waiting for its timing floor, the
+                                   #   delay action of enumeration_detection -- hands its general
+                                   #   permit back while it waits and takes a held permit instead.
+                                   #   There are a QUARTER of the effective admission_cap of them
+                                   #   (>= 1), so admission_cap scales both. When all are taken, a
+                                   #   further answer that would wait is a bare 503 at once, alike
+                                   #   for every route and caller, and the general permits stay
+                                   #   free for requests that are served.
 
 token_validation:                  # offline bearer validation (routes with auth.require: bearer)
   issuers:                         # one entry per accepted identity provider

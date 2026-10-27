@@ -532,7 +532,10 @@ There is one branch point, and it is the render, not the raise site:
   any other shape, the gRPC trailers-only status included. On a hit it calls
   `PipelineRequest.restoreUnroutedResponse` and renders through the `NO_ROUTE_MATCHED` path.
 * `edge.end.ResponseDelay.endNoEarlierThan` writes every answer rendered as the unrouted `404` no
-  earlier than its release time, from a Vert.x timer.
+  earlier than its release time, from a Vert.x timer. Before it arms the timer it moves the request
+  from the general admission pool to the held-answer sub-budget through the hold the edge root
+  stashed on the context (`ResponseDelay.HOLD_KEY`, bound to `EdgeAdmission.tryEnterHold`); a full
+  sub-budget is answered `503` at once, without a timer.
 * `PipelineRequest` carries the three facts the predicate reads: the header snapshot taken in
   `selectedRoute`, the trust marker `trustBoundaryPassed`, and the session-branch marker.
   `AuthenticationStage` sets the trust marker right after a bearer token validates -- before the
