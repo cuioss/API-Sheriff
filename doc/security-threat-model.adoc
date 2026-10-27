@@ -2467,8 +2467,8 @@ URL may resolve to, never which URL is fetched.
 JWKS-readiness health check does not serve this gateway. The extension's two health probes are
 excluded from the bean set, because against this gateway's validator they would report `UP` while
 checking no issuer at all; the extension's metrics collector is kept, because it observes the
-gateway's own validator, and the extension's own issuer namespace stays empty, so no second
-validator and no second set of key fetches exist
+gateway's own validator. The shipped artifact leaves the extension's own issuer namespace empty in
+every profile, so it builds no second validator and makes no second set of key fetches
 (link:adr/0074-The_token-validation_extensions_metrics_collector_observes_the_gateway_validator_and_its_health_probes_stay_excluded.adoc[ADR-0074]).
 The library's loader status is not truthful after a failed first fetch -- an HTTP loader whose first fetch
 failed never reports `OK`, even once a background refresh has installed keys, and its issuer cache
