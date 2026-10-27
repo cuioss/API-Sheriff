@@ -34,9 +34,12 @@ import io.vertx.ext.web.RoutingContext;
  * not written at all. The timer always fires once its delay has passed and then releases the answer it
  * held, so a closed connection leaves nothing behind.
  * <p>
- * The uniform {@code 404}'s response-timing floor writes through here (see
- * {@code edge.error.UniformNotFound}); a later per-source delay reuses the same primitive rather than
- * writing its own. This primitive applies no policy of its own: the caller computes the release time,
+ * Two callers write through here. The uniform {@code 404}'s response-timing floor is the first (see
+ * {@code edge.error.UniformNotFound}). The per-source {@code delay} action of
+ * {@code enumeration_detection} is the second: a rejection answer to a source that has tripped under
+ * that action is held until admission plus {@code delay_millis}, or until the uniform {@code 404}'s
+ * release time when that is later (see {@code edge.error.ErrorResponseWriter}), rather than through a
+ * delay of its own. This primitive applies no policy of its own: the caller computes the release time,
  * and the uniform {@code 404}'s caller computes one that is never in the past at the moment it is
  * computed.
  * <p>

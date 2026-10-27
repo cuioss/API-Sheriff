@@ -16,12 +16,14 @@
 package de.cuioss.sheriff.gateway.quarkus;
 
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Objects;
 
 import de.cuioss.http.security.core.UrlSecurityFailureType;
 import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.auth.AuthBranch;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.detection.SourceLedger;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import io.micrometer.core.instrument.FunctionCounter;
@@ -51,15 +53,24 @@ import org.jspecify.annotations.Nullable;
  *       {@link EventType} name;</li>
  *   <li>{@value #AUTH_BRANCH_TOTAL}{@code {route,branch}} — the authentication branch a
  *       {@code session_fallback} route selected per request, keyed by the {@link AuthBranch}
- *       label ({@code bearer} or {@code session}).</li>
+ *       label ({@code bearer} or {@code session});</li>
+ *   <li>{@value #SOURCE_TRIPS_TOTAL}{@code {action}} — the per-source enumeration-detection trips,
+ *       keyed by the configured action ({@code block}, {@code delay} or {@code observe});</li>
+ *   <li>{@value #SOURCE_UNTRACKED_TOTAL} — the recon events the detection substrate could not count
+ *       because its ledger was at the bound on tracked sources (cardinality overflow).</li>
  * </ul>
+ * A request refused because its source is blocked is recorded on {@value #ERRORS_TOTAL} under
+ * {@link EventType#SOURCE_BLOCKED}, like every other categorized rejection, with the
+ * {@value #NO_ROUTE} route label — it is refused before route selection.
  * Route cardinality is bounded (route id is a config-fixed label; unmatched requests share the
  * fixed {@value #NO_ROUTE} value) and every other label draws from a fixed set — the
  * {@code method} label of {@value #REQUESTS_TOTAL} is an {@link HttpMethod} enum name or the single
  * {@value #METHOD_OTHER} placeholder for a method the gateway does not parse, its
  * {@code status_family} label is one of the five families {@code 1xx} .. {@code 5xx} or the single
  * {@value #STATUS_FAMILY_OTHER} placeholder for a status outside {@code 100..599}, the
- * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, and the {@code event}
+ * {@code branch} label of {@value #AUTH_BRANCH_TOTAL} has exactly two values, the {@code action}
+ * label of {@value #SOURCE_TRIPS_TOTAL} has exactly three, the source address a trip concerns is never
+ * a label, and the {@code event}
  * label of {@value #ERRORS_TOTAL} is fixed at the {@link EventType} enum and never carries
  * request-derived input — so every meter is safe to keep always on. Each record call
  * resolves its meter through the {@link MeterRegistry}, which caches meters by name and tag set,
@@ -91,6 +102,16 @@ public class SheriffMetrics {
      * and {@link AuthBranch} label ({@code bearer} / {@code session}).
      */
     public static final String AUTH_BRANCH_TOTAL = "sheriff_auth_branch_total";
+    /**
+     * Counter of per-source enumeration-detection trips, keyed by the configured action
+     * ({@code block} / {@code delay} / {@code observe}).
+     */
+    public static final String SOURCE_TRIPS_TOTAL = "sheriff_source_trips_total";
+    /**
+     * Counter of recon events the detection substrate left uncounted because its ledger was at the
+     * bound on tracked sources — the cardinality overflow.
+     */
+    public static final String SOURCE_UNTRACKED_TOTAL = "sheriff_source_untracked_total";
 
     /** The bounded label value shared by requests that matched no route. */
     public static final String NO_ROUTE = "<no-route>";
@@ -118,6 +139,7 @@ public class SheriffMetrics {
     private static final String TAG_FAILURE_TYPE = "failure_type";
     private static final String TAG_EVENT = "event";
     private static final String TAG_BRANCH = "branch";
+    private static final String TAG_ACTION = "action";
 
     private final MeterRegistry registry;
 
@@ -222,6 +244,28 @@ public class SheriffMetrics {
             throw new IllegalArgumentException("sheriff_auth_branch_total accepts only the bearer and session branches");
         }
         registry.counter(AUTH_BRANCH_TOTAL, TAG_ROUTE, route, TAG_BRANCH, branch.label()).increment();
+    }
+
+    /**
+     * Counts one per-source enumeration-detection trip against {@link #SOURCE_TRIPS_TOTAL}, tagged with
+     * the action the tripping ledger was configured with. The {@code action} label is the lower-case
+     * name of a {@link SourceLedger.Action} constant, so its value set is exactly {@code block},
+     * {@code delay} and {@code observe}; the source the trip concerns is never a label.
+     *
+     * @param action the action the ledger was configured with when the source tripped
+     */
+    public void recordSourceTrip(SourceLedger.Action action) {
+        Objects.requireNonNull(action, TAG_ACTION);
+        registry.counter(SOURCE_TRIPS_TOTAL, TAG_ACTION, action.name().toLowerCase(Locale.ROOT)).increment();
+    }
+
+    /**
+     * Counts one recon event the detection substrate could not count against
+     * {@link #SOURCE_UNTRACKED_TOTAL}: its ledger was at the bound on tracked sources and could not
+     * make room, so the source was left untracked. The meter carries no label.
+     */
+    public void recordSourceUntracked() {
+        registry.counter(SOURCE_UNTRACKED_TOTAL).increment();
     }
 
     /**

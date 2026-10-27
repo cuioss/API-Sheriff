@@ -78,6 +78,16 @@ import org.jspecify.annotations.Nullable;
  * cause; the rejection is rendered <em>to</em> the {@code NO_ROUTE_MATCHED} shape, never re-reported
  * <em>as</em> {@code NO_ROUTE_MATCHED}.
  * <p>
+ * <strong>The per-source detection feed.</strong> After it is reported and before it is rendered,
+ * every rejection {@link #handleGatewayRejection} handles is admitted to the per-source recon ledger
+ * through the {@link ReconFeed}, under its TRUE event and with the weight {@link ReconEvents} gives it.
+ * When the rejecting source has tripped under the {@code enumeration_detection} action {@code delay},
+ * the feed returns a release time — admission plus {@code delay_millis} — and the answer is released
+ * no earlier than the later of that time and the uniform {@code 404}'s, through the same
+ * {@link ResponseDelay}: the per-source {@code delay} action is that primitive's second caller. Under
+ * the default {@code observe} action, and under {@code block}, the feed holds nothing and the answer is
+ * rendered exactly as without it.
+ * <p>
  * Every writer mutates the response on the request's event loop; the methods may be called from the
  * virtual thread. Thread-safe.
  *
@@ -106,8 +116,40 @@ public final class ErrorResponseWriter {
     private final GrpcStatusMapper grpcStatusMapper;
     private final RejectionReporter rejectionReporter;
     private final UniformNotFound uniformNotFound;
+    private final ReconFeed reconFeed;
 
     /**
+     * The per-source detection feed every reported rejection is admitted to — the producer side of the
+     * recon ledger. The writer hands each rejection over under its TRUE event and learns back whether
+     * the rejection's answer is held; which rejections count, under which source and with what weight
+     * is the feed's decision ({@code ReconEvents}).
+     * <p>
+     * Declared here, beside its one caller, so the writer depends on no implementation of it: the
+     * implementation lives with the per-source gate ({@code edge.admission.SourceGate}), which already
+     * depends on this package.
+     */
+    @FunctionalInterface
+    public interface ReconFeed {
+
+        /** The feed of a gateway without per-source detection: admits nothing and holds no answer. */
+        ReconFeed NONE = (ctx, request, eventType) -> OptionalLong.empty();
+
+        /**
+         * Admits one reported rejection to the per-source ledger.
+         *
+         * @param ctx       the rejected request
+         * @param request   the pipeline request, {@code null} for a rejection raised before one was built
+         * @param eventType the TRUE event of the rejection, never the one it is rendered as
+         * @return the {@link System#nanoTime()} value before which the rejection's answer is not written,
+         *         or empty when the answer is not held
+         */
+        OptionalLong admit(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType);
+    }
+
+    /**
+     * A writer without per-source detection ({@link ReconFeed#NONE}): the shape of a gateway whose
+     * {@code enumeration_detection} is disabled.
+     *
      * @param portalEndpoint    the application portal, whose {@code portal.error_pages} switch and
      *                          error-page renderer the negotiation consults
      * @param gatewayJson       the serializer the RFC 9457 problem body is rendered through
@@ -118,18 +160,45 @@ public final class ErrorResponseWriter {
      */
     public ErrorResponseWriter(PortalEndpoint portalEndpoint, GatewayJson gatewayJson,
             GrpcStatusMapper grpcStatusMapper, RejectionReporter rejectionReporter, boolean uniformNotFound) {
+        this(portalEndpoint, gatewayJson, grpcStatusMapper, rejectionReporter, uniformNotFound, ReconFeed.NONE);
+    }
+
+    /**
+     * @param portalEndpoint    the application portal, whose {@code portal.error_pages} switch and
+     *                          error-page renderer the negotiation consults
+     * @param gatewayJson       the serializer the RFC 9457 problem body is rendered through
+     * @param grpcStatusMapper  the mapper a rejected gRPC route's trailers-only status is written by
+     * @param rejectionReporter the accounting half {@link #handleGatewayRejection} reports through
+     * @param uniformNotFound   the resolved {@code security_defaults.uniform_not_found} switch: whether
+     *                          a pre-trust rejection is answered as the unrouted {@code 404}
+     * @param reconFeed         the per-source detection feed every reported rejection is admitted to,
+     *                          {@link ReconFeed#NONE} when detection is disabled
+     */
+    public ErrorResponseWriter(PortalEndpoint portalEndpoint, GatewayJson gatewayJson,
+            GrpcStatusMapper grpcStatusMapper, RejectionReporter rejectionReporter, boolean uniformNotFound,
+            ReconFeed reconFeed) {
         this.portalEndpoint = Objects.requireNonNull(portalEndpoint, "portalEndpoint");
         this.gatewayJson = Objects.requireNonNull(gatewayJson, "gatewayJson");
         this.grpcStatusMapper = Objects.requireNonNull(grpcStatusMapper, "grpcStatusMapper");
         this.rejectionReporter = Objects.requireNonNull(rejectionReporter, "rejectionReporter");
         this.uniformNotFound = new UniformNotFound(uniformNotFound);
+        this.reconFeed = Objects.requireNonNull(reconFeed, "reconFeed");
     }
 
     /**
-     * Meters and renders a categorized {@link GatewayException} rejection: reports it through the
-     * {@link RejectionReporter#reportRejection} — the event counter, the security-relevant WARN for
-     * filter violations and smuggled passthrough hosts, the latched INFO for an aborted inbound body
-     * and for a request-body idle timeout, and the error metric — then renders the rejection.
+     * Meters, admits and renders a categorized {@link GatewayException} rejection.
+     * <ol>
+     *   <li>It is reported through {@link RejectionReporter#reportRejection} — the event counter, the
+     *       security-relevant WARN for filter violations and smuggled passthrough hosts, the latched INFO
+     *       for an aborted inbound body and for a request-body idle timeout, and the error metric.</li>
+     *   <li>It is admitted to the per-source detection ledger through the {@link ReconFeed}, under its
+     *       TRUE event — never the one it is rendered as, so a {@code 401} or {@code 405} answered as the
+     *       uniform {@code 404} counts as what it is.</li>
+     *   <li>It is rendered. When the feed holds the answer — the source has tripped under the
+     *       {@code delay} action — the answer, in whichever shape it takes, is released no earlier than
+     *       the later of the uniform {@code 404}'s release time and the feed's, through the same
+     *       {@link ResponseDelay} the floor uses.</li>
+     * </ol>
      *
      * @param ctx      the rejected request
      * @param request  the pipeline request, {@code null} for a rejection raised before one was built
@@ -138,7 +207,8 @@ public final class ErrorResponseWriter {
     public void handleGatewayRejection(RoutingContext ctx, @Nullable PipelineRequest request,
             GatewayException rejected) {
         rejectionReporter.reportRejection(ctx, rejected);
-        renderRejection(ctx, request, rejected);
+        OptionalLong heldUntilNanos = reconFeed.admit(ctx, request, rejected.getEventType());
+        renderRejection(ctx, request, rejected, heldUntilNanos);
     }
 
     /**
@@ -291,7 +361,7 @@ public final class ErrorResponseWriter {
      * @param eventType the event the rejection reports, {@code null} for an unexpected internal failure
      */
     public void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType) {
-        renderProblem(ctx, request, eventType, Map.of());
+        renderProblem(ctx, request, eventType, Map.of(), OptionalLong.empty());
     }
 
     /**
@@ -338,12 +408,17 @@ public final class ErrorResponseWriter {
      * <p>
      * An open circuit's {@code 503} is given its {@code Retry-After} header first
      * ({@link #seedRetryAfter}), so it rides on whichever of the three shapes answers.
+     * <p>
+     * A {@code heldUntilNanos} the per-source feed returned holds the answer in every one of the three
+     * shapes; in the two problem shapes it combines with the uniform {@code 404}'s release time, the
+     * later of the two winning.
      */
-    private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected) {
+    private void renderRejection(RoutingContext ctx, @Nullable PipelineRequest request, GatewayException rejected,
+            OptionalLong heldUntilNanos) {
         EventType eventType = rejected.getEventType();
         if (request != null && uniformNotFound.applies(request, eventType)) {
             request.restoreUnroutedResponse();
-            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED, Map.of());
+            renderProblem(ctx, request, EventType.NO_ROUTE_MATCHED, Map.of(), heldUntilNanos);
             return;
         }
         seedRetryAfter(request, eventType);
@@ -351,15 +426,18 @@ public final class ErrorResponseWriter {
         if (selected != null && selected.protocol() == Protocol.GRPC) {
             Map<String, String> responseHeaders = request.gatewayAuthoredResponseHeaders();
             List<String> setCookies = request.responseSetCookies();
-            ctx.vertx().runOnContext(v -> {
+            ctx.vertx().runOnContext(v -> answerNoEarlierThan(ctx, heldUntilNanos, () -> {
+                if (ctx.response().ended()) {
+                    return;
+                }
                 ResponseEnds.applyStageSetCookies(ctx.response(), setCookies);
                 // The trailers-only status passes the one end rule like every other answer.
                 grpcStatusMapper.renderRejection(ctx.response(), eventType, responseHeaders,
                         ending -> ResponseEnds.endResponse(ctx, ending));
-            });
+            }));
             return;
         }
-        renderProblem(ctx, request, eventType, rejected.getProblemExtensions());
+        renderProblem(ctx, request, eventType, rejected.getProblemExtensions(), heldUntilNanos);
     }
 
     /**
@@ -371,10 +449,12 @@ public final class ErrorResponseWriter {
      * explicitly accept {@code text/html}, the RFC 9457 {@code application/problem+json} body is
      * written with the same status. The body carries the standard members first and then
      * {@code problemExtensions}; the HTML error page never does. An answer rendered as the unrouted
-     * {@code 404} waits for its release time ({@link UniformNotFound#delaysAnswer}) in either shape.
+     * {@code 404} waits for its release time ({@link UniformNotFound#delaysAnswer}) in either shape; an
+     * answer the per-source feed held ({@code heldUntilNanos}) waits for that time too, and when both
+     * apply for the later of the two.
      */
     private void renderProblem(RoutingContext ctx, @Nullable PipelineRequest request, @Nullable EventType eventType,
-            Map<String, Object> problemExtensions) {
+            Map<String, Object> problemExtensions, OptionalLong heldUntilNanos) {
         int status;
         String type;
         String title;
@@ -391,9 +471,10 @@ public final class ErrorResponseWriter {
             title = category != null ? category.title() : "Internal Server Error";
             classification = ErrorPageClassifier.classify(eventType);
         }
-        OptionalLong releaseAtNanos = uniformNotFound.delaysAnswer(eventType)
+        OptionalLong floorReleaseAtNanos = uniformNotFound.delaysAnswer(eventType)
                 ? OptionalLong.of(uniformNotFound.releaseAtNanos(admittedAtNanos(ctx), System.nanoTime()))
                 : OptionalLong.empty();
+        OptionalLong releaseAtNanos = laterOf(floorReleaseAtNanos, heldUntilNanos);
         if (answeredWithErrorPage(ctx, request, classification, status, List.of(), releaseAtNanos)) {
             return;
         }
@@ -423,6 +504,20 @@ public final class ErrorResponseWriter {
     private static void answerNoEarlierThan(RoutingContext ctx, OptionalLong releaseAtNanos, Runnable answer) {
         releaseAtNanos.ifPresentOrElse(releaseAt -> ResponseDelay.endNoEarlierThan(ctx, releaseAt, answer),
                 answer);
+    }
+
+    /**
+     * The later of two optional release times, compared on their difference so the comparison holds
+     * across the wrap of {@link System#nanoTime()}; empty only when both are.
+     */
+    private static OptionalLong laterOf(OptionalLong first, OptionalLong second) {
+        if (first.isEmpty()) {
+            return second;
+        }
+        if (second.isEmpty()) {
+            return first;
+        }
+        return second.getAsLong() - first.getAsLong() > 0 ? second : first;
     }
 
     /**

@@ -74,8 +74,11 @@ import org.jspecify.annotations.Nullable;
  *   <li>the reserved-path events {@link EventType#RESERVED_BODY_TOO_LARGE} and
  *       {@link EventType#LOGOUT_TOKEN_INVALID} — the reserved paths are a fixed, public set
  *       (ADR-0018), so probing them discloses nothing;</li>
- *   <li>the boot, session-lifecycle and informational events — they are not rejections of a
- *       request.</li>
+ *   <li>{@link EventType#SOURCE_BLOCKED} — the refusal of a source already blocked, answered before
+ *       admission and never reported to this predicate; counting it would extend a block by the very
+ *       requests it refuses;</li>
+ *   <li>the boot, session-lifecycle and informational events, {@link EventType#SOURCE_TRIPPED} among
+ *       them — they are not rejections of a request.</li>
  * </ul>
  * <p>
  * <strong>Static resources are excluded</strong> ({@link #isStaticResource}): a browser fetching a

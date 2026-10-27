@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -35,15 +36,23 @@ import java.util.function.Consumer;
 import java.util.function.LongUnaryOperator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.detection.SourceKey;
+import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
+import de.cuioss.sheriff.gateway.edge.admission.SourceGate;
 import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
@@ -51,6 +60,7 @@ import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
@@ -112,6 +122,8 @@ class ErrorResponseWriterTest {
     private static final long JITTER_NANOS = UniformNotFound.RESPONSE_JITTER.toNanos();
     /** Room for timer and event-loop scheduling under machine load before an upper bound is reached. */
     private static final long SCHEDULING_SLACK_NANOS = TimeUnit.SECONDS.toNanos(5);
+    /** The per-source answer hold, chosen well above the floor plus its jitter. */
+    private static final int DELAY_MILLIS = 300;
 
     @Test
     @DisplayName("an open circuit is given Retry-After: 5, the seconds the breaker stays open")
@@ -358,11 +370,106 @@ class ErrorResponseWriterTest {
             return new Timed(response.status(), endedAt - admittedAtNanos.get());
         }
 
+        @Test
+        @DisplayName("a pre-trust 401 rendered as the uniform 404 is admitted to the recon ledger under its true event")
+        void preTrustRejectionIsAdmittedUnderItsTrueEvent() throws Exception {
+            SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
+            AtomicReference<SourceKey> stashed = new AtomicReference<>();
+            handler.set(ctx -> {
+                gate.answersBlocked(ctx);
+                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer(true, PortalEndpoint.inert(), gate).handleGatewayRejection(ctx,
+                        stagedRequest(Protocol.HTTP, List.of()), new GatewayException(EventType.TOKEN_MISSING));
+            });
+
+            Response response = send();
+
+            Map<Enum<?>, Long> contributions = gate.ledger().state(Objects.requireNonNull(stashed.get()))
+                    .orElseThrow().contributions();
+            assertAll("counted as what it is, whatever it is rendered as",
+                    () -> assertEquals(404, response.status(), "precondition: rendered as the uniform 404"),
+                    () -> assertEquals(Map.of(EventType.TOKEN_MISSING, 1L), contributions,
+                            "admitted once, under TOKEN_MISSING and never under NO_ROUTE_MATCHED"));
+        }
+
+        @Test
+        @DisplayName("a rejection past the trust boundary is not admitted to the recon ledger")
+        void postTrustRejectionIsNotAdmitted() throws Exception {
+            SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
+            AtomicReference<SourceKey> stashed = new AtomicReference<>();
+            handler.set(ctx -> {
+                gate.answersBlocked(ctx);
+                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                PipelineRequest request = stagedRequest(Protocol.HTTP, List.of());
+                request.markTrustBoundaryPassed();
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer(true, PortalEndpoint.inert(), gate).handleGatewayRejection(ctx, request,
+                        new GatewayException(EventType.CONTENT_TOO_LARGE));
+            });
+
+            Response response = send();
+
+            assertAll("a trusted caller's rejection is no recon signal",
+                    () -> assertEquals(413, response.status(), "precondition: the honest answer"),
+                    () -> assertTrue(gate.ledger().state(Objects.requireNonNull(stashed.get())).isEmpty(),
+                            "the source was never admitted, so the ledger does not track it"));
+        }
+
+        @Test
+        @DisplayName("delay: a tripped source's rejection is answered no earlier than admission plus delay_millis")
+        void trippedSourceUnderDelayIsHeldForTheDelay() throws Exception {
+            long delayNanos = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
+            SourceGate gate = sourceGate(EnumerationDetectionConfig.builder()
+                    .threshold(1).action(EnumerationDetectionConfig.Action.DELAY).delayMillis(DELAY_MILLIS).build());
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert(), gate);
+            AtomicLong admittedAtNanos = new AtomicLong();
+            CompletableFuture<Long> endedAtNanos = new CompletableFuture<>();
+            handler.set(ctx -> {
+                long admittedAt = System.nanoTime();
+                admittedAtNanos.set(admittedAt);
+                ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
+                gate.answersBlocked(ctx);
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                ctx.addEndHandler(result -> endedAtNanos.complete(System.nanoTime()));
+                writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new GatewayException(EventType.METHOD_NOT_ALLOWED));
+            });
+
+            Response response = send();
+
+            long writtenAfterAdmission = Awaits.connect(endedAtNanos, "the held answer to end") - admittedAtNanos.get();
+            assertAll("held past the uniform 404's floor, to the per-source delay",
+                    () -> assertEquals(404, response.status(), "the answer itself is unchanged"),
+                    () -> assertTrue(delayNanos > FLOOR_NANOS + JITTER_NANOS,
+                            "precondition: the delay outlasts the floor, so it is the later release time"),
+                    () -> assertTrue(writtenAfterAdmission >= delayNanos,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, before the "
+                                    + delayNanos + " ns delay"),
+                    () -> assertTrue(writtenAfterAdmission < delayNanos + SCHEDULING_SLACK_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, far past the delay"));
+        }
+
+        private SourceGate sourceGate(EnumerationDetectionConfig config) {
+            ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
+                    ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                            .securityConfig(SecurityConfiguration.defaults()).build(),
+                    new SecurityEventCounter());
+            return new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()),
+                    forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry),
+                    new GatewayJson(new ObjectMapper()));
+        }
+
         private ErrorResponseWriter writer(boolean uniformNotFound, PortalEndpoint portal) {
+            return writer(uniformNotFound, portal, ErrorResponseWriter.ReconFeed.NONE);
+        }
+
+        private ErrorResponseWriter writer(boolean uniformNotFound, PortalEndpoint portal,
+                ErrorResponseWriter.ReconFeed reconFeed) {
             RejectionReporter reporter = new RejectionReporter(eventCounter, new SheriffMetrics(meterRegistry),
                     1_000L, 1_000L);
             return new ErrorResponseWriter(portal, new GatewayJson(new ObjectMapper()), new GrpcStatusMapper(),
-                    reporter, uniformNotFound);
+                    reporter, uniformNotFound, reconFeed);
         }
 
         private Response reject(ErrorResponseWriter writer, Protocol protocol, List<String> accept,

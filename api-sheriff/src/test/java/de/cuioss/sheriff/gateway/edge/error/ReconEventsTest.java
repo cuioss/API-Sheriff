@@ -98,6 +98,9 @@ class ReconEventsTest {
         table.put(EventType.LOGOUT_TOKEN_INVALID, reserved);
         table.put(EventType.WEBSOCKET_ORIGIN_REJECTED, postTrust);
         table.put(EventType.WEBSOCKET_IDLE_TIMEOUT, notARejection);
+        table.put(EventType.SOURCE_TRIPPED, notARejection);
+        table.put(EventType.SOURCE_BLOCKED,
+                "the refusal of a source already blocked: counting it would extend the block by the requests it refuses");
         return table;
     }
 

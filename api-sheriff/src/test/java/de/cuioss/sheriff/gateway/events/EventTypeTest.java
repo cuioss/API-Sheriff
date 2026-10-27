@@ -111,7 +111,8 @@ class EventTypeTest {
             arguments(EventType.WEBSOCKET_ORIGIN_REJECTED, 403, EventCategory.AUTHORIZATION),
             arguments(EventType.UPSTREAM_ERROR, 502, EventCategory.UPSTREAM),
             arguments(EventType.UPSTREAM_CIRCUIT_OPEN, 503, EventCategory.UPSTREAM),
-            arguments(EventType.UPSTREAM_TIMEOUT, 504, EventCategory.UPSTREAM));
+            arguments(EventType.UPSTREAM_TIMEOUT, 504, EventCategory.UPSTREAM),
+            arguments(EventType.SOURCE_BLOCKED, 429, EventCategory.RATE_LIMITING));
 
     static Stream<EventType> successEvents() {
         return SUCCESS_EVENTS.stream();
@@ -260,6 +261,23 @@ class EventTypeTest {
                         EventCategory.UPSTREAM.problemType()),
                 () -> assertEquals("Input Validation", EventCategory.INPUT_VALIDATION.title()),
                 () -> assertEquals("urn:api-sheriff:problem:routing", EventCategory.ROUTING.problemType()),
-                () -> assertEquals("Routing", EventCategory.ROUTING.title()));
+                () -> assertEquals("Routing", EventCategory.ROUTING.title()),
+                () -> assertEquals("urn:api-sheriff:problem:rate-limiting", EventCategory.RATE_LIMITING.problemType()),
+                () -> assertEquals("Rate Limiting", EventCategory.RATE_LIMITING.title()));
+    }
+
+    @Test
+    @DisplayName("Should keep a source trip informational and a blocked source a 429 rate-limiting failure")
+    void shouldMapTheTwoSourceDetectionEvents() {
+        // Stated literally: the bucket predicates derive membership from the accessors under test, so
+        // they cannot by themselves pin which bucket these two constants belong in.
+        assertAll("per-source detection events",
+                () -> assertNull(EventType.SOURCE_TRIPPED.category(), "A trip describes a source, not a request"),
+                () -> assertFalse(EventType.SOURCE_TRIPPED.isFailure(), "A trip is not a request failure"),
+                () -> assertFalse(EventType.SOURCE_TRIPPED.hasHttpMapping(), "A trip is never rendered"),
+                () -> assertEquals(EventCategory.RATE_LIMITING, EventType.SOURCE_BLOCKED.category(),
+                        "A blocked source is a rate-limiting failure"),
+                () -> assertTrue(EventType.SOURCE_BLOCKED.isFailure(), "A blocked source is a failure"),
+                () -> assertEquals(429, EventType.SOURCE_BLOCKED.httpStatus(), "A blocked source is answered 429"));
     }
 }

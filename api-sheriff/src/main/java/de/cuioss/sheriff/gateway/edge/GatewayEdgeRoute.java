@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.bff.runtime.BffRuntime;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -46,8 +47,10 @@ import de.cuioss.sheriff.gateway.config.model.SecurityConfigurations;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.sheriff.gateway.config.model.TlsConfig;
+import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions;
+import de.cuioss.sheriff.gateway.edge.admission.SourceGate;
 import de.cuioss.sheriff.gateway.edge.assembly.AssetSources;
 import de.cuioss.sheriff.gateway.edge.assembly.DispatchPath;
 import de.cuioss.sheriff.gateway.edge.assembly.RouteAssembler;
@@ -106,6 +109,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The public data-plane edge: a single catch-all Vert.x route that runs every inbound request
@@ -200,6 +204,16 @@ import jakarta.inject.Inject;
  * the response-timing floor after admission: the edge stashes its admission reading on the context
  * ({@link ResponseDelay#ADMITTED_AT_KEY}), and the writer holds the answer back on a Vert.x timer.
  * <p>
+ * <strong>Per-source enumeration detection.</strong> Unless {@code enumeration_detection} is disabled
+ * — an omitted block runs it with its defaults — the constructor builds a {@link SourceGate} over the
+ * recon ledger, keying sources through a {@link SourceKeyResolver} holding the declared
+ * {@code match.host} set and through the {@code forwarded} block's {@link TcpPeerGate} trust decision.
+ * {@code handle} asks the gate, after the retired-connection check and before admission, to resolve and
+ * stash the request's source and to answer a blocked source {@code 429} with {@code Retry-After}; the
+ * {@link ErrorResponseWriter} feeds the gate every reported rejection under its true event. Under the
+ * default {@code observe} action a trip changes no answer. A disabled block builds no ledger and no
+ * gate.
+ * <p>
  * <strong>Negotiated HTML error pages.</strong> With {@code portal.error_pages} on, the three
  * gateway-originated error writers — the problem renderer, a failed OIDC callback and a
  * {@code source: directory} asset miss — answer an {@link ErrorPageClassifier HTML-eligible} exit with
@@ -239,6 +253,8 @@ public class GatewayEdgeRoute {
     private final RedirectStage redirectStage;
 
     private final EdgeAdmission edgeAdmission;
+    /** The per-source gate; {@code null} when {@code enumeration_detection} is disabled. */
+    private final @Nullable SourceGate sourceGate;
     private final ConnectionRetirement connectionRetirement;
     private final RejectionReporter rejectionReporter;
     private final ErrorResponseWriter errorResponseWriter;
@@ -439,8 +455,22 @@ public class GatewayEdgeRoute {
         // The trust-boundary branch is on unless security_defaults.uniform_not_found is declared false:
         // an omitted block resolves to the secure default exactly as a block omitting the key does.
         boolean uniformNotFound = securityDefaultsConfig == null || securityDefaultsConfig.effectiveUniformNotFound();
+        // Per-source enumeration detection: an omitted block resolves to the defaults, so detection runs
+        // under observe unless the operator disables it — and then there is no ledger, no gate and no
+        // feed. The source is keyed through the declared match.host set and the same trust decision the
+        // forward stage takes; the resolver gets a counter of its own so a malformed forwarding header
+        // of a trusted proxy is not counted twice on sheriff_security_events_total.
+        EnumerationDetectionConfig declaredDetection = gatewayConfig.enumerationDetection();
+        EnumerationDetectionConfig detection = declaredDetection != null
+                ? declaredDetection : EnumerationDetectionConfig.defaults();
+        this.sourceGate = detection.effectiveEnabled()
+                ? new SourceGate(detection, new SourceKeyResolver(declaredHosts(routes)), peerGate,
+                        new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()), gatewayEventCounter,
+                        sheriffMetrics, gatewayJson)
+                : null;
         this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
-                rejectionReporter, uniformNotFound);
+                rejectionReporter, uniformNotFound,
+                sourceGate != null ? sourceGate : ErrorResponseWriter.ReconFeed.NONE);
         this.reservedBodyReader = new ReservedBodyReader(reservedPathRegistry, hardening.reservedBodyMaxBytes(),
                 gatewayEventCounter, rejectionReporter, errorResponseWriter);
         this.reservedPathHandler = new ReservedPathHandler(reservedPathRegistry, bffRuntime, portalEndpoint,
@@ -485,6 +515,11 @@ public class GatewayEdgeRoute {
             // The HTTP/1.x connection was retired by a framing rejection: its request boundaries are no
             // longer trusted, so nothing that arrives on it is processed, answered or forwarded.
             connection.close();
+            return;
+        }
+        // The source is resolved and stashed here, on the event loop, and a blocked source is answered
+        // 429 before admission: no permit, no virtual thread and no timer is spent on it.
+        if (sourceGate != null && sourceGate.answersBlocked(ctx)) {
             return;
         }
         if (!edgeAdmission.tryAdmit()) {
@@ -668,6 +703,18 @@ public class GatewayEdgeRoute {
             LOGGER.debug(unexpected, "Unexpected edge failure: %s", unexpected.getMessage());
             errorResponseWriter.renderProblem(ctx, request, null);
         }
+    }
+
+    /**
+     * The hosts the routes declare in {@code match.host} — the set a source's authority host is folded
+     * to, so a caller rotating {@code Host} cannot multiply its detection keys.
+     */
+    private static List<String> declaredHosts(List<Route> routes) {
+        return routes.stream()
+                .map(route -> route.match().host())
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
     }
 
     /**

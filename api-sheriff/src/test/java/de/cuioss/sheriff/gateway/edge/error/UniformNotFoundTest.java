@@ -113,6 +113,9 @@ class UniformNotFoundTest {
         table.put(EventType.LOGOUT_TOKEN_INVALID, reserved);
         table.put(EventType.WEBSOCKET_ORIGIN_REJECTED, postTrust);
         table.put(EventType.WEBSOCKET_IDLE_TIMEOUT, "informational: after the 101 upgrade, no HTTP mapping");
+        table.put(EventType.SOURCE_TRIPPED, informational);
+        table.put(EventType.SOURCE_BLOCKED,
+                "raised before route selection and admission, keyed by the source: identical for every address");
         return table;
     }
 

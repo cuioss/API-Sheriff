@@ -18,6 +18,7 @@ package de.cuioss.sheriff.gateway.testsupport;
 import java.util.Set;
 
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
@@ -47,11 +48,18 @@ public class ConfigFixtures {
 
     /**
      * The gateway document every fixture starts from.
+     * <p>
+     * It declares {@code enumeration_detection.enabled: false}. The edge tests built on it send many
+     * rejected requests from one loopback source; under the shipped default {@code observe} those would
+     * change no answer, but they would trip the source and raise its WARN and event-counter side effects
+     * in tests about something else. A test about detection overrides the block, or sets it to
+     * {@code null} to run the omitted-block default.
      *
-     * @return a builder carrying {@code version: 1} and nothing else
+     * @return a builder carrying {@code version: 1} and the disabled detection block, nothing else
      */
     public GatewayConfig.GatewayConfigBuilder gateway() {
-        return GatewayConfig.builder().version(1);
+        return GatewayConfig.builder().version(1)
+                .enumerationDetection(EnumerationDetectionConfig.builder().enabled(false).build());
     }
 
     /**

@@ -86,7 +86,11 @@ import org.jspecify.annotations.Nullable;
  *       (ADR-0018);</li>
  *   <li>every stage-1 rejection, the framing gate included, and the {@code 405} of an unparseable
  *       method — address-independent: identical whether a route exists or not;</li>
- *   <li>the boot and informational events — they have no HTTP mapping.</li>
+ *   <li>{@link EventType#SOURCE_BLOCKED} — raised before route selection, on the event loop before
+ *       admission, and keyed by the caller's source address rather than by the address it requested:
+ *       address-independent, identical whether a route exists or not;</li>
+ *   <li>the boot and informational events, {@link EventType#SOURCE_TRIPPED} among them — they have no
+ *       HTTP mapping.</li>
  * </ul>
  * The events raised after stage 4 share a constant with closed-set members in two cases
  * ({@code CONTENT_TOO_LARGE}, {@code SECURITY_FILTER_VIOLATION}); the trust-boundary leg of the

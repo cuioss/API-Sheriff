@@ -48,6 +48,13 @@ public enum EventCategory {
     /** Upstream connection failure, timeout, or open circuit breaker. */
     UPSTREAM("upstream", "Upstream"),
 
+    /**
+     * A request refused because its source is blocked by per-source enumeration detection
+     * ({@code enumeration_detection} action {@code block}); answered {@code 429} with
+     * {@code Retry-After}.
+     */
+    RATE_LIMITING("rate-limiting", "Rate Limiting"),
+
     /** Boot-time configuration failure — never rendered as an HTTP response. */
     CONFIGURATION("configuration", "Configuration");
 

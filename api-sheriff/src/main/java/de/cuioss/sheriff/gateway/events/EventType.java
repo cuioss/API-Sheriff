@@ -154,6 +154,24 @@ public enum EventType {
     /** The upstream call exceeded its configured timeout. */
     UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504),
 
+    // --- Per-source enumeration detection ---
+
+    /**
+     * A source's recon ledger reached the {@code enumeration_detection} threshold and tripped.
+     * Raised once per trip by the trip listener {@code SourceGate} registers on the recon
+     * {@code SourceLedger}, whatever the configured action — under the default {@code observe} it is
+     * the only effect of the trip. Informational: it describes the source, not a request, so it has
+     * no category and no HTTP mapping.
+     */
+    SOURCE_TRIPPED(null, 0),
+    /**
+     * A request was refused because its source is blocked under {@code enumeration_detection}
+     * action {@code block}. Raised by {@code SourceGate} on the event loop before edge admission, so
+     * the refusal holds no admission permit, no virtual thread and no timer; the edge answers
+     * {@code 429} with {@code Retry-After}.
+     */
+    SOURCE_BLOCKED(EventCategory.RATE_LIMITING, 429),
+
     // --- BFF server-session lifecycle (informational; no category, no HTTP mapping) ---
 
     /** A server-side session was established after a successful IdP login ({@code require: session}). */

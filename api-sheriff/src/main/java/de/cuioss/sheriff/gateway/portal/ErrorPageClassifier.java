@@ -42,7 +42,9 @@ import org.jspecify.annotations.Nullable;
  *   <li>{@link Classification#KEEP_SHAPE} — every other exit keeps its current body and content
  *       type. That includes, above all, every response <strong>relayed from an origin</strong>
  *       ({@link Exit#ORIGIN_RELAY}, {@link Exit#UPSTREAM_ASSET}): the gateway never replaces what an
- *       upstream said.</li>
+ *       upstream said. {@link EventType#SOURCE_BLOCKED} keeps its shape too: a blocked source is
+ *       answered {@code 429} before admission, before any pipeline request exists to negotiate
+ *       with.</li>
  * </ul>
  * <p>
  * <strong>Exhaustive by construction.</strong> {@link #classify(EventType)} is a {@code switch}
@@ -138,7 +140,9 @@ public class ErrorPageClassifier {
                 RESERVED_BODY_TOO_LARGE, INBOUND_BODY_ABORTED, REQUEST_BODY_TIMEOUT, TOKEN_MISSING, TOKEN_INVALID,
                 SESSION_CREATED, SESSION_DESTROYED,
                 SESSION_REFRESH_FAILED, BACKCHANNEL_LOGOUT, LOGOUT_TOKEN_INVALID, WEBSOCKET_ORIGIN_REJECTED,
-                WEBSOCKET_IDLE_TIMEOUT -> Classification.KEEP_SHAPE;
+                // SOURCE_BLOCKED is answered on the event loop before admission, so before any pipeline
+                // request exists to negotiate an HTML page for: the 429 keeps its problem document.
+                WEBSOCKET_IDLE_TIMEOUT, SOURCE_TRIPPED, SOURCE_BLOCKED -> Classification.KEEP_SHAPE;
         };
     }
 
