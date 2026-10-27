@@ -193,10 +193,12 @@ ever produced (see link:configuration.adoc#_rate_limit[Configuration -- `rate_li
 | Data plane: Vert.x `HttpClient` (streams, trailers, upgrades) shared per upstream tuple;
   resilience via per-route programmatic SmallRye Fault Tolerance guards with a stream-aware
   retry gate; gateway-side response caching rejected; `not_modified.enabled` = end-to-end
-  conditional pass-through, gating both halves of the exchange on one flag -- the five RFC 9110
-  §13 request validators (widened from two by link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037])
-  and the `ETag` / `Last-Modified` that answer them; `cui-http`'s client stack is control-plane
-  only.
+  conditional pass-through, gating both halves of the exchange on one flag -- with it off, the
+  two `304` validators `If-None-Match` / `If-Modified-Since` are withheld from `GET` and `HEAD`
+  and the `ETag` / `Last-Modified` that answer them are stripped, while `If-Match`,
+  `If-Unmodified-Since` and `If-Range` always cross (Amendment A1,
+  link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]);
+  `cui-http`'s client stack is control-plane only.
 
 | link:adr/0009-asymmetric-alias-resolution-failure.adoc[ADR-0009]
 | Asymmetric alias-resolution failure: an unresolvable enabled-endpoint `base_url` alias

@@ -859,10 +859,10 @@ class ForwardPolicyStageTest {
         @MethodSource("conditionalHeaders")
         @DisplayName("under forward-all a validator is withheld while not_modified is off, and crosses once it is on")
         void forwardAllWithholdsValidatorsWhenToggleOff(String requestValidator) {
-            // Arrange — with not_modified off the response half strips the ETag / Last-Modified that
-            // would answer a 304 validator on this route, so the toggle withholds the validator from
-            // the client copy under every mode, forward-all included: carrying it would ask a question
-            // whose answer is then discarded.
+            // Arrange — pins ADR-0037 § "The not_modified decision": with not_modified off the response
+            // half strips the ETag / Last-Modified that would answer a 304 validator on this route, so
+            // the toggle withholds the validator from the client copy under every mode, forward-all
+            // included: carrying it would ask a question whose answer is then discarded.
             // The unowned companion header is the matched control proving the mode copy really ran.
             Map<String, List<String>> headers = Map.of(
                     requestValidator, List.of("probe-value"),

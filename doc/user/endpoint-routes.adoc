@@ -145,7 +145,7 @@ endpoint:
                                    #   X-Powered-By are stripped from its responses; true keeps
                                    #   them (see "Keeping an upstream's identity headers" below)
       upstream:
-        path: /orders             # APPENDED to the alias base path; the request-path
+        path: /orders              # APPENDED to the alias base path; the request-path
                                    #   remainder after the match key follows it (see
                                    #   "Upstream path" below)
         rewrite_location: false    # default false. true maps an upstream Location pointing

@@ -1825,8 +1825,8 @@ a route opts out per route with `keep_identity_headers: true`
 (link:configuration.adoc#_identity_set[the identity set],
 link:adr/0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037]).
 A gateway-originated answer carries no `Server`, no `X-Powered-By` and no version string, and every
-gateway error shares one problem shape, so neither the error body nor its headers tell one
-rejecting component from another. The TLS and HTTP/2 fingerprint of the listener is an accepted
+`application/problem+json` error shares one shape (`type`, `title`, `status`), so neither that
+error body nor its headers tell one rejecting component from another. The TLS and HTTP/2 fingerprint of the listener is an accepted
 residual that no gateway key disguises (link:user/tls-edge.adoc#_tls_and_http2_fingerprints[TLS and
 HTTP/2 fingerprints]).
 
@@ -1838,8 +1838,8 @@ trace/internal detail; a bind failure adjacent to a resolved secret never surfac
 secret; problem+json bodies carry the category only, an HTML error page carries no
 request-derived input beyond the unchanged status, and a gRPC trailers-only rejection's
 `grpc-message` carries the category slug only. A gateway error carries no `Server`, no
-`X-Powered-By` and no version string, and every gateway error answers in one problem shape
-(pinned by `ErrorContractIT`). An upstream's `Server` and `X-Powered-By` are absent from the
+`X-Powered-By` and no version string, and every `application/problem+json` error answers in one
+shape -- `type`, `title`, `status` (pinned by `ErrorContractIT`). An upstream's `Server` and `X-Powered-By` are absent from the
 client response by default and present on a route that sets `keep_identity_headers: true`
 (pinned by `RoutingAndResponseHeadersIT`).
 
