@@ -83,6 +83,14 @@ to *run* the finished gateway).
 | How `ConfigValidator` orchestrates one ordered rule list, the concern map that assigns each boot
   rule to one concern class, and how to add a rule, register it and place its tests.
 
+| link:source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract]
+| The contract of the framework-free `detection` package -- keying by source address (IPv6 reduced
+  to its `/64`) and folded host, the soft 65,536-key bound, weighted admission with caller tags, the
+  leaky bucket that approximates a sliding window, the `enumeration_detection` configuration and why
+  `observe` is its default, the `CLEAR -> TRIPPED -> BLOCKED` state machine and query API, the raw
+  `SourceTrip` emit shape, threading, the single-node in-memory decision, and what it serves
+  `PLAN-V02-07` and deliberately does not.
+
 | link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split]
 | The Vert.x `NetServer` front architecture, the accept-time L4/L7 split, the internal-handoff
   loopback relay and public/internal port ownership, the runtime Host-vs-SNI smuggle guard, and the

@@ -154,11 +154,13 @@ set of things well, with zero mandatory external dependencies.
 
 | *Per-node in-memory rate limiting*
 | KrakenD CE / Traefik token-bucket -- explicitly per-node and stateless; the Redis-backed
-  distributed variant is what makes Tyk stateful. *Planned, not implemented, and no `429` is
-  produced today*: the per-route `rate_limit` field in the
-  link:configuration.adoc#_rate_limit[configuration schema] is parsed and enforced by nothing,
-  and every route that declares it is named at boot by the WARN `ApiSheriff-140`. A future
-  implementation builds on the per-source mechanism of the follow-up enumeration-hardening plan.
+  distributed variant is what makes Tyk stateful. *Per-route rate limiting is planned, not
+  implemented*: the per-route `rate_limit` field in the
+  link:configuration.adoc#_rate_limit[configuration schema] is parsed, applies no limit and causes
+  no `429`, and every route that declares it is named at boot by the WARN `ApiSheriff-140`. The
+  gateway's only `429` is the opt-in `block` action of `enumeration_detection`. A future
+  implementation builds on the shipped per-source detection substrate
+  (link:development/source-detection-substrate.adoc[`doc/development/source-detection-substrate.adoc`]).
 |===
 
 == Features to Avoid

@@ -579,7 +579,12 @@ public final class ConfigLogMessages {
 
         /**
          * A route declares the per-route {@code rate_limit} block, which the gateway parses but does
-         * not enforce: no rate limit is applied to the route and no request is answered {@code 429}.
+         * not enforce: no rate limit is applied to the route and the block itself never causes a
+         * {@code 429}.
+         * <p>
+         * A {@code 429} the gateway does send — for a source blocked under {@code enumeration_detection}
+         * action {@code block} — comes from the per-source detection substrate, not from
+         * {@code rate_limit}, so this record stays true whatever that block declares.
          * <p>
          * It is a {@code WARN} and never a boot refusal: refusing would break every descriptor that
          * already carries the block, and the block itself does no harm. What must not happen is an
@@ -592,7 +597,7 @@ public final class ConfigLogMessages {
         public static final LogRecord RATE_LIMIT_NOT_ENFORCED = LogRecordModel.builder()
                 .prefix(PREFIX)
                 .identifier(140)
-                .template("Route '%s' of endpoint '%s' declares rate_limit, which the gateway does not implement — no rate limit is applied to the route and no request is answered 429. Remove rate_limit from the route, or accept that nothing is enforced")
+                .template("Route '%s' of endpoint '%s' declares rate_limit, which the gateway does not implement — no rate limit is applied to the route and the rate_limit block never causes a 429. Remove rate_limit from the route, or accept that nothing is enforced")
                 .build();
     }
 

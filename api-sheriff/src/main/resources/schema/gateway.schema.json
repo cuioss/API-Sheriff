@@ -347,6 +347,48 @@
         "websocket_relay_cap": { "type": "integer", "minimum": 1 }
       }
     },
+    "enumeration_detection": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-source detection of address enumeration. Every rejection a caller provokes before the trust boundary for an event of the recon set (an unrouted address, a refused method, a filter or whitelist violation, a missing or invalid credential, a CSRF refusal) is counted against the caller's source: the TCP peer address, or the client address a trusted forwarder (forwarded.trusted_proxies) reports, an IPv6 address reduced to its /64, together with the request host folded to the hosts the routes declare. Static resources are not counted. A source trips when the count reaches threshold within window_seconds; each trip is logged as a WARN and metered. Omitted resolves to every default below: detection runs, and the action is observe, which records the trip without changing any answer. One source address may stand for every client behind a NAT or an untrusted load balancer, so settle the source keying before switching to block or delay.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether detection runs at all. Defaults to true."
+        },
+        "threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 100,
+          "description": "The number of recon events within window_seconds at which a source trips. Defaults to 100."
+        },
+        "window_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "The window, in seconds, over which a source's count drains by a full threshold. Defaults to 60."
+        },
+        "action": {
+          "type": "string",
+          "enum": ["block", "delay", "observe"],
+          "default": "observe",
+          "description": "The response to a tripped source. observe (the default) records the trip and changes no answer. block answers every request from the source 429 with Retry-After for block_seconds, before the request is admitted. delay holds the source's rejection answers for delay_millis."
+        },
+        "block_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "How long, in seconds, a tripped source is answered 429 under action block. Defaults to 60."
+        },
+        "delay_millis": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2000,
+          "description": "How long, in milliseconds, a tripped source's rejection answers are held under action delay. Defaults to 2000. Admitted range: 1 to 10000; a value above 10000 is refused at boot (enforced in code)."
+        }
+      }
+    },
     "token_validation": {
       "type": "object",
       "additionalProperties": false,

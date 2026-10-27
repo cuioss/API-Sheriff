@@ -1,0 +1,199 @@
+= Per-Source Detection Substrate -- Contract
+:toc:
+:toclevels: 2
+:sectnums:
+
+The written contract of the gateway's one per-source detection substrate, the framework-free package
+`de.cuioss.sheriff.gateway.detection`. It states what the substrate keys on, how it counts, when a
+source trips, what it emits and what it deliberately does not do -- the terms a consumer builds on.
+The first consumer is the edge's reconnaissance detection, configured by the `enumeration_detection`
+block; `PLAN-V02-07` is the first consumer designed against it from outside the edge
+(<<_plan_v02_07>>).
+
+== Shape
+
+[cols="1,3"]
+|===
+| Type | Role
+
+| `SourceKey`
+| The key one bucket is tracked under: `(source, host)`.
+
+| `SourceKeyResolver`
+| Derives a `SourceKey` from the peer address, a trusted forwarded client address and the authority
+  host.
+
+| `SourceLedger`
+| The substrate: one leaky bucket per key, weighted admission, the state machine, the query API and
+  the cardinality bound.
+
+| `SourceState`
+| The snapshot the query API and an admission answer.
+
+| `SourceTrip`
+| The raw record a trip hands the trip listener.
+|===
+
+The package imports no Vert.x, CDI, Micrometer or other framework type. The clock is an injected
+`LongSupplier` reading monotonic nanoseconds (`System::nanoTime` in production) and a trip is handed
+to a plain `Consumer<SourceTrip>`. Metering, logging and the wire are the consumer's.
+
+== Keying
+
+A key is `(source, host)`, compared character for character. `SourceKeyResolver` is the producer and
+canonicalizes both parts.
+
+*The source* is the forwarded client address when the caller hands one over, otherwise the TCP peer
+address. The resolver does not judge trust: the edge hands over a forwarded address only for a peer
+`forwarded.trusted_proxies` trusts, resolved by the same resolver the forward stage regenerates
+`X-Forwarded-For` from. The chosen address is canonicalized:
+
+* an IPv4 address is kept whole, in dotted-decimal form;
+* an IPv6 address is reduced to its `/64` prefix, written `a:b:c:d::/64`. An end site is routinely
+  given a whole `/64`, so keying on the full address would let one host rotate through unbounded
+  keys. The *residual*: a site holding a `/48` still controls 65,536 `/64` prefixes and can spread
+  across that many keys. The bound below caps what that costs the gateway; it does not make such a
+  source trip. An IPv4-mapped IPv6 address is an IPv4 address and is kept whole;
+* an absent, blank or unparseable address folds to the one fixed source `unknown`. The text is parsed
+  as an address literal only, so a host name is never resolved.
+
+*The host* is the lower-cased authority host when it equals a `match.host` some route declares,
+otherwise the fixed sentinel `*`. A caller rotating `Host` therefore cannot multiply its keys: one
+source occupies at most as many keys as there are declared hosts, plus one.
+
+== The Cardinality Bound
+
+A ledger tracks at most `MAX_TRACKED_SOURCES = 65,536` keys, a fixed constant. Admitting a new key at
+the bound first sweeps the map and removes every entry whose level drained to zero and that is not
+blocked. A sweep runs at most once per `SWEEP_INTERVAL` (one second), so a flood of new keys cannot
+turn every admission into a full scan. When the map is still full the key is not tracked: the
+admission returns the state `UNTRACKED`, the event is not counted and the overflow is counted in
+`untrackedCount()` for the consumer to report. A tripped or blocked key is never evicted.
+
+The bound is *soft*. The size check and the insert are not one atomic step, so the map can exceed the
+bound by at most the number of threads inserting new keys at the same moment.
+
+== Weighted Admission and Tags
+
+`admit(key, weight, tag)` adds one event of `weight` (at least `1`) to the key's bucket and returns
+the post-admission `SourceState`. `tag` is a constant of an enum the consumer supplies, so the tag set
+is bounded by construction. Per key the ledger keeps the weight each tag contributed since the bucket
+was last empty and reports it in the state and the trip. The recon consumer tags each event with its
+`EventType`.
+
+== Bucket Semantics
+
+Every admitted weight is added to the key's level. The level drains linearly at
+`threshold / window` per second: a source that keeps exactly a threshold's worth of weight per window
+holds a steady level just under the threshold, and a full bucket empties in one window. The drain is
+computed lazily from the clock whenever the bucket is touched -- no timer and no thread run.
+
+A leaky bucket *approximates* a sliding window. It is not one: a burst of the full threshold trips at
+once, while the same count spread evenly over slightly more than a window never does. The exact
+sliding window -- the count of events within the last `window` -- is deliberately not served, because
+it needs per-event timestamps per key.
+
+== Configuration
+
+A ledger is built from `SourceLedger.Settings(threshold, window, action, blockDuration)`. The recon
+consumer reads them from the top-level `enumeration_detection` block of `gateway.yaml`
+(`EnumerationDetectionConfig`):
+
+[cols="1,1,3"]
+|===
+| Key | Default | Meaning
+
+| `enabled` | `true` | Whether detection runs at all.
+| `threshold` | `100` | The level at which a source trips.
+| `window_seconds` | `60` | The window over which a full threshold drains.
+| `action` | `observe` | The response to a trip: `observe`, `delay` or `block`.
+| `block_seconds` | `60` | How long a tripped source is blocked under `block`.
+| `delay_millis` | `2000` | How long a tripped source's rejection answers are held under `delay`
+  (`1` to `10000`).
+|===
+
+An omitted block resolves to every default: detection runs on every gateway and records a trip
+without changing any answer. *`observe` is the default* because the gateway keys a source by its
+address and cannot tell at boot whether one address stands for one client or for every client behind
+a NAT or an untrusted load balancer; a default `block` or `delay` would refuse or slow all of them for
+the probing of one. `block` and `delay` are operator opt-ins. `LimitRules.validateEnumerationDetection`
+refuses an out-of-range value at boot.
+
+== State Machine and Query API
+
+[cols="1,3"]
+|===
+| Transition | When
+
+| `CLEAR -> TRIPPED`
+| The admission whose weight brings the level to the threshold or above. It emits one `SourceTrip`.
+  A source trips at most *once per `CLEAR` period*: the trip re-arms only after the level drained
+  back to zero.
+
+| `TRIPPED -> BLOCKED`
+| Under action `block`, whenever the level is at or above the threshold and the source is not already
+  blocked -- on the trip itself, and again on a later admission if the level is still or again at the
+  threshold after a block expired. The block lasts `blockDuration`.
+
+| `BLOCKED -> TRIPPED`
+| The block expired while the level is above zero.
+
+| `TRIPPED -> CLEAR`
+| The level drained to zero and no block holds. The per-tag contributions are cleared.
+|===
+
+`observe` and `delay` never block; what a trip changes on the wire is the consumer's decision, taken
+from the returned state. The query API answers without admitting an event:
+
+* `state(key)` -- the key's `SourceState` after draining to now, or empty when the key is not tracked;
+* `isBlocked(key)` -- whether the key is `BLOCKED`;
+* `trackedSources()` and `untrackedCount()` -- the map size and the overflow count.
+
+A `SourceState` carries the key, the status (`CLEAR`, `TRIPPED`, `BLOCKED` or `UNTRACKED`), the level,
+the threshold, the monotonic instant the block ends (meaningful only while `BLOCKED`) and the per-tag
+contributions.
+
+== The Emit Shape and the Trip Listener
+
+A trip hands one `SourceTrip` to the listener registered at construction: the key, the level right
+after the admission that tripped, the threshold, the window, the per-tag contributions, the configured
+action and the monotonic trip instant. It is a *raw* record: no log template, no ECS or OCSF field
+names, no wire format. Every rendering is the consumer's.
+
+The listener is called on the admitting thread, after the key's lock is released, and only by the
+admission that performed the transition. It must not block.
+
+== Threading
+
+The ledger is thread-safe. Every read-modify-write of one key -- drain, add, trip, block -- runs inside
+one `ConcurrentHashMap.compute`, so two concurrent admissions for one source cannot both perform the
+`CLEAR -> TRIPPED` transition and exactly one trip is emitted per `CLEAR` period. The two races the
+design accepts are named above: the soft cardinality bound, and the listener running after the lock is
+released, so a later admission's state may already be visible when the listener runs.
+
+== Single Node, In Memory
+
+The state lives in one process. It is not shared across gateway instances -- a source scanning a
+cluster spreads its count across the instances it reaches -- and it does not survive a restart. Both
+are deliberate: a shared store is a new dependency and a new failure mode on the request path, and
+the substrate's job is to bound what one instance spends on one source.
+
+[[_plan_v02_07]]
+== Designed Against `PLAN-V02-07`
+
+`PLAN-V02-07` builds a per-source abuse score from several signals. What the substrate serves it:
+
+* *Per-consumer instances.* A consumer builds its own `SourceLedger` with its own weights, window,
+  threshold and action; nothing is shared with the recon ledger except the key derivation.
+* *The recon trip as a score input.* The recon ledger's `SourceTrip` -- and its state through
+  `state(key)` -- is an input a score can read, keyed by the same `SourceKey`.
+* *Dedup.* A trip is emitted once per `CLEAR` period, so a consumer counting trips counts episodes,
+  not events.
+* *The per-tag breakdown.* The contributions say which kinds of event made a source trip.
+
+What it deliberately does not serve:
+
+* *ECS or OCSF formatting* -- the `SourceTrip` is raw; formatting it is `PLAN-V02-07`'s.
+* *Cross-node correlation* -- the state is per process.
+* *An exact sliding window* -- the bucket approximates one.
+* *Persistence across restarts* -- a restart clears every bucket.
