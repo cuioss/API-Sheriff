@@ -1,0 +1,292 @@
+= ADR-0075: One per-source detection substrate counts pre-trust rejections and answers a tripped source
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event, and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer.
+// tags: edge, enumeration, detection, rate-limiting, secure-defaults, http2, hand-rolled, availability
+// affects: api-sheriff, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+ADR-0073 answers every rejection raised before the trust boundary exactly as an unrouted address.
+One answer then tells a scanner nothing. A scanner sends many answers' worth of probes, though, and
+each probe costs the gateway a held answer, a log line and a metric increment. The question is how
+the gateway notices a source that probes, what it counts, and what it does when a source crosses a
+line. The answer must not punish clients that only share an address with the prober.
+
+=== One substrate
+
+*The gateway has one per-source detection substrate: the package
+`de.cuioss.sheriff.gateway.detection`.* Its written contract is
+link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract]. In
+short:
+
+* *Keying.* `SourceKeyResolver` keys a request by `(source, host)`. The source is the client address
+  a trusted forwarder reported, and otherwise the TCP peer. An IPv6 source is reduced to its `/64`.
+  An absent or unparseable address folds to one `unknown` source. The host is kept only when it
+  equals a `match.host` some route declares; every other host folds to `*`.
+* *Counting.* `SourceLedger` keeps one leaky bucket per key. An admitted event adds its weight. The
+  level drains linearly at `threshold / window` per second, computed from a monotonic clock whenever
+  the bucket is touched. No timer and no thread run.
+* *States.* A key trips when its level reaches the threshold, at most once per `CLEAR` period. Under
+  the `block` action a tripped key is blocked for a fixed time. A key returns to `CLEAR` when its
+  level drained to zero and no block holds.
+* *Bounds.* A ledger tracks at most `MAX_TRACKED_SOURCES` = 65,536 keys. A sweep removes drained,
+  unblocked keys. When the map is still full, a new key is not tracked and the overflow is counted.
+  A tripped or blocked key is never evicted.
+* *Surface.* A consumer supplies the weight and an enum tag per event. It can query a key's state,
+  and it receives each trip as a raw `SourceTrip` record. The record carries no log template and no
+  wire format.
+* *Scope.* The state lives in one process and does not survive a restart.
+
+A consumer builds its own ledger with its own threshold, window and action. The recon detection
+below is the first consumer.
+
+=== The first consumer: recon rejections before the trust boundary
+
+`ErrorResponseWriter.handleGatewayRejection` reports a rejection under its true event. It then hands
+the rejection to `SourceGate`, the recon ledger's producer. `ReconEvents.weightOf` gives the
+rejection weight `1` when its event is a member of the closed recon set and the request has not
+passed the trust boundary. Every other rejection weighs `0` and is not counted. `ReconEvents` holds
+the set and records the reason for every exclusion: events after the trust boundary, upstream and
+boot events, reserved-path events, a body that stopped arriving, and static resources.
+
+The count follows the true event, never the rendered status. A bearer `401` that is answered as the
+uniform `404` counts as `TOKEN_MISSING`. The shape a caller is shown therefore cannot change what is
+counted.
+
+A static resource is excluded because honest page loads miss them routinely. A request counts as a
+static resource when its route serves assets, or when the last segment of its path ends in one of a
+fixed set of static extensions.
+
+=== The response to a trip
+
+The top-level `enumeration_detection` block of the gateway configuration configures the recon
+ledger. An omitted block resolves to every default:
+
+[cols="1,1,3", options="header"]
+|===
+| Key | Default | Meaning
+
+| `enabled` | `true` | Whether detection runs.
+| `threshold` | `100` | The level at which a source trips.
+| `window_seconds` | `60` | The time a full threshold takes to drain.
+| `action` | `observe` | What a trip changes: `observe`, `delay` or `block`.
+| `block_seconds` | `60` | How long a source stays blocked under `block`.
+| `delay_millis` | `2000` | How long the rejection answers of a tripped source are held under
+  `delay`.
+|===
+
+Every trip is recorded, whatever the action. `SourceGate` counts it as `SOURCE_TRIPPED` on the event
+counter and on `sheriff_source_trips_total{action}`, and logs WARN `ApiSheriff-141`. The record names
+the source in its canonical form and the folded host. It never carries the raw `Host`, the path or
+a header.
+
+[cols="1,4", options="header"]
+|===
+| Action | What changes on the wire
+
+| `observe`
+| Nothing. The record above is the whole effect of a trip.
+
+| `delay`
+| The recon rejections of a tripped source are released no earlier than admission plus
+  `delay_millis`. `edge.end.ResponseDelay` holds them on a timer, and each held answer takes a permit
+  of the held-answer sub-budget (link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#amendment-a1[ADR-0073,
+  Amendment A1]). The uniform `404` floor still applies, and the later release wins. Requests the
+  gateway serves are never delayed.
+
+| `block`
+| A tripped source is blocked for `block_seconds`. Each request from a blocked source is answered
+  `429` with `Retry-After` and the `rate-limiting` problem document. `Retry-After` carries the whole
+  seconds left of the block, at least `1`. The request is counted as `SOURCE_BLOCKED`.
+|===
+
+[[default-observe]]
+=== Why the shipped default is observe
+
+*Detection is on by default. Enforcement is an operator decision.*
+
+The gateway keys a source by its address. At boot it cannot tell whether one address stands for one
+client or for every client behind a NAT, an egress proxy or a load balancer that
+`forwarded.trusted_proxies` does not name. A default `block` would refuse all of those clients for
+the probing of one. A default `delay` would slow every failed request of all of them. Either default
+would cause an outage that no operator chose.
+
+With `observe`, every deployment still gets the signal: the trip WARN and the trip meter. The
+operator opts into `block` or `delay` once the deployment's source addresses are known to be per
+client, directly or through `forwarded.trusted_proxies`.
+
+The availability cost of a scan does not depend on this default. A held answer leaves the general
+admission pool for the held-answer sub-budget (ADR-0073, Amendment A1). A scan therefore cannot fill
+the pool that trusted traffic is admitted from. The secure-defaults rule is met without a default
+`block`.
+
+=== Why block answers before admission
+
+`GatewayEdgeRoute.handle` calls `SourceGate.answersBlocked` on the event loop. The call runs after
+the retired-connection check and before `EdgeAdmission.tryAdmit`. A blocked request therefore takes
+no admission permit, starts no virtual thread and arms no timer. `SourceGate` writes the answer
+through the one end rule, `ResponseEnds.endResponse`.
+
+The `429` is written before route selection. It does not depend on the address, so it tells a caller
+nothing about routes. For the same reason it is a problem document on every address: no route, and
+so no `protocol: grpc`, has been selected when it is written.
+
+[[hand-rolled]]
+=== Why the substrate is hand-rolled
+
+link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+keeps a hand-rolled component only with a recorded reason. This is the reason: *no platform mechanism
+keys a limiter by caller.*
+
+* SmallRye Fault Tolerance `@RateLimit` limits the invocations of one method across all callers. It
+  has no key, so it cannot tell one source from another.
+* The HTTP layer the gateway runs on bounds connections, sizes and streams. It has no per-client
+  event count.
+* A Bucket4j-based extension would be a new dependency. Its per-key token bucket would still lack the
+  trip state, the once-per-period trip record and the per-tag breakdown the consumers read.
+
+The package imports no framework type because it needs none: the clock is a `LongSupplier` and the
+trip listener a `Consumer<SourceTrip>`. That is a property of the code, not the reason it exists.
+
+[[http2-on-the-transport]]
+=== Why HTTP/2 stream abuse is bounded on the transport
+
+A Rapid-Reset flood and a `CONTINUATION` flood abuse one connection. Their stream and reset state
+belongs to that connection, while the substrate keys a source address. Keying them by source would
+neither see one abusive connection sooner nor bound the memory it holds.
+
+The bounds are therefore fixed per-connection constants on the transport, set by
+`EdgeHardeningOptions` on every listener:
+
+* The listener announces a header-list size of at most 16 KiB, the HTTP/1.1 header-block bound. The
+  bound covers the whole decoded header block, `CONTINUATION` frames included.
+* The Rapid-Reset guard is pinned at the transport's own default of 200 client-sent `RST_STREAM`
+  frames per 30-second window. It is set explicitly so that a change of the transport default cannot
+  move it, and it is never raised
+  (link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
+  A connection past it is ended with `GOAWAY ENHANCE_YOUR_CALM`.
+
+The guard counts only the resets a client sends. The gateway's own `RST_STREAM(NO_ERROR)` resets of
+ADR-0066 and ADR-0060 can therefore never feed it. The forced-h2 gRPC upstream leg opens at most one
+upstream stream per admitted inbound request, so it inherits the inbound bounds. HTTP/2 stream abuse
+is not a substrate consumer.
+
+== Alternatives rejected
+
+*A default `block`.* Every gateway would refuse a probing source from the first trip. Rejected: the
+gateway cannot tell a shared address from a single client at boot, and a wrong guess refuses every
+client behind the address. The held-answer sub-budget bounds the cost of a scan instead.
+
+*A default `delay`.* A gentler default than `block`, with the same flaw: it slows every failed
+request of every client behind a shared address. Each held answer also occupies a held permit for
+`delay_millis`, so delaying the honest misses of a shared address spends the sub-budget the uniform
+`404` floor draws on.
+
+*Detection off by default.* `enabled: false` as the default would leave every deployment blind to
+scans unless an operator opts in. Rejected: `observe` costs one bucket per source and changes no
+answer, so there is nothing to protect by switching it off.
+
+*Counting by the rendered status.* The ledger would count every `404` the gateway sends. Rejected:
+under ADR-0073 the rendered status is deliberately uninformative. A count by status would include
+honest misses after the trust boundary and relayed upstream `404`s, so a client crawling a real
+application would trip. The true event is the signal.
+
+*An exact sliding window per source.* The count of events within the last `window` per key.
+Rejected: it needs one timestamp per event per key, so memory grows with the event rate. The leaky
+bucket needs one level and one timestamp per key. It accepts an approximation: a burst of a full
+threshold trips at once, while the same count spread over slightly more than a window never does.
+
+*A platform or library limiter.* SmallRye Fault Tolerance `@RateLimit`, or a Bucket4j-based
+extension. Rejected for the reasons in <<hand-rolled>>: the first has no per-caller key, and the
+second is a new dependency that still lacks the trip state and the trip record.
+
+*Keying by the full IPv6 address.* One end site holds a whole `/64`, so a single host could rotate
+through unbounded keys. Rejected for the `/64` prefix. A site holding a `/48` can still spread over
+65,536 prefixes; the cardinality bound caps what that costs the gateway.
+
+*Keying by the raw `Host`.* A caller rotating `Host` would multiply its keys. Rejected for the host
+folded to the declared `match.host` set.
+
+*An unbounded key map, or eviction of any key.* An unbounded map grows with the number of distinct
+sources. Evicting a tripped or blocked key would let a blocked source clear its block by flooding
+new keys. Rejected for the bound that sweeps only drained, unblocked keys and counts the overflow.
+
+*A store shared between gateway nodes.* Every node would see one count per source. Rejected: a
+shared store is a new dependency and a new failure mode on the request path. The substrate's job is
+to bound what one node spends on one source.
+
+*Answering `block` after admission or after route selection.* After admission, a blocked request
+would hold a permit and a virtual thread. After route selection, the `429` would depend on the
+address and reopen the oracle ADR-0073 closes. Rejected for the answer on the event loop before
+admission.
+
+*Bounding HTTP/2 stream abuse with the substrate.* Rejected for the reasons in
+<<http2-on-the-transport>>: the abuse and its state belong to one connection, not to one source.
+
+== Consequences
+
+* Every gateway records scans by default, with a WARN, a meter and an event. No answer changes until
+  an operator opts into `block` or `delay`.
+* A request from a blocked source costs one map lookup and one written `429`. It holds no permit, no
+  virtual thread and no timer.
+* The recon ledger's memory is bounded: at most 65,536 keys, plus at most the number of threads
+  inserting at the same moment. The per-tag contributions of a key are bounded by the tag enum.
+* The error contract gains the `rate-limiting` category and its `429`. That `429` comes only from
+  this substrate. The per-route `rate_limit` block is still not enforced
+  (link:0076-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0076]).
+* The design accepts these properties:
+** Behind a load balancer that `forwarded.trusted_proxies` does not name, every client is one
+   source. Under `block`, one prober then blocks all of them. The operator settles
+   `forwarded.trusted_proxies` before opting in; the trip WARN names the source, so a shared address
+   is visible.
+** The count is per node. A scan spread over several nodes, or over many sources, stays below the
+   threshold per key.
+** A source past the cardinality bound is not tracked and cannot trip. The overflow is counted on
+   `sheriff_source_untracked_total`, and the first one per process is logged once as WARN
+   `ApiSheriff-142`.
+** A restart clears every bucket and every block. `Retry-After` describes the block on this node
+   only.
+** Under the default `observe`, a scan is recorded, not slowed or stopped.
+
+== Links
+
+* link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract] --
+  keying, bounds, state machine, query API and emit shape
+* link:../architecture.adoc#_per_source_detection[Architecture -- Per-Source Detection] and
+  link:../architecture.adoc#_http2_transport_bounds[the HTTP/2 transport bounds]
+* link:../configuration.adoc#_enumeration_detection[Configuration -- `enumeration_detection`]
+* link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
+  sources and enumeration detection] -- the operator guide
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+  -- the uniform `404`, the trust boundary and the held-answer sub-budget of Amendment A1
+* link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062]
+  -- the rule this record gives its reason under
+* link:0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]
+  and
+  link:0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060]
+  -- the gateway's own `NO_ERROR` resets the Rapid-Reset guard never counts
+* link:0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]
+  -- the trusted-proxy set the source resolution relies on
+* link:0076-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0076] -- the
+  per-route `rate_limit` block, which a future implementation builds on this substrate
+* link:../security-threat-model.adoc#gw-08[Threat model -- GW-08] and
+  link:../security-threat-model.adoc#gw-16[GW-16]
+* link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-141` and `ApiSheriff-142`
+* `SourceLedgerTest`, `SourceKeyResolverTest`, `ReconEventsTest`, `SourceGateTest`,
+  `GatewayEdgeSourceDetectionTest`, `ConfigModelContractTest`, `EnumerationDetectionIT`,
+  `EdgeHardeningOptionsTest`, `GatewayEdgeHttp2AbuseTest` and `Http2StreamAbuseIT` -- the tests that
+  pin the substrate, the default, the trip response and the transport bounds
