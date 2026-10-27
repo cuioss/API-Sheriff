@@ -163,6 +163,7 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-27 — free slot held again.** After `PLAN-V02-05` landed, V02-11 was the only eligible plan (gate: 15 shared files with V02-50, 4 with V02-09); the operator chose to hold it. Nothing was emitted.
 - **2026-10-27 — `PLAN-V02-05` landed as #526; analyzed.** Verified: Maven Build, Config Validation, Demo Client E2E and
   Scorecard, Integration Tests (40551758384) and the PR benchmark (40551763060) green on `main` at `be7034ac`. Shipped: the
   identity-header strip (`Server`, `X-Powered-By`) on the HTTP relay, the gRPC relay and the upstream asset action with a
