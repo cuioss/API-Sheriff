@@ -20,9 +20,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
+import de.cuioss.sheriff.token.commons.events.EventCategory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -83,9 +86,15 @@ class MetricsIT extends BaseIntegrationTest {
     private static final String TOKEN_VALIDATION_ERRORS_TOTAL = "sheriff_token_validation_errors_total";
     private static final String FAILURE_RESULT_LABEL = "result=\"failure\"";
 
-    /** The closed set of {@code category} labels the error counter carries, one per failure category. */
-    private static final Set<String> TOKEN_VALIDATION_CATEGORY_LABELS = Set.of("category=\"INVALID_STRUCTURE\"",
-            "category=\"INVALID_SIGNATURE\"", "category=\"SEMANTIC_ISSUES\"");
+    /**
+     * The closed set of {@code category} labels the error counter carries, one per failure category.
+     * Derived from the library's {@link EventCategory} rather than restated: the collector tags each
+     * error series with {@code EventCategory#name()} of its event type (ADR-0074), so a category the
+     * library adds or renames moves this set with it instead of leaving a hand-written copy stale.
+     */
+    private static final Set<String> TOKEN_VALIDATION_CATEGORY_LABELS = Arrays.stream(EventCategory.values())
+            .map(category -> "category=\"" + category.name() + "\"")
+            .collect(Collectors.toUnmodifiableSet());
 
     /**
      * How long a rejected token may take to reach the error counter. The collector exports the gateway
@@ -290,7 +299,7 @@ class MetricsIT extends BaseIntegrationTest {
         String after = awaitTokenValidationErrorsAbove(baseline);
 
         // Assert — the labels are the bounded set ADR-0074 names: every sample is a failure, carries an
-        // event_type, and names one of the three failure categories.
+        // event_type, and names one of the library's EventCategory values.
         List<String> samples = PrometheusScrape.samples(after, TOKEN_VALIDATION_ERRORS_TOTAL);
         List<String> unbounded = samples.stream()
                 .filter(line -> !line.contains(FAILURE_RESULT_LABEL) || !line.contains("event_type=\"")
