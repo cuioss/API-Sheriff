@@ -440,6 +440,7 @@ public class TerminalActionRules {
     /**
      * Why a route relays no upstream response header, or empty when it relays them.
      *
+     * @param route the route declaring {@code keep_identity_headers}
      * @return the route kind that makes {@code keep_identity_headers} meaningless, or empty
      */
     private static Optional<String> identityHeadersIgnoredReason(RouteConfig route) {

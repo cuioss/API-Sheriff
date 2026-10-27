@@ -216,8 +216,9 @@ by setting `keep_identity_headers: true` (see
 link:doc/configuration.adoc#_identity_set[Configuration -- the identity set]). Beyond those sets the
 two directions differ: a route can *narrow* what crosses on the request side (`headers_deny` /
 `headers_allow`), while every other upstream response header -- a framework header outside the
-identity set, such as `X-AspNet-Version` -- reaches the client unchanged. `Set-Cookie` is the one
-response header a route's policy decides (see above), and there is no response-header allowlist.
+identity set, such as `X-AspNet-Version` -- reaches the client unchanged. Apart from the identity
+opt-out, `Set-Cookie` is the only response header a route's policy decides (see above), and there is
+no response-header allowlist.
 Strip such headers at the upstream, or in front of the gateway, if they matter to you.
 +
 The TLS and HTTP/2 fingerprint of the listener is a separate residual that no gateway key disguises
