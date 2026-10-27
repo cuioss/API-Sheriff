@@ -4262,9 +4262,10 @@ pipeline reads a single resolved `true`/`false` and never re-derives the inherit
   `-`/`_` spelling -- from the client's headers of a `GET` or `HEAD` after the mode copy, so
   neither reaches the upstream -- not under forward-all, not under a negative-list that does not
   name it, and not under a positive-list that names it in `headers_allow`. No `headers_deny`
-  entry is needed to withhold them. On every other method a `304` cannot answer the request: the
-  two validators are write preconditions answered `412`, so they cross in either state and a
-  create-only `PUT` with `If-None-Match: *` keeps its guard. A `set_headers` entry naming a
+  entry is needed to withhold them. On every other method a `304` cannot answer the request, so
+  the two validators cross in either state: `If-None-Match` is a write precondition answered
+  `412`, so a create-only `PUT` with `If-None-Match: *` keeps its guard, and the origin ignores
+  `If-Modified-Since`, which is defined only for `GET` and `HEAD`. A `set_headers` entry naming a
   validator is operator configuration and still crosses. `If-Match`, `If-Unmodified-Since` and
   `If-Range` are not governed by the toggle on any method: they cross in either state, so a
   conditional write keeps its `412` protection and `If-Range` stays paired with `Range`.

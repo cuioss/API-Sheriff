@@ -215,8 +215,12 @@ on the HTTP relay, the gRPC relay and an asset route with `source: upstream`. A 
 by setting `keep_identity_headers: true` (see
 link:doc/configuration.adoc#_identity_set[Configuration -- the identity set]). Beyond those sets the
 two directions differ: a route can *narrow* what crosses on the request side (`headers_deny` /
-`headers_allow`), while every other upstream response header -- a framework header outside the
-identity set, such as `X-AspNet-Version` -- reaches the client unchanged. Only a few named route
+`headers_allow`), while on the HTTP and gRPC relays every other upstream response header -- a
+framework header outside the identity set, such as `X-AspNet-Version` -- reaches the client
+unchanged. Two places do change origin headers: an asset route with `source: upstream` answers
+through the asset envelope, which sets its own `Content-Type`, `X-Content-Type-Options` and, for an
+authenticated asset, `Cache-Control: no-store`, and drops `Set-Cookie`; and a `security_headers`
+entry in `set` mode overwrites the origin's value. Only a few named route
 keys act on a response header: `keep_identity_headers` (above), the cookie policy for `Set-Cookie`
 (see above), `not_modified: false`, which strips `ETag` and `Last-Modified`, and
 `upstream.rewrite_location: true`, which rewrites `Location`. There is no response-header allowlist
