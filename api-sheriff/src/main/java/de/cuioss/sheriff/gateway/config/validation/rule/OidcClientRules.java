@@ -298,7 +298,9 @@ public class OidcClientRules {
      * <p>
      * The check is one-sided: every pair it refuses is one the boot refuses too, but a pair it passes
      * can still be refused at boot. Two paths that meet only through a {@code ..} element, or through a
-     * symbolic link on a machine without the key files, are caught only once the key material is read.
+     * symbolic link, pass where the key files are absent; at boot both files exist, so this rule refuses
+     * them through {@link Files#isSameFile}. The same key held in two distinct files is caught only once
+     * the key material is read.
      *
      * @param clientKeyFile the client-authentication key-file path
      * @param dpopKeyFile   the sender-constraint key-file path

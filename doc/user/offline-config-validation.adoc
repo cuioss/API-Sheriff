@@ -260,9 +260,9 @@ column names how the boot reports it.
   offline -- it is a configuration verdict and is reported as an `INVALID` line at
   `/oidc/sender_constraint/key_file`. Where the key files are absent, only two paths that are equal
   after normalisation and contain no `..` segment are refused. The check is one-sided: every
-  offline refusal is also a boot refusal, but a clean offline run does not promise a clean boot. The
-  same key under two different paths, including two paths that meet only through a `..` segment or
-  a symbolic link, needs the key material and is refused only at boot.
+  offline refusal is also a boot refusal, but a clean offline run does not promise a clean boot. Two
+  paths that meet only through a `..` segment or a symbolic link need the key files themselves, and
+  the same key held in two distinct files needs the key material; both are refused only at boot.
 | Startup fails with a `CONFIG_INVALID` refusal naming the key.
 
 | portal template
