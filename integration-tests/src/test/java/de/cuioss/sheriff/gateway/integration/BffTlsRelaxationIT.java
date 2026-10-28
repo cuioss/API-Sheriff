@@ -142,13 +142,23 @@ import org.junit.jupiter.api.Test;
  * {@code TOKEN_INVALID} for the realm's token in the third, each moving {@code sheriff_errors_total}
  * on the route {@value #SECURE_ASSET_ROUTE_ID} while {@code NO_ROUTE_MATCHED} on that route does not.
  * <p>
+ * <strong>How a refused login is told from an absent route.</strong> A login the back-channel refuses
+ * fails inside the gateway after the session route was selected and before the trust boundary, so the
+ * shipped default answers it as the unrouted {@code 404} too (ADR-0073, amendment A1), not as a server
+ * error. It is asserted the same way: the unrouted problem document — this descriptor declares no
+ * portal, so no HTML error page is negotiated for the navigation — with no {@code Location}, together
+ * with {@code PRE_TRUST_INTERNAL_FAILURE} moving {@code sheriff_errors_total} on the session route
+ * {@value #SESSION_ROUTE_ID} while {@code NO_ROUTE_MATCHED} on that route does not. The first test,
+ * whose login on the same route redirects and completes, is the matched control of the second.
+ * <p>
  * <strong>What this suite does NOT prove.</strong> It does not exercise
  * {@code egress_tls.upstream_verify_hostname}, which {@code UpstreamHostnameVerificationIT} covers on
  * the compose pair, nor the refusal of a relaxation beside a named trust profile, which is a boot
  * refusal covered at unit level. It does not prove the opposite single-variable leg — the back-channel
- * relaxed and the key-set fetch not. The refused login is asserted as a server-error answer that
- * carries no redirect; the suite does not pin which {@code 5xx} it is. Like every {@code Bff*IT} it
- * replays a cookie map and asserts nothing about browser cookie policy.
+ * relaxed and the key-set fetch not. It does not pin which call of the back-channel refused the
+ * certificate, only that the login failed inside the gateway on the session route and redirected the
+ * browser nowhere. Like every {@code Bff*IT} it replays a cookie map and asserts nothing about browser
+ * cookie policy.
  * <p>
  * <strong>The JSSE arguments.</strong> This is the one launch site of the module that passes JSSE
  * trust-store system properties to a gateway; see {@link #trustStoreArguments()}.
@@ -193,6 +203,15 @@ class BffTlsRelaxationIT {
      * behind a bearer, the {@code route} label its refusals are metered under.
      */
     private static final String SECURE_ASSET_ROUTE_ID = "assets-secure-directory";
+
+    /**
+     * The session route of the shared configuration that serves {@code MEDIATED_PATH}, the
+     * {@code route} label a refused login on it is metered under.
+     */
+    private static final String SESSION_ROUTE_ID = "bff-session-mediated";
+
+    /** The event an internal failure before the trust boundary is counted under (ADR-0073, amendment A1). */
+    private static final String PRE_TRUST_INTERNAL_FAILURE = "PRE_TRUST_INTERNAL_FAILURE";
 
     private static final String NETWORK = "sheriff-tls-relaxation";
     private static final String PROXY = "sheriff-tls-relaxation-idp";
@@ -346,7 +365,7 @@ class BffTlsRelaxationIT {
                     () -> UniformNotFoundAssertions.assertUnroutedProblem(tokenless,
                             "control: the route still refuses a request without a token"));
 
-            assertLoginRefusedBeforeAnyRedirect("with the back-channel verifying the host name, a certificate "
+            assertLoginRefusedBeforeAnyRedirect(rig, "with the back-channel verifying the host name, a certificate "
                     + "that does not name the identity provider must refuse the login");
         }
     }
@@ -381,7 +400,7 @@ class BffTlsRelaxationIT {
             UniformNotFoundAssertions.assertUnroutedProblem(rejected,
                     "without its key set the realm's token must be rejected");
 
-            assertLoginRefusedBeforeAnyRedirect("a certificate the trust store does not hold must refuse the "
+            assertLoginRefusedBeforeAnyRedirect(rig, "a certificate the trust store does not hold must refuse the "
                     + "login, whatever the two hostname keys say");
         }
     }
@@ -391,21 +410,48 @@ class BffTlsRelaxationIT {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * A navigation onto the session route, which would start a login: it must be answered with a
-     * server error that redirects the browser nowhere.
+     * A navigation onto the session route, which would start a login, while the back-channel refuses
+     * the identity provider's certificate. The login fails inside the gateway after the route was
+     * selected and before the trust boundary, so the shipped default answers it as the unrouted
+     * {@code 404} (ADR-0073, amendment A1). Three facts together make that answer a refused login,
+     * rather than an absent route or a login that started:
+     * <ul>
+     *   <li>it is exactly the unrouted problem document
+     *       ({@link UniformNotFoundAssertions#assertUnroutedProblem}) — the descriptor declares no
+     *       portal, so the {@code text/html} navigation negotiates no HTML error page;</li>
+     *   <li>it carries no {@code Location}: the browser is redirected nowhere, so no login started;</li>
+     *   <li>it moves {@code sheriff_errors_total} for {@value #PRE_TRUST_INTERNAL_FAILURE} on the
+     *       session route {@value #SESSION_ROUTE_ID}, read from the rig's own registry, while
+     *       {@code NO_ROUTE_MATCHED} on that route does not
+     *       ({@code UniformNotFoundAssertions.assertTrueEventMetered}): the route was selected, and the
+     *       request failed on it.</li>
+     * </ul>
+     *
+     * @param rig the rig whose gateway is asked and whose registry is read
+     * @param why names the leg in failure messages
      */
-    private static void assertLoginRefusedBeforeAnyRedirect(String why) {
-        Response navigation = BffKeycloakLoginFlow.gateway(Map.of(), ORIGIN)
+    private static void assertLoginRefusedBeforeAnyRedirect(Rig rig, String why) {
+        ExtractableResponse<Response> navigation = UniformNotFoundAssertions.assertTrueEventMetered(rig::metrics,
+                SESSION_ROUTE_ID, PRE_TRUST_INTERNAL_FAILURE, BffTlsRelaxationIT::loginNavigation);
+        assertAll(why,
+                () -> UniformNotFoundAssertions.assertUnroutedProblem(navigation,
+                        "a login refused by the back-channel"),
+                () -> assertNull(navigation.header("Location"),
+                        "a refused login must not redirect the browser"));
+    }
+
+    /**
+     * Navigates onto the session route without a session, as a browser does: {@code text/html}, no
+     * cookie, no redirect followed. That is the request the session stage answers by starting a login.
+     *
+     * @return the answer, keeping its headers and body
+     */
+    private static ExtractableResponse<Response> loginNavigation() {
+        return BffKeycloakLoginFlow.gateway(Map.of(), ORIGIN)
                 .header("Accept", "text/html")
                 .redirects().follow(false)
                 .when().get(MEDIATED_PATH)
-                .then().extract().response();
-        int status = navigation.statusCode();
-        assertAll(why,
-                () -> assertTrue(status >= 500 && status < 600,
-                        () -> "expected a server-error answer, was " + status + ". " + gatewayLog(GATEWAY)),
-                () -> assertNull(navigation.getHeader("Location"),
-                        "a refused login must not redirect the browser"));
+                .then().extract();
     }
 
     /**
