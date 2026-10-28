@@ -163,6 +163,7 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-28 — `PLAN-V02-11` is running** (operator confirmed the start); with `PLAN-V02-50` two of three slots are taken.
 - **2026-10-28 — emitted `PLAN-V02-11` into a free slot.** Overlap prompt answered "Emit V02-11" (gate: 15 shared files with
   V02-50, 4 with the now-landed V02-09). The row is `launched`; `launched → running` stays with the operator. The spec gained
   the ADR-writing guidance (`adr-writing.adoc`, the 500-line guard, next ordinal `0075`). The pre-commit gate churn stays a
