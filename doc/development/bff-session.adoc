@@ -7,7 +7,7 @@ A contributor-facing guide to the *server-session BFF* implementation (Variant 2
 lives, how to build and test it, and the one architectural rule that keeps it correct. It describes
 how to *work in* the code; the design rationale is in
 link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] and the canonical seam
-statement in link:../architecture.adoc#_bff_session_runtime[Architecture -- Server-session BFF runtime].
+statement in link:../architecture/authentication-and-bff.adoc#_bff_session_runtime[Architecture -- Server-session BFF runtime].
 
 == The engine boundary rule (read first)
 
@@ -498,6 +498,6 @@ Two test-support types matter for this code:
 
 == See also
 
-* link:../architecture.adoc#_bff_session_runtime[Architecture -- Server-session BFF runtime] -- the seam.
+* link:../architecture/authentication-and-bff.adoc#_bff_session_runtime[Architecture -- Server-session BFF runtime] -- the seam.
 * link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] -- the design.
 * link:../user/bff-session.adoc[Operator setup -- server-session BFF] -- how it is configured and run.

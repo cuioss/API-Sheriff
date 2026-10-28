@@ -6,13 +6,13 @@
 API Sheriff ships as *one binary*; each route runs in one of three authentication postures,
 selected by configuration (see "Variants Are Route Postures" below). The inbound pipeline -- TLS edge, `cui-http` security filter, static routing,
 the per-route forward policy, metrics, and event system -- is *shared* across all three (see
-link:../architecture.adoc[Architecture]). The variants differ only in the *authentication
+link:../architecture/README.adoc[Architecture]). The variants differ only in the *authentication
 stage*.
 
 NOTE: For the two BFF variants, the authoritative specification is `TokenSheriff/doc/client`
 (`CLIENT-1..22`); the canonical statement of that seam -- including its standing as the sole
 authority for the BFF surface -- is in
-link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer]. The two
+link:../architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer]. The two
 BFF variants below are the two token-binding shapes `CLIENT-19` requires to stay viable, and the
 last column names which one each realizes.
 

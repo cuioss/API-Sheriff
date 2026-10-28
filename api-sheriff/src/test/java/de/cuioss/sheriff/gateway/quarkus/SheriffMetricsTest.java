@@ -72,7 +72,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Verifies the D4/D5 metrics-and-readiness surface: {@link SheriffMetrics} registers the meter
- * names named in {@code architecture.adoc} § Metrics (including the BFF session-lifecycle counter and
+ * names named in {@code doc/architecture/observability-and-errors.adoc} § Metrics (including the BFF session-lifecycle counter and
  * the bounded {@code session_fallback} authentication-branch counter),
  * and {@link GatewayReadinessCheck} reflects configuration, JWKS status, and — for an active BFF
  * runtime in {@code server} or {@code cookie} mode — an {@code oidc=<mode>} datum beside an
@@ -82,14 +82,14 @@ import org.junit.jupiter.params.provider.ValueSource;
 class SheriffMetricsTest {
 
     @Nested
-    @DisplayName("SheriffMetrics registers the architecture.adoc meter names")
+    @DisplayName("SheriffMetrics registers the observability-and-errors.adoc meter names")
     class MeterNames {
 
         private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
         private final SheriffMetrics metrics = new SheriffMetrics(registry);
 
         @Test
-        @DisplayName("meter-name constants match architecture.adoc verbatim")
+        @DisplayName("meter-name constants match observability-and-errors.adoc verbatim")
         void meterNameConstantsMatchArchitecture() {
             assertEquals("sheriff_requests_total", SheriffMetrics.REQUESTS_TOTAL);
             assertEquals("sheriff_request_duration_seconds", SheriffMetrics.REQUEST_DURATION_SECONDS);

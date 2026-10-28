@@ -22,7 +22,7 @@ parts:
 ====
 *How to use this document.* It is normative for the security posture, not for behaviour --
 where a control's behaviour is specified, link:configuration.adoc[the configuration model]
-and link:architecture.adoc[the architecture] govern; this document names the *threat* the
+and link:architecture/README.adoc[the architecture] govern; this document names the *threat* the
 control exists to answer and the *assertion* that proves it still does. Every catalogue
 entry's assertion is meant to become a test (unit, integration, or benchmark) so a
 regression re-opens a known-historical hole loudly. Status values:
@@ -1420,7 +1420,7 @@ second (p99 762.2 ms) and `uploadLarge` at 1.80 requests per second (p99 3737.9 
 * *The reset is not a breaker failure.* The gateway's reset after a complete response runs after the
   guarded dispatch call has returned, so the breaker never counts it, and a client cannot open the
   breaker by uploading. Connect failures stay counted, because they are failures to reach the
-  upstream (see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]).
+  upstream (see link:architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client]).
 * *The reset leaves no error record.* The `StreamResetException` of the gateway's own upstream reset
   is dropped, so a burst of uploads does not write one `ERROR` record per upload (CWE-779).
 
@@ -1539,7 +1539,7 @@ stream-idle bound]):
   a partly sent request closes its connection abortively (<<gw-07-upstream-ports>>), and the next
   dispatch obtains a new one. On an HTTP/2 upstream the reset ends one stream and the connection
   carries on
-  (link:architecture.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout]).
+  (link:architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout]).
 * *A body that keeps arriving.* A body that has not ended 25 s after its upstream attempt started is
   ended there, 5 s before the guard's timeout. Before the response head the dispatch is answered
   `408` (`REQUEST_BODY_TIMEOUT`) and is attributed to the request: the breaker does not count it as a
@@ -1550,17 +1550,17 @@ stream-idle bound]):
   connection only after the deadline, or that the upstream is not taking data for when it passes, is
   ended the same way as soon as it is read again. An attempt that ends without handing its response
   back stops the deadline, which then reports nothing
-  (link:architecture.adoc#_request_body_deadline[Architecture -- request-body deadline]).
+  (link:architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline]).
 * *A gRPC call that goes quiet.* A gRPC call arms neither request-body bound. Until its upstream sends
   the response headers the guard's 30 s timeout bounds it; after them, a call that carries no frame
   in either direction for five minutes has its upstream request reset and ends with
   `grpc-status: 4` (`DEADLINE_EXCEEDED`)
-  (link:architecture.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound]).
+  (link:architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound]).
 * *An HTTP/2 upload the gateway does not read.* An upload refused `503` by the admission cap is reset
   with `NO_ERROR` after its answer, which returns the credit its body held. An upload its client
   resets while its dispatch waits for a pooled connection returns its credit and, at once, its
   admission permit. Both held without a change to the gateway; the connection stays open in both
-  cases (link:architecture.adoc#_http2_unread_upload_release[Architecture -- unread upload release]).
+  cases (link:architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[Architecture -- unread upload release]).
 
 The idle timeout and the deadline are recorded as `INFO` `ApiSheriff-23` and `ApiSheriff-24` and
 counted under `sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`; a call ended by the stream-idle
@@ -1657,7 +1657,7 @@ resets a client sends per connection, so a legitimate client that resets every u
 before its body was sent -- as a Go client does -- would reach the guard's limit on an ordinary
 upload burst and lose the connection with every sibling stream. The gateway therefore resets every
 early-answered HTTP/2 stream itself with `NO_ERROR`
-(link:architecture.adoc#_http2_post_response_reset[Architecture -- post-response reset]), so such
+(link:architecture/tls-and-inbound-security.adoc#_http2_post_response_reset[Architecture -- post-response reset]), so such
 a client is told to stop sending and does not have to reset the stream itself. A stream whose request
 body is still open stops being read, and its complete response is ended and the stream reset at the
 first of three points: the client can send nothing more on the stream (the stream's or the
@@ -1811,12 +1811,12 @@ errors can echo resolved secret values into the boot log; the interim `/api/info
 version string.
 
 *Control.* Every gateway-generated rejection carries no internal detail
-(link:architecture.adoc#_error_contract[error contract]), in one of three renderings: an
+(link:architecture/observability-and-errors.adoc#_error_contract[error contract]), in one of three renderings: an
 `application/problem+json` document naming the category only; for an HTML-eligible exit requested
 with an explicit `text/html` `Accept` while `portal.error_pages` is on, the negotiated HTML error
 page, whose only request-derived input is the unchanged status -- its title comes from a fixed
 per-status table, and everything else on it is operator portal configuration rendered anonymously
-(link:architecture.adoc#_html_error_pages[negotiated HTML error pages], <<html-05>>); and, on a
+(link:architecture/observability-and-errors.adoc#_html_error_pages[negotiated HTML error pages], <<html-05>>); and, on a
 `protocol: grpc` route, the trailers-only form whose `grpc-message` is the category slug.
 Config binding-error messages are sanitized/truncated so no resolved scalar (secret) is ever
 logged. `OidcConfig`/`Session` `toString()` redaction already holds; the binding path must not
@@ -2205,7 +2205,7 @@ problem body or its HTML error page, the response headers the request carried be
 selected, and never a trailers-only gRPC status. The closed set of events, every exclusion and its
 reason, and the definition of "identical" are recorded in
 link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-and in link:architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the
+and in link:architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture -- rejections before the
 trust boundary]. Every unrouted `404`, genuine or resolved, leaves the edge on the same release
 rule, written from a Vert.x timer: no earlier than a fixed floor plus a random jitter after
 admission, and an answer whose processing ran past the floor is held to the next floor step after

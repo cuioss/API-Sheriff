@@ -58,7 +58,7 @@ always keep their shape. A response relayed from the upstream is never replaced,
 request accepts (see
 link:../adr/0053-Portal_templates_render_on_a_standalone_Qute_engine_and_escape-bypass_constructs_are_refused_at_boot.adoc[ADR-0053],
 link:../user/portal.adoc#_error_pages[HTML error pages] and
-link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML error pages]).
+link:../architecture/observability-and-errors.adoc#_html_error_pages[Architecture -- Negotiated HTML error pages]).
 
 == Responsibilities
 
@@ -67,7 +67,7 @@ link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML erro
 | Concern | Behaviour
 
 | Inbound filtering
-| `cui-http` pipelines (path, parameter, header) + `RequestCollectionValidator` for counts,
+| `cui-http` pipelines (path, parameter, header) + parameter/header count limits,
   driven by the route's resolved `security_filter` block -- its own, else its endpoint's, else its
   anchor's (see link:../user/anchors.adoc#_policy_block_resolution[Policy-block resolution]). See
   link:../configuration.adoc#_security_filtering[Security Filtering].
@@ -104,11 +104,11 @@ link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML erro
   `X-Forwarded-*` are resolved behind a trusted-proxy allowlist by `cui-http`'s forwarded resolver,
   and the gateway emits regenerated canonical output (`X-Forwarded-*` by default). See
   link:../adr/0003-forwarded-headers.adoc[ADR-0003] and
-  link:../architecture.adoc#_forward_policy[Architecture -- Forward Policy].
+  link:../architecture/routing-and-forwarding.adoc#_forward_policy[Architecture -- Forward Policy].
 
 | Observability
-| Every outcome increments the link:../architecture.adoc#_event_system[event counter] and is
-  surfaced as link:../architecture.adoc#_metrics[metrics].
+| Every outcome increments the link:../architecture/observability-and-errors.adoc#_event_system[event counter] and is
+  surfaced as link:../architecture/observability-and-errors.adoc#_metrics[metrics].
 |===
 
 == Configuration

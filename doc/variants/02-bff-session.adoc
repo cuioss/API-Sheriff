@@ -21,7 +21,7 @@ server-side token store, backend proxies resource calls). The authoritative spec
 standing as the sole authority for the BFF surface, and the `token-sheriff-client` engine
 dependency (the engine performs the OAuth legs; API Sheriff owns the browser-facing BFF side)
 are stated canonically in
-link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer].
+link:../architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer].
 
 == Login Flow
 

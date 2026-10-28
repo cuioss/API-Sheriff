@@ -1,0 +1,141 @@
+= Threading, Object Reuse & Dependencies
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+link:README.adoc[← Back to Architecture Index]
+
+[[_threading_model]]
+== Threading Model
+
+The gateway uses a virtual-thread-per-request model:
+
+* Inbound security validation is synchronous CPU work and runs inline on the request's virtual
+  thread.
+
+* Data-plane downstream I/O uses the shared Vert.x client's event-loop streaming
+  (link:../adr/0008-data-plane-transport.adoc[ADR-0008]) -- the virtual thread coordinates the
+  request without blocking on proxied body bytes. Control-plane calls (inside the token-sheriff
+  libraries) use `cui-http` async `CompletableFuture` adapters or blocking JDK `HttpClient.send()`
+  from a virtual thread.
+
+* Offline token validation (`TokenValidator`) is thread-safe and cache-backed; a single instance is
+  created at startup and shared.
+
+To benefit from JEP 491 (JDK 24+, removing carrier-thread pinning on `synchronized` blocks), API
+Sheriff *compiles and runs on Java 25* (LTS) per
+link:../adr/0001-java25-runtime-baseline.adoc[ADR-0001] (`maven.compiler-plugin.release=25` in the
+root `pom.xml`). The CI build/test matrix also exercises the next GA release (Java 26) as a
+forward-compatibility guard.
+
+[CAUTION]
+.Never drive inbound-socket I/O from the request's virtual thread
+====
+The virtual thread runs the *pipeline logic*; the request's own *event loop* owns the inbound
+socket. Any operation on the inbound Vert.x connection -- reading the request body, `pause()` /
+`resume()`, writing the response, or the WebSocket upgrade (`toWebSocket()`) -- MUST run on that
+event loop, never inline on the per-request virtual thread:
+
+* *Writing the response* from the pipeline: marshal it with `ctx.vertx().runOnContext(v -> ...)`
+  (every edge renderer does this; `edge.end.ResponseEnds.reject(...)` is called only from the event
+  loop and needs no hop).
+
+* *Reading a body the gateway itself consumes* (the back-channel logout receiver -- the only
+  reserved path that consumes a request body, bounded by `reserved_body_max_bytes`): read it on the
+  event loop *before* the virtual-thread hop, then dispatch with the buffered bytes -- see
+  `edge.reserved.ReservedBodyReader#readReservedBodyThenDispatch`. A proxied body is never buffered;
+  it streams on the client's event loop (ADR-0008).
+
+Pausing the inbound stream, hopping to the virtual thread, and draining the paused body from that
+virtual thread (e.g. blocking on `request.body().toCompletionStage().get()` or re-arming across the
+boundary) causes read-deadline timeouts under CPU contention (1--2 cores) that surface as downstream
+`400` rejections (such as an absent `logout_token` on the back-channel logout receiver). Reproduce
+locally with `docker update --cpus 1 <container>`.
+====
+
+[[_performance_object_reuse]]
+== Performance: Boot-Time Assembly and Object Reuse
+
+Every expensive object is *assembled once at boot and shared immutably across all requests*;
+request-time work allocates minimally and touches no shared mutable per-request state:
+
+[cols="1,3", options="header"]
+|===
+| Object | Reuse rule
+
+| Inbound security pipelines + `SecurityConfiguration`
+| Immutable and thread-safe once built. One `SecurityConfiguration` and pipeline set per *distinct
+  profile / `security_filter` shape* (`edge.assembly.SecurityPostures`) -- deduplicated across all
+  routes sharing that shape.
+
+| Data-plane Vert.x `HttpClient` + connection pool
+| Immutable options, thread-safe client. One Vert.x client per *distinct upstream target*
+  (`edge.assembly.UpstreamTarget`: scheme + host + port + forced HTTP/2 for gRPC) -- deduplicated
+  across routes so N routes to the same backend share one client and connection pool
+  (link:../adr/0008-data-plane-transport.adoc[ADR-0008]). SmallRye Fault Tolerance guards are built
+  once at boot per *resilience shape* (`edge.assembly.ResilienceShape`: upstream target + retry
+  setting). Both live in `edge.assembly.UpstreamClients` so `routing.Route` stays framework-free.
+  WebSocket routes use the edge-wide WebSocket client.
+
+| `TokenValidator`
+| One shared, cache-backed, thread-safe instance created at startup.
+
+| `ForwardedHeaderResolver`
+| Immutable, thread-safe, transport-agnostic; one instance wired from the `forwarded` config and
+  reused for every request.
+
+| `routing.RouteTable` / per-route `routing.Route`
+| Built in two steps. First, `RouteTableBuilder` builds pre-boot `Route` records on the
+  framework-free path (effective auth, `neededScopes`, `allowed_methods`, `security_filter`,
+  `cookies`, `cookieOriginDefence`, forward sets, `LocationRewriter`, matcher, and `allowed_paths`
+  whitelist) with anchor policies resolved
+  (link:../adr/0007-anchor-scoped-policy.adoc[ADR-0007]). Second, at boot, `RouteAssembler`
+  completes each route via `toBuilder()` with its boot-only components (`DispatchPath`,
+  `SecurityPosture`, `AssetSource`). Stage 2 walks `RouteAssembler.AssembledRoutes.routes()` in
+  exact-first, longest-prefix-first order without runtime compilation or anchor lookups.
+
+| Event counters (`GatewayEventCounter`, `cui-http` `SecurityEventCounter`)
+| Shared, lock-free (`ConcurrentHashMap` + `AtomicLong`).
+|===
+
+*Per-request state (on the virtual-thread stack, never shared):* `PipelineRequest`,
+`ResolvedForwarding`, validated `AccessTokenContent`, the matched `Route` reference, and streamed
+request/response bodies.
+
+*Security of shared objects.* Shared objects hold immutable configuration rather than client state,
+preventing cross-request bleed. The circuit breaker is the sole shared object with mutable state,
+tracking only per-node, per-resilience-shape aggregate failure counts and timers.
+
+== Library Dependencies
+
+API Sheriff declares `token-sheriff-client`, `token-sheriff-client-quarkus`, and
+`token-sheriff-validation-quarkus` as direct dependencies, with versions managed by
+`token-sheriff-bom` via `version.token-sheriff` in the root `pom.xml` (`token-sheriff-validation`
+core arrives transitively through `token-sheriff-validation-quarkus`). The canonical
+concern/library/artifact mapping lives in
+link:../technical_aspects.adoc#_library_summary[Technical Aspects -- Library Summary].
+
+NOTE: `token-sheriff-client` and `token-sheriff-client-quarkus` are exercised at runtime by the BFF
+variants only; a base-gateway deployment uses only the validation path. See
+link:authentication-and-bff.adoc#_authentication_layer[Authentication Layer] for the engine/BFF
+seam.
+
+[[_implementation_deviations]]
+== Implementation Deviations
+
+* *Integration bearer validation covers rejection, not live issuance.* The default integration suite
+  exercises routing, health, the RFC 9457 error contract, and bearer *rejection* (missing or
+  malformed token -> uniform `404` with `TOKEN_MISSING` / `TOKEN_INVALID` metered, upstream never
+  reached) against a static file-JWKS issuer without requiring a live Keycloak instance. Positive
+  end-to-end token validation against the Keycloak realm runs under the `-Pintegration-tests` and
+  `-Pbenchmark` profiles (native container + compose stack).
+
+* *Per-route `connect_timeout_ms`, `read_timeout_ms`, `retry.max_attempts`, `retry.idempotent_only`,
+  and `rate_limit`.* `upstream.connect_timeout_ms`, `upstream.read_timeout_ms`,
+  `upstream.retry.max_attempts`, and `upstream.retry.idempotent_only` are bound into configuration
+  records at startup but are not wired into the data-plane client or fault-tolerance guard (proxy
+  and gRPC dispatches use the guard's fixed 30 s head timeout and fixed single-retry idempotent-only
+  gate). The per-route `rate_limit` block is parsed and announced with `WARN ApiSheriff-140` at boot
+  but is not yet enforced at runtime.

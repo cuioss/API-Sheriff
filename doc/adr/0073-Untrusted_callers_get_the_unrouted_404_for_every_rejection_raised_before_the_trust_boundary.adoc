@@ -291,7 +291,7 @@ measurement.
   -- the fixed reserved-path set
 * link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]
   -- the admission budget the floor draws on
-* link:../architecture.adoc[Architecture] -- the error contract and the rejection flow
+* link:../architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture] -- the error contract and the rejection flow
 * link:../configuration.adoc[Configuration Reference] -- `security_defaults.uniform_not_found`
 * link:../security-threat-model.adoc[Security Threat Model] -- the existence-oracle entry
 * link:../user/endpoint-routes.adoc[Endpoint Routes] -- why an existing route answers `404`

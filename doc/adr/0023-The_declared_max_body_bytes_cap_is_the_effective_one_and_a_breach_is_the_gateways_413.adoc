@@ -8,7 +8,7 @@
 // adr-metadata
 // summary: A declared security_filter.max_body_bytes body cap is the cap in force; the boot refuses any declared cap above the framework body limit quarkus.http.limits.max-body-size, so the framework never clips a declared cap silently, and the gateway renders a breach it observes as its own RFC 9457 413 (CONTENT_TOO_LARGE, INPUT_VALIDATION), mapped to RESOURCE_EXHAUSTED on gRPC
 // tags: body-limits, error-contract, fail-closed, configuration, edge
-// affects: api-sheriff/src/main/resources/application.properties, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/boot/ConfigBootPipeline.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigProducer.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/ThoroughChecksStage.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/GrpcStatusMapper.java, doc/configuration.adoc, doc/architecture.adoc
+// affects: api-sheriff/src/main/resources/application.properties, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/boot/ConfigBootPipeline.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/quarkus/ConfigProducer.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/pipeline/ThoroughChecksStage.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventType.java, api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/relay/GrpcStatusMapper.java, doc/configuration.adoc, doc/architecture/tls-and-inbound-security.adoc, doc/architecture/observability-and-errors.adoc
 // supersedes:
 // end-adr-metadata
 
@@ -54,7 +54,7 @@ cap asserts on the envelope, not on the status alone.
 
 The operator-facing statement of the floor is in
 link:../configuration.adoc[Configuration Reference]. The status and category tables are in
-link:../architecture.adoc[Architecture].
+link:../architecture/observability-and-errors.adoc#_error_contract[Architecture].
 
 == Alternatives rejected
 
@@ -141,5 +141,5 @@ route selection.
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073 -- The uniform 404] -- answers the declared-`Content-Length` fast-reject as the unrouted `404` before the trust boundary.
 * link:0003-forwarded-headers.adoc[ADR-0003 -- Forwarded headers] -- the immediate-TCP-peer trust gate this enforcement sits behind.
 * link:../configuration.adoc[Configuration Reference] -- the `max_body_bytes` key, the framework floor, the shadowing case and the chunked-request case.
-* link:../architecture.adoc[Architecture] -- the error contract: the HTTP status and category tables and the gRPC status mapping.
+* link:../architecture/observability-and-errors.adoc#_error_contract[Architecture] -- the error contract: the HTTP status and category tables and the gRPC status mapping.
 * `ConfigBootPipeline`, `ConfigProducer`, `ThoroughChecksStage`, `GrpcStatusMapper` -- the implementation; `ConfigBootPipelineTest`, `ConfigFailFastTest`, `BodyLimitActivationWiringTest`, `LargeBodyIT` -- the tests.

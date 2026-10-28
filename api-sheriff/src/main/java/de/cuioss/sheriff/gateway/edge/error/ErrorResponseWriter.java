@@ -257,7 +257,8 @@ public final class ErrorResponseWriter {
 
     /**
      * Gives the {@code 503} of an open circuit ({@link EventType#UPSTREAM_CIRCUIT_OPEN}) its
-     * {@code Retry-After} header, as the error contract in {@code architecture.adoc} states: the
+     * {@code Retry-After} header, as the error contract in
+     * {@code doc/architecture/observability-and-errors.adoc} states: the
      * header is seeded onto the request's {@linkplain PipelineRequest#responseHeaders() response-header
      * map}, which every writer of a gateway-authored answer applies — the problem document, the
      * negotiated HTML error page and the trailers-only gRPC status alike. Every other rejection is left

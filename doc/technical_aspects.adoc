@@ -189,7 +189,7 @@ strict rotation (ADR-0046). It wires
 `token-sheriff-validation` internally to validate every retrieved token. The authoritative
 API and requirement surface is `TokenSheriff/doc/client` (`CLIENT-1..22`); the split between
 engine and BFF responsibilities is stated in
-link:architecture.adoc#_authentication_layer[Architecture -- Authentication Layer].
+link:architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer].
 
 == Logging
 

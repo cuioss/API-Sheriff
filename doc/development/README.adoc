@@ -382,7 +382,7 @@ unrouted `404`, so an unauthenticated scanner cannot tell which addresses name r
 (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
 The operator view is in link:../user/endpoint-routes.adoc#_uniform_not_found_operator_note[Why an
 existing route answers 404]; the rendering contract is in
-link:../architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the trust
+link:../architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture -- rejections before the trust
 boundary]. This section is what a contributor touching that path needs.
 
 === Where the branch lives

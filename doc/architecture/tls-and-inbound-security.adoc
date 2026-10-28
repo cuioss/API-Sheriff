@@ -1,0 +1,353 @@
+= TLS Edge & Inbound Security
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+link:README.adoc[← Back to Architecture Index]
+
+[[_tls_edge_accept_time_sni_split]]
+== TLS Edge (Accept-Time SNI Split)
+
+The leftmost component is a Vert.x `NetServer` *front listener* that owns the public TLS port. It
+reassembles the full TLS ClientHello, reads the Server Name Indication (RFC 6066) in cleartext, and
+splits each connection at accept time:
+
+* *SNI listed in `tls.passthrough_sni`* -> an *opaque L4 TCP relay*: the intact byte stream
+  (ClientHello included) is forwarded, undecrypted, to the topology-resolved backend, which
+  completes the handshake and presents *its own* certificate. The gateway never terminates and sees
+  no L7 detail.
+
+* *any other SNI, or none* -> an *internal handoff to the terminated L7 listener*, which completes
+  the handshake with the gateway's own certificate (enforcing `min_version`, `alpn`, and `mtls`
+  client-certificate verification) and runs the full fixed pipeline.
+
+Two guards keep the split unambiguous: a boot-time check fails startup when a route's `match.host`
+equals a passthrough SNI, and a runtime *Host-vs-SNI smuggle guard* rejects a terminated request
+whose `Host` header names a passthrough SNI with `404` (`PASSTHROUGH_HOST_SMUGGLED`) *before route
+selection* -- so the passthrough backend's reserved identity can never be reached through the
+terminated listener. Selection is *fail-closed* (GW-06): anything not positively matched as
+passthrough is terminated, never relayed. The front-listener internals and the fail-closed rationale
+are documented in the link:../development/tls-edge.adoc[developer TLS-edge topic].
+
+[[_server_tls_policy_binding]]
+== Server-TLS Policy Binding (Two Seams)
+
+`gateway.yaml` is the single effective source of server-TLS *policy*
+(link:../adr/0025-The_whole_server-TLS_surface_is_neutral_in_gatewayyaml_and_bound_by_exactly_two_seams.adoc[ADR-0025]).
+Reaching the runtime takes *two different mechanisms*, because the two listeners do not share a
+seam:
+
+[cols="1,2,2", options="header"]
+|===
+| Listener | Seam | Why it is the only one available
+
+| Terminated main HTTPS listener
+| `TlsServerCustomizer`, an `HttpServerOptionsCustomizer` bean mapping `tls.min_version`,
+  `tls.cipher_suites` and `tls.alpn` onto the listener's enabled protocol set, cipher allowlist and
+  ALPN protocols. `MtlsServerCustomizer` is its sibling for `tls.mtls`.
+| Quarkus enumerates customizer beans from the CDI container in `doServerStart` *after*
+  `createSslOptions` has run, so the customizer is the last writer and its result is what the
+  listener starts with. Declaring the same policy through `quarkus.tls.*` does not work here: that
+  registry is consulted only when the certificate also comes from it, and this gateway supplies its
+  certificate through `quarkus.http.ssl.certificate.*`.
+
+| Management interface
+| `NeutralTlsConfigSource`, a SmallRye `ConfigSource` projecting `management.tls.enabled: false`
+  onto `quarkus.management.tls-configuration-name`.
+| `VertxHttpRecorder.initializeManagementInterface` never enumerates `HttpServerOptionsCustomizer`
+  beans. The only lever left on that path is the configuration the recorder reads, so a config
+  source is the seam *by elimination*, not by preference.
+|===
+
+*The projecting source runs before CDI exists.* A `ConfigSource` is instantiated while the
+configuration system itself is being built, before the CDI container starts. `NeutralTlsConfigSource`
+therefore re-reads `gateway.yaml` directly with SnakeYAML (under the same expansion-bomb caps as the
+authoritative loader,
+link:../adr/0010-YAML_expansion_limits_enforced_in_a_compose-only_pre-pass_before_bind.adoc[ADR-0010])
+and parses only the `management` block:
+
+* *The duplication is bounded and one-directional.* The authoritative parse, schema validation and
+  semantic validation still happen once in `ConfigLoader` and `ConfigValidator`. The early pass
+  reads one block and emits at most one key.
+
+* *A malformed or absent document degrades silently here.* The loader re-encounters the failure
+  moments later and reports it as a located `ConfigError` that fails the boot.
+
+* *An unexpected shape reads as "not explicitly disabled".* Because this parse precedes schema
+  validation, a `management` block that is not a map, or an `enabled` that is not a boolean, keeps
+  TLS on as the fail-safe direction while the loader prepares the real error.
+
+*The source is single-ordinal and projects policy keys only.* Its ordinal sits above the
+environment-variable source's so a policy named in `gateway.yaml` is not silently overridden by a
+deployment variable. That is safe because the projected set contains no deployment-bound key: never
+a port, never trust material, and never `quarkus.tls.key-store.*` (populating the default TLS
+registry bucket would make the management interface inherit HTTPS through `registry.getDefault()`).
+
+[[_inbound_security_filter]]
+== Inbound Security Filter
+
+The inbound filter is the "basic HTTP security filtering -- not a WAF" layer, delivered by
+`cui-http`'s security module. It runs as synchronous CPU work (< 1 ms target, no I/O) inline on the
+request's virtual thread, split across route selection into a non-skippable pre-route floor
+(`BasicChecksStage`) and an always-dispatched post-route per-route stage (`ThoroughChecksStage`)
+whose validation half is profile-gated:
+
+[cols="2,1,3", options="header"]
+|===
+| Check | Stage | Switchable by `profile`
+
+| Path canonicalisation and validation | pre-route floor | no -- route selection requires its output
+| Header name and value validation | pre-route floor | no
+| Parameter and header *count* caps | pre-route floor | no
+| `max_body_bytes` cap | post-route | no -- a resource guard, not an injection defence
+| `allowed_paths` allowlist | post-route | no -- a surface restriction, not an injection defence
+| URL-parameter *name* and *value* validation | post-route | *yes* -- off under `minimal`
+| Divergent path/header pipeline re-run | post-route | *yes* -- off under `minimal`
+|===
+
+The parameter *count* cap stays in the floor even though the values it bounds are validated
+post-route: a collection limit is a DoS guard that does not depend on a per-route policy.
+
+*Profiles.* The mode set is `strict` / `paranoid` / `lenient` / `minimal`, on the gateway-wide
+`security_defaults` block and on any `security_filter` block. An omitted block or omitted `profile`
+resolves to `strict`, the fail-closed choice. The value range is enforced by the bundled JSON
+Schema's `profile` enum before binding; the configuration validator enforces the posture rule --
+refusing an effective `minimal` on an effectively-authenticated or `type: bff` route (see
+link:README.adoc#_component_model[Component Model]). `minimal` contributes no limits policy of its
+own, taking its limits from the nearest non-`minimal` profile in its fallback chain (landing on
+`strict` when the whole chain is `minimal`), which keeps its retained body cap concrete
+(link:../adr/0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024]).
+
+Wiring (see link:../technical_aspects.adoc[Technical Aspects] for the full API):
+
+* `PipelineFactory.createCommonPipelines(config, counter)` yields the path, parameter-value,
+  header-name and header-value pipelines; `ThoroughChecksStage` builds the parameter-name pipeline
+  via `PipelineFactory.createParameterNamePipeline(routeConfig, eventCounter)`, and both stages
+  build dedicated `PipelineFactory.createHeaderValuePipeline(...)` instances for the `Authorization`
+  header (`security_defaults.max_authorization_header_value_length`) and for `Cookie` / `Set-Cookie`
+  in cookie-mode BFF (`oidc.session.max_cookie_size + 512` overhead).
+
+* `BasicChecksStage.enforceCollectionLimits` checks query-parameter pair count against
+  `maxParameterCount()` and total header value count against `maxHeaderCount()`, raising
+  `PARAMETER_LIMIT_EXCEEDED` (`400`) when exceeded.
+
+* A shared, immutable `SecurityConfiguration` supplies the tunable limits from the resolved
+  profile's preset (`SecurityProfile.STRICT` -- `strict()` with parameter-value line breaks refused
+  -- `SecurityProfile.PARANOID` -- `paranoid()` with parameter-value line breaks refused -- or
+  `SecurityProfile.LENIENT` -- `lenient()`), overlaid with any explicit `security_filter` limit keys
+  and `SecurityConfigurations.withDeclaredCharacterPolicy` (`security_defaults.allow_extended_ascii`).
+  `minimal` inherits the nearest non-`minimal` preset.
+
+* A single `de.cuioss.http.security.monitoring.SecurityEventCounter` is passed into every pipeline,
+  incrementing on each violation and feeding the gateway metrics.
+
+*The query is validated in the form it is forwarded in.* The post-route stage receives the query
+pairs raw and still percent-encoded, split from the request-target on `&` in wire order -- never
+grouped by name -- and validates names and values with `cui-http`'s parameter-name and
+parameter-value pipelines (each decoding once). The forward path appends those pairs in the same
+order, with one exception: every raw `;` in a forwarded name or value is rewritten as `%3B` on every
+route so an upstream that splits on `;` cannot read a second parameter out of one pair (CWE-235). The
+rewrite is lossless at the decoded level
+(link:../adr/0047-The_security_filter_validates_the_raw_query_it_forwards.adoc#semicolon-exception[ADR-0047]).
+
+Path allowlisting is enforced at the gateway layer from the route's `allowed_paths`. Which client
+headers and query parameters reach the upstream is answered later by the route's `forward` block
+(see link:routing-and-forwarding.adoc#_forward_policy[Forward Policy]) and
+link:../configuration.adoc#_security_filtering[Security Filtering].
+
+=== Framing Gate
+
+Separate from the profile-gated filter, a stateless anti-request-smuggling *framing gate*
+(`FramingGate`) runs once at stage 1, before route selection. It rejects five desync and framing
+vectors with `400`:
+
+. `Content-Length` + `Transfer-Encoding` coexistence (including duplicated or comma-listed
+  `Content-Length`);
+
+. a single `Content-Length` value that is not strictly decimal ASCII digits (`1*DIGIT` -- rejecting
+  empty, signed, whitespace-padded, hex or non-ASCII values) or overflows `long`;
+
+. a `Transfer-Encoding` that is repeated or is not exactly `chunked`;
+. a body on a bodyless method (`GET` or `HEAD`);
+
+. a `Connection` header naming a framing or trust header (which would drop it hop-by-hop and reopen
+  a desync).
+
+The gate is not re-run after forwarding headers are regenerated: request headers are immutable, and
+the outbound upstream map never carries the client's framing headers.
+
+On HTTP/1.x a framing rejection carries `Connection: close` and closes the connection once written,
+so any pipelined request behind it is discarded. On HTTP/2 it ends the offending stream alone,
+resetting an open request body with `NO_ERROR` once written (<<_http2_post_response_reset>>), while
+other streams on the connection continue. See link:../security-threat-model.adoc#gw-02[GW-02] for
+the transport-level and gate-level enforcement table.
+
+*One operator-relaxable leg.* The gateway-wide
+`security_defaults.allow_get_with_content_length_body` (default `false`) relaxes only the
+declared-`Content-Length` check on `GET` (for upstreams such as Elasticsearch `_search`,
+link:../adr/0026-The_framing_gate_relaxes_only_a_declared-Content-Length_body_on_GET_behind_an_explicit_gateway-wide_opt-in.adoc[ADR-0026]).
+A `GET` whose body is signalled without a declared `Content-Length`, any `Transfer-Encoding` on a
+bodyless method, `HEAD` on every leg, and the CL+TE and `Connection`-header checks remain
+unconditionally rejected. Because the gate runs before route selection, the knob is gateway-wide.
+
+[[_http2_post_response_reset]]
+== HTTP/2 Post-Response Reset and Connection Window
+
+*An HTTP/2 response answered while the request body is still open is ended once request data stops
+arriving or a time cap passes, and its stream is then reset with `NO_ERROR`.* This single rule in
+`ResponseEnds.endResponse` governs every response the edge ends: a relayed response (an upstream
+that answered before reading the whole body), pre-upgrade WebSocket error and rejection answers, and
+every answer the gateway writes itself -- the problem document, the HTML error page, the portal
+page, a reserved-path answer, an asset, a redirect, a short-circuit, the gRPC trailers-only status,
+a relay-failure answer and the admission `503` (including a framing rejection and a reserved-body
+`413`). Only a completed WebSocket upgrade (`toWebSocket()`) and the L4 passthrough relay bypass it.
+The `NO_ERROR` reset (RFC 9113 §8.1) tells the client to stop sending while leaving the connection
+and its other streams intact. A stream whose body has already ended is ended normally. HTTP/1.x is
+unchanged -- a framing rejection or a reserved-body `413` retires the connection instead.
+
+The rule runs in three steps:
+
+. *The body is stopped at once.* As soon as the answer is decided, the upstream request still
+  receiving the body is reset and the inbound stream is paused, returning no further flow-control
+  window.
+
+. *The end waits until request data stops arriving.* The final frame carrying `END_STREAM` is held
+  back until the stream's or connection's flow-control window is exhausted (or the stream ended), or
+  the remaining window has not changed for 50 ms, or 1 s has passed, whichever comes first. Holding
+  `END_STREAM` back until the client stops sending prevents the client from sending its own reset or
+  triggering `STREAM_CLOSED` resets on in-flight data frames, both of which count against the
+  transport's per-connection Rapid-Reset limit. The 50 ms quiet period and 1 s cap are gateway
+  constants.
+
+. *The reset goes out right behind the end.* The end and the `NO_ERROR` reset are written together
+  (or immediately after HTTP/2 flow control flushes the final frame), so no connection window
+  returned by another stream can let the client send on this stream in between.
+
+*Abortive upstream close on HTTP/1.1.* HTTP/1.1 cannot cancel a single message, so resetting an
+upstream request closes that upstream connection. Every non-forced-HTTP/2 upstream client configures
+`SO_LINGER 0`, turning that close into a TCP `RST` that frees the local ephemeral port immediately
+instead of holding it in `TIME_WAIT` (see
+link:terminal-actions-and-protocols.adoc#_downstream_client[Downstream Client]). The same abortive
+close applies on all four client-driven triggers: an early upstream answer, a client abort
+(<<_aborted_inbound_body>>), and, once a body chunk was forwarded, the request-body idle timeout
+(<<_request_body_idle_timeout>>) and request-body deadline (<<_request_body_deadline>>). Because an
+early-answer reset happens after the guarded dispatch call returned, the circuit breaker never sees
+it, and any resulting `StreamResetException` on the upstream request is dropped rather than logged
+at `ERROR`
+(link:../adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc#abortive-upstream-close[ADR-0066]).
+
+[[_http2_connection_window]]
+*The inbound HTTP/2 connection window has room for every stream the listener admits at once.* An
+inbound request returns no flow-control window until its dispatch obtains an upstream connection and
+subscribes to the body; until then (and permanently once step 1 pauses it), every byte sent on that
+stream stays charged against the connection window. `EdgeHardeningOptions` caps concurrent streams
+per connection at 100 and sizes the inbound connection window to `maxConcurrentStreams *
+initialStreamWindow` = 6,553,500 bytes (100 streams × 65,535 bytes, capped at `Integer.MAX_VALUE`
+and never below one stream window). Paused or queued streams therefore cannot exhaust the connection
+window and starve active uploads on the same connection.
+
+[[_http2_connection_window_measurement]]
+*The derived window was measured against a fixed 2 MiB window, and stays derived.* In k6 HTTP/2
+upload benchmarks against the native distroless stack (`upload-1MB` at 50 VUs and `upload-50MB` at
+5 VUs), lowering the connection window to a fixed 2 MiB (32 stream windows) reduced `upload-1MB`
+mean throughput by 12.2% and `upload-50MB` mean throughput by 31.1% (with p95 latency 46.4% higher)
+while re-exposing the connection to starvation whenever more than 32 streams are paused; the derived
+6,553,500-byte window is retained (see
+link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060]).
+
+[[_http2_unread_upload_release]]
+*An HTTP/2 upload the gateway does not read returns its credit when its stream ends.* An upload
+refused `503` by the admission cap is ended through the one end rule with a `NO_ERROR` reset (never
+`REFUSED_STREAM`, because a `503` response was already written), returning the stream's flow-control
+credit to the connection so admitted uploads on the same connection can complete. An upload reset by
+its client while waiting for a pooled upstream connection likewise returns its connection credit and
+releases its admission permit immediately
+(link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#unread-upload-bodies[ADR-0060],
+link:../adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
+
+== Request Body Framing and Timeouts
+
+[[_dispatch_body_framing]]
+*A bodyless method carries no body upstream, and a declared length frames the forwarded body.* A
+`GET` or `HEAD` without a positive declared `Content-Length` is sent upstream with no body on every
+protocol; its first inbound body byte (such as HTTP/2 `DATA` frames without `content-length`)
+refuses the request as `SECURITY_FILTER_VIOLATION` (`400` before relay, or a `CANCEL` stream reset
+once the response was handed over for relay). Every other request declaring `Content-Length` is
+forwarded framed by that exact byte count: a byte beyond it refuses the request as
+`SECURITY_FILTER_VIOLATION`, and a body ending short of it resets the upstream request as
+`INBOUND_BODY_ABORTED`. A request with no declared length keeps the transport's chunked/streamed
+framing. Only proxy dispatch streams an inbound body; assets, redirects, the portal and reserved
+paths forward none.
+
+[[_aborted_inbound_body]]
+*A request body that fails after dispatch is a client-caused termination.* When the inbound body
+stream fails after dispatch began (client disconnect mid-upload or broken chunk framing), the
+upstream request is reset (closing an HTTP/1.1 upstream connection abortively) and the gateway
+reports `INBOUND_BODY_ABORTED` (`400`, `INPUT_VALIDATION`, `INFO` `ApiSheriff-22` latched per route,
+counted in `sheriff_errors_total{event="INBOUND_BODY_ABORTED"}`). A body exceeding `max_body_bytes`
+remains `CONTENT_TOO_LARGE` (`413`), and the gateway's own early-answer reset
+(<<_http2_post_response_reset>>) is marked before ending the response so it is never recorded as
+`INBOUND_BODY_ABORTED`.
+
+Client-ended dispatches -- body over cap, body byte on a bodyless method, length mismatch, aborted
+inbound body, request-body idle timeout (<<_request_body_idle_timeout>>), or request-body deadline
+before the response head (<<_request_body_deadline>>) -- are not upstream failures: they are never
+retried and do not trip the circuit breaker (SmallRye Fault Tolerance records skipped `GatewayException`
+outcomes as successes in its rolling window).
+
+[[_request_body_idle_timeout]]
+*A request body that stops arriving ends its dispatch after 10 s, releasing its pooled upstream
+connection.* Once a proxied dispatch holds an upstream connection and is reading the request body,
+10 s without a forwarded body byte ends the dispatch as `REQUEST_BODY_TIMEOUT` (`408`,
+`INPUT_VALIDATION`, `INFO` `ApiSheriff-23` latched per route, counted in
+`sheriff_errors_total{event="REQUEST_BODY_TIMEOUT"}`). The clock starts when the body is handed to
+the upstream request and restarts on every forwarded chunk. It does not count:
+
+* waiting for a pooled upstream connection;
+* backpressure pauses while the upstream is not taking data (restarting when the pipe resumes);
+* bodyless requests or `protocol: grpc` routes (which never arm the clock);
+* time after the upstream request send completed.
+
+When it fires, the upstream request is reset. Because the request head is sent only with the first
+body chunk, an HTTP/1.1 upstream connection returns to the pool if no chunk was sent and closes
+abortively otherwise; an HTTP/2 upstream resets the stream only. The client receives `408` (with
+`NO_ERROR` stream reset on HTTP/2 or `Connection: close` on HTTP/1.x), and the circuit breaker and
+retry gate skip it
+(link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-idle-timeout[ADR-0060]).
+
+[[_request_body_deadline]]
+*A request body that has not ended 25 s after its upstream attempt started is ended there.* A slow
+sender that drips chunks faster than every 10 s is bounded by a fixed 25 s request-body deadline
+measured from the start of the upstream attempt (below the upstream guard's 30 s head timeout). When
+the deadline expires while the body is still being read, the upstream request is reset and the body
+is refused as `REQUEST_BODY_TIMEOUT` (`INFO` `ApiSheriff-24` latched per route, counted under
+`event="REQUEST_BODY_TIMEOUT"`):
+
+* *Before the response head:* answered `408` (`INPUT_VALIDATION`), skipped by the circuit breaker
+  and retry gate, and ended via the one end rule (`NO_ERROR` reset on HTTP/2, `Connection: close` on
+  HTTP/1.x).
+
+* *After the response head:* the upstream status stands (even if no upstream body byte was relayed
+  yet, ending with the upstream status and no body rather than `502`), followed by `NO_ERROR` stream
+  reset on HTTP/2 or connection close on HTTP/1.x.
+
+Waiting for a pooled upstream connection counts toward the 25 s; if the deadline has already passed
+when the body begins reading or when a backpressure pause resumes, the body is ended immediately.
+Bodyless requests and `protocol: grpc` routes never arm it
+(link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#request-body-deadline[ADR-0060]).
+
+[[_grpc_stream_idle_bound]]
+*A gRPC call that carries no frame in either direction for five minutes is ended with
+`DEADLINE_EXCEEDED`.* A `protocol: grpc` route arms neither the 10 s body idle timeout nor the 25 s
+body deadline, because streaming RPCs legitimately pause between messages over a shared forced-HTTP/2
+connection. Until the upstream response headers arrive, the upstream guard's 30 s timeout bounds the
+call (`UPSTREAM_TIMEOUT`, mapped to `DEADLINE_EXCEEDED` per
+link:observability-and-errors.adoc#_grpc_error_contract[gRPC rejections]). Once the response headers
+arrive, a fixed 5-minute stream-idle timer takes over, restarted by every request frame read and
+every upstream frame relayed (HTTP/2 `PING` frames do not count; `grpc-timeout` is not honoured). On
+expiry, the upstream request is reset and the client stream is ended with trailers `grpc-status: 4`
+(`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout` (`INFO` `ApiSheriff-25` latched per
+route; no error counter increment; see
+link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-stream-idle-bound[ADR-0060]).

@@ -681,7 +681,7 @@ link:#_endpoint_catalog[`endpoint.catalog`] block. Unknown keys are refused by t
   lists `text/html` explicitly with a quality above zero (`+*/*+` and `+text/*+` do not qualify). The
   status is unchanged, the page is anonymous and `no-store`, and a response relayed from an origin is
   never replaced. The eligible exits are listed under
-  link:architecture.adoc#_error_contract[Error Contract].
+  link:architecture/observability-and-errors.adoc#_error_contract[Error Contract].
 |===
 
 Every portal response carries `Content-Type: text/html; charset=utf-8`, `X-Content-Type-Options:
@@ -1693,7 +1693,7 @@ Each route declares the protocol it serves: `http` (the default), `graphql`, `gr
 HTTP/3 is deferred. The value selects handshake/streaming behaviour only (WebSocket upgrade,
 gRPC streaming); the semantics of each protocol -- and what the security filter does and does
 not inspect -- are defined once in
-link:architecture.adoc#_protocol_support[Architecture -- Protocol Support].
+link:architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support].
 
 A `protocol: websocket` route carries one additional per-route block --
 link:#_websocket[`websocket`] -- holding both WebSocket keys:
@@ -2106,7 +2106,7 @@ single input: whether the request carries an `Authorization` header.
 | Preconditions | The route is held to *both* backing blocks: its bearer posture needs a link:#_token_validation[`token_validation`] block with at least one issuer, and its session branch needs an link:#_oidc[`oidc`] block, exactly as a `require: session` route does.
 | Boot rules | Two refusals, each reported through `ApiSheriff-200` with a fixed detail text that names the owning anchor, endpoint or route and never echoes a configured value (see link:LogMessages.adoc[Log Messages]): `session_fallback: true` on a posture other than `require: bearer` (`none` and `session` have no bearer posture to split), and `session_fallback: true` on a gateway that declares no `oidc` block. A block violating both yields both. Each declared block is judged where it is declared, so an anchor default that no route inherits is still refused. The anchor floor rule is unchanged: it compares `require` only, so a `require: bearer, session_fallback: true` route passes under a `session` or `bearer` anchor floor.
 | Boot log | The per-route posture line `ApiSheriff-3` reports the resolved flag for every route, e.g. `auth.require='bearer', auth.session_fallback=true`, so the second authentication branch is visible at boot.
-| Metric | `sheriff_auth_branch_total{route,branch}` counts the selected branch (`bearer` or `session`) once per request, on `session_fallback` routes only (see link:architecture.adoc#_metrics[Metrics]).
+| Metric | `sheriff_auth_branch_total{route,branch}` counts the selected branch (`bearer` or `session`) once per request, on `session_fallback` routes only (see link:architecture/observability-and-errors.adoc#_metrics[Metrics]).
 |===
 
 *The branch table.* The header's *presence* decides -- not its scheme, not its value:
@@ -2613,7 +2613,7 @@ canonical gateway path works, and keeping the application's own routes under a s
   authorization request with `response_mode=query`, so the IdP must be free to answer a `302`
   carrying `code` and `state` in the query string. An IdP client pinned to force `form_post`
   breaks the flow. *There is no configuration knob for the response mode* -- it is fixed in code
-  (see link:architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response
+  (see link:architecture/authentication-and-bff.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response
   mode]), deliberately, because it is coupled to the `SameSite=Lax` browser-binding cookie. The
   response mode travels inside the pushed authorization request.
 
@@ -4196,7 +4196,7 @@ it judges a rolling window of the last 20 calls, opens when half or more of them
 for 5 seconds -- the `Retry-After` of the `503` it answers meanwhile -- and closes after two
 successful trial calls. Its state is per upstream target on each gateway node. An `upstream` block
 that declares `circuit_breaker` is refused at boot as an unknown key
-(see link:architecture.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
+(see link:architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client]). The upstream host is never
 written literally here -- only the alias-relative `path`.
 
 An `upstream` block belongs to a *proxy* route. A route declaring a `redirect` block must not declare

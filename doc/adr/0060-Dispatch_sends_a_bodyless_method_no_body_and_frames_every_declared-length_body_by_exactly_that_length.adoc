@@ -182,7 +182,7 @@ The inbound connection window stays derived: 100 streams times the 65,535-byte s
 6,553,500 bytes (`EdgeHardeningOptions`). A fixed 2 MiB window was measured and lost more throughput
 than the 10% a change was allowed to cost. The protocol, the figures and the limits of the
 measurement are in
-link:../architecture.adoc#_http2_connection_window_measurement[the architecture's connection-window
+link:../architecture/tls-and-inbound-security.adoc#_http2_connection_window_measurement[the architecture's connection-window
 measurement].
 
 === Fixed values, retry and recording
@@ -342,6 +342,6 @@ either (see link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- reque
 * link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap] -- the streaming counter that also holds a declared-length body to its length.
 * link:0006-body-streaming-vs-httpresult.adoc[ADR-0006 -- Body streaming] and link:0008-data-plane-transport.adoc[ADR-0008 -- Data-plane transport] -- the never-buffered body model.
 * link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064 -- The upstream guard is fixed in the gateway] -- the fixed guard and its 30 s timeout every bound of this record sits below.
-* link:../architecture.adoc#_dispatch_body_framing[Architecture -- dispatch body framing], link:../architecture.adoc#_request_body_idle_timeout[request-body idle timeout], link:../architecture.adoc#_request_body_deadline[request-body deadline], link:../architecture.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound], link:../architecture.adoc#_http2_unread_upload_release[unread upload release] and link:../architecture.adoc#_http2_connection_window_measurement[connection-window measurement].
+* link:../architecture/tls-and-inbound-security.adoc#_dispatch_body_framing[Architecture -- dispatch body framing], link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[request-body idle timeout], link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[request-body deadline], link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[gRPC stream-idle bound], link:../architecture/tls-and-inbound-security.adoc#_http2_unread_upload_release[unread upload release] and link:../architecture/tls-and-inbound-security.adoc#_http2_connection_window_measurement[connection-window measurement].
 * link:../security-threat-model.adoc[Threat Model] -- the request-smuggling and HTTP-desync class (GW-02), and link:../security-threat-model.adoc#gw-07-request-body[GW-07 -- request-body bounds].
 * `DispatchStage`, `ByteCappedBodyStream`, `EdgeHardeningOptions` -- the implementation; `DispatchStageTest`, `GatewayEdgeRequestBodyIdleTimeoutTest`, `GrpcDispatchStageTest` -- the tests.

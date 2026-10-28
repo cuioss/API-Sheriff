@@ -69,7 +69,7 @@ Lax cookie is not sent on a cross-site POST*. A real browser therefore arrived a
 without the binding cookie and was rejected `403` on the callback's "no browser-binding cookie"
 branch. Every login. The fix was to drive `response_mode=query` so the callback is a top-level GET
 navigation, on which a Lax cookie *is* sent -- see
-link:../../doc/architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode]
+link:../../doc/architecture/authentication-and-bff.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode]
 for the mode, the rejected `SameSite=None` alternative, and the accepted code-in-URL tradeoff.
 
 [IMPORTANT]

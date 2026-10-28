@@ -31,7 +31,7 @@ import org.eclipse.microprofile.faulttolerance.exceptions.TimeoutException;
  * <p>
  * The stage-6 dispatch runs through the route's SmallRye Fault-Tolerance guard, so a failure
  * surfaces as one of three shapes, each with a distinct HTTP status per the error contract in
- * {@code architecture.adoc}:
+ * {@code doc/architecture/observability-and-errors.adoc}:
  * <ul>
  *   <li>{@link CircuitBreakerOpenException} — the breaker is open, the upstream was never called →
  *       {@link EventType#UPSTREAM_CIRCUIT_OPEN} (503, {@code Retry-After} added by the edge);</li>

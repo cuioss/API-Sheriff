@@ -509,7 +509,7 @@ binding without a bounded key set, fail in one of those two directions.
   runtime-specific assembly at the boundary rather than in the framework-agnostic core
 * link:../configuration.adoc[Configuration reference] -- the `tls` and `management` field contracts and
   the per-key verdict table naming every disposition
-* link:../architecture.adoc[Architecture] -- the two binding seams and the ordering constraint that the
+* link:../architecture/tls-and-inbound-security.adoc#_server_tls_policy_binding[Architecture] -- the two binding seams and the ordering constraint that the
   projecting config source runs before CDI
 * link:../user/tls-edge.adoc[TLS edge (operator guide)] -- the neutral TLS policy keys and the
   plain-HTTP management opt-out

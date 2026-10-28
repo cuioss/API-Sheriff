@@ -7,7 +7,7 @@ A task-oriented guide for operators configuring `protocol: websocket` and `proto
 routes in `endpoints/*.yaml`. It shows *how* to author these routes and tune their per-route knobs;
 the authoritative field reference is the
 link:../configuration.adoc[Configuration Reference], and the design rationale lives in the
-link:../architecture.adoc[Architecture] document and the
+link:../architecture/README.adoc[Architecture] document and the
 link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] /
 link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] decision records. This
 guide never restates that rationale -- it points to it.
@@ -16,7 +16,7 @@ Every route declares the protocol it serves via the `protocol` key -- `http` (th
 `graphql`, `grpc`, or `websocket`. The value selects handshake and streaming behaviour only; the
 security filter, authentication, and forward policy apply uniformly across protocols. See
 link:../configuration.adoc#_protocols[Configuration -- Protocols] for the key itself and
-link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support] for what each
+link:../architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support] for what each
 protocol does and does not inspect.
 
 *A route that declares no `forward` block forwards every client header and query parameter the
@@ -32,7 +32,7 @@ cookie (see <<_cookies_on_protocol_routes>>).
 Declare a `forward` block only to *narrow* that. One protocol-specific caution: a gRPC route that *does*
 declare `headers_allow` must list `te`, because a positive-list never copies a name it does not
 name and gRPC over HTTP/2 requires `TE: trailers`. See
-link:../architecture.adoc#_forward_policy[Architecture -- Forward Policy].
+link:../architecture/routing-and-forwarding.adoc#_forward_policy[Architecture -- Forward Policy].
 
 == Configuring a WebSocket route
 
@@ -184,7 +184,7 @@ count, and the call's `grpc-timeout` is not honoured. A service whose calls stay
 than five minutes has to send messages to keep them open; the bound is fixed and has no
 configuration key. See
 link:endpoint-routes.adoc#_edge_hardening_defaults[Endpoint Routes -- edge hardening defaults] and
-link:../architecture.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
+link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 === gRPC rejections are trailers-only
 
@@ -195,7 +195,7 @@ name the failure, with no message body. The gateway maps the same rejection it w
 HTTP status on an HTTP route onto the canonical gRPC status; for example, a call whose validated
 token lacks a scope the route needs is rejected `PERMISSION_DENIED` (7). Operators do not configure
 this mapping -- it is fixed. The full mapping table is in
-link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)].
+link:../architecture/observability-and-errors.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)].
 
 *The exception: rejections before the trust boundary.* On the shipped default, a rejection raised
 before the caller is authenticated -- a missing or invalid token, a wrong method, a refused path or
@@ -249,7 +249,7 @@ with a trailers-only `PERMISSION_DENIED` when `security_defaults.uniform_not_fou
 == See also
 
 * link:../configuration.adoc[Configuration Reference] -- the authoritative `gateway.yaml` key reference.
-* link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support] -- what each protocol inspects.
-* link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections] -- the trailers-only status mapping.
+* link:../architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support] -- what each protocol inspects.
+* link:../architecture/observability-and-errors.adoc#_grpc_error_contract[Architecture -- gRPC rejections] -- the trailers-only status mapping.
 * link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] -- WebSocket Origin fail-closed allowlist.
 * link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] -- gRPC trailers-only rejection mapping.

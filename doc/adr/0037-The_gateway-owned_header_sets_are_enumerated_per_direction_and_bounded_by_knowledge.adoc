@@ -524,5 +524,5 @@ those clients.
 * link:0014-asset-serving-terminal-action.adoc[ADR-0014] — the asset terminal action that shares the response-direction strip
 * link:0008-data-plane-transport.adoc[ADR-0008] — the data-plane transport and its conditional-validator handling
 * GHSA-vvg7-p7jw-8qr3 — a session cookie forwarded to the proxied API, the class the single gateway-cookie definition prevents
-* `doc/architecture.adoc` — the request pipeline and its header policy
+* `doc/architecture/routing-and-forwarding.adoc` — the request pipeline and its header policy
 * `doc/configuration.adoc` — the operator-facing `forward` and `cookies` reference, and the never-forward section

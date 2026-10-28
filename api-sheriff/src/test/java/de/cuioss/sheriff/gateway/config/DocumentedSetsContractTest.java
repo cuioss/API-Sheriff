@@ -84,7 +84,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * {@link JwksRefreshKey}, and three documents restate the {@code oidc_discovery} readiness tokens
  * carried by {@link DiscoveryStatus.State#token()}: the value table of {@code doc/configuration.adoc},
  * the parenthesised list of {@code doc/security-threat-model.adoc} and the readiness prose of
- * {@code doc/architecture.adoc}. A restated list has no mechanical tie to its source, so
+ * {@code doc/architecture/observability-and-errors.adoc}. A restated list has no mechanical tie to its source, so
  * adding a mapping, a mode or a posture leaves every restatement silently stale — the documentation
  * still reads as authoritative while describing a gateway that no longer exists. The project's own review policy
  * treats a hardcoded list mirroring a set defined elsewhere as a defect unless it is derived from
@@ -181,7 +181,7 @@ class DocumentedSetsContractTest {
     private static final Path CONFIGURATION_ADOC = repoRoot().resolve("doc/configuration.adoc");
     private static final Path USER_README_ADOC = repoRoot().resolve("doc/user/README.adoc");
     private static final Path BFF_COOKIE_ADOC = repoRoot().resolve("doc/user/bff-cookie.adoc");
-    private static final Path ARCHITECTURE_ADOC = repoRoot().resolve("doc/architecture.adoc");
+    private static final Path ARCHITECTURE_ADOC = repoRoot().resolve("doc/architecture/observability-and-errors.adoc");
     private static final Path THREAT_MODEL_ADOC = repoRoot().resolve("doc/security-threat-model.adoc");
 
     /**
@@ -199,7 +199,7 @@ class DocumentedSetsContractTest {
     private static final String THREAT_MODEL_DISCOVERY_ANCHOR = "and `oidc_discovery` (";
 
     /**
-     * Anchor for {@code doc/architecture.adoc}'s prose enumeration of the {@code oidc_discovery} tokens
+     * Anchor for {@code doc/architecture/observability-and-errors.adoc}'s prose enumeration of the {@code oidc_discovery} tokens
      * ("…metadata (`.well-known/openid-configuration`) last did: `not-attempted` until …, `resolved` when
      * …, and `failed` when … threw."). The backticked list runs from the anchor to the sentence's own full
      * stop, which no token can contain.
@@ -854,7 +854,7 @@ class DocumentedSetsContractTest {
     }
 
     @Test
-    @DisplayName("doc/architecture.adoc names exactly the DiscoveryStatus.State tokens for oidc_discovery")
+    @DisplayName("doc/architecture/observability-and-errors.adoc names exactly the DiscoveryStatus.State tokens for oidc_discovery")
     void architectureAdocNamesTheDiscoveryTokens() throws Exception {
         // Arrange
         String document = read(ARCHITECTURE_ADOC);

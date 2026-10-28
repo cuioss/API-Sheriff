@@ -242,6 +242,6 @@ keeps, with a closed list and a boot refusal on the one combination that is neve
 * link:0023-The_declared_max_body_bytes_cap_is_the_effective_one_and_a_breach_is_the_gateways_413.adoc[ADR-0023 -- The declared max_body_bytes cap is the effective one] -- the body cap kept under `minimal`.
 * link:0026-A_security_bound_declared_at_one_inbound-validation_stage_is_re-asserted_at_every_later_stage_that_re-validates_the_same_input.adoc[ADR-0026 -- A security bound is re-asserted at every later stage] -- the principle that governs the stages this record places checks in.
 * link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067 -- Policy-block resolution] -- the resolution the refusal reads.
-* link:../architecture.adoc[Architecture] -- the inbound pipeline the bounds are stated against.
+* link:../architecture/README.adoc[Architecture] -- the inbound pipeline the bounds are stated against.
 * link:../configuration.adoc[Configuration Reference] -- the `security_defaults` and `security_filter` blocks and the `profile` key.
 * `SecurityProfile`, `ThoroughChecksStage`, `LimitRules` -- the implementation; `SecurityProfileTest`, `ThoroughChecksStageTest`, `LimitRulesTest` -- the tests.

@@ -265,7 +265,7 @@ checked in a way that has to be rewritten with the code it checks.
 
 == References
 
-* link:../architecture.adoc#_edge_package_structure[Architecture -- Edge Package Structure] -- the
+* link:../architecture/README.adoc#_edge_package_structure[Architecture -- Edge Package Structure] -- the
   structure as built, and the current place to read it
 * link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
   -- the four control legs the edge guard ships with

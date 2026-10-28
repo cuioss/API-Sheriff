@@ -163,7 +163,7 @@ Quarkus/Vert.x stack and are framework by any reading of this ADR.
 
 == References
 
-* link:../architecture.adoc#_authentication_layer[Architecture -- Authentication Layer] -- the
+* link:../architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer] -- the
   engine/BFF seam and the pure-Java engine modules API Sheriff consumes.
 * `TokenSheriff/doc/client` `CLIENT-21` -- framework-agnostic engine, framework bindings outside
   it (the precedent this ADR mirrors at package granularity).

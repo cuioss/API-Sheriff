@@ -90,7 +90,7 @@ class EventTypeTest {
 
     /**
      * The request-time error contract: one row per event the edge renders as an HTTP status, with the
-     * status and category the contract in {@code architecture.adoc} promises.
+     * status and category the contract in {@code doc/architecture/observability-and-errors.adoc} promises.
      */
     private static final List<Arguments> ERROR_CONTRACT = List.of(
             arguments(EventType.SECURITY_FILTER_VIOLATION, 400, EventCategory.INPUT_VALIDATION),

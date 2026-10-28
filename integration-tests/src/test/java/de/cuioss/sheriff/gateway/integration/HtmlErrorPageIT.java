@@ -173,7 +173,7 @@ class HtmlErrorPageIT extends BaseIntegrationTest {
 
     /**
      * The {@code Retry-After} value of an open circuit: the five seconds the breaker stays open, as the
-     * error contract in {@code doc/architecture.adoc} states it.
+     * error contract in {@code doc/architecture/observability-and-errors.adoc} states it.
      */
     private static final String BREAKER_OPEN_SECONDS = "5";
 

@@ -123,7 +123,7 @@ backpressure, and forces time-to-first-byte up to time-to-last-byte.
 
 == References
 
-* link:../architecture.adoc#_downstream_client[Architecture -- Downstream Client].
+* link:../architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client].
 * nginx `proxy_buffering` -- https://nginx.org/en/docs/http/ngx_http_proxy_module.html
 * Envoy flow control -- https://github.com/envoyproxy/envoy/blob/main/source/docs/flow_control.md
 * Go `httputil.ReverseProxy` (streaming, `FlushInterval`) -- https://pkg.go.dev/net/http/httputil#ReverseProxy

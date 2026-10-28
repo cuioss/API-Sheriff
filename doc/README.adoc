@@ -58,7 +58,7 @@ Limitations].
 | What API Sheriff should adopt from APISIX / Traefik / KrakenD and friends, what to
   deliberately avoid, and the differentiators no competitor covers.
 
-| link:architecture.adoc[Architecture]
+| link:architecture/README.adoc[Architecture]
 | The runtime components, request lifecycle, event system, metrics surface, and how
   `cui-http` and `token-sheriff-validation` are wired in. Threading model (virtual threads).
 
@@ -98,7 +98,7 @@ Limitations].
 | Container Image (three-layer topic)
 | The published image at `ghcr.io/cuioss/api-sheriff`, documented across all three layers. The
   reference layer is this statement: the image is a *packaging* of the same binary the
-  link:architecture.adoc[Architecture] already describes, so it adds no runtime component, no
+  link:architecture/README.adoc[Architecture] already describes, so it adds no runtime component, no
   request-lifecycle stage and no `gateway.yaml` key -- neither that document nor
   link:configuration.adoc[Configuration] has a surface for it. The
   link:user/container-image.adoc[operator guide] covers pulling, running and cryptographically
@@ -109,7 +109,7 @@ Limitations].
 | The deployment-shaped Docker Compose sample under `deployment/compose-sample`, documented across
   two layers. There is deliberately no reference layer: the sample introduces no runtime component
   and no `gateway.yaml` key -- it is an *arrangement* of the artifact
-  link:architecture.adoc[Architecture] already describes, so neither that document nor
+  link:architecture/README.adoc[Architecture] already describes, so neither that document nor
   link:configuration.adoc[Configuration] has a surface for it. The
   link:user/compose-sample.adoc[operator guide] covers bringing the stack up, the readiness gate and
   the sample-only values that must change, and the
@@ -334,7 +334,7 @@ record that was moved into developer documentation or merged into another record
 == Reading Order
 
 . link:features-analysis.adoc[Feature Analysis] -- what to build and what not to.
-. link:architecture.adoc[Architecture] -- how the runtime fits together.
+. link:architecture/README.adoc[Architecture] -- how the runtime fits together.
 . link:configuration.adoc[Configuration] -- the YAML contract.
 . link:security-threat-model.adoc[Threat Model] -- the trust boundaries and the CVE-derived
   controls every variant must satisfy.
