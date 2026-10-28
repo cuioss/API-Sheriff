@@ -71,8 +71,9 @@ throughput and latency.*
 A shrunken-budget exhaustion test has four parts:
 
 . *A dedicated low-budget instance.* An overlaid gateway configuration lowers the budget under test
-  to single digits. Only that budget differs from the primary instance. A production-sized budget
-  would need thousands of operations to run dry.
+  to single digits. A production-sized budget would need thousands of operations to run dry. The
+  overlay replaces the primary instance's gateway document rather than inheriting it, so it can also
+  differ in keys the probe never exercises. The budget is the only difference the probe relies on.
 . *A probe.* The probe performs more operations than the budget allows. It then makes a claim about
   the *gateway*, not about one response. A leaked unit of budget therefore turns into a refusal the
   probe observes.
