@@ -83,7 +83,7 @@ import org.junit.jupiter.api.Test;
  * request whose body had nothing left to arrive, a {@code body-stream-failed} abort for one whose body
  * was still arriving — both {@link EventType#INBOUND_BODY_ABORTED}, both refused by the retry predicate.
  * A departure that releases an attempt still waiting for its pooled upstream connection ends the same
- * way, and the circuit breaker counts no failure for it. And {@link RejectionReporter} records the two
+ * way once the pool hands the connection over, and the circuit breaker counts no failure for it. And {@link RejectionReporter} records the two
  * under their own dispositions on one per-route latch.
  */
 @EnableGeneratorController

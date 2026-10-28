@@ -171,12 +171,16 @@ import org.jspecify.annotations.Nullable;
  * <strong>A client that leaves releases the attempt it was waiting on.</strong> When the client resets
  * its stream or closes its connection before the response is handed over for relay, the edge reports
  * the departure through the {@link InboundBody} the request body arrives in, whatever the body framing
- * and whether or not the body has ended. The dispatch then stops waiting exactly as above — the attempt's
- * upstream request is released at once instead of being held until the guard's timeout — and reports an
+ * and whether or not the body has ended. The attempt is then released exactly as above: an upstream
+ * request in flight is reset at once instead of being held until the guard's timeout, and one still
+ * waiting for a pooled connection is never sent once the pool hands it one. The dispatch reports an
  * {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, so the breaker skips it: a body that was
- * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. A
- * client that left before the dispatch began has no upstream request asked for at all. From the
- * hand-over on, the relay owns the exchange and the departure is left to it.
+ * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. The
+ * departure does not wake a dispatching thread that is still waiting for a pooled connection: that wait
+ * ends when the pool hands the connection over, which reports the client's abort, or when the guard's
+ * timeout fires, which is an ordinary upstream timeout. A client that left before the dispatch began has
+ * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
+ * departure is left to it.
  * <p>
  * <strong>The gateway's own upstream reset is not logged as an error.</strong> Every attempt's
  * upstream request carries an exception handler from the moment it is obtained. Without one, Vert.x
@@ -1190,9 +1194,9 @@ public final class DispatchStage {
      * {@code GET} at once — the request stream is silent about it, and only the response learns that it
      * can no longer be answered. The edge root therefore hands a response that ended without being
      * answered to {@link #clientDeparted(Throwable)}, which delivers it once — to the departure handler
-     * registered at that moment, or to the one registered later — so a dispatch still waiting for its
-     * upstream answer stops waiting and releases the upstream request (see {@link DispatchStage}). A
-     * stream the gateway reset itself records no departure.
+     * registered at that moment, or to the one registered later — so a dispatch holding an upstream
+     * request releases it (see {@link DispatchStage}, which also states when a wait for a pooled
+     * connection ends). A stream the gateway reset itself records no departure.
      * <p>
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
      * registered from another thread; both go through the same monitor, as do the departure and its
@@ -1299,8 +1303,8 @@ public final class DispatchStage {
 
         /**
          * Registers the one handler a client departure is delivered to; a departure recorded before is
-         * replayed to it at once. A departure racing the registration may reach the handler twice, so the
-         * handler must be idempotent.
+         * replayed to it at once. The departure and the handler are exchanged under one monitor, so the
+         * handler receives the departure exactly once, whichever of the two comes first.
          *
          * @param handler receives how the client left
          */
@@ -1395,9 +1399,10 @@ public final class DispatchStage {
 
     /**
      * The failure of an attempt the dispatch stopped waiting for before its request obtained a
-     * connection: the request was reset unsent (see {@link UpstreamAttempt#publish}). When the client's
-     * departure released the attempt, the dispatch reports that departure in its place, so the breaker
-     * skips it and the retry predicate refuses it.
+     * connection: the request was reset unsent (see {@link UpstreamAttempt#publish}), which happens when
+     * the pool hands the released attempt a connection. When the client's departure released the
+     * attempt, the dispatch reports that departure in its place, so the breaker skips it and the retry
+     * predicate refuses it.
      * <p>
      * <strong>Deliberately not a {@link java.util.concurrent.CancellationException}.</strong> The
      * dispatching thread awaits the attempt through {@link java.util.concurrent.CompletableFuture#get()},
