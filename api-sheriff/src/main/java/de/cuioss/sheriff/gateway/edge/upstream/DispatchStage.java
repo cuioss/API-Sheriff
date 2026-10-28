@@ -22,7 +22,6 @@ import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -533,7 +532,7 @@ public final class DispatchStage {
                         // connection: the request was reset unsent, and no late upstream execution follows.
                         // When the client's departure released it, that is what the dispatch reports.
                         clientAbortAtFailure.set(body.clientAbort(cappedBody.get()));
-                        return Future.failedFuture(new CancellationException(ATTEMPT_ABANDONED));
+                        return Future.failedFuture(new AttemptReleasedUnsent());
                     }
                     forwardHeaders.forEach(request::putHeader);
                     // ResponseStage#relay is deferred onto the server request's event loop
@@ -568,7 +567,9 @@ public final class DispatchStage {
             // runs the abort action, so an abort that caused the failure is always in the snapshot,
             // while a client that went away only after the upstream had already failed is not — that
             // failure stays the upstream's. A send that never started (the connection itself failed)
-            // leaves no snapshot and is the upstream's failure as well.
+            // leaves no snapshot and is the upstream's failure as well. An attempt released before its
+            // request was sent arrives here too, as an AttemptReleasedUnsent: never a cancellation,
+            // which get() would throw past this catch (see AttemptReleasedUnsent).
             GatewayException clientAbort = clientAbortAtFailure.get();
             if (clientAbort != null) {
                 throw clientAbort;
@@ -1389,6 +1390,33 @@ public final class DispatchStage {
 
         private GatewayStreamReset() {
             super("The gateway ended the request stream it answered before the body ended", null, false, false);
+        }
+    }
+
+    /**
+     * The failure of an attempt the dispatch stopped waiting for before its request obtained a
+     * connection: the request was reset unsent (see {@link UpstreamAttempt#publish}). When the client's
+     * departure released the attempt, the dispatch reports that departure in its place, so the breaker
+     * skips it and the retry predicate refuses it.
+     * <p>
+     * <strong>Deliberately not a {@link java.util.concurrent.CancellationException}.</strong> The
+     * dispatching thread awaits the attempt through {@link java.util.concurrent.CompletableFuture#get()},
+     * which reports a future that failed with a {@code CancellationException} as cancelled: it throws the
+     * cancellation itself instead of wrapping it in an {@link ExecutionException}. Such a failure would
+     * bypass the client-abort attribution of {@code awaitResponse} and reach the guard as an upstream
+     * failure — the breaker would count every client that left while its attempt waited for a pooled
+     * connection, enough of them would open it for every other caller of the upstream, and the retry
+     * predicate would let the released attempt retry.
+     * <p>
+     * Carries no request-specific state, no stack trace and no suppressed exceptions.
+     */
+    static final class AttemptReleasedUnsent extends RuntimeException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        AttemptReleasedUnsent() {
+            super(ATTEMPT_ABANDONED, null, false, false);
         }
     }
 

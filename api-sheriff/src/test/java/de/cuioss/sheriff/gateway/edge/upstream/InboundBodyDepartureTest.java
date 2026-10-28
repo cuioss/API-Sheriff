@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -29,8 +30,13 @@ import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
@@ -46,16 +52,21 @@ import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
 import de.cuioss.sheriff.gateway.quarkus.SheriffMetrics;
 import de.cuioss.sheriff.gateway.routing.Route;
+import de.cuioss.sheriff.gateway.testsupport.Awaits;
 import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import de.cuioss.test.juli.LogAsserts;
 import de.cuioss.test.juli.TestLogLevel;
 import de.cuioss.test.juli.junit5.EnableTestLogger;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.smallrye.faulttolerance.api.CircuitBreakerState;
 import io.smallrye.faulttolerance.api.Guard;
 import io.vertx.core.Handler;
+import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
+import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.RoutingContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,7 +82,9 @@ import org.junit.jupiter.api.Test;
  * What the dispatch ends with is the client's abort: a {@link DispatchStage.ClientDeparted} for a
  * request whose body had nothing left to arrive, a {@code body-stream-failed} abort for one whose body
  * was still arriving — both {@link EventType#INBOUND_BODY_ABORTED}, both refused by the retry predicate.
- * And {@link RejectionReporter} records the two under their own dispositions on one per-route latch.
+ * A departure that releases an attempt still waiting for its pooled upstream connection ends the same
+ * way, and the circuit breaker counts no failure for it. And {@link RejectionReporter} records the two
+ * under their own dispositions on one per-route latch.
  */
 @EnableGeneratorController
 @EnableTestLogger(debug = RejectionReporter.class)
@@ -209,6 +222,103 @@ class InboundBodyDepartureTest {
     }
 
     /**
+     * A dispatch whose attempt is still waiting for a pooled upstream connection, driven through
+     * {@link DispatchStage#dispatch} over an upstream client that hands the attempt its request only when
+     * the case completes it, and under a guard whose breaker opens on the first failure it counts. The
+     * case decides the order: the attempt asks for its connection, then the client leaves or the
+     * connection fails, then the request is handed out or the connection is refused.
+     * <p>
+     * The matched control is a connection that fails without any departure: the same rig ends it as an
+     * upstream failure and the breaker opens on it, so a breaker that stays closed after a departure is a
+     * verdict of the rig, not a breaker unable to open.
+     */
+    @Nested
+    @DisplayName("a departure that releases an attempt waiting for its pooled connection ends as the client's abort")
+    class ReleasedWhileWaitingForAConnection {
+
+        private Route route;
+        private List<CircuitBreakerState> transitions;
+        private Promise<HttpClientRequest> connection;
+        private CountDownLatch requested;
+        private DispatchStage stage;
+        private DispatchStage.InboundBody body;
+
+        @BeforeEach
+        void setUp() {
+            route = departedRoute();
+            transitions = new CopyOnWriteArrayList<>();
+            connection = Promise.promise();
+            requested = new CountDownLatch(1);
+            Guard breakerOnFirstFailure = Guard.create()
+                    .withCircuitBreaker().requestVolumeThreshold(1).failureRatio(1.0).delay(30, ChronoUnit.SECONDS)
+                    .skipOn(GatewayException.class).onStateChange(transitions::add).done()
+                    .withTimeout().duration(30, ChronoUnit.SECONDS).done()
+                    .build();
+            UpstreamClients clients = new UpstreamClients(
+                    Map.of(UpstreamTarget.of(route), pendingClient(connection, requested)),
+                    Map.of(ResilienceShape.of(route), breakerOnFirstFailure));
+            stage = new DispatchStage(clients, 1024L, DispatchStage.NO_BODY_IDLE_TIMEOUT,
+                    new UpstreamFailureMapper(new GatewayEventCounter()));
+            body = DispatchStage.InboundBody.arm(new SilentStream());
+        }
+
+        @Test
+        @DisplayName("the dispatch ends as a ClientDeparted, its request is reset unsent, and the breaker counts no failure")
+        void departureWhileWaitingForAConnectionIsTheClientsAbort() throws Exception {
+            Throwable cause = departureCause();
+            UnsentRequest handedOut = new UnsentRequest();
+
+            GatewayException ended = dispatchWhile(() -> {
+                body.clientDeparted(cause);
+                connection.complete(handedOut.proxy());
+            });
+
+            assertAll("an attempt released by the client while it waited for its connection",
+                    () -> assertInstanceOf(DispatchStage.ClientDeparted.class, ended,
+                            () -> "the client's abort, not an upstream failure: " + ended),
+                    () -> assertSame(cause, ended.getCause(), "the departure is kept as the cause"),
+                    () -> assertTrue(handedOut.resets.get() > 0, "the request handed out late is reset"),
+                    () -> assertEquals(List.of(), handedOut.unexpected, "the request is never sent"),
+                    () -> assertTrue(transitions.isEmpty(),
+                            () -> "the breaker counted the departure as a failure: " + transitions));
+        }
+
+        @Test
+        @DisplayName("control — a connection that fails with no departure is an upstream failure the breaker counts")
+        void connectionFailureWithoutDepartureIsCounted() throws Exception {
+            GatewayException ended = dispatchWhile(() ->
+                    connection.fail(new IllegalStateException(Generators.letterStrings(8, 16).next())));
+
+            assertAll("a refused connection",
+                    () -> assertEquals(EventType.UPSTREAM_ERROR, ended.getEventType(), "an upstream failure"),
+                    () -> assertEquals(List.of(CircuitBreakerState.OPEN), transitions,
+                            "the breaker opens on the one failure it counts"));
+        }
+
+        /**
+         * Dispatches a bodyless request on a virtual thread, runs {@code meanwhile} once its attempt asked
+         * for its connection, and returns what the dispatch ended with.
+         */
+        private GatewayException dispatchWhile(Runnable meanwhile) throws Exception {
+            try (ExecutorService dispatching = Executors.newVirtualThreadPerTaskExecutor()) {
+                CompletableFuture<GatewayException> ended = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        stage.dispatch(route, HttpMethod.GET, "/" + route.id(), Map.of(), body, bodyless());
+                        return null;
+                    } catch (GatewayException failure) {
+                        return failure;
+                    }
+                }, dispatching);
+                Awaits.connect(requested, "the attempt to ask for its upstream connection");
+                meanwhile.run();
+                GatewayException failure = Awaits.connect(ended, "the dispatch to end");
+                assertNotNull(failure, "the dispatch must not be answered");
+                return failure;
+            }
+        }
+    }
+
+    /**
      * {@link RejectionReporter#reportRejection} over a routing context that answers the stashed route id
      * only: which disposition the latched {@code INFO} ApiSheriff-22 names, and the latch the two
      * dispositions share. The aborts are the ones the dispatch produces.
@@ -332,6 +442,51 @@ class InboundBodyDepartureTest {
                 new Class<?>[]{HttpClient.class}, (proxy, method, args) -> {
                     throw new AssertionError("the departed dispatch asked its upstream client for " + method.getName());
                 }));
+    }
+
+    /**
+     * An upstream client whose one request waits for its connection until the case settles
+     * {@code connection}: asking for it counts {@code requested} down, and any other call fails the case.
+     */
+    private static HttpClient pendingClient(Promise<HttpClientRequest> connection, CountDownLatch requested) {
+        return HttpClient.class.cast(Proxy.newProxyInstance(HttpClient.class.getClassLoader(),
+                new Class<?>[]{HttpClient.class}, (proxy, method, args) -> {
+                    if ("request".equals(method.getName()) && args != null && args.length == 1
+                            && args[0] instanceof RequestOptions) {
+                        requested.countDown();
+                        return connection.future();
+                    }
+                    throw new AssertionError("the dispatch asked its upstream client for " + method.getName());
+                }));
+    }
+
+    /**
+     * The upstream request an attempt obtains only after the dispatch stopped waiting for it: it may take
+     * an exception handler and be reset — any number of times, a second reset being harmless — and every
+     * other call, sending it above all, is recorded and fails.
+     */
+    private static final class UnsentRequest {
+
+        private final AtomicInteger resets = new AtomicInteger();
+        private final List<String> unexpected = new CopyOnWriteArrayList<>();
+
+        HttpClientRequest proxy() {
+            return HttpClientRequest.class.cast(Proxy.newProxyInstance(HttpClientRequest.class.getClassLoader(),
+                    new Class<?>[]{HttpClientRequest.class}, (proxy, method, args) -> switch (method.getName()) {
+                        case "exceptionHandler" -> proxy;
+                        case "reset" -> {
+                            resets.incrementAndGet();
+                            yield Boolean.TRUE;
+                        }
+                        case "toString" -> "an unsent upstream request";
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "equals" -> proxy == args[0];
+                        default -> {
+                            unexpected.add(method.getName());
+                            throw new AssertionError("the released request was asked for " + method.getName());
+                        }
+                    }));
+        }
     }
 
     /** A routing context answering the {@link RejectionReporter#ROUTE_KEY} lookup with {@code routeId} only. */

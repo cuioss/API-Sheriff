@@ -199,7 +199,8 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
                 () -> assertEquals("h2", connection.negotiatedProtocol(), "precondition: ALPN negotiated h2"),
                 () -> assertTrue(closed, "the gateway must end the flooding connection"),
                 () -> assertEquals(Optional.of(ENHANCE_YOUR_CALM), connection.goAwayCode(),
-                        "the connection past the pinned reset limit is ended with GOAWAY ENHANCE_YOUR_CALM"));
+                        () -> "the connection past the pinned reset limit is ended with GOAWAY ENHANCE_YOUR_CALM: "
+                                + connection.describe()));
         assertGatewayStaysReady();
     }
 
@@ -294,8 +295,9 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
      * shapes an HTTP/2 client library refuses to produce. Header blocks are HPACK-encoded as literal
      * fields without indexing, so the encoder keeps no state. The frames the gateway sends back are
      * parsed as they arrive: {@code SETTINGS} and {@code PING} are acknowledged, the streams a response
-     * {@code HEADERS} frame arrived for are recorded, and a {@code GOAWAY} is recorded with its error
-     * code. Frames are parsed on the socket's event loop; the observations are safe to read from the
+     * {@code HEADERS} frame arrived for are recorded, the streams the gateway reset are recorded with
+     * their error codes, and a {@code GOAWAY} is recorded with its error code, last stream id and debug
+     * data. Frames are parsed on the socket's event loop; the observations are safe to read from the
      * test thread.
      */
     private static final class RawTlsHttp2Connection {
@@ -319,7 +321,11 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
         /** Bytes received and not yet parsed into a whole frame; touched on the event loop only. */
         private Buffer pending = Buffer.buffer();
         private final Set<Integer> answeredStreams = ConcurrentHashMap.newKeySet();
+        /** The error code of every stream the gateway reset, by stream. */
+        private final Map<Integer, Long> resetStreams = new ConcurrentHashMap<>();
         private final CompletableFuture<Long> goAway = new CompletableFuture<>();
+        /** The last stream id and the debug data of the GOAWAY the gateway sent, as text. */
+        private final CompletableFuture<String> goAwayDetail = new CompletableFuture<>();
         private final CompletableFuture<Void> closed = new CompletableFuture<>();
 
         private RawTlsHttp2Connection(NetSocket socket, int port) {
@@ -438,6 +444,18 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
         }
 
         /**
+         * What the gateway sent back on this connection, for a failure message: the {@code GOAWAY} with
+         * its last stream id and debug data — where the transport states why it ended the connection —
+         * the streams it answered and the streams it reset.
+         */
+        String describe() {
+            return "GOAWAY " + goAwayCode().map(Long::toHexString).orElse("none") + " "
+                    + goAwayDetail.getNow("") + ", " + answeredStreams.size() + " stream(s) answered, "
+                    + resetStreams.size() + " stream(s) reset by the gateway: "
+                    + resetStreams.entrySet().stream().sorted(Map.Entry.comparingByKey()).limit(5).toList();
+        }
+
+        /**
          * Waits for the gateway to close the connection.
          *
          * @return {@code true} once closed, {@code false} when the wait ran out first
@@ -483,9 +501,14 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
                     }
                 }
                 case HEADERS -> answeredStreams.add(streamId);
-                case GOAWAY -> goAway.complete(payload.getUnsignedInt(4));
+                case RST_STREAM -> resetStreams.put(streamId, payload.getUnsignedInt(0));
+                case GOAWAY -> {
+                    goAwayDetail.complete("(last stream " + (payload.getInt(0) & 0x7fffffff) + ", debug '"
+                            + payload.getString(8, payload.length(), StandardCharsets.US_ASCII.name()) + "')");
+                    goAway.complete(payload.getUnsignedInt(4));
+                }
                 default -> {
-                    // DATA, RST_STREAM, WINDOW_UPDATE and PRIORITY carry nothing the cases assert on.
+                    // DATA, WINDOW_UPDATE and PRIORITY carry nothing the cases assert on.
                 }
             }
         }
