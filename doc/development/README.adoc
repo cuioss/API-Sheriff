@@ -267,9 +267,10 @@ Two precedents show the conversion:
   `api-sheriff-ws-admission` instance -- the probe
   `WebSocketProxyIT#sequentialRelaysReturnTheirAdmissionPermitsAtTeardown`, its two negative controls
   and `WsAdmissionActivationWiringTest`.
-* *The pending-login flood.* The bound of the pending-login store was proven in `-Pbenchmark` and
-  moved into the gating suite as `BffPendingLoginBoundIT`, because a capacity bound is a security
-  property and a security property gates the merge.
+* *The pending-login flood.* The bound of the pending-login store was carried by a `-Pbenchmark` goal
+  that failed on every run without blocking anything. Pull request 427 moved it into the gating suite
+  as `BffPendingLoginBoundIT`, because a capacity bound is a security property and a security
+  property gates the merge.
 
 [[_adding_a_resource_bound]]
 === Adding a test for a new resource bound
