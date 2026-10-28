@@ -556,6 +556,15 @@ public class GatewayEdgeRoute {
         // relay must run its upstream dial and client upgrade on it (see TerminalDispatch.dispatchWebSocket).
         ctx.put(TerminalDispatch.CLIENT_CONTEXT_KEY, Vertx.currentContext());
         ctx.addEndHandler(result -> {
+            if (result.failed()) {
+                // The response ended without being written: the client reset its stream or closed its
+                // connection first. A dispatch still waiting for its upstream answer learns it here,
+                // since a request whose body has ended no longer reports either.
+                DispatchStage.InboundBody armed = ctx.get(ResponseEnds.INBOUND_BODY_KEY);
+                if (armed != null) {
+                    armed.clientDeparted(result.cause());
+                }
+            }
             edgeAdmission.releaseAdmission(ctx, admissionReleased);
             rejectionReporter.recordRequestMetrics(ctx, startNanos);
         });

@@ -104,6 +104,9 @@ public enum EventType {
      * disconnected mid-upload, or the body's chunk framing broke — so the body never arrived whole.
      * {@code DispatchStage} aborts the upstream request at once and reports this event; the
      * {@code 400} is the status of the exchange, which a client that has already gone never reads.
+     * The same event reports a client that left — reset its stream or closed its connection — before
+     * its proxied request was answered, with or without a body: the upstream request it was waiting on
+     * is aborted at once rather than held until the upstream guard's timeout.
      * <p>
      * Contrast {@link #CONTENT_TOO_LARGE}, which is a body that kept arriving past the route's
      * {@code security_filter.max_body_bytes} cap. This event is a body that stopped arriving, whatever

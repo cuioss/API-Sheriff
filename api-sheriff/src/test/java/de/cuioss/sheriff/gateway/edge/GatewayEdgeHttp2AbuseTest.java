@@ -55,6 +55,7 @@ import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.StreamResetException;
 import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetSocket;
 import io.vertx.ext.web.Router;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -74,10 +75,17 @@ import org.junit.jupiter.api.Test;
  * over {@code CONTINUATION} frames — use the same connection shapes and show the bounds trip on the
  * abuse alone.
  * <p>
+ * <strong>A client that leaves releases what it held.</strong> A stream reset — or, over HTTP/1.1, a
+ * connection closed — while its request is held by the upstream releases that upstream request at once,
+ * whether the request is bodyless or its whole body has already been sent: the pooled upstream
+ * connections are not held for the guard's timeout by requests nobody will receive the answer to. The
+ * below-the-limit control depends on it, since its further request shares the upstream pool with the
+ * streams reset ahead of it.
+ * <p>
  * <strong>What the stub upstream does.</strong> It speaks HTTP/1.1, as the gateway's default upstream
  * client does. A request to a path under {@value #EARLY} is answered at once, before its body is read;
  * one under {@value #HELD} is received and never answered, so a stream opened against it stays open
- * until its client resets it; every other request is answered {@code ok} once its body has ended.
+ * until the gateway releases it; every other request is answered {@code ok} once its body has ended.
  */
 @EnableGeneratorController
 @DisplayName("GatewayEdgeRoute — HTTP/2 stream-abuse bounds of the inbound transport")
@@ -121,6 +129,13 @@ class GatewayEdgeHttp2AbuseTest {
     private final List<HttpClient> httpClients = new CopyOnWriteArrayList<>();
     /** Every request the stub upstream received a head for, as {@code METHOD path}. */
     private final List<String> upstreamStarted = new CopyOnWriteArrayList<>();
+    /**
+     * Every request whose upstream connection closed before the stub answered it, as {@code METHOD path}:
+     * a held request the gateway released by resetting its upstream request.
+     */
+    private final List<String> upstreamReleased = new CopyOnWriteArrayList<>();
+    /** Every request whose whole body the stub upstream received, as {@code METHOD path}. */
+    private final List<String> upstreamBodyEnded = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -160,9 +175,14 @@ class GatewayEdgeHttp2AbuseTest {
     }
 
     private void handleUpstreamRequest(HttpServerRequest request) {
-        upstreamStarted.add(request.method() + " " + request.path());
+        String received = request.method() + " " + request.path();
+        upstreamStarted.add(received);
         boolean early = request.path().startsWith(EARLY);
         boolean held = request.path().startsWith(HELD);
+        if (held) {
+            // A held request is never answered, so its response can only close: the gateway released it.
+            request.response().closeHandler(closed -> upstreamReleased.add(received));
+        }
         request.handler(chunk -> {
             // Read and discard: only whether the request arrived is observed.
         });
@@ -170,6 +190,7 @@ class GatewayEdgeHttp2AbuseTest {
             // The gateway resetting the upstream request is expected for every reset stream.
         });
         request.endHandler(end -> {
+            upstreamBodyEnded.add(received);
             if (!early && !held) {
                 request.response().end("ok");
             }
@@ -213,6 +234,75 @@ class GatewayEdgeHttp2AbuseTest {
                 () -> assertEquals(Optional.of(200), connection.status(afterStream),
                         "the further stream on the same connection is served"),
                 () -> assertEquals(Optional.empty(), connection.goAwayCode(), "the edge sends no GOAWAY"));
+    }
+
+    @Test
+    @DisplayName("a stream the client resets while its bodyless request is held upstream releases that upstream request")
+    void clientResetOfAHeldBodylessStreamReleasesItsUpstreamRequest() throws Exception {
+        RawHttp2Connection connection = RawHttp2Connection.open(netClient, frontPort);
+        String upstreamPath = HELD + "-reset-after-dispatch";
+        String received = "GET " + upstreamPath;
+
+        Awaits.connect(connection.write(RawHttp2Connection.headers(1,
+                connection.requestHead("GET", "/echo" + upstreamPath), true)), "the held request to be sent");
+        Awaits.until(() -> upstreamStarted.contains(received), "the held request to reach the upstream",
+                Awaits.CONNECT_CEILING_SECONDS);
+        Awaits.connect(connection.write(RawHttp2Connection.rstStream(1, RawHttp2Connection.CANCEL)),
+                "the client reset to be sent");
+        // Well inside the upstream guard's whole-dispatch timeout, which would release it anyway.
+        Awaits.until(() -> upstreamReleased.contains(received),
+                "the reset stream's upstream request to be released", Awaits.ADMISSION_RELEASE_CEILING_SECONDS);
+        Awaits.teardown(connection.close(), "the raw HTTP/2 connection to close");
+
+        assertAll("a client reset of a held bodyless stream",
+                () -> assertTrue(upstreamReleased.contains(received), "the upstream request is released"),
+                () -> assertEquals(Optional.empty(), connection.status(1), "the reset stream is never answered"),
+                () -> assertEquals(Optional.empty(), connection.goAwayCode(), "the edge sends no GOAWAY"));
+    }
+
+    @Test
+    @DisplayName("a stream the client resets once its whole upload reached the held upstream releases that upstream request")
+    void clientResetAfterTheWholeUploadReleasesItsUpstreamRequest() throws Exception {
+        RawHttp2Connection connection = RawHttp2Connection.open(netClient, frontPort);
+        String upstreamPath = HELD + "-reset-after-upload";
+        String received = "POST " + upstreamPath;
+
+        Awaits.connect(connection.write(RawHttp2Connection.headers(1,
+                        connection.requestHead("POST", "/echo" + upstreamPath), false)
+                        .appendBuffer(RawHttp2Connection.data(1, Generators.letterStrings(8, 16).next(), true))),
+                "the held upload to be sent");
+        // The request body has ended, so the request stream no longer reports the reset that follows.
+        Awaits.until(() -> upstreamBodyEnded.contains(received), "the whole upload to reach the upstream",
+                Awaits.CONNECT_CEILING_SECONDS);
+        Awaits.connect(connection.write(RawHttp2Connection.rstStream(1, RawHttp2Connection.CANCEL)),
+                "the client reset to be sent");
+        Awaits.until(() -> upstreamReleased.contains(received),
+                "the reset stream's upstream request to be released", Awaits.ADMISSION_RELEASE_CEILING_SECONDS);
+        Awaits.teardown(connection.close(), "the raw HTTP/2 connection to close");
+
+        assertAll("a client reset of a held upload whose body has ended",
+                () -> assertTrue(upstreamReleased.contains(received), "the upstream request is released"),
+                () -> assertEquals(Optional.empty(), connection.status(1), "the reset stream is never answered"),
+                () -> assertEquals(Optional.empty(), connection.goAwayCode(), "the edge sends no GOAWAY"));
+    }
+
+    @Test
+    @DisplayName("an HTTP/1.1 client that closes its connection while its request is held upstream releases that upstream request")
+    void http1ClientCloseOfAHeldRequestReleasesItsUpstreamRequest() throws Exception {
+        String upstreamPath = HELD + "-closed-over-http1";
+        String received = "GET " + upstreamPath;
+        NetSocket socket = Awaits.connect(netClient.connect(frontPort, LoopbackHost.ADDRESS),
+                "the HTTP/1.1 client to connect to the edge");
+
+        Awaits.connect(socket.write("GET /echo" + upstreamPath + " HTTP/1.1\r\nHost: localhost:" + frontPort
+                + "\r\n\r\n"), "the held request to be sent");
+        Awaits.until(() -> upstreamStarted.contains(received), "the held request to reach the upstream",
+                Awaits.CONNECT_CEILING_SECONDS);
+        Awaits.teardown(socket.close(), "the HTTP/1.1 client connection to close");
+
+        Awaits.until(() -> upstreamReleased.contains(received),
+                "the closed connection's upstream request to be released", Awaits.ADMISSION_RELEASE_CEILING_SECONDS);
+        assertTrue(upstreamReleased.contains(received), "the upstream request is released");
     }
 
     /**

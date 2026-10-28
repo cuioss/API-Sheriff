@@ -57,6 +57,8 @@ public final class RejectionReporter {
     public static final String ROUTE_KEY = "sheriff.route";
     /** The fixed disposition the aborted-inbound-body record carries; nothing the client supplied. */
     private static final String INBOUND_BODY_ABORTED_DISPOSITION = "body-stream-failed";
+    /** The fixed disposition of the same record for a client that left before it was answered. */
+    private static final String CLIENT_DEPARTED_DISPOSITION = "client-left";
 
     private final GatewayEventCounter gatewayEventCounter;
     private final SheriffMetrics sheriffMetrics;
@@ -121,8 +123,11 @@ public final class RejectionReporter {
             // message is a fixed disposition (never the raw Host value).
             case PASSTHROUGH_HOST_SMUGGLED -> LOGGER.warn(ApiSheriffLogMessages.WARN.PASSTHROUGH_HOST_SMUGGLED,
                     rejected.getMessage());
-            // A client-caused termination, not a security event: an INFO, latched per route.
-            case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx));
+            // A client-caused termination, not a security event: an INFO, latched per route. A client that
+            // left before it was answered carries a disposition of its own.
+            case INBOUND_BODY_ABORTED -> logInboundBodyAborted(routeLabel(ctx),
+                    rejected instanceof DispatchStage.ClientDeparted
+                            ? CLIENT_DEPARTED_DISPOSITION : INBOUND_BODY_ABORTED_DISPOSITION);
             // A body that stopped arriving while the dispatch held an upstream connection, or one still
             // arriving at the request-body deadline: an INFO each, latched per route.
             case REQUEST_BODY_TIMEOUT -> {
@@ -206,7 +211,9 @@ public final class RejectionReporter {
 
     /**
      * Records one {@link EventType#INBOUND_BODY_ABORTED} — a request body that failed after dispatch
-     * began, such as a client disconnecting mid-upload.
+     * began, such as a client disconnecting mid-upload (disposition {@code body-stream-failed}), or a
+     * client that left before its proxied request was answered, with or without a body (disposition
+     * {@code client-left}).
      * <p>
      * <strong>Latched per route.</strong> Every caller a route admits can end its own upload at will,
      * and on a route without authentication that is any caller at all, so a record per occurrence
@@ -218,13 +225,13 @@ public final class RejectionReporter {
      * The record carries the route id and a fixed disposition only: never the failure's message, which
      * can describe what the client sent.
      */
-    private void logInboundBodyAborted(String route) {
+    private void logInboundBodyAborted(String route, String disposition) {
         if (inboundBodyAbortReported.add(route)) {
-            LOGGER.info(ApiSheriffLogMessages.INFO.INBOUND_BODY_ABORTED, route, INBOUND_BODY_ABORTED_DISPOSITION);
+            LOGGER.info(ApiSheriffLogMessages.INFO.INBOUND_BODY_ABORTED, route, disposition);
             return;
         }
         LOGGER.debug("Request body on route '%s' did not arrive whole again (%s) — already reported once for "
-                + "this route, stays at DEBUG for the rest of the process", route, INBOUND_BODY_ABORTED_DISPOSITION);
+                + "this route, stays at DEBUG for the rest of the process", route, disposition);
     }
 
     /**
