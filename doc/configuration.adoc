@@ -407,7 +407,8 @@ edge_hardening:                    # OPTIONAL admission budget for the public da
                                    #   There are a QUARTER of the effective admission_cap of them
                                    #   (>= 1), so admission_cap scales both. When all are taken, a
                                    #   further answer that would wait is a bare 503, written no
-                                   #   earlier than the floor's release time and alike for every
+                                   #   earlier than the floor's release time (at once when
+                                   #   uniform_not_found is off) and alike for every
                                    #   route and caller, and it waits under its own general
                                    #   permit until then; held answers keep no general permit, so
                                    #   those stay free for requests that are served.
@@ -4471,7 +4472,8 @@ permit back while it waits and takes a permit of a third pool instead. That pool
 the effective `admission_cap`, and at least one, so `admission_cap` scales it; with the default cap
 it holds `512` answers. When every held permit is taken, a further answer that would wait is
 answered `503` no earlier than the floor's release time, without a held permit: it waits under the
-general permit it was admitted with, until that release time. That `503` is the same for every route
+general permit it was admitted with, until that release time (with `security_defaults.uniform_not_found`
+off there is no floor, and the `503` is written at once). That `503` is the same for every route
 and every caller. A held answer keeps no general permit while it waits, so the general permits stay
 free for requests the gateway serves except for the refused answers waiting for their release time
 (link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#amendment-a1[ADR-0073,
@@ -4578,7 +4580,9 @@ held-answer sub-budget, not on the general admission pool
 *Shared addresses -- settle this before switching to `block` or `delay`.* Behind a load balancer or
 reverse proxy that `forwarded.trusted_proxies` does not list, every client arrives from the
 balancer's address and is one source. One scanning client then trips that source, and under `block`
-every client behind the balancer is answered `429`; under `delay` all their rejections slow down. List
+every client behind the balancer is answered `429`; under `delay` all their rejections slow down and,
+once the source's share of the held-answer sub-budget is used up, every further request from it --
+served ones included -- is answered `429` as well. List
 the balancer in `forwarded.trusted_proxies` first, so each client is keyed by its own address. A
 source behind a NAT or a shared egress proxy remains one source whatever the gateway is told; keep
 `observe`, or raise `threshold`, for a deployment whose clients share such addresses.

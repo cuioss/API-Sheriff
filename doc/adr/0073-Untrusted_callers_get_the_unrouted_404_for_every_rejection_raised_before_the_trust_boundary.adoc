@@ -285,7 +285,8 @@ measurement.
   sub-budget is a quarter of the effective `edge_hardening.admission_cap`, at least one; with the
   default cap of 2048 it holds 512 answers, each for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`,
   70 ms, so the edge sustains about 512 / 0.07 s, roughly 7,300 held answers per second. Above that a
-  held answer is answered `503` no earlier than the floor's release time, alike for every held answer
+  held answer is answered `503` no earlier than the floor's release time (at once when
+  `security_defaults.uniform_not_found` is off, which has no floor), alike for every held answer
   whatever its route or caller, so the `503` leaks nothing. The refused answer waits under the
   general permit it was admitted with until that release time, so a request that passes the trust
   boundary still finds the general pool once those refusals are written.

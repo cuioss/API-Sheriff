@@ -92,7 +92,10 @@ public record EnumerationDetectionConfig(
         /** A tripped source is answered {@code 429} with {@code Retry-After} for the block duration. */
         BLOCK,
 
-        /** A tripped source's rejection answers are held for the configured delay. */
+        /**
+         * A tripped source's rejection answers are held for the configured delay; once its share of
+         * the held-answer sub-budget is used up, its further requests are answered {@code 429}.
+         */
         DELAY,
 
         /** A trip is recorded and no answer changes — the default. */

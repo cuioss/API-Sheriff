@@ -346,8 +346,9 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * these instead (see {@link EdgeAdmission#tryEnterHold}), so a caller producing answers that are
      * only held — a scan of unrouted addresses — cannot occupy the general pool for the length of the
      * floor and starve the traffic the gateway exists to serve. An answer refused a held permit is
-     * answered {@code 503} at the release time the uniform {@code 404}'s floor gives it, under the
-     * general permit it was admitted with (see {@code edge.end.ResponseDelay}).
+     * answered {@code 503} at the release time the uniform {@code 404}'s floor gives it (at once when
+     * {@code uniform_not_found} is off), under the general permit it was admitted with (see
+     * {@code edge.end.ResponseDelay}).
      * <p>
      * Derived, not configured: a quarter of the {@linkplain #admissionCap() admission cap}, and never
      * below one — the proportion an undeclared WebSocket relay sub-budget is derived with (ADR-0020).
