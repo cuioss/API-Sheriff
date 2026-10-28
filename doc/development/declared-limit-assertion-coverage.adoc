@@ -567,7 +567,14 @@ declaration's *existence* is proven while its *boundary* is not.
   `sheriff-config-ws-admission/gateway.yaml:35,36`
 | Admission budget (general permit + relay sub-budget)
 | COVERED
-| `WebSocketProxyIT` (`WsAdmissionExhaustion`) + `WsAdmissionActivationWiringTest`
+| `WebSocketProxyIT` -- the probe `sequentialRelaysReturnTheirAdmissionPermitsAtTeardown` (ten
+  sequential relays, then `GET /proxy/get` must answer `200`) and its two negative-control legs,
+  each holding one budget and requiring the probe to fail, then releasing it and requiring the probe
+  to pass: `probeFailsWhileTheRelaySubBudgetIsHeldAndPassesOnceReleased` (two established relays) and
+  `probeFailsWhileTheGeneralAdmissionBudgetIsHeldAndPassesOnceReleased` (eight in-flight requests);
+  plus `WsAdmissionActivationWiringTest`, whose `overlayCapsEqualTheHeldCountsOfTheNegativeControls`
+  is the equality guard binding both caps to the counts the controls hold, read from the IT rather
+  than copied
 
 | `tls.passthrough_sni`
   `sheriff-config/gateway.yaml:89-91`

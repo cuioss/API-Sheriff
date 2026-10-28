@@ -205,6 +205,135 @@ Documents in `doc/development/` cover:
 Design rationale lives in the link:../README.adoc[design documentation]; this layer describes
 how to *work in* the codebase that implements it.
 
+[[_test_lanes]]
+== Test Lanes: Which Lane Owns Which Defect Class
+
+Each defect class has one owning lane. Where the class can be decided without a timing margin, the
+owner is a lane whose failure blocks the merge that introduced the defect. The decision record is
+link:../adr/0075-Resource-exhaustion_detection_is_owned_by_the_gating_integration_suite_through_shrunken-budget_exhaustion_tests_and_the_benchmark_lane_stays_non-gating.adoc[ADR-0075];
+this section is what a contributor needs when deciding where a new test goes.
+
+[cols="3,3,1,5", options="header"]
+|===
+| Defect class | Owning lane | Gating | Mechanism
+
+| Per-request correctness -- one request gets the wrong answer
+| Unit tests (surefire) and the integration suite (`-Pintegration-tests`, Failsafe)
+| Yes
+| A request and an assertion on its response. Both lanes run on every pull request.
+
+| Declared limits -- a configured bound that must act, not only parse
+| The integration suite for the boundary; a surefire `*ActivationWiringTest` for the descriptor
+| Yes
+| A boundary assertion with a matched positive control in the integration suite, plus a wiring guard
+  that fails when the descriptor stops declaring the value the integration test relies on. The
+  per-limit index is link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage].
+
+| Resource lifecycle and cumulative exhaustion -- a budget that is not returned
+| The integration suite, in the sequential Failsafe execution
+| Yes
+| A shrunken-budget exhaustion test: a dedicated low-budget instance, a probe, a negative control
+  and a wiring guard (see <<_adding_a_resource_bound>>). A per-request assertion cannot see this
+  class however strong it is -- see
+  link:test-corpus-integrity.adoc#cumulative-finding[Test-Corpus Integrity, "A per-request assertion
+  cannot observe cumulative exhaustion"].
+
+| Throughput and latency regression
+| The benchmark lane (`-Pbenchmark`, `.github/workflows/benchmark.yml`)
+| No
+| k6 goals against native gateway instances. The workflow fires on a merged pull request, on a tag
+  and on a manual dispatch, so it measures and publishes; it cannot block a merge.
+
+| Lane-conditional failures -- a test that fails in one lane and passes in another
+| The lane that runs the test
+| As that lane is
+| The lane either serves the test or excludes it by name, with the reason beside the exclusion. The
+  `jfr` profile in `integration-tests/pom.xml` excludes `MtlsHandshakeIT` this way.
+|===
+
+=== A benchmark-observed resource failure becomes a gating test
+
+The benchmark lane runs after the merge, so it cannot block the change behind a failure it observes.
+When it observes a resource failure -- a pool that runs dry, a bound that does not hold -- the answer
+is a gating integration test of the shape below. A skip property on the failing goal is not an
+answer: it switches the goal off while the defect stays.
+
+Two precedents show the conversion:
+
+* *The WebSocket admission-permit leak.* A relay kept its general admission permit after a completed
+  upgrade, and under sustained load the gateway answered `503` to all traffic. The benchmark lane
+  observed it, and the response was the `skip.benchmark.websocket.echo` property: the `websocketEcho`
+  goal ran skipped while the relay leaked. The conversion is the gating regression on the
+  `api-sheriff-ws-admission` instance -- the probe
+  `WebSocketProxyIT#sequentialRelaysReturnTheirAdmissionPermitsAtTeardown`, its two negative controls
+  and `WsAdmissionActivationWiringTest`.
+* *The pending-login flood.* The bound of the pending-login store was carried by a `-Pbenchmark` goal
+  that failed on every run without blocking anything. Pull request 427 moved it into the gating suite
+  as `BffPendingLoginBoundIT`, because a capacity bound is a security property and a security
+  property gates the merge.
+
+[[_adding_a_resource_bound]]
+=== Adding a test for a new resource bound
+
+A process-wide budget sized for production is too large to exhaust in a test. Shrink it on a
+dedicated instance and prove the probe can fail:
+
+. *A dedicated instance or overlay.* Add a compose instance whose overlaid `gateway.yaml` lowers the
+  budget under test to single digits and changes nothing else, or add the budget to an existing
+  low-budget overlay. `sheriff-config-ws-admission/gateway.yaml` is the reference.
+. *A probe.* Perform more operations than the cap allows (N > cap), in sequence, then make a claim
+  about the *gateway* rather than about the last response -- for example that an ordinary request on
+  the same instance still answers `200`. A leaked unit of budget then becomes a refusal the probe
+  observes.
+. *A negative control with recovery.* From the test, hold exactly the cap's worth of the budget and
+  run the probe: it must fail. Release what was held and run it again: it must pass. The first leg
+  proves the probe can observe an exhausted budget; the second proves the held units caused the
+  failure. `WebSocketProxyIT#probeFailsWhileTheRelaySubBudgetIsHeldAndPassesOnceReleased` and
+  `WebSocketProxyIT#probeFailsWhileTheGeneralAdmissionBudgetIsHeldAndPassesOnceReleased` are the
+  reference.
+. *A wiring guard.* A surefire test parses the overlay and binds its caps to the integration test's
+  own constants: each cap below the probe's operation count and equal to the control's held count,
+  with the constants read from the integration test rather than copied. `WsAdmissionActivationWiringTest`
+  is the reference.
+
+Keep the class in the sequential Failsafe execution: a test that holds an instance's budget starves
+any other class running on that instance. Then give the limit its row in
+link:declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage].
+
+=== Instances and open defects behind the decision
+
+ADR-0075 describes the shipped instances by content only. Their identifiers are recorded here.
+
+[cols="3,3,4", options="header"]
+|===
+| Instance | Identifier | Disposition
+
+| WebSocket admission-permit leak
+| Finding `218b5c`, fixed in pull request 126
+| Detected by the shrunken-budget probe on `api-sheriff-ws-admission`; the negative controls on both
+  budgets demonstrate that the probe can fail.
+
+| Body-cap derivation defect
+| Fixed in pull request 131; pull request 134 repaired the benchmark coverage step
+| Detected per request by `LargeBodyIT`, with `BodyLimitActivationWiringTest` pinning the framework
+  floor -- a layer-boundary defect, not a cumulative one.
+
+| mTLS rejection legs failing in the `jfr` lane
+| GitHub issue 201
+| Neither detected nor fixed by this decision. The cause is recorded in the `jfr` profile's exclusion
+  comment in `integration-tests/pom.xml`.
+|===
+
+The epic ledger routed three open defects to the decision; ADR-0075 gives the reasons:
+
+* *(6) The detection gap for cumulative exhaustion -- adopted, narrowed.* The gating detector already
+  existed. What was missing was a demonstrated failure of it, which the negative controls supply.
+* *(7) The k6 scripts as an unguarded consumer of the shared gateway configuration -- declined.* It is
+  a consumer-drift concern of the benchmark lane, not a resource-lifecycle one.
+* *(9) `K6BenchmarkLogMessages` outside the reach of `LogMessagesCatalogueTest` -- declined.* The
+  guard's reach beyond the `api-sheriff` module is a catalogue-completeness defect class in a
+  different module.
+
 == Inbound Validation: Where the Code Lives and Why
 
 The inbound filter is *two stages split across route selection*, not one. A contributor changing

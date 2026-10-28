@@ -1,0 +1,254 @@
+= ADR-0075: Resource-exhaustion detection is owned by the gating integration suite through shrunken-budget exhaustion tests and the benchmark lane stays non-gating
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
+// Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
+// relevance without reading the full file. List fields are comma-separated.
+// summary: Resource-lifecycle and cumulative-exhaustion defects are detected in the gating Failsafe suite by shrunken-budget exhaustion tests: a dedicated gateway instance whose overlaid gateway configuration lowers the budget under test to single digits, a probe that performs more operations than the budget allows and then makes a claim about the gateway, a surefire wiring test that binds the overlay to the probe, and a committed negative control that holds the budget and observes the probe fail. Time-based soak is rejected, and the benchmark lane stays a non-gating measurement lane for throughput and latency.
+// tags: testing-lanes, resource-exhaustion, admission-control, integration-tests, benchmarks, ci-gating, rejected-alternatives
+// affects: integration-tests, benchmarks, documentation
+// supersedes:
+// end-adr-metadata
+
+// Authoring discipline (see manage-adr SKILL.md → "Authoring Discipline"):
+// ADRs are durable architectural statements, not incident write-ups. No PR numbers,
+// commit SHAs, dates, or lesson IDs anywhere in the body. CLAUDE.md's "current state
+// only" rule applies — describe the architecture, not the chronology.
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+The gateway holds process-wide budgets. Examples are the general admission budget
+(`edge_hardening.admission_cap`) and the relay sub-budget (`websocket_relay_cap`) of
+link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020].
+A defect in how such a budget is returned does not fail any single request. It fails the gateway
+after enough requests have run.
+
+Two test lanes could own the detection of that defect class:
+
+* *The gating integration suite.* The Failsafe suite under `-Pintegration-tests` runs on every pull
+  request. A red run blocks the merge.
+* *The benchmark lane.* The k6 suite under `-Pbenchmark` runs from
+  `.github/workflows/benchmark.yml`. The workflow fires on a merged pull request, on a tag and on a
+  manual dispatch. It cannot block the merge that caused a failure.
+
+This record decides which lane owns the detection, and with which mechanism.
+
+=== What the gating suite already held
+
+The question was asked as if no lane detected the defect class. The gating suite already did, for
+one instance of it.
+
+* `WebSocketProxyIT#sequentialRelaysReturnTheirAdmissionPermitsAtTeardown` drives the dedicated
+  instance `api-sheriff-ws-admission`. Its overlaid gateway configuration sets the general admission
+  budget to 8 and the relay sub-budget to 2. The test opens and closes ten relays in sequence. It then
+  requires `GET /proxy/get` to answer `200`. A relay that keeps either permit makes an upgrade or the
+  final request fail.
+* `WsAdmissionActivationWiringTest` runs under surefire. It asserts that both overlay caps stay
+  below the probe's operation count. A drift of the overlay therefore fails a fast test, not only the
+  slow one.
+
+The remaining gap was narrower than the question assumed. Nobody had seen that probe fail. A probe
+that has never failed may be unable to fail. This record closes the gap with a committed negative
+control. The control holds the budget and observes the probe fail (see below).
+
+=== The decision
+
+*Resource-lifecycle and cumulative-exhaustion defects are detected in the gating Failsafe suite, by
+shrunken-budget exhaustion tests. The benchmark lane stays a non-gating measurement lane for
+throughput and latency.*
+
+A shrunken-budget exhaustion test has four parts:
+
+. *A dedicated low-budget instance.* An overlaid gateway configuration lowers the budget under test
+  to single digits. A production-sized budget would need thousands of operations to run dry. The
+  overlay replaces the primary instance's gateway document rather than inheriting it, so it can also
+  differ in keys the probe never exercises. The budget is the only difference the probe relies on.
+. *A probe.* The probe performs more operations than the budget allows. It then makes a claim about
+  the *gateway*, not about one response. A leaked unit of budget therefore turns into a refusal the
+  probe observes.
+. *A wiring guard.* A surefire test reads the overlay and binds its values to the probe's own
+  constants. The guard fails when the overlay stops being exhaustible by the probe.
+. *A negative control and its recovery.* The control holds the budget from a test fixture and runs
+  the probe. The probe must fail. The control then releases what it held and runs the probe again.
+  The probe must pass. The control proves that the probe can observe an exhausted budget. The
+  recovery proves that the held units caused the failure.
+
+`WebSocketProxyIT` carries the negative control on both budgets of `api-sheriff-ws-admission`:
+
+* *Relay sub-budget.* The control holds two established relays. To the admission pool, a held relay
+  is the same as a relay that never returned its permit.
+* *General admission budget.* The control holds eight in-flight requests, and no relay. Each request
+  declares a body length and withholds the bytes until the control releases it.
+
+`WsAdmissionActivationWiringTest` asserts that the overlay caps equal the held counts the controls
+use. It reads those counts from `WebSocketProxyIT` rather than from a copy.
+
+The controls prove that the probe observes an exhausted pool on either budget. They do not replay a
+defect in the relay's release path. The unit tests of the relay stage own that path.
+
+=== The three shipped instances
+
+The decision was tested against the three resource-related failures the gateway has shipped. Each is
+described by its content.
+
+[cols="2,3,3", options="header"]
+|===
+| Instance | Gating suite | Benchmark lane
+
+| A WebSocket relay kept its general admission permit after a completed upgrade. A sustained run
+  exhausted the pool, and the gateway answered `503` to all traffic.
+| Detected by the shrunken-budget probe above. Its negative control on the general budget reproduces
+  the observable effect against the fixed gateway.
+| Observed the failure under load. The response was a skip property on the `websocketEcho` goal.
+  The goal ran skipped while the defect stood.
+
+| The framework's body-size limit stayed below a route's declared body cap. The framework rejected a
+  large upload before the gateway pipeline ran.
+| Detected per request by `LargeBodyIT`. `BodyLimitActivationWiringTest` pins the framework floor and
+  the declared cap. This is a layer-boundary defect, not a cumulative one.
+| Observed the failure. The response was a skip property on the `uploadLarge` goal.
+
+| The mTLS rejection legs failed in the `jfr` lane.
+| Neither detected nor prevented. The `jfr` profile's exclusion comment in `integration-tests/pom.xml`
+  records the cause: that lane pointed `MtlsHandshakeIT` at the primary instance, which requires no
+  client certificate, and the client offered no identity.
+| Neither detected nor prevented.
+|===
+
+The table yields two findings:
+
+* The benchmark lane observed two of the three instances. In both, its response was to skip the goal.
+  A lane that cannot block the merge has no other move when a goal fails.
+* The third instance is lane-conditional. It is a property of the lane that runs the test, not of the
+  gateway. Neither choice of home detects it. The lane that runs a test owns it, and a lane excludes a
+  test it cannot serve by name.
+
+=== The precedent for capacity bounds
+
+`BffPendingLoginBoundIT` already moved one capacity bound out of `-Pbenchmark` and into the gating
+suite. It proves the bound of the pending-login store against the primary instance. The reasoning
+was that a capacity bound is a security property, and a security property must gate the merge.
+
+This record adopts that reasoning for every resource bound. It does not decide it again per bound.
+It adds one part the precedent lacks. A bound whose production value is too large to exhaust in a
+test gets a shrunken-budget instance, and the negative control proves that the probe can fail.
+
+== Alternatives rejected
+
+=== The benchmark lane as the detection home
+
+Make the benchmark lane responsible for exhaustion defects, and let its failures gate the merge.
+
+Rejected:
+
+* *It runs after the merge.* The workflow fires on a merged pull request, on a tag and on a manual
+  dispatch. A failure arrives after the defect is on `main`.
+* *Making it gate is a structural change to the release lane.* The job has a budget of 75 minutes. It
+  starts seven native gateway instances beside the identity provider and the upstreams. It mints a
+  GitHub App token and deploys results to `cuioss.github.io` in the same job. A pull request from a
+  fork receives none of the secrets that job needs. Gating every pull request on it would move a
+  release-lane job into the merge path.
+* *Its demonstrated reaction to an exhaustion finding was a skip.* The lane saw the relay-permit leak
+  and answered with a skip property. A non-gating lane has no stronger reaction available.
+
+=== A time-based soak test in the gating suite
+
+Run sustained load against the production-sized budget for a fixed time, and fail when the gateway
+degrades.
+
+Rejected:
+
+* *It lengthens the integration lane for a signal the shrunken budget reaches in about ten
+  operations.* The probe above exhausts both budgets of its instance in fewer than a dozen relays.
+* *Its pass or fail threshold would be a timing margin.* A soak test must decide how long is long
+  enough and how slow is degraded. Both are margins that move with the machine. The suite already
+  keeps timing-sensitive classes, `WebSocketProxyIT` among them, in the sequential Failsafe
+  execution, because their margins do not survive CPU contention.
+
+=== A new non-gating soak lane
+
+Add a third lane, outside the merge path, that runs soak tests on a schedule.
+
+Rejected. A non-gating lane reproduces the detection gap this record closes. A failure would again
+arrive after the merge. Its only available reaction would again be a skip.
+
+=== Both lanes own the defect class
+
+Keep the gating probe and also add exhaustion goals to the benchmark lane, so each lane covers the
+defect class its own way.
+
+Rejected. One defect class gets two homes. The two definitions of "exhausted" drift apart, and a
+reader cannot tell which lane is the authority. The benchmark lane keeps observing what it observes.
+When it observes a resource failure, the answer is a gating test, not a second owner.
+
+== Consequences
+
+=== Positive
+
+* An exhaustion defect fails the pull request that introduces it. It does not reach `main` first.
+* The probe's ability to fail is demonstrated by a committed test on both budgets of its instance. A
+  green probe is therefore evidence, not an untested assertion.
+* The signal is deterministic. Every wait is a future completion or a bounded `get` with a timeout. No
+  threshold depends on how fast the machine is.
+* The benchmark lane's job stays measurement. Its budget, secrets and deploy steps stay out of the
+  merge path.
+
+=== Negative
+
+* *Every new resource bound costs an instance or an overlay.* It needs a dedicated low-budget
+  instance, or an overlay on an existing one, plus the probe, the negative control and the wiring
+  guard. The integration stack grows by one gateway instance per process-wide bound. The instance
+  count is already visible in the stack-startup term of the benchmark workflow's budget.
+* *The low-budget instance cannot be shared with a concurrent class.* A class that holds its budget
+  starves any other class on the same instance. Such a class stays in the sequential Failsafe
+  execution.
+* *A benchmark-observed resource failure creates work in another lane.* The benchmark lane may not
+  answer it with a skip property alone. The failure obliges a gating test of the shape above.
+
+=== Scope boundary
+
+The decision covers some adjacent concerns and declines others:
+
+* *The detection gap for cumulative exhaustion: adopted, narrowed.* The gating detector existed. The
+  missing part was a demonstrated failure of it, which the negative control supplies.
+* *The k6 scripts as unguarded consumers of the shared gateway configuration: not covered.* That is a
+  consumer-drift concern of the benchmark lane, not a resource-lifecycle concern.
+* *The reach of the log-message catalogue guard beyond the `api-sheriff` module: not covered.* That
+  is a catalogue-completeness defect class in a different module.
+* *The mTLS rejection failure in the `jfr` lane: not covered.* This decision neither detects nor
+  fixes it. It is owned by the lane that runs the test, as stated above.
+
+== Links
+
+* link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]
+  -- the general admission budget and the relay sub-budget the probe exhausts
+* link:0030-Comment-only_invariants_become_positively-phrased_fitness_functions_shipped_with_a_four-leg_control_set.adoc[ADR-0030]
+  -- the control legs a fitness function ships with; the negative control here is the matching leg
+* link:../development/README.adoc#_test_lanes[Developer documentation, "Test Lanes: Which Lane Owns Which Defect Class"]
+  -- the defect-class-to-lane table and the recipe for a new resource bound
+* link:../development/declared-limit-assertion-coverage.adoc[Declared-Limit Assertion Coverage]
+  -- the per-limit assertion inventory, including the admission-budget row
+* link:../development/test-corpus-integrity.adoc[Test-Corpus Integrity], section "A per-request
+  assertion cannot observe cumulative exhaustion" -- why a per-request test cannot see this defect
+  class
+* `integration-tests/src/test/java/de/cuioss/sheriff/gateway/integration/WebSocketProxyIT.java`
+  -- the probe, the negative controls and their recoveries
+* `WsAdmissionActivationWiringTest` -- the surefire guard binding the overlay caps to the probe
+* `integration-tests/src/main/docker/sheriff-config-ws-admission/gateway.yaml` -- the low-budget
+  overlay
+* `LargeBodyIT`, `BodyLimitActivationWiringTest` -- the per-request body-cap test and its wiring guard
+* `BffPendingLoginBoundIT` -- the capacity-bound precedent
+* `integration-tests/pom.xml` -- the sequential Failsafe execution and the `jfr` profile's exclusion
+* `.github/workflows/benchmark.yml`, `benchmarks/pom.xml` -- the benchmark lane's triggers, budget
+  and skip properties

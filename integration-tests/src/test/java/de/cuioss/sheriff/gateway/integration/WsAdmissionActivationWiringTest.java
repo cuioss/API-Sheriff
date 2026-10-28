@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.integration;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -44,6 +45,11 @@ import org.junit.jupiter.api.Test;
  * that is never defined, or an {@code edge_hardening} block whose caps drift upward all leave a green
  * test that has stopped testing anything. No black-box assertion inside the IT itself can see that:
  * the wire looks identical either way.
+ * <p>
+ * The same IT also carries two negative controls that hold one budget each — the relay sub-budget
+ * with established relays, the general budget with in-flight requests — and require the probe to
+ * fail. Those controls hold exactly as many permits as the overlay declares, so the overlay caps must
+ * also <em>equal</em> the IT's held counts, not merely stay below its upgrade count.
  * <p>
  * It parses the committed descriptors only (YAML text) and asserts the activation is present — it
  * starts no container and reaches no network. Modelled on {@code TlsEdgeActivationWiringTest} and
@@ -99,6 +105,31 @@ class WsAdmissionActivationWiringTest {
         assertTrue((Integer) relayCap < upgrades,
                 "websocket_relay_cap must stay below the " + upgrades
                         + " sequential upgrades the regression drives, was: " + relayCap);
+    }
+
+    /**
+     * Both caps must equal the counts {@code WebSocketProxyIT}'s negative controls hold:
+     * {@link WebSocketProxyIT#LOW_CAP_ADMISSION_CAP} in-flight requests for the general budget and
+     * {@link WebSocketProxyIT#LOW_CAP_RELAY_CAP} established relays for the relay sub-budget. A cap above
+     * its held count leaves a permit free, so the probe passes and the control fails for a fixture
+     * reason; a cap below it makes the fixture itself be refused. Either drift fails here, in the fast
+     * lane, rather than only in the slow Failsafe control. The counts are read from the IT, not copied.
+     */
+    @Test
+    @DisplayName("the ws-admission overlay caps equal the counts the negative controls hold")
+    void overlayCapsEqualTheHeldCountsOfTheNegativeControls() throws Exception {
+        // Arrange
+        Map<String, Object> hardening = edgeHardeningBlock();
+
+        // Act
+        Object admissionCap = hardening.get("admission_cap");
+        Object relayCap = hardening.get("websocket_relay_cap");
+
+        // Assert
+        assertEquals(Integer.valueOf(WebSocketProxyIT.LOW_CAP_ADMISSION_CAP), admissionCap,
+                "edge_hardening.admission_cap must equal the in-flight requests the general-budget control holds");
+        assertEquals(Integer.valueOf(WebSocketProxyIT.LOW_CAP_RELAY_CAP), relayCap,
+                "edge_hardening.websocket_relay_cap must equal the relays the relay-budget control holds");
     }
 
     @Test
