@@ -68,7 +68,8 @@ import org.junit.jupiter.api.Test;
  * source. With no {@code enumeration_detection} block declared the trip is recorded and every answer
  * stays byte for byte what it was before the trip: the shipped default is {@code observe}. Under a
  * declared {@code block} the next request is answered {@code 429} before admission; under a declared
- * {@code delay} the rejection answers are held. Static resources are never counted, a source is the
+ * {@code delay} the rejection answers are held. Browser-ambient fetches are never counted while a path
+ * ending in a static extension is, a source is the
  * forwarded client for a trusted proxy and the TCP peer otherwise, and a disabled block never acts.
  */
 @EnableTestLogger
@@ -188,20 +189,39 @@ class GatewayEdgeSourceDetectionTest {
     }
 
     @Test
-    @DisplayName("static resources are never counted: a run of missing assets does not trip the source")
-    void staticResourcesAreExcluded() throws Exception {
+    @DisplayName("browser-ambient fetches are never counted: a run of them does not trip the source")
+    void browserAmbientFetchesAreExcluded() throws Exception {
         start(EnumerationDetectionConfig.builder().threshold(2)
                 .action(EnumerationDetectionConfig.Action.BLOCK).build(), List.of());
-        for (String asset : List.of("/scan/logo.png", "/scan/app.js", "/scan/site.css", "/scan/font.woff2",
-                "/favicon.ico")) {
-            assertEquals(404, send(asset, Map.of()).status(), asset);
+        for (String ambient : List.of("/favicon.ico", "/robots.txt", "/apple-touch-icon.png",
+                "/apple-touch-icon-precomposed.png", "/apple-touch-icon-180x180.png")) {
+            assertEquals(404, send(ambient, Map.of()).status(), ambient);
         }
 
         Response probe = send(PROBE, Map.of());
 
-        assertAll("the assets left the source untripped",
+        assertAll("the ambient fetches left the source untripped",
                 () -> assertEquals(404, probe.status(), "the next probe is answered, not refused"),
                 () -> assertNull(registry.find(SheriffMetrics.SOURCE_TRIPS_TOTAL).counter(), "no trip was recorded"));
+    }
+
+    @Test
+    @DisplayName("a scan of paths ending in static extensions trips the source; an honest caller is not refused")
+    void staticExtensionScanTripsTheSource() throws Exception {
+        start(EnumerationDetectionConfig.builder().threshold(THRESHOLD)
+                .action(EnumerationDetectionConfig.Action.BLOCK).build(), List.of(LoopbackHost.ADDRESS + "/32"));
+        List<String> scan = List.of("/scan/logo.png", "/secure/app.js", "/scan/site.css", "/secure/font.woff2");
+        for (int index = 0; index < SCAN_LENGTH; index++) {
+            String path = scan.get(index % scan.size());
+            assertEquals(404, send(path, Map.of(FORWARDED_FOR, SCANNER)).status(), path);
+        }
+
+        Response scanner = send("/scan/next.png", Map.of(FORWARDED_FOR, SCANNER));
+        Response honest = send("/scan/next.png", Map.of(FORWARDED_FOR, HONEST));
+
+        assertAll("an extension alone does not exempt a probe",
+                () -> assertEquals(429, scanner.status(), "the scanning source is blocked"),
+                () -> assertEquals(404, honest.status(), "an honest client behind the same proxy is answered"));
     }
 
     @Test

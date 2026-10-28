@@ -201,18 +201,54 @@ class ReconEventsTest {
         @ParameterizedTest(name = "{0}")
         @ValueSource(strings = {"ico", "png", "jpg", "jpeg", "gif", "svg", "webp", "css", "js", "map", "woff",
                 "woff2", "ttf", "PNG", "Css"})
-        @DisplayName("a miss on a static extension is not counted, whatever its case")
-        void staticExtensionIsNotCounted(String extension) {
+        @DisplayName("a path ending in a static extension on a non-asset route is counted, whatever its case")
+        void staticExtensionAloneIsCounted(String extension) {
             PipelineRequest request = routedRequest("/assets/" + dynamicSegment() + "." + extension, null);
 
             assertAll(extension,
+                    () -> assertFalse(ReconEvents.isStaticResource(request)),
+                    () -> assertEquals(ReconEvents.RECON_WEIGHT,
+                            ReconEvents.weightOf(request, EventType.NO_ROUTE_MATCHED)),
+                    () -> assertEquals(ReconEvents.RECON_WEIGHT,
+                            ReconEvents.weightOf(request, EventType.TOKEN_MISSING)));
+        }
+
+        @Test
+        @DisplayName("the closed browser-ambient set is exactly the four root fetches")
+        void browserAmbientSetIsClosed() {
+            assertEquals(Set.of("/favicon.ico", "/robots.txt", "/apple-touch-icon.png",
+                    "/apple-touch-icon-precomposed.png"), ReconEvents.BROWSER_AMBIENT_PATHS);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"/favicon.ico", "/FAVICON.ICO", "/robots.txt", "/apple-touch-icon.png",
+                "/apple-touch-icon-precomposed.png", "/apple-touch-icon-180x180.png",
+                "/apple-touch-icon-152x152-precomposed.png"})
+        @DisplayName("a browser-ambient fetch is not counted, whatever its case")
+        void browserAmbientFetchIsNotCounted(String path) {
+            PipelineRequest request = routedRequest(path, null);
+
+            assertAll(path,
                     () -> assertTrue(ReconEvents.isStaticResource(request)),
                     () -> assertEquals(0, ReconEvents.weightOf(request, EventType.NO_ROUTE_MATCHED)));
         }
 
         @ParameterizedTest(name = "{0}")
+        @ValueSource(strings = {"/admin/favicon.ico", "/robots.txt.bak", "/apple-touch-icon-x.png",
+                "/apple-touch-icon-180x180.png.js", "/static/apple-touch-icon.png"})
+        @DisplayName("a path that only resembles a browser-ambient fetch is counted")
+        void lookalikeOfAnAmbientFetchIsCounted(String path) {
+            PipelineRequest request = routedRequest(path, null);
+
+            assertAll(path,
+                    () -> assertFalse(ReconEvents.isStaticResource(request)),
+                    () -> assertEquals(ReconEvents.RECON_WEIGHT,
+                            ReconEvents.weightOf(request, EventType.NO_ROUTE_MATCHED)));
+        }
+
+        @ParameterizedTest(name = "{0}")
         @ValueSource(strings = {"/admin", "/admin.php", "/.env", "/wp-login.php", "/css/admin", "/backup.js.bak"})
-        @DisplayName("a path whose last segment carries no static extension is counted")
+        @DisplayName("a path outside the browser-ambient set on a non-asset route is counted")
         void nonStaticPathIsCounted(String path) {
             PipelineRequest request = routedRequest(path, null);
 

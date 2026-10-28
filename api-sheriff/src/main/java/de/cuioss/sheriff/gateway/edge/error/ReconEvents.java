@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
@@ -86,12 +87,13 @@ import org.jspecify.annotations.Nullable;
  *       them — they are not rejections of a request.</li>
  * </ul>
  * <p>
- * <strong>Static resources are excluded</strong> ({@link #isStaticResource}): a browser fetching a
- * page requests icons, stylesheets, scripts and fonts it was never told exist, and an honest client
- * whose page references a missing asset would otherwise trip on its own page loads. A request is a
- * static resource when its selected route carries the asset terminal action, or when the last
- * segment of its canonical path — the raw request path when stage 1 has not run — ends in one of
- * {@link #STATIC_EXTENSIONS}, compared case-insensitively.
+ * <strong>Static resources are excluded</strong> ({@link #isStaticResource}): a request is a static
+ * resource when its selected route carries the asset terminal action — a miss there is a page's own
+ * asset reference — or when its canonical path — the raw request path when stage 1 has not run — is
+ * one of the {@linkplain #BROWSER_AMBIENT_PATHS browser-ambient fetches}, which browsers and crawlers
+ * request of every site unasked, compared case-insensitively. A file extension alone does not make a
+ * request static: an unrouted or bearer-route path ending in {@code .png} or {@code .js} is counted
+ * like any other path.
  * <p>
  * Stateless and thread-safe.
  *
@@ -120,11 +122,20 @@ public final class ReconEvents {
             EventType.TOKEN_INVALID));
 
     /**
-     * The file extensions that mark a static resource, lower case and without the dot. A fixed set,
-     * no configuration key reaches it.
+     * The closed set of browser-ambient fetches, lower case: the root paths browsers and crawlers
+     * request of every site without being told they exist. A fixed set, no configuration key reaches
+     * it. {@link #isStaticResource} also accepts the sized variants of the touch icon, such as
+     * {@code /apple-touch-icon-180x180.png} and {@code /apple-touch-icon-152x152-precomposed.png}.
      */
-    public static final Set<String> STATIC_EXTENSIONS = Set.of(
-            "ico", "png", "jpg", "jpeg", "gif", "svg", "webp", "css", "js", "map", "woff", "woff2", "ttf");
+    public static final Set<String> BROWSER_AMBIENT_PATHS = Set.of(
+            "/favicon.ico", "/robots.txt", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png");
+
+    /**
+     * The sized touch-icon fetches, such as {@code /apple-touch-icon-180x180.png} and
+     * {@code /apple-touch-icon-152x152-precomposed.png}, matched against the lower-cased path.
+     */
+    private static final Pattern APPLE_TOUCH_ICON =
+            Pattern.compile("/apple-touch-icon-\\d{1,4}x\\d{1,4}(-precomposed)?\\.png");
 
     private ReconEvents() {
         // stateless predicate holder; not instantiable
@@ -154,9 +165,9 @@ public final class ReconEvents {
 
     /**
      * @param request the request
-     * @return {@code true} when the selected route serves assets, or when the last segment of the
-     *         canonical path (the raw request path before stage 1) ends in a
-     *         {@linkplain #STATIC_EXTENSIONS static extension}
+     * @return {@code true} when the selected route serves assets, or when the canonical path (the raw
+     *         request path before stage 1) is a {@linkplain #BROWSER_AMBIENT_PATHS browser-ambient
+     *         fetch}
      */
     public static boolean isStaticResource(PipelineRequest request) {
         Route route = request.selectedRoute();
@@ -164,9 +175,7 @@ public final class ReconEvents {
             return true;
         }
         String canonicalPath = request.canonicalPath();
-        String path = canonicalPath != null ? canonicalPath : request.requestPath();
-        String lastSegment = path.substring(path.lastIndexOf('/') + 1);
-        int dot = lastSegment.lastIndexOf('.');
-        return dot >= 0 && STATIC_EXTENSIONS.contains(lastSegment.substring(dot + 1).toLowerCase(Locale.ROOT));
+        String path = (canonicalPath != null ? canonicalPath : request.requestPath()).toLowerCase(Locale.ROOT);
+        return BROWSER_AMBIENT_PATHS.contains(path) || APPLE_TOUCH_ICON.matcher(path).matches();
     }
 }

@@ -67,12 +67,12 @@ import org.junit.jupiter.api.Test;
  * <p>
  * <strong>What the block leg proves, in the order the one gateway goes through it.</strong>
  * <ol>
- *   <li><em>The honest caller is never tripped</em> — {@value #HONEST_STATIC_MISSES} misses for static
- *       resources (icons, stylesheets, scripts, fonts on addresses no route serves) and
+ *   <li><em>The honest caller is never tripped</em> — {@value #HONEST_STATIC_MISSES} misses for the
+ *       browser-ambient fetches (favicon, robots.txt, touch icons, on addresses no route serves) and
  *       {@value #HONEST_TOKENLESS_ASSET_FETCHES} tokenless fetches of the bearer-gated asset route — each
  *       more than the threshold on its own — are answered as before, the caller's token still fetches
- *       the asset, and no trip is metered. Static resources are not counted, and a request whose route
- *       serves assets is a static resource.</li>
+ *       the asset, and no trip is metered. Browser-ambient fetches are not counted, and neither is a
+ *       request whose route serves assets.</li>
  *   <li><em>A scan trips the source</em> — probes of unrouted addresses, alternated with a verb the
  *       global {@code allowed_methods} refuses, are answered as rejections until the source reaches the
  *       threshold; the next request is answered {@code 429} with {@code Retry-After} and the
@@ -115,7 +115,7 @@ class EnumerationDetectionIT extends BaseIntegrationTest {
     /** {@code enumeration_detection.block_seconds} of the one-off descriptor. */
     static final int BLOCK_SECONDS = 5;
 
-    /** Static-resource misses the honest leg sends: twice the threshold, so a counted miss would trip. */
+    /** Browser-ambient misses the honest leg sends: twice the threshold, so a counted miss would trip. */
     static final int HONEST_STATIC_MISSES = 2 * THRESHOLD;
 
     /** Tokenless fetches of the bearer-gated asset route the honest leg sends: one threshold's worth. */
@@ -162,8 +162,9 @@ class EnumerationDetectionIT extends BaseIntegrationTest {
     /** A method outside the one-off descriptor's global {@code allowed_methods: ["GET"]}. */
     private static final String REFUSED_VERB = "DELETE";
 
-    /** The static-resource extensions the honest leg's misses rotate through. */
-    private static final List<String> STATIC_EXTENSIONS = List.of("png", "css", "js", "woff2", "ico", "svg");
+    /** The browser-ambient fetches the honest leg's misses rotate through, none of them routed here. */
+    private static final List<String> BROWSER_AMBIENT_PATHS = List.of("/favicon.ico", "/robots.txt",
+            "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/apple-touch-icon-180x180.png");
 
     /** Upper bound for the one-off gateway to report readiness {@code UP} after {@code docker run}. */
     private static final long BOOT_TIMEOUT_SECONDS = 90L;
@@ -188,7 +189,7 @@ class EnumerationDetectionIT extends BaseIntegrationTest {
             assertApplicationPortAnswers(gateway, applicationOrigin);
             String bearer = mintIntegrationRealmToken();
 
-            assertHonestCallerIsNeverTripped(gateway, applicationOrigin, managementOrigin, bearer, suffix);
+            assertHonestCallerIsNeverTripped(gateway, applicationOrigin, managementOrigin, bearer);
             ExtractableResponse<Response> refused = scanUntilRefused(gateway, applicationOrigin, scanMarker);
             long refusedAt = System.nanoTime();
             assertRefusalIsTheRateLimitingAnswer(gateway, refused);
@@ -236,19 +237,18 @@ class EnumerationDetectionIT extends BaseIntegrationTest {
     }
 
     /**
-     * The honest leg: static-resource misses and tokenless fetches of the asset route, each more than
+     * The honest leg: browser-ambient misses and tokenless fetches of the asset route, each more than
      * the threshold on its own, trip nothing, and the caller's token still fetches the asset.
      */
     private static void assertHonestCallerIsNeverTripped(String gateway, String applicationOrigin,
-            String managementOrigin, String bearer, String suffix) {
+            String managementOrigin, String bearer) {
         assertEquals(200, securedAssetStatus(applicationOrigin, bearer),
                 () -> "precondition: the caller's token fetches the asset. " + gatewayLog(gateway));
         for (int index = 0; index < HONEST_STATIC_MISSES; index++) {
-            String path = "/static-" + suffix + "/asset-" + index + "."
-                    + STATIC_EXTENSIONS.get(index % STATIC_EXTENSIONS.size());
+            String path = BROWSER_AMBIENT_PATHS.get(index % BROWSER_AMBIENT_PATHS.size());
             int status = request(applicationOrigin, "GET", path).statusCode();
             int missIndex = index;
-            assertEquals(404, status, () -> "a static-resource miss is answered as an unrouted address, miss "
+            assertEquals(404, status, () -> "a browser-ambient miss is answered as an unrouted address, miss "
                     + missIndex + ": " + path + ". " + gatewayLog(gateway));
         }
         for (int index = 0; index < HONEST_TOKENLESS_ASSET_FETCHES; index++) {
@@ -261,7 +261,7 @@ class EnumerationDetectionIT extends BaseIntegrationTest {
                 () -> assertEquals(200, securedAssetStatus(applicationOrigin, bearer),
                         "the caller's token still fetches the asset"),
                 () -> assertEquals(0.0, trips(managementOrigin, "block"),
-                        "no trip is metered: static resources are never counted"));
+                        "no trip is metered: browser-ambient fetches and asset-route requests are never counted"));
     }
 
     /**

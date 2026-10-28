@@ -74,8 +74,10 @@ uniform `404` counts as `TOKEN_MISSING`. The shape a caller is shown therefore c
 counted.
 
 A static resource is excluded because honest page loads miss them routinely. A request counts as a
-static resource when its route serves assets, or when the last segment of its path ends in one of a
-fixed set of static extensions.
+static resource when its route serves assets, or when its path is one of the closed set of
+browser-ambient fetches browsers and crawlers make of every site unasked: `/favicon.ico`,
+`/robots.txt`, `/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png` and the sized touch icons
+(`ReconEvents.BROWSER_AMBIENT_PATHS`). A file extension alone does not make a path static.
 
 === The response to a trip
 

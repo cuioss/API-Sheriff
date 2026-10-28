@@ -4579,8 +4579,10 @@ source behind a NAT or a shared egress proxy remains one source whatever the gat
 
 *Not counted.* A rejection raised after the trust boundary (a valid token or a live session), a
 reserved path, an upstream error, a body that stopped arriving, and a static resource -- a request on
-an asset route, or for a path ending in a common static extension such as `.ico`, `.css` or `.js` --
-are never counted. Requests the gateway serves are never counted. An unexpected internal failure
+an asset route, or one of the browser-ambient fetches `/favicon.ico`, `/robots.txt`,
+`/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png` and the sized touch icons such as
+`/apple-touch-icon-180x180.png` -- are never counted. Any other path is counted whatever its file
+extension, so a miss for `/app.js` on no route counts like any other probe. Requests the gateway serves are never counted. An unexpected internal failure
 before the trust boundary (`PRE_TRUST_INTERNAL_FAILURE`) is answered as the uniform `404` but not
 counted: an operator-side failure is not caller behaviour and carries no detection weight.
 
