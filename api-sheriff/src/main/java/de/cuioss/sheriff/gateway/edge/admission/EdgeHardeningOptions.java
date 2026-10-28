@@ -365,12 +365,14 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * {@code delay} action of {@code enumeration_detection}: how many answers held for a tripped source
      * may wait at once. A tripped source's answer beyond its share is refused before admission with the
      * block-style {@code 429} (see {@link SourceGate}), so one delayed source cannot occupy the whole
-     * sub-budget and turn every other caller's held answer into a refusal. Answers held for the
-     * uniform {@code 404}'s floor alone are not counted against any share.
+     * sub-budget, once that has more than one permit, and turn every other caller's held answer into a
+     * refusal. Answers held for the uniform {@code 404}'s floor alone are not counted against any share.
      * <p>
-     * Derived, not configured: an eighth of the held-answer sub-budget, and never below one — so at least
-     * eight tripped sources are needed to fill it, and {@code edge_hardening.admission_cap} scales the
-     * share with the sub-budget.
+     * Derived, not configured: an eighth of the held-answer sub-budget, and never below one — so once the
+     * sub-budget has at least eight permits (an {@code edge_hardening.admission_cap} of {@code 32} or
+     * more) at least eight tripped sources are needed to fill it; below that the share is one, and as
+     * many tripped sources as the sub-budget has permits fill it. {@code edge_hardening.admission_cap}
+     * scales the share with the sub-budget.
      *
      * @return {@code max(1, heldAnswerCap() / 8)}
      */

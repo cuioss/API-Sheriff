@@ -833,9 +833,11 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 
 | `delay`
 | Every rejection of the kind that is counted answers only `delay_millis` after the request arrived
-  (default `2000`). Its served requests are not slowed. Scanning gets slower, and nothing tells the scanner why.
+  (default `2000`). Its served requests are not slowed. Scanning gets slower, and a scanner that keeps
+  fewer answers waiting than its share allows is not told why.
   While as many of its answers wait as its share of the held-answer sub-budget allows, its further
-  requests answer as under `block`, with `Retry-After` the seconds of `delay_millis`.
+  requests -- served ones included -- answer as under `block`, with `Retry-After` the seconds of
+  `delay_millis`.
 
 | `block`
 | Every request answers `429` with `Retry-After`, the seconds left of the block, and the

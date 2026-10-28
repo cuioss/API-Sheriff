@@ -88,6 +88,10 @@ public final class EdgeAdmission {
      * against that source's share of the held-answer sub-budget; a request without it — the uniform
      * {@code 404}'s floor alone — counts against no share. */
     public static final String HELD_SOURCE_KEY = "sheriff.heldsource";
+    /** Holds the source whose share unit {@link #tryEnterHold} actually took with the held permit,
+     * stashed before the held permit's guard. The release returns the unit of this source, never of
+     * whatever {@link #HELD_SOURCE_KEY} names by then, so it can only return what was taken. */
+    private static final String HELD_SHARE_SOURCE_KEY = "sheriff.heldsharesource";
     /** Holds the per-request release guard for the WebSocket relay sub-permit. Present ONLY once
      * {@link #tryAcquireWebSocketRelay} has actually acquired that sub-permit, so its absence is how
      * every release site knows there is no sub-permit to return. */
@@ -224,6 +228,9 @@ public final class EdgeAdmission {
             }
             return false;
         }
+        if (source != null) {
+            ctx.put(HELD_SHARE_SOURCE_KEY, source);
+        }
         ctx.put(HELD_ANSWER_GUARD_KEY, new AtomicBoolean());
         returnGeneralPermit(generalPermitReturned);
         if (released.get()) {
@@ -348,15 +355,16 @@ public final class EdgeAdmission {
     /**
      * Returns the held-answer sub-permit exactly once, and only for a request that actually acquired
      * one — the guard is stashed by {@link #tryEnterHold} on its acquired path, so an absent guard means
-     * an answer that was never held, or a hold that was refused, with nothing to return. A request that
-     * carries a {@link #HELD_SOURCE_KEY} took a unit of that source's share with the permit, and the
-     * unit is returned behind the same latch.
+     * an answer that was never held, or a hold that was refused, with nothing to return. A hold entered
+     * for a request carrying a {@link #HELD_SOURCE_KEY} took a unit of that source's share with the
+     * permit and recorded the source it took it from ({@link #HELD_SHARE_SOURCE_KEY}); that unit is
+     * returned behind the same latch.
      */
     private void releaseHeldAnswerPermit(RoutingContext ctx) {
         AtomicBoolean heldReleased = ctx.get(HELD_ANSWER_GUARD_KEY);
         if (heldReleased != null && heldReleased.compareAndSet(false, true)) {
             heldAnswerAdmission.release();
-            Object source = ctx.get(HELD_SOURCE_KEY);
+            Object source = ctx.get(HELD_SHARE_SOURCE_KEY);
             if (source != null) {
                 returnShare(source);
             }
