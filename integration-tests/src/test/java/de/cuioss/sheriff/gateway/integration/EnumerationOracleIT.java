@@ -396,8 +396,8 @@ class EnumerationOracleIT extends BaseIntegrationTest {
         assertEquals(overrunsBefore, overrunsAfter,
                 () -> "no pre-trust path may be released after the first floor step of " + RESPONSE_FLOOR.toMillis()
                         + " ms; slowest round trip per path: " + slowest.entrySet().stream()
-                                .map(entry -> entry.getKey() + "=" + entry.getValue().toMillis() + " ms")
-                                .collect(Collectors.joining(", ")));
+                        .map(entry -> entry.getKey() + "=" + entry.getValue().toMillis() + " ms")
+                        .collect(Collectors.joining(", ")));
     }
 
     @Test
