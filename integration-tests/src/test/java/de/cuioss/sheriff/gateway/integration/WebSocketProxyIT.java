@@ -20,17 +20,26 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.net.http.WebSocketHandshakeException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
@@ -63,13 +72,36 @@ import org.junit.jupiter.api.Test;
  * it is proven by {@code verify-invalid-config-fails.sh} and the unit-level {@code ProtocolRulesTest}
  * rather than against the running edge here.
  * <p>
- * <strong>Admission-permit exhaustion.</strong> One test in this suite deliberately drives a
+ * <strong>Admission-permit exhaustion.</strong> Three tests in this suite deliberately drive a
  * <em>different</em> instance: {@code api-sheriff-ws-admission} on {@code test.ws.admission.port}
  * (10447), whose overlaid {@code gateway.yaml} shrinks the {@code edge_hardening} budget to single
  * digits. The permit-release contract cannot be observed on the primary instance at all — its
  * production-shaped caps (2048 general permits, 512 relay permits) would need thousands of sequential
  * upgrades to exhaust, so a handful of connections passes there whether or not the relay ever returns
  * its permits. The low-cap instance is what turns that silent pass into a real assertion.
+ * <p>
+ * All three run one probe ({@link #runLowCapProbe()}): {@link #LOW_CAP_SEQUENTIAL_UPGRADES} sequential
+ * relays, then an ordinary HTTP request that must still be served.
+ * {@link #sequentialRelaysReturnTheirAdmissionPermitsAtTeardown()} requires the probe to pass. The
+ * other two are its <em>negative controls</em>, one per budget, and each proves the probe can fail:
+ * <ul>
+ * <li>{@link #probeFailsWhileTheRelaySubBudgetIsHeldAndPassesOnceReleased()} holds
+ * {@link #LOW_CAP_RELAY_CAP} established relays. To the admission pool a held relay is the same as a
+ * relay that never returned its permit, so the probe's first upgrade must be refused {@code 503}.</li>
+ * <li>{@link #probeFailsWhileTheGeneralAdmissionBudgetIsHeldAndPassesOnceReleased()} holds
+ * {@link #LOW_CAP_ADMISSION_CAP} in-flight HTTP requests and no relay. Each request declares a body
+ * length and withholds the bytes, so it keeps its general permit until the test releases it. The
+ * probe's first upgrade must again be refused {@code 503}.</li>
+ * </ul>
+ * Each control then releases what it held and runs the same probe again, which must pass: that
+ * recovery is the matched positive control proving the held permits, and nothing else, made the probe
+ * fail. The release runs in a {@code finally} block, so a failing control does not starve the tests
+ * that follow it on the same instance.
+ * <p>
+ * <strong>What the controls do not prove.</strong> They prove that the probe observes an exhausted pool
+ * on either budget. They do not replay a defect in the relay's own release path in production code: a
+ * held permit is held by the test fixture, not leaked by the gateway. The unit-level relay tests in the
+ * {@code api-sheriff} module own that path.
  * <p>
  * <strong>Why the pre-existing suite could not see the leak.</strong> Before that regression landed,
  * this class held seven tests, all green, while the relay leaked its admission permit on every
@@ -114,9 +146,34 @@ class WebSocketProxyIT extends BaseIntegrationTest {
     /** Idle-reclaim close code (WebSocket 1001 Going Away) the relay emits on idle expiry. */
     private static final int CLOSE_GOING_AWAY = 1001;
 
+    /** The status the edge refuses an upgrade with when an admission budget is exhausted. */
+    private static final int SERVICE_UNAVAILABLE = 503;
+
+    /** The public route a held request is sent to: a POST route on the shared endpoints directory. */
+    private static final String HELD_REQUEST_PATH = "/upload/small";
+
+    /**
+     * The general admission budget of the low-cap instance ({@code edge_hardening.admission_cap}),
+     * and the number of in-flight requests the general-budget negative control holds. Stated here,
+     * not read from the overlay: a bound read from the configuration under test would hold by
+     * construction.
+     * <p>
+     * Package-private because {@code WsAdmissionActivationWiringTest} reads it: its
+     * {@code overlayCapsEqualTheHeldCountsOfTheNegativeControls} guard requires the overlay to declare
+     * exactly this value, so a drift of the overlay fails the fast surefire guard.
+     */
+    static final int LOW_CAP_ADMISSION_CAP = 8;
+
+    /**
+     * The relay sub-budget of the low-cap instance ({@code edge_hardening.websocket_relay_cap}), and the
+     * number of established relays the relay negative control holds. Stated here for the same reason
+     * as {@link #LOW_CAP_ADMISSION_CAP}, and read by the same surefire guard.
+     */
+    static final int LOW_CAP_RELAY_CAP = 2;
+
     /**
      * Sequential upgrades driven against the low-cap instance. It exceeds BOTH caps that instance
-     * declares ({@code admission_cap: 8}, {@code websocket_relay_cap: 2}), so a leak of either permit
+     * declares ({@link #LOW_CAP_ADMISSION_CAP}, {@link #LOW_CAP_RELAY_CAP}), so a leak of either permit
      * fails the run: the relay sub-budget would run dry on the 3rd upgrade and the general budget on
      * the 9th. With both permits returned at relay teardown, all ten succeed.
      * <p>
@@ -248,6 +305,70 @@ class WebSocketProxyIT extends BaseIntegrationTest {
     @Test
     @DisplayName("more sequential relays than either admission cap allows all succeed, and HTTP still serves")
     void sequentialRelaysReturnTheirAdmissionPermitsAtTeardown() throws Exception {
+        runLowCapProbe();
+    }
+
+    @Test
+    @DisplayName("with the relay sub-budget held, the exhaustion probe fails; once released, it passes")
+    void probeFailsWhileTheRelaySubBudgetIsHeldAndPassesOnceReleased() throws Exception {
+        // Arrange — hold the whole relay sub-budget with established, echo-confirmed relays.
+        List<Held> held = new ArrayList<>();
+        try {
+            for (int relay = 1; relay <= LOW_CAP_RELAY_CAP; relay++) {
+                held.add(holdLowCapRelay(relay));
+            }
+
+            // Act
+            AssertionError failure = assertThrows(AssertionError.class, WebSocketProxyIT::runLowCapProbe,
+                    "with " + LOW_CAP_RELAY_CAP + " relays held, the probe must observe the exhausted relay sub-budget");
+
+            // Assert
+            assertFirstUpgradeRefusedForCapacity(failure);
+        } finally {
+            releaseAll(held);
+        }
+
+        // Assert — the matched positive control: the same probe passes once the held relays closed.
+        runLowCapProbe();
+    }
+
+    @Test
+    @DisplayName("with the general admission budget held by in-flight requests, the exhaustion probe fails; once released, it passes")
+    void probeFailsWhileTheGeneralAdmissionBudgetIsHeldAndPassesOnceReleased() throws Exception {
+        // Arrange — hold the whole general budget with in-flight requests whose bodies are withheld.
+        List<HeldRequest> held = new ArrayList<>();
+        try {
+            for (int request = 1; request <= LOW_CAP_ADMISSION_CAP; request++) {
+                held.add(holdLowCapRequest(request));
+            }
+            for (HeldRequest request : held) {
+                request.assertStillInFlight("before the probe ran");
+            }
+
+            // Act
+            AssertionError failure = assertThrows(AssertionError.class, WebSocketProxyIT::runLowCapProbe,
+                    "with " + LOW_CAP_ADMISSION_CAP + " requests held, the probe must observe the exhausted general budget");
+
+            // Assert — refused at the first upgrade, while every held request still held its permit.
+            assertFirstUpgradeRefusedForCapacity(failure);
+            for (HeldRequest request : held) {
+                request.assertStillInFlight("while the probe ran");
+            }
+        } finally {
+            releaseAll(held);
+        }
+
+        // Assert — the matched positive control: the same probe passes once the held requests ended.
+        runLowCapProbe();
+    }
+
+    /**
+     * The exhaustion probe: {@link #LOW_CAP_SEQUENTIAL_UPGRADES} sequential open / echo / close relays
+     * against the low-cap instance, then an ordinary HTTP request that must answer {@code 200}. A relay
+     * the gateway refuses fails the probe with the {@link AssertionError} {@link #openLowCapRelay}
+     * raises, which names the refused upgrade.
+     */
+    private static void runLowCapProbe() throws Exception {
         for (int upgrade = 1; upgrade <= LOW_CAP_SEQUENTIAL_UPGRADES; upgrade++) {
             var listener = new RecordingListener();
             WebSocket socket = openLowCapRelay(listener, upgrade);
@@ -328,6 +449,211 @@ class WebSocketProxyIT extends BaseIntegrationTest {
             throw new AssertionError("upgrade " + upgrade + " of " + LOW_CAP_SEQUENTIAL_UPGRADES
                     + " was refused — the closed relays before it did not return their admission permits",
                     refused.getCause());
+        }
+    }
+
+    /**
+     * Asserts that the probe failed where an exhausted budget makes it fail: at its first upgrade, which
+     * the edge refused {@code 503}. A failure anywhere else — a later upgrade, a lost echo, another
+     * status — is not the observation the negative control exists to make.
+     */
+    private static void assertFirstUpgradeRefusedForCapacity(AssertionError failure) {
+        String firstUpgradeRefused = "upgrade 1 of " + LOW_CAP_SEQUENTIAL_UPGRADES + " was refused";
+        assertTrue(String.valueOf(failure.getMessage()).startsWith(firstUpgradeRefused),
+                "the probe must fail at its first upgrade, was: " + failure.getMessage());
+        WebSocketHandshakeException refused = assertInstanceOf(WebSocketHandshakeException.class, failure.getCause(),
+                "the first upgrade must have been refused by the gateway with a non-101 answer");
+        assertEquals(SERVICE_UNAVAILABLE, refused.getResponse().statusCode(),
+                "an exhausted admission budget refuses the upgrade 503");
+    }
+
+    /**
+     * Opens one relay on the low-cap instance and confirms it end to end with an echo, so the relay
+     * holds both of its permits before the probe runs.
+     */
+    private static HeldRelay holdLowCapRelay(int relay) throws Exception {
+        var listener = new RecordingListener();
+        WebSocket socket;
+        try {
+            socket = httpClient.newWebSocketBuilder()
+                    .header("Origin", ALLOWED_ORIGIN)
+                    .buildAsync(URI.create(lowCapWsBaseUri + "/ws/echo"), listener)
+                    .get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (ExecutionException refused) {
+            throw new AssertionError("fixture: held relay " + relay + " of " + LOW_CAP_RELAY_CAP
+                    + " could not be established on an idle low-cap instance", refused.getCause());
+        }
+        String payload = "sheriff-ws-held-" + relay;
+        try {
+            socket.sendText(payload, true).get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            assertEquals(payload, listener.firstMessage.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+                    "fixture: held relay " + relay + " must round-trip its frame before the probe runs");
+        } catch (Exception | AssertionError notEstablished) {
+            socket.abort();
+            throw notEstablished;
+        }
+        return new HeldRelay(socket, listener);
+    }
+
+    /**
+     * Sends one {@code POST} to the low-cap instance whose body is declared but withheld, so the request
+     * stays in flight — and keeps its general admission permit — until {@link HeldRequest#release()}.
+     * HTTP/1.1 puts every held request on a connection of its own. The method returns once the client
+     * has subscribed to the body, which it does after the request headers are written.
+     */
+    private static HeldRequest holdLowCapRequest(int index) throws Exception {
+        var body = new WithheldBodyPublisher();
+        HttpRequest request = HttpRequest.newBuilder(URI.create("https://localhost:" + lowCapHttpPort + HELD_REQUEST_PATH))
+                .version(HttpClient.Version.HTTP_1_1)
+                .header("Content-Type", "text/plain")
+                .POST(body)
+                .build();
+        CompletableFuture<HttpResponse<String>> response =
+                httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+        var held = new HeldRequest(index, body, response);
+        try {
+            CompletableFuture.anyOf(body.subscribed, response).get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (ExecutionException | TimeoutException notSent) {
+            var fixtureFailure = new AssertionError("fixture: held request " + index + " of " + LOW_CAP_ADMISSION_CAP
+                    + " never started sending its body", notSent);
+            try {
+                held.release();
+            } catch (Exception releaseFailed) {
+                fixtureFailure.addSuppressed(releaseFailed);
+            }
+            throw fixtureFailure;
+        }
+        held.assertStillInFlight("as soon as it was sent");
+        return held;
+    }
+
+    /**
+     * Releases every held permit, attempting each one even when an earlier release fails, and rethrows
+     * the first failure with the later ones suppressed.
+     */
+    private static void releaseAll(List<? extends Held> held) throws Exception {
+        Exception first = null;
+        for (Held permit : held) {
+            try {
+                permit.release();
+            } catch (Exception releaseFailed) {
+                if (first == null) {
+                    first = releaseFailed;
+                } else {
+                    first.addSuppressed(releaseFailed);
+                }
+            }
+        }
+        if (first != null) {
+            throw first;
+        }
+    }
+
+    /** An admission permit a negative control holds from a test fixture until it releases it. */
+    private interface Held {
+
+        /** Releases the permit and waits until the gateway has ended the operation that held it. */
+        void release() throws Exception;
+    }
+
+    /** An established relay holding a general permit and a relay sub-permit. */
+    private record HeldRelay(WebSocket socket, RecordingListener listener) implements Held {
+
+        /**
+         * Closes the relay and awaits the close frame. The relay's teardown releases both permits
+         * before it closes either leg, so the observed close frame proves the release has happened. A
+         * relay that cannot be closed cleanly is aborted, which tears it down as well.
+         */
+        @Override
+        public void release() throws Exception {
+            try {
+                socket.sendClose(WebSocket.NORMAL_CLOSURE, "released").get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                listener.closed.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            } catch (Exception closeFailed) {
+                socket.abort();
+                throw closeFailed;
+            }
+        }
+    }
+
+    /** An in-flight request holding a general permit while its body is withheld. */
+    private record HeldRequest(int index, WithheldBodyPublisher body,
+            CompletableFuture<HttpResponse<String>> response) implements Held {
+
+        /**
+         * Fails the control with a fixture message when the held request has already ended — answered
+         * or failed. A request that ended returned its permit, so the probe would not observe an
+         * exhausted budget, and the probe's verdict would say nothing about it.
+         */
+        void assertStillInFlight(String when) {
+            if (response.isDone()) {
+                String outcome = response.handle((answer, failure) -> failure == null
+                        ? "answered " + answer.statusCode()
+                        : "failed with " + failure).join();
+                throw new AssertionError("fixture: held request " + index + " of " + LOW_CAP_ADMISSION_CAP
+                        + " was no longer in flight " + when + " (" + outcome + ") — it no longer held its permit");
+            }
+        }
+
+        /**
+         * Sends the withheld body and waits until the request has ended, answered or failed. Either way
+         * the gateway has ended the request and returned its permit.
+         */
+        @Override
+        public void release() throws Exception {
+            body.release();
+            response.handle((answer, failure) -> null).get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * A body publisher that declares a small body and produces it only once {@link #release()} is
+     * called. Until then the request is in flight with its body pending. {@link #subscribed} completes
+     * when the client subscribes to the body, which it does after writing the request headers.
+     */
+    private static final class WithheldBodyPublisher implements HttpRequest.BodyPublisher {
+
+        private static final byte[] BODY = "sheriff-held-request".getBytes(StandardCharsets.UTF_8);
+
+        private final CompletableFuture<Void> subscribed = new CompletableFuture<>();
+        private final CompletableFuture<Void> released = new CompletableFuture<>();
+
+        @Override
+        public long contentLength() {
+            return BODY.length;
+        }
+
+        @Override
+        public void subscribe(Flow.Subscriber<? super ByteBuffer> subscriber) {
+            AtomicBoolean ended = new AtomicBoolean();
+            subscriber.onSubscribe(new Flow.Subscription() {
+
+                @Override
+                public void request(long n) {
+                    if (n <= 0) {
+                        if (ended.compareAndSet(false, true)) {
+                            subscriber.onError(new IllegalArgumentException("non-positive subscription request: " + n));
+                        }
+                        return;
+                    }
+                    released.thenRun(() -> {
+                        if (ended.compareAndSet(false, true)) {
+                            subscriber.onNext(ByteBuffer.wrap(BODY));
+                            subscriber.onComplete();
+                        }
+                    });
+                }
+
+                @Override
+                public void cancel() {
+                    ended.set(true);
+                }
+            });
+            subscribed.complete(null);
+        }
+
+        void release() {
+            released.complete(null);
         }
     }
 
