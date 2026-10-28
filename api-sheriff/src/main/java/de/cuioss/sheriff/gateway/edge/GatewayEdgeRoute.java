@@ -208,14 +208,15 @@ import org.jspecify.annotations.Nullable;
  * arms the answer and holds it back on a Vert.x timer.
  * A held answer moves from the general admission pool to the held-answer sub-budget through the
  * {@link ResponseDelay.Hold} the edge stashes beside it ({@link ResponseDelay#HOLD_KEY}); when that
- * sub-budget is full the answer is a {@code 503} at once instead.
+ * sub-budget is full the answer is a {@code 503} instead, written no earlier than the floor's release.
  * <p>
  * <strong>Per-source enumeration detection.</strong> Unless {@code enumeration_detection} is disabled
  * — an omitted block runs it with its defaults — the constructor builds a {@link SourceGate} over the
  * recon ledger, keying sources through a {@link SourceKeyResolver} holding the declared
  * {@code match.host} set and through the {@code forwarded} block's {@link TcpPeerGate} trust decision.
  * {@code handle} asks the gate, after the retired-connection check and before admission, to resolve and
- * stash the request's source and to answer a blocked source {@code 429} with {@code Retry-After}; the
+ * stash the request's source and to answer a blocked source {@code 429} with {@code Retry-After} — and,
+ * under {@code delay}, a tripped source whose share of the held-answer sub-budget is used up; the
  * {@link ErrorResponseWriter} feeds the gate every reported rejection under its true event. Under the
  * default {@code observe} action a trip changes no answer. A disabled block builds no ledger and no
  * gate.
@@ -472,7 +473,7 @@ public class GatewayEdgeRoute {
         this.sourceGate = detection.effectiveEnabled()
                 ? new SourceGate(detection, new SourceKeyResolver(declaredHosts(routes)), peerGate,
                 new ForwardedHeaderResolver(resolverConfig, new SecurityEventCounter()), gatewayEventCounter,
-                sheriffMetrics, gatewayJson)
+                sheriffMetrics, gatewayJson, edgeAdmission::heldShareExhausted)
                 : null;
         this.errorResponseWriter = new ErrorResponseWriter(portalEndpoint, gatewayJson, grpcStatusMapper,
                 rejectionReporter, uniformNotFound,

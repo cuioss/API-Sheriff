@@ -834,6 +834,8 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 | `delay`
 | Every rejection of the kind that is counted answers only `delay_millis` after the request arrived
   (default `2000`). Its served requests are not slowed. Scanning gets slower, and nothing tells the scanner why.
+  While as many of its answers wait as its share of the held-answer sub-budget allows, its further
+  requests answer as under `block`, with `Retry-After` the seconds of `delay_millis`.
 
 | `block`
 | Every request answers `429` with `Retry-After`, the seconds left of the block, and the
@@ -1170,7 +1172,7 @@ deployment that never writes it keeps the behaviour shown here.
   existing route from an absent one (<<_uniform_not_found_operator_note>>). A Vert.x timer holds the
   answer; no thread waits. While it waits, the answer holds a permit of the held-answer sub-budget,
   a quarter of the effective `admission_cap`, instead of its general admission permit; when that
-  sub-budget is full the answer is a `503` at once. An answer released after the first floor step is
+  sub-budget is full the answer is a `503`, written no earlier than the floor's release time. An answer released after the first floor step is
   counted on `sheriff_uniform_not_found_overruns_total`. Not configurable.
 
 | Admission cap (in-flight requests) +

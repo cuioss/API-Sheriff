@@ -50,7 +50,8 @@ import org.junit.jupiter.api.Test;
  * answer is dropped when another writer ended the response, or the connection closed, before the
  * release. An answer that has to wait first enters the hold the edge stashed under
  * {@link ResponseDelay#HOLD_KEY}: an entered hold arms the timer, a refused one is answered {@code 503}
- * at once with no timer, and a request that carries no hold waits as before.
+ * no earlier than its refusal time — at once when that has passed, from a timer otherwise — and a
+ * request that carries no hold waits as before.
  * <p>
  * Every negative is observed by a probe timer scheduled on the same event loop for after the release,
  * so it is decided by timer order rather than by a sleep.
@@ -95,7 +96,8 @@ class ResponseDelayTest {
     void dueAnswerIsWrittenAtOnce() throws Exception {
         CompletableFuture<Boolean> ranInsideTheCall = new CompletableFuture<>();
         behaviour = ctx -> {
-            ResponseDelay.endNoEarlierThan(ctx, System.nanoTime() - 1, () -> answer(ctx));
+            long due = System.nanoTime() - 1;
+            ResponseDelay.endNoEarlierThan(ctx, due, due, () -> answer(ctx));
             ranInsideTheCall.complete(answers.get() == 1);
         };
 
@@ -115,7 +117,8 @@ class ResponseDelayTest {
         CompletableFuture<Boolean> answeredOnTheEventLoop = new CompletableFuture<>();
         behaviour = ctx -> {
             long calledAt = System.nanoTime();
-            ResponseDelay.endNoEarlierThan(ctx, calledAt + TimeUnit.MILLISECONDS.toNanos(holdMillis), () -> {
+            long releaseAt = calledAt + TimeUnit.MILLISECONDS.toNanos(holdMillis);
+            ResponseDelay.endNoEarlierThan(ctx, releaseAt, releaseAt, () -> {
                 heldForNanos.complete(System.nanoTime() - calledAt);
                 answeredOnTheEventLoop.complete(Context.isOnEventLoopThread());
                 answer(ctx);
@@ -141,8 +144,8 @@ class ResponseDelayTest {
     void heldAnswerIsDroppedWhenTheResponseWasEnded() throws Exception {
         CompletableFuture<Integer> answersAfterTheRelease = new CompletableFuture<>();
         behaviour = ctx -> {
-            ResponseDelay.endNoEarlierThan(ctx, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(holdMillis),
-                    () -> answer(ctx));
+            long releaseAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(holdMillis);
+            ResponseDelay.endNoEarlierThan(ctx, releaseAt, releaseAt, () -> answer(ctx));
             probeAfterTheRelease(answersAfterTheRelease);
             ctx.response().setStatusCode(503).end();
         };
@@ -161,8 +164,8 @@ class ResponseDelayTest {
         CompletableFuture<Void> answerHeld = new CompletableFuture<>();
         CompletableFuture<Integer> answersAfterTheRelease = new CompletableFuture<>();
         behaviour = ctx -> {
-            ResponseDelay.endNoEarlierThan(ctx, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(holdMillis),
-                    () -> answer(ctx));
+            long releaseAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(holdMillis);
+            ResponseDelay.endNoEarlierThan(ctx, releaseAt, releaseAt, () -> answer(ctx));
             probeAfterTheRelease(answersAfterTheRelease);
             answerHeld.complete(null);
         };
@@ -187,7 +190,8 @@ class ResponseDelayTest {
                 return true;
             });
             long calledAt = System.nanoTime();
-            ResponseDelay.endNoEarlierThan(ctx, calledAt + TimeUnit.MILLISECONDS.toNanos(holdMillis), () -> {
+            long releaseAt = calledAt + TimeUnit.MILLISECONDS.toNanos(holdMillis);
+            ResponseDelay.endNoEarlierThan(ctx, releaseAt, releaseAt, () -> {
                 heldForNanos.complete(System.nanoTime() - calledAt);
                 answer(ctx);
             });
@@ -204,13 +208,14 @@ class ResponseDelayTest {
     }
 
     @Test
-    @DisplayName("a refused hold is answered 503 at once, inside the call, and the held answer never runs")
-    void refusedHoldIsAnswered503AtOnce() throws Exception {
+    @DisplayName("a refused hold whose refusal time has passed is answered 503 at once, and the held answer never runs")
+    void refusedHoldWithADueRefusalIsAnswered503AtOnce() throws Exception {
         CompletableFuture<Boolean> endedInsideTheCall = new CompletableFuture<>();
         CompletableFuture<Integer> answersAfterTheRelease = new CompletableFuture<>();
         behaviour = ctx -> {
             ctx.put(ResponseDelay.HOLD_KEY, (ResponseDelay.Hold) () -> false);
-            ResponseDelay.endNoEarlierThan(ctx, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(holdMillis),
+            long calledAt = System.nanoTime();
+            ResponseDelay.endNoEarlierThan(ctx, calledAt + TimeUnit.MILLISECONDS.toNanos(holdMillis), calledAt - 1,
                     () -> answer(ctx));
             endedInsideTheCall.complete(ctx.response().ended());
             probeAfterTheRelease(answersAfterTheRelease);
@@ -218,10 +223,47 @@ class ResponseDelayTest {
 
         int status = get();
 
-        assertAll("an answer refused a held permit",
+        assertAll("an answer refused a held permit, its refusal already due",
                 () -> assertEquals(503, status, "the full sub-budget is answered 503"),
                 () -> assertTrue(Awaits.connect(endedInsideTheCall, "the handler to return"),
-                        "the 503 was written before endNoEarlierThan returned: no timer was armed"),
+                        "the 503 was written before endNoEarlierThan returned: its refusal time had passed"),
+                () -> assertEquals(0, Awaits.connect(answersAfterTheRelease, "the probe after the release"),
+                        "the held answer never runs"));
+    }
+
+    @Test
+    @DisplayName("a refused hold is answered 503 from a timer no earlier than its refusal time, before the answer's release")
+    void refusedHoldIsAnswered503NoEarlierThanItsRefusalTime() throws Exception {
+        CompletableFuture<Boolean> openWhenTheCallReturned = new CompletableFuture<>();
+        CompletableFuture<Long> refusedAfterNanos = new CompletableFuture<>();
+        CompletableFuture<Boolean> endedBeforeTheRelease = new CompletableFuture<>();
+        CompletableFuture<Integer> answersAfterTheRelease = new CompletableFuture<>();
+        long releaseMillis = holdMillis * 4;
+        behaviour = ctx -> {
+            ctx.put(ResponseDelay.HOLD_KEY, (ResponseDelay.Hold) () -> false);
+            long calledAt = System.nanoTime();
+            ctx.addHeadersEndHandler(v -> refusedAfterNanos.complete(System.nanoTime() - calledAt));
+            ResponseDelay.endNoEarlierThan(ctx, calledAt + TimeUnit.MILLISECONDS.toNanos(releaseMillis),
+                    calledAt + TimeUnit.MILLISECONDS.toNanos(holdMillis), () -> answer(ctx));
+            openWhenTheCallReturned.complete(!ctx.response().ended());
+            // Timers on one event loop fire in deadline order: this one is due after the refusal time
+            // and before the answer's release.
+            vertx.setTimer(holdMillis * 2, timerId -> endedBeforeTheRelease.complete(ctx.response().ended()));
+            vertx.setTimer(releaseMillis * 2, timerId -> answersAfterTheRelease.complete(answers.get()));
+        };
+
+        int status = get();
+
+        long refusedAfter = Awaits.connect(refusedAfterNanos, "the refusal to be written");
+        assertAll("an answer refused a held permit, its refusal not yet due",
+                () -> assertEquals(503, status, "the full sub-budget is answered 503"),
+                () -> assertTrue(Awaits.connect(openWhenTheCallReturned, "the handler to return"),
+                        "the 503 was not written inside the call: its refusal time had not passed"),
+                () -> assertTrue(refusedAfter >= TimeUnit.MILLISECONDS.toNanos(holdMillis),
+                        () -> "the 503 was written " + refusedAfter + " ns after the call, before its refusal time of "
+                                + holdMillis + " ms"),
+                () -> assertTrue(Awaits.connect(endedBeforeTheRelease, "the probe between refusal and release"),
+                        "the 503 is written at the refusal time, not held to the answer's later release"),
                 () -> assertEquals(0, Awaits.connect(answersAfterTheRelease, "the probe after the release"),
                         "the held answer never runs"));
     }
@@ -235,7 +277,8 @@ class ResponseDelayTest {
                 holdsEntered.incrementAndGet();
                 return false;
             });
-            ResponseDelay.endNoEarlierThan(ctx, System.nanoTime() - 1, () -> answer(ctx));
+            long due = System.nanoTime() - 1;
+            ResponseDelay.endNoEarlierThan(ctx, due, due, () -> answer(ctx));
         };
 
         int status = get();

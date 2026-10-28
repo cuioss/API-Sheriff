@@ -112,7 +112,10 @@ a header.
   `delay_millis`. `edge.end.ResponseDelay` holds them on a timer, and each held answer takes a permit
   of the held-answer sub-budget (link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#amendment-a1[ADR-0073,
   Amendment A1]). The uniform `404` floor still applies, and the later release wins. Requests the
-  gateway serves are never delayed.
+  gateway serves are never delayed. One tripped source's held answers count against its share of
+  that sub-budget, an eighth of it and at least one (`EdgeHardeningOptions.heldAnswerSourceShare`);
+  while the share is used up, each further request from the source is answered before admission
+  with the `block` answer below, its `Retry-After` the whole seconds of `delay_millis`.
 
 | `block`
 | A tripped source is blocked for `block_seconds`. Each request from a blocked source is answered
@@ -136,16 +139,17 @@ operator opts into `block` or `delay` once the deployment's source addresses are
 client, directly or through `forwarded.trusted_proxies`.
 
 The availability cost of a scan does not depend on this default. A held answer leaves the general
-admission pool for the held-answer sub-budget (ADR-0073, Amendment A1). A scan therefore cannot fill
-the pool that trusted traffic is admitted from. The secure-defaults rule is met without a default
-`block`.
+admission pool for the held-answer sub-budget (ADR-0073, Amendment A1). A scan therefore draws on the
+pool that trusted traffic is admitted from only while a probe is processed and, for a probe refused
+the hold, until the floor's release time. The secure-defaults rule is met without a default `block`.
 
 === Why block answers before admission
 
 `GatewayEdgeRoute.handle` calls `SourceGate.answersBlocked` on the event loop. The call runs after
 the retired-connection check and before `EdgeAdmission.tryAdmit`. A blocked request therefore takes
 no admission permit, starts no virtual thread and arms no timer. `SourceGate` writes the answer
-through the one end rule, `ResponseEnds.endResponse`.
+through the one end rule, `ResponseEnds.endResponse`. The same call refuses, with the same answer, a
+request from a source tripped under `delay` whose share of the held-answer sub-budget is used up.
 
 The `429` is written before route selection. It does not depend on the address, so it tells a caller
 nothing about routes. For the same reason it is a problem document on every address: no route, and

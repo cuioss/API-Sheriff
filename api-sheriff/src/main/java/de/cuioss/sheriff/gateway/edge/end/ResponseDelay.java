@@ -47,9 +47,19 @@ import io.vertx.ext.web.RoutingContext;
  * permit for the length of its wait, or a caller producing nothing but held answers could fill the
  * general pool. Before it arms a timer, this primitive therefore enters the hold through the
  * {@link Hold} the edge root stashed on the request ({@link #HOLD_KEY}), which moves the request onto
- * the held-answer sub-budget. A refused hold — the sub-budget is full — is answered {@code 503} at
- * once, with no timer, and that answer is the same for every held response whatever its route or
- * caller.
+ * the held-answer sub-budget. A refused hold — the sub-budget, or the share of it a tripped source
+ * may use, is full — is answered {@code 503}, and that answer is the same for every held response
+ * whatever its route or caller.
+ * <p>
+ * <strong>The refusal waits for its own release time.</strong> A refused answer is written no earlier
+ * than the refusal release time its caller hands in — for an answer the uniform {@code 404} floors,
+ * the floor's release time — on the same kind of Vert.x timer a held answer uses, so its latency does
+ * not depend on how far the request's processing got before it was refused. The refusal takes no held
+ * permit: it waits under the general admission permit the request was admitted with, which it never
+ * handed back. The answers waiting at once therefore stay within the admission cap plus the
+ * held-answer sub-budget, however many holds are refused; closing the connection on the same release
+ * time would have needed the same wait and would have answered an HTTP/2 stream's siblings too, so
+ * the refusal stays a {@code 503} on its own stream.
  * <p>
  * Stateless; {@link #endNoEarlierThan} runs on the event loop of the response it is handed.
  *
@@ -107,19 +117,23 @@ public final class ResponseDelay {
      *       is never written early. A request whose context carries no {@link Hold} waits the same way;
      *       the hold is then not entered.</li>
      *   <li><strong>The answer has to wait, and the hold is refused</strong> — the answer is replaced by
-     *       a bare {@code 503} written at once through {@link ResponseEnds#reject}; no timer is
-     *       armed.</li>
+     *       a bare {@code 503} written through {@link ResponseEnds#reject} no earlier than
+     *       {@code refusalAtNanos}: at once when that time has passed, otherwise from a Vert.x timer
+     *       scheduled the same way. No held permit is taken for it.</li>
      * </ul>
-     * A deferred answer leaves the calling thread free at once — it returns before the release — and is
-     * dropped when its response has been ended by another writer or has closed by the time the timer
-     * fires.
+     * A deferred answer or refusal leaves the calling thread free at once — it returns before the
+     * release — and is dropped when its response has been ended by another writer or has closed by the
+     * time the timer fires.
      *
      * @param ctx            the request whose answer is held back
      * @param releaseAtNanos the {@link System#nanoTime()} value before which the answer is not written
+     * @param refusalAtNanos the {@link System#nanoTime()} value before which the {@code 503} of a refused
+     *                       hold is not written; the floor's release time for a floored answer
      * @param answer         the writer's whole answer, ending the response through
      *                       {@link ResponseEnds#endResponse}
      */
-    public static void endNoEarlierThan(RoutingContext ctx, long releaseAtNanos, Runnable answer) {
+    public static void endNoEarlierThan(RoutingContext ctx, long releaseAtNanos, long refusalAtNanos,
+            Runnable answer) {
         long remainingNanos = releaseAtNanos - System.nanoTime();
         if (remainingNanos <= 0) {
             answer.run();
@@ -127,16 +141,32 @@ public final class ResponseDelay {
         }
         Hold hold = ctx.get(HOLD_KEY);
         if (hold != null && !hold.tryEnter()) {
-            // The marked connection is retired as the held answer would have retired it.
-            ConnectionRetirement.retireMarkedConnection(ctx);
-            ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE);
+            runNoEarlierThan(ctx, refusalAtNanos, () -> {
+                // The marked connection is retired as the held answer would have retired it.
+                ConnectionRetirement.retireMarkedConnection(ctx);
+                ResponseEnds.reject(ctx, SERVICE_UNAVAILABLE);
+            });
+            return;
+        }
+        runNoEarlierThan(ctx, releaseAtNanos, answer);
+    }
+
+    /**
+     * Runs {@code write} at once when {@code atNanos} has passed, and otherwise from a Vert.x timer for
+     * the remaining time, rounded up to the next whole millisecond; the timed write is dropped when the
+     * response has ended or closed by then.
+     */
+    private static void runNoEarlierThan(RoutingContext ctx, long atNanos, Runnable write) {
+        long remainingNanos = atNanos - System.nanoTime();
+        if (remainingNanos <= 0) {
+            write.run();
             return;
         }
         long delayMillis = Math.ceilDiv(remainingNanos, NANOS_PER_MILLI);
         HttpServerResponse response = ctx.response();
         ctx.vertx().setTimer(delayMillis, timerId -> {
             if (!response.ended() && !response.closed()) {
-                answer.run();
+                write.run();
             }
         });
     }

@@ -30,14 +30,16 @@ import io.vertx.core.http.HttpServerOptions;
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
  * rejected by the Vert.x codec, and an idle connection is reaped so a slow-loris / h2 abuse load
- * cannot pin connection slots. Seven further limits are consumed by
+ * cannot pin connection slots. Eight further limits are consumed by
  * {@code de.cuioss.sheriff.gateway.edge} and its sub-packages rather
  * than the transport: the {@linkplain #admissionCap() admission cap} bounds the number of requests
  * that may be in flight at once (rejected with {@code 503} <em>before</em> a virtual thread is
  * dispatched, so a flood cannot spawn unbounded virtual threads), the
  * {@linkplain #webSocketRelayCap() WebSocket relay cap} bounds how many of those in-flight requests
  * may be established WebSocket relays, the {@linkplain #heldAnswerCap() held-answer cap} bounds how
- * many answers may wait on a timer at once (refused with {@code 503} without waiting), the
+ * many answers may wait on a timer at once (refused with {@code 503} on the floor's release time,
+ * without a held permit), and one tripped source's {@linkplain #heldAnswerSourceShare() share} of it,
+ * the
  * {@linkplain #drainTimeoutMillis() drain timeout} bounds
  * the graceful-shutdown wait for in-flight requests to complete on {@code SIGTERM}, the
  * {@linkplain #reservedBodyMaxBytes() reserved-body ceiling} bounds the cumulative bytes the edge
@@ -343,7 +345,8 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * these instead (see {@link EdgeAdmission#tryEnterHold}), so a caller producing answers that are
      * only held — a scan of unrouted addresses — cannot occupy the general pool for the length of the
      * floor and starve the traffic the gateway exists to serve. An answer refused a held permit is
-     * answered {@code 503} at once, without waiting.
+     * answered {@code 503} at the release time the uniform {@code 404}'s floor gives it, under the
+     * general permit it was admitted with (see {@code edge.end.ResponseDelay}).
      * <p>
      * Derived, not configured: a quarter of the {@linkplain #admissionCap() admission cap}, and never
      * below one — the proportion an undeclared WebSocket relay sub-budget is derived with (ADR-0020).
@@ -354,6 +357,24 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      */
     public int heldAnswerCap() {
         return Math.max(1, admissionCap / 4);
+    }
+
+    /**
+     * One source's share of the {@linkplain #heldAnswerCap() held-answer sub-budget} under the
+     * {@code delay} action of {@code enumeration_detection}: how many answers held for a tripped source
+     * may wait at once. A tripped source's answer beyond its share is refused before admission with the
+     * block-style {@code 429} (see {@link SourceGate}), so one delayed source cannot occupy the whole
+     * sub-budget and turn every other caller's held answer into a refusal. Answers held for the
+     * uniform {@code 404}'s floor alone are not counted against any share.
+     * <p>
+     * Derived, not configured: an eighth of the held-answer sub-budget, and never below one — so at least
+     * eight tripped sources are needed to fill it, and {@code edge_hardening.admission_cap} scales the
+     * share with the sub-budget.
+     *
+     * @return {@code max(1, heldAnswerCap() / 8)}
+     */
+    public int heldAnswerSourceShare() {
+        return Math.max(1, heldAnswerCap() / 8);
     }
 
     /**

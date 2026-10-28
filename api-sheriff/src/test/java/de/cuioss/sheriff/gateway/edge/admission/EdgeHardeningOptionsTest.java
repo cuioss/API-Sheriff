@@ -66,6 +66,17 @@ class EdgeHardeningOptionsTest {
                 "A single chunked-transfer chunk is bounded to 16 KiB");
     }
 
+    @ParameterizedTest(name = "admission cap {0} -> held-answer cap {1}, one source's share {2}")
+    @CsvSource({"2048, 512, 64", "64, 16, 2", "63, 15, 1", "4, 1, 1"})
+    @DisplayName("derives one source's share of the held-answer sub-budget as an eighth of it, never below one")
+    void derivesTheHeldAnswerSourceShare(int admissionCap, int heldAnswerCap, int share) {
+        EdgeHardeningOptions hardening = new EdgeHardeningOptions(new EdgeHardeningConfig(admissionCap, null));
+
+        assertAll("the held-answer sub-budget and one source's share of it",
+                () -> assertEquals(heldAnswerCap, hardening.heldAnswerCap()),
+                () -> assertEquals(share, hardening.heldAnswerSourceShare()));
+    }
+
     @Test
     @DisplayName("reaps an idle connection after a bounded idle window (slow-loris / h2 abuse guard)")
     void reapsIdleConnection() {

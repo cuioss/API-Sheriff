@@ -52,6 +52,8 @@ import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
 import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
+import de.cuioss.sheriff.gateway.detection.SourceState;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
 import de.cuioss.sheriff.gateway.edge.admission.SourceGate;
 import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
@@ -106,7 +108,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  * release computed from the writer's reading twice. And an unexpected internal failure
  * ({@link ErrorResponseWriter#renderUnexpected}): before the trust boundary on a selected route it is the
  * floored unrouted {@code 404}, counted under {@link EventType#PRE_TRUST_INTERNAL_FAILURE} but carrying
- * no weight on the recon ledger; everywhere else the opaque {@code 500}.
+ * no weight on the recon ledger — and under {@code delay}, for a tripped source, held for the delay as
+ * its recon rejection would be; everywhere else the opaque {@code 500}.
  */
 @EnableGeneratorController
 @DisplayName("ErrorResponseWriter — Retry-After of an open circuit and the trust-boundary branch")
@@ -644,6 +647,70 @@ class ErrorResponseWriterTest {
                             () -> "written " + writtenAfterAdmission + " ns after admission, far past the delay"));
         }
 
+        @Test
+        @DisplayName("delay: a tripped source's pre-trust internal failure is held for the delay and still carries no weight")
+        void trippedSourceInternalFailureUnderDelayIsHeldWithoutWeight() throws Exception {
+            long delayNanos = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
+            EnumerationDetectionConfig delay = EnumerationDetectionConfig.builder()
+                    .threshold(1).action(EnumerationDetectionConfig.Action.DELAY).delayMillis(DELAY_MILLIS).build();
+            SourceGate trippedGate = sourceGate(delay);
+            SourceKey loopback = new SourceKey(SourceKeyResolver.canonicalSource(LoopbackHost.ADDRESS),
+                    SourceKey.UNDECLARED_HOST);
+            SourceState tripped = trippedGate.ledger().admit(loopback, 1, EventType.NO_ROUTE_MATCHED);
+            Failure held = renderFailure(trippedGate);
+            SourceGate untrippedGate = sourceGate(delay);
+            Failure control = renderFailure(untrippedGate);
+
+            assertAll("the internal failure of a tripped source is held like its recon rejection",
+                    () -> assertTrue(tripped.hasTripped(), "precondition: the source tripped at threshold 1"),
+                    () -> assertEquals(404, held.response().status(), "answered as the uniform 404"),
+                    () -> assertEquals(loopback, held.heldSource(), "held by the delay action for this source"),
+                    () -> assertTrue(held.writtenAfterAdmission() >= delayNanos,
+                            () -> "written " + held.writtenAfterAdmission() + " ns after admission, before the "
+                                    + delayNanos + " ns delay"),
+                    () -> assertEquals(Map.of(EventType.NO_ROUTE_MATCHED, 1L),
+                            trippedGate.ledger().state(loopback).orElseThrow().contributions(),
+                            "the failure added no weight to the tripped source"),
+                    () -> assertEquals(404, control.response().status(), "control: answered as the uniform 404"),
+                    () -> assertNull(control.heldSource(), "control: an untripped source is not held by the delay"),
+                    () -> assertTrue(untrippedGate.ledger().state(loopback).isEmpty(),
+                            "control: the failure did not start tracking the source"));
+        }
+
+        /** Renders one pre-trust internal failure through {@code gate} and records how it was answered. */
+        private Failure renderFailure(SourceGate gate) throws Exception {
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert(), gate);
+            AtomicLong admittedAtNanos = new AtomicLong();
+            CompletableFuture<Long> endedAtNanos = new CompletableFuture<>();
+            AtomicReference<Object> heldSource = new AtomicReference<>();
+            handler.set(ctx -> {
+                long admittedAt = System.nanoTime();
+                admittedAtNanos.set(admittedAt);
+                ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
+                gate.answersBlocked(ctx);
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                ctx.addEndHandler(result -> {
+                    heldSource.set(ctx.get(EdgeAdmission.HELD_SOURCE_KEY));
+                    endedAtNanos.complete(System.nanoTime());
+                });
+                writer.renderUnexpected(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new IllegalStateException(unexpectedMessage()));
+            });
+            Response response = send();
+            long writtenAfterAdmission = Awaits.connect(endedAtNanos, "the failure's answer to end") - admittedAtNanos.get();
+            return new Failure(response, heldSource.get(), writtenAfterAdmission);
+        }
+
+        /**
+         * How one internal failure was answered.
+         *
+         * @param response              the answer
+         * @param heldSource            the source the delay action held it for, {@code null} when not held
+         * @param writtenAfterAdmission nanoseconds from admission to the end of the answer
+         */
+        private record Failure(Response response, Object heldSource, long writtenAfterAdmission) {
+        }
+
         private SourceGate sourceGate(EnumerationDetectionConfig config) {
             ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
                     ForwardedResolverConfig.builder().trustedProxies(Set.of())
@@ -651,7 +718,7 @@ class ErrorResponseWriterTest {
                     new SecurityEventCounter());
             return new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()),
                     forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry),
-                    new GatewayJson(new ObjectMapper()));
+                    new GatewayJson(new ObjectMapper()), source -> false);
         }
 
         private ErrorResponseWriter writer(boolean uniformNotFound, PortalEndpoint portal) {

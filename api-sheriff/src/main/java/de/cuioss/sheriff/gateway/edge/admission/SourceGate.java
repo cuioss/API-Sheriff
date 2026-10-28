@@ -22,6 +22,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 
 import de.cuioss.http.forwarded.ForwardedHeaderResolver;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -74,12 +75,16 @@ import org.jspecify.annotations.Nullable;
  * {@link EventType#SOURCE_BLOCKED} and answered {@code 429} with {@code Retry-After} — the whole
  * seconds left of the block, at least {@code 1} — and the {@link EventCategory#RATE_LIMITING} problem
  * document, through the one end rule ({@link ResponseEnds#endResponse}). No admission permit, no
- * virtual thread and no timer is held for it.
+ * virtual thread and no timer is held for it. Under {@code delay} the same answer — with
+ * {@code Retry-After} the whole seconds of {@code delay_millis} — refuses a tripped source's request
+ * while that source's {@linkplain EdgeHardeningOptions#heldAnswerSourceShare() share} of the
+ * held-answer sub-budget is used up, so one delayed source cannot occupy the whole sub-budget.
  * <p>
  * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ReconFeed}, the gate admits every
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —
  * a recon event before the trust boundary that is not a static resource. Under {@code delay}, a
- * rejection whose source has tripped is held until admission plus {@code delay_millis}. An unexpected
+ * rejection whose source has tripped is held until admission plus {@code delay_millis}, and its hold
+ * counts against that source's share ({@link EdgeAdmission#HELD_SOURCE_KEY}). An unexpected
  * internal failure answered as the uniform {@code 404} ({@link EventType#PRE_TRUST_INTERNAL_FAILURE})
  * is never admitted, but under {@code delay} it is held exactly as a recon rejection of the same
  * request would be: otherwise, for a tripped source, a crafted input that made a stage fail on a routed
@@ -128,6 +133,8 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     private final OptionalLong delayNanos;
     private final AtomicBoolean overflowReported = new AtomicBoolean();
     private final SourceLedger ledger;
+    /** Whether a source's share of the held-answer sub-budget is used up ({@link EdgeAdmission#heldShareExhausted}). */
+    private final Predicate<SourceKey> heldShareExhausted;
 
     /**
      * Builds the gate and the recon ledger it listens to.
@@ -141,11 +148,18 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      * @param gatewayEventCounter the shared in-process event counter
      * @param sheriffMetrics      the Micrometer adapter the block, trip and overflow are recorded through
      * @param gatewayJson         the serializer the {@code 429} problem document is rendered through
+     * @param heldShareExhausted  whether a source's share of the held-answer sub-budget is used up — the
+     *                            edge admission's {@link EdgeAdmission#heldShareExhausted}; read only
+     *                            under {@code delay}
      */
+    // The collaborators are the gate's distinct dependencies; a parameter object would only group them
+    // for the count.
+    @SuppressWarnings("java:S107")
     public SourceGate(EnumerationDetectionConfig config, SourceKeyResolver keyResolver, TcpPeerGate peerGate,
             ForwardedHeaderResolver forwardedResolver, GatewayEventCounter gatewayEventCounter,
-            SheriffMetrics sheriffMetrics, GatewayJson gatewayJson) {
+            SheriffMetrics sheriffMetrics, GatewayJson gatewayJson, Predicate<SourceKey> heldShareExhausted) {
         Objects.requireNonNull(config, "config");
+        this.heldShareExhausted = Objects.requireNonNull(heldShareExhausted, "heldShareExhausted");
         this.keyResolver = Objects.requireNonNull(keyResolver, "keyResolver");
         this.peerGate = Objects.requireNonNull(peerGate, "peerGate");
         this.forwardedResolver = Objects.requireNonNull(forwardedResolver, "forwardedResolver");
@@ -188,10 +202,12 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     }
 
     /**
-     * Resolves the request's source, stashes it under {@link #SOURCE_KEY} and, when the source is
-     * blocked, answers the request at once. Called on the event loop before
-     * {@link EdgeAdmission#tryAdmit()}; when it answers, it takes no admission permit, starts no
-     * virtual thread and arms no timer.
+     * Resolves the request's source, stashes it under {@link #SOURCE_KEY} and answers the request at
+     * once with the block-style {@code 429} when the source is blocked ({@code block}), or when it has
+     * tripped under {@code delay} and its share of the held-answer sub-budget is used up — its
+     * {@code Retry-After} is then the whole seconds of {@code delay_millis}, at least {@code 1}. Called
+     * on the event loop before {@link EdgeAdmission#tryAdmit()}; when it answers, it takes no admission
+     * permit, starts no virtual thread and arms no timer.
      *
      * @param ctx the incoming request
      * @return {@code true} when the request was answered {@code 429} and the caller must stop
@@ -199,14 +215,36 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     public boolean answersBlocked(RoutingContext ctx) {
         SourceKey key = resolveSource(ctx.request());
         ctx.put(SOURCE_KEY, key);
-        if (ledger.settings().action() != SourceLedger.Action.BLOCK) {
+        SourceLedger.Action action = ledger.settings().action();
+        if (action == SourceLedger.Action.OBSERVE) {
             return false;
         }
         Optional<SourceState> state = ledger.state(key);
-        if (state.isEmpty() || !state.get().isBlocked()) {
+        if (state.isEmpty()) {
             return false;
         }
-        long retryAfterSeconds = retryAfterSeconds(state.get().remainingBlockNanos(System.nanoTime()));
+        if (action == SourceLedger.Action.BLOCK) {
+            if (!state.get().isBlocked()) {
+                return false;
+            }
+            answerBlocked(ctx, retryAfterSeconds(state.get().remainingBlockNanos(System.nanoTime())));
+            return true;
+        }
+        if (!state.get().hasTripped() || !heldShareExhausted.test(key)) {
+            return false;
+        }
+        // delay: the tripped source's share of the held-answer sub-budget is used up, so its further
+        // request is refused here as a blocked one is, until one of its held answers is released.
+        answerBlocked(ctx, retryAfterSeconds(delayNanos.orElse(0L)));
+        return true;
+    }
+
+    /**
+     * Writes the block-style answer: metered as {@link EventType#SOURCE_BLOCKED} and answered
+     * {@code 429} with {@code Retry-After} and the {@link EventCategory#RATE_LIMITING} problem document,
+     * through the one end rule.
+     */
+    private void answerBlocked(RoutingContext ctx, long retryAfterSeconds) {
         gatewayEventCounter.increment(EventType.SOURCE_BLOCKED);
         // Refused before route selection, so the route label is the shared no-route value.
         sheriffMetrics.recordError(SheriffMetrics.NO_ROUTE, EventType.SOURCE_BLOCKED);
@@ -215,7 +253,6 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
         response.putHeader(ErrorResponseWriter.RETRY_AFTER_HEADER, Long.toString(retryAfterSeconds));
         response.putHeader(CONTENT_TYPE_HEADER, PROBLEM_JSON);
         ResponseEnds.endResponse(ctx, () -> response.end(blockedProblemBody));
-        return true;
     }
 
     /**
@@ -253,6 +290,16 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
         if (delayNanos.isEmpty() || !state.hasTripped()) {
             return OptionalLong.empty();
         }
+        return delayedHold(ctx, key);
+    }
+
+    /**
+     * The {@code delay} hold of a tripped source's answer: admission plus {@code delay_millis}. The
+     * source is stashed under {@link EdgeAdmission#HELD_SOURCE_KEY}, so the hold this answer enters
+     * counts against the source's share of the held-answer sub-budget.
+     */
+    private OptionalLong delayedHold(RoutingContext ctx, SourceKey key) {
+        ctx.put(EdgeAdmission.HELD_SOURCE_KEY, key);
         return OptionalLong.of(admittedAtNanos(ctx) + delayNanos.getAsLong());
     }
 
@@ -272,7 +319,7 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
         if (!reconShaped || !ledger.state(key).map(SourceState::hasTripped).orElse(false)) {
             return OptionalLong.empty();
         }
-        return OptionalLong.of(admittedAtNanos(ctx) + delayNanos.getAsLong());
+        return delayedHold(ctx, key);
     }
 
     /**

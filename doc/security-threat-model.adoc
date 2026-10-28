@@ -2261,8 +2261,9 @@ the answer is armed -- after an HTML error page has rendered and after the hop f
 thread -- so neither moves an answer off the grid, and an answer released after the first step is
 counted on `sheriff_uniform_not_found_overruns_total`. While it waits, a held answer holds a permit of
 the held-answer sub-budget, a quarter of the effective `admission_cap`, instead of one of the general
-admission pool; a full sub-budget answers the held response `503` at once, alike for every held
-answer. The floor is measured: `EnumerationOracleIT` probes eight pre-trust paths a caller can drive on
+admission pool; a full sub-budget answers the held response `503` no earlier than the floor's release
+time, alike for every held answer, and one source tripped under `delay` is held to its share of the
+sub-budget. The floor is measured: `EnumerationOracleIT` probes eight pre-trust paths a caller can drive on
 the integration stack, the bearer-token paths among them, and asserts the overrun meter did not move
 (ADR-0073 Amendment A1 lists them). The true
 event is still reported -- the event counter, the WARN and INFO lines and
@@ -2318,9 +2319,10 @@ that it happened. A steady non-zero rate is the signal that the floor is too low
 answer holds a permit of the held-answer sub-budget until it is written: an answer ready within the
 floor for up to the floor plus the jitter, 70 ms after admission, and an answer held to a later floor
 step until that step plus the jitter. A flood of unrouted or pre-trust requests therefore fills the
-sub-budget, and past it every held answer is answered `503` at once, which is the same for every
-address and every caller. The general admission pool is not drawn on while an answer waits, so a
-request that passes the trust boundary is still admitted. No thread is held while an answer waits
+sub-budget, and past it every held answer is answered `503` no earlier than the floor's release time,
+which is the same for every address and every caller. A held answer does not draw on the general
+admission pool while it waits, and a refused one keeps its general permit only until the floor's
+release time, so a request that passes the trust boundary is still admitted once those are written. No thread is held while an answer waits
 (<<gw-07>>).
 
 *Assertion.* For a routed address and an unrouted address on the same gateway, a request with no
@@ -4039,7 +4041,7 @@ outstanding hardening work (next section).
 | <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
 | <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
-| <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` at once when it is full; the floor measured against eight caller-drivable pre-trust paths, the bearer-token paths among them, and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 Amendment A1 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
+| <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` on the floor's release time when it is full, one tripped source held to its share; the floor measured against eight caller-drivable pre-trust paths, the bearer-token paths among them, and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 Amendment A1 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED

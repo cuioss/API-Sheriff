@@ -560,19 +560,26 @@ public final class ErrorResponseWriter {
      * moment it is armed, from the admission reading and the current {@link System#nanoTime()}; when it
      * falls on a step above the first, the overrun is counted. The answer then runs at once when no
      * release time is set — the honest answer's case — and otherwise no earlier than the later of the
-     * floor's and the per-source feed's release times, through {@link ResponseDelay}.
+     * floor's and the per-source feed's release times, through {@link ResponseDelay}. A hold the
+     * held-answer sub-budget refuses is answered {@code 503} no earlier than the floor's release time
+     * when the answer is floored, so the refusal stays on the floor's step grid whatever the per-source
+     * feed asked for; an answer that is not floored is refused at once.
      */
     private void answerAt(RoutingContext ctx, AnswerTiming timing, Runnable answer) {
         OptionalLong releaseAtNanos = timing.heldUntilNanos();
+        long now = System.nanoTime();
+        long refusalAtNanos = now;
         if (timing.floored()) {
-            UniformNotFound.Release floor = uniformNotFound.release(admittedAtNanos(ctx), System.nanoTime());
+            UniformNotFound.Release floor = uniformNotFound.release(admittedAtNanos(ctx), now);
             if (floor.overran()) {
                 rejectionReporter.recordFloorOverrun();
             }
+            refusalAtNanos = floor.atNanos();
             releaseAtNanos = laterOf(OptionalLong.of(floor.atNanos()), releaseAtNanos);
         }
-        releaseAtNanos.ifPresentOrElse(releaseAt -> ResponseDelay.endNoEarlierThan(ctx, releaseAt, answer),
-                answer);
+        long refusalAt = refusalAtNanos;
+        releaseAtNanos.ifPresentOrElse(
+                releaseAt -> ResponseDelay.endNoEarlierThan(ctx, releaseAt, refusalAt, answer), answer);
     }
 
     /**

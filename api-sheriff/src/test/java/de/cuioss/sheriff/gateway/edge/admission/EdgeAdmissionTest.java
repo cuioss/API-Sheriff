@@ -60,7 +60,7 @@ import org.junit.jupiter.api.Test;
  * <p>
  * The held-answer sub-budget is pinned in {@link HeldAnswerSubBudget}: a hold swaps the general permit
  * for a held one, a full sub-budget changes nothing, and every permit and the in-flight count go back
- * exactly once.
+ * exactly once. One source's share of it is pinned in {@link HeldAnswerSourceShare}.
  */
 @DisplayName("EdgeAdmission — admission against the shutdown drain")
 class EdgeAdmissionTest {
@@ -284,6 +284,118 @@ class EdgeAdmissionTest {
             RoutingContext unarmed = routingContext();
 
             assertThrows(IllegalStateException.class, () -> small.tryEnterHold(unarmed));
+        }
+    }
+
+    /**
+     * One source's share of the held-answer sub-budget: a hold for a request carrying
+     * {@link EdgeAdmission#HELD_SOURCE_KEY} also takes a unit of that source's share, a used-up share
+     * refuses the hold without touching any permit, and the unit goes back exactly once with the held
+     * permit. The admission cap here is {@value #SHARED_CAP}: a held-answer sub-budget of 16 permits and
+     * a share of 2.
+     */
+    @Nested
+    @DisplayName("one source's share of the held-answer sub-budget")
+    class HeldAnswerSourceShare {
+
+        private static final int SHARED_CAP = 64;
+        private static final EdgeHardeningOptions SHARED = new EdgeHardeningOptions(new EdgeHardeningConfig(SHARED_CAP, null));
+        private static final String SOURCE = "198.51.100.7";
+        private static final String OTHER_SOURCE = "198.51.100.8";
+
+        private final EdgeAdmission shared = new EdgeAdmission(SHARED);
+
+        @Test
+        @DisplayName("a source takes its share and is then refused, while other sources and floor-only holds are not")
+        void sourceIsRefusedPastItsShareOthersAreNot() {
+            int share = SHARED.heldAnswerSourceShare();
+            List<Admitted> fromSource = admitAll(shared, share + 1);
+            fromSource.forEach(request -> request.ctx().put(EdgeAdmission.HELD_SOURCE_KEY, SOURCE));
+            Admitted fromOther = admit(shared);
+            fromOther.ctx().put(EdgeAdmission.HELD_SOURCE_KEY, OTHER_SOURCE);
+            Admitted floorOnly = admit(shared);
+
+            long heldWithinTheShare = fromSource.subList(0, share).stream()
+                    .filter(request -> shared.tryEnterHold(request.ctx())).count();
+            boolean exhaustedAtTheShare = shared.heldShareExhausted(SOURCE);
+            boolean heldPastTheShare = shared.tryEnterHold(fromSource.get(share).ctx());
+            boolean otherHeld = shared.tryEnterHold(fromOther.ctx());
+            boolean floorOnlyHeld = shared.tryEnterHold(floorOnly.ctx());
+
+            assertAll("holds against one source's share",
+                    () -> assertEquals(2, share, "precondition: an eighth of the 16 held permits"),
+                    () -> assertEquals(share, heldWithinTheShare, "every hold within the share is entered"),
+                    () -> assertTrue(exhaustedAtTheShare, "the share is used up once it is all held"),
+                    () -> assertFalse(heldPastTheShare, "the source's next hold is refused"),
+                    () -> assertTrue(otherHeld, "another source keeps its own share"),
+                    () -> assertFalse(shared.heldShareExhausted(OTHER_SOURCE), "the other source has room left"),
+                    () -> assertTrue(floorOnlyHeld, "a hold carrying no source counts against no share"));
+        }
+
+        @Test
+        @DisplayName("a share refusal hands no general permit back and takes no held permit")
+        void shareRefusalTouchesNoPermit() {
+            int share = SHARED.heldAnswerSourceShare();
+            List<Admitted> fromSource = admitAll(shared, share + 1);
+            fromSource.forEach(request -> request.ctx().put(EdgeAdmission.HELD_SOURCE_KEY, SOURCE));
+            fromSource.subList(0, share).forEach(request -> assertTrue(shared.tryEnterHold(request.ctx()),
+                    "precondition: the share is taken"));
+            List<Admitted> rest = admitAll(shared, SHARED_CAP - (share + 1));
+
+            boolean refused = shared.tryEnterHold(fromSource.get(share).ctx());
+            long generalPermitsFree = countAdmissions(shared, SHARED_CAP);
+            long heldPermitsFree = rest.stream().filter(request -> shared.tryEnterHold(request.ctx())).count();
+
+            assertAll("a hold refused by the source's share",
+                    () -> assertFalse(refused, "the hold past the share is refused"),
+                    () -> assertEquals(share, generalPermitsFree,
+                            "only the share holds gave their general permits back, the refused request none"),
+                    () -> assertEquals(SHARED.heldAnswerCap() - (long) share, heldPermitsFree,
+                            "the refusal took none of the held permits the share holds left"));
+        }
+
+        @Test
+        @DisplayName("a held answer's end returns its share unit exactly once, and the source may hold again")
+        void endReturnsTheShareUnitOnce() {
+            int share = SHARED.heldAnswerSourceShare();
+            List<Admitted> fromSource = admitAll(shared, share + 2);
+            fromSource.forEach(request -> request.ctx().put(EdgeAdmission.HELD_SOURCE_KEY, SOURCE));
+            fromSource.subList(0, share).forEach(request -> assertTrue(shared.tryEnterHold(request.ctx()),
+                    "precondition: the share is taken"));
+            Admitted ended = fromSource.getFirst();
+
+            shared.releaseAdmission(ended.ctx(), ended.released());
+            shared.releaseAdmission(ended.ctx(), ended.released());
+            boolean exhaustedAfterTheEnd = shared.heldShareExhausted(SOURCE);
+            boolean heldAgain = shared.tryEnterHold(fromSource.get(share).ctx());
+            boolean heldPastTheShareAgain = shared.tryEnterHold(fromSource.get(share + 1).ctx());
+
+            assertAll("the release of one of the source's held answers, run twice",
+                    () -> assertFalse(exhaustedAfterTheEnd, "the ended answer's unit is back"),
+                    () -> assertTrue(heldAgain, "the source may hold one more answer"),
+                    () -> assertFalse(heldPastTheShareAgain,
+                            "the repeated release returned the unit once, so the share is used up again"));
+        }
+
+        @Test
+        @DisplayName("a hold refused by the full sub-budget gives the source's unit straight back")
+        void fullSubBudgetReturnsTheShareUnit() {
+            EdgeAdmission small = new EdgeAdmission(SMALL);
+            Admitted floorOnly = admit(small);
+            Admitted fromSource = admit(small);
+            fromSource.ctx().put(EdgeAdmission.HELD_SOURCE_KEY, SOURCE);
+            assertTrue(small.tryEnterHold(floorOnly.ctx()), "precondition: the single held permit is taken");
+
+            boolean refused = small.tryEnterHold(fromSource.ctx());
+            boolean exhaustedAfterTheRefusal = small.heldShareExhausted(SOURCE);
+            small.releaseAdmission(floorOnly.ctx(), floorOnly.released());
+            boolean heldOnceAPermitIsFree = small.tryEnterHold(fromSource.ctx());
+
+            assertAll("a sourced hold against a full sub-budget",
+                    () -> assertEquals(1, SMALL.heldAnswerSourceShare(), "precondition: a share of one"),
+                    () -> assertFalse(refused, "the full sub-budget refuses the hold"),
+                    () -> assertFalse(exhaustedAfterTheRefusal, "the refusal left the source's unit unused"),
+                    () -> assertTrue(heldOnceAPermitIsFree, "the source's share is whole again"));
         }
     }
 

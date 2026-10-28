@@ -406,9 +406,10 @@ edge_hardening:                    # OPTIONAL admission budget for the public da
                                    #   permit back while it waits and takes a held permit instead.
                                    #   There are a QUARTER of the effective admission_cap of them
                                    #   (>= 1), so admission_cap scales both. When all are taken, a
-                                   #   further answer that would wait is a bare 503 at once, alike
-                                   #   for every route and caller, and the general permits stay
-                                   #   free for requests that are served.
+                                   #   further answer that would wait is a bare 503, written no
+                                   #   earlier than the floor's release time and alike for every
+                                   #   route and caller; held answers keep no general permit, so
+                                   #   those stay free for requests that are served.
 
 enumeration_detection:             # OPTIONAL per-source scan detection. Omit the block, or any
                                    #   key, to take the defaults shown: detection RUNS and a trip
@@ -4466,7 +4467,8 @@ the `delay` action of <<_enumeration_detection,`enumeration_detection`>> -- hand
 permit back while it waits and takes a permit of a third pool instead. That pool holds a quarter of
 the effective `admission_cap`, and at least one, so `admission_cap` scales it; with the default cap
 it holds `512` answers. When every held permit is taken, a further answer that would wait is
-answered `503` at once, without waiting. That `503` is the same for every route and every caller, and
+answered `503` no earlier than the floor's release time, without a held permit. That `503` is the same
+for every route and every caller, and
 the general permits stay free for requests the gateway serves
 (link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#amendment-a1[ADR-0073,
 Amendment A1]).

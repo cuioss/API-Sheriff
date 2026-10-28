@@ -285,8 +285,9 @@ measurement.
   sub-budget is a quarter of the effective `edge_hardening.admission_cap`, at least one; with the
   default cap of 2048 it holds 512 answers, each for up to `RESPONSE_FLOOR` + `RESPONSE_JITTER`,
   70 ms, so the edge sustains about 512 / 0.07 s, roughly 7,300 held answers per second. Above that a
-  held answer is answered `503` at once, alike for every held answer whatever its route or caller, so
-  the `503` leaks nothing, and a request that passes the trust boundary still finds the general pool.
+  held answer is answered `503` no earlier than the floor's release time, alike for every held answer
+  whatever its route or caller, so the `503` leaks nothing, and a request that passes the trust
+  boundary still finds the general pool.
   No thread is held while an answer waits; the cost is a held permit and a timer entry.
 * Every edge and integration test that requests an unrouted path waits for the floor. The tests
   assert only lower bounds on timing, so the floor slows them and does not make them flaky.
@@ -320,10 +321,14 @@ per-source `delay` action, moves from the general admission pool to a held-answe
 from the effective `admission_cap`, a quarter of it and at least one, as the WebSocket relay
 sub-budget is derived
 (link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]).
-No configuration key reaches it. A full sub-budget answers the held response `503` at once, with no
-timer, and that answer is the same for every held response whatever its route or caller. A flood of
-probes therefore cannot keep general permits occupied for the length of the wait; it still draws on
-the general pool while each probe is processed, up to the moment its answer enters the hold.
+No configuration key reaches it. A full sub-budget answers the held response `503` on the floor's
+release time, from the same kind of timer, without a held permit and under the general permit the
+request was admitted with, so the refusal's latency does not depend on how far processing got and the
+answers waiting at once stay within the admission cap plus the sub-budget; that answer is the same for
+every held response whatever its route or caller. A held answer therefore keeps no general permit
+for the length of its wait; a probe still draws on the general pool while it is processed, up to the
+moment its answer enters the hold, and a probe refused the hold keeps its general permit until the
+floor's release time.
 
 *The release time is computed on the event loop.* It is computed when the answer is armed, after an
 HTML error page has rendered and after the hop from the virtual thread, so neither moves an answer off

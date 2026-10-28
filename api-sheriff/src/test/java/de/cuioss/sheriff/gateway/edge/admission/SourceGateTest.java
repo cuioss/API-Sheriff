@@ -21,11 +21,16 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Proxy;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,6 +45,7 @@ import de.cuioss.sheriff.gateway.detection.SourceKey;
 import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
 import de.cuioss.sheriff.gateway.detection.SourceLedger;
 import de.cuioss.sheriff.gateway.detection.SourceState;
+import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
@@ -59,6 +65,7 @@ import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.ext.web.Router;
+import io.vertx.ext.web.RoutingContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -72,7 +79,9 @@ import org.junit.jupiter.params.provider.EnumSource;
  * asks the gate first and answers {@code 200} only when the gate let the request through: a blocked
  * source is answered {@code 429} with {@code Retry-After} and the rate-limiting problem document, an
  * unblocked source and a tripped source under the default {@code observe} pass, and a trip is reported
- * as an event, on the trip meter and as the trip WARN.
+ * as an event, on the trip meter and as the trip WARN. Under {@code delay} a tripped source whose share
+ * of the held-answer sub-budget is used up gets the same {@code 429}, and a held rejection carries its
+ * source for that share.
  */
 @EnableTestLogger
 @DisplayName("SourceGate — the per-source answer before admission")
@@ -81,6 +90,13 @@ class SourceGateTest {
 
     private static final String PASSED = "passed";
     private static final int BLOCK_SECONDS = 60;
+    /** A delay with a fractional second, so the rounding of its {@code Retry-After} is observable. */
+    private static final int DELAY_MILLIS = 2_500;
+    private static final long DELAY_NANOS = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
+    private static final long DELAY_RETRY_AFTER_SECONDS = 3L;
+
+    /** The sources the gate is told have used up their held-answer share. */
+    private final Set<SourceKey> exhaustedShares = ConcurrentHashMap.newKeySet();
 
     private Vertx vertx;
     private HttpServer server;
@@ -180,6 +196,100 @@ class SourceGateTest {
                 ApiSheriffLogMessages.WARN.SOURCE_TRIPPED.resolveIdentifierString());
     }
 
+    @Test
+    @DisplayName("under delay a tripped source whose held-answer share is used up is answered the block-style 429")
+    void trippedSourcePastItsShareUnderDelayIsAnswered429() throws Exception {
+        SourceGate sourceGate = gate(delay());
+        SourceState tripped = sourceGate.ledger().admit(loopbackKey(), 1, EventType.NO_ROUTE_MATCHED);
+        exhaustedShares.add(loopbackKey());
+
+        Response response = send();
+
+        EventCategory rateLimiting = EventCategory.RATE_LIMITING;
+        String expectedBody = ErrorResponseWriter.problemBody(new GatewayJson(new ObjectMapper()),
+                rateLimiting.problemType(), rateLimiting.title(), 429, Map.of());
+        assertAll("the answer past the share",
+                () -> assertTrue(tripped.hasTripped() && !tripped.isBlocked(),
+                        "precondition: tripped under delay, never blocked"),
+                () -> assertEquals(429, response.status()),
+                () -> assertEquals(Long.toString(DELAY_RETRY_AFTER_SECONDS),
+                        response.headers().get(ErrorResponseWriter.RETRY_AFTER_HEADER),
+                        "Retry-After is the whole seconds of delay_millis, rounded up"),
+                () -> assertEquals(expectedBody, response.body()),
+                () -> assertEquals(1L, eventCounter.getCount(EventType.SOURCE_BLOCKED)));
+    }
+
+    @Test
+    @DisplayName("under delay a tripped source with room in its share, and an untripped source, pass")
+    void delaySourcesWithinTheirShareOrUntrippedPass() throws Exception {
+        SourceGate sourceGate = gate(delay());
+        sourceGate.ledger().admit(loopbackKey(), 1, EventType.NO_ROUTE_MATCHED);
+
+        Response withRoom = send();
+        SourceGate untrippedGate = gate(delay());
+        exhaustedShares.add(loopbackKey());
+        Response untripped = send();
+
+        assertAll("the matched controls of the share refusal",
+                () -> assertEquals(200, withRoom.status(), "a tripped source with room in its share passes"),
+                () -> assertTrue(untrippedGate.ledger().state(loopbackKey()).isEmpty(),
+                        "precondition: the second gate has not tracked the source"),
+                () -> assertEquals(200, untripped.status(), "an untripped source is never refused for a share"),
+                () -> assertEquals(0L, eventCounter.getCount(EventType.SOURCE_BLOCKED)));
+    }
+
+    @Test
+    @DisplayName("under observe a tripped source passes even with its held-answer share used up")
+    void observeIgnoresTheShare() throws Exception {
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(1).build());
+        sourceGate.ledger().admit(loopbackKey(), 1, EventType.NO_ROUTE_MATCHED);
+        exhaustedShares.add(loopbackKey());
+
+        Response response = send();
+
+        assertAll("observe answers nothing differently",
+                () -> assertEquals(200, response.status()),
+                () -> assertEquals(0L, eventCounter.getCount(EventType.SOURCE_BLOCKED)));
+    }
+
+    @Test
+    @DisplayName("under delay a tripped source's held rejection carries its source for the share; an untripped one does not")
+    void delayHoldCarriesTheSourceForTheShare() {
+        SourceGate sourceGate = gate(delay());
+        Map<String, Object> trippedData = new HashMap<>(Map.of(SourceGate.SOURCE_KEY, loopbackKey(),
+                ResponseDelay.ADMITTED_AT_KEY, 0L));
+        Map<String, Object> firstData = new HashMap<>(trippedData);
+
+        OptionalLong first = sourceGate.admit(feedContext(firstData), null, EventType.NO_ROUTE_MATCHED);
+        OptionalLong held = sourceGate.admit(feedContext(trippedData), null, EventType.NO_ROUTE_MATCHED);
+        OptionalLong failure = sourceGate.admit(feedContext(new HashMap<>(Map.of(SourceGate.SOURCE_KEY, loopbackKey(),
+                ResponseDelay.ADMITTED_AT_KEY, 0L))), null, EventType.PRE_TRUST_INTERNAL_FAILURE);
+
+        assertAll("the delay hold and the source it counts against",
+                () -> assertTrue(first.isPresent(), "threshold 1: the first rejection trips the source and is held"),
+                () -> assertEquals(loopbackKey(), firstData.get(EdgeAdmission.HELD_SOURCE_KEY)),
+                () -> assertEquals(OptionalLong.of(DELAY_NANOS), held, "held until admission plus delay_millis"),
+                () -> assertEquals(loopbackKey(), trippedData.get(EdgeAdmission.HELD_SOURCE_KEY),
+                        "the hold counts against the tripped source's share"),
+                () -> assertEquals(OptionalLong.of(DELAY_NANOS), failure,
+                        "a pre-trust internal failure of the tripped source is held the same way"));
+    }
+
+    @Test
+    @DisplayName("under delay a rejection of an untripped source is not held and carries no source for the share")
+    void untrippedRejectionCarriesNoSource() {
+        SourceGate sourceGate = gate(EnumerationDetectionConfig.builder().threshold(2)
+                .action(EnumerationDetectionConfig.Action.DELAY).delayMillis(DELAY_MILLIS).build());
+        Map<String, Object> data = new HashMap<>(Map.of(SourceGate.SOURCE_KEY, loopbackKey(),
+                ResponseDelay.ADMITTED_AT_KEY, 0L));
+
+        OptionalLong hold = sourceGate.admit(feedContext(data), null, EventType.NO_ROUTE_MATCHED);
+
+        assertAll("a rejection below the threshold",
+                () -> assertTrue(hold.isEmpty(), "an untripped source is not delayed"),
+                () -> assertNull(data.get(EdgeAdmission.HELD_SOURCE_KEY), "nothing counts against a share"));
+    }
+
     @ParameterizedTest(name = "{0}")
     @EnumSource(EnumerationDetectionConfig.Action.class)
     @DisplayName("every configured action maps onto the ledger action of the same name")
@@ -198,15 +308,38 @@ class SourceGateTest {
         assertEquals(SourceLedger.Action.BLOCK, SourceGate.ledgerAction(EnumerationDetectionConfig.Action.BLOCK));
     }
 
+    /** {@code delay} at threshold 1, so the first counted rejection trips the source. */
+    private static EnumerationDetectionConfig delay() {
+        return EnumerationDetectionConfig.builder().threshold(1).action(EnumerationDetectionConfig.Action.DELAY)
+                .delayMillis(DELAY_MILLIS).build();
+    }
+
     private SourceGate gate(EnumerationDetectionConfig config) {
         ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
                 ForwardedResolverConfig.builder().trustedProxies(Set.of())
                         .securityConfig(SecurityConfiguration.defaults()).build(),
                 new SecurityEventCounter());
         SourceGate built = new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()),
-                forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry), new GatewayJson(new ObjectMapper()));
+                forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry), new GatewayJson(new ObjectMapper()),
+                exhaustedShares::contains);
         gate.set(built);
         return built;
+    }
+
+    /**
+     * A {@link RoutingContext} backed by a map for {@code get} and {@code put}, the only calls the
+     * rejection feed makes on it; every other call fails the test.
+     */
+    private static RoutingContext feedContext(Map<String, Object> data) {
+        return (RoutingContext) Proxy.newProxyInstance(RoutingContext.class.getClassLoader(),
+                new Class<?>[]{RoutingContext.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "get" -> data.get(args[0]);
+                    case "put" -> {
+                        data.put((String) args[0], args[1]);
+                        yield proxy;
+                    }
+                    default -> throw new AssertionError("the rejection feed must not call " + method.getName());
+                });
     }
 
     /** The key a request from this test's client is tracked under: the loopback peer, host folded to {@code *}. */

@@ -114,7 +114,9 @@ consumer reads them from the top-level `enumeration_detection` block of `gateway
 | `action` | `observe` | The response to a trip: `observe`, `delay` or `block`.
 | `block_seconds` | `60` | How long a tripped source is blocked under `block`.
 | `delay_millis` | `2000` | How long a tripped source's rejection answers are held under `delay`
-  (`1` to `10000`).
+  (`1` to `10000`). The edge counts one source's held answers against its share of the held-answer
+  sub-budget, an eighth of it and at least one, and answers a request past that share before admission
+  with the `block` answer, `Retry-After` the whole seconds of `delay_millis`.
 |===
 
 An omitted block resolves to every default: detection runs on every gateway and records a trip
