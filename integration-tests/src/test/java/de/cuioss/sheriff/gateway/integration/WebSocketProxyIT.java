@@ -587,7 +587,7 @@ class WebSocketProxyIT extends BaseIntegrationTest {
 
     /** An in-flight request holding a general permit while its body is withheld. */
     private record HeldRequest(int index, WithheldBodyPublisher body,
-            CompletableFuture<HttpResponse<String>> response) implements Held {
+    CompletableFuture<HttpResponse<String>> response) implements Held {
 
         /**
          * Fails the control with a fixture message when the held request has already ended — answered
