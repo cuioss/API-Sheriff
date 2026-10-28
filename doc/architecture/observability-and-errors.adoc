@@ -205,7 +205,7 @@ as the unrouted `404`
   event counter and on `sheriff_errors_total{event}`, with its stack trace at `DEBUG` and no `WARN`,
   since any caller that can craft the failing input reaches it. It carries no per-source detection
   weight (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]): an
-  operator-side failure is not caller behaviour and carries no detection weight. Every other
+  operator-side failure is not caller behaviour. Every other
   unexpected failure keeps the opaque `500` (ADR-0073 Amendment A1).
 
 [cols="1,3", options="header"]

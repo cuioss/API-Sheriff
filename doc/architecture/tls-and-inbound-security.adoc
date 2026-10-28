@@ -413,7 +413,7 @@ reserved-path event, a body that stopped arriving, an unexpected internal failur
 closed set of browser-ambient fetches (`/favicon.ico`, `/robots.txt`, `/apple-touch-icon.png`,
 `/apple-touch-icon-precomposed.png` and the sized touch icons) -- are never counted; a file
 extension alone does not exempt a path. The internal failure is answered as the uniform `404` but
-carries no weight: an operator-side failure is not caller behaviour and carries no detection weight.
+carries no weight: an operator-side failure is not caller behaviour.
 The count follows the true event, never the rendered status: a bearer `401` answered as the uniform
 `404` counts as `TOKEN_MISSING`.
 
