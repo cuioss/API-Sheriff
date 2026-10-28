@@ -1716,7 +1716,9 @@ bound (lowered when the listener announces more, kept when it announces less).
 `GatewayEdgeHttp2AbuseTest` drives the real edge with a raw HTTP/2 frame writer: a create-then-reset
 flood past the pinned window ends its connection with `GOAWAY ENHANCE_YOUR_CALM` while a fresh
 connection is served; early-answered uploads the gateway resets with `NO_ERROR` never trip the
-guard; a `CONTINUATION` flood past the header-list bound drops its connection; and a flood of
+guard; a `CONTINUATION` flood past the header-list bound drops its connection, and so does a complete
+header block of 17 KiB or 32 KiB spread over `CONTINUATION` frames, with a `GOAWAY` naming an error and
+the stream never answered; and a flood of
 zero-length `CONTINUATION` frames ends its connection before the stream is answered. `ConnectionHeadersTest` and
 `ForwardPolicyStageTest` pin that `HTTP2-Settings`, `Upgrade` and `Connection` are withheld under
 every forward mode, and the HTTP/2 legs of `GatewayEdgeFramingCorpusTest` pin the h2->h1

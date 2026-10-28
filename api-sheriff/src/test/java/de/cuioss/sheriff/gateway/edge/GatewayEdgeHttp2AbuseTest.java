@@ -102,6 +102,10 @@ class GatewayEdgeHttp2AbuseTest {
     private static final int HEADER_LIST_BOUND = 16 * 1024;
     /** The size of each header value a CONTINUATION frame of the size flood carries. */
     private static final int FLOOD_FIELD_BYTES = 1024;
+    /** A complete header block just above the bound: 17 KiB of fields. */
+    private static final int NEAR_BOUND_BLOCK_BYTES = 17 * 1024;
+    /** A complete header block far above the bound: 32 KiB of fields. */
+    private static final int FAR_ABOVE_BLOCK_BYTES = 2 * HEADER_LIST_BOUND;
     /** Zero-length CONTINUATION frames the empty-frame flood sends. */
     private static final int EMPTY_CONTINUATIONS = 10_000;
 
@@ -317,6 +321,51 @@ class GatewayEdgeHttp2AbuseTest {
                 () -> assertFalse(upstreamStarted.contains("GET /continuation-flood"),
                         "nothing of the flooded stream reaches the upstream"),
                 () -> assertEquals(200, afterStatus, "the edge keeps serving a fresh connection"));
+    }
+
+    @Test
+    @DisplayName("a complete header block just above 16 KiB ends the connection, not only its stream")
+    void headerBlockJustAboveTheBoundEndsTheConnection() throws Exception {
+        RawHttp2Connection connection = RawHttp2Connection.open(netClient, frontPort);
+        Awaits.connect(connection.write(completeBlock(connection, 1, "/echo/just-above", NEAR_BOUND_BLOCK_BYTES)),
+                "the header block to be sent");
+        Awaits.connect(connection.closed(), "the edge to end the connection");
+        int afterStatus = statusOfAFreshConnection();
+
+        assertAll("a complete header block of 17 KiB",
+                () -> assertTrue(connection.goAwayCode().isPresent(), "the edge announces the end with GOAWAY"),
+                () -> assertNotEquals(Optional.of(RawHttp2Connection.NO_ERROR), connection.goAwayCode(),
+                        "the GOAWAY names an error"),
+                () -> assertEquals(Optional.empty(), connection.status(1), "the stream is never answered"),
+                () -> assertFalse(upstreamStarted.contains("GET /just-above"), "the stream never reaches the upstream"),
+                () -> assertEquals(200, afterStatus, "the edge keeps serving a fresh connection"));
+    }
+
+    @Test
+    @DisplayName("a complete header block of 32 KiB ends the connection with GOAWAY")
+    void headerBlockFarAboveTheBoundEndsTheConnection() throws Exception {
+        RawHttp2Connection connection = RawHttp2Connection.open(netClient, frontPort);
+        Awaits.connect(connection.write(completeBlock(connection, 1, "/echo/far-above", FAR_ABOVE_BLOCK_BYTES)),
+                "the header block to be sent");
+        Awaits.connect(connection.closed(), "the edge to drop the connection");
+
+        assertAll("a header block far above the bound",
+                () -> assertTrue(connection.goAwayCode().isPresent(), "the edge announces the drop with GOAWAY"),
+                () -> assertNotEquals(Optional.of(RawHttp2Connection.NO_ERROR), connection.goAwayCode(),
+                        "the GOAWAY names an error"),
+                () -> assertFalse(upstreamStarted.contains("GET /far-above"), "the stream never reaches the upstream"));
+    }
+
+    /** A complete request header block of about {@code totalBytes}, its fields spread over CONTINUATION frames. */
+    private static Buffer completeBlock(RawHttp2Connection connection, int streamId, String path, int totalBytes) {
+        String filler = Generators.letterStrings(FLOOD_FIELD_BYTES, FLOOD_FIELD_BYTES).next();
+        int fieldFrames = totalBytes / FLOOD_FIELD_BYTES;
+        Buffer frames = RawHttp2Connection.headersLeftOpen(streamId, connection.requestHead("GET", path), true);
+        for (int i = 0; i < fieldFrames; i++) {
+            frames.appendBuffer(RawHttp2Connection.continuation(streamId,
+                    List.of(Map.entry("x-field-" + i, filler)), i == fieldFrames - 1));
+        }
+        return frames;
     }
 
     @Test

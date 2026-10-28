@@ -67,7 +67,9 @@ import org.jspecify.annotations.Nullable;
  * the client address a trusted forwarder reported — resolved only for a peer the {@link TcpPeerGate}
  * trusts, through a {@link ForwardedHeaderResolver} configured exactly as the forward stage's, so the
  * address keyed on is the one the gateway regenerates {@code X-Forwarded-For} from — and otherwise the
- * TCP peer. An untrusted peer's {@code X-Forwarded-For} is never read.
+ * TCP peer. An untrusted peer's {@code X-Forwarded-For} is never read. A trusted peer's request whose
+ * forwarding headers resolve to no client is keyed on {@link SourceKey#UNKNOWN_SOURCE}, never on the
+ * trusted peer's own address.
  * <p>
  * <strong>The block.</strong> A source can be {@code BLOCKED} only when the operator configured
  * {@code action: block}; the default {@code observe} never blocks. A request from a blocked source is
@@ -323,16 +325,21 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     }
 
     /**
-     * The key a request is tracked under: the forwarded client address for a trusted peer, otherwise
-     * the TCP peer, with the authority host folded to the declared set.
+     * The key a request is tracked under, with the authority host folded to the declared set: for a
+     * trusted peer the forwarded client address, and {@link SourceKey#UNKNOWN_SOURCE} when its
+     * forwarding headers resolve to no client — never the trusted peer's own address, which every such
+     * request through that peer would otherwise share; for any other peer the TCP peer.
      */
     private SourceKey resolveSource(HttpServerRequest raw) {
         SocketAddress remote = raw.remoteAddress();
         String peerAddress = remote != null ? remote.hostAddress() : null;
-        String forwardedClient = peerGate.isTrustedPeer(peerAddress)
-                ? forwardedResolver.resolve(name -> raw.headers().getAll(name)).clientIp().orElse(null)
-                : null;
-        return keyResolver.resolve(peerAddress, forwardedClient, authorityHostOf(raw));
+        String host = authorityHostOf(raw);
+        if (!peerGate.isTrustedPeer(peerAddress)) {
+            return keyResolver.resolve(peerAddress, null, host);
+        }
+        return forwardedResolver.resolve(name -> raw.headers().getAll(name)).clientIp()
+                .map(client -> keyResolver.resolve(peerAddress, client, host))
+                .orElseGet(() -> keyResolver.resolve(null, null, host));
     }
 
     /**

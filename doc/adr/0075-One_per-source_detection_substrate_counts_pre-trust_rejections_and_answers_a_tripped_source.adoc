@@ -34,7 +34,9 @@ link:../development/source-detection-substrate.adoc[Per-Source Detection Substra
 short:
 
 * *Keying.* `SourceKeyResolver` keys a request by `(source, host)`. The source is the client address
-  a trusted forwarder reported, and otherwise the TCP peer. An IPv6 source is reduced to its `/64`.
+  a trusted forwarder reported, and otherwise the TCP peer; a trusted forwarder's request whose
+  headers name no client is the `unknown` source, never the forwarder's own address. An IPv6 source
+  is reduced to its `/64`.
   An absent or unparseable address folds to one `unknown` source. The host is kept only when it
   equals a `match.host` some route declares; every other host folds to `*`.
 * *Counting.* `SourceLedger` keeps one leaky bucket per key. An admitted event adds its weight. The

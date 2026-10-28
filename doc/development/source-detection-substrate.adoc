@@ -46,7 +46,9 @@ canonicalizes both parts.
 *The source* is the forwarded client address when the caller hands one over, otherwise the TCP peer
 address. The resolver does not judge trust: the edge hands over a forwarded address only for a peer
 `forwarded.trusted_proxies` trusts, resolved by the same resolver the forward stage regenerates
-`X-Forwarded-For` from. The chosen address is canonicalized:
+`X-Forwarded-For` from. A trusted peer's request whose forwarding headers resolve to no client -- an
+absent or malformed header -- is keyed on the `unknown` source, never on the trusted peer's own
+address (`SourceGateTest`). The chosen address is canonicalized:
 
 * an IPv4 address is kept whole, in dotted-decimal form;
 * an IPv6 address is reduced to its `/64` prefix, written `a:b:c:d::/64`. An end site is routinely

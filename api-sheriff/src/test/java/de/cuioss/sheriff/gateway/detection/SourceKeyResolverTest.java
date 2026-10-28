@@ -108,6 +108,13 @@ class SourceKeyResolverTest {
             assertEquals(SourceKey.UNKNOWN_SOURCE, resolver.resolve(address, null, DECLARED_HOST).source());
         }
 
+        @ParameterizedTest(name = "[{0}]")
+        @ValueSource(strings = {"not-an-address", "999.1.1.1", "unknown"})
+        @DisplayName("an unparseable forwarded address folds to unknown and never falls back to the peer")
+        void unparseableForwardedAddressNeverFallsBackToThePeer(String forwarded) {
+            assertEquals(SourceKey.UNKNOWN_SOURCE, resolver.resolve("192.0.2.10", forwarded, DECLARED_HOST).source());
+        }
+
         @Test
         @DisplayName("a host name is never resolved: it folds to unknown like any other non-literal")
         void hostNameIsNotResolved() {

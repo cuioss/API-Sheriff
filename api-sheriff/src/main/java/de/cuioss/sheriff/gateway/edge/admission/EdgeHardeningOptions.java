@@ -73,7 +73,8 @@ import io.vertx.core.http.HttpServerOptions;
  * the HTTP/1.1 header block has: a listener announcing more, or announcing no limit, is lowered to it,
  * and a lower value is kept. The bound covers the whole decoded header block, {@code CONTINUATION}
  * frames included, so a header block spread over many frames is refused by the codec once it passes
- * that size. The per-connection Rapid-Reset guard is pinned at 200 {@code RST_STREAM} frames per
+ * that size, and the codec ends the connection with a {@code GOAWAY} naming an error — a complete block
+ * of 17 KiB does, as {@code GatewayEdgeHttp2AbuseTest} pins. The per-connection Rapid-Reset guard is pinned at 200 {@code RST_STREAM} frames per
  * 30-second window, the transport's own default: a connection whose client resets more streams than
  * that inside one window is ended with {@code GOAWAY ENHANCE_YOUR_CALM}. The values are set explicitly
  * so a change of the transport default cannot move them, and they are never raised (ADR-0066). The

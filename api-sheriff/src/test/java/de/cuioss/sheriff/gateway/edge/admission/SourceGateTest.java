@@ -73,6 +73,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The per-source gate in front of edge admission, driven over a live Vert.x server whose one handler
@@ -94,6 +95,8 @@ class SourceGateTest {
     private static final int DELAY_MILLIS = 2_500;
     private static final long DELAY_NANOS = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
     private static final long DELAY_RETRY_AFTER_SECONDS = 3L;
+    private static final String FORWARDED_FOR = "X-Forwarded-For";
+    private static final String FORWARDED_CLIENT = "203.0.113.7";
 
     /** The sources the gate is told have used up their held-answer share. */
     private final Set<SourceKey> exhaustedShares = ConcurrentHashMap.newKeySet();
@@ -290,6 +293,45 @@ class SourceGateTest {
                 () -> assertNull(data.get(EdgeAdmission.HELD_SOURCE_KEY), "nothing counts against a share"));
     }
 
+    @Test
+    @DisplayName("a trusted proxy's request is keyed by its forwarded client, an untrusted peer's by the peer")
+    void trustedProxyRequestIsKeyedByItsForwardedClient() throws Exception {
+        gate(EnumerationDetectionConfig.defaults(), List.of(LoopbackHost.ADDRESS + "/32"));
+        send(Map.of(FORWARDED_FOR, FORWARDED_CLIENT));
+        SourceKey trusted = stashed.get();
+        gate(EnumerationDetectionConfig.defaults());
+        send(Map.of(FORWARDED_FOR, FORWARDED_CLIENT));
+        SourceKey untrusted = stashed.get();
+
+        assertAll("the key follows the trust decision",
+                () -> assertEquals(new SourceKey(FORWARDED_CLIENT, SourceKey.UNDECLARED_HOST), trusted),
+                () -> assertEquals(loopbackKey(), untrusted, "an untrusted peer's header is never read"));
+    }
+
+    @ParameterizedTest(name = "[{0}]")
+    @ValueSource(strings = {"", "not-an-address", "999.0.0.1", "unknown"})
+    @DisplayName("a trusted proxy's request whose forwarding header names no client is keyed on the unknown source")
+    void trustedProxyRequestWithoutAClientIsKeyedOnTheUnknownSource(String forwardedFor) throws Exception {
+        gate(EnumerationDetectionConfig.defaults(), List.of(LoopbackHost.ADDRESS + "/32"));
+
+        Response response = send(Map.of(FORWARDED_FOR, forwardedFor));
+
+        assertAll("never the proxy's own address",
+                () -> assertEquals(200, response.status(), "the request is passed on"),
+                () -> assertEquals(new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST), stashed.get()));
+    }
+
+    @Test
+    @DisplayName("a trusted proxy's request with no forwarding header is keyed on the unknown source")
+    void trustedProxyRequestWithoutAHeaderIsKeyedOnTheUnknownSource() throws Exception {
+        gate(EnumerationDetectionConfig.defaults(), List.of(LoopbackHost.ADDRESS + "/32"));
+
+        send();
+
+        assertEquals(new SourceKey(SourceKey.UNKNOWN_SOURCE, SourceKey.UNDECLARED_HOST), stashed.get(),
+                "the proxy's own address is never the key");
+    }
+
     @ParameterizedTest(name = "{0}")
     @EnumSource(EnumerationDetectionConfig.Action.class)
     @DisplayName("every configured action maps onto the ledger action of the same name")
@@ -315,11 +357,16 @@ class SourceGateTest {
     }
 
     private SourceGate gate(EnumerationDetectionConfig config) {
+        return gate(config, List.of());
+    }
+
+    /** The gate with the given trusted proxies, the resolver configured as the forward stage's. */
+    private SourceGate gate(EnumerationDetectionConfig config, List<String> trustedProxies) {
         ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
-                ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                ForwardedResolverConfig.builder().trustedProxies(Set.copyOf(trustedProxies))
                         .securityConfig(SecurityConfiguration.defaults()).build(),
                 new SecurityEventCounter());
-        SourceGate built = new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()),
+        SourceGate built = new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(trustedProxies),
                 forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry), new GatewayJson(new ObjectMapper()),
                 exhaustedShares::contains);
         gate.set(built);
@@ -348,8 +395,13 @@ class SourceGateTest {
     }
 
     private Response send() throws Exception {
+        return send(Map.of());
+    }
+
+    private Response send(Map<String, String> requestHeaders) throws Exception {
         RequestOptions options = new RequestOptions().setHost(LoopbackHost.ADDRESS)
                 .setPort(server.actualPort()).setURI("/probe");
+        requestHeaders.forEach(options::putHeader);
         CompletableFuture<Response> future = client.request(options)
                 .compose(HttpClientRequest::send)
                 .compose(response -> {
