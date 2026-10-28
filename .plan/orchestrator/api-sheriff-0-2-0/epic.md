@@ -163,6 +163,15 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-28 — `PLAN-V02-09` landed as #530 (`0114065c`, ADR-0074); analyzed.** Verified green on `main`: Maven Build,
+  Integration Tests, Config Validation, Demo Client E2E, Scorecard and the PR benchmark; issue #174 is closed. It decided the
+  config-mapping question as a hybrid: the extension's metrics collector now observes the gateway's `@GatewayValidator`
+  validator (JWT validation metrics are published), the extension's health probes stay excluded
+  (`quarkus.arc.exclude-types=de.cuioss.sheriff.token.quarkus.health.*`), and no projection onto `sheriff.token.issuers.*` was
+  built. ADR-0074 supersedes ADR-0027; ADR-0032, ADR-0041 and ADR-0050 were amended in place. `oidc_discovery` is a separate
+  readiness datum that never changes the verdict. The BOM comment in `pom.xml` was re-measured at token-sheriff 0.9.8. Residue
+  went to `PLAN-V02-48` D12 (three statements and one ADR record no ADR holds yet) and `PLAN-V02-49` D3 (one weak test). The
+  pre-commit gate rewrote about 400 files on every run: see the Watch. Two slots are free; V02-50 runs.
 - **2026-10-27 — free slot held again.** After `PLAN-V02-05` landed, V02-11 was the only eligible plan (gate: 15 shared files with V02-50, 4 with V02-09); the operator chose to hold it. Nothing was emitted.
 - **2026-10-27 — `PLAN-V02-05` landed as #526; analyzed.** Verified: Maven Build, Config Validation, Demo Client E2E and
   Scorecard, Integration Tests (40551758384) and the PR benchmark (40551763060) green on `main` at `be7034ac`. Shipped: the
@@ -480,6 +489,11 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
+- **PRE-COMMIT GATE REWRITES ABOUT 400 FILES (IMPORT SPACING) — UNVERIFIED, NO OWNER** (added 2026-10-28, inbox
+  `plan-v02-09-token-sheriff-integration-fidelity-002`). The memory records the churn as fixed by #415; `PLAN-V02-09` saw it on
+  every `verify -Ppre-commit` run in its worktree and reverted it each time, and OpenRewrite also put a `TODO` marker on a
+  catch block that records an error and rethrows it. Not reproduced by the orchestrator. Check it on a clean `main` worktree
+  before the next plan that runs the gate; if it reproduces, stage a fix plan.
 - **HAND-MAINTAINED INVENTORIES NOT BOUND BY A TEST — NO OWNER** (added 2026-10-27, inbox
   `plan-v02-05-response-hygiene-012`). `DocumentedHeaderSetsContractTest` binds the identity set and both protocol tiers to
   their constants. The route-field inventory (`doc/configuration.adoc`, `endpoint.schema.json`) and the never-forward and

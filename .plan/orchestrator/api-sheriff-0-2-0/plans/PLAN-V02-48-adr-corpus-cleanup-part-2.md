@@ -49,7 +49,7 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
    skeleton rewrite. About 75 files reference this group, so rewrite in place and keep every anchor and ordinal.
 6. **Token validation.** `0022` relocates to `doc/technical_aspects.adoc` (a section on adopting upstream
    security-default changes); about 15 files reference it, `0011` A1 among them. `0063` is kept. **`0027` is not
-   touched:** `PLAN-V02-09` re-examines it.
+   touched:** it is `Superseded` by `0074` (shipped by `PLAN-V02-09`, #530).
 7. **Release and image.** `0034` (superseded by `0035`, marked), `0035`, `0039`, `0042`, `0070`. `0035`: flip
    Proposed to Accepted only after confirming the shipped `.github/workflows/release.yml` implements it.
    `PLAN-V02-04` repointed only `0039`'s `0031` mention.
@@ -76,8 +76,8 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
 11. **Report.** Before and after line count per record, plus corpus total and mean before and after, as
     `PLAN-V02-04` did. The ceiling stays enforced by `AdrRecordLengthContractTest`; the plan changes no ceiling.
     The corpus stood at 65 records, 15,289 lines and a mean of 235 per file on `main` at `f5826465`; `0072` (new in
-    #527, Accepted, 226 lines) and `0073` (new in #528, Accepted) are outside the 52 and make it 67 records on `main`
-    at `c957ee51`. Measure the before figure from the branch base, count both in both totals, and say so. The early records average about 136. Say where the
+    #527, Accepted, 226 lines) and `0073` (new in #528, Accepted) are outside the 52 and and `0074` (new in #530, Accepted) are outside the 52 and make it 68 records on `main`
+    at `0114065c`. Measure the before figure from the branch base, count all three in both totals, and say so. The early records average about 136. Say where the
     result lands against that and why.
 12. **Documentation residue of `PLAN-V02-04`.** Four statements outside `doc/adr/` that the WebSocket pre-upgrade
     end-rule fix or the rebase left untrue. Re-read each at outline; one that no longer holds is dropped. (The two
@@ -87,9 +87,17 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
     lists every parity condition, but the list omits the shared auth realm and tokens. `doc/development/bff-session.adoc`
     (near line 302) credits the native-image residual verdict to entry 3 only; its EC key-generation part is verified
     in entry 4. The `ResponseEnds` Javadoc names the failed-dial answer only; add the relayed upgrade refusal.
+    Three more come from #530 (code-review advisories shipped unfixed; re-read each at outline): the `BffRuntimeProducer`
+    `memoize` Javadoc says the delegate runs at most once although it retries after a failure; a stale comment in
+    `DefaultProfileReadinessTest`; and the metric-category list in `doc/architecture.adoc` has no mechanical tie to the
+    library's `EventCategory` now that `MetricsIT` derives its labels from it (bind it with a contract test, as
+    `DocumentedHeaderSetsContractTest` does for the header sets). Last, and first to drop at the cut line: `adr-propose`
+    found one decision no record holds, that a failed OIDC provider-metadata resolution is reported as a separate
+    readiness datum (`oidc_discovery`), read from a non-fetching view and never a `DOWN` verdict. The behaviour is in
+    `doc/architecture.adoc` and `doc/configuration.adoc` but not in an ADR; write one record, ordinal derived at write time.
 
 Split guard: 12 deliverables, one PR (the 12 the operator authorised per plan). The footprint is the 52
-rewrites, deliverable 12 (three documentation files and one Javadoc), plus the repointed files of three decisions: the `0022` relocation (about 15 files), the `0030` relocation
+rewrites, deliverable 12 (three documentation files, one Javadoc with its two companions, and at most one new record), plus the repointed files of three decisions: the `0022` relocation (about 15 files), the `0030` relocation
 (5) and the `0036`/`0047` merge (about 18). That sums to about 90 files against the 100-file review-bot cap. Measure
 the projection at outline. If it exceeds 90 files, deliverables 1, 6 and 8 carry the repoint-heavy decisions: cut
 there, ship the rest, and report the remainder to the orchestrator as a finding so a successor can be staged.
@@ -98,7 +106,7 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 
 - **Records amended by recent plans keep their content.** #527 amended `0058`; #528 amended `0007`, `0016`, `0023`,
   `0037`, `0049`, `0055` and `0059` with the uniform-`404` rule (ADR-0073); #526 amended `0008` and `0037` for the identity-header
-  strip and the `not_modified` close. Rewrite each to the skeleton and state the
+  strip and the `not_modified` close; #530 amended `0032`, `0041` and `0050` after superseding `0027` with `0074`. Rewrite each to the skeleton and state the
   amended rule as current fact, with no amendment marker or history. Re-read each against `main` at outline.
 - **No production behaviour change.** If the audit finds an ADR that contradicts shipped behaviour, report it: the
   ADR is corrected, the code is not.
@@ -126,9 +134,9 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
   - verdict: corroborated | checked_at: e087e5cec0ac2a48443e5df02882163bd38ecd53 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: adr-writing.adoc is 385 lines on main; AdrRecordLengthContractTest has MAX_BODY_LINES = 500 and a fixture control at 500 and 501
 - HYPOTHESIS: the verdict table of `PLAN-V02-04` deliverable 2 holds for every record named above — read it in the
   #521 body; refutation per record re-scopes that record (verify-at-outline)
-- OBSERVED: `doc/adr/` holds 67 records on `main` at `c957ee51` (the 65 left by #521 plus `0072` and `0073`, both Accepted), and
-  `0027-*` is Proposed and owned by `PLAN-V02-09` — `git ls-tree --name-only origin/main doc/adr/`
-  - verdict: corroborated | checked_at: c957ee513126fe929dd5b3266212fdb3159f7a3b | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: git ls-tree on origin/main doc/adr/ lists 67 records; 0027 Proposed, 0058 0072 0073 Accepted
+- OBSERVED: `doc/adr/` holds 68 records on `main` at `0114065c` (the 65 left by #521 plus `0072`, `0073` and `0074`, all Accepted), and
+  `0027-*` is Superseded by `0074` — `git ls-tree --name-only origin/main doc/adr/`
+  - verdict: corroborated | checked_at: 0114065c3f9c75cbc85f2f7772e7dec8b5a1ec71 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: git ls-tree on origin/main doc/adr/ lists 68 records; 0027 is Superseded by 0074; 0058 0072 0073 0074 Accepted
 - OBSERVED: the destinations `doc/technical_aspects.adoc`, `doc/configuration.adoc`,
   `doc/development/README.adoc`, `doc/development/test-corpus-integrity.adoc` and `doc/user/tls-edge.adoc` exist on
   `main` at `6b8d88f4`
@@ -157,11 +165,11 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
 
 - Depends on: `PLAN-V02-04` merged (#521, `f5826465`, done). It delivers the rubric, the skeleton, the term list and
   the ceiling guard this plan applies.
-- **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-07`, `PLAN-V02-09` (re-opens `0027`), `PLAN-V02-11` and `PLAN-V02-50` (`PLAN-V02-20`, `PLAN-V02-06` and
+- **Not concurrent with any plan that authors or re-opens an ADR:** `PLAN-V02-07`, `PLAN-V02-11` and `PLAN-V02-50` (`PLAN-V02-20`, `PLAN-V02-06`, `PLAN-V02-09` and
   `PLAN-V02-05` landed as #527, #528 and #526).
   A relocation or merge here moves the ground under a record being written there, and the ceiling guard fails a
   concurrent plan that lands an over-long record.
-- `PLAN-V02-09` re-examines `0027`; kidicap `PLAN-29` D6 owns `0008`'s timeout sentence. Neither is settled here.
+- Kidicap `PLAN-29` D6 owns `0008`'s timeout sentence; it is not settled here.
 - Merges and relocations break links in released versions' documentation. Report every removed or merged record
   with its replacement so the break is traceable.
 
