@@ -2,9 +2,9 @@
   "id": "PLAN-V02-11",
   "slug": "resource-exhaustion-test-home",
   "workstream": "WS-05",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-11-resource-exhaustion-test-home",
-  "pr": "",
-  "landing": "",
+  "pr": "534",
+  "landing": "landings/PLAN-V02-11.md",
   "seq": 11
 }

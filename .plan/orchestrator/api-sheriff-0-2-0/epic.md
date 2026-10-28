@@ -163,6 +163,13 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-28 — `PLAN-V02-11` landed (#534, `c1ded6c1`); Open Defects 14, 7 and 9 staged as `PLAN-V02-51`.** ADR-0075 adopted
+  Open Defect 6 (narrowed, now resolved) and declined 14 (#201), 7 and 9, so the ledger's routing of them to V02-11 left them
+  ownerless. Asked the operator; answer: **stage one plan for all three** (options were a #201-only plan, record-only, close 14
+  as a refuted premise). `PLAN-V02-51 lane-conditional-guards`, WS-05, staged, lane `plan-marshall`; D1 settles #201 with runs
+  (fix on fail-open, lane guard on misconfiguration, report if neither), D2 guards the k6 consumers of the shared
+  `gateway.yaml`, D3 extends `LogMessagesCatalogueTest` past one module. Surface `declarative`, 12 entries; overlaps V02-50 on
+  `integration-tests/**`. #201 was NOT closed on the exclusion comment alone.
 - **2026-10-28 — `PLAN-V02-11` is running** (operator confirmed the start); with `PLAN-V02-50` two of three slots are taken.
 - **2026-10-28 — emitted `PLAN-V02-11` into a free slot.** Overlap prompt answered "Emit V02-11" (gate: 15 shared files with
   V02-50, 4 with the now-landed V02-09). The row is `launched`; `launched → running` stays with the operator. The spec gained
@@ -440,7 +447,11 @@ doc-only or build-light plan for the second and third slots.
     as long as the `-Pjfr` lane was unrunnable**. **This one must not sit unowned**: it is fail-open
     behaviour on a security control. Candidate homes: `PLAN-V02-11` (which owns the *what are the
     test lanes for* question and now has a concrete instance to answer it with) or `PLAN-V02-10`
-    (per-client TLS trust). **HOME DECIDED 2026-08-09: `PLAN-V02-11`.** Its question is *which lane owns which defect class*,
+    (per-client TLS trust). **HOME DECIDED 2026-08-09: `PLAN-V02-11`; MOVED 2026-10-28 to `PLAN-V02-51` D1** — ADR-0075 (#534) declined it
+    ("neither detected nor fixed"), and the operator ruled one plan owns 14, 7 and 9. Issue #201 is still OPEN. The `jfr` profile's
+    exclusion comment in `integration-tests/pom.xml` (since #282) reads as a lane misconfiguration and not a gateway fail-open, but
+    nobody has run the test against `api-sheriff-mtls`; V02-51 D1 settles it with three runs per lane before closing or fixing.
+    Original reasoning for the earlier home: its question is *which lane owns which defect class*,
     and #201 is a defect **invisible in one lane and visible in another** — the first
     lane-conditional instance beside its two time-or-volume-conditional ones, and therefore new
     information for that decision rather than extra scope. **It is admissible as D2's demonstrated
@@ -472,14 +483,19 @@ doc-only or build-light plan for the second and third slots.
    fixed. Not strikeable on sight: it carries independently CI-observed defects and a deferral
    transmitted to a public PR thread. **Re-verify against the landed PLAN-42 work before striking** —
    PLAN-34's D4/D5 left in the 2026-08-02 three-way split and PLAN-42 shipped both, so the gap may be
-   narrower than this entry says. Read the landed code, not the split decision. Home: `PLAN-V02-11`.
+   narrower than this entry says. Read the landed code, not the split decision. **RESOLVED 2026-10-28 by `PLAN-V02-11` (#534,
+   `c1ded6c1`, ADR-0075):** the gating detector already existed (`WebSocketProxyIT#sequentialRelaysReturnTheirAdmissionPermitsAtTeardown`
+   on `api-sheriff-ws-admission`); what was missing was a demonstrated failure, which two committed negative controls now supply
+   (relay sub-budget and general admission budget). Residue: the general-admission control cannot wait for gateway-side
+   admission (Watch). Strike at the next compaction.
 7. **STRUCTURAL, an open operator decision never taken** — the k6 benchmark scripts are an unguarded
    consumer of gateway posture. `docker-compose.benchmark.yml` overlays the base compose and mounts
    the same `./src/main/docker/sheriff-config`, so the benchmark and the IT suite share one
    `gateway.yaml`. A plan changing gateway behaviour updates the IT suite in lockstep, but nothing
    requires it to update the k6 scripts. **The general shape, and it will recur**: a behavioural
    default flip is the class where "we updated the tests" hides "we did not update the other
-   consumers". Enumerate the consumers of a default, not just its tests. Home: `PLAN-V02-11`.
+   consumers". Enumerate the consumers of a default, not just its tests. Home: `PLAN-V02-11` until 2026-10-28, when ADR-0075
+   declined it; **now `PLAN-V02-51` D2**.
 8. **Unverified Sonar claim** — PLAN-06's uncorroborated Sonar claim is still unverified with no
    recovered evidence, and needs an **operator live-gate check** rather than plan work. Carried
    rather than closed because "we could not recover the evidence" is not "the claim was false", and
@@ -491,10 +507,25 @@ doc-only or build-light plan for the second and third slots.
    machine-protected against a duplicate id. **The generalisable shape: a guard anchored on one
    module's protection domain silently excludes every other module, and its green is
    indistinguishable from coverage.** When adopting it, check whether the fix generalises to every
-   module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
+   module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11` until 2026-10-28, when ADR-0075
+   declined it; **now `PLAN-V02-51` D3**.
 
 ## Watches
 
+- **POST-MERGE RUNS FOR `PLAN-V02-11` UNVERIFIED** (added 2026-10-28, landing `PLAN-V02-11`). At 20:49 UTC the `main` Integration
+  Tests run (40764480569) and the PR-attached Performance Benchmark run (40764486714) for `c1ded6c1` were still `in_progress`;
+  Maven Build (incl. `deploy-snapshot`), Demo Client E2E and Scorecard were green. Retire this Watch once both finish green; a red
+  Integration Tests run is a defect against #534.
+- **LOW-BUDGET FIXTURE HEADER OVERSTATES ITS FIDELITY** (added 2026-10-28, inbox
+  `plan-v02-11-resource-exhaustion-test-home-001` item 1). `integration-tests/src/main/docker/sheriff-config-ws-admission/gateway.yaml`
+  says the overlay differs from the primary `gateway.yaml` in "exactly two" things; it also lacks
+  `allow_get_with_content_length_body: true` and the TLS `min_version` / `cipher_suites` pins. ADR-0075 was corrected; the comment
+  was not. Comment fix only, no owner; fold into the next plan touching `integration-tests/src/main/docker/**`.
+- **GENERAL-ADMISSION NEGATIVE CONTROL CANNOT WAIT FOR GATEWAY-SIDE ADMISSION** (added 2026-10-28, same message, item 2). The
+  control counts a held request once the client subscribed to the withheld body; nothing confirms `EdgeAdmission.tryAdmit()` ran.
+  The race can only fail the control loudly, never pass it vacuously (accepted on #534). If it flakes, the fix is an in-flight
+  admission gauge on the management interface, a production change needing its own plan. Watch for a flake in
+  `WebSocketProxyIT`; the `EdgeAdmission` area is shared with `PLAN-V02-50`.
 - **PRE-COMMIT GATE REWRITES ABOUT 400 FILES (IMPORT SPACING) — UNVERIFIED, NO OWNER** (added 2026-10-28, inbox
   `plan-v02-09-token-sheriff-integration-fidelity-002`). The memory records the churn as fixed by #415; `PLAN-V02-09` saw it on
   every `verify -Ppre-commit` run in its worktree and reverted it each time, and OpenRewrite also put a `TODO` marker on a
