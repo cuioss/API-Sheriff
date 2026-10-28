@@ -163,11 +163,11 @@ Separate from the profile-gated filter, a stateless anti-request-smuggling *fram
 (`FramingGate`) runs once at stage 1, before route selection. It rejects five desync and framing
 vectors with `400`:
 
-. `Content-Length` + `Transfer-Encoding` coexistence (including duplicated or comma-listed
-  `Content-Length`);
+. `Content-Length` + `Transfer-Encoding` coexistence;
 
-. a single `Content-Length` value that is not strictly decimal ASCII digits (`1*DIGIT` -- rejecting
-  empty, signed, whitespace-padded, hex or non-ASCII values) or overflows `long`;
+. a `Content-Length` that is repeated or comma-listed, with or without `Transfer-Encoding`, or a
+  single value that is not strictly decimal ASCII digits (`1*DIGIT` -- rejecting empty, signed,
+  whitespace-padded, hex or non-ASCII values) or overflows `long`;
 
 . a `Transfer-Encoding` that is repeated or is not exactly `chunked`;
 . a body on a bodyless method (`GET` or `HEAD`);

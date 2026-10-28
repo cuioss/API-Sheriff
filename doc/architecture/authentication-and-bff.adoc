@@ -116,7 +116,7 @@ trusted or stored.
 [[_bff_session_runtime]]
 == BFF Runtime (Edge Wiring)
 
-The BFF realizes its side of the seam as four framework-agnostic pieces (recorded in
+The BFF realizes its side of the seam as four pieces, one of them CDI-bound (recorded in
 link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]
 and
 link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_the_cookie-header_length_relaxation_is_gateway-wide.adoc[ADR-0019]):
@@ -132,12 +132,11 @@ link:../adr/0019-Reserved_BFF_paths_bypass_the_url-parameter_value_pipeline_and_
   not during it]). A `require: session` route is mediated by `SessionAuthenticationStage`, injecting
   the access token upstream unless `auth.token_relay: false`.
 
-* *Reserved-path registry + live-edge dispatch.* `ReservedPathRegistry` matches up to eight
-  gateway-owned OIDC paths (callback, logout, logout-return, back-channel logout, user-info,
-  login-initiation, step-up, client JWKS) by *exact* path match before the proxy route table is
-  consulted. The six browser-facing paths require the request host to match the OIDC host;
-  back-channel logout and the client JWKS path match on every host because the identity provider
-  dials them server-to-server
+* *Reserved-path registry + live-edge dispatch.* `ReservedPathRegistry` matches the gateway-owned
+  OIDC endpoints defined in `ReservedPathRegistry.ReservedEndpoint` (`pathsOf(...)`) by *exact* path
+  match before the proxy route table is consulted. Browser-facing endpoints require the request host
+  to match the OIDC host; `BACKCHANNEL_LOGOUT` and `CLIENT_JWKS` (`MATCHED_ON_EVERY_HOST`) match on
+  every host because the identity provider dials them server-to-server
   (link:../adr/0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc#backchannel-host[ADR-0018],
   link:../adr/0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058]).
   An `oidc` block with a `redirect_uri` reserves `/bff/jwks` by default when undeclared: in key mode

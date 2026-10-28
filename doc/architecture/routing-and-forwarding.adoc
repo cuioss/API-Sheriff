@@ -215,10 +215,13 @@ gRPC trailers-only rejections) and WebSocket relays apply both maps.
 
 *`Location` rewrite in the relay.* A proxy route with `upstream.rewrite_location: true` carries a
 boot-built `LocationRewriter`. Before copying upstream response headers, the HTTP relay rewrites an
-upstream `Location` whose path-absolute value (or absolute URI matching the route upstream's own
-scheme, host and effective port) lies inside the effective upstream base path (alias base path +
-`upstream.path`) on a segment boundary onto the route's match key as a gateway-relative path with
-query and fragment preserved. Foreign origins, scheme-relative `//host`, unparseable values, paths
-outside the base path, and paths containing dot segments or ambiguous separators (`\`, `%2f`, `%5c`
-in either case) are relayed unchanged (see link:../security-threat-model.adoc#gw-13[GW-13]). The
-gRPC relay never rewrites `Location`.
+upstream `Location` whose path-absolute value (or absolute URI with no user-info matching the route
+upstream's own scheme, host and effective port) lies inside the effective upstream base path (alias
+base path + `upstream.path`) on a segment boundary onto the route's match key as a gateway-relative
+path with query and fragment preserved (on an exact `match.path` route, only when the rewritten path
+equals the exact match key itself). Foreign origins, absolute URIs carrying user-info,
+scheme-relative `//host`, relative-path or empty-path references (`?query`, `#fragment`, empty),
+unparseable values, paths outside the base path (or not equal to an exact route's match key), and
+paths containing dot segments or ambiguous separators (`\`, `%2f`, `%5c` in either case) are relayed
+unchanged (see link:../security-threat-model.adoc#gw-13[GW-13]). The gRPC relay never rewrites
+`Location`.

@@ -1828,7 +1828,7 @@ below exactly as an anchor or route block is. The block maps onto `cui-http`'s
   streams is raised after dispatch and stays.
 
 | `max_header_count` / `max_query_params`
-| `maxHeaderCount` / `maxParameterCount` (`RequestCollectionValidator`)
+| `maxHeaderCount` / `maxParameterCount` (`SecurityConfiguration`; enforced in `BasicChecksStage`)
 | Hash-collision / resource-exhaustion guards.
 
 | `max_header_value_length` / `max_param_value_length`
@@ -1890,14 +1890,15 @@ differs from it only in the two content block-lists, which are not limits.
 | 1024
 | 8192
 
-| parameter / header / cookie *name* length
+| parameter / header *name* length
 | 64
 | 256
-
-| cookie value length / cookie count
-| 1024 / 10
-| 8192 / 50
 |===
+
+(`SecurityConfiguration` also carries `maxCookieNameLength`, `maxCookieValueLength` and
+`maxCookieCount`, which are not wired by the gateway's inbound filter; `Cookie` and `Set-Cookie`
+headers are validated as header values under `maxHeaderValueLength` and the cookie-mode carve-out
+below.)
 
 All length limits are measured in *characters* -- the `cui-http` unit -- not bytes. The presets also
 differ in their non-length validators: `strict` normalizes Unicode, fails on suspicious patterns, and

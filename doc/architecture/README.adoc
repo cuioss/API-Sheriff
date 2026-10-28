@@ -72,9 +72,11 @@ terminal actions.
 === Request Pipeline Stages
 
 The fixed per-request order the edge (`GatewayEdgeRoute`) runs on a virtual thread. A rejection at
-any stage is rendered immediately (RFC 9457 `application/problem+json`, or trailers-only on a gRPC
-route) and nothing after it runs. A rejection raised between stage 2 and the trust boundary in
-stage 4 is rendered to an untrusted caller as the unrouted `404` instead
+any stage halts the pipeline (nothing after it runs) and renders an RFC 9457
+`application/problem+json` response (or trailers-only on a post-trust gRPC route), subject to the
+HTTP/2 open-body drain/reset rule and the uniform-`404` response-timing floor. A rejection raised
+between stage 2 and the trust boundary in stage 4 is rendered to an untrusted caller as the unrouted
+`404` instead
 (link:observability-and-errors.adoc#_trust_boundary_rejections[Rejections before the trust boundary]):
 
 [cols="1,2,4", options="header"]
@@ -141,16 +143,17 @@ stage 4 is rendered to an untrusted caller as the unrouted `404` instead
 Three checks sit between stage 1 and route selection (stage 2). After the stage-1 short-circuit
 check, the Host-vs-SNI smuggle guard rejects before route selection
 (link:tls-and-inbound-security.adoc#_tls_edge_accept_time_sni_split[TLS Edge]). Then the gateway's
-reserved paths are answered: first the reserved OIDC paths, matched exactly
-(link:authentication-and-bff.adoc#_bff_session_runtime[BFF runtime]), and then the application
-portal's `portal.path`, matched exactly on *any* host (<<_application_portal>>). Six of the eight
-reserved OIDC paths are matched on the OIDC host only; the back-channel logout path and the client
-JWKS path are matched on every host, because the identity provider dials them server-to-server. A
-prefix route covering `portal.path` or either all-host OIDC path never sees a request for it on any
-host; a prefix route covering one of the six host-gated OIDC paths never sees a request for it on
-the OIDC host, while the same path on another host reaches route selection. All three answer before
-stage 2a, so they carry the global security-header block. The portal additionally replaces
-`Content-Security-Policy` and `X-Content-Type-Options` with its own fixed values.
+reserved paths are answered: first the reserved OIDC paths (`ReservedPathRegistry.ReservedEndpoint`),
+matched exactly (link:authentication-and-bff.adoc#_bff_session_runtime[BFF runtime]), and then the
+application portal's `portal.path`, matched exactly on *any* host (<<_application_portal>>).
+Browser-facing reserved OIDC paths are matched on the OIDC host only; the back-channel logout path
+and the client JWKS path (`MATCHED_ON_EVERY_HOST`) are matched on every host, because the identity
+provider dials them server-to-server. A prefix route covering `portal.path` or either all-host OIDC
+path never sees a request for it on any host; a prefix route covering one of the host-gated OIDC
+paths never sees a request for it on the OIDC host, while the same path on another host reaches
+route selection. All three answer before stage 2a, so they carry the global security-header block.
+The portal additionally replaces `Content-Security-Policy` and `X-Content-Type-Options` with its own
+fixed values.
 
 The authentication stage is where the three variants differ: offline bearer validation
 (link:../variants/01-base-gateway.adoc[Variant 1]), OIDC session mediation

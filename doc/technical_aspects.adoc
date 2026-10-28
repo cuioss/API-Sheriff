@@ -84,7 +84,7 @@ pipeline orders them differently, and the order is deliberate:
 * *Header*: length -> character -> normalize -> pattern -> allow/block list -- *no decoding
   stage at all* (header values are not percent-encoded).
 
-Configuration via `SecurityConfiguration` with sensible defaults (path length 4096, parameter count 100, header count 50, cookie count 20, body size 5 MB).
+Configuration via `SecurityConfiguration` with sensible defaults (path length 4096, parameter count 100, header count 50, body size 5 MB).
 
 === Forwarded-Header Resolution
 

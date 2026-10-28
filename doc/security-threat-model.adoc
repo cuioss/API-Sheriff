@@ -56,8 +56,9 @@ two identity-provider back-channels through (see <<gw-06>>).
 canonicalization returning a *normalized* path (`URLPathValidationPipeline` -- decodes
 percent-encoding, collapses `..`/dot-segments and duplicate slashes, rejects
 traversal/`%00`/overlong/backslash *unconditionally*); header name/value CR/LF/NUL rejection
-(`CharacterValidationStage`, unconditional); collection count + length limits
-(`RequestCollectionValidator`, `LengthValidationStage`); the forwarded-header trust engine
+(`CharacterValidationStage`, unconditional); length limits (`LengthValidationStage`) and
+collection-count configuration (`SecurityConfiguration.maxParameterCount` / `maxHeaderCount`,
+enforced by the gateway's `BasicChecksStage`); the forwarded-header trust engine
 (`ForwardedHeaderResolver` -- CIDR-validated `trustedProxies`, right-to-left drop-untrusted,
 per-value sanitization, canonical `X-Forwarded-*`/RFC 7239 regeneration, NiFi aliases); the
 shared `SecurityEventCounter`; and reusable attack corpora (OWASP/ZAP/ModSec-CRS/Apache/Nginx/

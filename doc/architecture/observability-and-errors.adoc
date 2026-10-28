@@ -31,8 +31,8 @@ that feeds metrics and error mapping without an external broker:
      `PARAMETER_LIMIT_EXCEEDED`, `CONTENT_TOO_LARGE`, `RESERVED_BODY_TOO_LARGE`,
      `INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`
   ** `ROUTING`: `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED`, `METHOD_NOT_ALLOWED`
-  ** `AUTHENTICATION`: `TOKEN_MISSING`, `TOKEN_INVALID`
-  ** `AUTHORIZATION`: `SCOPE_MISSING`, `CSRF_REJECTED`
+  ** `AUTHENTICATION`: `TOKEN_MISSING`, `TOKEN_INVALID`, `LOGOUT_TOKEN_INVALID`
+  ** `AUTHORIZATION`: `SCOPE_MISSING`, `CSRF_REJECTED`, `WEBSOCKET_ORIGIN_REJECTED`
   ** `UPSTREAM`: `UPSTREAM_ERROR`, `UPSTREAM_TIMEOUT`, `UPSTREAM_CIRCUIT_OPEN`
 
 * Each category carries one slug (`input-validation`, `routing`, `authentication`, `authorization`,
@@ -48,11 +48,14 @@ Prometheus metrics (<<_metrics>>).
 [[_error_contract]]
 == Error Contract
 
-Every gateway-generated rejection is an `application/problem+json` (RFC 9457) response naming the
-category without leaking internal detail, with two exceptions: rejections on a `protocol: grpc`
-route after the trust boundary are trailers-only gRPC responses (<<_grpc_error_contract>>), and
-browser navigations receive a negotiated HTML error page when `portal.error_pages: true`
-(<<_html_error_pages>>).
+Every gateway-generated rejection rendered through `ErrorResponseWriter` is an
+`application/problem+json` (RFC 9457) response naming the category without leaking internal detail,
+with three exceptions: rejections on a `protocol: grpc` route after the trust boundary are
+trailers-only gRPC responses (<<_grpc_error_contract>>), browser navigations receive a negotiated
+HTML error page when `portal.error_pages: true` (<<_html_error_pages>>), and pre-pipeline /
+transport-level bare-status rejections write a status with no body (the Vert.x body-floor `413`,
+edge admission / executor rejection / WebSocket session-relay tracking-cap `503` via
+`ResponseEnds.reject`, and direct reserved-path `404`/`405` answers).
 
 A rejection raised after route selection and before the trust boundary is rendered to the caller as
 the unrouted `404` while `security_defaults.uniform_not_found` is on, the shipped default
@@ -68,11 +71,12 @@ where the uniform-`404` rule applies:
   on a bodyless method or beyond declared length -- see
   link:tls-and-inbound-security.adoc#_dispatch_body_framing[Dispatch body framing]); proxied request
   body failing after dispatch (`INBOUND_BODY_ABORTED`, see
-  link:tls-and-inbound-security.adoc#_aborted_inbound_body[Aborted inbound body]). Route-scoped
+  link:tls-and-inbound-security.adoc#_aborted_inbound_body[Aborted inbound body]); or a rejected
+  back-channel logout token (`LOGOUT_TOKEN_INVALID`, `AUTHENTICATION`). Route-scoped
   `allowed_paths` and post-route security-filter `400`s render as the unrouted `404` before the
-  trust boundary (<<_trust_boundary_rejections>>); pre-route floor and framing-gate `400`s stay
-  `400`.
-| `INPUT_VALIDATION`
+  trust boundary (<<_trust_boundary_rejections>>); pre-route floor, framing-gate and back-channel
+  logout `400`s stay `400`.
+| `INPUT_VALIDATION` (`AUTHENTICATION` for `LOGOUT_TOKEN_INVALID`)
 
 | `401`
 | Missing/invalid bearer token; invalid or expired session on a non-navigation request
@@ -90,9 +94,11 @@ where the uniform-`404` rule applies:
   redirect `302` to session widening -- see
   link:authentication-and-bff.adoc#_scope_enforcement[Scope Enforcement]); failed CSRF or
   cookie-forwarding same-origin check (see
-  link:routing-and-forwarding.adoc#_cookie_origin_check[Same-origin check]). CSRF `403`s run before
-  authentication and render as the unrouted `404` while `security_defaults.uniform_not_found` is on;
-  post-trust scope `403`s stay `403`.
+  link:routing-and-forwarding.adoc#_cookie_origin_check[Same-origin check]); or a WebSocket upgrade
+  whose `Origin` is absent or not in `allowed_origins` (`WEBSOCKET_ORIGIN_REJECTED`). CSRF `403`s
+  run before authentication and render as the unrouted `404` while
+  `security_defaults.uniform_not_found` is on; post-trust scope and WebSocket origin `403`s stay
+  `403`.
 | `AUTHORIZATION`
 
 | `404`
@@ -140,9 +146,10 @@ where the uniform-`404` rule applies:
 
 | `503`
 | Circuit breaker open (`UPSTREAM_CIRCUIT_OPEN`, carrying `Retry-After: 5`; see
-  link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]),
-  or edge admission cap reached.
-| `UPSTREAM`
+  link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]).
+  Edge admission cap, virtual-thread executor rejection, and WebSocket session-relay tracking-cap
+  exhaustion write a bare `503` directly via `ResponseEnds.reject` with no `EventType` (`--`).
+| `UPSTREAM` (`--` for bare `ResponseEnds.reject`)
 
 | `504`
 | Upstream dispatch timeout (the upstream guard's fixed 30 s head timeout, `UPSTREAM_TIMEOUT`).

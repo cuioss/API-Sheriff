@@ -24,12 +24,14 @@ The upstream client is split by plane (link:../adr/0008-data-plane-transport.ado
 
 * *Resilience -- SmallRye Fault Tolerance, programmatic.* One guard per upstream target and retry
   setting (`edge.assembly.ResilienceShape`), built at boot and invoked around the dispatch call in
-   the edge layer (no annotations or CDI interception on the hot path; the pre-boot configuration
-  model carries only `retry.enabled`, per
+  the edge layer (no annotations or CDI interception on the hot path; the pre-boot configuration
+  model carries `retry.enabled`, `retry.max_attempts`, and `retry.idempotent_only`; only
+  `retry.enabled` acts, while the other two remain bound and validated but unwired, per
   link:../adr/0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc#narrowed-pre-boot-rule[ADR-0062]).
-  Retry is *stream-aware*: on a route with `retry.enabled`, an attempt is retried only for an
-  idempotent method *and only when zero request-body bytes have been sent upstream* (no replay
-  buffer). The circuit breaker is fixed in the gateway
+  Retry is *stream-aware*: on a route with `retry.enabled`, the guard allows at most two retries
+  (`maxRetries(2)`, 100 ms delay) and retries an attempt only for an idempotent method *and only
+  when zero request-body bytes have been sent upstream* (no replay buffer). The circuit breaker is
+  fixed in the gateway
   (link:../adr/0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]):
   it evaluates a rolling window of the last 20 calls, opens at 50% failures, stays open for
   `BREAKER_RESET_SECONDS` = 5 s, and closes after two successful trial calls, emitting WARN
@@ -104,7 +106,9 @@ or a secondary-origin fetcher):
 * *Shared egress for upstream assets.* A `source: upstream` asset resolves its target through the
   same topology model as proxy routes, using a dedicated `UpstreamAssetSource` client with a scheme
   allowlist, `followRedirects(NEVER)`, a 5 s connect / 10 s read timeout, and a bounded response
-  byte cap (GW-05).
+  byte cap (GW-05; see
+  link:../adr/0014-asset-serving-terminal-action.adoc#_shipped_surface_reconciliation[ADR-0014 --
+  Shipped-surface reconciliation]).
 
 * *Directory index and fallback.* A `source: directory` action may declare an `index` file and a
   `fallback` file (for extensionless unknown paths); both re-enter the same path-confinement and
@@ -115,7 +119,8 @@ or a secondary-origin fetcher):
 
 The third terminal action
 (link:../adr/0014-asset-serving-terminal-action.adoc#amendment-a1[ADR-0014 Amendment A1]) answers
-the request at the gateway with a configured redirect status (`301`, `302`, `303`, `307` or `308`)
+the request at the gateway with the configured `redirect.status` (`3xx` status from the schema's
+closed redirect-status set; see link:../configuration.adoc#_redirect[Configuration -- `redirect`])
 and a `Location` header, never contacting an upstream.
 
 A redirect route runs the pipeline through stage 4 (authentication) and is answered immediately by

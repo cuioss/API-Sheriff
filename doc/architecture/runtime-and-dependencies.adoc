@@ -104,21 +104,21 @@ request-time work allocates minimally and touches no shared mutable per-request 
 `ResolvedForwarding`, validated `AccessTokenContent`, the matched `Route` reference, and streamed
 request/response bodies.
 
-*Security of shared objects.* Shared objects hold immutable configuration rather than client state,
-preventing cross-request bleed. The circuit breaker is the sole shared object with mutable state,
-tracking only per-node, per-resilience-shape aggregate failure counts and timers.
+*Security of shared objects.* Shared pipeline objects hold immutable configuration rather than
+per-request state, preventing cross-request bleed. Mutable shared state is confined to the upstream
+circuit breaker (per-node, per-resilience-shape aggregate failure counts and timers), the lock-free
+event counters (`GatewayEventCounter`, `SecurityEventCounter`), and, when the BFF is active, the
+bounded session, pending-authorization, replay-protection, and WebSocket session-relay stores.
 
 == Library Dependencies
 
-API Sheriff declares `token-sheriff-client`, `token-sheriff-client-quarkus`, and
-`token-sheriff-validation-quarkus` as direct dependencies, with versions managed by
-`token-sheriff-bom` via `version.token-sheriff` in the root `pom.xml` (`token-sheriff-validation`
-core arrives transitively through `token-sheriff-validation-quarkus`). The canonical
-concern/library/artifact mapping lives in
+Direct and transitive library dependencies are declared in `api-sheriff/pom.xml`, with versions
+managed by `cui-java-bom` and `token-sheriff-bom` (`version.token-sheriff`) in the root `pom.xml`.
+The single authoritative concern/library/artifact inventory lives in
 link:../technical_aspects.adoc#_library_summary[Technical Aspects -- Library Summary].
 
-NOTE: `token-sheriff-client` and `token-sheriff-client-quarkus` are exercised at runtime by the BFF
-variants only; a base-gateway deployment uses only the validation path. See
+NOTE: The `token-sheriff-client*` artifacts are exercised at runtime by the BFF variants only; a
+base-gateway deployment uses only the validation path. See
 link:authentication-and-bff.adoc#_authentication_layer[Authentication Layer] for the engine/BFF
 seam.
 
@@ -135,7 +135,8 @@ seam.
 * *Per-route `connect_timeout_ms`, `read_timeout_ms`, `retry.max_attempts`, `retry.idempotent_only`,
   and `rate_limit`.* `upstream.connect_timeout_ms`, `upstream.read_timeout_ms`,
   `upstream.retry.max_attempts`, and `upstream.retry.idempotent_only` are bound into configuration
-  records at startup but are not wired into the data-plane client or fault-tolerance guard (proxy
-  and gRPC dispatches use the guard's fixed 30 s head timeout and fixed single-retry idempotent-only
-  gate). The per-route `rate_limit` block is parsed and announced with `WARN ApiSheriff-140` at boot
-  but is not yet enforced at runtime.
+  records at startup and validated, but are not wired into the data-plane client or fault-tolerance
+  guard (proxy and gRPC dispatches use the guard's fixed 30 s head timeout and, when
+  `retry.enabled` is true, a fixed `maxRetries(2)` / 100 ms gate requiring an idempotent method and
+  zero forwarded request-body bytes). The per-route `rate_limit` block is parsed and announced with
+  `WARN ApiSheriff-140` at boot but is not yet enforced at runtime.
