@@ -2,9 +2,9 @@
   "id": "PLAN-V02-05",
   "slug": "response-hygiene",
   "workstream": "WS-03",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-05-response-hygiene",
-  "pr": "",
-  "landing": "",
+  "pr": "526",
+  "landing": "landings/PLAN-V02-05.md",
   "seq": 5
 }

@@ -2,9 +2,9 @@
   "id": "PLAN-V02-20",
   "slug": "cookie-key-file-model",
   "workstream": "WS-04",
-  "status": "running",
+  "status": "shipped",
   "plan_marshall_plan_id": "plan-v02-20-cookie-key-file-model",
-  "pr": "",
-  "landing": "",
+  "pr": "527",
+  "landing": "landings/PLAN-V02-20.md",
   "seq": 20
 }

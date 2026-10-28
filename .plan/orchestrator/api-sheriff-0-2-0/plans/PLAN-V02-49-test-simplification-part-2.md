@@ -53,6 +53,8 @@ machine): §2.4–2.8 and §6 list the findings. Re-derive every finding at outl
    - `WebSocketRelayStageTest.PreUpgradeFailureEnd` (added by `PLAN-V02-04`, #521) covers the failed upstream dial
      only. The relayed upstream upgrade refusal passes through the same `ResponseEnds.endResponse` seam and has no
      test. Add it, and show it red against a bare `response.end()`.
+   - `BffRuntimeProducerTest.theViewIsTheOneTheRuntimeRecordsInto` (added by #530; a code-review advisory) cannot fail
+     for the recording link it names. Make it fail when the link is cut, or remove it; show it red against the cut.
    - **GW-07 request body stays PARTIAL.** The operator held the public `dispatchGrpc` hand-over of the five-minute
      bound as the named residual. Do not close it and do not change the status paragraph.
 4. **Prove nothing was lost.** JaCoCo per class before and after is identical or higher for every touched class. The

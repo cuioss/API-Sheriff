@@ -54,6 +54,9 @@ found by inspection rather than by a gate.
 
    Derive the ADR ordinal from `doc/adr/` on the branch at write time, checking `main` and open
    branches; a duplicate ordinal fails the build.
+   Write the record to `doc/development/adr-writing.adoc` (skeleton, writing rule, term list);
+   `AdrRecordLengthContractTest` fails the build on a record body over 500 lines. Derive the ordinal again against
+   `origin/main` before the push: the next free one on `main` at `0114065c` is `0075`.
 
    **Say which of these adjacent open defects the plan adopts and which it declines** — the epic
    ledger routes them here and none is automatically in scope:

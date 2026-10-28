@@ -43,9 +43,10 @@ would otherwise force a retrofit.
 - **PLAN-V02-08** — SHIPPED 2026-10-02 as PR #377 (`e8db85bf`, code and ADR-0058) plus PR #378
   (`3a1182e5`, documentation), see `landings/PLAN-V02-08.md`. `PLAN-V02-12`, `PLAN-V02-09` and
   `PLAN-V02-15` no longer wait on it. Its held follow-up is staged as `PLAN-V02-20`.
-- **PLAN-V02-20** (staged 2026-10-03): the cookie sealing key provided as a file, like the two
-  signing keys. It writes the `oidc` block and `BffRuntimeProducer`, so it is never concurrent with
-  `PLAN-V02-12` or `PLAN-V02-09`.
+- **PLAN-V02-20** — SHIPPED 2026-10-26 as PR #527 (`6ec1393b`, ADR-0072), see `landings/PLAN-V02-20.md`. The cookie
+  sealing key is `oidc.session.key_file` (base64 text, 32 bytes, bounded read shared with the signing keys through
+  `KeyFiles`); `oidc.session.encryption_key` is gone. The boot refuses one key for both client authentication and DPoP
+  (ADR-0058 decision 2 amended). `PLAN-V02-12` and `PLAN-V02-09` no longer wait on it.
 - **PLAN-V02-13** — SHIPPED 2026-10-03 as PR #383 (`5ddf8081`, ADR-0059), see
   `landings/PLAN-V02-13.md`. `PLAN-V02-06` no longer waits on it; `PLAN-V02-07` now waits on
   `PLAN-V02-06` alone.
@@ -146,7 +147,7 @@ would otherwise force a retrofit.
 |---|---|---|
 | WS-01 | Architecture and Code Quality | PLAN-V02-01, PLAN-V02-02, PLAN-V02-14, PLAN-V02-16, PLAN-V02-24, PLAN-V02-25, PLAN-V02-26, PLAN-V02-27, PLAN-V02-28 and PLAN-V02-40 … PLAN-V02-43 (validator slices; V02-29 … -39 superseded), PLAN-V02-44, PLAN-V02-49 |
 | WS-02 | Documentation and Records | PLAN-V02-03, PLAN-V02-04, PLAN-V02-15, PLAN-V02-17, PLAN-V02-18, PLAN-V02-48 |
-| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23, PLAN-V02-45, PLAN-V02-46 |
+| WS-03 | Threat Hardening | PLAN-V02-05, PLAN-V02-06, PLAN-V02-07, PLAN-V02-13, PLAN-V02-23, PLAN-V02-45, PLAN-V02-46, PLAN-V02-50 |
 | WS-04 | OIDC Client Conformance | PLAN-V02-08, PLAN-V02-12 |
 | WS-05 | Integration and Test Fidelity | PLAN-V02-09, PLAN-V02-10, PLAN-V02-11 |
 
@@ -162,6 +163,61 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-28 — `PLAN-V02-11` is running** (operator confirmed the start); with `PLAN-V02-50` two of three slots are taken.
+- **2026-10-28 — emitted `PLAN-V02-11` into a free slot.** Overlap prompt answered "Emit V02-11" (gate: 15 shared files with
+  V02-50, 4 with the now-landed V02-09). The row is `launched`; `launched → running` stays with the operator. The spec gained
+  the ADR-writing guidance (`adr-writing.adoc`, the 500-line guard, next ordinal `0075`). The pre-commit gate churn stays a
+  Watch (operator: watch only). No other staged plan is eligible: V02-07 waits on V02-50, V02-48 may not run beside an
+  ADR-writing plan, V02-49 collides with both on tests.
+- **2026-10-28 — `PLAN-V02-09` landed as #530 (`0114065c`, ADR-0074); analyzed.** Verified green on `main`: Maven Build,
+  Integration Tests, Config Validation, Demo Client E2E, Scorecard and the PR benchmark; issue #174 is closed. It decided the
+  config-mapping question as a hybrid: the extension's metrics collector now observes the gateway's `@GatewayValidator`
+  validator (JWT validation metrics are published), the extension's health probes stay excluded
+  (`quarkus.arc.exclude-types=de.cuioss.sheriff.token.quarkus.health.*`), and no projection onto `sheriff.token.issuers.*` was
+  built. ADR-0074 supersedes ADR-0027; ADR-0032, ADR-0041 and ADR-0050 were amended in place. `oidc_discovery` is a separate
+  readiness datum that never changes the verdict. The BOM comment in `pom.xml` was re-measured at token-sheriff 0.9.8. Residue
+  went to `PLAN-V02-48` D12 (three statements and one ADR record no ADR holds yet) and `PLAN-V02-49` D3 (one weak test). The
+  pre-commit gate rewrote about 400 files on every run: see the Watch. Two slots are free; V02-50 runs.
+- **2026-10-27 — free slot held again.** After `PLAN-V02-05` landed, V02-11 was the only eligible plan (gate: 15 shared files with V02-50, 4 with V02-09); the operator chose to hold it. Nothing was emitted.
+- **2026-10-27 — `PLAN-V02-05` landed as #526; analyzed.** Verified: Maven Build, Config Validation, Demo Client E2E and
+  Scorecard, Integration Tests (40551758384) and the PR benchmark (40551763060) green on `main` at `be7034ac`. Shipped: the
+  identity-header strip (`Server`, `X-Powered-By`) on the HTTP relay, the gRPC relay and the upstream asset action with a
+  per-route `keep_identity_headers` opt-out; the `not_modified` close narrowed by two operator decisions to the two 304
+  validators on `GET`/`HEAD`; `headers_deny` folded over `_`/`-`; the fingerprint documentation. **Spec D2 (security
+  headers default-on) was not delivered: the operator ruled at refine that no header is default-on and every header is
+  configured explicitly; D2 became documentation.** If default-on headers are wanted, they are a new plan. Open Defect 1
+  is closed. `PLAN-V02-48` also keeps ADR-0008 and ADR-0037, amended in place. Lessons: three project lessons
+  (2026-10-27-17-001 to -003) and four plan-marshall findings routed to `lessons-routing`; the `finalize-main-drift`
+  memory was extended.
+- **2026-10-27 — `PLAN-V02-50` and `PLAN-V02-09` are running** (operator confirmed the starts); with `PLAN-V02-05` all three slots are taken.
+- **2026-10-27 — emitted `PLAN-V02-50` and `PLAN-V02-09` into the two free slots.** Operator ruling of 2026-10-26
+  (fill up to three at once when `PLAN-V02-06` lands), overlap prompt answered "V02-50, V02-09". The gate shows
+  V02-50/V02-05 sharing 13 files, V02-09/V02-05 26 and V02-50/V02-09 10 (config and edge sources and tests); the operator
+  accepted them. Both rows are `launched`; `launched → running` stays with the operator. `PLAN-V02-09` gained the ADR
+  guidance (`adr-writing.adoc`, the 500-line guard, next ordinal `0074`). Held back: V02-07 (waits for V02-50), V02-11
+  (held earlier), V02-48 (never beside an ADR-writing plan) and V02-49 (last).
+- **2026-10-27 — `PLAN-V02-06` landed as #528, partly; `PLAN-V02-50` staged for the rest.** #528 (`c957ee51`, ADR-0073,
+  98 files) shipped spec D1 (the uniform `404` for untrusted callers), D2 (the response-timing floor and its step rule)
+  and D9 (the `rate_limit` boot WARN and the wording), with their tests and docs. The operator split the other four
+  deliverables off at outline because nine deliverables in one PR would have passed the 100-file cap: D3 (per-source
+  detection substrate), D4 (response on trip), D7 (substrate contract) and D8 (HTTP/2 stream-abuse bounds). They are
+  `PLAN-V02-50` (`enumeration-detection-substrate`, WS-03), with the unwritten ADR for the kept-but-inert `rate_limit`
+  key, five documentation advisories, the findings deferred to the follow-up (recorded in the git-ignored security
+  notes) and a flaky test. `PLAN-V02-07` now waits on `PLAN-V02-50`. The sibling epics' references to V02-06's
+  substrate (`PLAN-V03-01`; kidicap `PLAN-21`, `PLAN-30`) point at a plan that no longer owns it. Verified green on
+  `main` at `c957ee51`: Maven Build, Integration Tests, Config Validation, Demo Client E2E, Scorecard and the PR
+  benchmark. #529 (`c9c8479c`), an operator docs fix, closed the two overstated offline-check statements that #527
+  left (they are no longer owed to `PLAN-V02-48`). `PLAN-V02-48` also learned that #528 amended seven ADRs in place.
+  Lessons: one project lesson (2026-10-27-14-001) and three plan-marshall findings routed to `lessons-routing`.
+- **2026-10-27 — `PLAN-V02-20` landed as #527; analyzed.** Verified on `main` at `6ec1393b`: Maven Build, Integration
+  Tests, Config Validation, Demo Client E2E, Scorecard and the PR benchmark are green; the retired-name sweep finds only
+  the deliberate residuals. The corpus is 66 records (`0072` added). Two overstated "offline verdict never differs from
+  the boot's" statements (an `OidcClientRules` Javadoc and `offline-config-validation.adoc`) are owned by `PLAN-V02-48`
+  D12, which also states the `0058` amendment as current fact (D2). Fourteen candidate lessons: seven were project
+  lessons and became three local lessons (2026-10-27-05-001 to -003); seven were plan-marshall tooling and went to
+  `lessons-routing` as four findings. The `PLAN-V02-09`/`-12` sequencing constraint on `PLAN-V02-20` is retired.
+  Free slot: the operator chose to hold it until `PLAN-V02-06` lands (both running plans are in finalize), then fill
+  up to three slots at once. Nothing was emitted.
 - **2026-10-26 — the stale local plan `plan-v02-23-cookie-forwarding-policy` was discarded** by operator instruction
   (`manage-status delete-plan`, 14 files, no lesson to carry back). It was the first, paused attempt at `PLAN-V02-23`
   (stopped at 4-plan on 2026-10-14 for the refactor chain); `plan-v02-23-cookie-forwarding-policy-r2` shipped as #515.
@@ -326,7 +382,7 @@ needs no translation.
   Operator ruling. The key stays in the endpoint schema, still not implemented, but setting it logs a
   boot WARN, and every document says the same thing: planned, not implemented, no `429` today. This
   replaces both wordings on `main` ("out of scope", from `6acbadac`, and "deferred"). Its future
-  implementation builds on `PLAN-V02-06`'s per-source mechanism, as its own plan after V02-06 lands;
+  implementation builds on the per-source mechanism of `PLAN-V02-50` (moved there from `PLAN-V02-06`), as its own plan after that lands;
   none is staged yet. Rejected: removing the key now (the PLAN-29 / ADR-0064 route), and wiring it into
   V02-06 (which already carries eight deliverables).
 
@@ -404,12 +460,7 @@ doc-only or build-light plan for the second and third slots.
 12. > ↪ Relocated to `settled.md` § "Open Defect 12 — RouteRuntimeAssembler dead WebSocket allocation (resolved by #476)" — resolved by #476 (PLAN-V02-44)
 13. > ↪ Relocated to `settled.md` § "Open Defect 13 — applyJwks orphan, folded into PLAN-V02-09 (closed 2026-08-09)" — closed; the method no longer exists
 
-1. **MEDIUM — upstream stack-identity leak.** `edge/ResponseStage` `isForwardableResponseHeader`
-   (:63) filters only hop-by-hop and conditional headers, so an upstream emitting `Server` or
-   `X-Powered-By` leaks its stack identity through the gateway. The orchestrator recommended fixing
-   it inside 0.1.0; the operator ruled it out of the release track 2026-07-27. **0.1.0 and 0.1.1 both
-   ship with this leak.** OWNER: `PLAN-V02-05` D1. *Re-grounded 2026-08-08: still present, and the
-   fix must cover **both** relay paths — `relay`:84 and `relayWithTrailers`:118.*
+1. > ↪ Relocated to `settled.md` § "Open Defect 1 — upstream stack-identity leak (closed 2026-10-27 by #526)" — `Server` and `X-Powered-By` stripped on all three upstream-header paths
 2. > ↪ Relocated to `settled.md` § "Open Defect 2 and Issue #189 remainder — closed 2026-10-22 by #512"
 3. > ↪ Relocated to `settled.md` § "Open Defect 3 — demo start script readiness contract (closed 2026-10-09)" — already fixed since #341
 4. **LOW, not release-gating** — the test-corpus integrity backlog PLAN-43 left as a countable
@@ -443,6 +494,22 @@ doc-only or build-light plan for the second and third slots.
    module carrying a catalogue rather than special-casing benchmarks. Home: `PLAN-V02-11`.
 
 ## Watches
+
+- **PRE-COMMIT GATE REWRITES ABOUT 400 FILES (IMPORT SPACING) — UNVERIFIED, NO OWNER** (added 2026-10-28, inbox
+  `plan-v02-09-token-sheriff-integration-fidelity-002`). The memory records the churn as fixed by #415; `PLAN-V02-09` saw it on
+  every `verify -Ppre-commit` run in its worktree and reverted it each time, and OpenRewrite also put a `TODO` marker on a
+  catch block that records an error and rethrows it. Not reproduced by the orchestrator. Check it on a clean `main` worktree
+  before the next plan that runs the gate; if it reproduces, stage a fix plan.
+- **HAND-MAINTAINED INVENTORIES NOT BOUND BY A TEST — NO OWNER** (added 2026-10-27, inbox
+  `plan-v02-05-response-hygiene-012`). `DocumentedHeaderSetsContractTest` binds the identity set and both protocol tiers to
+  their constants. The route-field inventory (`doc/configuration.adoc`, `endpoint.schema.json`) and the never-forward and
+  response-strip sets are still hand-maintained, and the repository's review bot re-raises such lists until a test binds
+  them. Bind them in whichever plan next touches those sets.
+- **FLAKY `GatewayEdgeRouteTest$RelayStartFailure.relayThatFailsToStartReleasesTheUpstreamResponse` — OWNED BY `PLAN-V02-50` D8**
+  (added 2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`). Failed once in the CI sonar-build isolated fork (run
+  40504680597) and passed on rerun; the branch did not touch the test. Make it deterministic and confirm it under
+  `-XX:ActiveProcessorCount=1`. Do not answer a red run with a retry. If it recurs before that plan runs, fix it as a side
+  fix the way #522 did. Other open flakes: `GatewayEdgeFramingCorpusTest` and `Http2EarlyResponseResetIT`.
 
 - > ↪ Relocated to `settled.md` § "Watch — superseded reviewer cuioss-review-bot (closed 2026-10-22 by #505)" — PR-Agent prose retired by #505 (PLAN-V02-43), guarded by ReviewerRosterDocsContractTest
 
@@ -566,7 +633,7 @@ doc-only or build-light plan for the second and third slots.
   not in this ledger; read it in that plan's archived findings. `DispatchStage` is shared with live
   work, so decide before another plan touches the edge relay.
 
-- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08` — FOLDED 2026-10-06: the refresh-revocation, nonce-retry and two status-code items into `PLAN-V02-01` D7; the same-key-file refusal and the `cnf` cookie size into `PLAN-V02-20` D3a; the canonical-form check into `PLAN-V02-12` D4; login rate limiting to kidicap `PLAN-21`; the three imprecise texts and the conformance-suite run stay here, unstaged** (added 2026-10-03; the plan's claims,
+- **POST-FAPI FOLLOW-UPS LEFT BY `PLAN-V02-08` — FOLDED 2026-10-06: the refresh-revocation, nonce-retry and two status-code items into `PLAN-V02-01` D7; the same-key-file refusal and the `cnf` cookie size into `PLAN-V02-20` D3a (shipped in #527); the canonical-form check into `PLAN-V02-12` D4; login rate limiting to kidicap `PLAN-21`; the three imprecise texts and the conformance-suite run stay here, unstaged** (added 2026-10-03; the plan's claims,
   each already stated in #377/#378 or their documents). A rate limit in front of login initiation,
   which now drives one outbound pushed request per call (threat model `BFF-20`) — owned by the sibling
   epic `kidicap-gateway-requirements` as its staged `PLAN-21` (login-flood pending records), so not a
