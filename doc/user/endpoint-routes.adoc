@@ -1053,7 +1053,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 | No rate limiting, whether the block is declared or not: per-route rate limiting is planned, not
   implemented, and the block never causes a `429`. A declared block is parsed and enforced by
   nothing, and every route that declares one is named at boot by the WARN `ApiSheriff-140` -- see
-  link:../configuration.adoc#_rate_limit[`rate_limit`]. The one `429` the gateway sends belongs to
+  link:../configuration.adoc#_rate_limit[`rate_limit`]. Every `429` the gateway sends belongs to
   per-source detection (<<_enumeration_detection_operator_note>>).
 |===
 

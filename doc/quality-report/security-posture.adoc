@@ -150,7 +150,7 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 |FULLY
 |Sweep of all 104 `LOGGER.*` calls in main: dispositions/lengths/modes only
 
-|Rate limiting reserved-only, never produces 429 (README, configuration)
+|The `rate_limit` key is reserved-only and never produces a 429 (README, configuration)
 |CONFIRMED
 |No non-model reference to `rateLimit` in runtime code; honest disclosure, still a parse-but-not-act key (SEC-5)
 

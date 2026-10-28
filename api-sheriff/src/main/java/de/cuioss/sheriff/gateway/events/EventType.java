@@ -182,7 +182,8 @@ public enum EventType {
     SOURCE_TRIPPED(null, 0),
     /**
      * A request was refused because its source is blocked under {@code enumeration_detection}
-     * action {@code block}. Raised by {@code SourceGate} on the event loop before edge admission, so
+     * action {@code block}, or, under action {@code delay}, because the tripped source's share of the
+     * held-answer sub-budget is used up. Raised by {@code SourceGate} on the event loop before edge admission, so
      * the refusal holds no admission permit, no virtual thread and no timer; the edge answers
      * {@code 429} with {@code Retry-After}.
      */

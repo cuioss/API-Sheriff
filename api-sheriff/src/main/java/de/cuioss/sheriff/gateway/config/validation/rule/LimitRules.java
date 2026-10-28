@@ -69,9 +69,10 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The unenforced-limit rule ({@link #validateRateLimitNotEnforced}) refuses nothing: it emits
  * {@link ConfigLogMessages.WARN#RATE_LIMIT_NOT_ENFORCED} for every route that declares the
- * {@code rate_limit} block, because the block is parsed but never enforced. A {@code 429} the gateway
- * sends comes from the per-source detection substrate under {@code enumeration_detection} action
- * {@code block}, never from {@code rate_limit}.
+ * {@code rate_limit} block, because the block is parsed but never enforced. Every {@code 429} the
+ * gateway sends comes from the per-source detection substrate under {@code enumeration_detection}
+ * (action {@code block}, or action {@code delay} for a source whose held-answer share is used up),
+ * never from {@code rate_limit}.
  * <p>
  * Every refusing rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and
  * never fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of
@@ -301,9 +302,10 @@ public class LimitRules {
      * <p>
      * Per-route rate limiting is not implemented. The block is parsed and bound into
      * {@code RateLimitConfig}, but no request-time component reads it: no rate limit is applied to the
-     * route and the block never causes a {@code 429}. The gateway's only {@code 429} is the opt-in
-     * {@code block} action of {@code enumeration_detection}, answered by the per-source detection
-     * substrate for a tripped source, not by {@code rate_limit}. A configuration key that parses but
+     * route and the block never causes a {@code 429}. Every {@code 429} the gateway sends
+     * comes from {@code enumeration_detection} (the opt-in {@code block} action, and under
+     * {@code delay} a tripped source whose held-answer share is used up), answered by the per-source
+     * detection substrate for a tripped source, not by {@code rate_limit}. A configuration key that parses but
      * does not act reads like a control the operator has in force, so the gap is announced at every
      * boot instead of being left for the operator to discover under load.
      * <p>

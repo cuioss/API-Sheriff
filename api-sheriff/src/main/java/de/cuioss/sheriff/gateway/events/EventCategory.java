@@ -50,7 +50,8 @@ public enum EventCategory {
 
     /**
      * A request refused because its source is blocked by per-source enumeration detection
-     * ({@code enumeration_detection} action {@code block}); answered {@code 429} with
+     * ({@code enumeration_detection} action {@code block}, or action {@code delay} once the source's
+     * held-answer share is used up); answered {@code 429} with
      * {@code Retry-After}.
      */
     RATE_LIMITING("rate-limiting", "Rate Limiting"),

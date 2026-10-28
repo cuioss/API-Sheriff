@@ -420,7 +420,9 @@ enumeration_detection:             # OPTIONAL per-source scan detection. Omit th
   window_seconds: 60               # a full threshold drains in this many seconds. Minimum 1.
   action: observe                  # observe (default) | delay | block. observe only logs the trip
                                    #   (ApiSheriff-141) and meters it. delay holds the source's
-                                   #   rejection answers; block answers it 429 before admission.
+                                   #   rejection answers (and answers 429 once its share of the
+                                   #   held-answer sub-budget is used up); block answers it 429
+                                   #   before admission.
                                    #   Switch only once a source address is ONE client: behind a
                                    #   NAT or an untrusted load balancer it is every client -- set
                                    #   forwarded.trusted_proxies first.

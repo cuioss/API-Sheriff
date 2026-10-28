@@ -582,8 +582,9 @@ public final class ConfigLogMessages {
          * not enforce: no rate limit is applied to the route and the block itself never causes a
          * {@code 429}.
          * <p>
-         * A {@code 429} the gateway does send — for a source blocked under {@code enumeration_detection}
-         * action {@code block} — comes from the per-source detection substrate, not from
+         * Every {@code 429} the gateway sends — for a source blocked under {@code enumeration_detection}
+         * action {@code block}, or under {@code delay} for a tripped source whose held-answer share is
+         * used up — comes from the per-source detection substrate, not from
          * {@code rate_limit}, so this record stays true whatever that block declares.
          * <p>
          * It is a {@code WARN} and never a boot refusal: refusing would break every descriptor that
