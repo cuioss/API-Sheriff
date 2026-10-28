@@ -2249,7 +2249,10 @@ link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_
 and in link:architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the
 trust boundary]. An unexpected internal failure in the same window is answered the same way and
 counted under `PRE_TRUST_INTERNAL_FAILURE`, with its stack trace at `DEBUG` and no `WARN`, so a
-crafted input that makes a stage fail cannot turn a routed address into a `500`. Every unrouted
+crafted input that makes a stage fail cannot turn a routed address into a `500`. It carries no weight
+on the per-source recon ledger
+(link:adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075]):
+an operator-side failure is not caller behaviour and carries no detection weight. Every unrouted
 `404`, genuine or resolved, leaves the edge on the same step rule, written from a Vert.x timer: no
 earlier than a fixed floor plus a random jitter after admission, and an answer whose processing ran
 past the floor is held to the next floor step after admission plus the jitter
@@ -2276,7 +2279,8 @@ session CSRF refusal, a `protocol: grpc` route, the bearer branch of a session-f
 `false` restores the honest codes. It times the floor for a subset only: the genuine unrouted `404`,
 a missing and a garbage bearer and an off-allowlist path, the last under `Accept: text/html` as
 well. `ErrorResponseWriterTest` asserts that a pre-trust internal failure is answered as the floored
-unrouted `404` and counted under `PRE_TRUST_INTERNAL_FAILURE` while a post-trust one stays `500`, that
+unrouted `404` and counted under `PRE_TRUST_INTERNAL_FAILURE` but never admitted to the recon ledger,
+where a recon event from the same source is, while a post-trust one stays `500`, that
 the release is computed from the admission reading on the event loop for the problem document and the
 HTML page alike, and that an overrun is counted. `GatewayEdgeHeldAnswerBudgetTest` asserts over a live
 edge that held answers past the sub-budget are answered `503` alike for unrouted and routed pre-trust
@@ -2327,8 +2331,8 @@ inherit it from the same renderer branch untimed. A cross-site unsafe request ca
 forwarded cookie receives the `404` with the routing problem type; only that status and type are
 asserted for it. A validated token without the needed scope still receives `403`, and a session
 route still receives `302` / `401`. An unexpected internal failure on a routed address before the
-trust boundary receives the floored unrouted `404` and is counted under `PRE_TRUST_INTERNAL_FAILURE`;
-after the trust boundary it receives `500`. No caller-drivable pre-trust path moves
+trust boundary receives the floored unrouted `404` and is counted under `PRE_TRUST_INTERNAL_FAILURE`,
+with no weight on the recon ledger; after the trust boundary it receives `500`. No caller-drivable pre-trust path moves
 `sheriff_uniform_not_found_overruns_total` on the integration stack. With
 `security_defaults.uniform_not_found: false`, every case receives its honest code.
 

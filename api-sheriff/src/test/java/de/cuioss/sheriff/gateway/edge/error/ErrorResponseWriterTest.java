@@ -105,8 +105,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  * the admission reading twice, and one a floor ahead of the writer's clock fails swapped arguments and a
  * release computed from the writer's reading twice. And an unexpected internal failure
  * ({@link ErrorResponseWriter#renderUnexpected}): before the trust boundary on a selected route it is the
- * floored unrouted {@code 404}, counted under {@link EventType#PRE_TRUST_INTERNAL_FAILURE}; everywhere
- * else the opaque {@code 500}.
+ * floored unrouted {@code 404}, counted under {@link EventType#PRE_TRUST_INTERNAL_FAILURE} but carrying
+ * no weight on the recon ledger; everywhere else the opaque {@code 500}.
  */
 @EnableGeneratorController
 @DisplayName("ErrorResponseWriter — Retry-After of an open circuit and the trust-boundary branch")
@@ -473,25 +473,41 @@ class ErrorResponseWriterTest {
         }
 
         @Test
-        @DisplayName("a pre-trust internal failure is admitted to the recon ledger under its own event")
-        void preTrustInternalFailureIsAdmittedToTheReconLedger() throws Exception {
+        @DisplayName("a pre-trust internal failure carries no weight on the recon ledger; a recon event from the same source does")
+        void preTrustInternalFailureIsNotAdmittedToTheReconLedger() throws Exception {
             SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert(), gate);
             AtomicReference<SourceKey> stashed = new AtomicReference<>();
             handler.set(ctx -> {
                 gate.answersBlocked(ctx);
                 stashed.set(ctx.get(SourceGate.SOURCE_KEY));
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
-                writer(true, PortalEndpoint.inert(), gate).renderUnexpected(ctx,
-                        stagedRequest(Protocol.HTTP, List.of()), new IllegalStateException(unexpectedMessage()));
+                writer.renderUnexpected(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new IllegalStateException(unexpectedMessage()));
             });
 
-            Response response = send();
+            Response failure = send();
+            SourceKey source = Objects.requireNonNull(stashed.get());
+            boolean trackedAfterFailure = gate.ledger().state(source).isPresent();
 
-            Map<Enum<?>, Long> contributions = gate.ledger().state(Objects.requireNonNull(stashed.get()))
-                    .orElseThrow().contributions();
-            assertAll("one more probe of the address",
-                    () -> assertEquals(404, response.status()),
-                    () -> assertEquals(Map.of(EventType.PRE_TRUST_INTERNAL_FAILURE, 1L), contributions));
+            handler.set(ctx -> {
+                gate.answersBlocked(ctx);
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new GatewayException(EventType.TOKEN_MISSING));
+            });
+
+            Response control = send();
+
+            Map<Enum<?>, Long> contributions = gate.ledger().state(source).orElseThrow().contributions();
+            assertAll("an operator-side failure is not caller behaviour",
+                    () -> assertEquals(404, failure.status(), "precondition: still answered as the uniform 404"),
+                    () -> assertEquals(1L, eventCounter.getCount(EventType.PRE_TRUST_INTERNAL_FAILURE),
+                            "precondition: still counted under its own event"),
+                    () -> assertFalse(trackedAfterFailure, "the failure left the source untracked"),
+                    () -> assertEquals(404, control.status(), "control: the recon event is answered as the 404 too"),
+                    () -> assertEquals(Map.of(EventType.TOKEN_MISSING, 1L), contributions,
+                            "control: the same source is admitted for a recon event, never for the failure"));
         }
 
         @Test

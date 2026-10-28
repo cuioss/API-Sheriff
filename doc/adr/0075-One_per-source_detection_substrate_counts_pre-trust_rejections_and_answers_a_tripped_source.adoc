@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event, and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer.
+// summary: The gateway keeps one framework-free per-source detection substrate, de.cuioss.sheriff.gateway.detection: a leaky bucket per (source, folded host) key, at most 65,536 keys, weighted admission, a CLEAR -> TRIPPED -> BLOCKED state machine, a query API and a raw trip record. The edge feeds it every recon rejection raised before the trust boundary, counted under its true event (a pre-trust internal failure carries no weight: it is not caller behaviour), and answers a tripped source as the enumeration_detection block says. The shipped default action is observe -- a trip is logged and metered and no answer changes -- because one source address may stand for every client behind a NAT or an untrusted load balancer; block (a 429 with Retry-After written before admission) and delay are operator opt-ins. The substrate is hand-rolled under ADR-0062 because no platform mechanism keys a limiter by caller. HTTP/2 stream abuse is bounded per connection on the transport and is not a substrate consumer.
 // tags: edge, enumeration, detection, rate-limiting, secure-defaults, http2, hand-rolled, availability
 // affects: api-sheriff, documentation
 // supersedes:
@@ -61,7 +61,13 @@ the rejection to `SourceGate`, the recon ledger's producer. `ReconEvents.weightO
 rejection weight `1` when its event is a member of the closed recon set and the request has not
 passed the trust boundary. Every other rejection weighs `0` and is not counted. `ReconEvents` holds
 the set and records the reason for every exclusion: events after the trust boundary, upstream and
-boot events, reserved-path events, a body that stopped arriving, and static resources.
+boot events, reserved-path events, a body that stopped arriving, a pre-trust internal failure, and
+static resources.
+
+`PRE_TRUST_INTERNAL_FAILURE` is excluded although it is answered as the uniform `404`: an
+operator-side failure is not caller behaviour and carries no detection weight. Counting it would
+charge the source address of every user retrying through an outage behind the edge, many of them
+behind one shared address, and under `delay` or `block` would slow or refuse them for it.
 
 The count follows the true event, never the rendered status. A bearer `401` that is answered as the
 uniform `404` counts as `TOKEN_MISSING`. The shape a caller is shown therefore cannot change what is

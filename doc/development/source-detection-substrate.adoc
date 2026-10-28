@@ -81,6 +81,11 @@ is bounded by construction. Per key the ledger keeps the weight each tag contrib
 was last empty and reports it in the state and the trip. The recon consumer tags each event with its
 `EventType`.
 
+Which events the recon consumer admits, and with what weight, is the consumer's decision, not the
+substrate's: `ReconEvents.weightOf` admits a pre-trust rejection of its closed recon set with weight
+`1` and everything else with weight `0`, which is never admitted. `PRE_TRUST_INTERNAL_FAILURE` is
+outside that set: an operator-side failure is not caller behaviour and carries no detection weight.
+
 == Bucket Semantics
 
 Every admitted weight is added to the key's level. The level drains linearly at

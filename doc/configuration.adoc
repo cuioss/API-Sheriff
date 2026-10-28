@@ -4578,7 +4578,9 @@ source behind a NAT or a shared egress proxy remains one source whatever the gat
 *Not counted.* A rejection raised after the trust boundary (a valid token or a live session), a
 reserved path, an upstream error, a body that stopped arriving, and a static resource -- a request on
 an asset route, or for a path ending in a common static extension such as `.ico`, `.css` or `.js` --
-are never counted. Requests the gateway serves are never counted.
+are never counted. Requests the gateway serves are never counted. An unexpected internal failure
+before the trust boundary (`PRE_TRUST_INTERNAL_FAILURE`) is answered as the uniform `404` but not
+counted: an operator-side failure is not caller behaviour and carries no detection weight.
 
 *Scope.* The counts live in the memory of one gateway instance. They are not shared between
 instances and are cleared by a restart. An instance tracks at most 65,536 sources; a source beyond

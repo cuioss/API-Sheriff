@@ -56,7 +56,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("ReconEvents — which rejections count as reconnaissance")
 class ReconEventsTest {
 
-    /** The eleven members of the recon set, written out: the literal IS the contract. */
+    /** The ten members of the recon set, written out: the literal IS the contract. */
     private static final Set<EventType> EXPECTED_RECON_SET = EnumSet.of(
             EventType.NO_ROUTE_MATCHED,
             EventType.PASSTHROUGH_HOST_SMUGGLED,
@@ -67,8 +67,7 @@ class ReconEventsTest {
             EventType.CONTENT_TOO_LARGE,
             EventType.CSRF_REJECTED,
             EventType.TOKEN_MISSING,
-            EventType.TOKEN_INVALID,
-            EventType.PRE_TRUST_INTERNAL_FAILURE);
+            EventType.TOKEN_INVALID);
 
     /** Every constant outside the recon set, with the reason it is not counted. */
     private static final Map<EventType, String> EXCLUSIONS = exclusions();
@@ -102,6 +101,8 @@ class ReconEventsTest {
         table.put(EventType.SOURCE_TRIPPED, notARejection);
         table.put(EventType.SOURCE_BLOCKED,
                 "the refusal of a source already blocked: counting it would extend the block by the requests it refuses");
+        table.put(EventType.PRE_TRUST_INTERNAL_FAILURE,
+                "an operator-side failure is not caller behaviour and carries no detection weight");
         return table;
     }
 
@@ -122,23 +123,24 @@ class ReconEventsTest {
         }
 
         @Test
-        @DisplayName("the recon set is exactly the eleven documented members")
-        void reconSetIsTheDocumentedEleven() {
+        @DisplayName("the recon set is exactly the ten documented members")
+        void reconSetIsTheDocumentedTen() {
             assertEquals(EXPECTED_RECON_SET, ReconEvents.RECON_SET);
         }
 
         @Test
-        @DisplayName("a pre-trust internal failure counts with weight 1, and not once the trust boundary is passed")
-        void preTrustInternalFailureIsAReconSignal() {
+        @DisplayName("a pre-trust internal failure carries no weight, where a recon event on the same request does")
+        void preTrustInternalFailureCarriesNoWeight() {
             PipelineRequest untrusted = routedRequest(dynamicPath(), null);
-            PipelineRequest trusted = routedRequest(dynamicPath(), null);
-            trusted.markTrustBoundaryPassed();
 
             assertAll("PRE_TRUST_INTERNAL_FAILURE",
-                    () -> assertEquals(1, ReconEvents.weightOf(untrusted, EventType.PRE_TRUST_INTERNAL_FAILURE),
-                            "answered as the uniform 404 to an untrusted caller, so one more probe"),
-                    () -> assertEquals(0, ReconEvents.weightOf(trusted, EventType.PRE_TRUST_INTERNAL_FAILURE),
-                            "a trusted caller is never counted"));
+                    () -> assertEquals(ReconEvents.RECON_WEIGHT,
+                            ReconEvents.weightOf(untrusted, EventType.METHOD_NOT_ALLOWED),
+                            "control: the same untrusted, non-static request counts a recon event"),
+                    () -> assertEquals(0, ReconEvents.weightOf(untrusted, EventType.PRE_TRUST_INTERNAL_FAILURE),
+                            "an operator-side failure is not caller behaviour"),
+                    () -> assertEquals(0, ReconEvents.weightOf(null, EventType.PRE_TRUST_INTERNAL_FAILURE),
+                            "not even before a request was built"));
         }
 
         @ParameterizedTest(name = "{0}")

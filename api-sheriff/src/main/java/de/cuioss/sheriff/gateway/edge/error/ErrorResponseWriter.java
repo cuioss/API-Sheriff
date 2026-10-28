@@ -243,9 +243,11 @@ public final class ErrorResponseWriter {
      *   <li>A failure raised after route selection and before the trust boundary while the switch is on
      *       ({@link UniformNotFound#applies} for {@link EventType#PRE_TRUST_INTERNAL_FAILURE}) is reported
      *       under that event through {@link RejectionReporter#reportPreTrustInternalFailure} — the event
-     *       counter and the error metric, no {@code WARN} — admitted to the per-source feed under it, and
-     *       answered exactly as a resolved rejection: the unrouted response headers restored, rendered as
-     *       {@link EventType#NO_ROUTE_MATCHED} and released on the floor's step grid.</li>
+     *       counter and the error metric, no {@code WARN} — handed to the per-source feed under it, which
+     *       weighs it at {@code 0} ({@link ReconEvents}: an operator-side failure is not caller behaviour
+     *       and carries no detection weight), and answered exactly as a resolved rejection: the unrouted
+     *       response headers restored, rendered as {@link EventType#NO_ROUTE_MATCHED} and released on the
+     *       floor's step grid.</li>
      *   <li>Every other failure — raised before route selection, after the trust boundary, or with the
      *       switch off — keeps the opaque {@code 500}; it carries no category and is not counted on the
      *       error metric.</li>

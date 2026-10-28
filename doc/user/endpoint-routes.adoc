@@ -859,7 +859,9 @@ source may cause before it trips: the count drains continuously, so a source sta
 long as it causes fewer than `threshold` rejections per `window_seconds`. Raise `threshold` when
 honest clients trip -- an application with many broken links, for example. Static resources such as
 `.ico`, `.css` and `.js` files are not counted, and neither is anything after a client has
-authenticated. `enabled: false` switches detection off completely. The counts are kept per gateway
+authenticated. Nor is a request the gateway itself failed on (`PRE_TRUST_INTERNAL_FAILURE`): an
+operator-side failure is not caller behaviour and carries no detection weight, so clients retrying
+through an outage are never tripped by it. `enabled: false` switches detection off completely. The counts are kept per gateway
 instance and are cleared by a restart, so a source spreading its requests over several instances is
 counted on each separately
 (link:../adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075]).
