@@ -458,8 +458,10 @@ of a process is logged once as WARN `ApiSheriff-142`.
 whether one address stands for one client or for every client behind a NAT or a load balancer that
 `forwarded.trusted_proxies` does not name. A default `block` or `delay` would refuse or slow all of
 them for the probing of one. Detection is therefore on by default and enforcement is an operator
-opt-in. The availability cost of a scan is bounded independently: held answers draw on their own
-sub-budget, so a scan cannot fill the pool trusted traffic is admitted from
+opt-in. The availability cost of a scan does not depend on this default: a held answer leaves the
+general admission pool for its own sub-budget, so a scan draws on the pool trusted traffic is
+admitted from only while a probe is processed and, for a probe refused the hold, until the floor's
+release time
 (link:../adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0075]).
 
 *Single node, in memory.* The buckets live in one process. They are not shared between gateway

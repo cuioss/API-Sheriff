@@ -234,12 +234,13 @@ Every delegated responsibility lives in a sub-package:
   pools: the general pool every request is admitted under (`edge_hardening.admission_cap`), the
   WebSocket relay sub-budget an upgrade takes in addition to its general permit for the relay's
   lifetime, and the held-answer sub-budget an answer waiting on a timer -- the uniform `404`'s floor,
-  the `delay` action -- takes instead of its general permit, a quarter of the admission cap with no
-  key of its own. A held answer refused a permit is a `503`, written no earlier than the floor's
-  release time under the general permit it was admitted with; one source tripped under `delay` holds
-  at most an eighth of the sub-budget, and the gate answers it `429` before admission while its share
-  is used up. The request stays counted in flight while its answer is held, so the drain waits for
-  it. The per-source gate answers a blocked source `429` before admission
+  the `delay` action -- takes instead of its general permit, a quarter of the admission cap (at least
+  one permit) with no key of its own. A held answer refused a permit is a `503`, written no earlier
+  than the floor's release time (at once while `security_defaults.uniform_not_found` is off) under the
+  general permit it was admitted with; one source tripped under `delay` holds at most its share of
+  the sub-budget -- an eighth of it, and at least one permit -- and the gate answers it `429` before
+  admission while its share is used up. The request stays counted in flight while its answer is held,
+  so the drain waits for it. The per-source gate answers a blocked source `429` before admission
   (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]).
 | `EdgeHardeningOptions`, `EdgeAdmission`, `SourceGate`
 
