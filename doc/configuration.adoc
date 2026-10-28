@@ -4540,7 +4540,9 @@ drained to zero.
 | Every counted rejection of the source is answered no earlier than admission plus `delay_millis`.
   The answer waits on a timer and holds a permit of the held-answer sub-budget (see
   <<_edge_hardening,`edge_hardening`>>) while it waits. Requests the gateway serves are never
-  delayed. The uniform `404` floor still applies, and the later release wins.
+  delayed. The uniform `404` floor still applies, and the later release wins. While the source's
+  share of the held-answer sub-budget is used up, its further requests are answered `429` before
+  admission, with `Retry-After` the delay in whole seconds.
 
 | `block`
 | For `block_seconds`, every request from the source is answered `429` with `Retry-After` -- the
@@ -4600,8 +4602,9 @@ sources and enumeration detection].
 The per-route rate-limiting schema (`requests_per_second`, `burst`). *Per-route rate limiting is
 planned, not implemented.* The block is parsed and bound into the route model, but nothing on the
 request path reads it: no limit is applied to any request, and the block never causes a `429`. The
-one `429` the gateway sends is the `block` action of
-<<_enumeration_detection,`enumeration_detection`>>.
+`429` answers the gateway sends all come from
+<<_enumeration_detection,`enumeration_detection`>> (the `block` action, and under `delay` a tripped
+source whose held-answer share is used up).
 
 So that a declared block cannot read as a control in force, every route that declares
 `rate_limit` is named at boot by the WARN `ApiSheriff-140` (see

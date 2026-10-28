@@ -294,8 +294,9 @@ Per-route rate limiting is planned, not implemented::
 The per-route `rate_limit` field is parsed and bound into `RateLimitConfig`, but nothing on the
 request path reads it: it applies no limit and causes no `429`. Every route that declares the key
 is named at boot by the WARN `ApiSheriff-140`, so a configuration that relies on it does not read as
-a control in force. The gateway's only `429` is the opt-in `block` action of
-`enumeration_detection`, which answers a source that tripped the per-source detection substrate --
+a control in force. The gateway's `429` answers all come from `enumeration_detection`, the per-source
+detection substrate: the opt-in `block` action, and, under the opt-in `delay` action, a tripped source
+whose share of the held-answer sub-budget is used up --
 see link:doc/development/source-detection-substrate.adoc[Per-Source Detection Substrate].
 
 From the first two-platform release on, the published image serves linux/amd64 and linux/arm64, each at GraalVM's default CPU baseline::

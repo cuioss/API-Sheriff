@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The per-route rate_limit block (requests_per_second, burst) stays in the endpoint schema and the route model. It is parsed and bound but enforced by nothing, and every route of an enabled endpoint that declares it is named at every boot by WARN ApiSheriff-140, which refuses nothing. This differs from ADR-0064, which removed the inert circuit_breaker block: per-route rate limiting is a planned feature, while the breaker shape was decided to stay fixed; and the boot WARN reaches the operator where the descriptor takes effect, so the block cannot read as a control in force. The rate_limit block never causes a 429; the only 429 the gateway sends comes from the enumeration_detection block action of ADR-0075. A future rate_limit implementation builds on the ADR-0075 substrate and decides its fields then.
+// summary: The per-route rate_limit block (requests_per_second, burst) stays in the endpoint schema and the route model. It is parsed and bound but enforced by nothing, and every route of an enabled endpoint that declares it is named at every boot by WARN ApiSheriff-140, which refuses nothing. This differs from ADR-0064, which removed the inert circuit_breaker block: per-route rate limiting is a planned feature, while the breaker shape was decided to stay fixed; and the boot WARN reaches the operator where the descriptor takes effect, so the block cannot read as a control in force. The rate_limit block never causes a 429; every 429 the gateway sends comes from the enumeration_detection block of ADR-0075 (the block action, and under delay a tripped source whose held-answer share is used up). A future rate_limit implementation builds on the ADR-0075 substrate and decides its fields then.
 // tags: configuration, rate-limiting, inert-configuration, boot-validation, secure-defaults
 // affects: api-sheriff, documentation
 // supersedes:
@@ -65,10 +65,11 @@ declared, so refusing a descriptor for it would protect nothing.
 
 === The 429 the gateway does send
 
-The `rate_limit` block never causes a `429`. The gateway sends a `429` in exactly one case: a source
-blocked under the `block` action of the `enumeration_detection` block
+The `rate_limit` block never causes a `429`. The gateway's `429` answers come from the
+`enumeration_detection` block only: a source blocked under the `block` action, and, under the
+`delay` action, a tripped source whose share of the held-answer sub-budget is used up
 (link:0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075]).
-That answer comes from the per-source detection substrate and is reported in the `rate-limiting`
+Those answers come from the per-source detection substrate and is reported in the `rate-limiting`
 problem category.
 
 === A future implementation builds on the substrate

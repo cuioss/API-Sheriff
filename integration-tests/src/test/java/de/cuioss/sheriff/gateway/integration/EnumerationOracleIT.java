@@ -104,8 +104,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <strong>Timing.</strong> No unrouted {@code 404}, genuine or resolved, leaves the edge before the
  * response-timing floor. The floor is {@link #RESPONSE_FLOOR}, restated here as the shipped constant a
  * black-box caller observes; it is asserted as a lower bound on the round trip only, so a slow runner
- * cannot make the assertion flaky. The floor is also <em>measured</em>: every pre-trust path a caller
- * can drive on this stack is probed {@link #MEASUREMENT_PROBES} times in sequence, and
+ * cannot make the assertion flaky. The floor is also <em>measured</em>: eight enumerated pre-trust
+ * paths a caller can drive on this stack are each probed {@link #MEASUREMENT_PROBES} times in sequence, and
  * {@code sheriff_uniform_not_found_overruns_total} must not move — no probe was released after the
  * first floor step. A run on a loaded machine can move it without the floor being too low; only an
  * overrun that reproduces on a quiet run is evidence for raising the floor.
@@ -353,8 +353,8 @@ class EnumerationOracleIT extends BaseIntegrationTest {
     }
 
     /**
-     * The measurement of the floor: every pre-trust path a caller can drive on this stack is probed
-     * {@link #MEASUREMENT_PROBES} times, one request after the other, and the overrun counter must not
+     * The measurement of the floor: eight enumerated pre-trust paths a caller can drive on this stack
+     * are each probed {@link #MEASUREMENT_PROBES} times, one request after the other, and the overrun counter must not
      * move. The slowest round trip of each path is reported when it does, so a failure names the path.
      */
     @Test

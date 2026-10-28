@@ -26,8 +26,8 @@ import org.jspecify.annotations.Nullable;
  * never enforced: no component reads it at request time, so no rate limit is applied and the block
  * never causes a {@code 429}. A future implementation builds on the shipped per-source detection
  * substrate ({@code de.cuioss.sheriff.gateway.detection.SourceLedger}, ADR-0075) rather than on these
- * two fields as they stand; the one {@code 429} the gateway sends today is the {@code block} action
- * of that substrate.
+ * two fields as they stand; every {@code 429} the gateway sends today comes from that substrate
+ * (the {@code block} action, and under {@code delay} a tripped source whose held-answer share is used up).
  *
  * @param requestsPerSecond the sustained request rate, {@code null} when omitted
  * @param burst             the burst allowance, {@code null} when omitted
