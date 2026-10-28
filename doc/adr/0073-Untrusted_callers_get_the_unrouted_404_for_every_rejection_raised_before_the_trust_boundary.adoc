@@ -9,7 +9,7 @@
 // Progressive-disclosure metadata block (see manage-adr SKILL.md → "ADR Template
 // Structure"). Read by `manage-adr.py scan` so a caller can assess an ADR's
 // relevance without reading the full file. List fields are comma-separated.
-// summary: A rejection raised after route selection and before the trust boundary (a validated bearer token or a completed authentication stage) is answered to the caller exactly as an unrouted address is answered: status 404, the NO_ROUTE_MATCHED body or HTML page, the pre-route response headers and never a trailers-only gRPC status. Every unrouted 404 leaves the edge no earlier than a fixed floor plus a random jitter after admission, on a Vert.x timer. The true event is still metered. One switch, security_defaults.uniform_not_found, governs both and is on by default. AMENDED (A1): an unexpected internal failure after route selection and before the trust boundary is answered as the floored unrouted 404 and counted under PRE_TRUST_INTERNAL_FAILURE with no per-source detection weight, its stack trace at DEBUG; a held answer leaves the general admission pool for a derived held-answer sub-budget, and a full sub-budget answers 503 at once for every held answer alike; the release time is computed on the event loop when the answer is armed, after rendering; the floor is measured by EnumerationOracleIT against every caller-drivable pre-trust path, and an answer released after the first step is counted on sheriff_uniform_not_found_overruns_total.
+// summary: A rejection raised after route selection and before the trust boundary (a validated bearer token or a completed authentication stage) is answered to the caller exactly as an unrouted address is answered: status 404, the NO_ROUTE_MATCHED body or HTML page, the pre-route response headers and never a trailers-only gRPC status. Every unrouted 404 leaves the edge no earlier than a fixed floor plus a random jitter after admission, on a Vert.x timer. The true event is still metered. One switch, security_defaults.uniform_not_found, governs both and is on by default. AMENDED (A1): an unexpected internal failure after route selection and before the trust boundary is answered as the floored unrouted 404 and counted under PRE_TRUST_INTERNAL_FAILURE with no per-source detection weight, its stack trace at DEBUG; a held answer leaves the general admission pool for a derived held-answer sub-budget, and a full sub-budget answers 503 at once for every held answer alike; the release time is computed on the event loop when the answer is armed, after rendering; the floor is measured by EnumerationOracleIT against eight caller-drivable pre-trust paths, and an answer released after the first step is counted on sheriff_uniform_not_found_overruns_total.
 // tags: edge, error-contract, information-disclosure, enumeration, timing, security-defaults, grpc
 // affects: api-sheriff, documentation
 // supersedes:
@@ -182,12 +182,15 @@ this wide. It must sit above the worst-case cost of the pre-trust window.
 `SecureRandom`. It spreads the release within a step.
 |===
 
-*The floor is measured.* `EnumerationOracleIT` drives every pre-trust path a caller can reach on the
+*The floor is measured.* `EnumerationOracleIT` drives eight pre-trust paths a caller can reach on the
 integration stack with a fixed number of sequential probes: the unrouted address, the verb gate, a
-path outside `allowed_paths`, a missing token, malformed tokens, a token at the header-size bound, a
+path outside `allowed_paths`, a missing token, a malformed token, a token at the header-size bound, a
 well-formed token naming an unknown key id, and the session branch's CSRF refusal. It then asserts
-that `sheriff_uniform_not_found_overruns_total` did not move, so every such path is answered inside
-the first step. The unknown-key-id path stays inside it because the key-set refresh it may trigger is
+that `sheriff_uniform_not_found_overruns_total` did not move, so each of those paths is answered
+inside the first step. The token at the header-size bound keeps the realm's key id, so its probe
+includes the signature check of a token as large as the `Authorization` carve-out admits. The
+declared-length fast-reject, a route-scoped filter violation, a cookie-forwarding same-origin refusal
+and a `protocol: grpc` route are not part of the measurement. The unknown-key-id path stays inside it because the key-set refresh it may trigger is
 scheduled off the request thread
 (link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]).
 An overrun that reproduces on a quiet run raises the floor in 10 ms steps until the measurement records
@@ -287,7 +290,8 @@ measurement.
   No thread is held while an answer waits; the cost is a held permit and a timer entry.
 * Every edge and integration test that requests an unrouted path waits for the floor. The tests
   assert only lower bounds on timing, so the floor slows them and does not make them flaky.
-* The floor is measured against every caller-drivable pre-trust path, and an answer whose processing
+* The floor is measured against eight caller-drivable pre-trust paths, the token paths among them,
+  and an answer whose processing
   exceeds 50 ms in production is held to the next step of the grid and counted on
   `sheriff_uniform_not_found_overruns_total`, so it leaves on a step boundary plus the jitter, not at
   its own processing time, and the operator sees that it happened.
@@ -318,14 +322,16 @@ sub-budget is derived
 (link:0020-WebSocket_relays_hold_their_admission_permit_for_the_connection_lifetime_and_are_bounded_by_a_derived_sub-budget.adoc[ADR-0020]).
 No configuration key reaches it. A full sub-budget answers the held response `503` at once, with no
 timer, and that answer is the same for every held response whatever its route or caller. A flood of
-probes therefore cannot fill the pool that trusted traffic is admitted from.
+probes therefore cannot keep general permits occupied for the length of the wait; it still draws on
+the general pool while each probe is processed, up to the moment its answer enters the hold.
 
 *The release time is computed on the event loop.* It is computed when the answer is armed, after an
 HTML error page has rendered and after the hop from the virtual thread, so neither moves an answer off
 the step grid.
 
-*The floor is measured and its overruns are metered.* `EnumerationOracleIT` probes every caller-drivable
-pre-trust path and asserts that no answer was released after the first step. An answer that is, in
+*The floor is measured and its overruns are metered.* `EnumerationOracleIT` probes the caller-drivable
+pre-trust paths listed under the floor above and asserts that no answer was released after the first
+step. An answer that is, in
 any deployment, is counted on `sheriff_uniform_not_found_overruns_total`. This replaces the earlier
 statement that the floor was a reasoned choice that had not been measured.
 

@@ -79,7 +79,12 @@ import org.jspecify.annotations.Nullable;
  * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ReconFeed}, the gate admits every
  * reported rejection to the ledger with the weight {@link ReconEvents#weightOf} gives its TRUE event —
  * a recon event before the trust boundary that is not a static resource. Under {@code delay}, a
- * rejection whose source has tripped is held until admission plus {@code delay_millis}. A source the
+ * rejection whose source has tripped is held until admission plus {@code delay_millis}. An unexpected
+ * internal failure answered as the uniform {@code 404} ({@link EventType#PRE_TRUST_INTERNAL_FAILURE})
+ * is never admitted, but under {@code delay} it is held exactly as a recon rejection of the same
+ * request would be: otherwise, for a tripped source, a crafted input that made a stage fail on a routed
+ * address would be answered at the floor while the same input on an absent address waited for the
+ * delay, and the timing would tell the two apart. A source the
  * ledger could not track — the cardinality bound — is counted on
  * {@link SheriffMetrics#SOURCE_UNTRACKED_TOTAL}, and the first overflow of the process is logged once
  * ({@link ApiSheriffLogMessages.WARN#SOURCE_UNTRACKED}).
@@ -216,7 +221,10 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
     /**
      * Admits one reported rejection to the recon ledger under the source {@link #answersBlocked}
      * stashed. A rejection {@link ReconEvents#weightOf} weighs at {@code 0} — not a recon event, past the
-     * trust boundary, or a static resource — is not admitted and is never held.
+     * trust boundary, or a static resource — is not admitted and is never held, with one exception: an
+     * {@link EventType#PRE_TRUST_INTERNAL_FAILURE} is not admitted either, but it is held under
+     * {@code delay} exactly when a recon rejection of the same request would be, so that it stays
+     * indistinguishable from the uniform {@code 404} it is answered as.
      *
      * @param ctx       the rejected request
      * @param request   the pipeline request, {@code null} for a rejection raised before one was built
@@ -226,9 +234,15 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
      */
     @Override
     public OptionalLong admit(RoutingContext ctx, @Nullable PipelineRequest request, EventType eventType) {
-        int weight = ReconEvents.weightOf(request, eventType);
         SourceKey key = ctx.get(SOURCE_KEY);
-        if (weight == 0 || key == null) {
+        if (key == null) {
+            return OptionalLong.empty();
+        }
+        if (eventType == EventType.PRE_TRUST_INTERNAL_FAILURE) {
+            return holdUncounted(ctx, request, key);
+        }
+        int weight = ReconEvents.weightOf(request, eventType);
+        if (weight == 0) {
             return OptionalLong.empty();
         }
         SourceState state = ledger.admit(key, weight, eventType);
@@ -237,6 +251,25 @@ public final class SourceGate implements ErrorResponseWriter.ReconFeed {
             return OptionalLong.empty();
         }
         if (delayNanos.isEmpty() || !state.hasTripped()) {
+            return OptionalLong.empty();
+        }
+        return OptionalLong.of(admittedAtNanos(ctx) + delayNanos.getAsLong());
+    }
+
+    /**
+     * The hold of a pre-trust internal failure, which carries no detection weight and is never admitted:
+     * under {@code delay} it is held until admission plus {@code delay_millis} when the source has
+     * already tripped and the request is one a recon rejection would be counted for — not past the trust
+     * boundary and not a static resource — and is answered without a hold otherwise. The source's state
+     * is only read, so the failure neither adds weight nor starts tracking an untracked source.
+     */
+    private OptionalLong holdUncounted(RoutingContext ctx, @Nullable PipelineRequest request, SourceKey key) {
+        if (delayNanos.isEmpty()) {
+            return OptionalLong.empty();
+        }
+        boolean reconShaped = request == null
+                || !(request.trustBoundaryPassed() || ReconEvents.isStaticResource(request));
+        if (!reconShaped || !ledger.state(key).map(SourceState::hasTripped).orElse(false)) {
             return OptionalLong.empty();
         }
         return OptionalLong.of(admittedAtNanos(ctx) + delayNanos.getAsLong());
