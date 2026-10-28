@@ -488,7 +488,7 @@ class WebSocketProxyIT extends BaseIntegrationTest {
             socket.sendText(payload, true).get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             assertEquals(payload, listener.firstMessage.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS),
                     "fixture: held relay " + relay + " must round-trip its frame before the probe runs");
-        } catch (Exception | AssertionError notEstablished) {
+        } catch (InterruptedException | ExecutionException | TimeoutException | AssertionError notEstablished) {
             socket.abort();
             throw notEstablished;
         }
@@ -518,7 +518,10 @@ class WebSocketProxyIT extends BaseIntegrationTest {
                     + " never started sending its body", notSent);
             try {
                 held.release();
-            } catch (Exception releaseFailed) {
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                fixtureFailure.addSuppressed(interrupted);
+            } catch (ExecutionException | TimeoutException releaseFailed) {
                 fixtureFailure.addSuppressed(releaseFailed);
             }
             throw fixtureFailure;
@@ -528,24 +531,30 @@ class WebSocketProxyIT extends BaseIntegrationTest {
     }
 
     /**
-     * Releases every held permit, attempting each one even when an earlier release fails, and rethrows
-     * the first failure with the later ones suppressed.
+     * Releases every held permit, attempting each one even when an earlier release fails. Any failed
+     * release fails the fixture with an {@link AssertionError} carrying the first failure as its cause
+     * and the later ones suppressed. An interrupt is restored on the thread before it is reported; the
+     * remaining permits are still released, because each release frees its permit before it waits.
      */
-    private static void releaseAll(List<? extends Held> held) throws Exception {
-        Exception first = null;
+    private static void releaseAll(List<? extends Held> held) {
+        AssertionError failure = null;
         for (Held permit : held) {
             try {
                 permit.release();
-            } catch (Exception releaseFailed) {
-                if (first == null) {
-                    first = releaseFailed;
+            } catch (InterruptedException | ExecutionException | TimeoutException releaseFailed) {
+                if (releaseFailed instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                if (failure == null) {
+                    failure = new AssertionError("fixture: a held admission permit could not be released",
+                            releaseFailed);
                 } else {
-                    first.addSuppressed(releaseFailed);
+                    failure.addSuppressed(releaseFailed);
                 }
             }
         }
-        if (first != null) {
-            throw first;
+        if (failure != null) {
+            throw failure;
         }
     }
 
@@ -553,7 +562,7 @@ class WebSocketProxyIT extends BaseIntegrationTest {
     private interface Held {
 
         /** Releases the permit and waits until the gateway has ended the operation that held it. */
-        void release() throws Exception;
+        void release() throws InterruptedException, ExecutionException, TimeoutException;
     }
 
     /** An established relay holding a general permit and a relay sub-permit. */
@@ -565,11 +574,11 @@ class WebSocketProxyIT extends BaseIntegrationTest {
          * relay that cannot be closed cleanly is aborted, which tears it down as well.
          */
         @Override
-        public void release() throws Exception {
+        public void release() throws InterruptedException, ExecutionException, TimeoutException {
             try {
                 socket.sendClose(WebSocket.NORMAL_CLOSURE, "released").get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                 listener.closed.get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            } catch (Exception closeFailed) {
+            } catch (InterruptedException | ExecutionException | TimeoutException closeFailed) {
                 socket.abort();
                 throw closeFailed;
             }
@@ -600,7 +609,7 @@ class WebSocketProxyIT extends BaseIntegrationTest {
          * the gateway has ended the request and returned its permit.
          */
         @Override
-        public void release() throws Exception {
+        public void release() throws InterruptedException, ExecutionException, TimeoutException {
             body.release();
             response.handle((answer, failure) -> null).get(HANDSHAKE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         }
