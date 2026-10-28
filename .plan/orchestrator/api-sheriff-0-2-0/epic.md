@@ -163,6 +163,11 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-28 — emitted `PLAN-V02-11` into a free slot.** Overlap prompt answered "Emit V02-11" (gate: 15 shared files with
+  V02-50, 4 with the now-landed V02-09). The row is `launched`; `launched → running` stays with the operator. The spec gained
+  the ADR-writing guidance (`adr-writing.adoc`, the 500-line guard, next ordinal `0075`). The pre-commit gate churn stays a
+  Watch (operator: watch only). No other staged plan is eligible: V02-07 waits on V02-50, V02-48 may not run beside an
+  ADR-writing plan, V02-49 collides with both on tests.
 - **2026-10-28 — `PLAN-V02-09` landed as #530 (`0114065c`, ADR-0074); analyzed.** Verified green on `main`: Maven Build,
   Integration Tests, Config Validation, Demo Client E2E, Scorecard and the PR benchmark; issue #174 is closed. It decided the
   config-mapping question as a hybrid: the extension's metrics collector now observes the gateway's `@GatewayValidator`
