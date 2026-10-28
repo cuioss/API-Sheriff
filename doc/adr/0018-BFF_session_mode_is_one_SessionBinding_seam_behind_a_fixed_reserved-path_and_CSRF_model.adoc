@@ -116,7 +116,7 @@ The code's lifetime is the IdP's default, which the gateway does not widen. The 
 is the pending record's, a separate quantity. A `query` callback reads no body, so the callback path
 is not in the edge's reserved-body allowlist. An IdP configured to `form_post` to this gateway is not
 supported. The mechanics are in
-link:../architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
+link:../architecture/authentication-and-bff.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
 
 [[seam]]
 === (iii) Server and cookie mode sit behind one `SessionBinding` seam
@@ -396,7 +396,7 @@ silent and shows only in the deployments least equipped to diagnose it.
 * link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057 -- Session routes obtain their declared scopes] -- the widening that uses the cookie-re-issuing write.
 * link:0058-The_BFF_pushes_every_authorization_request_and_binds_its_tokens_with_DPoP_and_authenticates_with_private_key_jwt_unless_a_client_secret_is_configured.adoc[ADR-0058 -- Pushed requests, DPoP and client authentication] -- the client JWKS path and the push that carries the response mode.
 * link:0046-Refresh_failures_are_disposed_by_the_engines_failure_kind_and_refresh-token_reuse_detection_is_the_identity_providers_job.adoc[ADR-0046 -- Refresh failures] -- the session-ended outcome of a refresh whose session is gone.
-* link:../architecture.adoc#_bff_session_runtime[Architecture -- BFF runtime], link:../architecture.adoc#_bff_session_store[session store, writes and lifetime] and link:../architecture.adoc#_oidc_callback_response_mode[OIDC callback response mode].
+* link:../architecture/authentication-and-bff.adoc#_bff_session_runtime[Architecture -- BFF runtime], link:../architecture/authentication-and-bff.adoc#_bff_session_store[session store, writes and lifetime] and link:../architecture/authentication-and-bff.adoc#_oidc_callback_response_mode[OIDC callback response mode].
 * link:../variants/02-bff-session.adoc[Variant 2 -- BFF, Session-based] and link:../variants/03-bff-cookie.adoc[Variant 3 -- BFF, Cookie-based] -- the two realisations.
 * link:../configuration.adoc#_oidc[Configuration Reference -- `oidc`] -- the key contract.
 * link:../user/bff-session.adoc[Operator setup -- server-session BFF] and link:../user/bff-cookie.adoc[Operator setup -- cookie-based BFF].

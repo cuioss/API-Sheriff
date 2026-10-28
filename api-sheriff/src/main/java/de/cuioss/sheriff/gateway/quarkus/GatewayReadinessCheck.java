@@ -55,7 +55,7 @@ import org.jspecify.annotations.Nullable;
  * environment variable — see {@code doc/user/context-path.adoc}, and block (d) of
  * {@code application.properties} for the same two-mode routing stated at its source.
  * <p>
- * Readiness reflects two facts, per {@code architecture.adoc} § Metrics (Health):
+ * Readiness reflects two facts, per {@code doc/architecture/observability-and-errors.adoc} § Metrics and Health:
  * <ul>
  *   <li><strong>Configuration</strong> — the {@link GatewayConfig} bean is present, which proves
  *       the boot-time load-and-validate pipeline in {@link ConfigProducer} succeeded (an invalid

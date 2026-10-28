@@ -331,7 +331,7 @@ and with it a second package to re-read on every upgrade.
 * link:0011-gatewayyaml_exposes_JWKS_trust_and_egress_as_neutral_names_bound_by_the_deployment.adoc[ADR-0011]
   -- the `token_validation` surface the gateway validator is built from
 * link:../configuration.adoc#_jwks_readiness[Configuration reference] -- the readiness contract
-* link:../architecture.adoc[Architecture] -- the metrics and health surfaces
+* link:../architecture/observability-and-errors.adoc#_metrics[Architecture] -- the metrics and health surfaces
 * `api-sheriff/src/main/resources/application.properties` -- the exclusion and its rationale
 * `ExtensionUnqualifiedBeanExclusionTest`, `DefaultProfileReadinessTest` -- the in-process pins
 * `MetricsIT` -- the native-image proof of the token-validation meters

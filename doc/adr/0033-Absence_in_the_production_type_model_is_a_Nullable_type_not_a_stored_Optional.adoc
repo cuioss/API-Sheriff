@@ -252,6 +252,6 @@ is indistinguishable from a bug in the check.
 
 == References
 
-* `doc/architecture.adoc` — the api-sheriff production type model
+* `doc/architecture/README.adoc` — the api-sheriff production type model
 * `doc/configuration.adoc` — the configuration record surface this decision reshapes
 * link:0005-module-structure.adoc[ADR-0005] — module boundaries the type model spans

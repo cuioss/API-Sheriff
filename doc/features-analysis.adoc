@@ -123,7 +123,7 @@ set of things well, with zero mandatory external dependencies.
 | *Prometheus metrics + OpenTelemetry hooks*
 | Universal across all six competitors. Prometheus ships from the start, exposed on a separate
   management port (Keycloak pattern) and fed by the in-process event counter; the OpenTelemetry
-  tracing hook is *post-MVP* (see link:architecture.adoc#_metrics[Metrics]).
+  tracing hook is *post-MVP* (see link:architecture/observability-and-errors.adoc#_metrics[Metrics]).
 
 | *Security-response-header middleware*
 | Traefik/KrakenD headers middleware: HSTS, `X-Content-Type-Options: nosniff`, frame-deny,
@@ -134,7 +134,7 @@ set of things well, with zero mandatory external dependencies.
   link:adr/0008-data-plane-transport.adoc[ADR-0008]: retry and the breaker are per-route
   programmatic SmallRye Fault-Tolerance guards (retry stream-aware), timeouts are options on
   the shared Vert.x data-plane client -- component ownership is stated in
-  link:architecture.adoc#_downstream_client[Architecture -- Downstream Client].
+  link:architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client].
 
 | *WebSocket + HTTP/2 + gRPC + GraphQL in OSS, from the start*
 | Required from day one (<<_initial_scope,Initial Scope>>). gRPC rides on HTTP/2 and
@@ -285,14 +285,14 @@ Secondary differentiators worth claiming:
 * *OSS token mediation on the JVM* -- APISIX has it only in Lua; Traefik/Kong only in EE.
 * *WebSocket in OSS* -- enterprise-only in KrakenD.
 * *First-class in-process security event system* feeding metrics/audit with no Elasticsearch
-  dependency (see link:architecture.adoc#_event_system[Event System]).
+  dependency (see link:architecture/observability-and-errors.adoc#_event_system[Event System]).
 
 [[_initial_scope]]
 == Initial Scope
 
 The first release ships a fixed set of protocols and one configuration mode. This section is that
 scope statement. The per-protocol handling is in
-link:architecture.adoc#_protocol_support[Architecture -- Protocol Support], and the per-route
+link:architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support], and the per-route
 `protocol` field is in link:configuration.adoc#_protocols[Configuration -- Protocols].
 
 === Protocols
@@ -321,7 +321,7 @@ link:architecture.adoc#_protocol_support[Architecture -- Protocol Support], and 
 Deferring HTTP/3 and dynamic configuration keeps the initial security-review surface small, in line
 with the lightweight posture this analysis argues for. The scope statement does not change BFF
 behaviour: for every BFF concern `TokenSheriff/doc/client` is the authority over the manifest (see
-link:variants/README.adoc[Variants] and link:architecture.adoc#_authentication_layer[Architecture]).
+link:variants/README.adoc[Variants] and link:architecture/authentication-and-bff.adoc#_authentication_layer[Architecture]).
 
 == Summary Matrix
 

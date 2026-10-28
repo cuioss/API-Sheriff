@@ -13,7 +13,7 @@ project compiles *and* runs on Java 25.
 == Context
 
 API Sheriff scales with a *virtual-thread-per-request* model (see
-link:../architecture.adoc#_threading_model[Architecture -- Threading Model]). The value of
+link:../architecture/runtime-and-dependencies.adoc#_threading_model[Architecture -- Threading Model]). The value of
 virtual threads for a gateway is highest when blocking work -- downstream HTTP calls, TLS,
 filtering -- does not pin the carrier platform thread.
 

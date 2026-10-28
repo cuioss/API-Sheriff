@@ -8,7 +8,7 @@ data-plane edge: the `ProtocolProcessor` SPI, the boot-time registry that binds 
 processor, and the per-request *protocol-dispatch seam* in the edge that routes WebSocket and gRPC
 requests down their specialised paths. It describes *how the code is organised* and *how to add a
 processor*; the protocol semantics are defined once in
-link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support], and the design
+link:../architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support], and the design
 decisions in link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] and
 link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016].
 
@@ -81,7 +81,7 @@ compile error rather than a request left unanswered.
 
 Each arm is a method of `TerminalDispatch` in `de.cuioss.sheriff.gateway.edge.terminal`, which hands
 the dispatch to the stages of `edge.upstream` and `edge.relay` (see
-link:../architecture.adoc#_edge_package_structure[Architecture -- Edge Package Structure]):
+link:../architecture/README.adoc#_edge_package_structure[Architecture -- Edge Package Structure]):
 
 === WebSocket -- handshake and opaque relay
 
@@ -154,7 +154,7 @@ then relays the upstream response -- including its `grpc-status` / `grpc-message
   Boundary]). `GrpcStatusMapper` renders every other gateway rejection as a *trailers-only* gRPC
   response (HTTP `200`, `application/grpc`, `grpc-status` / `grpc-message`) rather than
   problem+json -- an h2-negotiation failure maps to `UNAVAILABLE`. See
-  link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections].
+  link:../architecture/observability-and-errors.adoc#_grpc_error_contract[Architecture -- gRPC rejections].
 
 === HTTP / GraphQL -- streamed relay
 
@@ -189,8 +189,8 @@ To add a future protocol:
 
 == See also
 
-* link:../architecture.adoc#_protocol_support[Architecture -- Protocol Support] -- protocol semantics.
-* link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections] -- the trailers-only mapping.
+* link:../architecture/terminal-actions-and-protocols.adoc#_protocol_support[Architecture -- Protocol Support] -- protocol semantics.
+* link:../architecture/observability-and-errors.adoc#_grpc_error_contract[Architecture -- gRPC rejections] -- the trailers-only mapping.
 * link:../adr/0015-websocket-origin-failclosed-allowlist.adoc[ADR-0015] -- WebSocket Origin fail-closed allowlist.
 * link:../adr/0016-grpc-trailers-only-rejection-mapping.adoc[ADR-0016] -- gRPC trailers-only rejection mapping.
 * link:../user/protocol-routes.adoc[Operator Guide -- Protocol Routes] -- how operators configure these routes.

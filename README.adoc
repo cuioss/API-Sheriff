@@ -151,7 +151,7 @@ docker run -p 8443:8443 -p 127.0.0.1:9000:9000 \
   has exactly one port, so supplying `QUARKUS_MANAGEMENT_SSL_CERTIFICATE_*` above converts 9000
   itself to HTTPS; there is no simultaneous plain-HTTP listener. It is additionally bound to
   `127.0.0.1` (loopback only) so the unauthenticated management interface is not exposed on all
-  host interfaces, matching the security posture documented in `doc/architecture.adoc`
+  host interfaces, matching the security posture documented in `doc/architecture/observability-and-errors.adoc`
 
 *Both context paths — the data-plane one and the management one — are fixed when the image is
 built*, so the matching `QUARKUS_*_ROOT_PATH` environment variables are routing-inert against a
@@ -191,7 +191,7 @@ absent state: `headers_allow: []` is a positive-list naming nothing, and keeps f
 +
 *Mitigation, one line:* declare a positive-list (`headers_allow` / `query_allow`) on any route
 whose previous no-block posture you were relying on. See
-link:doc/architecture.adoc#_forward_policy[Architecture -- Forward Policy] and
+link:doc/architecture/routing-and-forwarding.adoc#_forward_policy[Architecture -- Forward Policy] and
 link:doc/adr/0036-Forward_filtering_is_a_three-mode_policy_inside_an_authorised_route.adoc[ADR-0036].
 
 No cookie crosses a route by default (behaviour change on upgrade)::

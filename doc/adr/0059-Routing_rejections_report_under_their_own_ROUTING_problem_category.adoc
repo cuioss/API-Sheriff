@@ -303,10 +303,10 @@ never sees.
   the negotiated HTML error page and its exhaustive classification
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]:
   the uniform `404` that answers the verb gate before the trust boundary
-* link:../architecture.adoc#_error_contract[Architecture -- Error Contract]: the consolidated status
+* link:../architecture/observability-and-errors.adoc#_error_contract[Architecture -- Error Contract]: the consolidated status
   mapping
-* link:../architecture.adoc#_html_error_pages[Architecture -- Negotiated HTML error pages]
-* link:../architecture.adoc#_metrics[Architecture -- Metrics]: the label set of `sheriff_errors_total`
+* link:../architecture/observability-and-errors.adoc#_html_error_pages[Architecture -- Negotiated HTML error pages]
+* link:../architecture/observability-and-errors.adoc#_metrics[Architecture -- Metrics]: the label set of `sheriff_errors_total`
 * link:../user/portal.adoc[Application Portal and HTML Error Pages]: the operator guide
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/events/EventCategory.java` and
   `EventType.java`: the category, its slug and its members

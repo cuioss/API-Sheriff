@@ -27,7 +27,8 @@ import io.vertx.core.http.HttpServerResponse;
 
 /**
  * Maps a gateway rejection on a {@code protocol: grpc} route to the canonical gRPC status and renders
- * it as a <strong>trailers-only</strong> gRPC response (architecture.adoc § gRPC error contract).
+ * it as a <strong>trailers-only</strong> gRPC response
+ * ({@code doc/architecture/observability-and-errors.adoc} § gRPC error contract).
  * <p>
  * A gRPC client cannot consume an {@code application/problem+json} body — the RPC runtime only
  * surfaces the {@code grpc-status} carried in the response headers/trailers. So a gateway rejection is

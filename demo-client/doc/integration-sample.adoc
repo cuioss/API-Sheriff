@@ -219,7 +219,7 @@ What this means for you as an integrator: *treat access logs and `Referer`-beari
 callback path as sensitive*, and do not add third-party analytics or error reporting that captures
 full URLs on `/bff/callback`. Nothing else in your application is affected -- the code never
 reaches your code. The full statement is in
-link:../../doc/architecture.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
+link:../../doc/architecture/authentication-and-bff.adoc#_oidc_callback_response_mode[Architecture -- OIDC callback response mode].
 ====
 
 == The Four Identity-Disclosure States

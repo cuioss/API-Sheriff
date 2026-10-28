@@ -167,6 +167,6 @@ capabilities, and makes the relationship a component with a name.
 * link:0024-Inbound_filter_modes_minimal_is_a_partial_disable_retaining_the_body_cap_and_path_allowlist_and_is_refused_on_authenticated_and_BFF_routes.adoc[ADR-0024 -- Inbound filter modes] -- which check lives at which stage.
 * link:0029-The_GET-with-body_opt-in_relaxes_only_the_Content-Length_leg_and_is_necessarily_gateway-wide.adoc[ADR-0029 -- The GET-with-body opt-in] -- a gate that re-asserts its own bound.
 * link:0054-The_boot_validator_judges_header_matchers_exactly_as_the_runtime_evaluates_them_and_a_matcher_set_that_can_never_hold_is_refused.adoc[ADR-0054 -- Header matchers] -- the sibling rule for boot-time and runtime reasoning about the same input.
-* link:../architecture.adoc[Architecture] -- the inbound pipeline's stages and their position relative to route selection.
+* link:../architecture/README.adoc[Architecture] -- the inbound pipeline's stages and their position relative to route selection.
 * link:../configuration.adoc#_pre_route_header_carve_outs[Configuration Reference -- Pre-route header-name carve-outs] -- the operator-facing carve-outs and their per-site bounds.
 * `SecurityConfigurations`, `BasicChecksStage`, `ThoroughChecksStage` -- the implementation; `ThoroughChecksStageTest` -- the test of the per-route carve-out seeding.

@@ -44,7 +44,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Contract of {@link GrpcStatusMapper}: the canonical HTTP-status → gRPC-status mapping (one row per
- * rejection cause, architecture.adoc § gRPC error contract) and the trailers-only rejection render
+ * rejection cause, {@code doc/architecture/observability-and-errors.adoc} § gRPC error contract) and the trailers-only rejection render
  * (HTTP {@code 200}, {@code content-type: application/grpc}, {@code grpc-status} / {@code grpc-message},
  * no DATA frame). The render is exercised over a live Vert.x server so a real
  * {@code HttpServerResponse} is mutated exactly as production does.

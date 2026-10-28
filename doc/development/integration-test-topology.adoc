@@ -261,7 +261,7 @@ overlay's `nginx-static` and mounts the same two files:
 It exists because no other upstream of the default stack answers an upload early: `go-httpbin` reads
 and echoes the whole body before it answers. An HTTP/2 upload answered while its body is still open
 is exactly the shape the gateway ends itself, with a `NO_ERROR` stream reset after the complete
-response (link:../architecture.adoc#_http2_post_response_reset[Architecture -- post-response reset]).
+response (link:../architecture/tls-and-inbound-security.adoc#_http2_post_response_reset[Architecture -- post-response reset]).
 Its one consumer is `Http2EarlyResponseResetIT`, driven against the primary instance, which is also
 the one instance that gates its start on this backend being healthy. Every other instance loads the
 route, because the endpoints directory is shared, and never dials it.

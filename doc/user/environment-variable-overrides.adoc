@@ -520,7 +520,7 @@ empty the resolver picks the one validator the gateway produces. That settles bo
 * *The metrics collector is kept.* `JwtMetricsCollector` observes that same validator and publishes
   its security events as `sheriff_token_validation_errors_total` and
   `sheriff_token_validation_success_operations_total` (see
-  link:../architecture.adoc#_metrics[Metrics]). Its schedule is the reason the Quarkus scheduler
+  link:../architecture/observability-and-errors.adoc#_metrics[Metrics]). Its schedule is the reason the Quarkus scheduler
   runs in production; each tick logs at `DEBUG` only.
 
 Read that `jwks` datum for what it is: whether *every configured issuer has a loaded key set*. The

@@ -223,8 +223,8 @@ gateway owns and verifies at boot.
   data model and the supported Qute subset
 * link:../configuration.adoc#_portal[Configuration Reference -- `portal`] and
   link:../configuration.adoc#_endpoint_catalog[`endpoint.catalog`]
-* link:../architecture.adoc#_application_portal[Architecture -- Application portal] and
-  link:../architecture.adoc#_html_error_pages[Negotiated HTML error pages]
+* link:../architecture/README.adoc#_application_portal[Architecture -- Application portal] and
+  link:../architecture/observability-and-errors.adoc#_html_error_pages[Negotiated HTML error pages]
 * link:../security-threat-model.adoc#_html_surface_failure_catalogue[Threat model -- HTML surface]
   (HTML-01 to HTML-06)
 * `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/portal/PortalRenderer.java`: the standalone

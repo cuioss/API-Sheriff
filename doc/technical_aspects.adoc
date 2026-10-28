@@ -84,7 +84,7 @@ pipeline orders them differently, and the order is deliberate:
 * *Header*: length -> character -> normalize -> pattern -> allow/block list -- *no decoding
   stage at all* (header values are not percent-encoded).
 
-Configuration via `SecurityConfiguration` with sensible defaults (path length 4096, parameter count 100, header count 50, cookie count 20, body size 5 MB).
+Configuration via `SecurityConfiguration` with sensible defaults (path length 4096, parameter count 100, header count 50, body size 5 MB).
 
 === Forwarded-Header Resolution
 
@@ -189,7 +189,7 @@ strict rotation (ADR-0046). It wires
 `token-sheriff-validation` internally to validate every retrieved token. The authoritative
 API and requirement surface is `TokenSheriff/doc/client` (`CLIENT-1..22`); the split between
 engine and BFF responsibilities is stated in
-link:architecture.adoc#_authentication_layer[Architecture -- Authentication Layer].
+link:architecture/authentication-and-bff.adoc#_authentication_layer[Architecture -- Authentication Layer].
 
 == Logging
 

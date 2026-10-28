@@ -9,7 +9,7 @@ Accepted. Amended for untrusted callers by ADR-0073 -- see <<amendment-adr-0073>
 == Context
 
 The gateway's standard rejection envelope is an `application/problem+json` (RFC 9457) response
-(link:../architecture.adoc#_error_contract[error contract]). That envelope is unusable on a
+(link:../architecture/observability-and-errors.adoc#_error_contract[error contract]). That envelope is unusable on a
 `protocol: grpc` route: a gRPC client's runtime does not surface an arbitrary HTTP response body
 to the caller -- it surfaces the *gRPC status* carried in the response *trailers* (`grpc-status`,
 `grpc-message`). A gateway that answered a rejected gRPC request with a problem+json *body* would
@@ -31,7 +31,7 @@ Gateway-generated rejections on a `protocol: grpc` route are emitted as *trailer
 responses -- an HTTP/2 response whose HEADERS frame carries `grpc-status` (and `grpc-message`)
 with *no DATA frame and no body* (the gRPC "Trailers-Only" case). The gateway maps the same
 rejection it would render as an HTTP status on an HTTP route onto the canonical gRPC status,
-defined *doc-first* in the link:../architecture.adoc#_grpc_error_contract[error contract] in the
+defined *doc-first* in the link:../architecture/observability-and-errors.adoc#_grpc_error_contract[error contract] in the
 same PR as the code:
 
 [cols="1,1,2"]
@@ -90,9 +90,9 @@ missing scope, `UNAVAILABLE` and `DEADLINE_EXCEEDED` at dispatch -- and for ever
 
 == References
 
-* link:../architecture.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)]
+* link:../architecture/observability-and-errors.adoc#_grpc_error_contract[Architecture -- gRPC rejections (trailers-only)]
   -- the doc-first mapping table this decision records.
-* link:../architecture.adoc#_error_contract[Architecture -- Error Contract] -- the HTTP-route
+* link:../architecture/observability-and-errors.adoc#_error_contract[Architecture -- Error Contract] -- the HTTP-route
   problem+json envelope this decision translates for gRPC.
 * link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
   -- the uniform `404` that answers a pre-trust rejection on a gRPC route.

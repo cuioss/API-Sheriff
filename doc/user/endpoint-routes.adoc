@@ -1037,7 +1037,7 @@ deployment that never writes it keeps the behaviour shown here.
   opens a new one. Not applied to bodyless requests or
   `protocol: grpc` routes; not configurable. Shorter than the upstream guard's 30 s timeout, which
   bounds the dispatch until the upstream's response head. See
-  link:../architecture.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout].
+  link:../architecture/tls-and-inbound-security.adoc#_request_body_idle_timeout[Architecture -- request-body idle timeout].
 
 | Request-body deadline
 | 25 s +
@@ -1050,7 +1050,7 @@ deployment that never writes it keeps the behaviour shown here.
   body is read. The deadline does not reset an upstream that is not taking data, but a body that
   upstream reads again after the deadline is ended then. Not applied to bodyless requests or
   `protocol: grpc` routes; not configurable. See
-  link:../architecture.adoc#_request_body_deadline[Architecture -- request-body deadline].
+  link:../architecture/tls-and-inbound-security.adoc#_request_body_deadline[Architecture -- request-body deadline].
 
 | gRPC stream-idle timeout
 | 5 min
@@ -1059,7 +1059,7 @@ deployment that never writes it keeps the behaviour shown here.
   `grpc-message: stream-idle-timeout`. A frame in either direction keeps the call open; HTTP/2 `PING`
   frames do not count, and the call's `grpc-timeout` is not honoured. Before the response headers the
   upstream guard's 30 s timeout bounds the call instead. Not configurable. See
-  link:../architecture.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
+  link:../architecture/tls-and-inbound-security.adoc#_grpc_stream_idle_bound[Architecture -- gRPC stream-idle bound].
 
 | Unrouted-`404` response floor
 | 50 ms + a random jitter below 20 ms +

@@ -35,7 +35,8 @@ import org.jspecify.annotations.Nullable;
  * error, security, and upstream signals as Micrometer meters on the management port, exposed
  * as Prometheus data via {@code quarkus-micrometer-registry-prometheus}.
  * <p>
- * The meter names are the fixed contract named in {@code architecture.adoc} § Metrics:
+ * The meter names are the fixed contract named in
+ * {@code doc/architecture/observability-and-errors.adoc} § Metrics:
  * <ul>
  *   <li>{@value #REQUESTS_TOTAL}{@code {route,method,status_family}} — the "paths" view;</li>
  *   <li>{@value #REQUEST_DURATION_SECONDS}{@code {route}} — per-route latency distribution;</li>

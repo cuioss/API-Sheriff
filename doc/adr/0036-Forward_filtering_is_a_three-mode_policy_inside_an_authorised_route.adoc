@@ -297,5 +297,5 @@ not announced by a boot WARN.
 * link:0037-The_gateway-owned_header_sets_are_enumerated_per_direction_and_bounded_by_knowledge.adoc[ADR-0037] — the gateway-owned sets that make the forward-all baseline safe
 * link:0008-data-plane-transport.adoc[ADR-0008] — the data-plane transport the forward stage feeds
 * link:0067-Every_policy_block_is_one_declaration_resolved_nearest_declared_scope_wins_with_whole-block_replacement.adoc[ADR-0067] — the resolution rule and the endpoint scope Amendment A1 records
-* `doc/architecture.adoc` — the request pipeline and the layer that enforces deny-by-default
+* `doc/architecture/routing-and-forwarding.adoc` — the request pipeline and the layer that enforces deny-by-default
 * `doc/configuration.adoc` — the `forward` block's operator-facing reference

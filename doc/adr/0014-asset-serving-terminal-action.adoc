@@ -82,6 +82,17 @@ the gateway override a hostile upstream `Content-Type`, strip an upstream `Set-C
   confinement, and the gateway-owned response envelope -- never by a forward list -- so no asset
   descriptor needs a `forward` block added to hold its posture.
 
+[[_shipped_surface_reconciliation]]
+=== Shipped-surface reconciliation
+
+The `source: upstream` bullet in the Decision section above originally called for sharing the Vert.x
+data-plane client, circuit breaker, and `upstream_defaults` with proxy routes. The shipped
+`UpstreamAssetSource` keeps the shared topology model (`base_url` / alias + `asset.path` + confined
+sub-path) and the GW-05 SSRF controls (scheme allowlist, `followRedirects(NEVER)`, bounded response
+byte cap, and the gateway-owned `AssetResponseEnvelope`), but executes the bounded buffered fetch
+through a dedicated JDK `HttpClient` (5 s connect / 10 s read timeout) rather than the streaming
+Vert.x `UpstreamClientPool` and `UpstreamGuards`.
+
 [[amendment-a1]]
 == Amendment A1 -- redirect as a third terminal action and exact-path routes
 

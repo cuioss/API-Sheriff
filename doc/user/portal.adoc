@@ -400,5 +400,5 @@ An error page:
   link:../configuration.adoc#_endpoint_catalog[`endpoint.catalog`]
 * link:bff-session.adoc[Server-Session BFF] and link:bff-cookie.adoc[Cookie-Based BFF] for the
   `oidc` block the signed-in state and the links depend on
-* link:../architecture.adoc#_request_pipeline_stages[Architecture -- Request Pipeline Stages] and
-  link:../architecture.adoc#_error_contract[Error Contract]
+* link:../architecture/README.adoc#_request_pipeline_stages[Architecture -- Request Pipeline Stages] and
+  link:../architecture/observability-and-errors.adoc#_error_contract[Error Contract]

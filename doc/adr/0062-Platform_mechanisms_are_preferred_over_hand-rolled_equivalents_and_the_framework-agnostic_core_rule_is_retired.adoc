@@ -288,4 +288,4 @@ command mode in the ADR-0061 section above.
 * link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018] -- the session contract, the updating write and the session amendments
 * link:0057-Session_routes_obtain_their_declared_scopes_by_refreshing_inside_the_grant_and_widening_the_live_session_outside_it.adoc[ADR-0057] -- scope refresh and session widening, and its session amendment
 * link:0061-Offline_configuration_validation_is_a_pre-boot_flag_on_the_gateway_binary_over_the_boots_own_pipeline_seam.adoc[ADR-0061] -- the offline check whose pre-boot path the narrowed gate protects
-* link:../architecture.adoc#_bff_session_runtime[Architecture -- BFF runtime] -- where `BffRuntimeProducer` assembles the session store and binding
+* link:../architecture/authentication-and-bff.adoc#_bff_session_runtime[Architecture -- BFF runtime] -- where `BffRuntimeProducer` assembles the session store and binding

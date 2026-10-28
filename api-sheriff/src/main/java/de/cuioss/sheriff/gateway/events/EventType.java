@@ -27,7 +27,8 @@ import org.jspecify.annotations.Nullable;
  * counters only. <strong>Configuration events</strong> carry {@link EventCategory#CONFIGURATION}
  * but also have no HTTP mapping: they occur at boot and abort startup rather than
  * producing a response. <strong>Request-time failures</strong> carry a category and a
- * positive HTTP status, matching the error contract in {@code architecture.adoc}.
+ * positive HTTP status, matching the error contract in
+ * {@code doc/architecture/observability-and-errors.adoc}.
  *
  * @author API Sheriff Team
  * @since 1.0

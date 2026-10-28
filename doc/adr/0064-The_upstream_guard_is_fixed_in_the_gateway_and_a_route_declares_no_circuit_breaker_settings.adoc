@@ -162,7 +162,7 @@ and because the clients that need spreading are the ones that implement their ow
   decision amends
 * link:0062-Platform_mechanisms_are_preferred_over_hand-rolled_equivalents_and_the_framework-agnostic_core_rule_is_retired.adoc[ADR-0062] --
   the platform-mechanism rule SmallRye Fault Tolerance is used under
-* link:../architecture.adoc#_downstream_client[Architecture -- Downstream Client] -- the resilience
+* link:../architecture/terminal-actions-and-protocols.adoc#_downstream_client[Architecture -- Downstream Client] -- the resilience
   description and the `503` error row
 * link:../quality-report/code-correctness.adoc[Code Correctness Report] -- DP-2, the inert upstream
   keys

@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Verifies the Prometheus metrics surface is exposed on the management port — at {@code metrics}
  * beneath the configured {@code quarkus.management.root-path}, off the public data-plane port — per
- * {@code architecture.adoc} § Metrics.
+ * {@code doc/architecture/observability-and-errors.adoc} § Metrics.
  * <p>
  * Traffic is driven through the {@code /proxy} route first so the registry has request activity to
  * report, then the management endpoint is scraped and asserted to return the Prometheus exposition
@@ -152,7 +152,7 @@ class MetricsIT extends BaseIntegrationTest {
                 "sheriff_upstream_duration_seconds must be emitted once the downstream call completes");
 
         // Assert — the bounded labels are wired: the config-fixed route id and the status family
-        // (never the raw status), keeping label cardinality bounded per architecture.adoc § Metrics.
+        // (never the raw status), keeping label cardinality bounded per observability-and-errors.adoc § Metrics.
         assertTrue(body.contains("route=\"httpbin-proxy\""),
                 "the request counter must carry the config-fixed, bounded route label");
         assertTrue(body.contains("status_family=\"2xx\""),
