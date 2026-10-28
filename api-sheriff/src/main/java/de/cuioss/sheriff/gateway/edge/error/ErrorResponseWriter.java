@@ -577,9 +577,11 @@ public final class ErrorResponseWriter {
             refusalAtNanos = floor.atNanos();
             releaseAtNanos = laterOf(OptionalLong.of(floor.atNanos()), releaseAtNanos);
         }
-        long refusalAt = refusalAtNanos;
-        releaseAtNanos.ifPresentOrElse(
-                releaseAt -> ResponseDelay.endNoEarlierThan(ctx, releaseAt, refusalAt, answer), answer);
+        if (releaseAtNanos.isPresent()) {
+            ResponseDelay.endNoEarlierThan(ctx, releaseAtNanos.getAsLong(), refusalAtNanos, answer);
+        } else {
+            answer.run();
+        }
     }
 
     /**
