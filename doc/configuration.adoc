@@ -4489,7 +4489,8 @@ before the trust boundary, each under its true event whatever status it is answe
 whose count reaches the threshold *trips*, and the `action` decides what the trip changes. The block
 and every key are optional: an omitted block or key takes its default, so *detection runs on every
 gateway and a trip changes no answer* unless an operator opts into `block` or `delay`. The mechanism
-is described in link:architecture.adoc#_per_source_detection[Architecture -- Per-Source Detection]
+is described in
+link:architecture/tls-and-inbound-security.adoc#_per_source_detection[Architecture -- Per-Source Detection]
 and its contract in
 link:development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract].
 

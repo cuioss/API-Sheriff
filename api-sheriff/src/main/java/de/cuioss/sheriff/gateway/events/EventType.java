@@ -27,9 +27,10 @@ import org.jspecify.annotations.Nullable;
  * counters only. <strong>Configuration events</strong> carry {@link EventCategory#CONFIGURATION}
  * but also have no HTTP mapping: they occur at boot and abort startup rather than
  * producing a response. <strong>Request-time failures</strong> carry a category and a
- * positive HTTP status, matching the error contract in {@code doc/architecture/observability-and-errors.adoc}. The one
- * request-time failure without a status of its own is {@link #PRE_TRUST_INTERNAL_FAILURE}: it is
- * counted under its own name and answered as {@link #NO_ROUTE_MATCHED}.
+ * positive HTTP status, matching the error contract in
+ * {@code doc/architecture/observability-and-errors.adoc}. The one request-time failure without a
+ * status of its own is {@link #PRE_TRUST_INTERNAL_FAILURE}: it is counted under its own name and
+ * answered as {@link #NO_ROUTE_MATCHED}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -186,9 +187,9 @@ public enum EventType {
     /**
      * A request was refused because its source is blocked under {@code enumeration_detection}
      * action {@code block}, or, under action {@code delay}, because the tripped source's share of the
-     * held-answer sub-budget is used up. Raised by {@code SourceGate} on the event loop before edge admission, so
-     * the refusal holds no admission permit, no virtual thread and no timer; the edge answers
-     * {@code 429} with {@code Retry-After}.
+     * held-answer sub-budget is used up. Raised by {@code SourceGate} on the event loop before edge
+     * admission, so the refusal holds no admission permit, no virtual thread and no timer; the edge
+     * answers {@code 429} with {@code Retry-After}.
      */
     SOURCE_BLOCKED(EventCategory.RATE_LIMITING, 429),
 

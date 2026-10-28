@@ -280,8 +280,8 @@ admission.
 
 * link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract] --
   keying, bounds, state machine, query API and emit shape
-* link:../architecture.adoc#_per_source_detection[Architecture -- Per-Source Detection] and
-  link:../architecture.adoc#_http2_transport_bounds[the HTTP/2 transport bounds]
+* link:../architecture/tls-and-inbound-security.adoc#_per_source_detection[Architecture -- Per-Source Detection] and
+  link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[the HTTP/2 transport bounds]
 * link:../configuration.adoc#_enumeration_detection[Configuration -- `enumeration_detection`]
 * link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
   sources and enumeration detection] -- the operator guide

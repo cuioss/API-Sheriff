@@ -361,7 +361,7 @@ statement that the floor was a reasoned choice that had not been measured.
   -- the derived sub-budget the held-answer sub-budget of Amendment A1 follows
 * link:0063-An_unknown_key_id_triggers_one_bounded_JWKS_refresh_per_issuer_and_the_refresh_cadence_is_configurable.adoc[ADR-0063]
   -- the off-thread key-set refresh that keeps the unknown-key-id path inside the first floor step
-* link:../architecture.adoc[Architecture] -- the error contract and the rejection flow
+* link:../architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture] -- the error contract and the rejection flow
 * link:../configuration.adoc[Configuration Reference] -- `security_defaults.uniform_not_found`
 * link:../security-threat-model.adoc[Security Threat Model] -- the existence-oracle entry
 * link:../user/endpoint-routes.adoc[Endpoint Routes] -- why an existing route answers `404`

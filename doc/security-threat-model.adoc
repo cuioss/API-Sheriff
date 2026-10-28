@@ -2248,8 +2248,9 @@ problem body or its HTML error page, the response headers the request carried be
 selected, and never a trailers-only gRPC status. The closed set of events, every exclusion and its
 reason, and the definition of "identical" are recorded in
 link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-and in link:architecture.adoc#_trust_boundary_rejections[Architecture -- rejections before the
-trust boundary]. An unexpected internal failure in the same window is answered the same way and
+and in
+link:architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture --
+rejections before the trust boundary]. An unexpected internal failure in the same window is answered the same way and
 counted under `PRE_TRUST_INTERNAL_FAILURE`, with its stack trace at `DEBUG` and no `WARN`, so a
 crafted input that makes a stage fail cannot turn a routed address into a `500`. It carries no weight
 on the per-source recon ledger

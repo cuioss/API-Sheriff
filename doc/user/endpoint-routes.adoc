@@ -1133,7 +1133,7 @@ deployment that never writes it keeps the behaviour shown here.
   window is ended with `GOAWAY ENHANCE_YOUR_CALM`, and every other connection is served on. Pinned at
   the transport's own default and never raised. Only resets the client sends count, never the
   gateway's own. Not configurable. See
-  link:../architecture.adoc#_http2_transport_bounds[Architecture -- HTTP/2 transport bounds].
+  link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[Architecture -- HTTP/2 transport bounds].
 
 | Request-body idle timeout
 | 10 s
