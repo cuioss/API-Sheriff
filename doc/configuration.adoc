@@ -4565,13 +4565,13 @@ would refuse or slow all of those clients when one of them scans. Detection is t
 and visible through the trip WARN and metric, and enforcement is a decision the operator takes for
 the deployment. A scan cannot exhaust the gateway meanwhile: the answers it causes wait on the
 held-answer sub-budget, not on the general admission pool
-(link:adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0075]).
+(link:adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0076]).
 ====
 
 *What a source is.* A source is the pair of an address and a host:
 
 * *The address* is the client address a trusted forwarder reported, when the request comes from a peer
-  listed in <<_forwarded,`forwarded.trusted_proxies`>> -- the same address the gateway regenerates
+  listed in <<_forwarded_headers,`forwarded.trusted_proxies`>> -- the same address the gateway regenerates
   `X-Forwarded-For` from. For every other peer it is the TCP peer address, and the peer's
   `X-Forwarded-For` is never read. An IPv6 address is reduced to its `/64` prefix; an absent or
   unparseable address counts as the one source `unknown`.
@@ -4620,9 +4620,9 @@ it, remove the key, or accept that nothing it states is enforced.
 
 The block is kept, rather than removed as the inert `circuit_breaker` block was, because per-route
 rate limiting is planned and the boot WARN already keeps the block from reading as enforced
-(link:adr/0076-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0076]). A
+(link:adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]). A
 future implementation builds on the per-source detection substrate
-(link:adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075])
+(link:adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076])
 rather than on these two fields as they stand.
 
 === `metadata`

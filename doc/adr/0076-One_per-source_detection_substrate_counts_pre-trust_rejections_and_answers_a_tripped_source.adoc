@@ -1,4 +1,4 @@
-= ADR-0075: One per-source detection substrate counts pre-trust rejections and answers a tripped source
+= ADR-0076: One per-source detection substrate counts pre-trust rejections and answers a tripped source
 :toc: left
 :toclevels: 3
 :toc-title: Table of Contents
@@ -261,7 +261,7 @@ admission.
   inserting at the same moment. The per-tag contributions of a key are bounded by the tag enum.
 * The error contract gains the `rate-limiting` category and its `429`. That `429` comes only from
   this substrate. The per-route `rate_limit` block is still not enforced
-  (link:0076-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0076]).
+  (link:0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]).
 * The design accepts these properties:
 ** Behind a load balancer that `forwarded.trusted_proxies` does not name, every client is one
    source. Under `block`, one prober then blocks all of them. The operator settles
@@ -295,7 +295,7 @@ admission.
   -- the gateway's own `NO_ERROR` resets the Rapid-Reset guard never counts
 * link:0044-Trusted-proxy_breadth_is_warned_beyond_one_provisioned_network_and_refused_only_at_the_whole_address_space.adoc[ADR-0044]
   -- the trusted-proxy set the source resolution relies on
-* link:0076-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0076] -- the
+* link:0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077] -- the
   per-route `rate_limit` block, which a future implementation builds on this substrate
 * link:../security-threat-model.adoc#gw-08[Threat model -- GW-08] and
   link:../security-threat-model.adoc#gw-16[GW-16]

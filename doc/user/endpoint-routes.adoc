@@ -163,7 +163,7 @@ endpoint:
       rate_limit: { requests_per_second: 100, burst: 20 }
                                    # planned, not implemented: parsed, enforced by
                                    #   nothing, never causes a 429, and named at boot
-                                   #   by the WARN ApiSheriff-140 (ADR-0076)
+                                   #   by the WARN ApiSheriff-140 (ADR-0077)
 ----
 
 The manifest's `/auth` -> IdP and `/token` -> IdP mappings are just another endpoint file bound to
@@ -849,7 +849,7 @@ client behind a NAT or a load balancer, so stopping or slowing a source is left 
 *Before you switch to `block` or `delay`.* Make sure one source address is one client:
 
 . If the gateway sits behind a load balancer or reverse proxy, list it in `forwarded.trusted_proxies`
-  (see link:../configuration.adoc#_forwarded[Configuration -- `forwarded`]). Otherwise every client
+  (see link:../configuration.adoc#_forwarded_headers[Configuration -- `forwarded`]). Otherwise every client
   arrives from the balancer's address, one scanning client trips that address, and `block` answers
   `429` to all of them.
 . If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
@@ -869,7 +869,7 @@ operator-side failure is not caller behaviour and carries no detection weight, s
 through an outage are never tripped by it. `enabled: false` switches detection off completely. The counts are kept per gateway
 instance and are cleared by a restart, so a source spreading its requests over several instances is
 counted on each separately
-(link:../adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075]).
+(link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
 
 [[_endpoint_scopes]]
 === Endpoint scopes (`endpoint.scopes`)

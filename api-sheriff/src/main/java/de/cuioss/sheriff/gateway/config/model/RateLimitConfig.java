@@ -25,7 +25,7 @@ import org.jspecify.annotations.Nullable;
  * boot with the WARN {@code ApiSheriff-140} ({@code LimitRules.validateRateLimitNotEnforced}). It is
  * never enforced: no component reads it at request time, so no rate limit is applied and the block
  * never causes a {@code 429}. A future implementation builds on the shipped per-source detection
- * substrate ({@code de.cuioss.sheriff.gateway.detection.SourceLedger}, ADR-0075) rather than on these
+ * substrate ({@code de.cuioss.sheriff.gateway.detection.SourceLedger}, ADR-0076) rather than on these
  * two fields as they stand; every {@code 429} the gateway sends today comes from that substrate
  * (the {@code block} action, and under {@code delay} a tripped source whose held-answer share is used up).
  *

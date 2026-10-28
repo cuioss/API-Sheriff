@@ -52,7 +52,7 @@ problem+json contract enforces for HTTP routes. The `429` (rate limiting) has no
 `429` the gateway sends answers a source blocked by per-source detection before route selection, so
 no route -- and no `protocol: grpc` -- is known when it is written, and it is always the
 `rate-limiting` problem document
-(link:0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075]).
+(link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
 
 == Consequences
 

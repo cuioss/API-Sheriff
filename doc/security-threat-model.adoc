@@ -2254,7 +2254,7 @@ rejections before the trust boundary]. An unexpected internal failure in the sam
 counted under `PRE_TRUST_INTERNAL_FAILURE`, with its stack trace at `DEBUG` and no `WARN`, so a
 crafted input that makes a stage fail cannot turn a routed address into a `500`. It carries no weight
 on the per-source recon ledger
-(link:adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075]):
+(link:adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]):
 an operator-side failure is not caller behaviour and carries no detection weight. Every unrouted
 `404`, genuine or resolved, leaves the edge on the same step rule, written from a Vert.x timer: no
 earlier than a fixed floor plus a random jitter after admission, and an answer whose processing ran

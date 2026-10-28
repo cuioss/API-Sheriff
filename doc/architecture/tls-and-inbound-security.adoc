@@ -278,7 +278,7 @@ bounds belong to one connection and are deliberately not keyed by the per-source
 (<<_per_source_detection>>), whose key is a source address. The forced-h2 gRPC upstream leg opens at
 most one upstream stream per admitted inbound request, so it inherits them
 (link:../security-threat-model.adoc#gw-08[GW-08],
-link:../adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#http2-on-the-transport[ADR-0075]).
+link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#http2-on-the-transport[ADR-0076]).
 
 [[_http2_unread_upload_release]]
 *An HTTP/2 upload the gateway does not read returns its credit when its stream ends.* An upload
@@ -383,7 +383,7 @@ a threshold as the `enumeration_detection` block says. One substrate does the co
 framework-free package `de.cuioss.sheriff.gateway.detection`. Its written contract is
 link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract],
 and the decision with its rejected alternatives is
-link:../adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0075].
+link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076].
 
 *Keying.* `SourceKeyResolver` keys a request by `(source, host)`. The source is the client address a
 trusted forwarder reported -- read only for a peer `forwarded.trusted_proxies` trusts, through a
@@ -462,7 +462,7 @@ opt-in. The availability cost of a scan does not depend on this default: a held 
 general admission pool for its own sub-budget, so a scan draws on the pool trusted traffic is
 admitted from only while a probe is processed and, for a probe refused the hold, until the floor's
 release time
-(link:../adr/0075-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0075]).
+(link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0076]).
 
 *Single node, in memory.* The buckets live in one process. They are not shared between gateway
 instances and do not survive a restart. `enumeration_detection.enabled: false` builds no ledger and

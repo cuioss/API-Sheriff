@@ -151,7 +151,7 @@ where the uniform-`404` rule applies:
   block causes no `429`: it is *planned, not implemented*, parsed but enforced by nothing, and every
   route that declares it is named at boot by the WARN `ApiSheriff-140` (see
   link:../configuration.adoc#_rate_limit[Configuration -- `rate_limit`] and
-  link:../adr/0076-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0076]).
+  link:../adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]).
 | `RATE_LIMITING`
 
 | `502`
