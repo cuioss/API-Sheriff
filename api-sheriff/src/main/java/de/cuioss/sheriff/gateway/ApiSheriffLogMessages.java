@@ -252,5 +252,33 @@ public final class ApiSheriffLogMessages {
                 .identifier(117)
                 .template("Asset root '%s' offers no SecureDirectoryStream on this platform — falling back to the resolved-path read, which leaves an ancestor-directory symlink swap after the in-root check unrefused")
                 .build();
+
+        /**
+         * A source tripped per-source enumeration detection: its recon ledger reached the
+         * {@code enumeration_detection} threshold. Emitted once per trip, which the ledger raises at most
+         * once per {@code CLEAR} period of a source. Records the source in the canonical form the
+         * detection contract fixes (an IPv4 address whole, an IPv6 address as its {@code /64} prefix),
+         * the host folded to the declared {@code match.host} set ({@code *} for any other), the
+         * threshold, the window in seconds and the configured action — never the raw {@code Host}, the
+         * request path or any header.
+         */
+        public static final LogRecord SOURCE_TRIPPED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(141)
+                .template("Source '%s' on host '%s' tripped enumeration detection: %s recon events within %s seconds — action: %s")
+                .build();
+
+        /**
+         * The per-source detection ledger reached its fixed bound on tracked sources and could not make
+         * room, so a source was left untracked: its recon events are not counted and it can neither
+         * trip nor be blocked. Latched: emitted once per process, on the first overflow; every further
+         * overflow is a {@code DEBUG} diagnostic and is counted on
+         * {@code sheriff_source_untracked_total}. Records the bound only — never a source address.
+         */
+        public static final LogRecord SOURCE_UNTRACKED = LogRecordModel.builder()
+                .prefix(PREFIX)
+                .identifier(142)
+                .template("Enumeration detection is tracking its maximum of %s sources — a further source was left untracked and cannot trip; further overflows stay at DEBUG and are counted on sheriff_source_untracked_total")
+                .build();
     }
 }

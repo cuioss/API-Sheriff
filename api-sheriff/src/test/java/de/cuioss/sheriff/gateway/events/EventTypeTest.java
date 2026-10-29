@@ -39,13 +39,15 @@ import org.junit.jupiter.params.provider.MethodSource;
 /**
  * Pins {@link EventType}'s category, HTTP-status and WebSocket-close mappings.
  * <p>
- * Every constant is claimed by exactly one of four buckets — success / informational, boot-only
- * configuration, WebSocket-close, and the request-time error contract. Bucket <em>membership</em> is
- * DERIVED from {@link EventType}'s own accessors ({@code hasHttpMapping}, {@code wsCloseCode},
- * {@code category}), not hand-listed: a guard that merely detects an omission still lets the second
- * registry drift first, whereas a derived set cannot drift at all. A constant added to the enum
- * therefore lands in its bucket automatically, and {@link ContractCoverage} asserts the four
- * predicates remain a true partition so a constant can never fall into none or two of them.
+ * Every constant is claimed by exactly one of five buckets — success / informational, boot-only
+ * configuration, WebSocket-close, a failure rendered as another event, and the request-time error
+ * contract. Bucket <em>membership</em> is DERIVED from {@link EventType}'s own accessors
+ * ({@code hasHttpMapping}, {@code wsCloseCode}, {@code category}), not hand-listed: a guard that merely
+ * detects an omission still lets the second registry drift first, whereas a derived set cannot drift at
+ * all. The one exception is the rendered-as-another bucket, whose accessor combination equals a
+ * configuration event's and which is therefore written out. A constant added to the enum lands in its
+ * bucket automatically, and {@link ContractCoverage} asserts the five buckets remain a true partition
+ * so a constant can never fall into none or two of them.
  * <p>
  * What stays literal is the thing that carries independent information: {@link #ERROR_CONTRACT}
  * states each mapped event's expected status and category as written-out values rather than
@@ -75,11 +77,22 @@ class EventTypeTest {
                 .collect(() -> EnumSet.noneOf(EventType.class), Set::add, Set::addAll);
     }
 
+    /**
+     * Request-time failures counted under their own name but rendered as another event's answer: a
+     * category, so the error metric counts them, and no HTTP mapping of their own. Stated literally
+     * rather than derived: the accessor combination is the same as a boot-only configuration event's, so
+     * only the written-out set tells the two apart, and a new constant with that combination lands in the
+     * configuration bucket, whose category assertion then fails until it is placed deliberately.
+     */
+    private static final Set<EventType> RENDERED_AS_ANOTHER_EVENTS =
+            EnumSet.of(EventType.PRE_TRUST_INTERNAL_FAILURE);
+
     /** Boot-only configuration failures: a category, but never an HTTP response. */
     private static final Set<EventType> CONFIGURATION_EVENTS =
             classify(eventType -> !eventType.hasHttpMapping()
                     && eventType.wsCloseCode() == 0
-                    && eventType.category() != null);
+                    && eventType.category() != null
+                    && !RENDERED_AS_ANOTHER_EVENTS.contains(eventType));
 
     /**
      * Events that terminate an <em>established</em> WebSocket relay: no HTTP mapping (they occur
@@ -111,7 +124,8 @@ class EventTypeTest {
             arguments(EventType.WEBSOCKET_ORIGIN_REJECTED, 403, EventCategory.AUTHORIZATION),
             arguments(EventType.UPSTREAM_ERROR, 502, EventCategory.UPSTREAM),
             arguments(EventType.UPSTREAM_CIRCUIT_OPEN, 503, EventCategory.UPSTREAM),
-            arguments(EventType.UPSTREAM_TIMEOUT, 504, EventCategory.UPSTREAM));
+            arguments(EventType.UPSTREAM_TIMEOUT, 504, EventCategory.UPSTREAM),
+            arguments(EventType.SOURCE_BLOCKED, 429, EventCategory.RATE_LIMITING));
 
     static Stream<EventType> successEvents() {
         return SUCCESS_EVENTS.stream();
@@ -233,7 +247,8 @@ class EventTypeTest {
         @DisplayName("Should claim every EventType constant in exactly one bucket")
         void shouldClaimEveryConstantExactlyOnce() {
             List<EventType> claimed = Stream
-                    .of(SUCCESS_EVENTS, CONFIGURATION_EVENTS, WEBSOCKET_CLOSE_EVENTS, errorContractKeys())
+                    .of(SUCCESS_EVENTS, CONFIGURATION_EVENTS, WEBSOCKET_CLOSE_EVENTS, RENDERED_AS_ANOTHER_EVENTS,
+                            errorContractKeys())
                     .flatMap(Collection::stream)
                     .toList();
 
@@ -243,7 +258,7 @@ class EventTypeTest {
             // being a partition, and the buckets would silently disagree about who owns it.
             assertAll("bucket partition",
                     () -> assertEquals(EnumSet.allOf(EventType.class), EnumSet.copyOf(claimed),
-                            "Every EventType constant must be claimed by one of the four bucket predicates —"
+                            "Every EventType constant must be claimed by one of the five buckets —"
                                     + " an unclaimed constant means the predicates no longer cover the enum"),
                     () -> assertEquals(claimed.size(), EnumSet.copyOf(claimed).size(),
                             "No EventType constant may be claimed by more than one bucket predicate"));
@@ -260,6 +275,38 @@ class EventTypeTest {
                         EventCategory.UPSTREAM.problemType()),
                 () -> assertEquals("Input Validation", EventCategory.INPUT_VALIDATION.title()),
                 () -> assertEquals("urn:api-sheriff:problem:routing", EventCategory.ROUTING.problemType()),
-                () -> assertEquals("Routing", EventCategory.ROUTING.title()));
+                () -> assertEquals("Routing", EventCategory.ROUTING.title()),
+                () -> assertEquals("urn:api-sheriff:problem:rate-limiting", EventCategory.RATE_LIMITING.problemType()),
+                () -> assertEquals("Rate Limiting", EventCategory.RATE_LIMITING.title()));
+    }
+
+    @Test
+    @DisplayName("Should count a pre-trust internal failure as a routing failure with no status of its own")
+    void shouldMapThePreTrustInternalFailure() {
+        EventType failure = EventType.PRE_TRUST_INTERNAL_FAILURE;
+
+        assertAll("pre-trust internal failure",
+                () -> assertEquals(EventCategory.ROUTING, failure.category(),
+                        "categorized as the unrouted answer it is rendered as, so the error metric counts it"),
+                () -> assertTrue(failure.isFailure(), "an internal failure is a failure"),
+                () -> assertFalse(failure.hasHttpMapping(),
+                        "it is never rendered as itself: the caller is answered NO_ROUTE_MATCHED"),
+                () -> assertEquals(0, failure.httpStatus(), "no HTTP status of its own"),
+                () -> assertEquals(0, failure.wsCloseCode(), "no WebSocket-close mapping"));
+    }
+
+    @Test
+    @DisplayName("Should keep a source trip informational and a blocked source a 429 rate-limiting failure")
+    void shouldMapTheTwoSourceDetectionEvents() {
+        // Stated literally: the bucket predicates derive membership from the accessors under test, so
+        // they cannot by themselves pin which bucket these two constants belong in.
+        assertAll("per-source detection events",
+                () -> assertNull(EventType.SOURCE_TRIPPED.category(), "A trip describes a source, not a request"),
+                () -> assertFalse(EventType.SOURCE_TRIPPED.isFailure(), "A trip is not a request failure"),
+                () -> assertFalse(EventType.SOURCE_TRIPPED.hasHttpMapping(), "A trip is never rendered"),
+                () -> assertEquals(EventCategory.RATE_LIMITING, EventType.SOURCE_BLOCKED.category(),
+                        "A blocked source is a rate-limiting failure"),
+                () -> assertTrue(EventType.SOURCE_BLOCKED.isFailure(), "A blocked source is a failure"),
+                () -> assertEquals(429, EventType.SOURCE_BLOCKED.httpStatus(), "A blocked source is answered 429"));
     }
 }

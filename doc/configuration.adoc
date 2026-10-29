@@ -143,8 +143,8 @@ file-and-JSON-pointer error before any immutable value object is built:
 | `schema/gateway.schema.json`
 | The global `gateway.yaml` document -- `version` (the only required key), `metadata`, `tls`,
   `management`, `security_headers`, `security_defaults`, `allowed_methods`, `anchors`,
-  `upstream_defaults`, `asset_defaults`, `forwarded`, `edge_hardening`, `token_validation`,
-  `cookies` and `oidc`.
+  `upstream_defaults`, `asset_defaults`, `forwarded`, `edge_hardening`, `enumeration_detection`,
+  `token_validation`, `cookies` and `oidc`.
 
 | `schema/endpoint.schema.json`
 | A single `endpoints/*.yaml` file -- the `endpoint` block (`id`, `enabled`, `base_url`,
@@ -153,7 +153,7 @@ file-and-JSON-pointer error before any immutable value object is built:
   `id`, `protocol`, `anchor`, `match`, `auth`, `security_filter`, `forward`, `cookies`,
   `keep_identity_headers`, `upstream`, `asset`, `redirect`, the WebSocket-route `websocket` block
   (which holds `allowed_origins` and `idle_timeout_seconds`), and `rate_limit` (planned, not
-  implemented, no `429` today -- see link:#_rate_limit[`rate_limit`]).
+  implemented; it never causes a `429` -- see link:#_rate_limit[`rate_limit`]).
 |===
 
 Both schemas set `additionalProperties: false` at *every* object level, so an *unknown key* -- a
@@ -400,6 +400,35 @@ edge_hardening:                    # OPTIONAL admission budget for the public da
                                    #   QUARTER of the effective admission_cap (>= 1), so lowering
                                    #   admission_cap alone stays valid. See "Sizing the WebSocket
                                    #   relay budget" in the protocol-routes guide.
+                                   # NO KEY for the held-answer sub-budget: an answer held back on
+                                   #   a timer -- the uniform 404 waiting for its timing floor, the
+                                   #   delay action of enumeration_detection -- hands its general
+                                   #   permit back while it waits and takes a held permit instead.
+                                   #   There are a QUARTER of the effective admission_cap of them
+                                   #   (>= 1), so admission_cap scales both. When all are taken, a
+                                   #   further answer that would wait is a bare 503, written no
+                                   #   earlier than the floor's release time (at once when
+                                   #   uniform_not_found is off) and alike for every
+                                   #   route and caller, and it waits under its own general
+                                   #   permit until then; held answers keep no general permit, so
+                                   #   those stay free for requests that are served.
+
+enumeration_detection:             # OPTIONAL per-source scan detection. Omit the block, or any
+                                   #   key, to take the defaults shown: detection RUNS and a trip
+                                   #   changes no answer.
+  enabled: true                    # false builds no detection at all
+  threshold: 100                   # weighted recon rejections at which a source trips. Minimum 1.
+  window_seconds: 60               # a full threshold drains in this many seconds. Minimum 1.
+  action: observe                  # observe (default) | delay | block. observe only logs the trip
+                                   #   (ApiSheriff-141) and meters it. delay holds the source's
+                                   #   rejection answers (and answers 429 once its share of the
+                                   #   held-answer sub-budget is used up); block answers it 429
+                                   #   before admission.
+                                   #   Switch only once a source address is ONE client: behind a
+                                   #   NAT or an untrusted load balancer it is every client -- set
+                                   #   forwarded.trusted_proxies first.
+  block_seconds: 60                # how long a source stays blocked under block. Minimum 1.
+  delay_millis: 2000               # how long rejection answers are held under delay. 1..10000.
 
 token_validation:                  # offline bearer validation (routes with auth.require: bearer)
   issuers:                         # one entry per accepted identity provider
@@ -3787,9 +3816,10 @@ links here rather than restating it
 *Request direction.* These client headers are withheld under *every* forward mode, whatever a
 route declares: `Authorization`, `Connection`, `Proxy-Connection`, `Keep-Alive`,
 `Proxy-Authenticate`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`,
-`Content-Length`, `Host`, `Origin`, `Referer` and `Date` -- the credential the gateway terminates
-or mediates, the hop the gateway terminates rather than the message it forwards, the framing the
-gateway re-establishes, and the names the gateway itself owns.
+`HTTP2-Settings`, `Content-Length`, `Host`, `Origin`, `Referer` and `Date` -- the credential the
+gateway terminates or mediates, the hop the gateway terminates rather than the message it forwards
+(`HTTP2-Settings` is the settings payload of a cleartext `h2c` upgrade, which belongs to that hop
+alone), the framing the gateway re-establishes, and the names the gateway itself owns.
 
 The set also holds the *spoofable provenance claims* only the gateway is entitled to make: the
 vendor client-IP aliases `X-Real-IP`, `X-Client-IP`, `True-Client-IP` and `CF-Connecting-IP`, and
@@ -4435,20 +4465,165 @@ link:user/endpoint-routes.adoc#_edge_hardening_defaults[Edge hardening defaults]
   see link:user/protocol-routes.adoc[Protocol routes].
 |===
 
+*The held-answer sub-budget has no key.* An answer the gateway holds back on a timer -- the uniform
+`404` waiting for its response-timing floor (<<_uniform_not_found>>), and a rejection answer held by
+the `delay` action of <<_enumeration_detection,`enumeration_detection`>> -- hands its general admission
+permit back while it waits and takes a permit of a third pool instead. That pool holds a quarter of
+the effective `admission_cap`, and at least one, so `admission_cap` scales it; with the default cap
+it holds `512` answers. When every held permit is taken, a further answer that would wait is
+answered `503` no earlier than the floor's release time, without a held permit: it waits under the
+general permit it was admitted with, until that release time (with `security_defaults.uniform_not_found`
+off there is no floor, and the `503` is written at once). That `503` is the same for every route
+and every caller. A held answer keeps no general permit while it waits, so the general permits stay
+free for requests the gateway serves except for the refused answers waiting for their release time
+(link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc#amendment-a1[ADR-0073,
+Amendment A1]).
+
+[[_enumeration_detection]]
+=== `enumeration_detection`
+
+Per-source scan detection, declarable only in `gateway.yaml`. The gateway counts, per source, the
+rejections that reveal a scan -- an unrouted address, a wrong method, a path or parameter the route
+refuses, a declared body over the cap, a CSRF refusal, a missing or invalid bearer token -- raised
+before the trust boundary, each under its true event whatever status it is answered with. A source
+whose count reaches the threshold *trips*, and the `action` decides what the trip changes. The block
+and every key are optional: an omitted block or key takes its default, so *detection runs on every
+gateway and a trip changes no answer* unless an operator opts into `block` or `delay`. The mechanism
+is described in
+link:architecture/tls-and-inbound-security.adoc#_per_source_detection[Architecture -- Per-Source Detection]
+and its contract in
+link:development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract].
+
+[cols="1,1,3", options="header"]
+|===
+| Key | Default | Meaning
+
+| `enabled`
+| `true`
+| Whether detection runs. `false` builds no detection at all: nothing is counted, logged or
+  answered differently.
+
+| `threshold`
+| `100`
+| The weighted count at which a source trips (minimum `1`). Every counted rejection weighs `1`.
+
+| `window_seconds`
+| `60`
+| The time in seconds a full threshold takes to drain (minimum `1`). The count drains continuously at
+  `threshold / window_seconds` per second, so a source that keeps exactly a threshold's worth of
+  rejections per window stays just below it, and a burst of a full threshold trips at once.
+
+| `action`
+| `observe`
+| What a trip changes -- one of `observe`, `delay` or `block`; see below.
+
+| `block_seconds`
+| `60`
+| How long a tripped source stays blocked under `block` (minimum `1`).
+
+| `delay_millis`
+| `2000`
+| How long, in milliseconds after admission, the rejection answers of a tripped source are held under
+  `delay` (`1` to `10000`).
+|===
+
+An out-of-range value is refused at boot by `LimitRules.validateEnumerationDetection`, naming the key
+and the value; an unknown key inside the block is refused by the schema.
+
+*The actions.* Every trip, whatever the action, is logged as WARN `ApiSheriff-141` and counted on
+`sheriff_source_trips_total{action}`. A source trips once and then not again until its count has
+drained to zero.
+
+[cols="1,4", options="header"]
+|===
+| Action | What a tripped source sees
+
+| `observe`
+| Nothing different. Every answer stays what it was; the trip is only recorded.
+
+| `delay`
+| Every counted rejection of the source is answered no earlier than admission plus `delay_millis`.
+  The answer waits on a timer and holds a permit of the held-answer sub-budget (see
+  <<_edge_hardening,`edge_hardening`>>) while it waits. Requests the gateway serves are never
+  delayed. The uniform `404` floor still applies, and the later release wins. While the source's
+  share of the held-answer sub-budget is used up, its further requests are answered `429` before
+  admission, with `Retry-After` the delay in whole seconds.
+
+| `block`
+| For `block_seconds`, every request from the source is answered `429` with `Retry-After` -- the
+  whole seconds left of the block, at least `1` -- and the `rate-limiting` problem document. The answer
+  is written before admission and before route selection, so it is the same on every address and
+  takes no admission permit. It is counted as `SOURCE_BLOCKED` on `sheriff_errors_total`.
+|===
+
+[NOTE]
+.Why `observe` is the default
+====
+The gateway keys a source by its address, and at boot it cannot tell whether one address is one
+client or every client behind a NAT, an egress proxy or a load balancer. A default `block` or `delay`
+would refuse or slow all of those clients when one of them scans. Detection is therefore on by default
+and visible through the trip WARN and metric, and enforcement is a decision the operator takes for
+the deployment. A scan cannot exhaust the gateway meanwhile: the answers it causes wait on the
+held-answer sub-budget, not on the general admission pool
+(link:adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0076]).
+====
+
+*What a source is.* A source is the pair of an address and a host:
+
+* *The address* is the client address a trusted forwarder reported, when the request comes from a peer
+  listed in <<_forwarded_headers,`forwarded.trusted_proxies`>> -- the same address the gateway regenerates
+  `X-Forwarded-For` from. For every other peer it is the TCP peer address, and the peer's
+  `X-Forwarded-For` is never read. An IPv6 address is reduced to its `/64` prefix; an absent or
+  unparseable address counts as the one source `unknown`.
+* *The host* is the request host when a route declares it as `match.host`, and `*` for every other
+  host, so changing `Host` does not give a caller a fresh count.
+
+*Shared addresses -- settle this before switching to `block` or `delay`.* Behind a load balancer or
+reverse proxy that `forwarded.trusted_proxies` does not list, every client arrives from the
+balancer's address and is one source. One scanning client then trips that source, and under `block`
+every client behind the balancer is answered `429`; under `delay` all their rejections slow down and,
+once the source's share of the held-answer sub-budget is used up, every further request from it --
+served ones included -- is answered `429` as well. List
+the balancer in `forwarded.trusted_proxies` first, so each client is keyed by its own address. A
+source behind a NAT or a shared egress proxy remains one source whatever the gateway is told; keep
+`observe`, or raise `threshold`, for a deployment whose clients share such addresses.
+
+*Not counted.* A rejection raised after the trust boundary (a valid token or a live session), a
+reserved path, an upstream error, a body that stopped arriving, and a static resource -- a request on
+an asset route, or one of the browser-ambient fetches `/favicon.ico`, `/robots.txt`,
+`/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png` and the sized touch icons such as
+`/apple-touch-icon-180x180.png` -- are never counted. Any other path is counted whatever its file
+extension, so a miss for `/app.js` on no route counts like any other probe. Requests the gateway serves are never counted. An unexpected internal failure
+before the trust boundary (`PRE_TRUST_INTERNAL_FAILURE`) is answered as the uniform `404` but not
+counted: an operator-side failure is not caller behaviour and carries no detection weight.
+
+*Scope.* The counts live in the memory of one gateway instance. They are not shared between
+instances and are cleared by a restart. An instance tracks at most 65,536 sources; a source beyond
+that is not counted, which `sheriff_source_untracked_total` and the WARN `ApiSheriff-142` report. The
+operator view -- reading the trip and choosing an action -- is in
+link:user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes -- Scanning
+sources and enumeration detection].
+
 === `rate_limit`
 
-The per-route rate-limiting schema (`requests_per_second`, `burst`). *Rate
-limiting is planned, not implemented, and no `429` is produced today.* The block is parsed and
-bound into the route model, but nothing on the request path reads it: no limit is applied to any
-request.
+The per-route rate-limiting schema (`requests_per_second`, `burst`). *Per-route rate limiting is
+planned, not implemented.* The block is parsed and bound into the route model, but nothing on the
+request path reads it: no limit is applied to any request, and the block never causes a `429`. The
+`429` answers the gateway sends all come from
+<<_enumeration_detection,`enumeration_detection`>> (the `block` action, and under `delay` a tripped
+source whose held-answer share is used up).
 
 So that a declared block cannot read as a control in force, every route that declares
 `rate_limit` is named at boot by the WARN `ApiSheriff-140` (see
 link:LogMessages.adoc[Log Messages]). The WARN refuses nothing and the boot continues. To clear
 it, remove the key, or accept that nothing it states is enforced.
 
-A future implementation builds on the per-source mechanism of the follow-up enumeration-hardening
-plan rather than on these two fields as they stand.
+The block is kept, rather than removed as the inert `circuit_breaker` block was, because per-route
+rate limiting is planned and the boot WARN already keeps the block from reading as enforced
+(link:adr/0077-The_unenforced_rate_limit_key_is_kept_parsed_and_warned_at_boot.adoc[ADR-0077]). A
+future implementation builds on the per-source detection substrate
+(link:adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076])
+rather than on these two fields as they stand.
 
 === `metadata`
 

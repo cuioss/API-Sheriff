@@ -22,7 +22,6 @@ import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.Callable;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -167,7 +166,24 @@ import org.jspecify.annotations.Nullable;
  * response back, the next attempt begins, or the dispatch itself fails — that attempt's upstream
  * request is reset: one still waiting for a pooled connection is reset as soon as it obtains one and
  * is never sent late, one in flight is reset, and a response it already received and paused is
- * released with it. Only a response actually handed to the caller is exempt.
+ * released with it. Only a response actually handed to the caller is exempt. A bodyless request already
+ * sent is reset on the context it was sent from, after the send, so the reset never overtakes its head
+ * write and never returns the upstream connection to the pool with the request still to be written (see
+ * {@link UpstreamAttempt}).
+ * <p>
+ * <strong>A client that leaves releases the attempt it was waiting on.</strong> When the client resets
+ * its stream or closes its connection before the response is handed over for relay, the edge reports
+ * the departure through the {@link InboundBody} the request body arrives in, whatever the body framing
+ * and whether or not the body has ended. The attempt is then released exactly as above: an upstream
+ * request in flight is reset at once instead of being held until the guard's timeout, and one still
+ * waiting for a pooled connection is never sent once the pool hands it one. The dispatch reports an
+ * {@link EventType#INBOUND_BODY_ABORTED} as the client's abort, so the breaker skips it: a body that was
+ * still arriving as one that did not arrive whole, any other request as a {@link ClientDeparted}. The
+ * departure does not wake a dispatching thread that is still waiting for a pooled connection: that wait
+ * ends when the pool hands the connection over, which reports the client's abort, or when the guard's
+ * timeout fires, which is an ordinary upstream timeout. A client that left before the dispatch began has
+ * no upstream request asked for at all. From the hand-over on, the relay owns the exchange and the
+ * departure is left to it.
  * <p>
  * <strong>The gateway's own upstream reset is not logged as an error.</strong> Every attempt's
  * upstream request carries an exception handler from the moment it is obtained. Without one, Vert.x
@@ -208,6 +224,10 @@ public final class DispatchStage {
     /** Fixed disposition of an attempt released before its request was sent. */
     private static final String ATTEMPT_ABANDONED =
             "The dispatch no longer waits for this attempt; its request was not sent";
+
+    /** Fixed disposition of a dispatch the client left before it was answered. */
+    private static final String CLIENT_DEPARTED =
+            "The client left before the request was answered; the upstream request was aborted";
 
     /** The methods that carry no body upstream unless they declare a positive length. */
     private static final Set<HttpMethod> BODYLESS_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
@@ -349,6 +369,11 @@ public final class DispatchStage {
                 .orElseThrow(() -> new IllegalStateException("proxy dispatch requires an upstream client"));
         Guard guard = upstreamClients.guard(shape)
                 .orElseThrow(() -> new IllegalStateException("proxy dispatch requires a resilience guard"));
+        Throwable departedEarly = requestBody instanceof InboundBody armed ? armed.departure() : null;
+        if (departedEarly != null) {
+            // The client left before the dispatch began: no upstream request is asked for at all.
+            throw departureAbort(departedEarly, !framing.bodyless());
+        }
         DispatchBody body = new DispatchBody(requestBody, framing);
         boolean handedToCaller = false;
         try {
@@ -478,6 +503,11 @@ public final class DispatchStage {
         UpstreamAttempt attempt = body.beginAttempt();
         boolean handedBack = false;
         try {
+            GatewayException departed = body.departure();
+            if (departed != null) {
+                // The client left before this attempt asked for its request: none is asked for.
+                throw departed;
+            }
             HttpClientResponse received = awaitResponse(httpClient, options, forwardHeaders, body, attempt);
             handedBack = true;
             return received;
@@ -504,10 +534,14 @@ public final class DispatchStage {
                     // Registered before the request is published, so every reset of it the gateway
                     // makes — the unsent release below included — finds a handler (see the class javadoc).
                     request.exceptionHandler(DispatchStage::onUpstreamRequestFailure);
-                    if (!attempt.publish(request)) {
+                    // A bodyless request's head is written by the send below, from this callback; a body is
+                    // written by the inbound side as it arrives (see UpstreamAttempt).
+                    if (!attempt.publish(request, body.bodyless())) {
                         // The dispatch stopped waiting for this attempt before its request obtained a
                         // connection: the request was reset unsent, and no late upstream execution follows.
-                        return Future.failedFuture(new CancellationException(ATTEMPT_ABANDONED));
+                        // When the client's departure released it, that is what the dispatch reports.
+                        clientAbortAtFailure.set(body.clientAbort(cappedBody.get()));
+                        return Future.failedFuture(new AttemptReleasedUnsent());
                     }
                     forwardHeaders.forEach(request::putHeader);
                     // ResponseStage#relay is deferred onto the server request's event loop
@@ -542,7 +576,9 @@ public final class DispatchStage {
             // runs the abort action, so an abort that caused the failure is always in the snapshot,
             // while a client that went away only after the upstream had already failed is not — that
             // failure stays the upstream's. A send that never started (the connection itself failed)
-            // leaves no snapshot and is the upstream's failure as well.
+            // leaves no snapshot and is the upstream's failure as well. An attempt released before its
+            // request was sent arrives here too, as an AttemptReleasedUnsent: never a cancellation,
+            // which get() would throw past this catch (see AttemptReleasedUnsent). NOSONAR java:S125 - explanatory prose, not commented-out code
             GatewayException clientAbort = clientAbortAtFailure.get();
             if (clientAbort != null) {
                 throw clientAbort;
@@ -580,6 +616,22 @@ public final class DispatchStage {
         }
         LOGGER.debug(failure, "Upstream request reported a failure, handled where it is mapped: %s",
                 failure.getClass().getName());
+    }
+
+    /**
+     * The client abort a dispatch reports for a client that left before it was answered: a request body
+     * that was still arriving did not arrive whole, exactly as when the body stream itself reports the
+     * failure; any other request — a bodyless one, or one whose whole body arrived — is a
+     * {@link ClientDeparted}.
+     *
+     * @param cause             how the client's response ended
+     * @param bodyStillArriving whether the request carries a body whose end had not arrived
+     * @return the client abort
+     */
+    private static GatewayException departureAbort(Throwable cause, boolean bodyStillArriving) {
+        return bodyStillArriving
+                ? new GatewayException(EventType.INBOUND_BODY_ABORTED, ByteCappedBodyStream.INBOUND_BODY_FAILED, cause)
+                : new ClientDeparted(cause);
     }
 
     private static @Nullable GatewayException extractGatewayException(Throwable failure) {
@@ -721,6 +773,12 @@ public final class DispatchStage {
         private final @Nullable BodylessMethodWatch bodylessWatch;
         /** Receives a refusal that arrives after the response was handed over. */
         private final Consumer<GatewayException> lateViolation;
+        /** Guards {@code departure} and {@code handedOver}: a departure takes exactly one side of the hand-over. */
+        private final Object departureLock = new Object();
+        /** The client abort recorded when the client left before the response was handed over. */
+        private @Nullable GatewayException departure;
+        /** Whether the response was handed over for relay: from then on the relay owns the exchange. */
+        private boolean handedOver;
 
         DispatchBody(ReadStream<Buffer> inbound, BodyFraming framing) {
             this.inbound = inbound;
@@ -729,6 +787,55 @@ public final class DispatchStage {
             this.bodylessWatch = framing.bodyless()
                     ? BodylessMethodWatch.arm(inbound, this::resetCurrentRequest, lateViolation)
                     : null;
+            // Registered last: a departure replayed here classifies the request by its framing.
+            if (inbound instanceof InboundBody armed) {
+                armed.departureHandler(this::clientDeparted);
+            }
+        }
+
+        /**
+         * The client left before its response ended. Until the response is handed over, the dispatch
+         * stops waiting: the client abort is recorded first, so the transport failure the release causes
+         * is reported as the client's, then the current attempt is released — a request still waiting for
+         * its pooled connection is never sent, one in flight is reset. Once the response was handed over
+         * the relay owns the exchange and the departure is left to it. Idempotent.
+         */
+        private void clientDeparted(Throwable cause) {
+            synchronized (departureLock) {
+                if (handedOver || departure != null) {
+                    return;
+                }
+                departure = departureAbort(cause, bodyStillArriving());
+            }
+            abandonCurrentAttempt();
+        }
+
+        /** @return {@code true} for a bodyless request: it is sent upstream with no body */
+        boolean bodyless() {
+            return bodylessWatch != null;
+        }
+
+        /**
+         * @return {@code true} when the request carries a body whose end has not reached the current
+         *         attempt's body stream — or no attempt has subscribed the body yet
+         */
+        private boolean bodyStillArriving() {
+            if (bodylessWatch != null) {
+                return false;
+            }
+            UpstreamAttempt current = currentAttempt.get();
+            ByteCappedBodyStream sent = current == null ? null : current.body();
+            return sent == null || !sent.inboundEnded();
+        }
+
+        /**
+         * @return the client abort recorded when the client left before the hand-over, or {@code null}
+         */
+        @Nullable
+        GatewayException departure() {
+            synchronized (departureLock) {
+                return departure;
+            }
         }
 
         /**
@@ -830,27 +937,38 @@ public final class DispatchStage {
         }
 
         /**
-         * @return the client-caused reason the body aborted the attempt's upstream request, or
-         *         {@code null} when it did not
+         * @return the client-caused reason the attempt's upstream request was aborted — the body's own
+         *         refusal, or else the client's departure — or {@code null} when it was not
          */
         @Nullable
         GatewayException clientAbort(@Nullable ByteCappedBodyStream cappedBody) {
+            GatewayException bodyAbort;
             if (bodylessWatch != null) {
-                return bodylessWatch.clientAbort();
+                bodyAbort = bodylessWatch.clientAbort();
+            } else {
+                bodyAbort = cappedBody == null ? null : cappedBody.clientAbort();
             }
-            return cappedBody == null ? null : cappedBody.clientAbort();
+            return bodyAbort != null ? bodyAbort : departure();
         }
 
         /**
          * Hands the received response over for relay: a refusal from now on goes to the late-violation
-         * callback.
+         * callback, and a client departure is left to the relay. A client that already left is reported
+         * instead, and nothing is handed over.
          *
          * @param cappedBody the attempt's body stream, {@code null} for a bodyless request
-         * @return the refusal that came before the hand-over — of a bodyless request's body byte, or of
-         *         a body still arriving at the request-body deadline — or {@code null} when there was none
+         * @return the refusal that came before the hand-over — the client's departure, a bodyless
+         *         request's body byte, or a body still arriving at the request-body deadline — or
+         *         {@code null} when there was none
          */
         @Nullable
         GatewayException handOver(@Nullable ByteCappedBodyStream cappedBody) {
+            synchronized (departureLock) {
+                if (departure != null) {
+                    return departure;
+                }
+                handedOver = true;
+            }
             if (bodylessWatch != null) {
                 return bodylessWatch.handOver();
             }
@@ -878,6 +996,17 @@ public final class DispatchStage {
      * them stopped at once, before they could start. A stopped clock has no timer pending and reports
      * nothing: it neither refuses the body, nor resets the request, nor reaches the late-violation callback.
      * <p>
+     * <strong>A bodyless request is reset after its own head write.</strong> A bodyless attempt sends its
+     * request from the callback that publishes it, on the request's own context, and Vert.x may queue that
+     * head write on the event loop of the upstream connection. A reset run on that event loop while the
+     * write is still queued is applied first: the HTTP/1.1 connection goes back to the pool, and the queued
+     * write then puts the request on it all the same, so the next request handed that connection waits
+     * behind a request nobody reads the answer to, until the guard's timeout. The client's departure is
+     * reported on the inbound connection's event loop, which can be that very loop. A reset of a published
+     * bodyless request asked for from any thread other than the one that published it is therefore handed
+     * to the publishing context and runs there, after the send. A body-carrying request has its head
+     * written with the first body chunk, on the inbound side, and is reset on the thread that asks for it.
+     * <p>
      * Thread-safe: the request and the body are published on the request's event loop while the
      * dispatching thread may abandon the attempt at the same moment. Each side writes its own field before
      * it reads the other's — the publisher sets the request or the body, then reads the flag;
@@ -890,7 +1019,7 @@ public final class DispatchStage {
         /** When the attempt began, the moment the guard's timeout for it starts too. */
         private final long startNanos = System.nanoTime();
         private final AtomicBoolean abandoned = new AtomicBoolean();
-        private final AtomicReference<@Nullable HttpClientRequest> request = new AtomicReference<>();
+        private final AtomicReference<@Nullable PublishedRequest> request = new AtomicReference<>();
         private final AtomicReference<@Nullable ByteCappedBodyStream> body = new AtomicReference<>();
 
         /**
@@ -911,15 +1040,25 @@ public final class DispatchStage {
             return startNanos;
         }
 
+        /** @return the body stream this attempt sends, or {@code null} while none is attached */
+        @Nullable
+        ByteCappedBodyStream body() {
+            return body.get();
+        }
+
         /**
          * Publishes the request this attempt obtained.
          *
-         * @param obtained the attempt's upstream request, not yet sent
+         * @param obtained          the attempt's upstream request, not yet sent
+         * @param sentFromPublisher whether the request's head is written by a send made from the calling
+         *                          context once this returns, as a bodyless request's is: a reset asked
+         *                          for from another thread then runs on this context, after that send
          * @return {@code true} when the attempt is still waited for and the request may be sent;
          *         {@code false} when it was already abandoned — the request has then been reset
          */
-        boolean publish(HttpClientRequest obtained) {
-            request.set(obtained);
+        boolean publish(HttpClientRequest obtained, boolean sentFromPublisher) {
+            @Nullable Context publisher = sentFromPublisher ? Vertx.currentContext() : null;
+            request.set(new PublishedRequest(obtained, publisher, Thread.currentThread()));
             if (abandoned.get()) {
                 obtained.reset();
                 return false;
@@ -940,11 +1079,38 @@ public final class DispatchStage {
             }
         }
 
-        /** Resets this attempt's request, if it obtained one. */
+        /**
+         * Resets this attempt's request, if it obtained one: at once, or — for a request sent from its
+         * publishing context, asked for from another thread — on that context, after the send.
+         */
         void resetRequest() {
-            HttpClientRequest published = request.get();
+            PublishedRequest published = request.get();
             if (published != null) {
                 published.reset();
+            }
+        }
+    }
+
+    /**
+     * An attempt's upstream request together with where its head is written from.
+     *
+     * @param request         the upstream request
+     * @param publisher       the context the request's head is sent from, after publication, or
+     *                        {@code null} when it is written elsewhere
+     * @param publisherThread the thread that published the request
+     */
+    private record PublishedRequest(HttpClientRequest request, @Nullable Context publisher, Thread publisherThread) {
+
+        /**
+         * Resets the request. On the publishing thread, and for a request whose head is written elsewhere,
+         * the reset is made at once; otherwise it is handed to the publishing context, so it runs after the
+         * send made there and can never overtake that send's queued head write (see {@link UpstreamAttempt}).
+         */
+        void reset() {
+            if (publisher == null || Thread.currentThread() == publisherThread) {
+                request.reset();
+            } else {
+                publisher.runOnContext(_ -> request.reset());
             }
         }
     }
@@ -1075,9 +1241,19 @@ public final class DispatchStage {
      * bound is what lets the edge's wait before the reset end once the client can send nothing more;
      * failing that, the wait ends once request data stops arriving or a time cap passes.
      * <p>
+     * <strong>A client that leaves is recorded too.</strong> The request stream reports a client reset
+     * or a closed connection only while its body is still open; once the body has ended — a bodyless
+     * {@code GET} at once — the request stream is silent about it, and only the response learns that it
+     * can no longer be answered. The edge root therefore hands a response that ended without being
+     * answered to {@link #clientDeparted(Throwable)}, which delivers it once — to the departure handler
+     * registered at that moment, or to the one registered later — so a dispatch holding an upstream
+     * request releases it (see {@link DispatchStage}, which also states when a wait for a pooled
+     * connection ends). A stream the gateway reset itself records no departure.
+     * <p>
      * Thread-safe: the failure arrives on the inbound connection's event loop while the handler may be
-     * registered from another thread; both go through the same monitor. The pause is pinned without
-     * holding that monitor: a resume racing the mark is followed by a pause again.
+     * registered from another thread; both go through the same monitor, as do the departure and its
+     * handler. The pause is pinned without holding that monitor: a resume racing the mark is followed by
+     * a pause again.
      */
     public static final class InboundBody implements ReadStream<Buffer> {
 
@@ -1085,6 +1261,8 @@ public final class DispatchStage {
         private @Nullable Throwable failure;
         private @Nullable Handler<Throwable> failureHandler;
         private volatile boolean resetByGateway;
+        private @Nullable Throwable departure;
+        private @Nullable Handler<Throwable> departureHandler;
 
         private InboundBody(ReadStream<Buffer> delegate) {
             this.delegate = delegate;
@@ -1139,6 +1317,58 @@ public final class DispatchStage {
             failure = GatewayStreamReset.INSTANCE;
             if (failureHandler != null) {
                 failureHandler.handle(GatewayStreamReset.INSTANCE);
+            }
+        }
+
+        /**
+         * Records that the client left before its response ended: it reset the HTTP/2 stream or closed
+         * the connection, so the response can no longer be answered. The edge root calls this from the
+         * request's end handler when the response ended without being written. The departure is
+         * delivered once — now to the registered departure handler, or later to the one registered next.
+         * Ignored on a stream the gateway reset itself ({@link #resetByGateway()}), whose answer was
+         * decided by the gateway, and after a first departure: idempotent.
+         *
+         * @param cause how the response ended, as the end handler reported it
+         */
+        public void clientDeparted(Throwable cause) {
+            Objects.requireNonNull(cause, "cause");
+            Handler<Throwable> handler;
+            synchronized (this) {
+                if (resetByGateway || departure != null) {
+                    return;
+                }
+                departure = cause;
+                handler = departureHandler;
+            }
+            if (handler != null) {
+                handler.handle(cause);
+            }
+        }
+
+        /**
+         * @return how the client left, as {@link #clientDeparted(Throwable)} recorded it, or {@code null}
+         *         while it has not left
+         */
+        synchronized @Nullable Throwable departure() {
+            return departure;
+        }
+
+        /**
+         * Registers the one handler a client departure is delivered to; a departure recorded before is
+         * replayed to it at once. The departure and the handler are exchanged under one monitor, so the
+         * handler receives the departure exactly once, whichever of the two comes first.
+         *
+         * @param handler receives how the client left
+         */
+        void departureHandler(Handler<Throwable> handler) {
+            Objects.requireNonNull(handler, "handler");
+            Throwable recorded;
+            synchronized (this) {
+                departureHandler = handler;
+                recorded = departure;
+            }
+            if (recorded != null) {
+                handler.handle(recorded);
             }
         }
 
@@ -1216,6 +1446,53 @@ public final class DispatchStage {
 
         private GatewayStreamReset() {
             super("The gateway ended the request stream it answered before the body ended", null, false, false);
+        }
+    }
+
+    /**
+     * The failure of an attempt the dispatch stopped waiting for before its request obtained a
+     * connection: the request was reset unsent (see {@link UpstreamAttempt#publish}), which happens when
+     * the pool hands the released attempt a connection. When the client's departure released the
+     * attempt, the dispatch reports that departure in its place, so the breaker skips it and the retry
+     * predicate refuses it.
+     * <p>
+     * <strong>Deliberately not a {@link java.util.concurrent.CancellationException}.</strong> The
+     * dispatching thread awaits the attempt through {@link java.util.concurrent.CompletableFuture#get()},
+     * which reports a future that failed with a {@code CancellationException} as cancelled: it throws the
+     * cancellation itself instead of wrapping it in an {@link ExecutionException}. Such a failure would
+     * bypass the client-abort attribution of {@code awaitResponse} and reach the guard as an upstream
+     * failure — the breaker would count every client that left while its attempt waited for a pooled
+     * connection, enough of them would open it for every other caller of the upstream, and the retry
+     * predicate would let the released attempt retry.
+     * <p>
+     * Carries no request-specific state, no stack trace and no suppressed exceptions.
+     */
+    static final class AttemptReleasedUnsent extends RuntimeException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        AttemptReleasedUnsent() {
+            super(ATTEMPT_ABANDONED, null, false, false);
+        }
+    }
+
+    /**
+     * The client abort of a dispatch whose client left — reset its stream or closed its connection —
+     * before the response was handed over for relay (see {@link InboundBody#clientDeparted(Throwable)}).
+     * It is an {@link EventType#INBOUND_BODY_ABORTED} like a request body that did not arrive whole, told
+     * apart from it by its type so it is reported with its own disposition. Like every client-ended
+     * dispatch it is a gateway rejection: the breaker skips it and the retry predicate refuses it.
+     *
+     * @since 1.0
+     */
+    public static final class ClientDeparted extends GatewayException {
+
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        ClientDeparted(Throwable cause) {
+            super(EventType.INBOUND_BODY_ABORTED, CLIENT_DEPARTED, cause);
         }
     }
 
@@ -1340,7 +1617,7 @@ public final class DispatchStage {
     static final class ByteCappedBodyStream implements ReadStream<Buffer> {
 
         /** Fixed disposition of a failed inbound body; carries nothing the client supplied. */
-        private static final String INBOUND_BODY_FAILED =
+        static final String INBOUND_BODY_FAILED =
                 "Request body failed before it arrived whole; the upstream request was aborted";
 
         /** Fixed disposition of a body ending short of its declared length. */
@@ -1398,6 +1675,8 @@ public final class DispatchStage {
         private long deadlineTimer = NO_TIMER;
         /** Receives a deadline refusal once the response was handed over; {@code null} until then. */
         private @Nullable Consumer<GatewayException> lateViolation;
+        /** Whether the inbound body's end arrived, whatever was made of it. */
+        private volatile boolean inboundEnded;
         private @Nullable Handler<Buffer> dataHandler;
         private @Nullable Handler<Throwable> failureHandler;
         private @Nullable Handler<Void> endHandler;
@@ -1517,6 +1796,11 @@ public final class DispatchStage {
             return abortReason.get() instanceof GatewayException clientCaused ? clientCaused : null;
         }
 
+        /** @return {@code true} once the inbound body's end has arrived, whatever was made of it */
+        boolean inboundEnded() {
+            return inboundEnded;
+        }
+
         private void onChunk(Buffer chunk) {
             if (abortReason.get() != null || endAtPassedDeadline()) {
                 return;
@@ -1550,6 +1834,7 @@ public final class DispatchStage {
          * already been told the body failed, or the gateway reset the stream itself.
          */
         private void onInboundEnd(@Nullable Void end) {
+            inboundEnded = true;
             if (abortReason.get() != null) {
                 return;
             }

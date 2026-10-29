@@ -151,10 +151,12 @@ configuration. Each has its own design section:
   link:development/bff-cookie.adoc[contributor guide] (build, test, and extend it).
 |===
 
-Rate limiting is planned, not implemented, and no `429` is produced today: the per-route
-`rate_limit` field is parsed but enforced by nothing, and every route that declares it is named at
-boot by the WARN `ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Configuration --
-`rate_limit`]).
+Per-route rate limiting is planned, not implemented: the per-route `rate_limit` field is parsed,
+applies no limit and causes no `429`, and every route that declares it is named at boot by the WARN
+`ApiSheriff-140` (see link:configuration.adoc#_rate_limit[Configuration -- `rate_limit`]). The
+gateway's `429` answers all come from `enumeration_detection` (the opt-in `block` action, and, under
+`delay`, a tripped source whose share of the held-answer sub-budget is used up), answered by the
+per-source detection substrate (link:development/source-detection-substrate.adoc[contract]).
 
 == Architecture Decisions
 

@@ -16,6 +16,8 @@
 package de.cuioss.sheriff.gateway.edge.admission;
 
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -26,18 +28,37 @@ import de.cuioss.tools.logging.CuiLogger;
 import io.vertx.ext.web.RoutingContext;
 
 /**
- * Admission into the edge and its drain on shutdown: the bounded
- * {@linkplain EdgeHardeningOptions#admissionCap() admission cap} every request is admitted under
- * before a virtual thread is dispatched, the
- * {@linkplain EdgeHardeningOptions#webSocketRelayCap() WebSocket relay sub-budget} an upgrade takes in
- * addition to it, the in-flight count, and the bounded drain that waits for in-flight requests on
- * {@code SIGTERM}.
+ * Admission into the edge and its drain on shutdown: three permit pools, the in-flight count, and the
+ * bounded drain that waits for in-flight requests on {@code SIGTERM}.
+ * <ol>
+ *   <li>The general pool, sized by the {@linkplain EdgeHardeningOptions#admissionCap() admission cap}:
+ *       every request is admitted under one of its permits before a virtual thread is dispatched.</li>
+ *   <li>The {@linkplain EdgeHardeningOptions#webSocketRelayCap() WebSocket relay sub-budget}: an
+ *       upgrade takes one of its permits <em>in addition to</em> its general permit and holds both for
+ *       the relay's lifetime.</li>
+ *   <li>The {@linkplain EdgeHardeningOptions#heldAnswerCap() held-answer sub-budget}: an answer held
+ *       back on a timer takes one of its permits <em>instead of</em> its general permit
+ *       ({@link #tryEnterHold}), so held answers cannot occupy the general pool.</li>
+ * </ol>
+ * A request that hands its general permit back on entering a hold stays counted in flight until its
+ * response ends, so the drain still waits for its held answer.
  * <p>
- * Thread-safe: the permits are semaphores, the in-flight count is atomic, the draining flag is
- * volatile, and every per-request release is latched so it happens exactly once. The volatile flag
- * alone does not keep a request from being admitted after the drain has finished; that guarantee
- * comes from the order of the accesses — {@link #tryAdmit()} publishes its claim before it reads the
- * flag, and {@link #drain()} sets the flag before it reads the in-flight count.
+ * <strong>One source's share of the held-answer sub-budget.</strong> An answer the {@code delay} action
+ * holds for a tripped source carries that source on its context ({@link #HELD_SOURCE_KEY}); entering
+ * its hold also takes one unit of the source's
+ * {@linkplain EdgeHardeningOptions#heldAnswerSourceShare() share}, and the unit is returned exactly
+ * once, together with the held permit. A source whose share is used up is refused the hold, and
+ * {@link #heldShareExhausted} lets the source gate refuse its further requests before admission. The
+ * per-source counts live in a map that holds a source only while at least one of its held answers
+ * waits, so it never holds more entries than the sub-budget has permits.
+ * <p>
+ * Thread-safe: the permits are semaphores, the in-flight count is atomic, the per-source counts are
+ * updated atomically per key, the draining flag is volatile, and every per-request release is latched
+ * so it happens exactly once — the general permit, the in-flight count and each sub-budget permit
+ * behind a latch of its own. The volatile flag alone
+ * does not keep a request from being admitted after the drain has finished; that guarantee comes from
+ * the order of the accesses — {@link #tryAdmit()} publishes its claim before it reads the flag, and
+ * {@link #drain()} sets the flag before it reads the in-flight count.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -53,6 +74,24 @@ public final class EdgeAdmission {
      * handler never fires and {@code TerminalDispatch.dispatchWebSocket} must hand the relay its own
      * release callback. */
     public static final String ADMISSION_GUARD_KEY = "sheriff.admissionguard";
+    /** Holds the per-request latch of the general admission permit, stashed with
+     * {@link #ADMISSION_GUARD_KEY} by {@link #armReleaseGuards}. It is separate from that guard, which
+     * latches the in-flight count, because a held answer returns its general permit at hold entry
+     * ({@link #tryEnterHold}) while the request stays in flight until its response ends. */
+    private static final String GENERAL_PERMIT_GUARD_KEY = "sheriff.generalpermitguard";
+    /** Holds the per-request release guard for the held-answer sub-permit. Present ONLY once
+     * {@link #tryEnterHold} has actually acquired that sub-permit, so its absence is how
+     * {@link #releaseAdmission} knows there is no held permit to return. */
+    private static final String HELD_ANSWER_GUARD_KEY = "sheriff.heldanswerguard";
+    /** Holds the source an answer held by the {@code delay} action is held for, stashed by
+     * {@link SourceGate} before the answer is armed. A hold entered for a request carrying it counts
+     * against that source's share of the held-answer sub-budget; a request without it — the uniform
+     * {@code 404}'s floor alone — counts against no share. */
+    public static final String HELD_SOURCE_KEY = "sheriff.heldsource";
+    /** Holds the source whose share unit {@link #tryEnterHold} actually took with the held permit,
+     * stashed before the held permit's guard. The release returns the unit of this source, never of
+     * whatever {@link #HELD_SOURCE_KEY} names by then, so it can only return what was taken. */
+    private static final String HELD_SHARE_SOURCE_KEY = "sheriff.heldsharesource";
     /** Holds the per-request release guard for the WebSocket relay sub-permit. Present ONLY once
      * {@link #tryAcquireWebSocketRelay} has actually acquired that sub-permit, so its absence is how
      * every release site knows there is no sub-permit to return. */
@@ -73,17 +112,29 @@ public final class EdgeAdmission {
      * starve ordinary HTTP traffic — trading the permit leak for a slow squeeze.
      */
     private final Semaphore webSocketRelayAdmission;
+    /**
+     * The held-answer sub-budget: acquired <em>instead of</em> {@link #admission} by an answer that
+     * waits on a timer. Without it every held answer would keep its general permit for the whole wait,
+     * so a scan whose answers are all held could fill the general pool with answers that do no work.
+     */
+    private final Semaphore heldAnswerAdmission;
+    /** How many answers held for one tripped source may wait at once. */
+    private final int heldAnswerSourceShare;
+    /** The held answers waiting per source; a source is present only while its count is positive. */
+    private final ConcurrentMap<Object, Integer> heldPerSource = new ConcurrentHashMap<>();
     private final AtomicInteger inFlight = new AtomicInteger();
     private volatile boolean draining;
 
     /**
-     * @param hardening the edge transport / admission bounds the two permit pools and the drain
-     *                  window are sized from
+     * @param hardening the edge transport / admission bounds the three permit pools, the per-source
+     *                  share of the held-answer sub-budget and the drain window are sized from
      */
     public EdgeAdmission(EdgeHardeningOptions hardening) {
         this.hardening = Objects.requireNonNull(hardening, "hardening");
         this.admission = new Semaphore(hardening.admissionCap());
         this.webSocketRelayAdmission = new Semaphore(hardening.webSocketRelayCap());
+        this.heldAnswerAdmission = new Semaphore(hardening.heldAnswerCap());
+        this.heldAnswerSourceShare = hardening.heldAnswerSourceShare();
     }
 
     /**
@@ -120,6 +171,91 @@ public final class EdgeAdmission {
     }
 
     /**
+     * Stashes the release guards of a request {@link #tryAdmit()} has just admitted: the in-flight
+     * guard under {@link #ADMISSION_GUARD_KEY}, which every release site hands to
+     * {@link #releaseAdmission}, and the general-permit latch beside it, which {@link #tryEnterHold}
+     * and {@link #releaseAdmission} share so the general permit is returned exactly once whichever of
+     * them gets there first.
+     *
+     * @param ctx the admitted request
+     * @return the in-flight guard, as stashed under {@link #ADMISSION_GUARD_KEY}
+     */
+    public AtomicBoolean armReleaseGuards(RoutingContext ctx) {
+        AtomicBoolean released = new AtomicBoolean();
+        ctx.put(ADMISSION_GUARD_KEY, released);
+        ctx.put(GENERAL_PERMIT_GUARD_KEY, new AtomicBoolean());
+        return released;
+    }
+
+    /**
+     * Moves an admitted request whose answer is about to be held back on a timer from the general pool
+     * to the held-answer sub-budget: one held permit is taken with a single atomic
+     * {@link Semaphore#tryAcquire()}, its release guard is stashed under
+     * {@link #HELD_ANSWER_GUARD_KEY} — only on this acquired path — and the request's general permit
+     * is returned at once, behind the general-permit latch {@link #armReleaseGuards} stashed, so the end
+     * handler cannot return it a second time. The request stays counted in flight until its response
+     * ends, so {@link #drain()} still waits for the held answer.
+     * <p>
+     * A request carrying a {@link #HELD_SOURCE_KEY} also takes one unit of that source's share first;
+     * the unit is returned with the held permit, by the same latch.
+     * <p>
+     * When the sub-budget, or the source's share of it, is full nothing changes and {@code false} is
+     * returned: the caller refuses the hold instead of holding, and the request keeps its general
+     * permit.
+     * <p>
+     * A response that has already been released — its end handler ran before the hold was entered —
+     * gives the held permit straight back, so a hold entered too late leaves nothing behind.
+     *
+     * @param ctx the admitted request whose answer is to be held
+     * @return {@code true} when the held permit was taken and the general permit handed back;
+     *         {@code false} when the held-answer sub-budget or the source's share of it is full
+     * @throws IllegalStateException when the request carries no release guards — it was not admitted
+     *                               through {@link #armReleaseGuards}
+     */
+    public boolean tryEnterHold(RoutingContext ctx) {
+        AtomicBoolean released = ctx.get(ADMISSION_GUARD_KEY);
+        AtomicBoolean generalPermitReturned = ctx.get(GENERAL_PERMIT_GUARD_KEY);
+        if (released == null || generalPermitReturned == null) {
+            throw new IllegalStateException("A hold can only be entered by a request whose release guards were armed");
+        }
+        Object source = ctx.get(HELD_SOURCE_KEY);
+        if (source != null && !tryTakeShare(source)) {
+            return false;
+        }
+        if (!heldAnswerAdmission.tryAcquire()) {
+            if (source != null) {
+                returnShare(source);
+            }
+            return false;
+        }
+        if (source != null) {
+            ctx.put(HELD_SHARE_SOURCE_KEY, source);
+        }
+        ctx.put(HELD_ANSWER_GUARD_KEY, new AtomicBoolean());
+        returnGeneralPermit(generalPermitReturned);
+        if (released.get()) {
+            // The response ended before the hold was entered; its release already ran and saw no held
+            // permit, so the one taken here is returned now.
+            releaseHeldAnswerPermit(ctx);
+        }
+        return true;
+    }
+
+    /**
+     * Whether a source has used up its {@linkplain EdgeHardeningOptions#heldAnswerSourceShare() share}
+     * of the held-answer sub-budget: as many of its answers as the share allows are waiting now. Read on
+     * the event loop by the source gate before admission, so a tripped source's further requests are
+     * refused there rather than processed and then refused a hold.
+     *
+     * @param source the source, as stashed under {@link #HELD_SOURCE_KEY}
+     * @return {@code true} when no further answer held for {@code source} may wait now
+     */
+    public boolean heldShareExhausted(Object source) {
+        Integer held = heldPerSource.get(source);
+        return held != null && held >= heldAnswerSourceShare;
+    }
+
+    /**
      * Acquires the WebSocket relay sub-permit for an upgrade, <em>in addition to</em> the general
      * permit the request already holds, and stashes its release guard under
      * {@link #WEBSOCKET_RELAY_GUARD_KEY} — only on the acquired path, since every release site keys
@@ -152,9 +288,15 @@ public final class EdgeAdmission {
      * A WebSocket relay tracked with its session stops being tracked here too, for the same reason: the
      * registry entry then leaves on every path the permit does — the relay's teardown, a failed client
      * upgrade, a failed upstream dial, a refused relay budget — and cannot outlive the relay.
+     * <p>
+     * A request whose answer was held returned its general permit at hold entry; the general-permit
+     * latch it shares with {@link #tryEnterHold} keeps this method from returning it again, and the held
+     * permit is returned here instead, behind its own latch. The held permit is returned after
+     * {@code released} is set, so a hold entered concurrently either is seen here or sees the release
+     * itself and returns its permit (see {@link #tryEnterHold}).
      *
      * @param ctx      the admitted request
-     * @param released the request's admission-release latch
+     * @param released the request's in-flight latch, stashed under {@link #ADMISSION_GUARD_KEY}
      */
     public void releaseAdmission(RoutingContext ctx, AtomicBoolean released) {
         SessionRelayRegistry.Tracked sessionRelay = ctx.get(SESSION_RELAY_KEY);
@@ -164,9 +306,17 @@ public final class EdgeAdmission {
         }
         releaseWebSocketRelayPermit(ctx);
         if (released.compareAndSet(false, true)) {
-            admission.release();
+            AtomicBoolean generalPermitReturned = ctx.get(GENERAL_PERMIT_GUARD_KEY);
+            if (generalPermitReturned != null) {
+                returnGeneralPermit(generalPermitReturned);
+            } else {
+                // No separate latch was armed, so no hold can have returned the permit: the in-flight
+                // latch alone makes this the one return.
+                admission.release();
+            }
             inFlight.decrementAndGet();
         }
+        releaseHeldAnswerPermit(ctx);
     }
 
     /**
@@ -199,6 +349,55 @@ public final class EdgeAdmission {
         AtomicBoolean relayReleased = ctx.get(WEBSOCKET_RELAY_GUARD_KEY);
         if (relayReleased != null && relayReleased.compareAndSet(false, true)) {
             webSocketRelayAdmission.release();
+        }
+    }
+
+    /**
+     * Returns the held-answer sub-permit exactly once, and only for a request that actually acquired
+     * one — the guard is stashed by {@link #tryEnterHold} on its acquired path, so an absent guard means
+     * an answer that was never held, or a hold that was refused, with nothing to return. A hold entered
+     * for a request carrying a {@link #HELD_SOURCE_KEY} took a unit of that source's share with the
+     * permit and recorded the source it took it from ({@link #HELD_SHARE_SOURCE_KEY}); that unit is
+     * returned behind the same latch.
+     */
+    private void releaseHeldAnswerPermit(RoutingContext ctx) {
+        AtomicBoolean heldReleased = ctx.get(HELD_ANSWER_GUARD_KEY);
+        if (heldReleased != null && heldReleased.compareAndSet(false, true)) {
+            heldAnswerAdmission.release();
+            Object source = ctx.get(HELD_SHARE_SOURCE_KEY);
+            if (source != null) {
+                returnShare(source);
+            }
+        }
+    }
+
+    /**
+     * Takes one unit of {@code source}'s share, atomically for that source.
+     *
+     * @return {@code true} when the unit was taken; {@code false} when the share is used up
+     */
+    private boolean tryTakeShare(Object source) {
+        AtomicBoolean taken = new AtomicBoolean();
+        heldPerSource.compute(source, (key, held) -> {
+            int count = held == null ? 0 : held;
+            if (count >= heldAnswerSourceShare) {
+                return held;
+            }
+            taken.set(true);
+            return count + 1;
+        });
+        return taken.get();
+    }
+
+    /** Returns one unit of {@code source}'s share; the source leaves the map with its last unit. */
+    private void returnShare(Object source) {
+        heldPerSource.computeIfPresent(source, (key, held) -> held > 1 ? held - 1 : null);
+    }
+
+    /** Returns the general admission permit exactly once, behind the request's general-permit latch. */
+    private void returnGeneralPermit(AtomicBoolean generalPermitReturned) {
+        if (generalPermitReturned.compareAndSet(false, true)) {
+            admission.release();
         }
     }
 }

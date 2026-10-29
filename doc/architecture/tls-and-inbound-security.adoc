@@ -257,6 +257,29 @@ while re-exposing the connection to starvation whenever more than 32 streams are
 6,553,500-byte window is retained (see
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060]).
 
+[[_http2_transport_bounds]]
+*The inbound HTTP/2 header block and stream-reset rate are bounded on the transport, per
+connection.* `EdgeHardeningOptions` sets two more HTTP/2 bounds on every listener, as fixed
+constants no configuration reaches. The listener announces a `SETTINGS_MAX_HEADER_LIST_SIZE` of at
+most 16 KiB, the bound of the HTTP/1.1 header block: a listener announcing more, or no limit, is
+lowered to it, and a lower value is kept. The bound covers the whole decoded header block,
+`CONTINUATION` frames included, so a header block grown past it over any number of frames ends the
+connection with a `GOAWAY` naming an error -- `GatewayEdgeHttp2AbuseTest` drives complete blocks of
+17 KiB and 32 KiB and an unended flood past 64 KiB. The per-connection Rapid-Reset guard is pinned
+at 200 client-sent `RST_STREAM` frames per 30-second window, the transport's own default. It is set
+explicitly so that a change of that default cannot move it, and it is never raised
+(link:../adr/0066-An_HTTP2_response_answered_while_its_request_body_is_open_is_ended_once_request_data_stops_arriving_or_a_time_cap_passes_and_its_stream_is_then_reset_with_NO_ERROR.adoc[ADR-0066]).
+A connection past it is ended with `GOAWAY ENHANCE_YOUR_CALM`, and every other connection is served
+on. The guard counts only the resets a client sends, so the gateway's own `NO_ERROR` resets
+(<<_http2_post_response_reset>>) never feed it. A client's `HTTP2-Settings` header, the settings
+payload of a cleartext `h2c` upgrade, is withheld from the upstream with `Upgrade` and `Connection`
+(see link:../configuration.adoc#_never_forward_set[the request-direction never-forward set]). These
+bounds belong to one connection and are deliberately not keyed by the per-source detection substrate
+(<<_per_source_detection>>), whose key is a source address. The forced-h2 gRPC upstream leg opens at
+most one upstream stream per admitted inbound request, so it inherits them
+(link:../security-threat-model.adoc#gw-08[GW-08],
+link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#http2-on-the-transport[ADR-0076]).
+
 [[_http2_unread_upload_release]]
 *An HTTP/2 upload the gateway does not read returns its credit when its stream ends.* An upload
 refused `503` by the admission cap is ended through the one end rule with a `NO_ERROR` reset (never
@@ -351,3 +374,99 @@ expiry, the upstream request is reset and the client stream is ended with traile
 (`DEADLINE_EXCEEDED`) and `grpc-message: stream-idle-timeout` (`INFO` `ApiSheriff-25` latched per
 route; no error counter increment; see
 link:../adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc#grpc-stream-idle-bound[ADR-0060]).
+
+[[_per_source_detection]]
+== Per-Source Detection (Enumeration Detection)
+
+The gateway counts, per source, the rejections that reveal a scan, and answers a source that crossed
+a threshold as the `enumeration_detection` block says. One substrate does the counting: the
+framework-free package `de.cuioss.sheriff.gateway.detection`. Its written contract is
+link:../development/source-detection-substrate.adoc[Per-Source Detection Substrate -- Contract],
+and the decision with its rejected alternatives is
+link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076].
+
+*Keying.* `SourceKeyResolver` keys a request by `(source, host)`. The source is the client address a
+trusted forwarder reported -- read only for a peer `forwarded.trusted_proxies` trusts, through a
+resolver configured exactly as the one the forward stage regenerates `X-Forwarded-For` from -- and
+otherwise the TCP peer. An IPv6 source is reduced to its `/64` prefix, and an absent or unparseable
+address folds to the one source `unknown`. The host is kept only when it equals a `match.host` some
+route declares; every other host folds to `*`, so a caller rotating `Host` cannot multiply its keys.
+
+*The bucket and its states.* `SourceLedger` keeps one leaky bucket per key in a `ConcurrentHashMap`.
+An admitted event adds its weight, and the level drains linearly at `threshold / window` per second,
+computed from a monotonic clock whenever the bucket is touched -- no timer and no thread. Every
+read-modify-write of one key runs inside one `compute`, so a source trips exactly once per `CLEAR`
+period: `CLEAR -> TRIPPED` when the level reaches the threshold, `TRIPPED -> BLOCKED` for
+`block_seconds` under the `block` action, and back to `CLEAR` once the level drained to zero and no
+block holds. A ledger tracks at most 65,536 keys. At the bound it sweeps drained, unblocked keys;
+when the map is still full a new key stays untracked and the overflow is counted. A tripped or
+blocked key is never evicted.
+
+*Where the edge feeds it.* `ErrorResponseWriter.handleGatewayRejection` reports a rejection under its
+true event and then hands it to `edge.admission.SourceGate`, the recon ledger's one producer.
+`edge.error.ReconEvents` weighs the rejection `1` when its event is a member of the closed recon set
+and the request has not passed the trust boundary
+(link:observability-and-errors.adoc#_trust_boundary_rejections[Rejections before the trust
+boundary]), and `0` otherwise: an event after the trust boundary, an upstream or boot event, a
+reserved-path event, a body that stopped arriving, an unexpected internal failure
+(`PRE_TRUST_INTERNAL_FAILURE`), and a static resource -- a request on an asset route, or one of the
+closed set of browser-ambient fetches (`/favicon.ico`, `/robots.txt`, `/apple-touch-icon.png`,
+`/apple-touch-icon-precomposed.png` and the sized touch icons) -- are never counted; a file
+extension alone does not exempt a path. The internal failure is answered as the uniform `404` but
+carries no weight: an operator-side failure is not caller behaviour.
+The count follows the true event, never the rendered status: a bearer `401` answered as the uniform
+`404` counts as `TOKEN_MISSING`.
+
+*Where it answers.* `GatewayEdgeRoute.handle` calls `SourceGate.answersBlocked` on the event loop,
+after the retired-connection check and before `EdgeAdmission.tryAdmit`. It resolves the request's key
+and stashes it on the `RoutingContext`, where the rejection feed finds it after the virtual-thread
+hop. What a trip changes depends on the action:
+
+[cols="1,4", options="header"]
+|===
+| Action | Effect on the wire
+
+| `observe` (default)
+| None. The trip is recorded below, and every answer stays what it was.
+
+| `delay`
+| A recon rejection of a tripped source is released no earlier than admission plus `delay_millis`,
+  through `edge.end.ResponseDelay` on the held-answer sub-budget
+  (link:README.adoc#_edge_package_structure[Edge Package Structure], the `admission` row). The
+  uniform `404` floor still applies; the later release wins. An unexpected internal failure answered
+  as the uniform `404` is not counted, but it is held exactly as a recon rejection of the same
+  request would be, so the delay cannot tell it apart from that `404`. Served requests are never
+  delayed. While the source's share of the held-answer sub-budget is used up, its further requests
+  are answered `429` before admission, with `Retry-After` the delay in whole seconds.
+
+| `block`
+| A tripped source is blocked for `block_seconds`. Each request from it is answered `429` with
+  `Retry-After` (the whole seconds left of the block, at least `1`) and the `rate-limiting` problem
+  document, through the one end rule. It is answered before admission and before route selection,
+  so it takes no admission permit, starts no virtual thread, arms no timer and does not depend on the
+  address. It is counted as `SOURCE_BLOCKED` on `sheriff_errors_total`.
+|===
+
+*What a trip records.* Every trip, whatever the action, is counted as `SOURCE_TRIPPED` on the event
+counter and on `sheriff_source_trips_total{action}`
+(link:observability-and-errors.adoc#_metrics[Metrics and Health]), and logged as WARN
+`ApiSheriff-141`, naming the canonical source and the folded host -- never the raw `Host`, the path or
+a header. An untracked source is counted on `sheriff_source_untracked_total`, and the first overflow
+of a process is logged once as WARN `ApiSheriff-142`.
+
+*Why the default is `observe`.* The gateway keys a source by its address and cannot tell at boot
+whether one address stands for one client or for every client behind a NAT or a load balancer that
+`forwarded.trusted_proxies` does not name. A default `block` or `delay` would refuse or slow all of
+them for the probing of one. Detection is therefore on by default and enforcement is an operator
+opt-in. The availability cost of a scan does not depend on this default: a held answer leaves the
+general admission pool for its own sub-budget, so a scan draws on the pool trusted traffic is
+admitted from only while a probe is processed and, for a probe refused the hold, until the floor's
+release time
+(link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc#default-observe[ADR-0076]).
+
+*Single node, in memory.* The buckets live in one process. They are not shared between gateway
+instances and do not survive a restart. `enumeration_detection.enabled: false` builds no ledger and
+no gate. See link:../configuration.adoc#_enumeration_detection[Configuration --
+`enumeration_detection`] for every key and
+link:../user/endpoint-routes.adoc#_enumeration_detection_operator_note[Endpoint Routes] for the
+operator view.

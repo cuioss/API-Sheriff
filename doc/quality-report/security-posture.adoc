@@ -51,8 +51,8 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 |`pipeline/CanonicalPathGuard.java:53-68` and consumers; threat-model status stale in the conservative direction (SEC-6)
 
 |GW-02: CL+TE, duplicate CL, body-on-bodyless rejected 400; GET-body opt-in Content-Length-leg-only, default false (ADR-0029)
-|FULLY (structure); test corpus a doc-admitted GAP
-|`pipeline/FramingGate.java:93-148`; default false via `SecurityDefaultsConfig`; see SEC-2
+|FULLY (structure); threat-model status PARTIAL
+|`pipeline/FramingGate.java:93-148`; default false via `SecurityDefaultsConfig`; `GatewayEdgeFramingCorpusTest` pins the framing clauses over HTTP/1.1 and HTTP/2 (on HTTP/2, CL.CL as fields declaring different lengths), the h2->h1 declared-length framing included; the upstream reset is pinned against an HTTP/1.1 upstream only; see SEC-2
 
 |GW-03/ADR-0037: never-forward set under every mode; `Cookie` absolute; `Authorization` positive-list-only; separator folding
 |FULLY
@@ -100,7 +100,7 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 
 |GW-12: rejections are problem+json category-only; secrets redacted in `toString()`
 |FULLY
-|`GatewayEdgeRoute.java:1102-1116`; `OidcConfig.java:90-91`; unexpected exceptions → opaque 500
+|`GatewayEdgeRoute.java:727-731`; `ErrorResponseWriter.java:261-272`; `OidcConfig.java:90-91`; unexpected exceptions → opaque 500, except before the trust boundary on a routed address, where they are the floored unrouted 404 (GW-16)
 
 |Inbound-filter floor non-skippable; omitted profile → `strict`; `minimal` refused on authenticated/BFF routes (ADR-0024)
 |FULLY
@@ -150,7 +150,7 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 |FULLY
 |Sweep of all 104 `LOGGER.*` calls in main: dispositions/lengths/modes only
 
-|Rate limiting reserved-only, never produces 429 (README, configuration)
+|The `rate_limit` key is reserved-only and never produces a 429 (README, configuration)
 |CONFIRMED
 |No non-model reference to `rateLimit` in runtime code; honest disclosure, still a parse-but-not-act key (SEC-5)
 
@@ -162,9 +162,17 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 |FULLY in key mode; limitation CONFIRMED for client-secret mode
 |`BffRuntimeProducer`: one shared `SenderConstraint`, `BoundTokenEndpointClient` as the only token-endpoint client, `PushedAuthorizationRequests` on the login, session-widening and RFC 9470 step-up seams, credential selected by `OidcConfig.usesClientSecret()` (`PrivateKeyJwtAuth` or `ClientSecretBasicAuth`); `ApiSheriff-133` at every boot in client-secret mode. Stack evidence: `BffFapiControlsIT`, `BffClientSecretModeIT`, `BffGeneratedKeysIT`. The pushed session widening is exercised against Keycloak by `BffSessionScopeParityIT` (the silent attempt and a refused push); its interactive re-drive and an unbound token response on its callback are proven at unit level only. The RFC 9470 step-up seam has no live caller (code-correctness BFF-1), so its pushed re-drive is proven at unit level only
 
-|GW-02 smuggling corpus, GW-08 h2 abuse bounds, GW-06 behaviour tests: GAP/PARTIAL
+|GW-08: HTTP/2 stream-abuse bounds pinned on the transport -- 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s, never raised; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded (threat model COVERED)
+|FULLY
+|`edge/admission/EdgeHardeningOptions.apply` sets the bounds on every listener; `http/ConnectionHeaders.REQUEST_STRIP`; proven by `EdgeHardeningOptionsTest`, `GatewayEdgeHttp2AbuseTest`, `ConnectionHeadersTest`, `ForwardPolicyStageTest` and, against the native image, `Http2StreamAbuseIT`
+
+|GW-16/ADR-0073 A1: every pre-trust rejection and every pre-trust unexpected internal failure on a routed address answered as the unrouted `404`, counted under its true event (`PRE_TRUST_INTERNAL_FAILURE` for the failure, no WARN, and no per-source detection weight: an operator-side failure is not caller behaviour); every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed; held answers on a derived sub-budget, `503` on the floor's release time when full, a source tripped under `delay` held to its share of it; the floor measured against eight caller-drivable pre-trust paths, the bearer-token paths among them, and its overruns metered on `sheriff_uniform_not_found_overruns_total` (threat model COVERED)
+|FULLY
+|`edge/error/UniformNotFound`, `edge/error/ErrorResponseWriter.renderUnexpected` and its event-loop release, `edge/error/RejectionReporter`, `edge/end/ResponseDelay`, `edge/admission/EdgeAdmission.tryEnterHold`; proven by `UniformNotFoundTest`, `ErrorResponseWriterTest`, `GatewayEdgeUniformNotFoundTest`, `GatewayEdgeHeldAnswerBudgetTest` and, against the native image, `EnumerationOracleIT`; the floor is measured on the integration stack, not on every deployment
+
+|GW-06 behaviour tests: PARTIAL
 |CONFIRMED as claimed
-|Gaps admitted, not hidden; h2c non-forward covered structurally
+|Gaps admitted, not hidden
 
 |Compose-sample credentials are placeholders with warnings
 |CONFIRMED
@@ -250,13 +258,13 @@ link:code-correctness.adoc[DP-10] for the boot-WARN recommendation.
 [cols="1,4"]
 |===
 |Severity |INFO — Confidence HIGH — Category: doc-overclaim (inverse)
-|Location |`doc/security-threat-model.adoc` (GW-01, GW-02 status text)
+|Location |`doc/security-threat-model.adoc` (GW-01 status text)
 |===
 
 GW-01 status says the single-canonical-path invariant is "not stated explicitly anywhere, nor
 is the divergence tested", yet `CanonicalPathGuard` exists and every consumer demonstrably
-consumes `canonicalPath()`. GW-02 is marked GAP while `FramingGate` implements the rejections.
-Stale in the safe direction; worth refreshing so the release-gate matrix stays truthful.
+consumes `canonicalPath()`. Stale in the safe direction; worth refreshing so the release-gate
+matrix stays truthful.
 
 === SEC-7 — Revocation failure during logout is DEBUG-only
 

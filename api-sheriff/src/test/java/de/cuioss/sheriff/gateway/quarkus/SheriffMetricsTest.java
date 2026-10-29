@@ -51,6 +51,7 @@ import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
 import de.cuioss.sheriff.gateway.config.model.Metadata;
 import de.cuioss.sheriff.gateway.config.model.OidcConfig;
 import de.cuioss.sheriff.gateway.config.model.TokenValidationConfig;
+import de.cuioss.sheriff.gateway.detection.SourceLedger;
 import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayException;
@@ -98,6 +99,64 @@ class SheriffMetricsTest {
             assertEquals("sheriff_upstream_duration_seconds", SheriffMetrics.UPSTREAM_DURATION_SECONDS);
             assertEquals("sheriff_session_events_total", SheriffMetrics.SESSION_EVENTS_TOTAL);
             assertEquals("sheriff_auth_branch_total", SheriffMetrics.AUTH_BRANCH_TOTAL);
+            assertEquals("sheriff_source_trips_total", SheriffMetrics.SOURCE_TRIPS_TOTAL);
+            assertEquals("sheriff_source_untracked_total", SheriffMetrics.SOURCE_UNTRACKED_TOTAL);
+            assertEquals("sheriff_uniform_not_found_overruns_total", SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL);
+        }
+
+        @Test
+        @DisplayName("recordUniformNotFoundOverrun counts sheriff_uniform_not_found_overruns_total without a label")
+        void recordUniformNotFoundOverrunCountsWithoutLabel() {
+            metrics.recordUniformNotFoundOverrun();
+            metrics.recordUniformNotFoundOverrun();
+            metrics.recordUniformNotFoundOverrun();
+
+            var counter = registry.get(SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL).counter();
+            assertAll("sheriff_uniform_not_found_overruns_total",
+                    () -> assertEquals(3.0, counter.count(), 0.0),
+                    () -> assertTrue(counter.getId().getTags().isEmpty(),
+                            "neither the route nor the path an overrun concerns becomes a label"));
+        }
+
+        @Test
+        @DisplayName("recordSourceTrip counts under sheriff_source_trips_total{action} with the lower-case action")
+        void recordSourceTripCountsPerAction() {
+            metrics.recordSourceTrip(SourceLedger.Action.OBSERVE);
+            metrics.recordSourceTrip(SourceLedger.Action.OBSERVE);
+            metrics.recordSourceTrip(SourceLedger.Action.BLOCK);
+
+            assertAll("sheriff_source_trips_total",
+                    () -> assertEquals(2.0, registry.get(SheriffMetrics.SOURCE_TRIPS_TOTAL)
+                            .tag("action", "observe").counter().count(), 0.0),
+                    () -> assertEquals(1.0, registry.get(SheriffMetrics.SOURCE_TRIPS_TOTAL)
+                            .tag("action", "block").counter().count(), 0.0),
+                    () -> assertNull(registry.find(SheriffMetrics.SOURCE_TRIPS_TOTAL)
+                            .tag("action", "delay").counter(), "an action that never tripped has no series"));
+        }
+
+        @Test
+        @DisplayName("the action label of sheriff_source_trips_total is bounded to block, delay and observe")
+        void sourceTripActionLabelIsBounded() {
+            for (SourceLedger.Action action : SourceLedger.Action.values()) {
+                metrics.recordSourceTrip(action);
+            }
+
+            Set<String> labels = registry.find(SheriffMetrics.SOURCE_TRIPS_TOTAL).counters().stream()
+                    .map(counter -> counter.getId().getTag("action"))
+                    .collect(Collectors.toSet());
+            assertEquals(Set.of("block", "delay", "observe"), labels);
+        }
+
+        @Test
+        @DisplayName("recordSourceUntracked counts sheriff_source_untracked_total without a label")
+        void recordSourceUntrackedCountsWithoutLabel() {
+            metrics.recordSourceUntracked();
+            metrics.recordSourceUntracked();
+
+            var counter = registry.get(SheriffMetrics.SOURCE_UNTRACKED_TOTAL).counter();
+            assertAll("sheriff_source_untracked_total",
+                    () -> assertEquals(2.0, counter.count(), 0.0),
+                    () -> assertTrue(counter.getId().getTags().isEmpty(), "the overflow meter carries no label"));
         }
 
         @Test

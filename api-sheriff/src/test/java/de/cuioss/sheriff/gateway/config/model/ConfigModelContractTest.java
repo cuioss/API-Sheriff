@@ -610,6 +610,10 @@ class ConfigModelContractTest {
                     voCase("UpstreamConfig.NotModified", UpstreamConfig.NotModified.builder().enabled(true).build(),
                             UpstreamConfig.NotModified.builder().enabled(true).build(),
                             UpstreamConfig.NotModified.builder().enabled(false).build()),
+                    voCase("EnumerationDetectionConfig", EnumerationDetectionConfig.defaults(),
+                            EnumerationDetectionConfig.defaults(),
+                            EnumerationDetectionConfig.builder().action(EnumerationDetectionConfig.Action.BLOCK)
+                                    .build()),
                     voCase("RateLimitConfig", new RateLimitConfig(100, 200),
                             new RateLimitConfig(100, 200),
                             new RateLimitConfig(1, 1)));
@@ -670,7 +674,7 @@ class ConfigModelContractTest {
             // Positional on purpose: the canonical constructor is the subject the builder is compared to.
             GatewayConfig viaCtor = new GatewayConfig(2, null, null, null, null, null,
                     List.of(HttpMethod.GET), CookiesConfig.NONE, Map.of("api", anchorConfig()), null, null, null,
-                    null, null, null, null, portalConfig());
+                    null, null, null, null, null, portalConfig());
             GatewayConfig viaBuilder = GatewayConfig.builder().version(2).allowedMethods(List.of(HttpMethod.GET))
                     .cookies(CookiesConfig.NONE).anchors(Map.of("api", anchorConfig())).portal(portalConfig())
                     .build();
@@ -793,7 +797,7 @@ class ConfigModelContractTest {
         void gatewayConfigNormalizesAllAbsentComponents() {
             // Positional on purpose: the canonical constructor's null normalization is the subject.
             GatewayConfig cfg = new GatewayConfig(1, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
             assertNull(cfg.metadata());
             assertNull(cfg.tls());
             assertNull(cfg.management());
@@ -808,6 +812,7 @@ class ConfigModelContractTest {
             assertNull(cfg.tokenValidation());
             assertNull(cfg.oidc());
             assertNull(cfg.edgeHardening());
+            assertNull(cfg.enumerationDetection(), "an omitted enumeration_detection block declares none");
             assertNull(cfg.egressTls());
             assertNull(cfg.portal(), "an omitted portal block keeps the portal off");
         }
@@ -899,6 +904,80 @@ class ConfigModelContractTest {
                     () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET, partialBlock.contentTypeNosniffMode()),
                     () -> assertEquals(SecurityHeadersConfig.HeaderMode.SET,
                             partialBlock.contentSecurityPolicyMode()));
+        }
+
+        @Test
+        @DisplayName("an omitted enumeration_detection block, and an empty one, resolve to detection on and observe")
+        void enumerationDetectionDefaultsToObserve() {
+            EnumerationDetectionConfig omittedBlock = EnumerationDetectionConfig.defaults();
+            EnumerationDetectionConfig emptyBlock = EnumerationDetectionConfig.builder().build();
+            EnumerationDetectionConfig actionOmitted = EnumerationDetectionConfig.builder().threshold(5)
+                    .blockSeconds(10).build();
+
+            assertAll("the shipped default records a trip and changes no answer",
+                    () -> assertEquals(EnumerationDetectionConfig.Action.OBSERVE, omittedBlock.effectiveAction()),
+                    () -> assertEquals(EnumerationDetectionConfig.Action.OBSERVE, emptyBlock.effectiveAction()),
+                    () -> assertEquals(EnumerationDetectionConfig.Action.OBSERVE, actionOmitted.effectiveAction(),
+                            "a block that declares other keys but no action still observes"),
+                    () -> assertTrue(omittedBlock.effectiveEnabled(), "detection runs when nothing is declared"),
+                    () -> assertTrue(emptyBlock.effectiveEnabled()),
+                    () -> assertEquals(100, emptyBlock.effectiveThreshold()),
+                    () -> assertEquals(60, emptyBlock.effectiveWindowSeconds()),
+                    () -> assertEquals(60, emptyBlock.effectiveBlockSeconds()),
+                    () -> assertEquals(2000, emptyBlock.effectiveDelayMillis()),
+                    () -> assertEquals(omittedBlock, new EnumerationDetectionConfig(true, 100, 60,
+                            EnumerationDetectionConfig.Action.OBSERVE, 60, 2000)));
+        }
+
+        @Test
+        @DisplayName("declared enumeration_detection members are returned as declared")
+        void enumerationDetectionReturnsDeclaredMembers() {
+            EnumerationDetectionConfig cfg = new EnumerationDetectionConfig(false, 7, 30,
+                    EnumerationDetectionConfig.Action.BLOCK, 90, 500);
+
+            assertAll("no default overrides a declared value",
+                    () -> assertFalse(cfg.effectiveEnabled()),
+                    () -> assertEquals(7, cfg.effectiveThreshold()),
+                    () -> assertEquals(30, cfg.effectiveWindowSeconds()),
+                    () -> assertEquals(EnumerationDetectionConfig.Action.BLOCK, cfg.effectiveAction()),
+                    () -> assertEquals(90, cfg.effectiveBlockSeconds()),
+                    () -> assertEquals(500, cfg.effectiveDelayMillis()),
+                    () -> assertEquals("block", cfg.effectiveAction().toString(),
+                            "the action renders in its configuration spelling"));
+        }
+
+        @Test
+        @DisplayName("the schema declares enumeration_detection with action defaulting to observe and no unknown key")
+        void schemaDeclaresEnumerationDetection() throws Exception {
+            JsonNode schema;
+            try (InputStream in = ConfigModelContractTest.class.getResourceAsStream("/schema/gateway.schema.json")) {
+                assertNotNull(in, "the bundled gateway schema is on the classpath");
+                schema = new ObjectMapper().readTree(in);
+            }
+            JsonNode block = schema.at("/properties/enumeration_detection");
+
+            assertAll("the model block and the schema block agree",
+                    () -> assertFalse(block.isMissingNode(), "the schema declares the block"),
+                    () -> assertFalse(block.path("additionalProperties").asBoolean(true),
+                            "the block refuses an unknown key"),
+                    () -> assertEquals("observe", block.at("/properties/action/default").asText()),
+                    () -> assertEquals(Set.of("block", "delay", "observe"),
+                            textValues(block.at("/properties/action/enum"))),
+                    () -> assertTrue(block.at("/properties/enabled/default").asBoolean(false)),
+                    () -> assertEquals(Set.of("enabled", "threshold", "window_seconds", "action", "block_seconds",
+                            "delay_millis"), propertyNames(block)));
+        }
+
+        private static Set<String> textValues(JsonNode array) {
+            Set<String> values = new HashSet<>();
+            array.forEach(element -> values.add(element.asText()));
+            return values;
+        }
+
+        private static Set<String> propertyNames(JsonNode block) {
+            Set<String> names = new HashSet<>();
+            block.path("properties").fieldNames().forEachRemaining(names::add);
+            return names;
         }
 
         @Test

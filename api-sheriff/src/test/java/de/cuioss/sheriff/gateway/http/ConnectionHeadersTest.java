@@ -92,7 +92,7 @@ class ConnectionHeadersTest {
     }
 
     @Test
-    @DisplayName("Should carry exactly the 24 request-direction never-forward names")
+    @DisplayName("Should carry exactly the 25 request-direction never-forward names")
     void shouldCarryTheExactRequestSet() {
         assertEquals(
                 ConnectionHeaders.REQUEST_STRIP, Set.of(
@@ -103,6 +103,9 @@ class ConnectionHeadersTest {
                         // Hop-by-hop / connection-specific: the hop the gateway terminates.
                         "connection", "keep-alive", "proxy-connection", "te", "trailer",
                         "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization",
+                        // The h2c upgrade's settings payload (RFC 7540 §3.2.1), bound by RFC 9113
+                        // §3.2 to the one connection the Upgrade names — never relayed.
+                        "http2-settings",
                         // Framing the dispatch path re-establishes.
                         "content-length",
                         // Names the gateway itself owns, consumes, or regenerates.
@@ -124,7 +127,7 @@ class ConnectionHeadersTest {
                 "the response set stays at its 10 names; the provenance-variant widening is"
                         + " request-direction only and must not propagate here — a response"
                         + " carrying X-Real-IP is the source's business, not the gateway's");
-        assertEquals(24, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 24 names");
+        assertEquals(25, ConnectionHeaders.REQUEST_STRIP.size(), "the request set carries 25 names");
         assertTrue(ConnectionHeaders.REQUEST_STRIP.containsAll(ConnectionHeaders.RESPONSE_STRIP),
                 "the request set currently contains every response name — asserted as the OBSERVATION"
                         + " it is, with both sets pinned exhaustively above, so a name added to one"
@@ -139,6 +142,27 @@ class ConnectionHeadersTest {
         assertTrue(ConnectionHeaders.isRequestStripped(name),
                 () -> name + " must be recognised — a client sends header names in its own casing, and"
                         + " a case-sensitive check would be bypassable by changing one letter");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "HTTP2-Settings", "http2-settings", "HTTP2-SETTINGS",
+            "HTTP2_Settings", "http2_settings", "HTTP2_SETTINGS"})
+    @DisplayName("Should withhold HTTP2-Settings in every case and '-'/'_' spelling")
+    void shouldWithholdTheH2cUpgradeSettings(String name) {
+        assertTrue(ConnectionHeaders.isRequestStripped(name),
+                () -> name + " carries the settings of an h2c upgrade the gateway never relays; RFC 9113"
+                        + " §3.2 binds it to the single connection the Upgrade names, so a client-sent"
+                        + " copy is a connection-specific claim the upstream must never see — and a"
+                        + " CGI-folding backend reads the underscore spelling as the same variable");
+    }
+
+    @Test
+    @DisplayName("Should keep HTTP2-Settings request-direction only — it never appears on a response")
+    void shouldNotWidenTheResponseSetWithTheH2cUpgradeSettings() {
+        assertFalse(ConnectionHeaders.isConnectionSpecific("HTTP2-Settings"),
+                "HTTP2-Settings is a request header of the h2c upgrade; the response set is the"
+                        + " RFC 9113 §8.2.2 protocol fact and stays independently enumerated");
     }
 
     @ParameterizedTest

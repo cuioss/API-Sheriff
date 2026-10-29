@@ -55,7 +55,8 @@ import org.jspecify.annotations.Nullable;
  *                       a route carries at most one terminal action, so
  *                       {@code upstream}, {@code asset} and {@code redirect} are
  *                       mutually exclusive (ADR-0014 and its Amendment A1)
- * @param rateLimit      the reserved rate-limit block, {@code null} when omitted
+ * @param rateLimit      the planned, not implemented, {@code rate_limit} block (reported at boot,
+ *                       never enforced), {@code null} when omitted
  * @param websocket      the per-route WebSocket settings ({@code allowed_origins},
  *                       {@code idle_timeout_seconds}), {@code null} for non-WebSocket routes
  * @param keepIdentityHeaders the per-route {@code keep_identity_headers} opt-out: {@code true}

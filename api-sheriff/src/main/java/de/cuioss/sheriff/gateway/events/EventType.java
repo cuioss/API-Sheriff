@@ -28,7 +28,9 @@ import org.jspecify.annotations.Nullable;
  * but also have no HTTP mapping: they occur at boot and abort startup rather than
  * producing a response. <strong>Request-time failures</strong> carry a category and a
  * positive HTTP status, matching the error contract in
- * {@code doc/architecture/observability-and-errors.adoc}.
+ * {@code doc/architecture/observability-and-errors.adoc}. The one request-time failure without a
+ * status of its own is {@link #PRE_TRUST_INTERNAL_FAILURE}: it is counted under its own name and
+ * answered as {@link #NO_ROUTE_MATCHED}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -103,6 +105,10 @@ public enum EventType {
      * disconnected mid-upload, or the body's chunk framing broke — so the body never arrived whole.
      * {@code DispatchStage} aborts the upstream request at once and reports this event; the
      * {@code 400} is the status of the exchange, which a client that has already gone never reads.
+     * The same event reports a client that left — reset its stream or closed its connection — before
+     * its proxied request was answered, with or without a body: an upstream request in flight is aborted
+     * at once rather than held until the upstream guard's timeout, and one still waiting for a pooled
+     * connection is never sent once the pool hands it one.
      * <p>
      * Contrast {@link #CONTENT_TOO_LARGE}, which is a body that kept arriving past the route's
      * {@code security_filter.max_body_bytes} cap. This event is a body that stopped arriving, whatever
@@ -153,6 +159,40 @@ public enum EventType {
     UPSTREAM_CIRCUIT_OPEN(EventCategory.UPSTREAM, 503),
     /** The upstream call exceeded its configured timeout. */
     UPSTREAM_TIMEOUT(EventCategory.UPSTREAM, 504),
+
+    // --- Pre-trust internal failure (counted, never rendered as itself) ---
+
+    /**
+     * An unexpected internal failure after route selection and before the trust boundary, while
+     * {@code security_defaults.uniform_not_found} is on. Its single raise site is
+     * {@code ErrorResponseWriter.renderUnexpected}, reached from the trailing
+     * {@code RuntimeException} catch of the edge's per-request flow. It has no HTTP mapping of its own:
+     * the caller is answered the floored unrouted {@code 404} ({@link #NO_ROUTE_MATCHED}), so a failure
+     * on a routed address cannot be told from an absent one. It carries the {@link EventCategory#ROUTING}
+     * category because that is the answer it is rendered as, and because a category is what lets the
+     * error metric count it under its own {@code event} label. The same failure after the trust
+     * boundary, or with the switch off, keeps the uncategorized {@code 500}.
+     */
+    PRE_TRUST_INTERNAL_FAILURE(EventCategory.ROUTING, 0),
+
+    // --- Per-source enumeration detection ---
+
+    /**
+     * A source's recon ledger reached the {@code enumeration_detection} threshold and tripped.
+     * Raised once per trip by the trip listener {@code SourceGate} registers on the recon
+     * {@code SourceLedger}, whatever the configured action — under the default {@code observe} it is
+     * the only effect of the trip. Informational: it describes the source, not a request, so it has
+     * no category and no HTTP mapping.
+     */
+    SOURCE_TRIPPED(null, 0),
+    /**
+     * A request was refused because its source is blocked under {@code enumeration_detection}
+     * action {@code block}, or, under action {@code delay}, because the tripped source's share of the
+     * held-answer sub-budget is used up. Raised by {@code SourceGate} on the event loop before edge
+     * admission, so the refusal holds no admission permit, no virtual thread and no timer; the edge
+     * answers {@code 429} with {@code Retry-After}.
+     */
+    SOURCE_BLOCKED(EventCategory.RATE_LIMITING, 429),
 
     // --- BFF server-session lifecycle (informational; no category, no HTTP mapping) ---
 

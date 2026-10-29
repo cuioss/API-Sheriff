@@ -544,15 +544,15 @@ enforces it and the test that pins it:
 | Clause | Enforced by | Pinned by
 
 | `Content-Length` beside `Transfer-Encoding: chunked`, in either order (CL.TE, TE.CL)
-| transport
+| transport; on HTTP/2 the transport refuses `Transfer-Encoding` as connection-specific
 | `GatewayEdgeFramingCorpusTest` (`contentLengthThenTransferEncoding`,
-  `transferEncodingThenContentLength`)
+  `transferEncodingThenContentLength`, `contentLengthBesideTransferEncodingIsRefusedOnHttp2`)
 
 | `Content-Length` beside a coding list that names `chunked`, or beside a repeated
-  `Transfer-Encoding` field
+  `Transfer-Encoding` field (TE.TE)
 | transport
 | `GatewayEdgeFramingCorpusTest` (`obfuscatedTransferEncodingTheTransportReadsAsChunked`,
-  `repeatedTransferEncoding`)
+  `repeatedTransferEncoding`, `repeatedTransferEncodingIsRefusedOnHttp2`)
 
 | `Content-Length` beside a coding whose final coding is not `chunked` (e.g. `xchunked`)
 | transport, with `FramingGate` as backstop
@@ -564,9 +564,10 @@ enforces it and the test that pins it:
 | `GatewayEdgeFramingCorpusTest` (`soleTransferEncodingNotExactlyChunked`);
   `FramingGateTest.AmbiguousTransferEncoding`
 
-| More than one `Content-Length`, or a comma-separated `Content-Length` value
-| `FramingGate`
-| `FramingGateTest` (`rejectsMultipleContentLength`, `rejectsCommaSeparatedContentLength`)
+| More than one `Content-Length` (CL.CL), or a comma-separated `Content-Length` value
+| `FramingGate`; on HTTP/2 the transport refuses `Content-Length` fields declaring different lengths
+| `GatewayEdgeFramingCorpusTest` (`repeatedContentLengthIsRefusedOnHttp2`); `FramingGateTest`
+  (`rejectsMultipleContentLength`, `rejectsCommaSeparatedContentLength`)
 
 | A single `Content-Length` that is not a decimal number fitting a `long` -- empty, signed,
   carrying a character other than an ASCII digit, or overflowing; leading zeros are admitted
@@ -606,15 +607,18 @@ enforces it and the test that pins it:
   before dispatch sees it
 | `GatewayEdgeFramingCorpusTest` (`optInGetIsForwardedFramedByItsDeclaredLength`,
   `declaredLengthRequestIsForwardedFramedByItsLength`, `zeroDeclaredLengthIsForwardedFramedAsZero`,
-  `bodyLongerThanItsDeclaredLengthIsRefused`, `undeclaredLengthKeepsTheTransportFraming`);
+  `bodyLongerThanItsDeclaredLengthIsRefused`, `undeclaredLengthKeepsTheTransportFraming`,
+  `declaredLengthHttp2BodyReachesAnHttp1UpstreamWithThatLength`,
+  `undeclaredLengthHttp2BodyCarriesNoClientLength`);
   `DispatchStageTest` (`forwardsABodyOfExactlyItsDeclaredLength`,
   `refusesAChunkCrossingTheDeclaredLength`, `abortsAnEndShortOfTheDeclaredLength`,
   `appliesNoLengthBoundWithoutADeclaredLength`)
 
 | A `Connection` token naming a framing header (`Content-Length`, `Transfer-Encoding`, `Host`)
   or a trust header (`Authorization`, `Forwarded`, `X-Forwarded-For`, `-Host`, `-Proto`, `-Port`)
-| `FramingGate`
-| `GatewayEdgeFramingCorpusTest` (`connectionStripsContentLength`); `FramingGateTest`
+| `FramingGate`; on HTTP/2 the transport refuses `Connection` as connection-specific
+| `GatewayEdgeFramingCorpusTest` (`connectionStripsContentLength`,
+  `connectionFramingStripIsRefusedOnHttp2`); `FramingGateTest`
   (`rejectsFramingHeaderStrip`, `rejectsTrustHeaderStrip`)
 
 | A bare-LF chunk terminator
@@ -640,7 +644,8 @@ enforces it and the test that pins it:
   and is recorded by it as a success
 | edge (`DispatchStage`, `RejectionReporter`, `UpstreamGuards`)
 | `GatewayEdgeFramingCorpusTest` (`inboundFramingFailureAfterDispatchResetsTheUpstreamRequest`,
-  `bareLineFeedChunkTerminator`, `clientDisconnectMidUploadIsNotASecurityWarning`);
+  `bareLineFeedChunkTerminator`, `clientDisconnectMidUploadIsNotASecurityWarning`,
+  `clientResetMidUploadResetsTheUpstreamRequestOnHttp2`);
   `DispatchStageTest.BreakerAttribution`
 |===
 
@@ -670,14 +675,13 @@ starts admitting one of those shapes. Every HTTP/1.1 corpus entry writes raw byt
 socket, and every entry asserts both the status of each response and the exact list of requests
 the upstream saw.
 
-The row is off COVERED because the assertion below is not pinned in full. Over HTTP/2 the corpus
-pins that a gate rejection ends only its own stream, that a declared body on `HEAD` is refused,
-that a non-decimal `Content-Length` refuses only its own stream, the bodyless-method rule, and the
-framing of a body with and without a declared length. The smuggling entries speak HTTP/1.1, and
-the upstream side of the corpus is HTTP/1.1 throughout: no test drives the remaining gate clauses
-or an inbound body failure after dispatch over HTTP/2, and none drives the upstream reset against
-an HTTP/2 upstream. One clause is pinned by `FramingGateTest` alone and by no corpus entry: a
-repeated or comma-separated `Content-Length`.
+Over HTTP/2 the corpus pins CL+TE, CL.CL with differing lengths, TE.TE and the `Connection`
+framing strip -- each is refused and nothing of it reaches the upstream -- together with an inbound body
+failure after dispatch (a client `RST_STREAM` mid-upload resets the upstream request, is reported as
+`INBOUND_BODY_ABORTED`, and the upstream connection is not reused), and the h2->h1 framing of a body
+with and without a declared length. The row stays off COVERED for one part of the assertion: the
+upstream side of the corpus is HTTP/1.1 throughout, so the upstream reset is pinned against an
+HTTP/1.1 upstream only. A comma-separated `Content-Length` is pinned by `FramingGateTest` alone.
 
 *Assertion.* A request with both `Content-Length` and `Transfer-Encoding`, a HEAD/GET with a
 body, or a `Connection: Content-Length` cleanup attempt is rejected (400) and never produces
@@ -1653,6 +1657,38 @@ over-limit connections; re-derive Content-Length on any downgrade; never forward
 proxies gRPC over upstream h2 -- both the terminated and forced-h2-upstream sides
 inherit this requirement.
 
+API Sheriff holds these bounds on the inbound HTTP/2 transport. `EdgeHardeningOptions` sets the first
+three on every listener as fixed gateway constants that no configuration key reaches; the last two
+follow from the never-forward set and from dispatch:
+
+* *Concurrent streams.* A connection announces at most 100 concurrent streams; a listener announcing
+  more, or no limit, is lowered to that bound.
+* *Stream resets.* The per-connection Rapid-Reset guard is pinned at 200 client-sent `RST_STREAM`
+  frames per 30-second window -- the transport's own default, set explicitly so a change of that
+  default cannot move it, and never raised (ADR-0066). A connection past it is ended with
+  `GOAWAY ENHANCE_YOUR_CALM`; every other connection is served on.
+* *Header block.* A connection announces a `SETTINGS_MAX_HEADER_LIST_SIZE` of at most 16 KiB, the
+  bound the HTTP/1.1 header block has. It covers the whole decoded header block, `CONTINUATION`
+  frames included, so a header block grown past it over any number of frames ends the connection.
+  Zero-length `CONTINUATION` frames add nothing to the block, so this bound cannot end a flood of
+  them; the transport ends that connection before the stream is answered. That is the transport's
+  default behaviour, not a gateway constant; `GatewayEdgeHttp2AbuseTest` pins the outcome.
+* *h2c and connection-specific headers.* A client's `Upgrade`, `Connection` and `HTTP2-Settings`
+  headers are members of the request-direction never-forward set (<<gw-03>>), so no forward mode
+  relays them; the gateway itself never performs an `h2c` upgrade towards an upstream.
+* *Downgrade framing.* A request forwarded from HTTP/2 to an HTTP/1.1 upstream is framed by dispatch,
+  never by a client-supplied header: a declared length becomes exactly the upstream
+  `Content-Length`, an undeclared one keeps the framing the upstream client chooses
+  (link:adr/0060-Dispatch_sends_a_bodyless_method_no_body_and_frames_every_declared-length_body_by_exactly_that_length.adoc[ADR-0060],
+  <<gw-02>>).
+
+The per-source detection substrate does not key these bounds. Its key is a source address, while
+stream and reset state belong to one connection, so each bound is a property of the connection
+that carries the abuse. The gRPC path inherits all of them: its inbound streams arrive over the same
+listeners, and the forced-h2 upstream leg opens at most one upstream stream per admitted inbound
+request, so the stream and reset rates it can produce towards an upstream are bounded by the inbound
+ones.
+
 *Note -- early-answered uploads do not feed the reset count.* The Rapid-Reset guard counts the
 resets a client sends per connection, so a legitimate client that resets every upload stream answered
 before its body was sent -- as a Go client does -- would reach the guard's limit on an ordinary
@@ -1666,9 +1702,7 @@ connection's flow-control window is used up, or the client ended or lost the str
 has not changed for 50 ms, or 1 s has passed. Only the first shows that no more of the body can
 arrive. The 50 ms quiet period infers it from a client that is not sending, and the 1 s cap is a
 separate exit that ends the wait even while request data may still be in flight. The guard itself is
-untouched: no
-`quarkus.http.limits.rst-flood-*` key is set or changed, and this note does not change the status
-below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
+pinned at the transport default and never raised, and this note does not change the status below. On an HTTP/1.1 upstream the same stop closes the upstream connection, and that close was an
 availability threat of its own: it is recorded, with its control, under
 <<gw-07-upstream-ports,GW-07>>.
 
@@ -1681,13 +1715,25 @@ stream-idle bound ends with trailers, its stream reset with `NO_ERROR` when its 
 Each is a reset the gateway sends, so none counts towards the client's Rapid-Reset limit, and none
 ends the connection or its other streams. The status below is unchanged.
 
-*Status:* GAP. Quarkus/Netty ship some Rapid-Reset mitigation, but stream-reset rate limiting
-and CONTINUATION bounds must be verified and pinned, and h2c-upgrade non-forwarding asserted.
-This spans both the terminated h2 edge and the forced-h2 gRPC upstream.
+*Status:* COVERED. `EdgeHardeningOptionsTest` pins the reset-guard constants and the header-list
+bound (lowered when the listener announces more, kept when it announces less).
+`GatewayEdgeHttp2AbuseTest` drives the real edge with a raw HTTP/2 frame writer: a create-then-reset
+flood past the pinned window ends its connection with `GOAWAY ENHANCE_YOUR_CALM` while a fresh
+connection is served; early-answered uploads the gateway resets with `NO_ERROR` never trip the
+guard; a `CONTINUATION` flood past the header-list bound drops its connection, and so does a complete
+header block of 17 KiB or 32 KiB spread over `CONTINUATION` frames, with a `GOAWAY` naming an error and
+the stream never answered; and a flood of
+zero-length `CONTINUATION` frames ends its connection before the stream is answered. `ConnectionHeadersTest` and
+`ForwardPolicyStageTest` pin that `HTTP2-Settings`, `Upgrade` and `Connection` are withheld under
+every forward mode, and the HTTP/2 legs of `GatewayEdgeFramingCorpusTest` pin the h2->h1
+declared-length framing. `GatewayEdgeEarlyResponseResetTest` keeps proving that the gateway's own
+resets are not counted. Against the native image `Http2StreamAbuseIT` drives the same floods,
+the `HTTP2-Settings` withholding and the h2->h1 framing over TLS and ALPN.
 
 *Assertion.* A Rapid-Reset / CONTINUATION-flood load against the gateway does not exhaust
-CPU/memory (bounded, connection dropped); client `Upgrade: h2c`/`Connection` headers are not
-forwarded upstream; an h2->h1 path re-derives framing.
+CPU/memory (bounded, connection dropped); client `Upgrade: h2c`/`Connection`/`HTTP2-Settings`
+headers are not forwarded upstream; an h2->h1 path re-derives framing; a reset the gateway sends
+never counts towards a client's Rapid-Reset limit.
 
 [#gw-09]
 === GW-09 -- WebSocket cross-site hijacking (CSWSH) / missing Origin check on upgrade
@@ -2206,14 +2252,31 @@ problem body or its HTML error page, the response headers the request carried be
 selected, and never a trailers-only gRPC status. The closed set of events, every exclusion and its
 reason, and the definition of "identical" are recorded in
 link:adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
-and in link:architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture -- rejections before the
-trust boundary]. Every unrouted `404`, genuine or resolved, leaves the edge on the same release
-rule, written from a Vert.x timer: no earlier than a fixed floor plus a random jitter after
-admission, and an answer whose processing ran past the floor is held to the next floor step after
-admission plus the jitter (`UniformNotFound.releaseAtNanos`, ADR-0073). The true event is still reported -- the event counter, the WARN and
-INFO lines and `sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is
-not shown. One switch, `security_defaults.uniform_not_found`, governs the branch and the floor and
-is on by default (link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
+and in
+link:architecture/observability-and-errors.adoc#_trust_boundary_rejections[Architecture --
+rejections before the trust boundary]. An unexpected internal failure in the same window is answered the same way and
+counted under `PRE_TRUST_INTERNAL_FAILURE`, with its stack trace at `DEBUG` and no `WARN`, so a
+crafted input that makes a stage fail cannot turn a routed address into a `500`. It carries no weight
+on the per-source recon ledger
+(link:adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]):
+an operator-side failure is not caller behaviour and carries no detection weight. Every unrouted
+`404`, genuine or resolved, leaves the edge on the same step rule, written from a Vert.x timer: no
+earlier than a fixed floor plus a random jitter after admission, and an answer whose processing ran
+past the floor is held to the next floor step after admission plus the jitter
+(`UniformNotFound.release`, ADR-0073). The release time is computed on the event loop at the moment
+the answer is armed -- after an HTML error page has rendered and after the hop from the virtual
+thread -- so neither moves an answer off the grid, and an answer released after the first step is
+counted on `sheriff_uniform_not_found_overruns_total`. While it waits, a held answer holds a permit of
+the held-answer sub-budget, a quarter of the effective `admission_cap`, instead of one of the general
+admission pool; a full sub-budget answers the held response `503` no earlier than the floor's release
+time, alike for every held answer, and one source tripped under `delay` is held to its share of the
+sub-budget. The floor is measured: `EnumerationOracleIT` probes eight pre-trust paths a caller can drive on
+the integration stack, the bearer-token paths among them, and asserts the overrun meter did not move
+(ADR-0073 Amendment A1 lists them). The true
+event is still reported -- the event counter, the WARN and INFO lines and
+`sheriff_errors_total{event}` -- so the operator keeps the real cause the caller is not shown. One
+switch, `security_defaults.uniform_not_found`, governs the branch and the floor and is on by default
+(link:configuration.adoc#_uniform_not_found[Configuration -- the uniform 404]).
 
 *Status:* COVERED. `UniformNotFoundTest` walks every `EventType` constant and fails for one with
 neither a closed-set nor an exclusion entry. `GatewayEdgeUniformNotFoundTest` asserts over a live
@@ -2224,12 +2287,23 @@ session CSRF refusal, a `protocol: grpc` route, the bearer branch of a session-f
 `match.headers` route. It also asserts that a scope `403` is not delayed and that the switch set to
 `false` restores the honest codes. It times the floor for a subset only: the genuine unrouted `404`,
 a missing and a garbage bearer and an off-allowlist path, the last under `Accept: text/html` as
-well. `ResponseDelayTest` asserts that the wait is a timer and not a held thread. `EnumerationOracleIT`
+well. `ErrorResponseWriterTest` asserts that a pre-trust internal failure is answered as the floored
+unrouted `404` and counted under `PRE_TRUST_INTERNAL_FAILURE` but never admitted to the recon ledger,
+where a recon event from the same source is, while a post-trust one stays `500`, that
+the release is computed from the admission reading on the event loop for the problem document and the
+HTML page alike, and that an overrun is counted. `GatewayEdgeHeldAnswerBudgetTest` asserts over a live
+edge that held answers past the sub-budget are answered `503` alike for unrouted and routed pre-trust
+requests while an authenticated request is still admitted. `ResponseDelayTest` asserts that the wait
+is a timer and not a held thread. `EnumerationOracleIT`
 makes the same comparison against the native image on the shipped default for the bearer-route
 subset: no token, a garbage token, a wrong method, an off-allowlist path, an oversized declared body
 and a `protocol: grpc` route. For each of those it also asserts that the resolved and the genuine
 unrouted answer both wait for the floor. It also asserts the honest `403` of a validated token lacking a scope
-and the `302` / `401` of a session route. The cookie-forwarding same-origin refusal is covered by
+and the `302` / `401` of a session route, that no crafted malformed bearer token is answered `500`,
+and -- the measurement of the floor -- that `sheriff_uniform_not_found_overruns_total` is unchanged
+after a fixed number of sequential probes of eight caller-drivable pre-trust paths; the oversized
+declared body, the route-scoped filter violation, the cookie-forwarding same-origin refusal and the
+`protocol: grpc` route are not part of that measurement. The cookie-forwarding same-origin refusal is covered by
 status and problem type only: `GatewayEdgeCookiePolicyTest` asserts its `404`, and
 `CookieForwardingPolicyIT` asserts the `404` and the routing problem type. No test compares its
 body, header set, HTML page or timing with the unrouted answer.
@@ -2240,21 +2314,23 @@ session route answers an anonymous navigation with a `302` into login and anythi
 anonymous route discloses itself through its own success answer. The uniform answer covers their
 pre-trust rejections only.
 
-*Residual risk (accepted) -- the floor is a reasoned value, not a measured one.* The floor
-(`UniformNotFound.RESPONSE_FLOOR`, 50 ms) is meant to sit above the slowest pre-trust arm, the
-offline signature check of a well-formed token with a wrong signature. No benchmark times that arm
-against the floored answer yet. An answer whose processing runs past the floor -- a
-garbage-collection pause, an unusually large token -- is not written at once: it is held to the
-next floor step after admission plus the jitter (`RESPONSE_JITTER`, 20 ms), the step rule of
-ADR-0073.
+*Residual risk (accepted) -- the floor is measured on the integration stack, not on every
+deployment.* The floor (`UniformNotFound.RESPONSE_FLOOR`, 50 ms) is measured against eight pre-trust
+paths a caller can drive on the integration stack, the bearer-token paths among them. A deployment on slower hardware, or one hit by a
+garbage-collection pause, can still see an answer run past it. Such an answer is not written at once:
+it is held to the next floor step after admission plus the jitter (`RESPONSE_JITTER`, 20 ms), the step
+rule of ADR-0073, and it is counted on `sheriff_uniform_not_found_overruns_total`, so an operator sees
+that it happened. A steady non-zero rate is the signal that the floor is too low for that deployment.
 
-*Residual risk (accepted) -- the floor costs admission under a `404` flood.* Each unrouted `404`
-holds its admission permit until it is written: an answer ready within the floor holds it for up
-to the floor plus the jitter, 70 ms after admission, and an answer held to a later floor step holds
-it until that step plus the jitter. A flood of unrouted or
-pre-trust requests therefore occupies admission permits for longer than it would without the floor,
-and past the admission cap the edge answers `503`, which is the same for every address. No thread is
-held while an answer waits (<<gw-07>>).
+*Residual risk (accepted) -- held answers share a bounded sub-budget under a `404` flood.* Each held
+answer holds a permit of the held-answer sub-budget until it is written: an answer ready within the
+floor for up to the floor plus the jitter, 70 ms after admission, and an answer held to a later floor
+step until that step plus the jitter. A flood of unrouted or pre-trust requests therefore fills the
+sub-budget, and past it every held answer is answered `503` no earlier than the floor's release time,
+which is the same for every address and every caller. A held answer does not draw on the general
+admission pool while it waits, and a refused one keeps its general permit only until the floor's
+release time, so a request that passes the trust boundary is still admitted once those are written. No thread is held while an answer waits
+(<<gw-07>>).
 
 *Assertion.* For a routed address and an unrouted address on the same gateway, a request with no
 token, a garbage token, a wrong method, an off-allowlist path, a route-scoped filter violation, an
@@ -2266,8 +2342,12 @@ except the route-scoped filter violation and the cross-origin request on a sessi
 inherit it from the same renderer branch untimed. A cross-site unsafe request carrying a
 forwarded cookie receives the `404` with the routing problem type; only that status and type are
 asserted for it. A validated token without the needed scope still receives `403`, and a session
-route still receives `302` / `401`. With `security_defaults.uniform_not_found: false`, every case
-receives its honest code.
+route still receives `302` / `401`. An unexpected internal failure on a routed address before the
+trust boundary receives the floored unrouted `404` and is counted under `PRE_TRUST_INTERNAL_FAILURE`,
+with no weight on the recon ledger; after the trust boundary it receives `500`. None of the
+caller-drivable pre-trust paths the floor measurement probes moves
+`sheriff_uniform_not_found_overruns_total` on the integration stack. With
+`security_defaults.uniform_not_found: false`, every case receives its honest code.
 
 == OAuth / OIDC / BFF failure catalogue
 
@@ -3951,7 +4031,7 @@ outstanding hardening work (next section).
 | ID | Control (short) | Owner | Status
 
 | <<gw-01>> | One canonical path for routing+auth+forward (+ matrix/encoded-slash); the query validated in the raw form it is forwarded in, forward lists matched on the decoded name | cui-http (canonical path, parameter pipelines) + gateway pipeline invariant + ADR-0047 | PARTIAL
-| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1; on HTTP/2 the stream-scoped gate rejection, a declared body on `HEAD`, the refusal of a non-decimal `Content-Length`, the bodyless-method rule and declared-length framing are pinned, the other gate clauses and an inbound body failure after dispatch are not)
+| <<gw-02>> | Reject ambiguous HTTP framing; nothing behind a rejected request is processed; a bodyless method never carries a body upstream on any protocol; a declared length frames the forwarded body exactly; an upstream request whose inbound body failed is reset and its connection not reused, reported as the client-attributed `INBOUND_BODY_ABORTED`, not counted as a failure by the route's circuit breaker and recorded by it as a success | Gateway (`FramingGate`, `ConnectionRetirement`, `ResponseEnds`, `DispatchStage`, `UpstreamGuards`) + HTTP transport (cui-http out of scope) | PARTIAL (pinned for HTTP/1.1 and HTTP/2, the h2->h1 declared-length framing included; the upstream reset is pinned against an HTTP/1.1 upstream only)
 | <<gw-03>> | Header CR/LF reject; `strict` refuses a query value decoding to CR/LF; per-direction gateway-owned never-forward sets; hop-by-hop cannot strip framing/trust | cui-http (CR/LF) + gateway (`SecurityProfile.STRICT`, `ConnectionHeaders`, ADR-0037) | PARTIAL
 | <<gw-04>> | TCP-peer forwarded gate; regenerate; CIDR validation; breadth warned beyond one provisioned network (chosen `/16` / `/48` residual, same rules for an environment-supplied range); the whole forwarding-name equivalence class withheld under every forward mode | cui-http resolver + ADR-0003 + ADR-0044 + gateway (peer gate, trust-all rejection, `ApiSheriff-102`, `ConnectionHeaders`) | COVERED
 | <<gw-05>> | Fixed topology upstream; scheme allowlist; egress-policy (control plane) with the JWKS allowance derived from the `jwks.url` host unless an authoritative explicit list is declared (accepted SSRF trade-off, certificate trust unchanged); upstream-asset reuse (no redirect, bounded) | ADR-0004 / ADR-0014 / ADR-0011 Amendment A1 / token-sheriff `EgressPolicy` | COVERED
@@ -3960,7 +4040,7 @@ outstanding hardening work (next section).
 | <<gw-07-jwks-refresh>> | Unknown key id: at most one JWKS refresh per issuer per `jwks.unknown_kid_refresh_window_seconds` (`5`-`3600`, default `30`), claimed on arrival, never on a request thread; a refresh published only when it holds the triggering key id; the replaced key set kept for `jwks.key_rotation_grace_period_seconds` (`0`-`3600`); window and grace deadline on a monotonic clock; `jwks.refresh_interval_seconds` (`60`-`86400`) bounds the background re-fetch; all three keys bounded at boot and refused on a `file` source; `ApiSheriff-136` limited to one record per window | Gateway (`RetryingJwksLoader`, `TokenValidatorProducer`) + configuration validator -- ADR-0063 | COVERED
 | <<gw-07-upstream-ports>> | A gateway-closed HTTP/1.1 upstream connection is closed abortively (`SO_LINGER 0`) and holds no local port in `TIME_WAIT`; the gateway's reset after a complete response falls outside the guarded call and is not counted by the breaker; its `StreamResetException` leaves no `ERROR` record | Gateway (`EgressClients` upstream client, `DispatchStage`) -- ADR-0066 | COVERED (no test observes the gateway's `TIME_WAIT` sockets; the benchmark proof is a recorded run, not a standing guard; the abortive close is pinned for the early answer and the client abort, not for the request-body idle timeout or deadline)
 | <<gw-07-request-body>> | A body that stops ends after 10 s without progress (`408`); a body not ended 25 s after its attempt started ends there -- `408` before the response head, the relayed response ended after it -- neither counted by the breaker as a failure nor retried; the pool wait is not counted by the idle timeout but counts towards the deadline, and a deadline that passed while the body was not being read ends it once it is read again; a gRPC call arms neither, and one silent in both directions for five minutes after its headers ends with `DEADLINE_EXCEEDED`; a refused or client-reset queued HTTP/2 upload returns its connection-window credit and its permit; every value a fixed constant | Gateway (`DispatchStage`, `EdgeHardeningOptions`, `ResponseStage`, `TerminalDispatch`, `RejectionReporter`, `ResponseEnds`) -- ADR-0060 | PARTIAL (no test observes the public `dispatchGrpc` handing its fixed five-minute stream-idle bound to the overload the tests drive)
-| <<gw-08>> | h2 stream-reset/CONTINUATION bounds; no h2c forward | Gateway (terminated h2 + gRPC upstream) | GAP
+| <<gw-08>> | Per-connection transport bounds pinned as fixed constants: at most 100 concurrent streams, a 16 KiB header-list bound (`CONTINUATION` included), the Rapid-Reset guard at the transport default of 200 client resets per 30 s (never raised), the gateway's own `NO_ERROR` resets uncounted; `HTTP2-Settings`, `Upgrade` and `Connection` never forwarded; h2->h1 framed by the declared length; the gRPC upstream leg inherits the inbound bounds | Gateway (`EdgeHardeningOptions`, `ConnectionHeaders`, `DispatchStage`) on the HTTP transport -- ADR-0060, ADR-0066 | COVERED
 | <<gw-09>> | WebSocket Origin validation on upgrade; allowlist mandatory at boot on bearer and session routes; session cookie `SameSite=Lax` | ADR-0015 + configuration validator + `OriginValidationStage` | COVERED
 | <<gw-10>> | No admin API / no scripting / no default creds | Design | ELIMINATED
 | <<gw-11>> | No SQL/SAML/mgmt endpoints; safe config-path + asset-path handling (canonicalize-then-confine + corpus) | Design / configuration validator / ADR-0014 (`PathConfinement`) | COVERED
@@ -3968,7 +4048,7 @@ outstanding hardening work (next section).
 | <<gw-13>> | Redirect target is fixed config; boot open-redirect review; explicit `allow_external` opt-in with boot WARN; answered after authentication | Configuration validator + `RedirectStage` (ADR-0014 Amendment A1) | COVERED
 | <<gw-14>> | Gateway-owned response headers `set` by default, `default` per-header opt-in; wholesale anchor replacement stated; pre-route responses keep the global block | `SecurityHeadersStage` + `ResponseStage` + configuration validator (ADR-0007 Amendment A1) | COVERED
 | <<gw-15>> | Per-route `cookies` policy, default `none`; one gateway-cookie definition dropped in both directions under every policy; `allow: all` refused at the gateway scope; upstream `Set-Cookie` relayed by policy with `Domain` removed on the HTTP relay, gRPC headers and gRPC trailers; a same-origin check on every non-WebSocket cookie-forwarding route for unsafe requests carrying a forwarded cookie, `allowed_origins` mandatory on a cookie-forwarding WebSocket route | Gateway (`GatewayCookies`, `ForwardPolicyStage`, `UpstreamSetCookieFilter`, `ResponseStage`, `CsrfDefence`, `RouteTableBuilder`, `GatewayEdgeRoute`) + configuration validator (`CookieRules`, `ForwardingRules`) -- ADR-0037 | COVERED (cross-upstream exposure under `allow: all`, a `Path`-scoped upstream cookie and an upstream that opts out of the check accepted)
-| <<gw-16>> | Every rejection raised after route selection and before the trust boundary rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released no earlier than a fixed floor plus jitter on a Vert.x timer; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `ResponseDelay`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor is a reasoned value pending a measurement, and its admission cost under a `404` flood, accepted)
+| <<gw-16>> | Every rejection raised after route selection and before the trust boundary, and every unexpected internal failure there, rendered as the unrouted `404` -- status, body, `Content-Type` and header set identical, never trailers-only on gRPC; every unrouted `404` released on the floor's step grid, the release computed on the event loop when the answer is armed, on a Vert.x timer; held answers on a derived held-answer sub-budget, `503` on the floor's release time when it is full, one tripped source held to its share; the floor measured against eight caller-drivable pre-trust paths, the bearer-token paths among them, and its overruns metered; the true event still metered; one switch `security_defaults.uniform_not_found`, on by default | Gateway (`UniformNotFound`, `ErrorResponseWriter`, `RejectionReporter`, `ResponseDelay`, `EdgeAdmission`, `PipelineRequest`, `AuthenticationStage`) -- ADR-0073 Amendment A1 | COVERED (session and anonymous routes still disclose themselves through their own answers, the floor measured on the integration stack rather than on every deployment, and the held-answer `503` under a `404` flood, accepted)
 | <<bff-01>> | Exact-match redirect URI | Engine (logout) + AS (auth) + gateway reserved-path registration | COVERED
 | <<bff-02>> | Browser-bound `state`; single-use; same-origin return URL with the raw query kept and a boot-checked `default_return_url` | Engine `FlowContext` + gateway pending-authorization record (binding cookie) | COVERED (server) / PARTIAL-accepted (cookie: TTL replay window)
 | <<bff-03>> | PKCE `S256`; verifier binding; single-use code | Engine `PkceChallenge` (S256-only) | COVERED
@@ -4010,9 +4090,9 @@ down. Closing them is the whole point of this exercise. Each is a small, additiv
   encoded-traversal/encoded-slash/matrix-param corpus proves no authorize-as-public /
   dispatch-to-protected divergence (upstream count = 0). Dominant gateway CVE class; the
   direct fix for the code-review raw-vs-normalized finding.
-. *GW-08 -- pin HTTP/2 abuse bounds.* Verify and assert stream-creation/reset
-  rate limiting (Rapid Reset), CONTINUATION frame count/size bounds, and non-forwarding of
-  client `Upgrade: h2c`/`Connection` to the upstream.
+. *GW-02 -- pin the upstream reset against an HTTP/2 upstream.* Every framing clause is pinned
+  over HTTP/1.1 and HTTP/2; the reset of an upstream request whose inbound body failed is driven
+  against an HTTP/1.1 upstream only.
 . *GW-06 -- fail-closed SNI + behaviour tests.* Make explicit: empty/fragmented SNI
   takes the strict policy or rejects (never a permissive default); the full ClientHello is
   reassembled before SNI routing; every security-gating boolean has a *behaviour* test (a real

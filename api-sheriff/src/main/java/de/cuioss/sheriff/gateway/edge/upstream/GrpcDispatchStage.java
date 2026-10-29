@@ -41,10 +41,14 @@ import io.vertx.core.streams.ReadStream;
  * failure at dispatch (the forced-h2 dial could not establish {@code h2}) surfaces as an upstream
  * connection failure, mapped to {@link EventType#UPSTREAM_ERROR} by {@link UpstreamFailureMapper} and
  * rendered as gRPC {@code UNAVAILABLE} by {@link de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper}.
- * The Plan-04 GW-08 HTTP/2 abuse bounds (Rapid-Reset / CONTINUATION-flood) hold on the gRPC path
- * because they are enforced by the shared inbound transport
- * ({@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions}) rather than per-protocol, so legitimate
- * multi-stream gRPC traffic is never misfired.
+ * <strong>The HTTP/2 stream-abuse bounds (threat {@code GW-08}) hold on the gRPC path</strong> because
+ * they are bounds of the shared inbound transport, applied by
+ * {@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions} to every listener rather than
+ * per protocol: at most 100 concurrent streams per connection, a decoded header block of at most
+ * 16 KiB ({@code CONTINUATION} frames included), and the per-connection Rapid-Reset guard pinned at 200
+ * client-sent {@code RST_STREAM} frames per 30-second window. Ordinary multi-stream gRPC traffic stays
+ * inside all three. The forced-h2 upstream leg opens at most one upstream stream per admitted inbound
+ * request, so the stream and reset rates it can produce upstream inherit the inbound bounds.
  * <p>
  * <strong>No request-body idle timeout and no request-body deadline.</strong> The dispatch is built
  * with {@link DispatchStage#NO_BODY_IDLE_TIMEOUT} and without a request-body deadline, so a gRPC request

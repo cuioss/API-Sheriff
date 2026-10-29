@@ -161,9 +161,9 @@ endpoint:
                                    #   policy (20-call window, ratio 0.5, 5 s open) and a route
                                    #   declares none -- the key is refused at boot (ADR-0064)
       rate_limit: { requests_per_second: 100, burst: 20 }
-                                   # planned, not implemented, no 429 today: parsed,
-                                   #   enforced by nothing, and named at boot by the
-                                   #   WARN ApiSheriff-140
+                                   # planned, not implemented: parsed, enforced by
+                                   #   nothing, never causes a 429, and named at boot
+                                   #   by the WARN ApiSheriff-140 (ADR-0077)
 ----
 
 The manifest's `/auth` -> IdP and `/token` -> IdP mappings are just another endpoint file bound to
@@ -745,12 +745,14 @@ convention nothing validates.
 === Why an existing route answers 404
 
 A request to a route that exists can be answered `404`, exactly as an address without any route is
-answered. That is deliberate. When a caller has not authenticated yet, every rejection a route
-raises before authentication completes is answered as the unrouted `404`: a missing or invalid
+answered. That is deliberate. Every rejection a route raises before authentication has completed --
+before the trust boundary -- is answered as the unrouted `404` to every caller, one with a valid
+credential included: a missing or invalid
 bearer token, a method outside `allowed_methods`, a path outside `allowed_paths`, a refusal of the
-route's `security_filter`, a declared `Content-Length` over `max_body_bytes`, and a CSRF or
-same-origin refusal. Without this, an unauthenticated scanner would learn which addresses name
-routes from the `401`, `405`, `400`, `413` or `403` it receives. The answer is the same in every
+route's `security_filter`, a declared `Content-Length` over `max_body_bytes`, a CSRF or
+same-origin refusal, and an unexpected internal failure of the gateway while it handles the request.
+Without this, an unauthenticated scanner would learn which addresses name routes from the `401`,
+`405`, `400`, `413`, `403` or `500` it receives. The answer is the same in every
 detail: status, body, `Content-Type`, response headers -- no `WWW-Authenticate`, no `Allow` -- and
 the time it takes. A `protocol: grpc` route answers with the HTTP `404` too, not with a gRPC status
 (link:../adr/0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]).
@@ -762,12 +764,21 @@ not see it:
   `TOKEN_MISSING`, `TOKEN_INVALID`, `METHOD_NOT_ALLOWED`, `PATH_NOT_ALLOWED`,
   `SECURITY_FILTER_VIOLATION`, `CONTENT_TOO_LARGE` or `CSRF_REJECTED` -- with the route id and the
   category, never `NO_ROUTE_MATCHED`. A rising `NO_ROUTE_MATCHED` count is a request for an address
-  that has no route; any of the others is a request a route refused.
+  that has no route; any of the others is a request a route refused. `PRE_TRUST_INTERNAL_FAILURE` is
+  the gateway failing on a request before authentication completed: it writes no WARN, because a
+  caller who found an input that triggers it could otherwise fill the log, so its stack trace is
+  logged at `DEBUG` only. A count that keeps rising is worth a `DEBUG` look at that route.
 * The WARN and INFO lines the gateway logs for a rejection name the true event as well (see
   link:../LogMessages.adoc[Log Messages]).
+* `sheriff_uniform_not_found_overruns_total` counts the `404` answers that took longer than the
+  response floor to prepare and were therefore released one floor step later than an absent address
+  is. It should stay at zero. A non-zero value means some path answered this way is slower than the
+  floor on this deployment, so its `404` can be told from an absent address's by its timing; a
+  steady rate is a reason to report it, together with the routes involved, so the floor can be
+  re-measured.
 
-*Who still gets the honest code.* The uniform `404` is for callers that have not passed
-authentication. A client with a valid token keeps every answer raised after authentication: the
+*Who still gets the honest code.* The uniform `404` covers only what is raised before the trust
+boundary. A client with a valid token keeps every answer raised after authentication: the
 `403 insufficient_scope` of a token lacking a scope, the dispatch `408` and `413`, and upstream
 `5xx`. A session route keeps its own answers too: a navigation without a session is redirected into
 the login, and any other request receives `401` `application/problem+json`. Rejections raised before
@@ -780,6 +791,85 @@ names which refusal.
 `401`, `405`, `400`, `413` and `403` for every caller, and the gRPC trailers-only status on a gRPC
 route. The default is `true`. See
 link:../configuration.adoc#_uniform_not_found[Configuration -- The uniform 404].
+
+[[_enumeration_detection_operator_note]]
+=== Scanning sources and enumeration detection
+
+The uniform `404` keeps a scanner from learning which addresses are routes. The gateway also notices
+the scanner itself. It counts, per source, the rejections a request receives before authentication
+completes -- an address without a route, a wrong method, a path or input the gateway refuses, a
+declared body over the cap, a CSRF refusal, a missing or invalid token -- and a source whose count
+reaches a threshold *trips*. All keys are in
+link:../configuration.adoc#_enumeration_detection[Configuration -- `enumeration_detection`].
+
+*By default a trip changes nothing a client sees.* Detection runs on every gateway, also without an
+`enumeration_detection` block, with the action `observe`: a trip is logged and counted, and every
+answer stays exactly what it was. The gateway cannot tell whether one address is one client or every
+client behind a NAT or a load balancer, so stopping or slowing a source is left for you to switch on.
+
+*Reading a trip.*
+
+* WARN `ApiSheriff-141` names the source, the host, the threshold, the window and the action. The
+  source is an IPv4 address, an IPv6 `/64` prefix, or `unknown`; for a request through a trusted
+  forwarder it is the client address the forwarder reported. The host is a host a route declares in
+  `match.host`, or `*`. The line never carries the requested path or a header. A source trips once
+  and is not reported again until it has stopped long enough for its count to drain.
+* `sheriff_source_trips_total{action}` on the management port counts the trips.
+* `sheriff_source_untracked_total` counts rejections from sources the gateway could not track because
+  it already tracks the maximum of 65,536 sources; WARN `ApiSheriff-142` reports the first of them.
+  A steady count there means more distinct sources are being rejected than the gateway tracks -- a
+  scan spread over many addresses, or a deployment whose sources are not per client.
+* `sheriff_errors_total{event}` keeps naming the true cause of every rejection the scanner received
+  (see <<_uniform_not_found_operator_note>>).
+
+*What a scanning source sees under each action.*
+
+[cols="1,4", options="header"]
+|===
+| `action` | What the tripped source sees
+
+| `observe` (default)
+| The same answers as before the trip.
+
+| `delay`
+| Every rejection of the kind that is counted answers only `delay_millis` after the request arrived
+  (default `2000`). Its served requests are not slowed. Scanning gets slower, and a scanner that keeps
+  fewer answers waiting than its share allows is not told why.
+  While as many of its answers wait as its share of the held-answer sub-budget allows, its further
+  requests -- served ones included -- answer as under `block`, with `Retry-After` the seconds of
+  `delay_millis`.
+
+| `block`
+| Every request answers `429` with `Retry-After`, the seconds left of the block, and the
+  `rate-limiting` problem document, for `block_seconds` (default `60`). The answer is the same on every
+  address, so it reveals no route. `sheriff_errors_total{event="SOURCE_BLOCKED"}` counts the blocked
+  requests.
+|===
+
+*Before you switch to `block` or `delay`.* Make sure one source address is one client:
+
+. If the gateway sits behind a load balancer or reverse proxy, list it in `forwarded.trusted_proxies`
+  (see link:../configuration.adoc#_forwarded_headers[Configuration -- `forwarded`]). Otherwise every client
+  arrives from the balancer's address, one scanning client trips that address, and `block` answers
+  `429` to all of them.
+. If many of your clients share an address -- a corporate NAT, a mobile carrier, a shared egress
+  proxy -- they are one source whatever the gateway is told. Keep `observe`, or raise `threshold` well
+  above what those clients cause together.
+. Check the trips you already have: a WARN `ApiSheriff-141` naming the address of your balancer, or
+  of a known partner, means that address is shared.
+
+*Tuning and switching it off.* `threshold` and `window_seconds` set how many counted rejections a
+source may cause before it trips: the count drains continuously, so a source stays below the line as
+long as it causes fewer than `threshold` rejections per `window_seconds`. Raise `threshold` when
+honest clients trip -- an application with many broken links, for example. Requests on an asset route
+and the fetches browsers make of every site -- `/favicon.ico`, `/robots.txt` and the
+`/apple-touch-icon` images -- are not counted, and neither is anything after a client has
+authenticated; a missing `.css` or `.js` file outside an asset route is counted. Nor is a request the gateway itself failed on (`PRE_TRUST_INTERNAL_FAILURE`): an
+operator-side failure is not caller behaviour and carries no detection weight, so clients retrying
+through an outage are never tripped by it. `enabled: false` switches detection off completely. The counts are kept per gateway
+instance and are cleared by a restart, so a source spreading its requests over several instances is
+counted on each separately
+(link:../adr/0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
 
 [[_endpoint_scopes]]
 === Endpoint scopes (`endpoint.scopes`)
@@ -960,10 +1050,11 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
   resolves `allow: none` whatever is declared. See <<_cookie_dependent_upstream>>.
 
 | `rate_limit`
-| No rate limiting, whether the block is declared or not: rate limiting is planned, not
-  implemented, and no `429` is produced today. A declared block is parsed and enforced by nothing,
-  and every route that declares one is named at boot by the WARN `ApiSheriff-140` -- see
-  link:../configuration.adoc#_rate_limit[`rate_limit`].
+| No rate limiting, whether the block is declared or not: per-route rate limiting is planned, not
+  implemented, and the block never causes a `429`. A declared block is parsed and enforced by
+  nothing, and every route that declares one is named at boot by the WARN `ApiSheriff-140` -- see
+  link:../configuration.adoc#_rate_limit[`rate_limit`]. Every `429` the gateway sends belongs to
+  per-source detection (<<_enumeration_detection_operator_note>>).
 |===
 
 [[_edge_hardening_defaults]]
@@ -971,7 +1062,7 @@ posture rather than inventing one, and an omitted `security_filter` lands on `st
 
 The public data-plane HTTP listener is bounded on two axes, and they are governed differently.
 
-The *transport bounds* — the framing limits, the HTTP/2 connection window, the request-body idle
+The *transport bounds* — the framing limits, the HTTP/2 stream, header-list, reset and connection-window bounds, the request-body idle
 timeout and deadline, the gRPC stream-idle timeout, the unrouted-`404` response floor and the drain
 window — are fixed secure defaults applied in code (`EdgeHardeningOptions`, the gRPC relay for the
 stream-idle timeout, and `UniformNotFound` for the response floor) and are not
@@ -1029,6 +1120,21 @@ deployment that never writes it keeps the behaviour shown here.
   above times the initial stream window, capped at 2^31^-1 and never below one stream window. Not
   configurable.
 
+| HTTP/2 header list per request
+| 16 KiB
+| The `SETTINGS_MAX_HEADER_LIST_SIZE` value every listener announces -- the HTTP/1.1 header-block
+  bound. It covers the whole decoded header block, `CONTINUATION` frames included, so a header block
+  grown past it over any number of frames ends the connection. A listener announcing more, or no
+  limit, is lowered to it; a lower setting is kept. Not configurable.
+
+| HTTP/2 stream resets per connection
+| 200 per 30 s
+| The Rapid-Reset guard: a connection whose client sends more `RST_STREAM` frames than this inside one
+  window is ended with `GOAWAY ENHANCE_YOUR_CALM`, and every other connection is served on. Pinned at
+  the transport's own default and never raised. Only resets the client sends count, never the
+  gateway's own. Not configurable. See
+  link:../architecture/tls-and-inbound-security.adoc#_http2_transport_bounds[Architecture -- HTTP/2 transport bounds].
+
 | Request-body idle timeout
 | 10 s
 | A proxied request whose body makes no progress for this long while the gateway reads it is
@@ -1067,8 +1173,10 @@ deployment that never writes it keeps the behaviour shown here.
 | While `security_defaults.uniform_not_found` is on, every answer rendered as the unrouted `404` is
   written no earlier than this after the request was admitted, so the answer time does not tell an
   existing route from an absent one (<<_uniform_not_found_operator_note>>). A Vert.x timer holds the
-  answer; no thread waits. The answer keeps its admission permit until it is written. Not
-  configurable.
+  answer; no thread waits. While it waits, the answer holds a permit of the held-answer sub-budget,
+  a quarter of the effective `admission_cap`, instead of its general admission permit; when that
+  sub-budget is full the answer is a `503`, written no earlier than the floor's release time. An answer released after the first floor step is
+  counted on `sheriff_uniform_not_found_overruns_total`. Not configurable.
 
 | Admission cap (in-flight requests) +
   [`edge_hardening.admission_cap`]

@@ -23,9 +23,11 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * The block is parsed and bound into this record, and every route that declares it is reported at
  * boot with the WARN {@code ApiSheriff-140} ({@code LimitRules.validateRateLimitNotEnforced}). It is
- * never enforced: no component reads it at request time, so no rate limit is applied and no request
- * is answered {@code 429}. A future implementation builds on the per-source mechanism of the
- * follow-up enumeration-hardening plan rather than on these two fields as they stand.
+ * never enforced: no component reads it at request time, so no rate limit is applied and the block
+ * never causes a {@code 429}. A future implementation builds on the shipped per-source detection
+ * substrate ({@code de.cuioss.sheriff.gateway.detection.SourceLedger}, ADR-0076) rather than on these
+ * two fields as they stand; every {@code 429} the gateway sends today comes from that substrate
+ * (the {@code block} action, and under {@code delay} a tripped source whose held-answer share is used up).
  *
  * @param requestsPerSecond the sustained request rate, {@code null} when omitted
  * @param burst             the burst allowance, {@code null} when omitted

@@ -34,6 +34,7 @@ import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.IssuerConfig;
@@ -62,7 +63,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Tests for the inbound-limit rules the {@link ConfigValidator} runs through {@link LimitRules}: the
- * {@code edge_hardening} admission budget, the {@code security_defaults.max_authorization_header_value_length}
+ * {@code edge_hardening} admission budget, the {@code enumeration_detection} bounds, the
+ * {@code security_defaults.max_authorization_header_value_length}
  * carve-out bound, and the fail-closed ADR-0024 {@code profile: minimal} refusal on effectively-authenticated
  * and BFF routes — plus the fail-closed default of the GET-body opt-in that shares the
  * {@code security_defaults} block, and the boot WARN for every route declaring the unenforced
@@ -808,6 +810,84 @@ class LimitRulesTest {
                             "the WARN never carries requests_per_second"),
                     () -> assertFalse(warnings.getFirst().contains(String.valueOf(burst)),
                             "the WARN never carries burst"));
+        }
+    }
+
+    @Nested
+    @DisplayName("enumeration_detection bounds")
+    class EnumerationDetectionBounds {
+
+        private static final String POINTER = "/enumeration_detection/";
+
+        private List<ConfigError> validate(EnumerationDetectionConfig detection) {
+            return validator.validate(validGateway().enumerationDetection(detection).build(), List.of(),
+                    topologyWith());
+        }
+
+        @Test
+        @DisplayName("Should accept an omitted block, an empty block and every member at its documented bound")
+        void shouldAcceptOmittedAndBoundaryValues() {
+            List<ConfigError> omitted = validator.validate(validGateway().build(), List.of(), topologyWith());
+            List<ConfigError> empty = validate(EnumerationDetectionConfig.builder().build());
+            List<ConfigError> lowest = validate(new EnumerationDetectionConfig(true, 1, 1,
+                    EnumerationDetectionConfig.Action.BLOCK, 1, 1));
+            List<ConfigError> highestDelay = validate(EnumerationDetectionConfig.builder()
+                    .action(EnumerationDetectionConfig.Action.DELAY).delayMillis(LimitRules.MAX_DELAY_MILLIS).build());
+
+            assertAll("nothing in range is refused",
+                    () -> assertTrue(omitted.isEmpty(), () -> "omitted: " + omitted),
+                    () -> assertTrue(empty.isEmpty(), () -> "empty: " + empty),
+                    () -> assertTrue(lowest.isEmpty(), () -> "lowest: " + lowest),
+                    () -> assertTrue(highestDelay.isEmpty(), () -> "highest delay: " + highestDelay));
+        }
+
+        @ParameterizedTest(name = "threshold {0}")
+        @ValueSource(ints = {0, -1})
+        @DisplayName("Should refuse a threshold below 1, naming its pointer and value")
+        void shouldRefuseThresholdBelowOne(int threshold) {
+            List<ConfigError> errors = validate(EnumerationDetectionConfig.builder().threshold(threshold).build());
+
+            assertHasError(errors, POINTER + "threshold", "threshold must be at least 1 (was " + threshold + ")");
+        }
+
+        @ParameterizedTest(name = "window_seconds {0}")
+        @ValueSource(ints = {0, -60})
+        @DisplayName("Should refuse a window below 1 second")
+        void shouldRefuseWindowBelowOne(int windowSeconds) {
+            List<ConfigError> errors = validate(EnumerationDetectionConfig.builder().windowSeconds(windowSeconds)
+                    .build());
+
+            assertHasError(errors, POINTER + "window_seconds", "(was " + windowSeconds + ")");
+        }
+
+        @ParameterizedTest(name = "block_seconds {0}")
+        @ValueSource(ints = {0, -5})
+        @DisplayName("Should refuse a block duration below 1 second")
+        void shouldRefuseBlockBelowOne(int blockSeconds) {
+            List<ConfigError> errors = validate(EnumerationDetectionConfig.builder().blockSeconds(blockSeconds)
+                    .build());
+
+            assertHasError(errors, POINTER + "block_seconds", "(was " + blockSeconds + ")");
+        }
+
+        @ParameterizedTest(name = "delay_millis {0}")
+        @ValueSource(ints = {0, -1, LimitRules.MAX_DELAY_MILLIS + 1, Integer.MAX_VALUE})
+        @DisplayName("Should refuse an answer hold outside 1..10000 milliseconds")
+        void shouldRefuseDelayOutOfRange(int delayMillis) {
+            List<ConfigError> errors = validate(EnumerationDetectionConfig.builder().delayMillis(delayMillis)
+                    .build());
+
+            assertHasError(errors, POINTER + "delay_millis", "1..10000 (was " + delayMillis + ")");
+        }
+
+        @Test
+        @DisplayName("Should report every refused member in one pass")
+        void shouldReportEveryViolationInOnePass() {
+            List<ConfigError> errors = validate(new EnumerationDetectionConfig(true, 0, 0,
+                    EnumerationDetectionConfig.Action.OBSERVE, 0, 0));
+
+            assertEquals(4, errors.stream().filter(e -> e.pointer().startsWith(POINTER)).count(),
+                    () -> "expected one refusal per member, got: " + errors);
         }
     }
 }

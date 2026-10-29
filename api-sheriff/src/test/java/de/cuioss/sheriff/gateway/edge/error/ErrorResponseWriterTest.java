@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -35,15 +36,25 @@ import java.util.function.Consumer;
 import java.util.function.LongUnaryOperator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.cuioss.http.forwarded.ForwardedHeaderResolver;
+import de.cuioss.http.forwarded.ForwardedResolverConfig;
+import de.cuioss.http.security.config.SecurityConfiguration;
+import de.cuioss.http.security.monitoring.SecurityEventCounter;
 import de.cuioss.sheriff.gateway.bff.runtime.GatewayJson;
 import de.cuioss.sheriff.gateway.bff.runtime.SessionIdentity;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.HttpMethod;
 import de.cuioss.sheriff.gateway.config.model.MatchConfig;
 import de.cuioss.sheriff.gateway.config.model.PortalConfig;
 import de.cuioss.sheriff.gateway.config.model.Protocol;
 import de.cuioss.sheriff.gateway.config.model.Require;
 import de.cuioss.sheriff.gateway.config.model.ResolvedUpstream;
+import de.cuioss.sheriff.gateway.detection.SourceKey;
+import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
+import de.cuioss.sheriff.gateway.detection.SourceState;
+import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
+import de.cuioss.sheriff.gateway.edge.admission.SourceGate;
 import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
@@ -51,6 +62,7 @@ import de.cuioss.sheriff.gateway.events.EventCategory;
 import de.cuioss.sheriff.gateway.events.EventType;
 import de.cuioss.sheriff.gateway.events.GatewayEventCounter;
 import de.cuioss.sheriff.gateway.events.GatewayException;
+import de.cuioss.sheriff.gateway.forward.TcpPeerGate;
 import de.cuioss.sheriff.gateway.pipeline.PipelineRequest;
 import de.cuioss.sheriff.gateway.portal.ErrorPageClassifier;
 import de.cuioss.sheriff.gateway.portal.PortalCatalog;
@@ -88,8 +100,16 @@ import org.junit.jupiter.params.provider.EnumSource;
  * pre-trust rejection on a selected route is rendered as the unrouted {@code 404} — its response headers
  * restored to the set taken at route selection, its stage cookies dropped, a gRPC route answered as an
  * HTTP {@code 404}, the HTML page negotiated under the {@code NO_ROUTE_MATCHED} classification — while it
- * is still reported under its true event. Its release is counted from the request's admission reading
- * ({@link ResponseDelay#ADMITTED_AT_KEY}) under {@link UniformNotFound#releaseAtNanos}.
+ * is still reported under its true event. Its release is computed on the event loop from the request's
+ * admission reading ({@link ResponseDelay#ADMITTED_AT_KEY}) under {@link UniformNotFound#release}, for the
+ * problem document and the HTML page alike, and a release past the first step is metered. Two admission
+ * readings guard the order of the release arguments: one 1.5 floors old fails a release computed from
+ * the admission reading twice, and one a floor ahead of the writer's clock fails swapped arguments and a
+ * release computed from the writer's reading twice. And an unexpected internal failure
+ * ({@link ErrorResponseWriter#renderUnexpected}): before the trust boundary on a selected route it is the
+ * floored unrouted {@code 404}, counted under {@link EventType#PRE_TRUST_INTERNAL_FAILURE} but carrying
+ * no weight on the recon ledger — and under {@code delay}, for a tripped source, held for the delay as
+ * its recon rejection would be; everywhere else the opaque {@code 500}.
  */
 @EnableGeneratorController
 @DisplayName("ErrorResponseWriter — Retry-After of an open circuit and the trust-boundary branch")
@@ -112,6 +132,8 @@ class ErrorResponseWriterTest {
     private static final long JITTER_NANOS = UniformNotFound.RESPONSE_JITTER.toNanos();
     /** Room for timer and event-loop scheduling under machine load before an upper bound is reached. */
     private static final long SCHEDULING_SLACK_NANOS = TimeUnit.SECONDS.toNanos(5);
+    /** The per-source answer hold, chosen well above the floor plus its jitter. */
+    private static final int DELAY_MILLIS = 300;
 
     @Test
     @DisplayName("an open circuit is given Retry-After: 5, the seconds the breaker stays open")
@@ -333,6 +355,50 @@ class ErrorResponseWriterTest {
                             () -> "written " + writtenAfterAdmission + " ns after admission, far past the first step"));
         }
 
+        @Test
+        @DisplayName("the HTML-page branch is released on the step grid of the admission reading as well")
+        void htmlPageIsReleasedOnTheStepGrid() throws Exception {
+            ErrorResponseWriter writer = writer(true, errorPagesPortal());
+
+            Timed timed = timedAnswer(nowNanos -> nowNanos - FLOOR_NANOS * 3 / 2,
+                    ctx -> writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of("text/html")),
+                            new GatewayException(EventType.TOKEN_MISSING)));
+
+            long writtenAfterAdmission = timed.writtenAfterAdmissionNanos();
+            assertAll("the page, rendered before the release is computed, still leaves on the second step",
+                    () -> assertEquals(404, timed.status()),
+                    () -> assertTrue(timed.response().body().startsWith("<!DOCTYPE html>"),
+                            "precondition: the HTML page answered"),
+                    () -> assertTrue(writtenAfterAdmission >= 2 * FLOOR_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, before the second step of "
+                                    + 2 * FLOOR_NANOS + " ns"),
+                    () -> assertTrue(writtenAfterAdmission < 2 * FLOOR_NANOS + JITTER_NANOS + SCHEDULING_SLACK_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, far past the second step"));
+        }
+
+        @Test
+        @DisplayName("an answer released on a step above the first is counted on the overrun meter")
+        void overrunIsMetered() throws Exception {
+            Timed timed = rejectAdmittedAt(nowNanos -> nowNanos - FLOOR_NANOS * 3 / 2);
+
+            Counter overruns = meterRegistry.find(SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL).counter();
+            assertAll("an answer ready 1.5 floors after admission overran the first step",
+                    () -> assertEquals(404, timed.status()),
+                    () -> assertNotNull(overruns, "sheriff_uniform_not_found_overruns_total was recorded"),
+                    () -> assertEquals(1.0, Objects.requireNonNull(overruns).count()));
+        }
+
+        @Test
+        @DisplayName("control: an answer ready within the floor records no overrun")
+        void answerWithinTheFloorRecordsNoOverrun() throws Exception {
+            Timed timed = rejectAdmittedAt(nowNanos -> nowNanos);
+
+            assertAll("released on the first step",
+                    () -> assertEquals(404, timed.status()),
+                    () -> assertNull(meterRegistry.find(SheriffMetrics.UNIFORM_NOT_FOUND_OVERRUNS_TOTAL).counter(),
+                            "no overrun series exists"));
+        }
+
         /**
          * Hands a pre-trust rejection to the writer with {@link ResponseDelay#ADMITTED_AT_KEY} set to the
          * admission reading {@code admissionFromNow} derives from the handler's own {@link System#nanoTime()},
@@ -340,6 +406,17 @@ class ErrorResponseWriterTest {
          */
         private Timed rejectAdmittedAt(LongUnaryOperator admissionFromNow) throws Exception {
             ErrorResponseWriter writer = writer(true, PortalEndpoint.inert());
+            return timedAnswer(admissionFromNow, ctx -> writer.handleGatewayRejection(ctx,
+                    stagedRequest(Protocol.HTTP, List.of()), new GatewayException(EventType.TOKEN_MISSING)));
+        }
+
+        /**
+         * Runs {@code render} with {@link ResponseDelay#ADMITTED_AT_KEY} set to the admission reading
+         * {@code admissionFromNow} derives from the handler's own {@link System#nanoTime()}, and records when
+         * the response ended.
+         */
+        private Timed timedAnswer(LongUnaryOperator admissionFromNow, Consumer<RoutingContext> render)
+                throws Exception {
             AtomicLong admittedAtNanos = new AtomicLong();
             CompletableFuture<Long> endedAtNanos = new CompletableFuture<>();
             handler.set(ctx -> {
@@ -348,21 +425,312 @@ class ErrorResponseWriterTest {
                 ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
                 ctx.addEndHandler(result -> endedAtNanos.complete(System.nanoTime()));
-                writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of()),
-                        new GatewayException(EventType.TOKEN_MISSING));
+                render.accept(ctx);
             });
 
             Response response = send();
 
             long endedAt = Awaits.connect(endedAtNanos, "the held answer to end");
-            return new Timed(response.status(), endedAt - admittedAtNanos.get());
+            return new Timed(response, endedAt - admittedAtNanos.get());
+        }
+
+        @Test
+        @DisplayName("a RuntimeException after route selection and before the trust boundary is the floored unrouted 404")
+        void preTrustInternalFailureIsTheFlooredUnrouted404() throws Exception {
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert());
+
+            Timed timed = timedAnswer(nowNanos -> nowNanos, ctx -> writer.renderUnexpected(ctx,
+                    stagedRequest(Protocol.HTTP, List.of()), new IllegalStateException(unexpectedMessage())));
+
+            Response response = timed.response();
+            long writtenAfterAdmission = timed.writtenAfterAdmissionNanos();
+            assertAll("answered exactly as an unrouted address",
+                    () -> assertEquals(404, response.status()),
+                    () -> assertEquals(PROBLEM_JSON, response.headers().get(CONTENT_TYPE)),
+                    () -> assertEquals(noRouteMatchedBody(), response.body(), "the NO_ROUTE_MATCHED body"),
+                    () -> assertEquals(GLOBAL_HSTS, response.headers().get(HSTS),
+                            "the response headers taken at selection are restored"),
+                    () -> assertNull(response.headers().get(WWW_AUTHENTICATE), "the challenge is dropped"),
+                    () -> assertNull(response.headers().get(SET_COOKIE), "the stage cookie is dropped"),
+                    () -> assertTrue(writtenAfterAdmission >= FLOOR_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, before the floor of "
+                                    + FLOOR_NANOS + " ns"));
+        }
+
+        @Test
+        @DisplayName("a pre-trust internal failure is counted under PRE_TRUST_INTERNAL_FAILURE, never as a 500")
+        void preTrustInternalFailureIsCountedUnderItsOwnEvent() throws Exception {
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert());
+
+            timedAnswer(nowNanos -> nowNanos, ctx -> writer.renderUnexpected(ctx,
+                    stagedRequest(Protocol.HTTP, List.of()), new IllegalStateException(unexpectedMessage())));
+
+            Counter counted = meterRegistry.find(SheriffMetrics.ERRORS_TOTAL)
+                    .tags("route", routeId, "event", EventType.PRE_TRUST_INTERNAL_FAILURE.name()).counter();
+            assertAll("the server-side record names the internal failure",
+                    () -> assertEquals(1L, eventCounter.getCount(EventType.PRE_TRUST_INTERNAL_FAILURE)),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.NO_ROUTE_MATCHED)),
+                    () -> assertNotNull(counted, "sheriff_errors_total carries PRE_TRUST_INTERNAL_FAILURE"),
+                    () -> assertEquals("routing", Objects.requireNonNull(counted).getId().getTag("category")),
+                    () -> assertEquals(1.0, Objects.requireNonNull(counted).count()));
+        }
+
+        @Test
+        @DisplayName("a pre-trust internal failure carries no weight on the recon ledger; a recon event from the same source does")
+        void preTrustInternalFailureIsNotAdmittedToTheReconLedger() throws Exception {
+            SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert(), gate);
+            AtomicReference<SourceKey> stashed = new AtomicReference<>();
+            handler.set(ctx -> {
+                gate.answersBlocked(ctx);
+                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer.renderUnexpected(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new IllegalStateException(unexpectedMessage()));
+            });
+
+            Response failure = send();
+            SourceKey source = Objects.requireNonNull(stashed.get());
+            boolean trackedAfterFailure = gate.ledger().state(source).isPresent();
+
+            handler.set(ctx -> {
+                gate.answersBlocked(ctx);
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new GatewayException(EventType.TOKEN_MISSING));
+            });
+
+            Response control = send();
+
+            Map<Enum<?>, Long> contributions = gate.ledger().state(source).orElseThrow().contributions();
+            assertAll("an operator-side failure is not caller behaviour",
+                    () -> assertEquals(404, failure.status(), "precondition: still answered as the uniform 404"),
+                    () -> assertEquals(1L, eventCounter.getCount(EventType.PRE_TRUST_INTERNAL_FAILURE),
+                            "precondition: still counted under its own event"),
+                    () -> assertFalse(trackedAfterFailure, "the failure left the source untracked"),
+                    () -> assertEquals(404, control.status(), "control: the recon event is answered as the 404 too"),
+                    () -> assertEquals(Map.of(EventType.TOKEN_MISSING, 1L), contributions,
+                            "control: the same source is admitted for a recon event, never for the failure"));
+        }
+
+        @Test
+        @DisplayName("past the trust boundary an internal failure stays the opaque, uncounted 500")
+        void postTrustInternalFailureStays500() throws Exception {
+            handler.set(ctx -> {
+                PipelineRequest request = stagedRequest(Protocol.HTTP, List.of());
+                request.markTrustBoundaryPassed();
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer(true, PortalEndpoint.inert()).renderUnexpected(ctx, request,
+                        new IllegalStateException(unexpectedMessage()));
+            });
+
+            Response response = send();
+
+            assertAll("a trusted caller is told the truth",
+                    () -> assertEquals(500, response.status()),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.PRE_TRUST_INTERNAL_FAILURE)),
+                    () -> assertNull(meterRegistry.find(SheriffMetrics.ERRORS_TOTAL).counter(),
+                            "an uncategorized failure is not counted on sheriff_errors_total"));
+        }
+
+        @Test
+        @DisplayName("switch off: a pre-trust internal failure stays the opaque 500")
+        void switchOffKeepsTheInternalFailure500() throws Exception {
+            handler.set(ctx -> {
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer(false, PortalEndpoint.inert()).renderUnexpected(ctx,
+                        stagedRequest(Protocol.HTTP, List.of()), new IllegalStateException(unexpectedMessage()));
+            });
+
+            Response response = send();
+
+            assertAll("the honest internal error",
+                    () -> assertEquals(500, response.status()),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.PRE_TRUST_INTERNAL_FAILURE)));
+        }
+
+        @Test
+        @DisplayName("before route selection an internal failure stays the opaque 500")
+        void unroutedInternalFailureStays500() throws Exception {
+            handler.set(ctx -> writer(true, PortalEndpoint.inert()).renderUnexpected(ctx,
+                    PipelineRequest.builder().method(HttpMethod.POST).requestPath("/" + routeId + "/call").build(),
+                    new IllegalStateException(unexpectedMessage())));
+
+            Response response = send();
+
+            assertAll("identical for every address already, so nothing to hide",
+                    () -> assertEquals(500, response.status()),
+                    () -> assertEquals(0L, eventCounter.getCount(EventType.PRE_TRUST_INTERNAL_FAILURE)));
+        }
+
+        private String unexpectedMessage() {
+            return Generators.letterStrings(5, 20).next();
+        }
+
+        @Test
+        @DisplayName("a pre-trust 401 rendered as the uniform 404 is admitted to the recon ledger under its true event")
+        void preTrustRejectionIsAdmittedUnderItsTrueEvent() throws Exception {
+            SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
+            AtomicReference<SourceKey> stashed = new AtomicReference<>();
+            handler.set(ctx -> {
+                gate.answersBlocked(ctx);
+                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer(true, PortalEndpoint.inert(), gate).handleGatewayRejection(ctx,
+                        stagedRequest(Protocol.HTTP, List.of()), new GatewayException(EventType.TOKEN_MISSING));
+            });
+
+            Response response = send();
+
+            Map<Enum<?>, Long> contributions = gate.ledger().state(Objects.requireNonNull(stashed.get()))
+                    .orElseThrow().contributions();
+            assertAll("counted as what it is, whatever it is rendered as",
+                    () -> assertEquals(404, response.status(), "precondition: rendered as the uniform 404"),
+                    () -> assertEquals(Map.of(EventType.TOKEN_MISSING, 1L), contributions,
+                            "admitted once, under TOKEN_MISSING and never under NO_ROUTE_MATCHED"));
+        }
+
+        @Test
+        @DisplayName("a rejection past the trust boundary is not admitted to the recon ledger")
+        void postTrustRejectionIsNotAdmitted() throws Exception {
+            SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
+            AtomicReference<SourceKey> stashed = new AtomicReference<>();
+            handler.set(ctx -> {
+                gate.answersBlocked(ctx);
+                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                PipelineRequest request = stagedRequest(Protocol.HTTP, List.of());
+                request.markTrustBoundaryPassed();
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer(true, PortalEndpoint.inert(), gate).handleGatewayRejection(ctx, request,
+                        new GatewayException(EventType.CONTENT_TOO_LARGE));
+            });
+
+            Response response = send();
+
+            assertAll("a trusted caller's rejection is no recon signal",
+                    () -> assertEquals(413, response.status(), "precondition: the honest answer"),
+                    () -> assertTrue(gate.ledger().state(Objects.requireNonNull(stashed.get())).isEmpty(),
+                            "the source was never admitted, so the ledger does not track it"));
+        }
+
+        @Test
+        @DisplayName("delay: a tripped source's rejection is answered no earlier than admission plus delay_millis")
+        void trippedSourceUnderDelayIsHeldForTheDelay() throws Exception {
+            long delayNanos = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
+            SourceGate gate = sourceGate(EnumerationDetectionConfig.builder()
+                    .threshold(1).action(EnumerationDetectionConfig.Action.DELAY).delayMillis(DELAY_MILLIS).build());
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert(), gate);
+            AtomicLong admittedAtNanos = new AtomicLong();
+            CompletableFuture<Long> endedAtNanos = new CompletableFuture<>();
+            handler.set(ctx -> {
+                long admittedAt = System.nanoTime();
+                admittedAtNanos.set(admittedAt);
+                ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
+                gate.answersBlocked(ctx);
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                ctx.addEndHandler(result -> endedAtNanos.complete(System.nanoTime()));
+                writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new GatewayException(EventType.METHOD_NOT_ALLOWED));
+            });
+
+            Response response = send();
+
+            long writtenAfterAdmission = Awaits.connect(endedAtNanos, "the held answer to end") - admittedAtNanos.get();
+            assertAll("held past the uniform 404's floor, to the per-source delay",
+                    () -> assertEquals(404, response.status(), "the answer itself is unchanged"),
+                    () -> assertTrue(delayNanos > FLOOR_NANOS + JITTER_NANOS,
+                            "precondition: the delay outlasts the floor, so it is the later release time"),
+                    () -> assertTrue(writtenAfterAdmission >= delayNanos,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, before the "
+                                    + delayNanos + " ns delay"),
+                    () -> assertTrue(writtenAfterAdmission < delayNanos + SCHEDULING_SLACK_NANOS,
+                            () -> "written " + writtenAfterAdmission + " ns after admission, far past the delay"));
+        }
+
+        @Test
+        @DisplayName("delay: a tripped source's pre-trust internal failure is held for the delay and still carries no weight")
+        void trippedSourceInternalFailureUnderDelayIsHeldWithoutWeight() throws Exception {
+            long delayNanos = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
+            EnumerationDetectionConfig delay = EnumerationDetectionConfig.builder()
+                    .threshold(1).action(EnumerationDetectionConfig.Action.DELAY).delayMillis(DELAY_MILLIS).build();
+            SourceGate trippedGate = sourceGate(delay);
+            SourceKey loopback = new SourceKey(SourceKeyResolver.canonicalSource(LoopbackHost.ADDRESS),
+                    SourceKey.UNDECLARED_HOST);
+            SourceState tripped = trippedGate.ledger().admit(loopback, 1, EventType.NO_ROUTE_MATCHED);
+            Failure held = renderFailure(trippedGate);
+            SourceGate untrippedGate = sourceGate(delay);
+            Failure control = renderFailure(untrippedGate);
+
+            assertAll("the internal failure of a tripped source is held like its recon rejection",
+                    () -> assertTrue(tripped.hasTripped(), "precondition: the source tripped at threshold 1"),
+                    () -> assertEquals(404, held.response().status(), "answered as the uniform 404"),
+                    () -> assertEquals(loopback, held.heldSource(), "held by the delay action for this source"),
+                    () -> assertTrue(held.writtenAfterAdmission() >= delayNanos,
+                            () -> "written " + held.writtenAfterAdmission() + " ns after admission, before the "
+                                    + delayNanos + " ns delay"),
+                    () -> assertEquals(Map.of(EventType.NO_ROUTE_MATCHED, 1L),
+                            trippedGate.ledger().state(loopback).orElseThrow().contributions(),
+                            "the failure added no weight to the tripped source"),
+                    () -> assertEquals(404, control.response().status(), "control: answered as the uniform 404"),
+                    () -> assertNull(control.heldSource(), "control: an untripped source is not held by the delay"),
+                    () -> assertTrue(untrippedGate.ledger().state(loopback).isEmpty(),
+                            "control: the failure did not start tracking the source"));
+        }
+
+        /** Renders one pre-trust internal failure through {@code gate} and records how it was answered. */
+        private Failure renderFailure(SourceGate gate) throws Exception {
+            ErrorResponseWriter writer = writer(true, PortalEndpoint.inert(), gate);
+            AtomicLong admittedAtNanos = new AtomicLong();
+            CompletableFuture<Long> endedAtNanos = new CompletableFuture<>();
+            AtomicReference<Object> heldSource = new AtomicReference<>();
+            handler.set(ctx -> {
+                long admittedAt = System.nanoTime();
+                admittedAtNanos.set(admittedAt);
+                ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
+                gate.answersBlocked(ctx);
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                ctx.addEndHandler(result -> {
+                    heldSource.set(ctx.get(EdgeAdmission.HELD_SOURCE_KEY));
+                    endedAtNanos.complete(System.nanoTime());
+                });
+                writer.renderUnexpected(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new IllegalStateException(unexpectedMessage()));
+            });
+            Response response = send();
+            long writtenAfterAdmission = Awaits.connect(endedAtNanos, "the failure's answer to end") - admittedAtNanos.get();
+            return new Failure(response, heldSource.get(), writtenAfterAdmission);
+        }
+
+        /**
+         * How one internal failure was answered.
+         *
+         * @param response              the answer
+         * @param heldSource            the source the delay action held it for, {@code null} when not held
+         * @param writtenAfterAdmission nanoseconds from admission to the end of the answer
+         */
+        private record Failure(Response response, Object heldSource, long writtenAfterAdmission) {
+        }
+
+        private SourceGate sourceGate(EnumerationDetectionConfig config) {
+            ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
+                    ForwardedResolverConfig.builder().trustedProxies(Set.of())
+                            .securityConfig(SecurityConfiguration.defaults()).build(),
+                    new SecurityEventCounter());
+            return new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()),
+                    forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry),
+                    new GatewayJson(new ObjectMapper()), source -> false);
         }
 
         private ErrorResponseWriter writer(boolean uniformNotFound, PortalEndpoint portal) {
+            return writer(uniformNotFound, portal, ErrorResponseWriter.ReconFeed.NONE);
+        }
+
+        private ErrorResponseWriter writer(boolean uniformNotFound, PortalEndpoint portal,
+                ErrorResponseWriter.ReconFeed reconFeed) {
             RejectionReporter reporter = new RejectionReporter(eventCounter, new SheriffMetrics(meterRegistry),
                     1_000L, 1_000L);
             return new ErrorResponseWriter(portal, new GatewayJson(new ObjectMapper()), new GrpcStatusMapper(),
-                    reporter, uniformNotFound);
+                    reporter, uniformNotFound, reconFeed);
         }
 
         private Response reject(ErrorResponseWriter writer, Protocol protocol, List<String> accept,
@@ -437,7 +805,11 @@ class ErrorResponseWriterTest {
     private record Response(int status, Map<String, String> headers, String body) {
     }
 
-    /** A held answer's status and how long after its admission reading the response ended. */
-    private record Timed(int status, long writtenAfterAdmissionNanos) {
+    /** A held answer and how long after its admission reading the response ended. */
+    private record Timed(Response response, long writtenAfterAdmissionNanos) {
+
+        int status() {
+            return response.status();
+        }
     }
 }

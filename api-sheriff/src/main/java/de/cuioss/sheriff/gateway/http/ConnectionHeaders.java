@@ -104,7 +104,11 @@ public class ConnectionHeaders {
      *   <li><strong>Hop-by-hop and connection-specific names</strong> describing the hop the gateway
      *       terminates rather than the message it forwards: {@code connection}, {@code keep-alive},
      *       {@code proxy-connection}, {@code te}, {@code trailer}, {@code transfer-encoding},
-     *       {@code upgrade}, {@code proxy-authenticate}, {@code proxy-authorization}.</li>
+     *       {@code upgrade}, {@code proxy-authenticate}, {@code proxy-authorization}, and
+     *       {@code http2-settings} — the settings payload of the cleartext {@code h2c} upgrade
+     *       (RFC 7540 §3.2.1), which RFC 9113 §3.2 binds to the single connection the
+     *       {@code Upgrade} names; the gateway never relays that upgrade, so a client-sent copy is
+     *       a connection-specific claim with no meaning to the upstream.</li>
      *   <li><strong>Framing the gateway re-establishes:</strong> {@code content-length} is a claim
      *       about the client's body, and the dispatch path frames what it actually sends.</li>
      *   <li><strong>Names the gateway itself owns or regenerates:</strong> {@code host} (the
@@ -169,7 +173,7 @@ public class ConnectionHeaders {
      */
     public static final Set<String> REQUEST_STRIP = Set.of(
             "authorization", "connection", "content-length", "date", "host",
-            "keep-alive", "origin", "proxy-authenticate", "proxy-authorization",
+            "http2-settings", "keep-alive", "origin", "proxy-authenticate", "proxy-authorization",
             "proxy-connection", "referer", "te", "trailer", "transfer-encoding", "upgrade",
             "x_forwarded_for", "x_forwarded_host", "x_forwarded_proto", "x_forwarded_port",
             "x_forwarded_prefix", "x-real-ip", "x-client-ip", "true-client-ip",

@@ -33,17 +33,20 @@ import de.cuioss.sheriff.gateway.config.model.AnchorType;
 import de.cuioss.sheriff.gateway.config.model.AuthConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import de.cuioss.tools.logging.CuiLogger;
 import lombok.experimental.UtilityClass;
+import org.jspecify.annotations.Nullable;
 
 /**
  * The boot-time {@link ValidationRule}s that bound the gateway's inbound limits: the inbound-filter
- * profile a route may run under, the edge admission budget, the {@code Authorization}
- * header-value carve-out, and the per-route {@code rate_limit} block the gateway does not enforce.
+ * profile a route may run under, the edge admission budget, the per-source enumeration detection, the
+ * {@code Authorization} header-value carve-out, and the per-route {@code rate_limit} block the gateway
+ * does not enforce.
  * <p>
  * The inbound-filter mode refusal ({@link #validateSecurityProfileMinimal}, ADR-0024): a route whose
  * effective {@code profile} resolves to {@code minimal} must be neither effectively authenticated nor
@@ -54,6 +57,11 @@ import lombok.experimental.UtilityClass;
  * both caps must admit at least one request, and the WebSocket relay sub-budget must stay within the
  * admission pool it draws from.
  * <p>
+ * The enumeration-detection rule ({@link #validateEnumerationDetection}) bounds the
+ * {@code enumeration_detection} block: the threshold, the window and the block duration must each be
+ * at least {@code 1}, and the answer hold must lie within {@code 1..}{@value #MAX_DELAY_MILLIS}
+ * milliseconds.
+ * <p>
  * The carve-out rule ({@link #validateAuthorizationHeaderValueLength}) refuses a declared
  * {@code security_defaults.max_authorization_header_value_length} below the resolved gateway-wide
  * header-value baseline, since the key can only raise the pre-route cap for {@code Authorization}
@@ -61,7 +69,10 @@ import lombok.experimental.UtilityClass;
  * <p>
  * The unenforced-limit rule ({@link #validateRateLimitNotEnforced}) refuses nothing: it emits
  * {@link ConfigLogMessages.WARN#RATE_LIMIT_NOT_ENFORCED} for every route that declares the
- * {@code rate_limit} block, because the block is parsed but never enforced.
+ * {@code rate_limit} block, because the block is parsed but never enforced. Every {@code 429} the
+ * gateway sends comes from the per-source detection substrate under {@code enumeration_detection}
+ * (action {@code block}, or action {@code delay} for a source whose held-answer share is used up),
+ * never from {@code rate_limit}.
  * <p>
  * Every refusing rule appends file- and pointer-annotated {@link ConfigError}s to the shared list and
  * never fails fast. Stateless, and free of framework dependencies as the pre-boot rule requires of
@@ -73,10 +84,14 @@ import lombok.experimental.UtilityClass;
 @UtilityClass
 public class LimitRules {
 
+    /** The largest answer hold, in milliseconds, {@code enumeration_detection.delay_millis} may declare. */
+    public static final int MAX_DELAY_MILLIS = 10_000;
+
     private static final CuiLogger LOGGER = new CuiLogger(LimitRules.class);
 
     private static final String EDGE_HARDENING_ADMISSION_POINTER = "/edge_hardening/admission_cap";
     private static final String EDGE_HARDENING_WEBSOCKET_POINTER = "/edge_hardening/websocket_relay_cap";
+    private static final String ENUMERATION_DETECTION_POINTER = "/enumeration_detection/";
     private static final String SECURITY_DEFAULTS_AUTHORIZATION_POINTER =
             "/security_defaults/max_authorization_header_value_length";
 
@@ -182,6 +197,45 @@ public class LimitRules {
     }
 
     /**
+     * Bounds the operator-facing {@code enumeration_detection} block. {@code threshold},
+     * {@code window_seconds} and {@code block_seconds} must each be at least {@code 1}: a threshold of
+     * zero would trip every source on its first rejection, and a zero window or block has no
+     * duration to drain or block over. {@code delay_millis} must lie within
+     * {@code 1..}{@value #MAX_DELAY_MILLIS}: the hold keeps a rejection answer open on the edge, so an
+     * unbounded value would let one tripped source hold answers for as long as the operator wrote.
+     * <p>
+     * The schema owns the {@code minimum: 1} of each member as well; the rule restates the lower
+     * bounds so that a document bound without the schema — the offline check of a programmatic caller
+     * — is held to them too, and it alone owns the {@code delay_millis} upper bound. An omitted member
+     * is never refused: it resolves to its documented default. Each refusal names the member's pointer
+     * and the declared value, which is an integer and carries no secret.
+     *
+     * @param gateway the bound gateway document
+     * @param errors  the shared error accumulator
+     */
+    public static void validateEnumerationDetection(GatewayConfig gateway, List<ConfigError> errors) {
+        EnumerationDetectionConfig detection = gateway.enumerationDetection();
+        if (detection == null) {
+            return;
+        }
+        refuseBelowOne("threshold", detection.threshold(), errors);
+        refuseBelowOne("window_seconds", detection.windowSeconds(), errors);
+        refuseBelowOne("block_seconds", detection.blockSeconds(), errors);
+        Integer delayMillis = detection.delayMillis();
+        if (delayMillis != null && (delayMillis < 1 || delayMillis > MAX_DELAY_MILLIS)) {
+            errors.add(new ConfigError(GATEWAY_FILE, ENUMERATION_DETECTION_POINTER + "delay_millis",
+                    "delay_millis must lie within 1..%d (was %d)".formatted(MAX_DELAY_MILLIS, delayMillis)));
+        }
+    }
+
+    private static void refuseBelowOne(String member, @Nullable Integer declared, List<ConfigError> errors) {
+        if (declared != null && declared < 1) {
+            errors.add(new ConfigError(GATEWAY_FILE, ENUMERATION_DETECTION_POINTER + member,
+                    "%s must be at least 1 (was %d)".formatted(member, declared)));
+        }
+    }
+
+    /**
      * Bounds the operator-declared {@code Authorization} header-value carve-out: a
      * <em>declared</em> {@code security_defaults.max_authorization_header_value_length} must not fall
      * below the resolved gateway-wide baseline {@code maxHeaderValueLength}.
@@ -246,11 +300,14 @@ public class LimitRules {
      * Rule: every route that declares the per-route {@code rate_limit} block is reported with the boot
      * WARN {@link ConfigLogMessages.WARN#RATE_LIMIT_NOT_ENFORCED}, naming the route and its endpoint.
      * <p>
-     * Rate limiting is not implemented. The block is parsed and bound into {@code RateLimitConfig},
-     * but no request-time component reads it: no rate limit is applied and no request is ever
-     * answered {@code 429}. A configuration key that parses but does not act reads like a control the
-     * operator has in force, so the gap is announced at every boot instead of being left for the
-     * operator to discover under load.
+     * Per-route rate limiting is not implemented. The block is parsed and bound into
+     * {@code RateLimitConfig}, but no request-time component reads it: no rate limit is applied to the
+     * route and the block never causes a {@code 429}. Every {@code 429} the gateway sends
+     * comes from {@code enumeration_detection} (the opt-in {@code block} action, and under
+     * {@code delay} a tripped source whose held-answer share is used up), answered by the per-source
+     * detection substrate for a tripped source, not by {@code rate_limit}. A configuration key that parses but
+     * does not act reads like a control the operator has in force, so the gap is announced at every
+     * boot instead of being left for the operator to discover under load.
      * <p>
      * The rule refuses nothing and appends no violation, so the boot continues: refusing would break
      * every descriptor that already carries the block, while the WARN keeps the gap visible. It is

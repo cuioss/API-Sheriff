@@ -34,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
@@ -175,6 +176,8 @@ class GatewayEdgeFramingCorpusTest {
     private final Map<String, Framing> upstreamFraming = new ConcurrentHashMap<>();
     /** How many body bytes of each request reached the stub upstream, keyed by its label. */
     private final Map<String, AtomicLong> upstreamBodyBytes = new ConcurrentHashMap<>();
+    /** The protocol version each request arrived at the stub upstream in, keyed by its label. */
+    private final Map<String, HttpVersion> upstreamVersions = new ConcurrentHashMap<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -241,6 +244,7 @@ class GatewayEdgeFramingCorpusTest {
         boolean streaming = request.path().startsWith(STREAMING);
         upstreamConnections.put(label, request.connection());
         upstreamFraming.put(label, new Framing(request.getHeader(CONTENT_LENGTH), request.getHeader(TRANSFER_ENCODING)));
+        upstreamVersions.put(label, request.version());
         AtomicLong bodyBytes = upstreamBodyBytes.computeIfAbsent(label, unused -> new AtomicLong());
         upstreamStarted.add(label);
         if (streaming) {
@@ -411,6 +415,164 @@ class GatewayEdgeFramingCorpusTest {
                 () -> assertEquals(List.of(AFTER_GET), upstreamStarted,
                         "nothing of the refused stream may reach the upstream"),
                 () -> assertEquals(List.of(), upstreamAborted));
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — Content-Length beside Transfer-Encoding: chunked is refused; nothing of it reaches the upstream")
+    void contentLengthBesideTransferEncodingIsRefusedOnHttp2() throws Exception {
+        String body = "0" + CRLF + CRLF + smuggled();
+
+        assertRefusedOnHttp2("/cl-te-h2", List.of(
+                Map.entry("content-length", String.valueOf(body.length())),
+                Map.entry("transfer-encoding", "chunked")), body);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — TE.TE, Content-Length beside a repeated Transfer-Encoding field, is refused")
+    void repeatedTransferEncodingIsRefusedOnHttp2() throws Exception {
+        String body = "0" + CRLF + CRLF + smuggled();
+
+        assertRefusedOnHttp2("/te-te-h2", List.of(
+                Map.entry("content-length", String.valueOf(body.length())),
+                Map.entry("transfer-encoding", "chunked"),
+                Map.entry("transfer-encoding", "identity")), body);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — CL.CL, two Content-Length fields declaring different lengths, is refused")
+    void repeatedContentLengthIsRefusedOnHttp2() throws Exception {
+        String body = smuggled();
+        String hidden = smuggled();
+
+        assertRefusedOnHttp2("/cl-cl-h2", List.of(
+                Map.entry("content-length", String.valueOf(body.length())),
+                Map.entry("content-length", String.valueOf(body.length() + hidden.length()))), body + hidden);
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a Connection token naming Content-Length is refused")
+    void connectionFramingStripIsRefusedOnHttp2() throws Exception {
+        String body = smuggled();
+
+        assertRefusedOnHttp2("/cl-0-h2", List.of(
+                Map.entry("content-length", String.valueOf(body.length())),
+                Map.entry("connection", "Content-Length")), body);
+    }
+
+    /**
+     * Sends one {@code POST} to {@code path} over a raw prior-knowledge HTTP/2 connection, its header
+     * block carrying {@code framingFields} exactly as written — an HTTP/2 client library would drop or
+     * refuse the connection-specific ones — followed by {@code body} in one {@code DATA} frame ending the
+     * stream, and asserts the refusal: the stream is reset or answered with an error status, never
+     * served; the edge serves a further request; and nothing of the refused stream, the request hidden
+     * in its body included, reaches the HTTP/1.1 upstream.
+     */
+    private void assertRefusedOnHttp2(String path, List<Map.Entry<String, String>> framingFields, String body)
+            throws Exception {
+        RawHttp2Connection connection = RawHttp2Connection.open(netClient, frontPort);
+        List<Map.Entry<String, String>> fields = new ArrayList<>(connection.requestHead("POST", "/echo" + path));
+        fields.addAll(framingFields);
+
+        Awaits.connect(connection.write(RawHttp2Connection.headers(1, fields, false)
+                .appendBuffer(RawHttp2Connection.data(1, body, true))), "the ambiguous request to be sent");
+        try {
+            Awaits.until(() -> connection.status(1).isPresent() || connection.reset(1).isPresent() || connection.isClosed(),
+                    "the edge to answer, reset or close the ambiguous stream", Awaits.CONNECT_CEILING_SECONDS);
+        } catch (TimeoutException e) {
+            throw new AssertionError("the edge neither answered, reset nor closed the ambiguous stream; frames received "
+                    + connection.framesReceived() + ", upstream started " + upstreamStarted + ", completed "
+                    + upstreamCompleted + ", framing " + upstreamFraming, e);
+        }
+        Answer after = sendAfter(client(HttpVersion.HTTP_2), frontPort);
+        awaitUpstreamSettled();
+        Awaits.teardown(connection.close(), "the raw HTTP/2 connection to close");
+
+        assertAll("an ambiguously framed HTTP/2 request",
+                () -> assertTrue(connection.refused(1) || connection.goAwayCode().isPresent(),
+                        () -> "the stream must be refused: status " + connection.status(1) + ", reset "
+                                + connection.reset(1) + ", GOAWAY " + connection.goAwayCode()),
+                () -> assertFalse(connection.status(1).filter(status -> status < 400).isPresent(),
+                        () -> "the stream must never be served: " + connection.status(1)),
+                () -> assertEquals(200, after.response().statusCode(), "the edge must serve a further request"),
+                () -> assertFalse(upstreamStarted.stream().anyMatch(seen -> seen.contains(SMUGGLED)),
+                        () -> "the smuggled request reached the upstream: " + upstreamStarted),
+                () -> assertEquals(List.of(AFTER_GET), upstreamStarted,
+                        "nothing of the refused stream may reach the upstream"),
+                () -> assertEquals(List.of(), upstreamAborted));
+    }
+
+    @Test
+    @DisplayName("HTTP/2 — a client resetting its upload mid-body resets the upstream request and retires its connection")
+    void clientResetMidUploadResetsTheUpstreamRequestOnHttp2() throws Exception {
+        HttpClient http2Client = client(HttpVersion.HTTP_2);
+        String path = HELD + "-client-reset";
+        String label = "POST " + path;
+        HttpClientRequest upload = open(http2Client, frontPort, "POST", "/echo" + path);
+        upload.exceptionHandler(ignored -> {
+            // The client's own reset reaches its request side; the edge's handling is what is asserted.
+        });
+        upload.setChunked(true);
+        Awaits.connect(upload.write(Generators.letterStrings(4, 12).next()), "the first part of the upload to be sent");
+        Awaits.until(() -> upstreamStarted.contains(label),
+                "the upstream to receive the head of the dispatched upload", Awaits.CONNECT_CEILING_SECONDS);
+        HttpConnection carrier = upstreamConnections.get(label);
+
+        upload.reset(RawHttp2Connection.CANCEL);
+        Awaits.until(() -> upstreamAborted.contains(label) && errorCount("INBOUND_BODY_ABORTED") == 1.0,
+                "the edge to reset the upstream request and account for the aborted body",
+                Awaits.CONNECT_CEILING_SECONDS);
+        Awaits.until(() -> upstreamClosedConnections.contains(carrier),
+                "the upstream connection of the reset request to close", Awaits.TEARDOWN_CEILING_SECONDS);
+        Answer after = sendAfter(http2Client, frontPort);
+        awaitUpstreamSettled();
+
+        assertAll("a client RST_STREAM mid-upload",
+                () -> assertEquals(List.of(label), upstreamAborted,
+                        "the dispatched upstream request must be reset, and only that one"),
+                () -> assertEquals(1.0, errorCount("INBOUND_BODY_ABORTED"),
+                        "the client's reset is reported as the client-attributed aborted body"),
+                () -> assertEquals(0.0, errorCount(SECURITY_FILTER_VIOLATION),
+                        "a client resetting its upload is not a security filter violation"),
+                () -> assertEquals(200, after.response().statusCode(), "a further stream must succeed"),
+                () -> assertSame(upload.connection(), after.connection(),
+                        "the client's reset ends its own stream only, not the connection"),
+                () -> assertNotSame(carrier, upstreamConnections.get(AFTER_GET),
+                        "the further request must not arrive on the connection of the reset request"));
+    }
+
+    @Test
+    @DisplayName("h2->h1 — a declared-length HTTP/2 body reaches the HTTP/1.1 upstream framed by exactly that length")
+    void declaredLengthHttp2BodyReachesAnHttp1UpstreamWithThatLength() throws Exception {
+        String body = Generators.letterStrings(4, 12).next();
+        String label = "POST /h2-declared";
+
+        Answer answer = sendDeclaredLength(client(HttpVersion.HTTP_2), frontPort, "POST", "/echo/h2-declared", body);
+
+        assertAll("a declared-length body downgraded from HTTP/2 to HTTP/1.1",
+                () -> assertEquals(HttpVersion.HTTP_2, answer.response().version(), "the client leg is HTTP/2"),
+                () -> assertEquals(HttpVersion.HTTP_1_1, upstreamVersions.get(label), "the upstream leg is HTTP/1.1"),
+                () -> assertForwardedFramedByLength(answer, label, body));
+    }
+
+    @Test
+    @DisplayName("h2->h1 — an HTTP/2 body declaring no length reaches the HTTP/1.1 upstream with no Content-Length")
+    void undeclaredLengthHttp2BodyCarriesNoClientLength() throws Exception {
+        String body = Generators.letterStrings(4, 12).next();
+        String label = "POST /h2-undeclared";
+        HttpClientRequest request = open(client(HttpVersion.HTTP_2), frontPort, "POST", "/echo/h2-undeclared");
+        request.setChunked(true);
+        Awaits.connect(request.write(body), "the request body to be sent");
+
+        Answer answer = Awaits.connect(request.end().compose(sent -> answerOf(request)), "the request to be answered");
+        awaitUpstreamSettled();
+
+        assertAll("an undeclared-length body downgraded from HTTP/2 to HTTP/1.1",
+                () -> assertEquals(200, answer.response().statusCode(), answer.body()),
+                () -> assertEquals(HttpVersion.HTTP_2, answer.response().version(), "the client leg is HTTP/2"),
+                () -> assertEquals(HttpVersion.HTTP_1_1, upstreamVersions.get(label), "the upstream leg is HTTP/1.1"),
+                () -> assertEquals(List.of(label + " [" + body + "]"), upstreamCompleted),
+                () -> assertEquals(new Framing(null, "chunked"), upstreamFraming.get(label),
+                        "the dispatch frames the body itself; no Content-Length is invented or carried over"));
     }
 
     @ParameterizedTest

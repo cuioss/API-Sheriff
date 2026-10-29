@@ -142,8 +142,13 @@ then relays the upstream response -- including its `grpc-status` / `grpc-message
 * *Opaque frame streaming.* `GrpcDispatchStage` reuses the byte-capped streaming dispatch of
   `DispatchStage`, so the request/response bodies stream as opaque length-prefixed frames (the
   gateway never inspects the protobuf payload) under the same body cap and stream-aware retry gate
-  as the HTTP path. The Plan-04 GW-08 HTTP/2 abuse bounds hold on the gRPC path because they are
-  enforced by the shared inbound transport (`EdgeHardeningOptions`), not per-protocol.
+  as the HTTP path. The HTTP/2 stream-abuse bounds of threat GW-08 hold on the gRPC path because
+  they are bounds of the shared inbound transport, set by `EdgeHardeningOptions` on every listener
+  rather than per protocol: at most 100 concurrent streams per connection, a decoded header block of
+  at most 16 KiB (`CONTINUATION` frames included), and the Rapid-Reset guard pinned at 200
+  client-sent `RST_STREAM` frames per 30-second window. The forced-h2 upstream leg opens at most one
+  upstream stream per admitted inbound request, so its stream and reset rates inherit the inbound
+  bounds (link:../security-threat-model.adoc#gw-08[Threat model -- GW-08]).
 * *Trailer relay and rejection mapping.* `ResponseStage.relayWithTrailers` streams the body with
   the client response held open, then copies the upstream trailers onto the client and ends it, so
   the client observes the gRPC status. The branch order of a gateway-generated rejection on a gRPC

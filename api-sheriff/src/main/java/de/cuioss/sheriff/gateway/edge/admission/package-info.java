@@ -15,13 +15,17 @@
  */
 /**
  * Transport and admission bounds of the edge: the hardening options the edge's HTTP server and
- * request handling are bounded by, and the admission of requests into the edge.
+ * request handling are bounded by, the admission of requests into the edge, and the per-source gate
+ * in front of that admission.
  * <p>
- * <strong>Contents.</strong> {@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions}
- * and {@link de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission}, which admits requests under
- * those bounds and drains them on shutdown.
+ * <strong>Contents.</strong> {@link de.cuioss.sheriff.gateway.edge.admission.EdgeHardeningOptions},
+ * {@link de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission}, which admits requests under those
+ * bounds and drains them on shutdown, and {@link de.cuioss.sheriff.gateway.edge.admission.SourceGate},
+ * which wires the per-source detection substrate into the edge and answers a blocked source before
+ * admission.
  * <p>
- * <strong>Dependencies.</strong> This package depends on no other edge package.
+ * <strong>Dependencies.</strong> This package may depend on the edge packages {@code error},
+ * {@code end} and {@code request}.
  *
  * @author API Sheriff Team
  * @since 1.0

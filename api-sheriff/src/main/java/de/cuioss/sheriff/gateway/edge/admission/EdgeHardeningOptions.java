@@ -30,13 +30,17 @@ import io.vertx.core.http.HttpServerOptions;
  * The transport bounds fail fast on abusive framing before a request is ever admitted to the
  * pipeline: an over-long request line, an over-large header block, or an over-large chunk is
  * rejected by the Vert.x codec, and an idle connection is reaped so a slow-loris / h2 abuse load
- * cannot pin connection slots. Six further limits are consumed by
+ * cannot pin connection slots. Eight further limits are consumed by
  * {@code de.cuioss.sheriff.gateway.edge} and its sub-packages rather
  * than the transport: the {@linkplain #admissionCap() admission cap} bounds the number of requests
  * that may be in flight at once (rejected with {@code 503} <em>before</em> a virtual thread is
  * dispatched, so a flood cannot spawn unbounded virtual threads), the
  * {@linkplain #webSocketRelayCap() WebSocket relay cap} bounds how many of those in-flight requests
- * may be established WebSocket relays, the {@linkplain #drainTimeoutMillis() drain timeout} bounds
+ * may be established WebSocket relays, the {@linkplain #heldAnswerCap() held-answer cap} bounds how
+ * many answers may wait on a timer at once (refused with {@code 503} on the floor's release time,
+ * without a held permit), and one tripped source's {@linkplain #heldAnswerSourceShare() share} of it,
+ * the
+ * {@linkplain #drainTimeoutMillis() drain timeout} bounds
  * the graceful-shutdown wait for in-flight requests to complete on {@code SIGTERM}, the
  * {@linkplain #reservedBodyMaxBytes() reserved-body ceiling} bounds the cumulative bytes the edge
  * will buffer for a gateway-terminated reserved POST path (rejected with {@code 413}), so an
@@ -63,6 +67,23 @@ import io.vertx.core.http.HttpServerOptions;
  * gateway is not reading yet returns no window, so a connection window the size of one stream would
  * let such streams use it up and leave the ones being forwarded unable to send a byte. The window is
  * derived from the listener's stream settings after the stream bound is applied, not configured.
+ * <p>
+ * <strong>The inbound HTTP/2 header block and stream-reset rate are transport bounds as well.</strong>
+ * The listener announces a {@code SETTINGS_MAX_HEADER_LIST_SIZE} of at most 16 KiB — the same bound
+ * the HTTP/1.1 header block has: a listener announcing more, or announcing no limit, is lowered to it,
+ * and a lower value is kept. The bound covers the whole decoded header block, {@code CONTINUATION}
+ * frames included, so a header block spread over many frames is refused by the codec once it passes
+ * that size, and the codec ends the connection with a {@code GOAWAY} naming an error — a complete block
+ * of 17 KiB does, as {@code GatewayEdgeHttp2AbuseTest} pins. The per-connection Rapid-Reset guard is pinned at 200 {@code RST_STREAM} frames per
+ * 30-second window, the transport's own default: a connection whose client resets more streams than
+ * that inside one window is ended with {@code GOAWAY ENHANCE_YOUR_CALM}. The values are set explicitly
+ * so a change of the transport default cannot move them, and they are never raised (ADR-0066). The
+ * guard counts only the resets a client sends on its connection, so the gateway's own
+ * {@code RST_STREAM(NO_ERROR)} — the early-response reset of ADR-0066 and the request-body and
+ * stream-idle resets of ADR-0060 A2 — can never feed it. The per-source detection substrate
+ * ({@code de.cuioss.sheriff.gateway.detection}) is deliberately not used for these bounds: its key is a
+ * source address, while stream creation and reset state belong to one connection, so per-source
+ * keying would neither see a single abusive connection sooner nor bound its memory.
  * <p>
  * <strong>Transport bounds are fixed; the admission budget is operator-configurable.</strong> The
  * codec limits above are deliberate secure defaults chosen to keep the abuse surface bounded while
@@ -139,6 +160,25 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      * window stays a finite multiple of the stream window.
      */
     private static final long MAX_CONCURRENT_STREAMS_PER_CONNECTION = 100L;
+
+    /**
+     * Upper bound on the decoded HTTP/2 header block of one request, announced as the listener's
+     * initial {@code SETTINGS_MAX_HEADER_LIST_SIZE}. Defined as {@link #MAX_HEADER_SIZE_BYTES} so the
+     * HTTP/2 header block, {@code CONTINUATION} frames included, has the same 16 KiB bound as the
+     * HTTP/1.1 one.
+     */
+    private static final long MAX_HEADER_LIST_SIZE_BYTES = MAX_HEADER_SIZE_BYTES;
+
+    /**
+     * Number of {@code RST_STREAM} frames a client may send on one HTTP/2 connection within
+     * {@link #RST_FLOOD_WINDOW_SECONDS} before the transport ends the connection with
+     * {@code GOAWAY ENHANCE_YOUR_CALM} — pinned at the transport's own default, never raised
+     * (ADR-0066).
+     */
+    private static final int RST_FLOOD_MAX_RST_FRAMES_PER_WINDOW = 200;
+
+    /** Length of the Rapid-Reset counting window in seconds — pinned at the transport's own default. */
+    private static final int RST_FLOOD_WINDOW_SECONDS = 30;
 
     private final int admissionCap;
     private final int webSocketRelayCap;
@@ -222,13 +262,29 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
     private static void apply(HttpServerOptions options) {
         Http2Settings settings = options.getInitialSettings();
         boundConcurrentStreams(settings);
+        boundHeaderListSize(settings);
         options.setMaxHeaderSize(MAX_HEADER_SIZE_BYTES)
                 .setMaxInitialLineLength(MAX_INITIAL_LINE_LENGTH_BYTES)
                 .setMaxChunkSize(MAX_CHUNK_SIZE_BYTES)
                 .setIdleTimeout(IDLE_TIMEOUT_SECONDS)
                 .setIdleTimeoutUnit(TimeUnit.SECONDS)
                 .setInitialSettings(settings)
-                .setHttp2ConnectionWindowSize(connectionWindowSize(settings));
+                .setHttp2ConnectionWindowSize(connectionWindowSize(settings))
+                .setHttp2RstFloodMaxRstFramePerWindow(RST_FLOOD_MAX_RST_FRAMES_PER_WINDOW)
+                .setHttp2RstFloodWindowDuration(RST_FLOOD_WINDOW_SECONDS)
+                .setHttp2RstFloodWindowDurationTimeUnit(TimeUnit.SECONDS);
+    }
+
+    /**
+     * Lowers the listener's announced header-list size to {@link #MAX_HEADER_LIST_SIZE_BYTES} when it
+     * is unbounded or above that bound; a lower value is left as it is.
+     *
+     * @param settings the initial HTTP/2 settings of the listener, updated in place
+     */
+    private static void boundHeaderListSize(Http2Settings settings) {
+        if (settings.getMaxHeaderListSize() > MAX_HEADER_LIST_SIZE_BYTES) {
+            settings.setMaxHeaderListSize(MAX_HEADER_LIST_SIZE_BYTES);
+        }
     }
 
     /**
@@ -279,6 +335,50 @@ public class EdgeHardeningOptions implements HttpServerOptionsCustomizer {
      */
     public int webSocketRelayCap() {
         return webSocketRelayCap;
+    }
+
+    /**
+     * The held-answer sub-budget: how many answers the edge may hold back at once on a timer — the
+     * uniform {@code 404} waiting for its response-timing floor, and the rejection answer of a source
+     * tripped under the {@code delay} action of {@code enumeration_detection}.
+     * <p>
+     * A held answer hands its general admission permit back when it starts waiting and takes one of
+     * these instead (see {@link EdgeAdmission#tryEnterHold}), so a caller producing answers that are
+     * only held — a scan of unrouted addresses — cannot occupy the general pool for the length of the
+     * floor and starve the traffic the gateway exists to serve. An answer refused a held permit is
+     * answered {@code 503} at the release time the uniform {@code 404}'s floor gives it (at once when
+     * {@code uniform_not_found} is off), under the general permit it was admitted with (see
+     * {@code edge.end.ResponseDelay}).
+     * <p>
+     * Derived, not configured: a quarter of the {@linkplain #admissionCap() admission cap}, and never
+     * below one — the proportion an undeclared WebSocket relay sub-budget is derived with (ADR-0020).
+     * Held answers follow the pool they leave, so {@code edge_hardening.admission_cap} scales the
+     * sub-budget, and unlike the relay sub-budget it has no key of its own.
+     *
+     * @return {@code max(1, admissionCap() / 4)}
+     */
+    public int heldAnswerCap() {
+        return Math.max(1, admissionCap / 4);
+    }
+
+    /**
+     * One source's share of the {@linkplain #heldAnswerCap() held-answer sub-budget} under the
+     * {@code delay} action of {@code enumeration_detection}: how many answers held for a tripped source
+     * may wait at once. A tripped source's answer beyond its share is refused before admission with the
+     * block-style {@code 429} (see {@link SourceGate}), so one delayed source cannot occupy the whole
+     * sub-budget, once that has more than one permit, and turn every other caller's held answer into a
+     * refusal. Answers held for the uniform {@code 404}'s floor alone are not counted against any share.
+     * <p>
+     * Derived, not configured: an eighth of the held-answer sub-budget, and never below one — so once the
+     * sub-budget has at least eight permits (an {@code edge_hardening.admission_cap} of {@code 32} or
+     * more) at least eight tripped sources are needed to fill it; below that the share is one, and as
+     * many tripped sources as the sub-budget has permits fill it. {@code edge_hardening.admission_cap}
+     * scales the share with the sub-budget.
+     *
+     * @return {@code max(1, heldAnswerCap() / 8)}
+     */
+    public int heldAnswerSourceShare() {
+        return Math.max(1, heldAnswerCap() / 8);
     }
 
     /**

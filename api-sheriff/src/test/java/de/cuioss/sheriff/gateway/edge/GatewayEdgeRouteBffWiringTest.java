@@ -161,6 +161,8 @@ public class GatewayEdgeRouteBffWiringTest {
     private static final String USER_INFO_PATH = "/auth/userinfo";
     private static final String LOGIN_PATH = "/auth/login";
     private static final String STEP_UP_PATH = "/auth/step-up";
+    /** The id of {@link #sessionRoute()}, the {@code route} tag its metered failures carry. */
+    private static final String SESSION_ROUTE_ID = "s";
     /** Where the engine-free session stage redirects an unauthenticated navigation. */
     private static final String LOGIN_CHALLENGE_LOCATION = "/login";
     /** Where the engine-free session stage redirects a navigation whose session needs widening. */
@@ -238,26 +240,61 @@ public class GatewayEdgeRouteBffWiringTest {
             vertx.close();
         }
 
+        /**
+         * The control legs drive the same route through an edge with no active runtime, whose
+         * {@code AuthenticationStage} carries no session stage and fails internally. That failure is
+         * raised after route selection and before the trust boundary, so the default edge answers it as
+         * the floored unrouted {@code 404} and counts it under
+         * {@link EventType#PRE_TRUST_INTERNAL_FAILURE}; the edge with
+         * {@code security_defaults.uniform_not_found: false} keeps the opaque {@code 500}. The counted
+         * event, not the status alone, is what pins the uniform leg to that failure: an unrouted path
+         * is a {@code 404} too.
+         */
         @Test
         @DisplayName("Should boot a require:session route through the session-aware AuthenticationStage")
         void shouldBootSessionRouteWithActiveRuntime() throws Exception {
             RouteTable sessionTable = new RouteTable(List.of(sessionRoute()));
+            GatewayConfig uniform = ConfigFixtures.gateway().build();
+            GatewayConfig honest = ConfigFixtures.gateway()
+                    .securityDefaults(SecurityDefaultsConfig.builder().uniformNotFound(false).build()).build();
+            SimpleMeterRegistry unwiredMeters = new SimpleMeterRegistry();
 
             // Not throwing at construction distinguishes nothing: the bearer assembly builds silently
             // too, and so would a constructor that ignored the runtime outright — both fail only once
             // a request arrives. The observable that IS specific to the session-aware assembly is the
             // wired SessionAuthenticationStage's own login challenge on an unauthenticated navigation.
             HttpClientResponse challenged = serveUnauthenticatedNavigation(sessionTable,
-                    activeRuntime(serverBinding(newStore())));
-            HttpClientResponse unwired = serveUnauthenticatedNavigation(sessionTable, BffRuntime.inert());
+                    activeRuntime(serverBinding(newStore())), uniform, new SimpleMeterRegistry());
+            HttpClientResponse unwired = serveUnauthenticatedNavigation(sessionTable, BffRuntime.inert(),
+                    uniform, unwiredMeters);
+            HttpClientResponse unwiredHonest = serveUnauthenticatedNavigation(sessionTable, BffRuntime.inert(),
+                    honest, new SimpleMeterRegistry());
 
-            assertEquals(302, challenged.statusCode(),
-                    "the wired session stage answers an unauthenticated HTML navigation with a redirect");
-            assertEquals("/login", challenged.getHeader("Location"),
-                    "and the target is that stage's own login challenge, not a bearer 401");
-            assertEquals(500, unwired.statusCode(),
-                    "control: without an active runtime the same route reaches an AuthenticationStage "
-                            + "carrying no session stage, so the assertion above is attributable to the wiring");
+            assertAll("the session-aware assembly, against the same route without an active runtime",
+                    () -> assertEquals(302, challenged.statusCode(),
+                            "the wired session stage answers an unauthenticated HTML navigation with a redirect"),
+                    () -> assertEquals("/login", challenged.getHeader("Location"),
+                            "and the target is that stage's own login challenge, not a bearer 401"),
+                    () -> assertEquals(404, unwired.statusCode(),
+                            "control: without an active runtime the same route reaches an AuthenticationStage "
+                                    + "carrying no session stage, whose pre-trust failure is answered as the "
+                                    + "unrouted 404, so the assertions above are attributable to the wiring"),
+                    () -> assertEquals(1.0, preTrustInternalFailureCount(unwiredMeters),
+                            "control: that 404 is the counted pre-trust internal failure, not an unrouted path"),
+                    () -> assertEquals(500, unwiredHonest.statusCode(),
+                            "control: with the uniform 404 switched off the same failure keeps the opaque 500"));
+        }
+
+        /**
+         * The {@code sheriff_errors_total} count of {@link EventType#PRE_TRUST_INTERNAL_FAILURE} on the
+         * session route, failing the test when the series was never registered — an absent series is not
+         * a zero count.
+         */
+        private double preTrustInternalFailureCount(SimpleMeterRegistry meters) {
+            Counter counter = meters.find(SheriffMetrics.ERRORS_TOTAL)
+                    .tags("route", SESSION_ROUTE_ID, "event", EventType.PRE_TRUST_INTERNAL_FAILURE.name()).counter();
+            assertNotNull(counter, "no " + SheriffMetrics.ERRORS_TOTAL + " series for the pre-trust internal failure");
+            return counter.count();
         }
 
         /**
@@ -265,9 +302,11 @@ public class GatewayEdgeRouteBffWiringTest {
          * freshly-assembled edge and returns the edge's own answer. {@code Accept: text/html} is what
          * selects the session stage's redirect branch over its API-shaped 401.
          */
-        private HttpClientResponse serveUnauthenticatedNavigation(RouteTable table, BffRuntime runtime)
-                throws Exception {
-            HttpServer front = EdgeFixtures.serve(vertx, newEdge(table, runtime));
+        private HttpClientResponse serveUnauthenticatedNavigation(RouteTable table, BffRuntime runtime,
+                GatewayConfig gatewayConfig, SimpleMeterRegistry meters) throws Exception {
+            HttpServer front = EdgeFixtures.serve(vertx, EdgeFixtures.edge(vertx, virtualThreadExecutor)
+                    .routes(table).gatewayConfig(gatewayConfig).metrics(new SheriffMetrics(meters))
+                    .runtime(runtime).build());
             HttpClient client = vertx.createHttpClient();
             try {
                 RequestOptions options = new RequestOptions()
@@ -282,10 +321,6 @@ public class GatewayEdgeRouteBffWiringTest {
                 Awaits.teardown(client.close(), "the HTTP client to close");
                 Awaits.teardown(front.close(), "the edge front server to close");
             }
-        }
-
-        private GatewayEdgeRoute newEdge(RouteTable table, BffRuntime runtime) {
-            return EdgeFixtures.edge(vertx, virtualThreadExecutor).routes(table).runtime(runtime).build();
         }
     }
 
@@ -2005,7 +2040,7 @@ public class GatewayEdgeRouteBffWiringTest {
     }
 
     private static Route sessionRoute() {
-        return ConfigFixtures.route("s", "/s")
+        return ConfigFixtures.route(SESSION_ROUTE_ID, "/s")
                 .effectiveAuth(AuthConfig.builder().require(Require.SESSION).build())
                 .upstream(new ResolvedUpstream("https", "s.example", 443, ""))
                 .build();

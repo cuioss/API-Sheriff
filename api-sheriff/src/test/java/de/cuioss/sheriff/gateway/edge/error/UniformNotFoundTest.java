@@ -53,14 +53,14 @@ import org.junit.jupiter.params.provider.MethodSource;
  * The trust-boundary predicate: which rejections are answered to an untrusted caller as the unrouted
  * {@code 404}. Every {@link EventType} constant carries a recorded disposition — a member of the closed
  * set, or an exclusion with its reason — so a constant added without one turns this test red instead
- * of silently staying honest. The release-time step rule of {@link UniformNotFound#releaseAtNanos} is
- * pinned here as well.
+ * of silently staying honest. The release-time step rule of {@link UniformNotFound#release} — the
+ * release time and the step index an overrun is metered from — is pinned here as well.
  */
 @EnableGeneratorController
 @DisplayName("UniformNotFound — the trust-boundary predicate of the rejection renderer")
 class UniformNotFoundTest {
 
-    /** The eight members of the closed set, written out: the literal IS the contract. */
+    /** The nine members of the closed set, written out: the literal IS the contract. */
     private static final Set<EventType> EXPECTED_CLOSED_SET = EnumSet.of(
             EventType.METHOD_NOT_ALLOWED,
             EventType.PATH_NOT_ALLOWED,
@@ -69,7 +69,8 @@ class UniformNotFoundTest {
             EventType.CONTENT_TOO_LARGE,
             EventType.CSRF_REJECTED,
             EventType.TOKEN_MISSING,
-            EventType.TOKEN_INVALID);
+            EventType.TOKEN_INVALID,
+            EventType.PRE_TRUST_INTERNAL_FAILURE);
 
     /** Every constant outside the closed set, with the reason it keeps its honest answer. */
     private static final Map<EventType, String> EXCLUSIONS = exclusions();
@@ -113,6 +114,9 @@ class UniformNotFoundTest {
         table.put(EventType.LOGOUT_TOKEN_INVALID, reserved);
         table.put(EventType.WEBSOCKET_ORIGIN_REJECTED, postTrust);
         table.put(EventType.WEBSOCKET_IDLE_TIMEOUT, "informational: after the 101 upgrade, no HTTP mapping");
+        table.put(EventType.SOURCE_TRIPPED, informational);
+        table.put(EventType.SOURCE_BLOCKED,
+                "raised before route selection and admission, keyed by the source: identical for every address");
         return table;
     }
 
@@ -133,8 +137,8 @@ class UniformNotFoundTest {
         }
 
         @Test
-        @DisplayName("the closed set is exactly the eight documented members")
-        void closedSetIsTheDocumentedEight() {
+        @DisplayName("the closed set is exactly the nine documented members")
+        void closedSetIsTheDocumentedNine() {
             assertEquals(EXPECTED_CLOSED_SET, UniformNotFound.CLOSED_SET);
         }
 
@@ -165,7 +169,7 @@ class UniformNotFoundTest {
         @ParameterizedTest(name = "{0}")
         @EnumSource(value = EventType.class, names = {"METHOD_NOT_ALLOWED", "PATH_NOT_ALLOWED",
                 "SECURITY_FILTER_VIOLATION", "PARAMETER_LIMIT_EXCEEDED", "CONTENT_TOO_LARGE", "CSRF_REJECTED",
-                "TOKEN_MISSING", "TOKEN_INVALID"})
+                "TOKEN_MISSING", "TOKEN_INVALID", "PRE_TRUST_INTERNAL_FAILURE"})
         @DisplayName("switch off: no member is answered as the unrouted 404")
         void switchOffKeepsEveryMemberHonest(EventType eventType) {
             UniformNotFound switchedOff = new UniformNotFound(false);
@@ -209,7 +213,7 @@ class UniformNotFoundTest {
         @ParameterizedTest(name = "{0}")
         @EnumSource(value = EventType.class, names = {"METHOD_NOT_ALLOWED", "PATH_NOT_ALLOWED",
                 "SECURITY_FILTER_VIOLATION", "PARAMETER_LIMIT_EXCEEDED", "CONTENT_TOO_LARGE", "CSRF_REJECTED",
-                "TOKEN_MISSING", "TOKEN_INVALID"})
+                "TOKEN_MISSING", "TOKEN_INVALID", "PRE_TRUST_INTERNAL_FAILURE"})
         @DisplayName("trust boundary passed: the caller keeps the honest answer for every member")
         void trustedCallerKeepsTheHonestAnswer(EventType eventType) {
             PipelineRequest request = routedRequest();
@@ -244,7 +248,7 @@ class UniformNotFoundTest {
 
         @ParameterizedTest(name = "{0}")
         @EnumSource(value = EventType.class, names = {"CSRF_REJECTED", "METHOD_NOT_ALLOWED", "PATH_NOT_ALLOWED",
-                "SECURITY_FILTER_VIOLATION", "CONTENT_TOO_LARGE"})
+                "SECURITY_FILTER_VIOLATION", "CONTENT_TOO_LARGE", "PRE_TRUST_INTERNAL_FAILURE"})
         @DisplayName("session branch x a non-authentication member: still answered as the unrouted 404")
         void sessionBranchNonAuthenticationMemberStaysUniform(EventType eventType) {
             PipelineRequest request = routedRequest();
@@ -256,7 +260,7 @@ class UniformNotFoundTest {
     }
 
     @Nested
-    @DisplayName("releaseAtNanos places the answer on the next floor step its processing has not passed")
+    @DisplayName("release places the answer on the next floor step its processing has not passed")
     class ReleaseSteps {
 
         @ParameterizedTest(name = "{0}")
@@ -269,6 +273,21 @@ class UniformNotFoundTest {
             long[] offsets = releaseOffsets(uniformNotFound, ADMITTED_AT_NANOS, nowNanos);
 
             assertOffsetsOnStep(label, offsets, expectedSteps);
+        }
+
+        @ParameterizedTest(name = "{0}")
+        @MethodSource("de.cuioss.sheriff.gateway.edge.error.UniformNotFoundTest#releaseStepCases")
+        @DisplayName("the exposed step index is the step the answer is released on, and only a step above 1 overran")
+        void releaseExposesItsStepIndex(String label, long elapsedNanos, long expectedSteps) {
+            UniformNotFound uniformNotFound = new UniformNotFound(true);
+
+            UniformNotFound.Release release = uniformNotFound.release(ADMITTED_AT_NANOS,
+                    ADMITTED_AT_NANOS + elapsedNanos);
+
+            assertAll(label,
+                    () -> assertEquals(expectedSteps, release.step(), "the step index"),
+                    () -> assertEquals(expectedSteps > 1, release.overran(),
+                            "an overrun is exactly a release on a step above the first"));
         }
 
         @Test
@@ -314,7 +333,7 @@ class UniformNotFoundTest {
         private static long[] releaseOffsets(UniformNotFound uniformNotFound, long admittedAtNanos, long nowNanos) {
             long[] offsets = new long[DRAWS];
             for (int draw = 0; draw < DRAWS; draw++) {
-                offsets[draw] = uniformNotFound.releaseAtNanos(admittedAtNanos, nowNanos) - admittedAtNanos;
+                offsets[draw] = uniformNotFound.release(admittedAtNanos, nowNanos).atNanos() - admittedAtNanos;
             }
             return offsets;
         }

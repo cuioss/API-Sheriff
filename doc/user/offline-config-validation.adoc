@@ -313,7 +313,8 @@ expressions into the `run:` script. A pipeline that does not build from source r
 container-image invocation instead.
 
 This repository runs the same check over every configuration set it ships -- the compose sample, the
-integration-test set, its eight compose-mounted variants and the two standalone one-off sets -- in
+integration-test set, its eight compose-mounted variants, the tls-relaxation variant and the three
+standalone one-off sets -- in
 link:../../.github/workflows/config-validation.yml[`.github/workflows/config-validation.yml`]. It is a
 worked example of assembling a set the way the deployment mounts it and giving each set exactly its
 own variables.

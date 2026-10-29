@@ -592,6 +592,13 @@ sources assign -- so the table is a test input, and a change to it is not a docu
 | `sheriff-stub-idp-gateway`
 | `JwksKeyRotationIT`, through the key-rotation variant of `StubIdentityProviderRig` -- see
   <<stub-idp-rig>>
+
+| `10472`
+| `19472`
+| `enumeration-gateway-<suffix>`
+| `EnumerationDetectionIT`, over `sheriff-config-enumeration/gateway.yaml`: the one gateway of the
+  run that declares an `enumeration_detection` trip response (`action: block`), which no Compose
+  instance may carry because every suite reaches them from one source address
 |===
 // end::test-started-host-ports[]
 
@@ -604,7 +611,7 @@ application port, so it is fixed by the same allocation and is distinct wherever
 ports are; the second column of the table lists it, and `OneOffGatewayContainersTest` checks that
 column against the derivation. The suite still reads the published management port back from docker
 before it polls readiness. The application port of a BFF has to be known before the container exists,
-because the descriptor names the gateway's own origin and is read at boot. The two bearer-only suites
+because the descriptor names the gateway's own origin and is read at boot. The three bearer-only suites
 have no such constraint and take a fixed port for the reason the next paragraphs give. The cost of
 the form is accepted: while a test runs, its gateway is reachable from the network the host is on,
 at a fixed port, as the Compose gateways are. It carries only committed test material --
@@ -622,7 +629,7 @@ own. Docker hands out assigned ports from the host's ephemeral range in sequence
 containers of the same run had already published, and left, numbers of that range. Which property of
 the assigned number refused the connection was not established; what is established is that it was
 a number docker chose and not one the harness controls. The fixed management ports lie in `19459` to
-`19471`, above the Compose stack's own management ports (`19000` to `19011`) and well below the
+`19472`, above the Compose stack's own management ports (`19000` to `19011`) and well below the
 default Linux ephemeral range (`32768` to `60999`) docker assigns from, and no earlier container of a
 run publishes them.
 

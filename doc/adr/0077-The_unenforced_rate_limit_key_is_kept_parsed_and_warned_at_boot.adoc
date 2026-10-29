@@ -1,0 +1,128 @@
+= ADR-0077: The unenforced rate_limit key is kept, parsed and warned at boot
+:toc: left
+:toclevels: 3
+:toc-title: Table of Contents
+:sectnums:
+:source-highlighter: highlight.js
+
+// adr-metadata
+// summary: The per-route rate_limit block (requests_per_second, burst) stays in the endpoint schema and the route model. It is parsed and bound but enforced by nothing, and every route of an enabled endpoint that declares it is named at every boot by WARN ApiSheriff-140, which refuses nothing. This differs from ADR-0064, which removed the inert circuit_breaker block: per-route rate limiting is a planned feature, while the breaker shape was decided to stay fixed; and the boot WARN reaches the operator where the descriptor takes effect, so the block cannot read as a control in force. The rate_limit block never causes a 429; every 429 the gateway sends comes from the enumeration_detection block of ADR-0076 (the block action, and under delay a tripped source whose held-answer share is used up). A future rate_limit implementation builds on the ADR-0076 substrate and decides its fields then.
+// tags: configuration, rate-limiting, inert-configuration, boot-validation, secure-defaults
+// affects: api-sheriff, documentation
+// supersedes:
+// end-adr-metadata
+
+== Status
+
+Accepted
+
+== Decision
+
+=== The question
+
+A route may declare a `rate_limit` block with `requests_per_second` and `burst`. The endpoint schema
+admits it, and the configuration loader binds it into `RouteConfig`. Nothing on the request path
+reads it: no rate limit is applied to any route.
+
+link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]
+met the same shape on `upstream.circuit_breaker` and removed the block. Its reason was that a key
+that parses and acts on nothing is worse than an absent key: an operator reads a control into the
+deployment that the gateway does not run. The question is whether `rate_limit` follows that
+precedent, and if not, what keeps it from causing the same false impression.
+
+=== Keep the block, parse it, and warn at every boot
+
+*The `rate_limit` block stays in the schema and the route model. The gateway names every route that
+declares it at every boot, and enforces nothing.*
+
+* The boot validation rule `LimitRules.validateRateLimitNotEnforced` logs WARN `ApiSheriff-140` once
+  per route of an enabled endpoint that declares the block. It does so whatever the block holds, an
+  empty `rate_limit: {}` included.
+* The WARN refuses nothing, and the boot continues.
+* The WARN states that no rate limit is applied to the route and that the block never causes a
+  `429`. It names the route id and the endpoint id, never a configured value.
+* The configuration reference, the log-message catalogue and the project README state the same:
+  per-route rate limiting is planned, not implemented.
+
+=== Why not removal, as ADR-0064 did
+
+Two differences separate `rate_limit` from `circuit_breaker`.
+
+*The breaker shape was decided; the rate limit is planned.* ADR-0064 decided that the circuit
+breaker is a fixed policy of the gateway and that no route declares its shape. Removing the key
+recorded that decision. Per-route rate limiting is the opposite case: it is a planned feature, and
+the block is the place in the route descriptor where it will be declared. Removing the block now
+would be reverted by that feature.
+
+*The boot WARN closes the hazard ADR-0064 removed.* ADR-0064 rejected inert keys because
+documentation is not read where a descriptor is written. The boot WARN is not documentation. It is
+written by the running gateway, at every boot, naming each declaring route. An operator who reads
+`rate_limit` into a deployment meets the WARN in the log of that deployment. The block therefore
+cannot pass as a control in force.
+
+A boot refusal would add nothing to that. A block that limits nothing does no harm while it is
+declared, so refusing a descriptor for it would protect nothing.
+
+=== The 429 the gateway does send
+
+The `rate_limit` block never causes a `429`. The gateway's `429` answers come from the
+`enumeration_detection` block only: a source blocked under the `block` action, and, under the
+`delay` action, a tripped source whose share of the held-answer sub-budget is used up
+(link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]).
+Those answers come from the per-source detection substrate and is reported in the `rate-limiting`
+problem category.
+
+=== A future implementation builds on the substrate
+
+A per-route rate limit counts events per key over a window, which is what the ADR-0076 substrate
+does. A future implementation builds its own `SourceLedger` with per-route settings rather than a
+second counting mechanism. It decides its fields then; `requests_per_second` and `burst` as they
+stand are not a commitment. It also decides how a rate-limit answer on a routed address relates to
+the uniform `404` of
+link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+for a caller before the trust boundary. That implementation supersedes this record.
+
+== Alternatives rejected
+
+*Remove the block, as ADR-0064 removed `circuit_breaker`.* The schema would refuse a descriptor that
+declares it. Rejected: the hazard is closed by the boot WARN, the planned feature would revert the
+removal, and a refusal of a block that limits nothing protects nothing.
+
+*Keep the block and stay silent.* The block would parse and act on nothing, documented only.
+Rejected for the reason ADR-0064 gives: documentation is not read where a descriptor is written, so
+the block would read as a control in force.
+
+*Keep the block in the schema and refuse it at boot.* For an operator this is the same as removal: a
+descriptor that declares it stops booting. Rejected for the same reason as removal.
+
+*Implement the block now on the substrate.* Rejected as a separate decision. It needs choices this
+record does not settle: what the key is (source, route, token subject), how a `429` on a routed
+address relates to the uniform `404` before the trust boundary, and what `Retry-After` states.
+
+*Read `rate_limit` through `enumeration_detection`.* The route's values would configure the recon
+ledger. Rejected: the two answer different questions. Enumeration detection counts pre-trust
+rejections per source across the gateway; a rate limit counts the requests a route serves.
+
+== Consequences
+
+* A descriptor that declares `rate_limit` boots, and the gateway logs one `ApiSheriff-140` WARN per
+  declaring route at every boot.
+* The schema carries two fields that act on nothing. The WARN, not the schema, tells the operator so.
+* Every `429` the gateway sends comes from ADR-0076. An operator who sees a `429` looks at
+  `enumeration_detection`, never at `rate_limit`.
+* When per-route rate limiting is implemented, its record supersedes this one, and the WARN goes with
+  the gap it reports.
+
+== Links
+
+* link:0064-The_upstream_guard_is_fixed_in_the_gateway_and_a_route_declares_no_circuit_breaker_settings.adoc[ADR-0064]
+  -- the removal of the inert `circuit_breaker` block this record departs from
+* link:0076-One_per-source_detection_substrate_counts_pre-trust_rejections_and_answers_a_tripped_source.adoc[ADR-0076]
+  -- the per-source substrate a future implementation builds on, and the source of every `429`
+* link:0073-Untrusted_callers_get_the_unrouted_404_for_every_rejection_raised_before_the_trust_boundary.adoc[ADR-0073]
+  -- the uniform `404` a future rate-limit answer must be reconciled with
+* link:../configuration.adoc#_rate_limit[Configuration -- `rate_limit`]
+* link:../LogMessages.adoc[Log Messages] -- `ApiSheriff-140`
+* link:../development/declared-limit-assertion-coverage.adoc[Declared-limit assertion coverage] --
+  why a key that parses is not a key that acts
+* `LimitRulesTest` -- the test that pins the WARN

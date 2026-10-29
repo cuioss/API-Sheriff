@@ -33,13 +33,20 @@ import io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.ClientCalls;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -87,10 +94,21 @@ import org.junit.jupiter.params.provider.MethodSource;
  * {@code sheriff_errors_total} under its TRUE event on the route it selected, and never under
  * {@code NO_ROUTE_MATCHED}.
  * <p>
+ * <strong>Crafted tokens.</strong> A bearer route is fed tokens shaped to make the token library fail
+ * in an unusual way: an undecodable token, a token with a segment missing, an unsigned {@code alg: none}
+ * token, a well-formed token naming a key id the issuer does not publish, a token whose claims carry
+ * the wrong JSON types, and a well-formed token as long as the {@code Authorization} carve-out admits.
+ * Each is answered with the unrouted {@code 404} and reported as {@code TOKEN_INVALID} — never as
+ * {@code PRE_TRUST_INTERNAL_FAILURE}, which would mean the library failed instead of refusing.
+ * <p>
  * <strong>Timing.</strong> No unrouted {@code 404}, genuine or resolved, leaves the edge before the
  * response-timing floor. The floor is {@link #RESPONSE_FLOOR}, restated here as the shipped constant a
  * black-box caller observes; it is asserted as a lower bound on the round trip only, so a slow runner
- * cannot make the assertion flaky.
+ * cannot make the assertion flaky. The floor is also <em>measured</em>: eight enumerated pre-trust
+ * paths a caller can drive on this stack are each probed {@link #MEASUREMENT_PROBES} times in sequence, and
+ * {@code sheriff_uniform_not_found_overruns_total} must not move — no probe was released after the
+ * first floor step. A run on a loaded machine can move it without the floor being too low; only an
+ * overrun that reproduces on a quiet run is evidence for raising the floor.
  * <p>
  * <strong>What stays honest.</strong> A caller past the trust boundary keeps the honest answer: a
  * validated token lacking the route's scope is refused {@code 403}. The session branch keeps its own
@@ -139,6 +157,28 @@ class EnumerationOracleIT extends BaseIntegrationTest {
 
     private static final int CALL_TIMEOUT_SECONDS = 15;
 
+    /** The declared {@code security_defaults.max_authorization_header_value_length} of the stack. */
+    private static final int AUTHORIZATION_VALUE_CAP = 8192;
+
+    private static final String BEARER = "Bearer ";
+
+    /** The uniform-404 overrun counter; it carries no label (ADR-0073 Amendment A1). */
+    private static final String OVERRUNS_TOTAL = "sheriff_uniform_not_found_overruns_total";
+
+    /** The event a pre-trust internal failure is reported under. */
+    private static final String PRE_TRUST_INTERNAL_FAILURE = "PRE_TRUST_INTERNAL_FAILURE";
+
+    /** How often each pre-trust path is probed, one request after the other, in the floor measurement. */
+    private static final int MEASUREMENT_PROBES = 20;
+
+    /** An unsafe-method path on the {@code bff-session-fallback} route, where the CSRF defence runs. */
+    private static final String CSRF_PATH = "/app/fallback/post";
+
+    /** An {@code Origin} that is neither the gateway origin nor a configured CSRF trusted origin. */
+    private static final String FOREIGN_ORIGIN = "https://evil.example.com";
+
+    private static final Pattern KEY_ID = Pattern.compile("\"kid\"\\s*:\\s*\"[^\"]*\"");
+
     private static ManagedChannel channel;
 
     /**
@@ -175,6 +215,38 @@ class EnumerationOracleIT extends BaseIntegrationTest {
                         overCap, BEARER_ROUTE, "CONTENT_TOO_LARGE"),
                 new PreTrustCase("protocol: grpc route", "POST", GRPC_BEARER_PATH,
                         Map.of("Content-Type", "application/grpc"), null, GRPC_BEARER_ROUTE, "TOKEN_MISSING"));
+    }
+
+    /**
+     * One crafted {@code Authorization} value for the bearer route.
+     *
+     * @param name          names the case in test output
+     * @param authorization the header value sent
+     */
+    record CraftedToken(String name, String authorization) {
+
+        @Override
+        public String toString() {
+            return name;
+        }
+    }
+
+    /**
+     * The crafted tokens. All but the undecodable one start from a token the realm really issued, so
+     * every other part of them is what the library expects and only the crafted part is wrong.
+     */
+    static Stream<CraftedToken> craftedTokens() {
+        JwtParts real = JwtParts.of(BearerValidationIT.mintIntegrationRealmAccessToken(BearerValidationIT.OIDC_SCOPE));
+        return Stream.of(
+                new CraftedToken("undecodable segments", BEARER + "!!!.@@@.###"),
+                new CraftedToken("a segment missing", BEARER + real.header() + "." + real.payload()),
+                new CraftedToken("alg none",
+                        BEARER + encode("{\"alg\":\"none\",\"typ\":\"JWT\"}") + "." + real.payload() + "."),
+                new CraftedToken("unknown key id", unknownKeyId(real)),
+                new CraftedToken("wrong claim types", BEARER + real.header() + "."
+                        + encode("{\"iss\":42,\"sub\":[\"x\"],\"exp\":\"never\",\"iat\":true,\"aud\":{\"x\":1},\"scope\":7}")
+                        + "." + real.signature()),
+                new CraftedToken("at the Authorization cap", atAuthorizationCap(real)));
     }
 
     @BeforeAll
@@ -256,6 +328,76 @@ class EnumerationOracleIT extends BaseIntegrationTest {
                 () -> assertEquals(unrouted.getStatus().getCode(), bearer.getStatus().getCode(),
                         "the tokenless bearer call must surface exactly as the unrouted service does, never as the"
                                 + " trailers-only UNAUTHENTICATED that would disclose the route"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("craftedTokens")
+    @DisplayName("a crafted bearer token is refused as the unrouted 404 and reported as TOKEN_INVALID, never as an internal failure")
+    void craftedTokenIsRefusedNotFailedOn(CraftedToken crafted) {
+        String before = PrometheusScrape.scrape();
+
+        ExtractableResponse<Response> response = UniformNotFoundAssertions.assertTrueEventMetered(BEARER_ROUTE,
+                "TOKEN_INVALID", () -> given()
+                        .header("Authorization", crafted.authorization())
+                        .header("Accept", JSON_ACCEPT)
+                        .when()
+                        .get(BEARER_PATH)
+                        .then()
+                        .extract());
+
+        String after = PrometheusScrape.scrape();
+        UniformNotFoundAssertions.assertUnroutedProblem(response, crafted.name());
+        assertEquals(PrometheusScrape.errorCount(before, BEARER_ROUTE, PRE_TRUST_INTERNAL_FAILURE),
+                PrometheusScrape.errorCount(after, BEARER_ROUTE, PRE_TRUST_INTERNAL_FAILURE),
+                () -> crafted.name() + " must be refused by the token library, not make it fail");
+    }
+
+    /**
+     * The measurement of the floor: eight enumerated pre-trust paths a caller can drive on this stack
+     * are each probed {@link #MEASUREMENT_PROBES} times, one request after the other, and the overrun counter must not
+     * move. The slowest round trip of each path is reported when it does, so a failure names the path.
+     */
+    @Test
+    @DisplayName("the floor is measured: no caller-drivable pre-trust path is released after the first floor step")
+    void noPreTrustPathOverrunsTheFloor() {
+        JwtParts real = JwtParts.of(BearerValidationIT.mintIntegrationRealmAccessToken(BearerValidationIT.OIDC_SCOPE));
+        List<Probe> probes = List.of(
+                probe("unrouted address", "GET", UniformNotFoundAssertions.UNROUTED_PATH, Map.of()),
+                probe("verb gate", "PATCH", BEARER_PATH, Map.of()),
+                probe("path not allowed", "GET", OFF_ALLOWLIST_PATH, Map.of()),
+                probe("missing token", "GET", BEARER_PATH, Map.of()),
+                probe("malformed token", "GET", BEARER_PATH, Map.of("Authorization", BEARER + "not-a-real-jwt")),
+                probe("token at the Authorization cap", "GET", BEARER_PATH,
+                        Map.of("Authorization", atAuthorizationCap(real))),
+                probe("unknown key id", "GET", BEARER_PATH, Map.of("Authorization", unknownKeyId(real))),
+                new Probe("session-branch CSRF refusal", () -> BffKeycloakLoginFlow.gateway(Map.of())
+                        .header("Origin", FOREIGN_ORIGIN)
+                        .header("Accept", JSON_ACCEPT)
+                        .redirects().follow(false)
+                        .when()
+                        .post(CSRF_PATH)
+                        .then()
+                        .extract()));
+        Map<String, Duration> slowest = new LinkedHashMap<>();
+        double overrunsBefore = overruns(PrometheusScrape.scrape());
+
+        for (Probe probe : probes) {
+            for (int sent = 0; sent < MEASUREMENT_PROBES; sent++) {
+                long sentAt = System.nanoTime();
+                ExtractableResponse<Response> response = probe.send().get();
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - sentAt);
+                assertEquals(UniformNotFoundAssertions.UNROUTED_STATUS, response.statusCode(),
+                        () -> probe.name() + " must be answered as the unrouted 404");
+                slowest.merge(probe.name(), elapsed, (kept, next) -> kept.compareTo(next) >= 0 ? kept : next);
+            }
+        }
+
+        double overrunsAfter = overruns(PrometheusScrape.scrape());
+        assertEquals(overrunsBefore, overrunsAfter,
+                () -> "no pre-trust path may be released after the first floor step of " + RESPONSE_FLOOR.toMillis()
+                        + " ms; slowest round trip per path: " + slowest.entrySet().stream()
+                        .map(entry -> entry.getKey() + "=" + entry.getValue().toMillis() + " ms")
+                        .collect(Collectors.joining(", ")));
     }
 
     @Test
@@ -357,5 +499,86 @@ class EnumerationOracleIT extends BaseIntegrationTest {
 
     /** An answer and the round trip it took. */
     private record Timed(ExtractableResponse<Response> response, Duration elapsed) {
+    }
+
+    /** One caller-drivable pre-trust path of the floor measurement, and how to send it. */
+    private record Probe(String name, Supplier<ExtractableResponse<Response>> send) {
+    }
+
+    /** A probe on the primary instance with the given method, path and headers beside {@code Accept}. */
+    private static Probe probe(String name, String method, String path, Map<String, String> headers) {
+        return new Probe(name, () -> given()
+                .headers(headers)
+                .header("Accept", JSON_ACCEPT)
+                .redirects().follow(false)
+                .when()
+                .request(method, path)
+                .then()
+                .extract());
+    }
+
+    /** The three base64url segments of a compact JWS. */
+    private record JwtParts(String header, String payload, String signature) {
+
+        static JwtParts of(String token) {
+            String[] parts = token.split("\\.", -1);
+            assertEquals(3, parts.length, "precondition: the minted token is a compact JWS");
+            return new JwtParts(parts[0], parts[1], parts[2]);
+        }
+    }
+
+    /** The realm's token with its header naming a key id the issuer does not publish. */
+    private static String unknownKeyId(JwtParts real) {
+        String header = decode(real.header());
+        Matcher keyId = KEY_ID.matcher(header);
+        assertTrue(keyId.find(), () -> "precondition: the realm names its signing key in the token header: " + header);
+        String renamed = keyId.replaceFirst(Matcher.quoteReplacement("\"kid\":\"no-such-key-of-the-realm\""));
+        return BEARER + encode(renamed) + "." + real.payload() + "." + real.signature();
+    }
+
+    /**
+     * The realm's token with its payload padded by one extra claim until the whole {@code Authorization}
+     * value is as long as the carve-out admits. Unpadded base64url never encodes to a length of the form
+     * {@code 4k + 1}, so the value ends on the cap or one character below it.
+     */
+    private static String atAuthorizationCap(JwtParts real) {
+        String payload = decode(real.payload());
+        int frame = (BEARER + real.header() + ".." + real.signature()).length();
+        int pad = Math.max(0, (AUTHORIZATION_VALUE_CAP - frame) * 3 / 4 - payload.length() - 16);
+        String token = paddedToken(real, payload, pad);
+        String longer = paddedToken(real, payload, pad + 1);
+        while (longer.length() <= AUTHORIZATION_VALUE_CAP) {
+            token = longer;
+            pad++;
+            longer = paddedToken(real, payload, pad + 1);
+        }
+        int length = token.length();
+        assertTrue(length <= AUTHORIZATION_VALUE_CAP && length >= AUTHORIZATION_VALUE_CAP - 1,
+                () -> "precondition: the padded token must end at the Authorization cap; it is " + length);
+        return token;
+    }
+
+    private static String paddedToken(JwtParts real, String payload, int pad) {
+        String padded = "{\"pad\":\"" + "a".repeat(pad) + "\"," + payload.substring(1);
+        return BEARER + real.header() + "." + encode(padded) + "." + real.signature();
+    }
+
+    private static String encode(String json) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(json.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String decode(String segment) {
+        return new String(Base64.getUrlDecoder().decode(segment), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * The value of {@value #OVERRUNS_TOTAL} in an exposition. The counter carries no label, and it is
+     * exposed only once it has been recorded, so an absent counter counts as zero.
+     */
+    private static double overruns(String exposition) {
+        return exposition.lines()
+                .filter(line -> line.startsWith(OVERRUNS_TOTAL + " ") || line.startsWith(OVERRUNS_TOTAL + "{"))
+                .mapToDouble(line -> Double.parseDouble(line.substring(line.lastIndexOf(' ') + 1).strip()))
+                .sum();
     }
 }

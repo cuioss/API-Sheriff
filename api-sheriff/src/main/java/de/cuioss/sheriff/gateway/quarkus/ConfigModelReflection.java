@@ -27,6 +27,7 @@ import de.cuioss.sheriff.gateway.config.model.CookiesConfig;
 import de.cuioss.sheriff.gateway.config.model.EdgeHardeningConfig;
 import de.cuioss.sheriff.gateway.config.model.EgressTlsConfig;
 import de.cuioss.sheriff.gateway.config.model.EndpointConfig;
+import de.cuioss.sheriff.gateway.config.model.EnumerationDetectionConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardConfig;
 import de.cuioss.sheriff.gateway.config.model.ForwardedConfig;
 import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
@@ -92,6 +93,8 @@ import io.quarkus.runtime.annotations.RegisterForReflection;
         CookieAllow.All.class,
         CookieAllow.Named.class,
         EdgeHardeningConfig.class,
+        EnumerationDetectionConfig.class,
+        EnumerationDetectionConfig.Action.class,
         TokenValidationConfig.class,
         IssuerConfig.class,
         IssuerConfig.Jwks.class,
