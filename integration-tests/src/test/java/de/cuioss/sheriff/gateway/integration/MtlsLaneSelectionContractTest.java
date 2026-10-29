@@ -204,7 +204,7 @@ class MtlsLaneSelectionContractTest {
                 () -> assertFalse(specimenViolations("<build><plugins>" + failsafe("", "") + "</plugins></build>",
                         required, published).isEmpty(), "a bare lane in the module's own build was accepted"),
                 () -> assertFalse(specimenViolations(profile("negated", "<groups>!sleep-bound</groups>", ""),
-                        required, published).isEmpty(),
+                                required, published).isEmpty(),
                         "a lane whose groups expression !sleep-bound selects the untagged IT was accepted"),
                 () -> assertEquals(List.of(), specimenViolations(profile("unsatisfied",
                         "<groups>sleep-bound &amp; docker</groups>", ""), required, published, Set.of("docker")),
@@ -213,12 +213,12 @@ class MtlsLaneSelectionContractTest {
                         "<excludedGroups>docker | sleep-bound</excludedGroups>", ""), required, published,
                         Set.of("docker")), "a lane whose excludedGroups expression matches the IT's tag was rejected"),
                 () -> assertTrue(specimenViolations(profile("malformed", "<groups>docker &amp;</groups>", ""),
-                        required, published).stream()
-                        .anyMatch(violation -> violation.contains("malformed/default") && violation.contains("docker &")),
+                                required, published).stream()
+                                .anyMatch(violation -> violation.contains("malformed/default") && violation.contains("docker &")),
                         "a lane with an unparseable groups expression was not refused naming the lane and expression"),
                 () -> assertFalse(specimenViolations(profile("overridden", properties(wired),
-                        "<systemPropertyVariables combine.self=\"override\"><" + PORT_KEY + ">10444</" + PORT_KEY
-                                + "></systemPropertyVariables>"), required, published).isEmpty(),
+                                "<systemPropertyVariables combine.self=\"override\"><" + PORT_KEY + ">10444</" + PORT_KEY
+                                        + "></systemPropertyVariables>"), required, published).isEmpty(),
                         "a lane whose execution overrides the inherited properties down to the port was accepted"),
                 () -> assertEquals(List.of(), specimenViolations(profile("appended",
                         "<excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>",
@@ -265,14 +265,14 @@ class MtlsLaneSelectionContractTest {
                 () -> assertEquals(new TagReading(Set.of("docker"), List.of()), inherited,
                         "a tag declared on the superclass applies to the IT, as JUnit's @Tag is @Inherited"),
                 () -> assertFalse(specimenViolations(profile("docker-lane", "<groups>docker</groups>", ""), required,
-                        Set.of("10444"), inherited.tags()).isEmpty(),
+                                Set.of("10444"), inherited.tags()).isEmpty(),
                         "a lane selecting the inherited tag with no properties was accepted"),
                 () -> assertEquals(new TagReading(Set.of("slow", "shared"), List.of()), constant,
                         "a @Tag naming a String constant of the file or of its superclass carries that constant's value"),
                 () -> assertEquals(new TagReading(Set.of("alpha", "beta"), List.of()), contained,
                         "every @Tag of a @Tags container applies"),
                 () -> assertTrue(unresolvable.unresolved().stream()
-                        .anyMatch(problem -> problem.contains("SpecimenIT.java") && problem.contains("@Tag(MISSING)")),
+                                .anyMatch(problem -> problem.contains("SpecimenIT.java") && problem.contains("@Tag(MISSING)")),
                         () -> "an unresolvable @Tag argument was not refused naming the file and the annotation: "
                                 + unresolvable));
     }
@@ -428,7 +428,7 @@ class MtlsLaneSelectionContractTest {
         String name = reference.group(2);
         Stream<Source> candidates = owner == null ? scope.stream()
                 : Stream.concat(scope.stream().filter(candidate -> owner.equals(className(candidate))),
-                        lookup.find(source, owner).stream());
+                lookup.find(source, owner).stream());
         Optional<String> constant = candidates.map(candidate -> constantIn(candidate, name))
                 .flatMap(Optional::stream)
                 .findFirst();

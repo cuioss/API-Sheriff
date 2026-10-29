@@ -21,10 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import de.cuioss.sheriff.gateway.config.PolicyBlock;
-import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
-import de.cuioss.sheriff.gateway.config.model.HttpMethod;
-import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 import java.io.IOException;
 import java.io.StringReader;
 import java.io.UncheckedIOException;
@@ -48,6 +44,11 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.yaml.snakeyaml.Yaml;
+
+import de.cuioss.sheriff.gateway.config.PolicyBlock;
+import de.cuioss.sheriff.gateway.config.RouteTableBuilder;
+import de.cuioss.sheriff.gateway.config.model.HttpMethod;
+import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.DynamicTest;
@@ -800,7 +801,7 @@ class BenchmarkScriptConfigContractTest {
                     () -> assertEquals(1, discovery.refusals().size(),
                             () -> "the call " + call + " must be refused exactly once: " + discovery.refusals()),
                     () -> assertTrue(discovery.refusals().stream()
-                            .anyMatch(refusal -> refusal.startsWith("specimen.js ") && refusal.contains(call)),
+                                    .anyMatch(refusal -> refusal.startsWith("specimen.js ") && refusal.contains(call)),
                             () -> "the refusal must name the script and the call " + call + ": "
                                     + discovery.refusals()));
         }
