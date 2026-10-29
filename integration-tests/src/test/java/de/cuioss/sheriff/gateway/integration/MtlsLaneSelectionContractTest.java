@@ -29,6 +29,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -69,11 +71,19 @@ import org.junit.jupiter.api.Test;
  * lane defect from a gateway defect. A lane declaring only some of the properties fails the same way,
  * so it is refused too.
  * <p>
- * <strong>What it asserts.</strong> For every profile of the module's {@code pom.xml} and every
- * {@code maven-failsafe-plugin} execution in it — a lane — the effective configuration is computed the
- * way Maven merges it: the root {@code pom.xml}'s {@code pluginManagement} entry, the module's own
- * build, the profile, and the execution, each dominant over the one before, executions matched by id
- * (an execution without one is {@code default}). A lane selects the IT when an include matches its
+ * <strong>What it asserts.</strong> A lane is one effective {@code maven-failsafe-plugin} execution of
+ * the module, for the build without a profile and for each profile id that the root {@code pom.xml} or
+ * the module's {@code pom.xml} declares the plugin under, in {@code plugins} or {@code pluginManagement};
+ * a root profile and a module profile with the same id are one lane, as one {@code -P} switch activates
+ * both. Its configuration is computed the way Maven builds the module's effective POM from every layer
+ * the two files apply to it: in each file the profile's build is injected over the file's own build;
+ * the module's {@code plugins} are inherited over the root's, and the module's {@code pluginManagement}
+ * over the root's; the merged {@code pluginManagement} is applied under the merged {@code plugins}; and
+ * each execution is merged over the plugin-level configuration. Every merge keeps the dominant side and
+ * honours {@code combine.self} and {@code combine.children}; executions are matched by id (an execution
+ * without one is {@code default}), and only a plugin some {@code plugins} layer declares runs. A root
+ * declaration carrying {@code <inherited>}, which this merge does not model, fails the test naming the
+ * lane. A lane selects the IT when an include matches its
  * path, no exclude does, and its tags pass the lane's {@code groups} and {@code excludedGroups}. Both
  * are read the way failsafe's JUnit Platform provider reads them: a comma-separated list of JUnit tag
  * expressions, the IT passing {@code groups} when the list is empty or any entry holds, and being
@@ -89,22 +99,39 @@ import org.junit.jupiter.api.Test;
  * annotation. Every
  * lane that selects it declares every required property, and its {@code test.mtls.port} is a host
  * port the compose service publishes. The required properties are derived from the IT's source — every
- * {@code test.mtls.*} key it reads through {@code System.getProperty} — not listed here.
+ * {@code test.mtls.*} key it reads through {@code System.getProperty} — not listed here. Before a
+ * {@code test.mtls.*} value is judged, every {@code ${...}} reference in it is resolved, repeatedly
+ * through the values it names, against {@code ${project.basedir}} / {@code ${basedir}} (the module
+ * directory) and the POM {@code <properties>} that apply to the lane: the module profile's, the
+ * module's, the root profile's and the root's, the nearest winning. A reference naming nothing there,
+ * one that refers back to itself, or references nested deeper than {@value #MAX_REFERENCE_DEPTH} levels
+ * fail the test naming the lane, the key and the reference or property, for a lane that selects the IT —
+ * an unresolved value is never compared as text.
  * <p>
- * <strong>What it does not read.</strong> Configuration from the parents above the root
- * {@code pom.xml} and properties supplied on the command line. Includes and excludes are read as
- * single Ant-style globs; a pattern written in surefire's richer syntax — {@code %regex[...]},
- * {@code %ant[...]}, a comma-separated list, a {@code !} negation or a {@code #} method filter — would
- * match nothing as a glob, so it fails the test naming the lane and the pattern rather than being read
- * as "does not select". On the tag side: method-level {@code @Tag} annotations,
+ * <strong>What it does not read.</strong> The parent POMs above the root {@code pom.xml}, which live
+ * outside the repository; {@code settings.xml} and its profiles; properties supplied on the command
+ * line, environment variables and any other Maven model value, so a {@code test.mtls.*} value that
+ * references one fails; and how a profile is activated — {@code activeByDefault} and activation by property, JDK, OS or
+ * file are not read, so each profile is judged as its own lane, alone, and two profiles activated
+ * together are not judged as one. An include or exclude is evaluated only
+ * in the one form this guard reads exactly as surefire does: a path with a directory part (it contains
+ * a {@code /}) that ends in {@code .java} and uses no wildcard but {@code *}, {@code **} and {@code ?},
+ * such as {@code **}{@code /*IT.java}. Every other form surefire accepts — no directory part
+ * ({@code MtlsHandshakeIT.java}, {@code *IT.java}), no extension ({@code **}{@code /*IT}), a
+ * {@code .class} extension, a bare class name, {@code %regex[...]}, {@code %ant[...]}, a comma-separated
+ * list, a {@code !} negation, a {@code #} method filter, or anything else it cannot prove it reads like
+ * surefire — fails the test naming the lane and the pattern rather than being read as "does not
+ * select". On the tag side: method-level {@code @Tag} annotations,
  * tags declared on implemented interfaces, and a superclass outside the module's test sources or
  * named through a wildcard import — the {@code extends} chain stops there.
  * <p>
  * <strong>Controls</strong> (ADR-0030). The population is asserted non-empty before the rule runs: the
  * IT reads at least one property and among them the port, at least one lane selects the IT today and
  * at least one leaves it out. The detector is driven with POM specimens it must reject — a selecting
- * lane with no properties, with only the port, with the primary port — and ones it must accept. The
- * specimens are strings in this file only.
+ * lane with no properties, with only the port, with the primary port, a lane with an include or exclude
+ * outside the evaluated form, a lane the root's {@code plugins} or a root profile passes down, a port
+ * reference that resolves to an unpublished port, cannot be resolved or is cyclic — and ones it must
+ * accept. The specimens are strings in this file only.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -127,6 +154,20 @@ class MtlsLaneSelectionContractTest {
     private static final String PRIMARY_PORT = "10443";
     private static final String DEFAULT_EXECUTION = "default";
     private static final String NO_PROFILE = "(no profile)";
+    private static final String MTLS_PROPERTY_PREFIX = "test.mtls.";
+
+    /** A {@code ${...}} property reference in a POM value; group 1 the property name. */
+    private static final Pattern PROPERTY_REFERENCE = Pattern.compile("\\$\\{([^}]*)}");
+
+    /** How deep {@code ${...}} references may nest before resolving them fails. */
+    private static final int MAX_REFERENCE_DEPTH = 16;
+
+    /**
+     * The Maven model values a {@code test.mtls.*} value may name besides POM properties: the module
+     * directory, which is the working directory under surefire.
+     */
+    private static final Map<String, String> BUILT_IN_PROPERTIES =
+            Map.of("project.basedir", MODULE.toString(), "basedir", MODULE.toString());
 
     /** Failsafe's own includes, in force when no layer declares any. */
     private static final List<String> DEFAULT_INCLUDES = List.of("**/IT*.java", "**/*IT.java", "**/*ITCase.java");
@@ -146,10 +187,15 @@ class MtlsLaneSelectionContractTest {
     private static final Pattern INNER_TAG = Pattern.compile("@(?:org\\.junit\\.jupiter\\.api\\.)?Tag\\s*\\(");
 
     /**
-     * Surefire include/exclude syntax beyond a single Ant-style glob. {@link Lane#matches} would read
-     * such a pattern as a literal glob that matches nothing, so a lane carrying one is refused instead.
+     * The one include/exclude form {@link Lane#matches} reads exactly as surefire does: a path with a
+     * directory part, every segment non-empty and made of Java identifier characters and the wildcards
+     * {@code *}, {@code **} and {@code ?}, ending in {@code .java}. Surefire also accepts other forms — no
+     * directory part, no extension, a {@code .class} extension, a bare class name, {@code %regex[...]},
+     * {@code %ant[...]}, a comma-separated list, a {@code !} negation, a {@code #} method filter — which a
+     * glob reading would judge differently or match nothing with, so a lane carrying any pattern outside
+     * this form is refused instead.
      */
-    private static final Pattern UNREADABLE_PATTERN_SYNTAX = Pattern.compile("%regex\\[|%ant\\[|[,#]|^\\s*!");
+    private static final Pattern EVALUABLE_PATTERN = Pattern.compile("[\\w$*?]+(?:/[\\w$*?]+)*/[\\w$*?]+\\.java");
 
     private static final Pattern NAMED_VALUE = Pattern.compile("^value\\s*=\\s*");
     private static final Pattern STRING_LITERAL = Pattern.compile("\"([^\"\\\\]*)\"");
@@ -248,6 +294,132 @@ class MtlsLaneSelectionContractTest {
     }
 
     @Test
+    @DisplayName("the detector refuses every include or exclude it cannot read exactly as surefire does")
+    void detectorRefusesPatternsItCannotReadLikeSurefire() throws Exception {
+        Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
+        Set<String> published = Set.of("10444");
+        Map<String, String> wired = new LinkedHashMap<>();
+        required.forEach(key -> wired.put(key, "declared"));
+        wired.put(PORT_KEY, "10444");
+
+        assertAll(
+                () -> assertRefused("no-extension", "<includes><include>**/*IT</include></includes>", "**/*IT",
+                        required, published),
+                () -> assertRefused("no-directory", "<includes><include>MtlsHandshakeIT.java</include></includes>",
+                        "MtlsHandshakeIT.java", required, published),
+                () -> assertRefused("no-directory-glob", "<includes><include>*IT.java</include></includes>",
+                        "*IT.java", required, published),
+                () -> assertRefused("bare-class", "<includes><include>MtlsHandshakeIT</include></includes>",
+                        "MtlsHandshakeIT", required, published),
+                () -> assertRefused("class-file", "<includes><include>**/MtlsHandshakeIT.class</include></includes>",
+                        "**/MtlsHandshakeIT.class", required, published),
+                () -> assertRefused("class-file-exclude",
+                        "<excludes><exclude>**/MtlsHandshakeIT.class</exclude></excludes>",
+                        "**/MtlsHandshakeIT.class", required, published),
+                () -> assertEquals(List.of(), specimenViolations(profile("single-wildcard", properties(wired)
+                        + "<includes><include>**/Mtls?andshakeIT.java</include></includes>", ""), required, published),
+                        "a fully wired lane whose include is a directory-qualified .java glob using ? was refused"),
+                () -> assertEquals(List.of(), specimenViolations(profile("qualified", "<includes><include>" + IT_PATH
+                                + "</include></includes><excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>",
+                                ""), required, published),
+                        "a lane whose fully qualified include is excluded again was refused"));
+    }
+
+    @Test
+    @DisplayName("the detector reads the failsafe executions the root pom's plugins and profiles pass down to the module")
+    void detectorReadsEveryLayerTheRootPassesDown() throws Exception {
+        Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
+        Set<String> published = Set.of("10444");
+        Map<String, String> wired = new LinkedHashMap<>();
+        required.forEach(key -> wired.put(key, "declared"));
+        wired.put(PORT_KEY, "10444");
+
+        List<String> rootPlugins = specimenViolations("", rootBuild("<plugins>" + failsafe("", "") + "</plugins>"),
+                required, published);
+        List<String> rootProfile = specimenViolations("", rootBuild("") + profile("root-lane", "", ""), required,
+                published);
+        List<String> inheritedFlag = specimenViolations("", rootBuild("<plugins><plugin><artifactId>" + FAILSAFE
+                + "</artifactId><inherited>false</inherited></plugin></plugins>"), required, published);
+
+        assertAll(
+                () -> assertTrue(rootPlugins.stream().anyMatch(violation -> violation.contains(NO_PROFILE + "/default")
+                                && violation.contains("does not declare")),
+                        () -> "a failsafe execution in the root's build/plugins that selects the IT with no properties"
+                                + " was not rejected naming the lane: " + rootPlugins),
+                () -> assertTrue(rootProfile.stream().anyMatch(violation -> violation.contains("root-lane/default")
+                                && violation.contains("does not declare")),
+                        () -> "a failsafe execution in a root profile that selects the IT with no properties was not"
+                                + " rejected naming the lane: " + rootProfile),
+                () -> assertTrue(inheritedFlag.stream().anyMatch(violation -> violation.contains(NO_PROFILE + "/default")
+                                && violation.contains("<inherited>")),
+                        () -> "a root failsafe plugin carrying <inherited>, which this guard does not model, was not"
+                                + " refused naming the lane: " + inheritedFlag),
+                () -> assertEquals(List.of(), specimenViolations("<profiles><profile><id>completing</id><build><plugins>"
+                                + "<plugin><artifactId>" + FAILSAFE + "</artifactId><configuration>" + properties(wired)
+                                + "</configuration></plugin></plugins></build></profile></profiles>",
+                        "<build><pluginManagement><plugins>"
+                                + failsafe("", "<includes><include>**/*IT.java</include></includes>")
+                                + "</plugins></pluginManagement></build>", required, published),
+                        "a root pluginManagement execution that a module profile completes with the properties was"
+                                + " rejected"),
+                () -> assertEquals(List.of(), specimenViolations(profile("shared", properties(wired), ""),
+                        rootBuild("") + profile("shared", "", ""), required, published),
+                        "a root profile completed by the module profile of the same id was rejected"));
+    }
+
+    @Test
+    @DisplayName("the detector resolves ${...} references in test.mtls properties before judging them")
+    void detectorResolvesPropertyReferences() throws Exception {
+        Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
+        Set<String> published = Set.of("10444");
+        Map<String, String> referenced = new LinkedHashMap<>();
+        required.forEach(key -> referenced.put(key, "declared"));
+        referenced.put(PORT_KEY, "${mtls.port}");
+
+        List<String> unpublished = specimenViolations(pomPropertiesElement("<mtls.port>10443</mtls.port>")
+                + profile("ref-unpublished", properties(referenced), ""), required, published);
+        Map<String, String> unknown = new LinkedHashMap<>(referenced);
+        unknown.put(PORT_KEY, "${nowhere}");
+        List<String> unresolvable = specimenViolations(profile("ref-unknown", properties(unknown), ""), required,
+                published);
+        List<String> cyclic = specimenViolations(pomPropertiesElement("<mtls.port>${mtls.alias}</mtls.port>"
+                + "<mtls.alias>${mtls.port}</mtls.alias>") + profile("ref-cyclic", properties(referenced), ""),
+                required, published);
+
+        assertAll(
+                () -> assertEquals(List.of(), specimenViolations(pomPropertiesElement("<mtls.port>10444</mtls.port>")
+                        + profile("ref-published", properties(referenced), ""), required, published),
+                        "a lane whose port is a reference resolving to a published port was rejected"),
+                () -> assertEquals(List.of(), specimenViolations(pomPropertiesElement("<mtls.port>10443</mtls.port>")
+                                + profileWithProperties("ref-nearest", "<mtls.port>10444</mtls.port>",
+                                        properties(referenced)),
+                                rootBuild("") + pomPropertiesElement("<mtls.port>9999</mtls.port>"), required, published),
+                        "a reference the lane's profile resolves to a published port, over other values of the module"
+                                + " and the root, was rejected"),
+                () -> assertTrue(unpublished.stream().anyMatch(violation -> violation.contains("ref-unpublished/default")
+                                && violation.contains("'10443'")),
+                        () -> "a lane whose port reference resolves to an unpublished port was not rejected naming the"
+                                + " lane and the resolved port: " + unpublished),
+                () -> assertTrue(unresolvable.stream().anyMatch(violation -> violation.contains("ref-unknown/default")
+                                && violation.contains(PORT_KEY) && violation.contains("${nowhere}")
+                                && violation.contains("cannot be resolved")),
+                        () -> "a lane whose port reference cannot be resolved was not refused naming the lane, the key"
+                                + " and the reference: " + unresolvable),
+                () -> assertTrue(cyclic.stream().anyMatch(violation -> violation.contains("ref-cyclic/default")
+                                && violation.contains("'mtls.port' refers back to itself")),
+                        () -> "a lane whose port reference is cyclic was not refused naming the property: " + cyclic));
+    }
+
+    private static void assertRefused(String lane, String pluginConfiguration, String pattern, Set<String> required,
+            Set<String> published) throws ParserConfigurationException, SAXException, IOException {
+        List<String> violations = specimenViolations(profile(lane, pluginConfiguration, ""), required, published);
+        assertTrue(violations.stream().anyMatch(violation -> violation.contains(lane + "/default")
+                        && violation.contains("'" + pattern + "'")),
+                () -> "a lane with the pattern '" + pattern + "', which this guard cannot read exactly as surefire does,"
+                        + " was not refused naming the lane and the pattern: " + violations);
+    }
+
+    @Test
     @DisplayName("the tag reader resolves inherited, constant-valued and contained @Tag annotations, and refuses others")
     void tagReaderResolvesTagsTheWayJUnitDoes() throws Exception {
         Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
@@ -322,6 +494,12 @@ class MtlsLaneSelectionContractTest {
             if (!lane.selects(IT_PATH, tags)) {
                 continue;
             }
+            if (!lane.unresolvedProperties().isEmpty()) {
+                violations.add("lane " + lane.name() + " selects MtlsHandshakeIT, but " + lane.unresolvedProperties()
+                        + ". This guard cannot tell what the IT receives, so it refuses the lane rather than"
+                        + " comparing the unresolved text");
+                continue;
+            }
             Set<String> missing = new TreeSet<>(required);
             lane.properties().forEach((key, value) -> {
                 if (!value.isBlank()) {
@@ -349,11 +527,27 @@ class MtlsLaneSelectionContractTest {
 
     private static List<String> specimenViolations(String moduleBody, Set<String> required, Set<String> published,
             Set<String> tags) throws ParserConfigurationException, SAXException, IOException {
-        String root = "<project><build><pluginManagement><plugins>"
-                + failsafe("<includes><include>**/*IT.java</include></includes>", "")
-                + "</plugins></pluginManagement></build></project>";
-        return violations(lanes(parse("<project>" + moduleBody + "</project>"), parse(root)), required, tags,
-                published);
+        return specimenViolations(moduleBody, rootBuild(""), required, published, tags);
+    }
+
+    private static List<String> specimenViolations(String moduleBody, String rootBody, Set<String> required,
+            Set<String> published) throws ParserConfigurationException, SAXException, IOException {
+        return specimenViolations(moduleBody, rootBody, required, published, Set.of());
+    }
+
+    private static List<String> specimenViolations(String moduleBody, String rootBody, Set<String> required,
+            Set<String> published, Set<String> tags) throws ParserConfigurationException, SAXException, IOException {
+        return violations(lanes(parse("<project>" + moduleBody + "</project>"), parse("<project>" + rootBody
+                + "</project>")), required, tags, published);
+    }
+
+    /**
+     * A root build whose {@code pluginManagement} carries the failsafe entry every specimen inherits,
+     * followed by {@code plugins}.
+     */
+    private static String rootBuild(String plugins) {
+        return "<build><pluginManagement><plugins>" + failsafe("<includes><include>**/*IT.java</include></includes>", "")
+                + "</plugins></pluginManagement>" + plugins + "</build>";
     }
 
     // --- reading the IT and the compose file --------------------------------------------------------
@@ -613,10 +807,14 @@ class MtlsLaneSelectionContractTest {
      * @param excludedGroups           the lane's {@code excludedGroups} tag expressions
      * @param unreadable               why a tag expression or an include/exclude pattern could not be
      *                                 read, empty when every one of them was
-     * @param properties               the effective {@code systemPropertyVariables}
+     * @param properties               the effective {@code systemPropertyVariables}, every
+     *                                 {@code test.mtls.*} value with its {@code ${...}} references resolved
+     * @param unresolvedProperties     why a {@code test.mtls.*} value could not be resolved, naming the key
+     *                                 and the reference; empty when every one of them was
      */
     private record Lane(String name, List<String> includes, List<String> excludes, List<TagExpression> groups,
-    List<TagExpression> excludedGroups, List<String> unreadable, Map<String, String> properties) {
+    List<TagExpression> excludedGroups, List<String> unreadable, Map<String, String> properties,
+    List<String> unresolvedProperties) {
 
         /**
          * Whether the lane runs a test at the path carrying the tags. A test passes {@code groups} when
@@ -641,83 +839,221 @@ class MtlsLaneSelectionContractTest {
     }
 
     /**
-     * Every failsafe lane of the module: one per execution, per profile that declares the plugin, and
-     * per execution of the module's own build when it declares the plugin.
+     * Every failsafe lane of the module: one per effective execution, for the build without a profile
+     * and for each profile of the root or the module that declares the plugin in its {@code plugins} or
+     * {@code pluginManagement}. A root profile and a module profile with the same id are one lane, as one
+     * {@code -P} switch activates both.
      *
      * @param module the module's parsed {@code pom.xml}
-     * @param root   the root's parsed {@code pom.xml}, whose {@code pluginManagement} entry every lane inherits
-     * @return the lanes in document order
+     * @param root   the root's parsed {@code pom.xml}, the module's parent
+     * @return the lanes, those of the build without a profile first, then the profiles in document order,
+     *         the module's before the root's
      */
     private static List<Lane> lanes(Document module, Document root) {
-        Optional<Element> managed = failsafe(children(root.getDocumentElement(), "build").stream()
-                .flatMap(build -> children(build, "pluginManagement").stream()));
-        Optional<Element> own = failsafe(children(module.getDocumentElement(), "build").stream());
-        List<Lane> lanes = new ArrayList<>();
-        own.ifPresent(plugin -> lanes.addAll(lanesOf(NO_PROFILE, layers(plugin, own, managed))));
-        for (Element profiles : children(module.getDocumentElement(), "profiles")) {
-            for (Element profile : children(profiles, "profile")) {
-                failsafe(children(profile, "build").stream()).ifPresent(plugin -> lanes.addAll(
-                        lanesOf(childText(profile, "id"), layers(plugin, own, managed))));
-            }
+        Element moduleProject = module.getDocumentElement();
+        Element rootProject = root.getDocumentElement();
+        Set<String> profileIds = new LinkedHashSet<>();
+        Stream.of(moduleProject, rootProject)
+                .flatMap(project -> profiles(project).stream())
+                .filter(profile -> declaredFailsafe(profile).isPresent() || managedFailsafe(profile).isPresent())
+                .forEach(profile -> profileIds.add(childText(profile, "id")));
+        List<Lane> lanes = new ArrayList<>(lanesOf(NO_PROFILE, moduleProject, Optional.empty(), rootProject,
+                Optional.empty()));
+        for (String id : profileIds) {
+            lanes.addAll(lanesOf(id, moduleProject, profile(moduleProject, id), rootProject, profile(rootProject, id)));
         }
         return lanes;
     }
 
-    /** The plugin declarations a lane is merged from, the most dominant first, each once. */
-    private static List<Element> layers(Element plugin, Optional<Element> own, Optional<Element> managed) {
-        Set<Element> layers = new LinkedHashSet<>();
-        layers.add(plugin);
-        own.ifPresent(layers::add);
-        managed.ifPresent(layers::add);
-        return List.copyOf(layers);
+    /**
+     * The lanes of one profile — or of none — merged the way Maven builds the module's effective POM:
+     * in each POM the profile is injected over that POM's own build, the module's result is inherited
+     * over the root's, and the merged {@code pluginManagement} is then applied under the merged
+     * {@code plugins}. Only a plugin some {@code plugins} layer declares produces lanes. A construct of the
+     * root this merge does not model refuses every lane of the profile.
+     */
+    private static List<Lane> lanesOf(String profileId, Element moduleProject, Optional<Element> moduleProfile,
+            Element rootProject, Optional<Element> rootProfile) {
+        Optional<Plugin> declared = mergePlugins(
+                injected(moduleProject, moduleProfile, MtlsLaneSelectionContractTest::declaredFailsafe),
+                injected(rootProject, rootProfile, MtlsLaneSelectionContractTest::declaredFailsafe));
+        Optional<Plugin> managed = mergePlugins(
+                injected(moduleProject, moduleProfile, MtlsLaneSelectionContractTest::managedFailsafe),
+                injected(rootProject, rootProfile, MtlsLaneSelectionContractTest::managedFailsafe));
+        List<String> unrepresentable = inheritedFlags(rootProject, rootProfile);
+        Map<String, String> pomProperties = new HashMap<>();
+        Stream.of(Optional.of(rootProject), rootProfile, Optional.of(moduleProject), moduleProfile)
+                .flatMap(Optional::stream)
+                .flatMap(holder -> children(holder, "properties").stream())
+                .flatMap(properties -> Conf.of(properties).children().stream())
+                .forEach(property -> pomProperties.put(property.name(), property.value()));
+        List<Lane> lanes = new ArrayList<>();
+        declared.map(plugin -> plugin.over(managed)).ifPresent(effective -> effective.executions().forEach(
+                (id, execution) -> lanes.add(lane(profileId + "/" + id, merge(execution, effective.configuration()),
+                        unrepresentable, pomProperties))));
+        return lanes;
     }
 
-    private static List<Lane> lanesOf(String profile, List<Element> layers) {
-        Conf pluginLevel = null;
-        Map<String, Conf> executions = new LinkedHashMap<>();
-        for (Element layer : layers) {
-            pluginLevel = merge(pluginLevel, configuration(layer));
-            for (Element holder : children(layer, "executions")) {
+    /**
+     * A system property value with every {@code ${...}} reference replaced by the property it names,
+     * repeated through the values those properties hold. A name resolves through
+     * {@link #BUILT_IN_PROPERTIES} first, then through {@code pomProperties}.
+     *
+     * @param value         the value to resolve
+     * @param pomProperties the POM properties that apply to the lane, the nearest already winning
+     * @param resolving     the property names whose values are being resolved, outermost first
+     * @return the value without references
+     * @throws IllegalArgumentException naming the reference when it names no property this guard reads,
+     *                                  and naming the property when a reference refers back to it or the
+     *                                  references nest deeper than {@value #MAX_REFERENCE_DEPTH} levels
+     */
+    private static String resolve(String value, Map<String, String> pomProperties, List<String> resolving) {
+        Matcher reference = PROPERTY_REFERENCE.matcher(value);
+        StringBuilder resolved = new StringBuilder();
+        while (reference.find()) {
+            String name = reference.group(1);
+            if (resolving.contains(name)) {
+                throw new IllegalArgumentException("property '" + name + "' refers back to itself through "
+                        + String.join(" -> ", resolving) + " -> " + name);
+            }
+            if (resolving.size() >= MAX_REFERENCE_DEPTH) {
+                throw new IllegalArgumentException("references nest deeper than " + MAX_REFERENCE_DEPTH
+                        + " levels at property '" + name + "'");
+            }
+            String target = BUILT_IN_PROPERTIES.getOrDefault(name, pomProperties.get(name));
+            if (target == null) {
+                throw new IllegalArgumentException(reference.group() + " names no property of the lane's profile, the"
+                        + " module pom or the root pom, and a value from the command line, settings.xml or the"
+                        + " environment cannot be read");
+            }
+            List<String> deeper = new ArrayList<>(resolving);
+            deeper.add(name);
+            reference.appendReplacement(resolved, Matcher.quoteReplacement(resolve(target, pomProperties, deeper)));
+        }
+        reference.appendTail(resolved);
+        return resolved.toString();
+    }
+
+    /** One POM's failsafe declaration in one section, its profile injected over its own build. */
+    private static Optional<Plugin> injected(Element project, Optional<Element> profile,
+            Function<Element, Optional<Element>> section) {
+        return mergePlugins(profile.flatMap(section).map(Plugin::of), section.apply(project).map(Plugin::of));
+    }
+
+    /**
+     * One message per failsafe declaration of the root — in its {@code plugins} or
+     * {@code pluginManagement}, of its own build or of the profile — that carries {@code <inherited>} on
+     * the plugin or an execution. The flag decides whether the module receives the declaration, which
+     * this guard does not model. The module's own flags concern only its children, not its own build.
+     */
+    private static List<String> inheritedFlags(Element rootProject, Optional<Element> rootProfile) {
+        return Stream.concat(Stream.of(rootProject), rootProfile.stream())
+                .flatMap(holder -> Stream.of(declaredFailsafe(holder), managedFailsafe(holder)))
+                .flatMap(Optional::stream)
+                .filter(plugin -> !children(plugin, "inherited").isEmpty() || children(plugin, "executions").stream()
+                        .flatMap(executions -> children(executions, "execution").stream())
+                        .anyMatch(execution -> !children(execution, "inherited").isEmpty()))
+                .map(_ -> "the root pom's " + FAILSAFE + " declares <inherited>, which decides whether the module"
+                        + " receives it and which this guard does not model")
+                .toList();
+    }
+
+    private static Optional<Plugin> mergePlugins(Optional<Plugin> dominant, Optional<Plugin> recessive) {
+        return dominant.map(plugin -> plugin.over(recessive)).or(() -> recessive);
+    }
+
+    /** The failsafe plugin in the {@code build/plugins} of a project or profile. */
+    private static Optional<Element> declaredFailsafe(Element holder) {
+        return failsafe(children(holder, "build").stream());
+    }
+
+    /** The failsafe plugin in the {@code build/pluginManagement} of a project or profile. */
+    private static Optional<Element> managedFailsafe(Element holder) {
+        return failsafe(children(holder, "build").stream().flatMap(build -> children(build, "pluginManagement").stream()));
+    }
+
+    private static List<Element> profiles(Element project) {
+        return children(project, "profiles").stream().flatMap(profiles -> children(profiles, "profile").stream())
+                .toList();
+    }
+
+    private static Optional<Element> profile(Element project, String id) {
+        return profiles(project).stream().filter(profile -> id.equals(childText(profile, "id"))).findFirst();
+    }
+
+    /**
+     * A failsafe plugin declaration: its plugin-level configuration and its executions by id (an
+     * execution without one is {@value #DEFAULT_EXECUTION}); a configuration absent from the declaration
+     * is {@code null}.
+     */
+    private record Plugin(Conf configuration, Map<String, Conf> executions) {
+
+        static Plugin of(Element element) {
+            Map<String, Conf> executions = new LinkedHashMap<>();
+            for (Element holder : children(element, "executions")) {
                 for (Element execution : children(holder, "execution")) {
                     String id = childText(execution, "id");
                     String key = id.isEmpty() ? DEFAULT_EXECUTION : id;
-                    Conf merged = merge(executions.get(key), configuration(execution));
-                    executions.put(key, merged);
+                    executions.put(key, merge(executions.get(key),
+                            MtlsLaneSelectionContractTest.configuration(execution)));
                 }
             }
+            return new Plugin(MtlsLaneSelectionContractTest.configuration(element),
+                    Collections.unmodifiableMap(executions));
         }
-        List<Lane> lanes = new ArrayList<>();
-        for (Map.Entry<String, Conf> execution : executions.entrySet()) {
-            lanes.add(lane(profile + "/" + execution.getKey(), merge(execution.getValue(), pluginLevel)));
+
+        /** This declaration merged over a recessive one, executions matched by id. */
+        Plugin over(Optional<Plugin> recessive) {
+            if (recessive.isEmpty()) {
+                return this;
+            }
+            Map<String, Conf> merged = new LinkedHashMap<>(executions);
+            recessive.get().executions().forEach((id, inherited) -> merged.put(id,
+                    merge(merged.get(id), inherited)));
+            return new Plugin(merge(configuration, recessive.get().configuration()),
+                    Collections.unmodifiableMap(merged));
         }
-        return lanes;
     }
 
-    private static Lane lane(String name, Conf effective) {
+    private static Lane lane(String name, Conf effective, List<String> unrepresentable,
+            Map<String, String> pomProperties) {
         List<String> includes = values(effective, "includes");
         Map<String, String> properties = new LinkedHashMap<>();
         child(effective, "systemPropertyVariables")
                 .ifPresent(variables -> variables.children().forEach(property -> properties.put(property.name(),
                         property.value())));
+        List<String> unresolved = new ArrayList<>();
+        properties.replaceAll((key, value) -> {
+            if (!key.startsWith(MTLS_PROPERTY_PREFIX)) {
+                return value;
+            }
+            try {
+                return resolve(value, pomProperties, List.of());
+            } catch (IllegalArgumentException e) {
+                unresolved.add(key + " = '" + value + "' cannot be resolved: " + e.getMessage());
+                return value;
+            }
+        });
         List<String> excludes = values(effective, "excludes");
-        List<String> unreadable = new ArrayList<>();
+        List<String> unreadable = new ArrayList<>(unrepresentable);
         refuseUnreadablePatterns("include", includes, unreadable);
         refuseUnreadablePatterns("exclude", excludes, unreadable);
         return new Lane(name, includes.isEmpty() ? DEFAULT_INCLUDES : includes, excludes,
                 tagExpressions(effective, "groups", unreadable), tagExpressions(effective, "excludedGroups", unreadable),
-                List.copyOf(unreadable), properties);
+                List.copyOf(unreadable), properties, List.copyOf(unresolved));
     }
 
     /**
-     * Records every include or exclude pattern written in surefire syntax beyond a single Ant-style
-     * glob, naming the kind and the pattern: read as a glob it would match nothing, which would turn a
+     * Records every include or exclude pattern outside {@link #EVALUABLE_PATTERN}, naming the kind and
+     * the pattern: read as a glob it could match nothing where surefire matches the IT, which would turn a
      * lane that runs the IT into one this guard passes over.
      */
     private static void refuseUnreadablePatterns(String kind, List<String> patterns, List<String> unreadable) {
         patterns.stream()
-                .filter(pattern -> UNREADABLE_PATTERN_SYNTAX.matcher(pattern).find())
+                .filter(pattern -> !EVALUABLE_PATTERN.matcher(pattern).matches())
                 .forEach(pattern -> unreadable.add(kind + " pattern '" + pattern
-                        + "' uses surefire syntax beyond a single Ant-style glob, which this guard does not read"));
+                        + "' is not a directory-qualified .java path using only the wildcards *, ** and ?, the one"
+                        + " form this guard reads exactly as surefire does"));
     }
 
     /**
@@ -999,6 +1335,17 @@ class MtlsLaneSelectionContractTest {
     private static String profile(String id, String pluginConfiguration, String executionConfiguration) {
         return "<profiles><profile><id>" + id + "</id><build><plugins>"
                 + failsafe(pluginConfiguration, executionConfiguration) + "</plugins></build></profile></profiles>";
+    }
+
+    /** A module profile carrying POM properties, whose failsafe plugin carries the given plugin-level configuration. */
+    private static String profileWithProperties(String id, String properties, String pluginConfiguration) {
+        return "<profiles><profile><id>" + id + "</id>" + pomPropertiesElement(properties) + "<build><plugins>"
+                + failsafe(pluginConfiguration, "") + "</plugins></build></profile></profiles>";
+    }
+
+    /** A POM {@code <properties>} element around the given property elements. */
+    private static String pomPropertiesElement(String properties) {
+        return "<properties>" + properties + "</properties>";
     }
 
     private static String failsafe(String pluginConfiguration, String executionConfiguration) {
