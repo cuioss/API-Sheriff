@@ -17,6 +17,7 @@ package de.cuioss.sheriff.gateway.edge.end;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.ref.WeakReference;
@@ -210,6 +211,8 @@ class ResponseDelayTest {
         Awaits.connect(request.connection().close(), "the client connection to close");
 
         awaitLetGo(body, "the held answer to be let go once its connection closed");
+
+        assertNull(body.get(), "the held answer is unreachable once its connection closed");
     }
 
     @Test
@@ -236,6 +239,8 @@ class ResponseDelayTest {
         WeakReference<byte[]> body = Awaits.connect(armedBody, "the answer to be armed after the close");
 
         awaitLetGo(body, "the answer armed after the close to be let go");
+
+        assertNull(body.get(), "the answer armed after the close is unreachable");
     }
 
     @Test
