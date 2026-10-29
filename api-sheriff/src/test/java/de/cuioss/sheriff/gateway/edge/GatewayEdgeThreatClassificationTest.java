@@ -158,8 +158,8 @@ class GatewayEdgeThreatClassificationTest {
     @Test
     @DisplayName("a scan of malformed requests crosses the threshold and logs exactly one ALERT, however long it goes on")
     void scanRaisesExactlyOneAlertPerEpisode() throws Exception {
-        HttpServer front = start(gateway(null, ThreatClassificationConfig.builder().threshold(MALFORMED_THRESHOLD).build()),
-                registry);
+        HttpServer front = serve(edge(gateway(null, ThreatClassificationConfig.builder().threshold(MALFORMED_THRESHOLD).build()),
+                registry));
 
         List<Response> scan = new ArrayList<>();
         for (int index = 0; index < MALFORMED_SCAN; index++) {
@@ -194,7 +194,7 @@ class GatewayEdgeThreatClassificationTest {
     @Test
     @DisplayName("no block declared: the shipped defaults build the classifier, which alerts once a scan reaches the default threshold")
     void omittedBlockRunsTheShippedDefaults() throws Exception {
-        HttpServer front = start(gateway(null, null), registry);
+        HttpServer front = serve(edge(gateway(null, null), registry));
         int belowThreshold = ThreatClassificationConfig.DEFAULT_THRESHOLD
                 / ThreatClassificationConfig.Weights.DEFAULT_INPUT_VALIDATION - 1;
 
@@ -220,9 +220,9 @@ class GatewayEdgeThreatClassificationTest {
     @Test
     @DisplayName("a single malformed request raises no ALERT, and its status, body and timing are those of an edge that does not classify")
     void singleMalformedRequestIsBenign() throws Exception {
-        HttpServer classifying = start(gateway(null, null), registry);
-        HttpServer reference = start(gateway(null, ThreatClassificationConfig.builder().enabled(false).build()),
-                new SimpleMeterRegistry());
+        HttpServer classifying = serve(edge(gateway(null, null), registry));
+        HttpServer reference = serve(edge(gateway(null, ThreatClassificationConfig.builder().enabled(false).build()),
+                new SimpleMeterRegistry()));
 
         Response classified = send(classifying, MALFORMED, Map.of());
         Response unclassified = send(reference, MALFORMED, Map.of());
@@ -242,9 +242,9 @@ class GatewayEdgeThreatClassificationTest {
     @Test
     @DisplayName("a scanner tripping both ledgers gives one recon trip and exactly one ALERT, which carries the recon trip")
     void scannerTrippingBothLedgersRaisesOneAlertCarryingTheReconTrip() throws Exception {
-        HttpServer front = start(gateway(
+        HttpServer front = serve(edge(gateway(
                 EnumerationDetectionConfig.builder().threshold(RECON_THRESHOLD).build(),
-                ThreatClassificationConfig.builder().threshold(RECON_FED_THRESHOLD).build()), registry);
+                ThreatClassificationConfig.builder().threshold(RECON_FED_THRESHOLD).build()), registry));
 
         for (int index = 0; index < RECON_SCAN; index++) {
             assertEquals(404, send(front, UNROUTED + "-" + index, Map.of()).status(), "observe changes no answer");
@@ -269,8 +269,8 @@ class GatewayEdgeThreatClassificationTest {
     @Test
     @DisplayName("enumeration_detection disabled: the threat score is still kept and still alerts")
     void scoreIsKeptWithoutEnumerationDetection() throws Exception {
-        HttpServer front = start(gateway(EnumerationDetectionConfig.builder().enabled(false).build(),
-                ThreatClassificationConfig.builder().threshold(MALFORMED_THRESHOLD).build()), registry);
+        HttpServer front = serve(edge(gateway(EnumerationDetectionConfig.builder().enabled(false).build(),
+                ThreatClassificationConfig.builder().threshold(MALFORMED_THRESHOLD).build()), registry));
 
         for (int index = 0; index < MALFORMED_SCAN; index++) {
             send(front, MALFORMED + "-" + index, Map.of());
@@ -285,8 +285,8 @@ class GatewayEdgeThreatClassificationTest {
     @Test
     @DisplayName("threat_classification disabled: no ALERT is raised and recon detection is unchanged")
     void disabledClassificationRaisesNothingAndLeavesReconUnchanged() throws Exception {
-        HttpServer front = start(gateway(EnumerationDetectionConfig.builder().threshold(RECON_THRESHOLD).build(),
-                ThreatClassificationConfig.builder().enabled(false).build()), registry);
+        HttpServer front = serve(edge(gateway(EnumerationDetectionConfig.builder().threshold(RECON_THRESHOLD).build(),
+                ThreatClassificationConfig.builder().enabled(false).build()), registry));
 
         List<Integer> statuses = new ArrayList<>();
         for (int index = 0; index < RECON_SCAN; index++) {
@@ -313,8 +313,8 @@ class GatewayEdgeThreatClassificationTest {
         TestTokenHolder tokenHolder = TestTokenGenerators.accessTokens().next();
         TokenValidator tokenValidator = TokenValidator.builder().issuerConfig(tokenHolder.getIssuerConfig()).build();
         int authorization = ThreatClassificationConfig.Weights.DEFAULT_AUTHORIZATION;
-        HttpServer front = startWithValidator(gateway(null, ThreatClassificationConfig.builder()
-                .threshold(2 * authorization).build()), tokenValidator);
+        HttpServer front = serve(edge(gateway(null, ThreatClassificationConfig.builder()
+                .threshold(2 * authorization).build()), registry).tokenValidator(tokenValidator));
         Map<String, String> bearer = Map.of("Authorization", "Bearer " + tokenHolder.getRawToken(),
                 "Accept", "application/json");
 
@@ -336,8 +336,8 @@ class GatewayEdgeThreatClassificationTest {
     @DisplayName("a static-resource miss is not scored, while the same weight on a probe alerts at once")
     void staticResourceMissIsNotScored() throws Exception {
         int threshold = MALFORMED_THRESHOLD;
-        HttpServer front = start(gateway(null, ThreatClassificationConfig.builder().threshold(threshold)
-                .weights(ThreatClassificationConfig.Weights.builder().routing(threshold).build()).build()), registry);
+        HttpServer front = serve(edge(gateway(null, ThreatClassificationConfig.builder().threshold(threshold)
+                .weights(ThreatClassificationConfig.Weights.builder().routing(threshold).build()).build()), registry));
 
         for (String ambient : List.of("/favicon.ico", "/robots.txt", "/apple-touch-icon.png",
                 "/apple-touch-icon-precomposed.png", "/apple-touch-icon-180x180.png")) {
@@ -358,19 +358,11 @@ class GatewayEdgeThreatClassificationTest {
         return ConfigFixtures.gateway().enumerationDetection(detection).threatClassification(classification).build();
     }
 
-    private HttpServer start(GatewayConfig config, SimpleMeterRegistry meters) throws Exception {
-        return serve(EdgeFixtures.edge(vertx, virtualThreadExecutor)
+    private EdgeFixtures.Edge edge(GatewayConfig config, SimpleMeterRegistry meters) {
+        return EdgeFixtures.edge(vertx, virtualThreadExecutor)
                 .gatewayConfig(config)
                 .routes(scopedRoute())
-                .metrics(new SheriffMetrics(meters)));
-    }
-
-    private HttpServer startWithValidator(GatewayConfig config, TokenValidator tokenValidator) throws Exception {
-        return serve(EdgeFixtures.edge(vertx, virtualThreadExecutor)
-                .gatewayConfig(config)
-                .routes(scopedRoute())
-                .tokenValidator(tokenValidator)
-                .metrics(new SheriffMetrics(registry)));
+                .metrics(new SheriffMetrics(meters));
     }
 
     private HttpServer serve(EdgeFixtures.Edge edge) throws Exception {
