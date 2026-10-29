@@ -92,8 +92,11 @@ import org.junit.jupiter.api.Test;
  * {@code test.mtls.*} key it reads through {@code System.getProperty} — not listed here.
  * <p>
  * <strong>What it does not read.</strong> Configuration from the parents above the root
- * {@code pom.xml}, properties supplied on the command line, and {@code %regex[...]} patterns: includes
- * and excludes are read as Ant-style globs. On the tag side: method-level {@code @Tag} annotations,
+ * {@code pom.xml} and properties supplied on the command line. Includes and excludes are read as
+ * single Ant-style globs; a pattern written in surefire's richer syntax — {@code %regex[...]},
+ * {@code %ant[...]}, a comma-separated list, a {@code !} negation or a {@code #} method filter — would
+ * match nothing as a glob, so it fails the test naming the lane and the pattern rather than being read
+ * as "does not select". On the tag side: method-level {@code @Tag} annotations,
  * tags declared on implemented interfaces, and a superclass outside the module's test sources or
  * named through a wildcard import — the {@code extends} chain stops there.
  * <p>
@@ -141,6 +144,12 @@ class MtlsLaneSelectionContractTest {
 
     /** A {@code @Tag} inside a {@code @Tags} container, up to its '('. */
     private static final Pattern INNER_TAG = Pattern.compile("@(?:org\\.junit\\.jupiter\\.api\\.)?Tag\\s*\\(");
+
+    /**
+     * Surefire include/exclude syntax beyond a single Ant-style glob. {@link Lane#matches} would read
+     * such a pattern as a literal glob that matches nothing, so a lane carrying one is refused instead.
+     */
+    private static final Pattern UNREADABLE_PATTERN_SYNTAX = Pattern.compile("%regex\\[|%ant\\[|[,#]|^\\s*!");
 
     private static final Pattern NAMED_VALUE = Pattern.compile("^value\\s*=\\s*");
     private static final Pattern STRING_LITERAL = Pattern.compile("\"([^\"\\\\]*)\"");
@@ -215,6 +224,19 @@ class MtlsLaneSelectionContractTest {
                                 required, published).stream()
                                 .anyMatch(violation -> violation.contains("malformed/default") && violation.contains("docker &")),
                         "a lane with an unparseable groups expression was not refused naming the lane and expression"),
+                () -> assertTrue(specimenViolations(profile("regex",
+                                "<includes><include>%regex[.*MtlsHandshakeIT.*]</include></includes>", ""),
+                                required, published).stream()
+                                .anyMatch(violation -> violation.contains("regex/default")
+                                        && violation.contains("%regex[.*MtlsHandshakeIT.*]")),
+                        "a lane with a %regex include, which no glob reading can judge, was not refused naming the "
+                                + "lane and pattern"),
+                () -> assertTrue(specimenViolations(profile("listed",
+                                "<includes><include>**/Mtls*IT.java, **/Other*IT.java</include></includes>", ""),
+                                required, published).stream()
+                                .anyMatch(violation -> violation.contains("listed/default")
+                                        && violation.contains("**/Mtls*IT.java, **/Other*IT.java")),
+                        "a lane with a comma-separated include list was not refused naming the lane and pattern"),
                 () -> assertFalse(specimenViolations(profile("overridden", properties(wired),
                                 "<systemPropertyVariables combine.self=\"override\"><" + PORT_KEY + ">10444</" + PORT_KEY
                                         + "></systemPropertyVariables>"), required, published).isEmpty(),
@@ -291,8 +313,8 @@ class MtlsLaneSelectionContractTest {
             Set<String> published) {
         List<String> violations = new ArrayList<>();
         for (Lane lane : lanes) {
-            if (!lane.unreadableTagExpressions().isEmpty()) {
-                violations.add("lane " + lane.name() + " cannot be judged: " + lane.unreadableTagExpressions()
+            if (!lane.unreadable().isEmpty()) {
+                violations.add("lane " + lane.name() + " cannot be judged: " + lane.unreadable()
                         + ". This guard cannot tell whether the lane runs MtlsHandshakeIT, so it refuses the lane"
                         + " rather than reading it as one that does not");
                 continue;
@@ -589,22 +611,22 @@ class MtlsLaneSelectionContractTest {
      * @param groups                   the lane's {@code groups} tag expressions, one per comma-separated
      *                                 entry; empty selects every test
      * @param excludedGroups           the lane's {@code excludedGroups} tag expressions
-     * @param unreadableTagExpressions why an entry of either list could not be read, empty when every
-     *                                 entry parsed
+     * @param unreadable               why a tag expression or an include/exclude pattern could not be
+     *                                 read, empty when every one of them was
      * @param properties               the effective {@code systemPropertyVariables}
      */
     private record Lane(String name, List<String> includes, List<String> excludes, List<TagExpression> groups,
-    List<TagExpression> excludedGroups, List<String> unreadableTagExpressions, Map<String, String> properties) {
+    List<TagExpression> excludedGroups, List<String> unreadable, Map<String, String> properties) {
 
         /**
          * Whether the lane runs a test at the path carrying the tags. A test passes {@code groups} when
          * that list is empty or any of its expressions holds, and is excluded when any
          * {@code excludedGroups} expression holds — how the JUnit Platform provider reads a
-         * comma-separated list. A lane with an unreadable expression is treated as selecting the test,
-         * so it is checked rather than passed over; {@link #violations} refuses it first.
+         * comma-separated list. A lane with an unreadable expression or pattern is treated as selecting
+         * the test, so it is checked rather than passed over; {@link #violations} refuses it first.
          */
         boolean selects(String path, Set<String> tags) {
-            if (!unreadableTagExpressions.isEmpty()) {
+            if (!unreadable.isEmpty()) {
                 return true;
             }
             return includes.stream().anyMatch(pattern -> matches(pattern, path))
@@ -677,10 +699,25 @@ class MtlsLaneSelectionContractTest {
         child(effective, "systemPropertyVariables")
                 .ifPresent(variables -> variables.children().forEach(property -> properties.put(property.name(),
                         property.value())));
+        List<String> excludes = values(effective, "excludes");
         List<String> unreadable = new ArrayList<>();
-        return new Lane(name, includes.isEmpty() ? DEFAULT_INCLUDES : includes, values(effective, "excludes"),
+        refuseUnreadablePatterns("include", includes, unreadable);
+        refuseUnreadablePatterns("exclude", excludes, unreadable);
+        return new Lane(name, includes.isEmpty() ? DEFAULT_INCLUDES : includes, excludes,
                 tagExpressions(effective, "groups", unreadable), tagExpressions(effective, "excludedGroups", unreadable),
                 List.copyOf(unreadable), properties);
+    }
+
+    /**
+     * Records every include or exclude pattern written in surefire syntax beyond a single Ant-style
+     * glob, naming the kind and the pattern: read as a glob it would match nothing, which would turn a
+     * lane that runs the IT into one this guard passes over.
+     */
+    private static void refuseUnreadablePatterns(String kind, List<String> patterns, List<String> unreadable) {
+        patterns.stream()
+                .filter(pattern -> UNREADABLE_PATTERN_SYNTAX.matcher(pattern).find())
+                .forEach(pattern -> unreadable.add(kind + " pattern '" + pattern
+                        + "' uses surefire syntax beyond a single Ant-style glob, which this guard does not read"));
     }
 
     /**
