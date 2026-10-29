@@ -24,11 +24,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
+import java.io.UncheckedIOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,6 +38,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import javax.xml.XMLConstants;
@@ -71,14 +74,28 @@ import org.junit.jupiter.api.Test;
  * way Maven merges it: the root {@code pom.xml}'s {@code pluginManagement} entry, the module's own
  * build, the profile, and the execution, each dominant over the one before, executions matched by id
  * (an execution without one is {@code default}). A lane selects the IT when an include matches its
- * path, no exclude does, and its tags pass the lane's {@code groups} and {@code excludedGroups}. Every
+ * path, no exclude does, and its tags pass the lane's {@code groups} and {@code excludedGroups}. Both
+ * are read the way failsafe's JUnit Platform provider reads them: a comma-separated list of JUnit tag
+ * expressions, the IT passing {@code groups} when the list is empty or any entry holds, and being
+ * excluded when any {@code excludedGroups} entry holds. An entry is a plain tag name or combines them
+ * with {@code !} (not), {@code &} (and) and {@code |} (or), in that precedence, with parentheses and
+ * the {@code any()} / {@code none()} keywords. An entry this guard cannot parse fails the test naming
+ * the lane and the expression — it is never read as "does not select". The IT's tags are read from
+ * source the way JUnit resolves them: its own class-level {@code @Tag} and {@code @Tags} annotations
+ * plus those of every superclass reached through its {@code extends} chain in the module's test
+ * sources ({@code @Tag} is {@code @Inherited}), each argument a string literal or a {@code String}
+ * constant of the annotated file, its superclasses or the class a qualified reference names. An
+ * argument the reader cannot resolve to a literal fails the test naming the file and the
+ * annotation. Every
  * lane that selects it declares every required property, and its {@code test.mtls.port} is a host
  * port the compose service publishes. The required properties are derived from the IT's source — every
  * {@code test.mtls.*} key it reads through {@code System.getProperty} — not listed here.
  * <p>
  * <strong>What it does not read.</strong> Configuration from the parents above the root
  * {@code pom.xml}, properties supplied on the command line, and {@code %regex[...]} patterns: includes
- * and excludes are read as Ant-style globs.
+ * and excludes are read as Ant-style globs. On the tag side: method-level {@code @Tag} annotations,
+ * tags declared on implemented interfaces, and a superclass outside the module's test sources or
+ * named through a wildcard import — the {@code extends} chain stops there.
  * <p>
  * <strong>Controls</strong> (ADR-0030). The population is asserted non-empty before the rule runs: the
  * IT reads at least one property and among them the port, at least one lane selects the IT today and
@@ -95,6 +112,9 @@ class MtlsLaneSelectionContractTest {
     /** The working directory the runner started in — the module root under surefire. */
     private static final Path MODULE = Path.of(System.getProperty("user.dir"));
 
+    /** The module's test source root, which the IT and its superclasses are read from. */
+    private static final Path TEST_SOURCES = MODULE.resolve("src/test/java");
+
     /** The IT's path relative to the test source root, which is what failsafe patterns match. */
     private static final String IT_PATH = "de/cuioss/sheriff/gateway/integration/MtlsHandshakeIT.java";
 
@@ -110,17 +130,35 @@ class MtlsLaneSelectionContractTest {
 
     private static final Pattern REQUIRED_PROPERTY =
             Pattern.compile("System\\.getProperty\\(\\s*\"(test\\.mtls\\.[^\"]+)\"");
-    private static final Pattern TOP_LEVEL_TAG = Pattern.compile("(?m)^@Tag\\(\"([^\"]+)\"\\)");
+
+    /** A top-level class declaration: group 1 the class name, group 2 the type it extends, if any. */
+    private static final Pattern CLASS_DECLARATION = Pattern.compile(
+            "(?m)^(?:(?:public|protected|private|abstract|final|sealed|non-sealed|static|strictfp)\\s+)*"
+                    + "class\\s+(\\w+)(?:\\s*<[^{]*?>)?(?:\\s+extends\\s+([\\w.]+))?");
+
+    /** A class-level {@code @Tag} or {@code @Tags} annotation (group 1), written unindented, up to its '('. */
+    private static final Pattern TAG_ANNOTATION = Pattern.compile("(?m)^@(?:org\\.junit\\.jupiter\\.api\\.)?(Tags?)\\s*\\(");
+
+    /** A {@code @Tag} inside a {@code @Tags} container, up to its '('. */
+    private static final Pattern INNER_TAG = Pattern.compile("@(?:org\\.junit\\.jupiter\\.api\\.)?Tag\\s*\\(");
+
+    private static final Pattern NAMED_VALUE = Pattern.compile("^value\\s*=\\s*");
+    private static final Pattern STRING_LITERAL = Pattern.compile("\"([^\"\\\\]*)\"");
+    private static final Pattern CONSTANT_REFERENCE = Pattern.compile("(?:(\\w+)\\.)?([A-Za-z_$][\\w$]*)");
 
     // --- the real pom.xml files, the real IT and the real compose file ------------------------------
 
     @Test
     @DisplayName("every lane that selects MtlsHandshakeIT declares every test.mtls property and the published mTLS port")
     void lanesSelectingTheItWireEveryMtlsProperty() throws Exception {
-        String itSource = Files.readString(existing(MODULE.resolve("src/test/java").resolve(IT_PATH)));
+        String itSource = Files.readString(existing(TEST_SOURCES.resolve(IT_PATH)));
         Set<String> required = requiredProperties(itSource);
-        Set<String> tags = tags(itSource);
+        TagReading tagReading = effectiveTags(new Source(IT_PATH, itSource),
+                MtlsLaneSelectionContractTest::testTreeSource);
+        Set<String> tags = tagReading.tags();
         Set<String> published = publishedPorts();
+        assertEquals(List.of(), tagReading.unresolved(),
+                "a @Tag on MtlsHandshakeIT or a superclass could not be read to a literal, so its lanes cannot be judged");
         List<Lane> lanes = lanes(parse(Files.readString(existing(MODULE.resolve("pom.xml")))),
                 parse(Files.readString(existing(MODULE.getParent().resolve("pom.xml")))));
 
@@ -164,7 +202,79 @@ class MtlsLaneSelectionContractTest {
                 () -> assertFalse(specimenViolations(profile("primary", "", properties(primaryPort)), required,
                         published).isEmpty(), "a lane selecting the IT with the primary port was accepted"),
                 () -> assertFalse(specimenViolations("<build><plugins>" + failsafe("", "") + "</plugins></build>",
-                        required, published).isEmpty(), "a bare lane in the module's own build was accepted"));
+                        required, published).isEmpty(), "a bare lane in the module's own build was accepted"),
+                () -> assertFalse(specimenViolations(profile("negated", "<groups>!sleep-bound</groups>", ""),
+                        required, published).isEmpty(),
+                        "a lane whose groups expression !sleep-bound selects the untagged IT was accepted"),
+                () -> assertEquals(List.of(), specimenViolations(profile("unsatisfied",
+                        "<groups>sleep-bound &amp; docker</groups>", ""), required, published, Set.of("docker")),
+                        "a lane whose groups expression the IT's tags do not satisfy was rejected"),
+                () -> assertEquals(List.of(), specimenViolations(profile("tag-excluded",
+                        "<excludedGroups>docker | sleep-bound</excludedGroups>", ""), required, published,
+                        Set.of("docker")), "a lane whose excludedGroups expression matches the IT's tag was rejected"),
+                () -> assertTrue(specimenViolations(profile("malformed", "<groups>docker &amp;</groups>", ""),
+                        required, published).stream()
+                        .anyMatch(violation -> violation.contains("malformed/default") && violation.contains("docker &")),
+                        "a lane with an unparseable groups expression was not refused naming the lane and expression"),
+                () -> assertFalse(specimenViolations(profile("overridden", properties(wired),
+                        "<systemPropertyVariables combine.self=\"override\"><" + PORT_KEY + ">10444</" + PORT_KEY
+                                + "></systemPropertyVariables>"), required, published).isEmpty(),
+                        "a lane whose execution overrides the inherited properties down to the port was accepted"),
+                () -> assertEquals(List.of(), specimenViolations(profile("appended",
+                        "<excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>",
+                        "<excludes combine.children=\"append\"><exclude>**/Unrelated.java</exclude></excludes>"),
+                        required, published), "a lane whose appended excludes keep the IT's exclusion was rejected"));
+    }
+
+    @Test
+    @DisplayName("the tag reader resolves inherited, constant-valued and contained @Tag annotations, and refuses others")
+    void tagReaderResolvesTagsTheWayJUnitDoes() throws Exception {
+        Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
+
+        TagReading inherited = specimenTags("""
+                class SpecimenIT extends SpecimenBase {
+                }
+                """, Map.of("SpecimenBase", """
+                @Tag("docker")
+                public abstract class SpecimenBase {
+                }
+                """));
+        TagReading constant = specimenTags("""
+                @Tag(LANE)
+                class SpecimenIT extends SpecimenBase {
+                    static final String LANE = "slow";
+                }
+                """, Map.of("SpecimenBase", """
+                @Tag(SHARED)
+                public abstract class SpecimenBase {
+                    protected static final String SHARED = "shared";
+                }
+                """));
+        TagReading contained = specimenTags("""
+                @Tags({@Tag("alpha"), @Tag("beta")})
+                class SpecimenIT {
+                }
+                """, Map.of());
+        TagReading unresolvable = specimenTags("""
+                @Tag(MISSING)
+                class SpecimenIT {
+                }
+                """, Map.of());
+
+        assertAll(
+                () -> assertEquals(new TagReading(Set.of("docker"), List.of()), inherited,
+                        "a tag declared on the superclass applies to the IT, as JUnit's @Tag is @Inherited"),
+                () -> assertFalse(specimenViolations(profile("docker-lane", "<groups>docker</groups>", ""), required,
+                        Set.of("10444"), inherited.tags()).isEmpty(),
+                        "a lane selecting the inherited tag with no properties was accepted"),
+                () -> assertEquals(new TagReading(Set.of("slow", "shared"), List.of()), constant,
+                        "a @Tag naming a String constant of the file or of its superclass carries that constant's value"),
+                () -> assertEquals(new TagReading(Set.of("alpha", "beta"), List.of()), contained,
+                        "every @Tag of a @Tags container applies"),
+                () -> assertTrue(unresolvable.unresolved().stream()
+                        .anyMatch(problem -> problem.contains("SpecimenIT.java") && problem.contains("@Tag(MISSING)")),
+                        () -> "an unresolvable @Tag argument was not refused naming the file and the annotation: "
+                                + unresolvable));
     }
 
     // --- the rule -----------------------------------------------------------------------------------
@@ -182,6 +292,12 @@ class MtlsLaneSelectionContractTest {
             Set<String> published) {
         List<String> violations = new ArrayList<>();
         for (Lane lane : lanes) {
+            if (!lane.unreadableTagExpressions().isEmpty()) {
+                violations.add("lane " + lane.name() + " cannot be judged: " + lane.unreadableTagExpressions()
+                        + ". This guard cannot tell whether the lane runs MtlsHandshakeIT, so it refuses the lane"
+                        + " rather than reading it as one that does not");
+                continue;
+            }
             if (!lane.selects(IT_PATH, tags)) {
                 continue;
             }
@@ -207,10 +323,15 @@ class MtlsLaneSelectionContractTest {
 
     private static List<String> specimenViolations(String moduleBody, Set<String> required, Set<String> published)
             throws ParserConfigurationException, SAXException, IOException {
+        return specimenViolations(moduleBody, required, published, Set.of());
+    }
+
+    private static List<String> specimenViolations(String moduleBody, Set<String> required, Set<String> published,
+            Set<String> tags) throws ParserConfigurationException, SAXException, IOException {
         String root = "<project><build><pluginManagement><plugins>"
                 + failsafe("<includes><include>**/*IT.java</include></includes>", "")
                 + "</plugins></pluginManagement></build></project>";
-        return violations(lanes(parse("<project>" + moduleBody + "</project>"), parse(root)), required, Set.of(),
+        return violations(lanes(parse("<project>" + moduleBody + "</project>"), parse(root)), required, tags,
                 published);
     }
 
@@ -222,10 +343,204 @@ class MtlsLaneSelectionContractTest {
         return keys;
     }
 
-    private static Set<String> tags(String itSource) {
+    /**
+     * The tags JUnit gives a test class, read from source: the class's own {@code @Tag} and
+     * {@code @Tags} annotations plus those of every superclass reached through its {@code extends}
+     * chain, since {@code @Tag} is {@code @Inherited}. The chain is followed through the module's test
+     * sources and stops at a type the lookup does not find there. A {@code @Tag} argument may be a
+     * string literal or a {@code String} constant, found in the annotated file, a superclass of it, or
+     * the class a qualified reference names; anything else is reported in
+     * {@link TagReading#unresolved()}, never skipped.
+     *
+     * @param it     the test class's source
+     * @param lookup finds a type's source by the simple name another source uses for it
+     * @return the effective tags and the annotations that could not be read
+     */
+    private static TagReading effectiveTags(Source it, SourceLookup lookup) {
+        List<Source> chain = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        Optional<Source> current = Optional.of(it);
+        while (current.isPresent() && visited.add(current.get().path())) {
+            Source source = current.get();
+            chain.add(source);
+            Matcher declaration = CLASS_DECLARATION.matcher(source.text());
+            current = declaration.find() && declaration.group(2) != null
+                    ? lookup.find(source, simpleName(declaration.group(2))) : Optional.empty();
+        }
         Set<String> tags = new TreeSet<>();
-        TOP_LEVEL_TAG.matcher(itSource).results().forEach(match -> tags.add(match.group(1)));
-        return tags;
+        List<String> unresolved = new ArrayList<>();
+        for (int i = 0; i < chain.size(); i++) {
+            readTagAnnotations(chain.subList(i, chain.size()), lookup, tags, unresolved);
+        }
+        return new TagReading(tags, List.copyOf(unresolved));
+    }
+
+    /**
+     * Reads the class-level {@code @Tag} / {@code @Tags} annotations of the first source of
+     * {@code scope}; the rest of {@code scope} is its superclass chain, searched for constants.
+     */
+    private static void readTagAnnotations(List<Source> scope, SourceLookup lookup, Set<String> tags,
+            List<String> unresolved) {
+        Source source = scope.getFirst();
+        Matcher declaration = CLASS_DECLARATION.matcher(source.text());
+        if (!declaration.find()) {
+            unresolved.add(source.path() + ": no class declaration to read @Tag annotations from");
+            return;
+        }
+        String header = source.text().substring(0, declaration.start());
+        Matcher annotation = TAG_ANNOTATION.matcher(header);
+        while (annotation.find()) {
+            Optional<String> argument = annotationArgument(header, annotation.end());
+            if (argument.isEmpty()) {
+                unresolved.add(source.path() + ": " + annotation.group() + " is never closed");
+                continue;
+            }
+            String text = annotation.group() + argument.get() + ")";
+            if ("Tags".equals(annotation.group(1))) {
+                Matcher inner = INNER_TAG.matcher(argument.get());
+                while (inner.find()) {
+                    Optional<String> innerArgument = annotationArgument(argument.get(), inner.end());
+                    resolveTag(scope, lookup, innerArgument.map(value -> inner.group() + value + ")").orElse(text),
+                            innerArgument.orElse(""), tags, unresolved);
+                }
+            } else {
+                resolveTag(scope, lookup, text, argument.get(), tags, unresolved);
+            }
+        }
+    }
+
+    /** Resolves one {@code @Tag} argument to its literal, or records why it cannot be. */
+    private static void resolveTag(List<Source> scope, SourceLookup lookup, String annotation, String argument,
+            Set<String> tags, List<String> unresolved) {
+        Source source = scope.getFirst();
+        String value = NAMED_VALUE.matcher(argument.strip()).replaceFirst("");
+        Matcher literal = STRING_LITERAL.matcher(value);
+        if (literal.matches()) {
+            tags.add(literal.group(1));
+            return;
+        }
+        Matcher reference = CONSTANT_REFERENCE.matcher(value);
+        if (!reference.matches()) {
+            unresolved.add(source.path() + ": " + annotation + " is neither a string literal nor a String constant");
+            return;
+        }
+        String owner = reference.group(1);
+        String name = reference.group(2);
+        Stream<Source> candidates = owner == null ? scope.stream()
+                : Stream.concat(scope.stream().filter(candidate -> owner.equals(className(candidate))),
+                        lookup.find(source, owner).stream());
+        Optional<String> constant = candidates.map(candidate -> constantIn(candidate, name))
+                .flatMap(Optional::stream)
+                .findFirst();
+        constant.ifPresentOrElse(tags::add, () -> unresolved.add(source.path() + ": " + annotation
+                + " names no String constant initialised with a literal in this file, its superclasses or "
+                + (owner == null ? "any other source" : owner)));
+    }
+
+    private static Optional<String> constantIn(Source source, String name) {
+        Matcher constant = Pattern.compile("\\bString\\s+" + Pattern.quote(name) + "\\s*=\\s*\"([^\"\\\\]*)\"\\s*;")
+                .matcher(source.text());
+        return constant.find() ? Optional.of(constant.group(1)) : Optional.empty();
+    }
+
+    private static String className(Source source) {
+        Matcher declaration = CLASS_DECLARATION.matcher(source.text());
+        return declaration.find() ? declaration.group(1) : "";
+    }
+
+    private static String simpleName(String qualified) {
+        return qualified.substring(qualified.lastIndexOf('.') + 1);
+    }
+
+    /**
+     * The argument text of an annotation, from just after its opening parenthesis to the one that
+     * closes it, skipping quoted text and nested parentheses.
+     *
+     * @return the argument, or empty when it never closes
+     */
+    private static Optional<String> annotationArgument(String text, int from) {
+        int depth = 0;
+        char quote = 0;
+        for (int i = from; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quote != 0) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == quote) {
+                    quote = 0;
+                }
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                if (depth == 0) {
+                    return Optional.of(text.substring(from, i));
+                }
+                depth--;
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** Reads a specimen IT through {@link #effectiveTags}, its superclasses found among {@code others} by name. */
+    private static TagReading specimenTags(String itSource, Map<String, String> others) {
+        return effectiveTags(new Source("SpecimenIT.java", itSource),
+                (from, simpleName) -> Optional.ofNullable(others.get(simpleName))
+                        .map(text -> new Source(simpleName + ".java", text)));
+    }
+
+    /**
+     * Finds the source of a type a test source names by its simple name: through an explicit import
+     * of it, else in the naming file's own package. Empty when the file is not in the module's test
+     * tree, which is where reading a superclass chain stops.
+     */
+    private static Optional<Source> testTreeSource(Source from, String simpleName) {
+        Matcher imported = Pattern.compile("(?m)^import\\s+([\\w.]+)\\." + Pattern.quote(simpleName) + "\\s*;")
+                .matcher(from.text());
+        String directory = imported.find() ? imported.group(1).replace('.', '/')
+                : from.path().substring(0, Math.max(0, from.path().lastIndexOf('/')));
+        String path = directory.isEmpty() ? simpleName + ".java" : directory + "/" + simpleName + ".java";
+        Path file = TEST_SOURCES.resolve(path);
+        if (!Files.isRegularFile(file)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(new Source(path, Files.readString(file)));
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read the test source " + file, e);
+        }
+    }
+
+    /**
+     * A test source file.
+     *
+     * @param path the file's path relative to the test source root
+     * @param text the file's text
+     */
+    private record Source(String path, String text) {
+    }
+
+    /** Finds the source of a type named, by its simple name, in another source. */
+    @FunctionalInterface
+    private interface SourceLookup {
+
+        /**
+         * @param from       the source naming the type
+         * @param simpleName the type's simple name
+         * @return the type's source, empty when it is outside the module's test tree
+         */
+        Optional<Source> find(Source from, String simpleName);
+    }
+
+    /**
+     * The tags a test class carries.
+     *
+     * @param tags       the effective tags
+     * @param unresolved one message per annotation that could not be read to a literal, naming its
+     *                   file and the annotation
+     */
+    private record TagReading(Set<String> tags, List<String> unresolved) {
     }
 
     /**
@@ -269,21 +584,34 @@ class MtlsLaneSelectionContractTest {
     /**
      * One failsafe execution under one profile, with its effective configuration.
      *
-     * @param name           {@code profile/execution}
-     * @param includes       the effective include patterns
-     * @param excludes       the effective exclude patterns
-     * @param groups         the tags the lane selects, empty for all
-     * @param excludedGroups the tags the lane excludes
-     * @param properties     the effective {@code systemPropertyVariables}
+     * @param name                     {@code profile/execution}
+     * @param includes                 the effective include patterns
+     * @param excludes                 the effective exclude patterns
+     * @param groups                   the lane's {@code groups} tag expressions, one per comma-separated
+     *                                 entry; empty selects every test
+     * @param excludedGroups           the lane's {@code excludedGroups} tag expressions
+     * @param unreadableTagExpressions why an entry of either list could not be read, empty when every
+     *                                 entry parsed
+     * @param properties               the effective {@code systemPropertyVariables}
      */
-    private record Lane(String name, List<String> includes, List<String> excludes, Set<String> groups,
-    Set<String> excludedGroups, Map<String, String> properties) {
+    private record Lane(String name, List<String> includes, List<String> excludes, List<TagExpression> groups,
+    List<TagExpression> excludedGroups, List<String> unreadableTagExpressions, Map<String, String> properties) {
 
+        /**
+         * Whether the lane runs a test at the path carrying the tags. A test passes {@code groups} when
+         * that list is empty or any of its expressions holds, and is excluded when any
+         * {@code excludedGroups} expression holds — how the JUnit Platform provider reads a
+         * comma-separated list. A lane with an unreadable expression is treated as selecting the test,
+         * so it is checked rather than passed over; {@link #violations} refuses it first.
+         */
         boolean selects(String path, Set<String> tags) {
+            if (!unreadableTagExpressions.isEmpty()) {
+                return true;
+            }
             return includes.stream().anyMatch(pattern -> matches(pattern, path))
                     && excludes.stream().noneMatch(pattern -> matches(pattern, path))
-                    && (groups.isEmpty() || tags.stream().anyMatch(groups::contains))
-                    && tags.stream().noneMatch(excludedGroups::contains);
+                    && (groups.isEmpty() || groups.stream().anyMatch(expression -> expression.test(tags)))
+                    && excludedGroups.stream().noneMatch(expression -> expression.test(tags));
         }
 
         private static boolean matches(String pattern, String path) {
@@ -350,8 +678,27 @@ class MtlsLaneSelectionContractTest {
         child(effective, "systemPropertyVariables")
                 .ifPresent(variables -> variables.children().forEach(property -> properties.put(property.name(),
                         property.value())));
+        List<String> unreadable = new ArrayList<>();
         return new Lane(name, includes.isEmpty() ? DEFAULT_INCLUDES : includes, values(effective, "excludes"),
-                commaSeparated(effective, "groups"), commaSeparated(effective, "excludedGroups"), properties);
+                tagExpressions(effective, "groups", unreadable), tagExpressions(effective, "excludedGroups", unreadable),
+                List.copyOf(unreadable), properties);
+    }
+
+    /**
+     * The tag expressions of a {@code groups} or {@code excludedGroups} element: one per
+     * comma-separated entry. An entry that does not parse is recorded in {@code unreadable}, naming the
+     * element and the entry, and contributes no expression.
+     */
+    private static List<TagExpression> tagExpressions(Conf effective, String name, List<String> unreadable) {
+        List<TagExpression> expressions = new ArrayList<>();
+        for (String entry : commaSeparated(effective, name)) {
+            try {
+                expressions.add(TagExpression.parse(entry));
+            } catch (IllegalArgumentException e) {
+                unreadable.add(name + " expression '" + entry + "' is not a JUnit tag expression: " + e.getMessage());
+            }
+        }
+        return expressions;
     }
 
     private static List<String> values(Conf effective, String list) {
@@ -359,16 +706,140 @@ class MtlsLaneSelectionContractTest {
                 .orElse(List.of());
     }
 
-    private static Set<String> commaSeparated(Conf effective, String name) {
-        Set<String> tags = new TreeSet<>();
+    private static List<String> commaSeparated(Conf effective, String name) {
+        List<String> entries = new ArrayList<>();
         child(effective, name).ifPresent(conf -> {
-            for (String tag : conf.value().split(",")) {
-                if (!tag.isBlank()) {
-                    tags.add(tag.strip());
+            for (String entry : conf.value().split(",")) {
+                if (!entry.isBlank()) {
+                    entries.add(entry.strip());
                 }
             }
         });
-        return tags;
+        return entries;
+    }
+
+    // --- JUnit tag expressions ----------------------------------------------------------------------
+
+    /**
+     * A JUnit Platform tag expression, evaluated against a test's tags: plain tag names, {@code !}
+     * (not), {@code &} (and), {@code |} (or) with that precedence, parentheses, and the
+     * {@code any()} and {@code none()} keywords (the test has some tag / has none). Kept here rather
+     * than borrowed from the JUnit launcher, which this module does not otherwise depend on.
+     */
+    @FunctionalInterface
+    private interface TagExpression {
+
+        boolean test(Set<String> tags);
+
+        /**
+         * @param expression the expression text
+         * @return the parsed expression
+         * @throws IllegalArgumentException naming the problem when the text is not a tag expression
+         */
+        static TagExpression parse(String expression) {
+            TagExpressionParser parser = new TagExpressionParser(expression);
+            TagExpression parsed = parser.or();
+            parser.expectEnd();
+            return parsed;
+        }
+    }
+
+    /** Recursive-descent parser for {@link TagExpression}: or := and ('|' and)*, and := not ('&' not)*. */
+    private static final class TagExpressionParser {
+
+        private static final String OPERATORS = "()&|!";
+
+        private final List<String> tokens = new ArrayList<>();
+        private int position;
+
+        TagExpressionParser(String expression) {
+            int i = 0;
+            while (i < expression.length()) {
+                char c = expression.charAt(i);
+                if (Character.isWhitespace(c)) {
+                    i++;
+                } else if (OPERATORS.indexOf(c) >= 0) {
+                    tokens.add(String.valueOf(c));
+                    i++;
+                } else {
+                    int start = i;
+                    while (i < expression.length() && !Character.isWhitespace(expression.charAt(i))
+                            && OPERATORS.indexOf(expression.charAt(i)) < 0) {
+                        i++;
+                    }
+                    tokens.add(expression.substring(start, i));
+                }
+            }
+        }
+
+        TagExpression or() {
+            TagExpression left = and();
+            while (accept("|")) {
+                TagExpression first = left;
+                TagExpression second = and();
+                left = tags -> first.test(tags) || second.test(tags);
+            }
+            return left;
+        }
+
+        private TagExpression and() {
+            TagExpression left = not();
+            while (accept("&")) {
+                TagExpression first = left;
+                TagExpression second = not();
+                left = tags -> first.test(tags) && second.test(tags);
+            }
+            return left;
+        }
+
+        private TagExpression not() {
+            if (accept("!")) {
+                TagExpression operand = not();
+                return tags -> !operand.test(tags);
+            }
+            return primary();
+        }
+
+        private TagExpression primary() {
+            if (position >= tokens.size()) {
+                throw new IllegalArgumentException("an operand is missing at the end");
+            }
+            String token = tokens.get(position++);
+            if ("(".equals(token)) {
+                TagExpression inner = or();
+                if (!accept(")")) {
+                    throw new IllegalArgumentException("a '(' is never closed");
+                }
+                return inner;
+            }
+            if (OPERATORS.contains(token)) {
+                throw new IllegalArgumentException("'" + token + "' stands where an operand is expected");
+            }
+            if (("any".equals(token) || "none".equals(token)) && accept("(")) {
+                if (!accept(")")) {
+                    throw new IllegalArgumentException("'" + token + "(' is not closed by ')'");
+                }
+                return "any".equals(token) ? tags -> !tags.isEmpty() : Set::isEmpty;
+            }
+            return tags -> tags.contains(token);
+        }
+
+        private boolean accept(String token) {
+            if (position < tokens.size() && tokens.get(position).equals(token)) {
+                position++;
+                return true;
+            }
+            return false;
+        }
+
+        void expectEnd() {
+            if (tokens.isEmpty()) {
+                throw new IllegalArgumentException("the expression is empty");
+            }
+            if (position < tokens.size()) {
+                throw new IllegalArgumentException("'" + tokens.get(position) + "' follows a complete expression");
+            }
+        }
     }
 
     private static Optional<Conf> child(Conf conf, String name) {
