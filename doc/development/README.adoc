@@ -339,8 +339,12 @@ The epic ledger routed three open defects to the decision; ADR-0075 gives the re
 
 * *(6) The detection gap for cumulative exhaustion -- adopted, narrowed.* The gating detector already
   existed. What was missing was a demonstrated failure of it, which the negative controls supply.
-* *(7) The k6 scripts as an unguarded consumer of the shared gateway configuration -- declined.* It is
-  a consumer-drift concern of the benchmark lane, not a resource-lifecycle one.
+* *(7) The k6 scripts as an unguarded consumer of the shared gateway configuration -- declined, since
+  guarded.* ADR-0075 declined it as a consumer-drift concern of the benchmark lane, not a
+  resource-lifecycle one. The consumer-drift class is now guarded in the gating surefire lane by
+  `BenchmarkScriptConfigContractTest`, which binds every k6 benchmark script to the shared gateway
+  configuration keys it depends on, so a key changed without its script fails the build and names
+  that script.
 * *(9) `K6BenchmarkLogMessages` outside the reach of `LogMessagesCatalogueTest` -- declined.* The
   guard's reach beyond the `api-sheriff` module is a catalogue-completeness defect class in a
   different module.
