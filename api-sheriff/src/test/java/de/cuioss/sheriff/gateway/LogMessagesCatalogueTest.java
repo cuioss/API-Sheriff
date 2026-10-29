@@ -105,6 +105,8 @@ class LogMessagesCatalogueTest {
     /** A {@code .identifier(..)} call; group 1 the whole argument, surrounding whitespace included. */
     private static final Pattern IDENTIFIER_CALL = Pattern.compile("\\.\\s*identifier\\s*\\(([^()]*)\\)");
     private static final Pattern INTEGER_LITERAL = Pattern.compile("\\d+");
+    /** A multi-digit integer literal with a leading zero, which Java reads as octal. */
+    private static final Pattern LEADING_ZERO_LITERAL = Pattern.compile("0\\d+");
 
     /**
      * The identifier band each level holder owns, as documented on every catalogue. A nested holder
@@ -400,6 +402,33 @@ class LogMessagesCatalogueTest {
                     thrown::getMessage);
         }
 
+        @Test
+        @DisplayName("Should fail on a leading-zero identifier, which Java reads as octal, naming the module, catalogue and literal")
+        void shouldRejectALeadingZeroIdentifier() {
+            String source = specimen(holder("INFO", recordDeclaration("OCTAL", "PREFIX", "010")));
+
+            var thrown = assertThrows(IllegalArgumentException.class, () -> readCatalogue(MODULE, FILE, source));
+
+            assertAll(
+                    () -> assertTrue(thrown.getMessage().contains(MODULE + ":" + FILE), thrown::getMessage),
+                    () -> assertTrue(thrown.getMessage().contains("OCTAL"), thrown::getMessage),
+                    () -> assertTrue(thrown.getMessage().contains("'010'"), thrown::getMessage));
+        }
+
+        @Test
+        @DisplayName("Should read a single zero and a plain decimal identifier as the compiler does")
+        void shouldReadZeroAndPlainDecimalIdentifiers() {
+            String source = specimen(recordDeclaration("ZERO", "PREFIX", "0")
+                    + holder("INFO", recordDeclaration("TEN", "PREFIX", "10")));
+
+            List<Catalogued> records = readCatalogue(MODULE, FILE, source);
+
+            assertEquals(List.of(
+                            new Catalogued(MODULE, "SpecimenLogMessages", "", "ZERO", "Specimen", 0),
+                            new Catalogued(MODULE, "SpecimenLogMessages", "INFO", "TEN", "Specimen", 10)),
+                    records, "a single 0 and a decimal without a leading zero are read as the compiler reads them");
+        }
+
         private static String specimen(String members) {
             return """
                     package specimen;
@@ -567,7 +596,9 @@ class LogMessagesCatalogueTest {
      * @throws IllegalArgumentException naming the file, and the field where there is one, when a
      *                                  builder call is not in the supported form, a prefix is not a
      *                                  string literal or a constant holding one, an identifier is not
-     *                                  an integer literal, or a record sits outside a level holder
+     *                                  a decimal integer literal (one with a leading zero, which Java
+     *                                  reads as octal, is refused — see {@link #resolveIdentifier}), or
+     *                                  a record sits outside a level holder
      */
     private static List<Catalogued> readCatalogue(String module, String fileName, String source) {
         String file = module + ":" + fileName;
@@ -625,10 +656,28 @@ class LogMessagesCatalogueTest {
                 + "' resolves to no string literal");
     }
 
+    /**
+     * Reads an {@code .identifier(..)} argument as the compiler does, for the one form the reader
+     * supports: a decimal integer literal, that is a single {@code 0} or digits without a leading zero.
+     * A multi-digit literal with a leading zero is octal in Java ({@code 010} compiles to 8), so it is
+     * refused rather than read as a decimal or parsed as octal — the reader stays strict, and a record it
+     * would number differently from the compiler could collide at run time without failing this test.
+     *
+     * @param argument the argument text, stripped
+     * @param where    the file and field, for the failure message
+     * @return the identifier
+     * @throws IllegalArgumentException naming the file, the field and the literal when the argument is
+     *                                  not an integer literal or has a leading zero
+     */
     private static int resolveIdentifier(String argument, String where) {
         if (!INTEGER_LITERAL.matcher(argument).matches()) {
             throw new IllegalArgumentException(where + ": identifier argument '"
                     + argument.replace(LITERAL_MARK, '"') + "' is not an integer literal");
+        }
+        if (LEADING_ZERO_LITERAL.matcher(argument).matches()) {
+            throw new IllegalArgumentException(where + ": identifier argument '" + argument + "' has a leading zero,"
+                    + " so Java reads it as an octal literal; this reader reads decimal literals only — write the"
+                    + " identifier in decimal");
         }
         return Integer.parseInt(argument);
     }
