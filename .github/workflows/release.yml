@@ -129,7 +129,7 @@ jobs:
       && (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
     permissions:
       contents: write
-    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
+    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -253,7 +253,7 @@ jobs:
 
       - name: Read the released version
         id: config
-        uses: cuioss/cuioss-organization/.github/actions/read-project-config@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
         with:
           config-path: .release-config/.github/project.yml
 
@@ -886,7 +886,7 @@ jobs:
 
       - name: Read the released version
         id: config
-        uses: cuioss/cuioss-organization/.github/actions/read-project-config@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
         with:
           config-path: .release-config/.github/project.yml
 
