@@ -19,10 +19,11 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.StringReader;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -57,8 +58,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Pins that every failsafe lane which runs {@code MtlsHandshakeIT} hands it every {@code test.mtls.*}
- * system property it reads, and that its {@code test.mtls.port} names a host port the
- * {@value #MTLS_SERVICE} compose service publishes.
+ * system property it reads, and that its {@code test.mtls.port} names the host port the
+ * {@value #MTLS_SERVICE} compose service publishes for its TLS test listener.
  * <p>
  * <strong>Why this test exists.</strong> {@code MtlsHandshakeIT} falls back to defaults that point at
  * a <em>different</em> instance than the one it names: without {@code test.mtls.port} it dials the
@@ -99,8 +100,14 @@ import org.junit.jupiter.api.Test;
  * constant of the annotated file, its superclasses or the class a qualified reference names. An
  * argument the reader cannot resolve to a literal fails the test naming the file and the
  * annotation. Every
- * lane that selects it declares every required property, and its {@code test.mtls.port} is a host
- * port the compose service publishes. The required properties are derived from the IT's source — every
+ * lane that selects it declares every required property, and its {@code test.mtls.port} is the host
+ * port the compose service publishes for its TLS test listener. That port is read from the module's
+ * {@code docker-compose.yml}: of the service's port mappings, the one whose container port is the
+ * service's management port — {@code QUARKUS_MANAGEMENT_PORT} in its environment, else Quarkus' default
+ * {@value #QUARKUS_DEFAULT_MANAGEMENT_PORT} — is set aside, and the test listener is the one mapping that
+ * remains; comments beside a mapping are not read. A service whose mappings leave no mapping, or more
+ * than one, or one without a fixed host port, fails the test naming the service and every mapping, rather
+ * than every published port being accepted. The required properties are derived from the IT's source — every
  * {@code test.mtls.*} key it reads through {@code System.getProperty} — not listed here. Before a
  * {@code test.mtls.*} value is judged, every {@code ${...}} reference in it is resolved, repeatedly
  * through the values it names, against {@code ${project.basedir}} / {@code ${basedir}} (the module
@@ -139,8 +146,11 @@ import org.junit.jupiter.api.Test;
  * outside the evaluated form (among them a directory after the leading {@code **}{@code /}), a lane
  * selecting the IT through {@code **}{@code /MtlsHandshakeIT.java}, a lane the root's {@code plugins} or a
  * root profile passes down, a port
- * reference that resolves to an unpublished port, cannot be resolved or is cyclic — and ones it must
- * accept. The specimens are strings in this file only.
+ * reference that resolves to an unpublished port, cannot be resolved or is cyclic, a lane whose port is
+ * the mTLS service's management host port — and ones it must accept. The compose reader is driven with
+ * compose specimens the same way: it must tell the test listener from the management mapping, also when
+ * the environment moves the management port, and refuse a service whose mappings leave the test listener
+ * unidentified. The specimens are strings in this file only.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -164,6 +174,15 @@ class MtlsLaneSelectionContractTest {
     private static final String DEFAULT_EXECUTION = "default";
     private static final String NO_PROFILE = "(no profile)";
     private static final String MTLS_PROPERTY_PREFIX = "test.mtls.";
+
+    /** The compose service environment variable that moves the Quarkus management interface off its default port. */
+    private static final String MANAGEMENT_PORT_VARIABLE = "QUARKUS_MANAGEMENT_PORT";
+
+    /** The Quarkus management-interface port when a service's environment does not set {@value #MANAGEMENT_PORT_VARIABLE}. */
+    private static final String QUARKUS_DEFAULT_MANAGEMENT_PORT = "9000";
+
+    /** A port number, as a compose mapping writes its container and host side. */
+    private static final Pattern PORT_NUMBER = Pattern.compile("\\d+");
 
     /** A {@code ${...}} property reference in a POM value; group 1 the property name. */
     private static final Pattern PROPERTY_REFERENCE = Pattern.compile("\\$\\{([^}]*)}");
@@ -466,6 +485,72 @@ class MtlsLaneSelectionContractTest {
                         () -> "a lane whose port reference is cyclic was not refused naming the property: " + cyclic));
     }
 
+    @Test
+    @DisplayName("the detector accepts the host port of the mTLS service's test listener only, never its management port")
+    void detectorAcceptsOnlyTheTestListenerPort() throws Exception {
+        Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
+        Map<String, String> onTestListener = new LinkedHashMap<>();
+        required.forEach(key -> onTestListener.put(key, "declared"));
+        onTestListener.put(PORT_KEY, "10444");
+        Map<String, String> onManagement = new LinkedHashMap<>(onTestListener);
+        onManagement.put(PORT_KEY, "19001");
+        Set<String> published = testListenerPorts("""
+                services:
+                  %s:
+                    ports:
+                      - "10444:8443"
+                      - "19001:9000"
+                """.formatted(MTLS_SERVICE));
+
+        List<String> managementLane = specimenViolations(profile("management-port", properties(onManagement), ""),
+                required, published);
+
+        assertAll(
+                () -> assertTrue(managementLane.stream().anyMatch(violation -> violation.contains("management-port/default")
+                                && violation.contains("'19001'") && violation.contains("[10444]")),
+                        () -> "a lane whose " + PORT_KEY + " is the management host port was not rejected naming the"
+                                + " lane, the port and the test listener's host port: " + managementLane),
+                () -> assertEquals(List.of(), specimenViolations(profile("test-listener", properties(onTestListener), ""),
+                        required, published), "a lane using the test listener's host port was rejected"),
+                () -> assertEquals(Set.of("10444"), testListenerPorts("""
+                        services:
+                          %s:
+                            environment:
+                              - QUARKUS_MANAGEMENT_PORT=9100
+                            ports:
+                              - target: 8443
+                                published: 10444
+                              - target: 9100
+                                published: 19001
+                        """.formatted(MTLS_SERVICE)),
+                        "the management port the service's environment names, in the long mapping form, was not told"
+                                + " apart from the test listener"),
+                () -> assertUnidentified("""
+                        services:
+                          %s:
+                            ports:
+                              - "10444:8443"
+                              - "10450:8080"
+                              - "19001:9000"
+                        """.formatted(MTLS_SERVICE), "10450:8080"),
+                () -> assertUnidentified("""
+                        services:
+                          %s:
+                            ports:
+                              - "19001:9000"
+                        """.formatted(MTLS_SERVICE), "19001:9000"));
+    }
+
+    /** Asserts that the compose reader refuses the specimen, naming the service and one of its mappings. */
+    private static void assertUnidentified(String compose, String mapping) {
+        AssertionError refusal = assertThrows(AssertionError.class, () -> testListenerPorts(compose),
+                () -> "the compose reader accepted mappings that do not identify the test listener, among them '"
+                        + mapping + "'");
+        assertTrue(refusal.getMessage().contains("'" + MTLS_SERVICE + "'") && refusal.getMessage().contains(mapping),
+                () -> "the refusal does not name the service and the mapping '" + mapping + "': "
+                        + refusal.getMessage());
+    }
+
     private static void assertRefused(String lane, String pluginConfiguration, String pattern, Set<String> required,
             Set<String> published) throws ParserConfigurationException, SAXException, IOException {
         List<String> violations = specimenViolations(profile(lane, pluginConfiguration, ""), required, published);
@@ -534,7 +619,7 @@ class MtlsLaneSelectionContractTest {
      * @param lanes     every failsafe lane of the module
      * @param required  the {@code test.mtls.*} keys the IT reads
      * @param tags      the JUnit tags on the IT class
-     * @param published the host ports the mTLS compose service publishes
+     * @param published the host port the mTLS compose service publishes for its TLS test listener
      * @return one message per defect
      */
     private static List<String> violations(List<Lane> lanes, Set<String> required, Set<String> tags,
@@ -570,7 +655,8 @@ class MtlsLaneSelectionContractTest {
             String port = lane.properties().get(PORT_KEY);
             if (required.contains(PORT_KEY) && port != null && !published.contains(port)) {
                 violations.add("lane " + lane.name() + " sets " + PORT_KEY + " to '" + port + "', but the '"
-                        + MTLS_SERVICE + "' service publishes " + published + ": the IT would reach another listener");
+                        + MTLS_SERVICE + "' service publishes its TLS test listener on " + published
+                        + ": the IT would reach another listener");
             }
         }
         return violations;
@@ -815,33 +901,92 @@ class MtlsLaneSelectionContractTest {
     }
 
     /**
-     * The host ports the mTLS compose service publishes, from both compose forms: the short
-     * {@code HOST:CONTAINER} (or {@code IP:HOST:CONTAINER}) string and the long mapping with
-     * {@code published}.
+     * The host port the module's {@code docker-compose.yml} publishes for the {@value #MTLS_SERVICE}
+     * service's TLS test listener, read by {@link #testListenerPorts}.
      */
     private static Set<String> publishedPorts() throws IOException {
-        Map<?, ?> compose;
-        try (InputStream in = Files.newInputStream(existing(MODULE.resolve("docker-compose.yml")))) {
-            compose = new Yaml().loadAs(in, Map.class);
-        }
+        return testListenerPorts(Files.readString(existing(MODULE.resolve("docker-compose.yml"))));
+    }
+
+    /**
+     * The host port a compose document publishes for the {@value #MTLS_SERVICE} service's TLS test
+     * listener — never the host port of another of its mappings. Every {@code ports} entry is read in
+     * both compose forms: the short {@code HOST:CONTAINER} (or {@code IP:HOST:CONTAINER}, with an
+     * optional {@code /protocol} suffix) string and the long mapping with {@code target} and
+     * {@code published}. The mapping whose container port is the service's management port is set
+     * aside, and the test listener is the one mapping that remains. The management port is the value of
+     * {@value #MANAGEMENT_PORT_VARIABLE} in the service's {@code environment}, in its list or its map
+     * form, and Quarkus' default {@value #QUARKUS_DEFAULT_MANAGEMENT_PORT} when the environment does not
+     * set it. Comments beside a mapping are not read: they are not data.
+     * <p>
+     * Fails closed: when a mapping's container port is not a port number, when no mapping or more than
+     * one remains, or when the remaining one publishes no fixed host port, the compose document does not
+     * establish which listener {@code MtlsHandshakeIT} reaches. The test then fails naming the service,
+     * the management port and every mapping it saw, rather than accepting every mapping.
+     *
+     * @param composeYaml the compose document
+     * @return the test listener's host port
+     */
+    private static Set<String> testListenerPorts(String composeYaml) {
+        Map<?, ?> compose = new Yaml().loadAs(composeYaml, Map.class);
         Object services = compose.get("services");
         assertInstanceOf(Map.class, services, "docker-compose.yml declares no services");
         Object service = ((Map<?, ?>) services).get(MTLS_SERVICE);
         assertInstanceOf(Map.class, service, "docker-compose.yml declares no '" + MTLS_SERVICE + "' service");
         Object ports = ((Map<?, ?>) service).get("ports");
         assertInstanceOf(List.class, ports, "the '" + MTLS_SERVICE + "' service publishes no ports");
-        Set<String> published = new TreeSet<>();
+        String managementPort = managementPort(((Map<?, ?>) service).get("environment"));
+        List<String> seen = new ArrayList<>();
+        List<String> remaining = new ArrayList<>();
+        boolean unreadable = false;
         for (Object entry : (List<?>) ports) {
+            String host;
+            String container;
             if (entry instanceof Map<?, ?> longForm) {
-                published.add(String.valueOf(longForm.get("published")));
+                host = longForm.get("published") == null ? null : String.valueOf(longForm.get("published"));
+                container = String.valueOf(longForm.get("target"));
+                seen.add(String.valueOf(longForm));
             } else {
-                String[] parts = String.valueOf(entry).split(":");
-                if (parts.length > 1) {
-                    published.add(parts[parts.length - 2]);
+                String text = String.valueOf(entry);
+                String[] parts = text.split(":");
+                host = parts.length > 1 ? parts[parts.length - 2] : null;
+                container = parts[parts.length - 1].replaceFirst("/.*", "");
+                seen.add(text);
+            }
+            unreadable |= !PORT_NUMBER.matcher(container).matches();
+            if (!managementPort.equals(container)) {
+                remaining.add(host);
+            }
+        }
+        if (unreadable || remaining.size() != 1 || remaining.getFirst() == null
+                || !PORT_NUMBER.matcher(remaining.getFirst()).matches()) {
+            return fail("the '" + MTLS_SERVICE + "' service's port mappings " + seen + " do not identify its TLS test"
+                    + " listener: with the mapping of the management port " + managementPort + " set aside, exactly"
+                    + " one mapping of a numeric container port must remain and publish a fixed host port. This"
+                    + " guard refuses rather than accepting every mapping, since a " + PORT_KEY + " naming another"
+                    + " listener would send MtlsHandshakeIT to it");
+        }
+        return Set.of(remaining.getFirst());
+    }
+
+    /**
+     * The container port of a compose service's Quarkus management interface: the value of
+     * {@value #MANAGEMENT_PORT_VARIABLE} in its {@code environment}, given as a {@code KEY=value} list
+     * or as a map, else Quarkus' default {@value #QUARKUS_DEFAULT_MANAGEMENT_PORT}.
+     */
+    private static String managementPort(Object environment) {
+        if (environment instanceof Map<?, ?> map && map.get(MANAGEMENT_PORT_VARIABLE) != null) {
+            return String.valueOf(map.get(MANAGEMENT_PORT_VARIABLE)).strip();
+        }
+        if (environment instanceof List<?> list) {
+            for (Object entry : list) {
+                String text = String.valueOf(entry);
+                if (text.startsWith(MANAGEMENT_PORT_VARIABLE + "=")) {
+                    return text.substring(MANAGEMENT_PORT_VARIABLE.length() + 1).strip();
                 }
             }
         }
-        return published;
+        return QUARKUS_DEFAULT_MANAGEMENT_PORT;
     }
 
     private static Path existing(Path file) {
