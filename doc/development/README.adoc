@@ -256,7 +256,8 @@ this section is what a contributor needs when deciding where a new test goes.
 | The lane that runs the test
 | As that lane is
 | The lane either serves the test or excludes it by name, with the reason beside the exclusion. The
-  `jfr` profile in `integration-tests/pom.xml` excludes `MtlsHandshakeIT` this way.
+  `jfr` profile in `integration-tests/pom.xml` excludes `MtlsHandshakeIT` this way, and
+  `MtlsLaneSelectionContractTest` guards the exclusion.
 |===
 
 === A benchmark-observed resource failure becomes a gating test
@@ -327,9 +328,11 @@ ADR-0075 describes the shipped instances by content only. Their identifiers are 
   floor -- a layer-boundary defect, not a cumulative one.
 
 | mTLS rejection legs failing in the `jfr` lane
-| GitHub issue 201
-| Neither detected nor fixed by this decision. The cause is recorded in the `jfr` profile's exclusion
-  comment in `integration-tests/pom.xml`.
+| GitHub issue 201, closed
+| Settled as a lane misconfiguration, not a gateway defect, by nine counted `MtlsHandshakeIT` runs: three
+  under `-Pintegration-tests` and three under `-Pjfr` with the `test.mtls.*` properties supplied passed
+  all three methods; three under `-Pjfr` without them passed `trustedClientCertAccepted` and failed both
+  rejection legs. The `jfr` profile keeps its exclusion, and `MtlsLaneSelectionContractTest` guards it.
 |===
 
 The epic ledger routed three open defects to the decision; ADR-0075 gives the reasons:

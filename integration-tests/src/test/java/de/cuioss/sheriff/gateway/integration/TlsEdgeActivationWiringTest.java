@@ -34,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
-import java.util.regex.Pattern;
 import org.yaml.snakeyaml.Yaml;
 
 import org.junit.jupiter.api.DisplayName;
@@ -62,8 +61,11 @@ import org.junit.jupiter.api.Test;
  * four are structural facts here rather than review conventions — the arm was previously pointed at
  * the primary instance, so the no-regression gate was comparing a configuration against itself.
  * <p>
- * It parses the committed descriptors only (YAML / properties / POM text) and asserts the activation
- * is present — it starts no container and reaches no network.
+ * It parses the committed descriptors only (YAML / properties) and asserts the activation is present —
+ * it starts no container and reaches no network. It does not read the POM: that every failsafe lane
+ * running {@code MtlsHandshakeIT} hands it the {@code test.mtls.*} properties, with the port the
+ * {@code api-sheriff-mtls} service publishes, is guarded per lane by
+ * {@link MtlsLaneSelectionContractTest}.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -98,13 +100,6 @@ class TlsEdgeActivationWiringTest {
 
     private static final String PASSTHROUGH_SNI = "passthrough.test.example";
     private static final String FAULT_SNI = "fault.test.example";
-
-    /** The compose service {@code MtlsHandshakeIT} reaches through {@code test.mtls.port}. */
-    private static final String MTLS_SERVICE = "api-sheriff-mtls";
-
-    /** A {@code <test.mtls.port>} element in the POM, capturing its literal value. */
-    private static final Pattern MTLS_PORT_ELEMENT =
-            Pattern.compile("<test\\.mtls\\.port>\\s*([^<]*?)\\s*</test\\.mtls\\.port>");
 
     @Test
     @DisplayName("the mounted gateway.yaml declares a non-empty passthrough_sni mapping the test SNIs to aliases")
@@ -294,42 +289,6 @@ class TlsEdgeActivationWiringTest {
                 "the foreign-CA client keystore mtls-wrong.p12 must exist");
         assertTrue(Files.isRegularFile(CERTS.resolve("mtls-client-ca.crt")),
                 "the client CA trust anchor mtls-client-ca.crt must exist for the mTLS instance");
-    }
-
-    /**
-     * The mTLS port is checked by <em>value</em>, not by element name: the {@code test.mtls.port}
-     * system property must name the host port the {@code api-sheriff-mtls} compose service actually
-     * publishes. An element that exists but names another port (the primary instance's 10443, say)
-     * points {@code MtlsHandshakeIT} at a listener that never asks for a client certificate, and a
-     * presence check stays green over exactly that mistake.
-     */
-    @Test
-    @DisplayName("the Failsafe configuration wires the test.mtls.* system properties")
-    void failsafeWiresMtlsSystemProperties() throws Exception {
-        // Arrange
-        String pom = Files.readString(MODULE.resolve("pom.xml"));
-        List<String> declaredPorts = MTLS_PORT_ELEMENT.matcher(pom).results().map(match -> match.group(1)).toList();
-
-        // Assert — without these, MtlsHandshakeIT falls back to null keystores / port 10443 and cannot
-        // reach the mTLS instance with a client identity.
-        assertEquals(1, declaredPorts.size(),
-                "pom must declare the test.mtls.port system property exactly once, found: " + declaredPorts);
-        String mtlsPort = declaredPorts.getFirst();
-        assertTrue(mtlsPort.chars().allMatch(Character::isDigit),
-                "test.mtls.port must be a literal port number, was: " + mtlsPort);
-        Object mtlsService = composeServices().get(MTLS_SERVICE);
-        assertInstanceOf(Map.class, mtlsService, "compose must declare the '" + MTLS_SERVICE + "' service");
-        Object ports = ((Map<?, ?>) mtlsService).get("ports");
-        assertInstanceOf(List.class, ports, "the '" + MTLS_SERVICE + "' service must publish ports");
-        List<String> published = ((List<?>) ports).stream().map(String::valueOf).toList();
-        assertTrue(published.stream().anyMatch(entry -> entry.startsWith(mtlsPort + ":")),
-                "test.mtls.port is " + mtlsPort + " but the '" + MTLS_SERVICE
-                        + "' service publishes no such host port, so MtlsHandshakeIT would reach a"
-                        + " different listener; published: " + published);
-        assertTrue(pom.contains("<test.mtls.client.keystore>"),
-                "pom must wire test.mtls.client.keystore to the trusted client keystore");
-        assertTrue(pom.contains("<test.mtls.wrong.keystore>"),
-                "pom must wire test.mtls.wrong.keystore to the foreign-CA client keystore");
     }
 
     @SuppressWarnings("unchecked")

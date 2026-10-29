@@ -1018,7 +1018,9 @@ pass is the larger sample that says so again, from the other direction.
 | Asserts `pom.xml` *contains the element name* `+<test.mtls.port>+`. A value pointing at the wrong
   instance passes, which is the failure the test's own comment describes ("falls back to ... port
   10443"). Assert the value against the port the compose file publishes, as
-  `EgressVerifyActivationWiringTest` does for its own pair.
+  `EgressVerifyActivationWiringTest` does for its own pair. *The method has since been removed*, and
+  its strengthen is discharged by `MtlsLaneSelectionContractTest`, which asserts the
+  `test.mtls.port` value per failsafe lane against the port the compose file publishes.
 
 | `overlayDeclaresAnExhaustibleAdmissionBudget`
   (`WsAdmissionActivationWiringTest`)
@@ -1151,7 +1153,7 @@ column means the file was read and nothing in it met F1, F2 or F3 -- never that 
 | `PassthroughFaultIT.java`                       | 1  | 1 | one `strengthen`
 | `PipelineVerbIT.java`                           | 6  | 0 | every verb asserted on the echo, not the status alone
 | `SecurityProfileModeIT.java`                    | 8  | 0 | the still-rejects legs are the load-bearing ones
-| `TlsEdgeActivationWiringTest.java`              | 10 | 1 | one `strengthen`
+| `TlsEdgeActivationWiringTest.java`              | 10 | 1 | one `strengthen`; the flagged method has since been removed, see its `strengthen` row
 | `TlsPassthroughIT.java`                         | 2  | 0 | asserts the negotiated peer certificate identity
 | `UpstreamAssetServingIT.java`                   | 5  | 0 | h2 regression plus a directory-source control
 | `UpstreamHostnameVerificationIT.java`           | 3  | 0 | three legs; the third separates two readings of the knob
