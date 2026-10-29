@@ -19,8 +19,11 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.ref.WeakReference;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -30,6 +33,7 @@ import de.cuioss.test.generator.Generators;
 import de.cuioss.test.generator.junit.EnableGeneratorController;
 import io.vertx.core.Context;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
 import io.vertx.core.http.HttpMethod;
@@ -51,10 +55,15 @@ import org.junit.jupiter.api.Test;
  * release. An answer that has to wait first enters the hold the edge stashed under
  * {@link ResponseDelay#HOLD_KEY}: an entered hold arms the timer, a refused one is answered {@code 503}
  * no earlier than its refusal time — at once when that has passed, from a timer otherwise — and a
- * request that carries no hold waits as before.
+ * request that carries no hold waits as before. A held answer does not outlive its response: once the
+ * connection closes, the timer no longer holds the answer, whether the close came while the answer
+ * waited or before it was armed.
  * <p>
  * Every negative is observed by a probe timer scheduled on the same event loop for after the release,
- * so it is decided by timer order rather than by a sleep.
+ * so it is decided by timer order rather than by a sleep. That an answer is no longer held is observed
+ * through a weak reference to the body it would have written, polled under explicit collections: the
+ * release is set far beyond the poll's ceiling, so a timer still pending keeps the body reachable for the
+ * whole poll.
  */
 @EnableGeneratorController
 @DisplayName("ResponseDelay — an answer is written no earlier than its release time, from a timer")
@@ -62,6 +71,11 @@ import org.junit.jupiter.api.Test;
 class ResponseDelayTest {
 
     private static final String ANSWER_BODY = "released";
+    /**
+     * How far ahead the release of an answer whose connection closes is set, in minutes: far beyond the
+     * poll that watches the answer being let go, so only the close can end its hold within that poll.
+     */
+    private static final long RELEASE_AFTER_THE_POLL_MINUTES = 10;
 
     /** How long a not-yet-due answer is held, in milliseconds. */
     private final long holdMillis = Generators.integers(100, 200).next();
@@ -180,6 +194,51 @@ class ResponseDelayTest {
     }
 
     @Test
+    @DisplayName("a held answer is let go once its connection closes, not kept until its release")
+    void heldAnswerIsLetGoWhenTheConnectionCloses() throws Exception {
+        CompletableFuture<WeakReference<byte[]>> heldBody = new CompletableFuture<>();
+        behaviour = ctx -> {
+            byte[] body = ANSWER_BODY.getBytes(StandardCharsets.UTF_8);
+            long releaseAt = System.nanoTime() + TimeUnit.MINUTES.toNanos(RELEASE_AFTER_THE_POLL_MINUTES);
+            ResponseDelay.endNoEarlierThan(ctx, releaseAt, releaseAt, () -> answer(ctx, body));
+            heldBody.complete(new WeakReference<>(body));
+        };
+        HttpClientRequest request = Awaits.connect(client.request(options()), "the request to be opened");
+
+        request.send();
+        WeakReference<byte[]> body = Awaits.connect(heldBody, "the server to hold its answer");
+        Awaits.connect(request.connection().close(), "the client connection to close");
+
+        awaitLetGo(body, "the held answer to be let go once its connection closed");
+    }
+
+    @Test
+    @DisplayName("an answer armed after its connection closed is not held until its release")
+    void answerArmedAfterTheConnectionClosedIsNotHeld() throws Exception {
+        CompletableFuture<Void> requestReceived = new CompletableFuture<>();
+        CompletableFuture<WeakReference<byte[]>> armedBody = new CompletableFuture<>();
+        behaviour = ctx -> {
+            // Armed in a later event-loop task, after the close has run the request's end handlers — the
+            // order in which the edge's writer arms an answer whose client left during processing.
+            ctx.addEndHandler(gone -> ctx.vertx().runOnContext(v -> {
+                byte[] body = ANSWER_BODY.getBytes(StandardCharsets.UTF_8);
+                long releaseAt = System.nanoTime() + TimeUnit.MINUTES.toNanos(RELEASE_AFTER_THE_POLL_MINUTES);
+                ResponseDelay.endNoEarlierThan(ctx, releaseAt, releaseAt, () -> answer(ctx, body));
+                armedBody.complete(new WeakReference<>(body));
+            }));
+            requestReceived.complete(null);
+        };
+        HttpClientRequest request = Awaits.connect(client.request(options()), "the request to be opened");
+
+        request.send();
+        Awaits.connect(requestReceived, "the server to receive the request");
+        Awaits.connect(request.connection().close(), "the client connection to close");
+        WeakReference<byte[]> body = Awaits.connect(armedBody, "the answer to be armed after the close");
+
+        awaitLetGo(body, "the answer armed after the close to be let go");
+    }
+
+    @Test
     @DisplayName("an answer not yet due enters the hold once, then is written from a timer after its release")
     void enteredHoldArmsTheTimer() throws Exception {
         AtomicInteger holdsEntered = new AtomicInteger();
@@ -292,6 +351,23 @@ class ResponseDelayTest {
     private void answer(RoutingContext ctx) {
         answers.incrementAndGet();
         ResponseEnds.endResponse(ctx, () -> ctx.response().end(ANSWER_BODY));
+    }
+
+    /** The held answer writing {@code body}: what the answer holds while it waits is its own body. */
+    private void answer(RoutingContext ctx, byte[] body) {
+        answers.incrementAndGet();
+        ResponseEnds.endResponse(ctx, () -> ctx.response().end(Buffer.buffer(body)));
+    }
+
+    /**
+     * Polls, under explicit collections, until nothing holds {@code body} any longer. A timer still
+     * pending for its answer holds it until the release, which lies beyond the poll's ceiling.
+     */
+    private static void awaitLetGo(WeakReference<byte[]> body, String what) throws TimeoutException {
+        Awaits.until(() -> {
+            System.gc(); // NOSONAR java:S1215 reachability of the held body is the property under test
+            return body.get() == null;
+        }, what, Awaits.CONNECT_CEILING_SECONDS);
     }
 
     /** Reads the answer count from a timer on the same event loop, due well after the held answer's. */

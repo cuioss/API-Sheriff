@@ -15,6 +15,7 @@
  */
 package de.cuioss.sheriff.gateway.edge.end;
 
+import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.ext.web.RoutingContext;
 
@@ -31,8 +32,11 @@ import io.vertx.ext.web.RoutingContext;
  * <p>
  * <strong>Ended and closed responses.</strong> A response another writer ended while the timer was
  * pending is not written again, and a response whose connection or stream closed in the meantime is
- * not written at all. The timer always fires once its delay has passed and then releases the answer it
- * held, so a closed connection leaves nothing behind.
+ * not written at all. The timer does not outlive its response: a response that ends or closes while its
+ * answer waits — the client reset its stream or closed its connection — cancels the timer, and an answer
+ * armed for a response that has already ended or closed arms none. A client that leaves therefore
+ * leaves no timer behind, and nothing that timer would have held, for the rest of the wait; the timers
+ * pending at once are the answers still waiting for a live response.
  * <p>
  * Two callers write through here. The uniform {@code 404}'s response-timing floor is the first (see
  * {@code edge.error.UniformNotFound}). The per-source {@code delay} action of
@@ -123,7 +127,8 @@ public final class ResponseDelay {
      * </ul>
      * A deferred answer or refusal leaves the calling thread free at once — it returns before the
      * release — and is dropped when its response has been ended by another writer or has closed by the
-     * time the timer fires.
+     * time the timer fires. A response that ends or closes before then cancels the timer, and one that
+     * has already ended or closed when the answer is armed gets no timer at all.
      *
      * @param ctx            the request whose answer is held back
      * @param releaseAtNanos the {@link System#nanoTime()} value before which the answer is not written
@@ -154,7 +159,9 @@ public final class ResponseDelay {
     /**
      * Runs {@code write} at once when {@code atNanos} has passed, and otherwise from a Vert.x timer for
      * the remaining time, rounded up to the next whole millisecond; the timed write is dropped when the
-     * response has ended or closed by then.
+     * response has ended or closed by then. The timer goes with its response: a response that ends or
+     * closes before the timer fires cancels it, and a response that has already ended or closed arms
+     * none.
      */
     private static void runNoEarlierThan(RoutingContext ctx, long atNanos, Runnable write) {
         long remainingNanos = atNanos - System.nanoTime();
@@ -162,12 +169,22 @@ public final class ResponseDelay {
             write.run();
             return;
         }
-        long delayMillis = Math.ceilDiv(remainingNanos, NANOS_PER_MILLI);
         HttpServerResponse response = ctx.response();
-        ctx.vertx().setTimer(delayMillis, timerId -> {
+        if (response.ended() || response.closed()) {
+            // Its end handlers have run already, so nothing would cancel a timer armed now, and the write
+            // it would hold can never be written.
+            return;
+        }
+        long delayMillis = Math.ceilDiv(remainingNanos, NANOS_PER_MILLI);
+        Vertx vertx = ctx.vertx();
+        long timerId = vertx.setTimer(delayMillis, fired -> {
             if (!response.ended() && !response.closed()) {
                 write.run();
             }
         });
+        // A client that resets its stream or closes its connection ends the response unanswered; the timer
+        // is cancelled with it rather than holding the write until the release. addEndHandler is additive,
+        // so this composes with the admission release the edge root registered.
+        ctx.addEndHandler(ended -> vertx.cancelTimer(timerId));
     }
 }
