@@ -26,10 +26,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -55,6 +58,7 @@ import de.cuioss.sheriff.gateway.detection.SourceKeyResolver;
 import de.cuioss.sheriff.gateway.detection.SourceState;
 import de.cuioss.sheriff.gateway.edge.admission.EdgeAdmission;
 import de.cuioss.sheriff.gateway.edge.admission.SourceGate;
+import de.cuioss.sheriff.gateway.edge.admission.SourceKeys;
 import de.cuioss.sheriff.gateway.edge.end.ResponseDelay;
 import de.cuioss.sheriff.gateway.edge.relay.GrpcStatusMapper;
 import de.cuioss.sheriff.gateway.edge.upstream.UpstreamGuards;
@@ -109,7 +113,9 @@ import org.junit.jupiter.params.provider.EnumSource;
  * ({@link ErrorResponseWriter#renderUnexpected}): before the trust boundary on a selected route it is the
  * floored unrouted {@code 404}, counted under {@link EventType#PRE_TRUST_INTERNAL_FAILURE} but carrying
  * no weight on the recon ledger — and under {@code delay}, for a tripped source, held for the delay as
- * its recon rejection would be; everywhere else the opaque {@code 500}.
+ * its recon rejection would be; everywhere else the opaque {@code 500}. And the threat feed: a handled
+ * rejection is handed to it once, under its true event and after the recon feed, without changing the
+ * answer, and an unexpected internal failure never is.
  */
 @EnableGeneratorController
 @DisplayName("ErrorResponseWriter — Retry-After of an open circuit and the trust-boundary branch")
@@ -191,6 +197,8 @@ class ErrorResponseWriterTest {
         private GatewayEventCounter eventCounter;
         private SimpleMeterRegistry meterRegistry;
         private final AtomicReference<Consumer<RoutingContext>> handler = new AtomicReference<>();
+        /** Resolves and stashes the source on the event loop, as the edge does before the recon gate. */
+        private final SourceKeys sourceKeys = sourceKeys();
         private String routeId;
 
         @BeforeEach
@@ -482,8 +490,9 @@ class ErrorResponseWriterTest {
             ErrorResponseWriter writer = writer(true, PortalEndpoint.inert(), gate);
             AtomicReference<SourceKey> stashed = new AtomicReference<>();
             handler.set(ctx -> {
+                sourceKeys.resolveAndStash(ctx);
                 gate.answersBlocked(ctx);
-                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                stashed.set(ctx.get(SourceKeys.SOURCE_KEY));
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
                 writer.renderUnexpected(ctx, stagedRequest(Protocol.HTTP, List.of()),
                         new IllegalStateException(unexpectedMessage()));
@@ -494,6 +503,7 @@ class ErrorResponseWriterTest {
             boolean trackedAfterFailure = gate.ledger().state(source).isPresent();
 
             handler.set(ctx -> {
+                sourceKeys.resolveAndStash(ctx);
                 gate.answersBlocked(ctx);
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
                 writer.handleGatewayRejection(ctx, stagedRequest(Protocol.HTTP, List.of()),
@@ -573,8 +583,9 @@ class ErrorResponseWriterTest {
             SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
             AtomicReference<SourceKey> stashed = new AtomicReference<>();
             handler.set(ctx -> {
+                sourceKeys.resolveAndStash(ctx);
                 gate.answersBlocked(ctx);
-                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                stashed.set(ctx.get(SourceKeys.SOURCE_KEY));
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
                 writer(true, PortalEndpoint.inert(), gate).handleGatewayRejection(ctx,
                         stagedRequest(Protocol.HTTP, List.of()), new GatewayException(EventType.TOKEN_MISSING));
@@ -596,8 +607,9 @@ class ErrorResponseWriterTest {
             SourceGate gate = sourceGate(EnumerationDetectionConfig.defaults());
             AtomicReference<SourceKey> stashed = new AtomicReference<>();
             handler.set(ctx -> {
+                sourceKeys.resolveAndStash(ctx);
                 gate.answersBlocked(ctx);
-                stashed.set(ctx.get(SourceGate.SOURCE_KEY));
+                stashed.set(ctx.get(SourceKeys.SOURCE_KEY));
                 PipelineRequest request = stagedRequest(Protocol.HTTP, List.of());
                 request.markTrustBoundaryPassed();
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
@@ -614,6 +626,62 @@ class ErrorResponseWriterTest {
         }
 
         @Test
+        @DisplayName("the threat feed is handed a pre-trust 401 rendered as the uniform 404 once, under its true event, after the recon feed")
+        void threatFeedIsFedOnceUnderTheTrueEvent() throws Exception {
+            List<String> fed = new CopyOnWriteArrayList<>();
+            ErrorResponseWriter writer = writer(true, (ctx, request, eventType) -> {
+                fed.add("recon:" + eventType);
+                return OptionalLong.empty();
+            }, (ctx, request, eventType) -> fed.add("threat:" + eventType));
+
+            Response response = reject(writer, Protocol.HTTP, List.of(), EventType.TOKEN_MISSING);
+
+            assertAll("fed as what it is, whatever it is rendered as",
+                    () -> assertEquals(List.of("recon:" + EventType.TOKEN_MISSING, "threat:" + EventType.TOKEN_MISSING),
+                            fed, "once each, the threat feed after the recon feed, never as NO_ROUTE_MATCHED"),
+                    () -> assertEquals(404, response.status(), "the answer is unchanged: the uniform 404"),
+                    () -> assertEquals(noRouteMatchedBody(), response.body()));
+        }
+
+        @Test
+        @DisplayName("the threat feed changes no answer: the same rejection answers alike with and without it")
+        void threatFeedChangesNoAnswer() throws Exception {
+            Response without = reject(writer(true, ErrorResponseWriter.ReconFeed.NONE,
+                    ErrorResponseWriter.ThreatFeed.NONE), Protocol.HTTP, List.of(), EventType.METHOD_NOT_ALLOWED);
+            AtomicInteger fed = new AtomicInteger();
+            Response with = reject(writer(true, ErrorResponseWriter.ReconFeed.NONE,
+                    (ctx, request, eventType) -> fed.incrementAndGet()), Protocol.HTTP, List.of(),
+                    EventType.METHOD_NOT_ALLOWED);
+
+            assertAll("observe only",
+                    () -> assertEquals(1, fed.get(), "precondition: the rejection was fed"),
+                    () -> assertEquals(without.status(), with.status()),
+                    () -> assertEquals(without.body(), with.body()),
+                    () -> assertEquals(without.headers().get(CONTENT_TYPE), with.headers().get(CONTENT_TYPE)));
+        }
+
+        @Test
+        @DisplayName("an unexpected internal failure is never handed to the threat feed")
+        void renderUnexpectedDoesNotFeedTheThreatFeed() throws Exception {
+            AtomicInteger fed = new AtomicInteger();
+            ErrorResponseWriter writer = writer(true, ErrorResponseWriter.ReconFeed.NONE,
+                    (ctx, request, eventType) -> fed.incrementAndGet());
+            handler.set(ctx -> {
+                ctx.put(RejectionReporter.ROUTE_KEY, routeId);
+                writer.renderUnexpected(ctx, stagedRequest(Protocol.HTTP, List.of()),
+                        new IllegalStateException(unexpectedMessage()));
+            });
+
+            Response response = send();
+
+            assertAll("an operator-side failure is not caller behaviour",
+                    () -> assertEquals(404, response.status(), "precondition: answered as the uniform 404"),
+                    () -> assertEquals(1L, eventCounter.getCount(EventType.PRE_TRUST_INTERNAL_FAILURE),
+                            "precondition: counted under its own event"),
+                    () -> assertEquals(0, fed.get(), "the threat feed was never called"));
+        }
+
+        @Test
         @DisplayName("delay: a tripped source's rejection is answered no earlier than admission plus delay_millis")
         void trippedSourceUnderDelayIsHeldForTheDelay() throws Exception {
             long delayNanos = TimeUnit.MILLISECONDS.toNanos(DELAY_MILLIS);
@@ -626,6 +694,7 @@ class ErrorResponseWriterTest {
                 long admittedAt = System.nanoTime();
                 admittedAtNanos.set(admittedAt);
                 ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
+                sourceKeys.resolveAndStash(ctx);
                 gate.answersBlocked(ctx);
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
                 ctx.addEndHandler(result -> endedAtNanos.complete(System.nanoTime()));
@@ -687,6 +756,7 @@ class ErrorResponseWriterTest {
                 long admittedAt = System.nanoTime();
                 admittedAtNanos.set(admittedAt);
                 ctx.put(ResponseDelay.ADMITTED_AT_KEY, admittedAt);
+                sourceKeys.resolveAndStash(ctx);
                 gate.answersBlocked(ctx);
                 ctx.put(RejectionReporter.ROUTE_KEY, routeId);
                 ctx.addEndHandler(result -> {
@@ -712,13 +782,19 @@ class ErrorResponseWriterTest {
         }
 
         private SourceGate sourceGate(EnumerationDetectionConfig config) {
+            return new SourceGate(config, eventCounter, new SheriffMetrics(meterRegistry),
+                    new GatewayJson(new ObjectMapper()), source -> false, _ -> {
+                        // the recon trip's observer is SourceGateTest's subject
+                    });
+        }
+
+        /** The source-key stage of a gateway without trusted proxies: every request is keyed on its TCP peer. */
+        private static SourceKeys sourceKeys() {
             ForwardedHeaderResolver forwardedResolver = new ForwardedHeaderResolver(
                     ForwardedResolverConfig.builder().trustedProxies(Set.of())
                             .securityConfig(SecurityConfiguration.defaults()).build(),
                     new SecurityEventCounter());
-            return new SourceGate(config, new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()),
-                    forwardedResolver, eventCounter, new SheriffMetrics(meterRegistry),
-                    new GatewayJson(new ObjectMapper()), source -> false);
+            return new SourceKeys(new SourceKeyResolver(List.of()), new TcpPeerGate(List.of()), forwardedResolver);
         }
 
         private ErrorResponseWriter writer(boolean uniformNotFound, PortalEndpoint portal) {
@@ -731,6 +807,14 @@ class ErrorResponseWriterTest {
                     1_000L, 1_000L);
             return new ErrorResponseWriter(portal, new GatewayJson(new ObjectMapper()), new GrpcStatusMapper(),
                     reporter, uniformNotFound, reconFeed);
+        }
+
+        private ErrorResponseWriter writer(boolean uniformNotFound, ErrorResponseWriter.ReconFeed reconFeed,
+                ErrorResponseWriter.ThreatFeed threatFeed) {
+            RejectionReporter reporter = new RejectionReporter(eventCounter, new SheriffMetrics(meterRegistry),
+                    1_000L, 1_000L);
+            return new ErrorResponseWriter(PortalEndpoint.inert(), new GatewayJson(new ObjectMapper()),
+                    new GrpcStatusMapper(), reporter, uniformNotFound, reconFeed, threatFeed);
         }
 
         private Response reject(ErrorResponseWriter writer, Protocol protocol, List<String> accept,
