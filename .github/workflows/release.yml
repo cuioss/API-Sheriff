@@ -409,6 +409,9 @@ jobs:
               EFFECTIVE="${DECLARED#*:}"
               EFFECTIVE="${EFFECTIVE%\}}"
               ;;
+            *)
+              # A plain literal is accepted unchanged: EFFECTIVE already equals DECLARED.
+              ;;
           esac
           if [ "$EFFECTIVE" != "$MANAGEMENT_CONTEXT_PATH" ]; then
             echo "::error::Smoke-probe path disagrees with the image this lane publishes. .github/workflows/release.yml declares MANAGEMENT_CONTEXT_PATH='${MANAGEMENT_CONTEXT_PATH}', while ${SHIPPED_PROPERTIES} declares quarkus.management.root-path='${DECLARED}', which acts as '${EFFECTIVE}' for the unseamed build this lane runs. The probe would 404 against a perfectly healthy image. Change the workflow constant to match the shipped declaration; do NOT pass -Dsheriff.management-context-path into the integration-test build to make them agree."
@@ -1496,16 +1499,16 @@ jobs:
 
           # 3. Delete: signatures first, then the index, then the platform manifests it lists.
           delete_version() {
-            local WHAT="$1" DIGEST="$2" ID
-            ID="$(jq -r --arg name "$DIGEST" '.[] | select(.name == $name) | .id' <<< "$VERSIONS")"
-            if [ -z "$ID" ]; then
-              echo "${WHAT} ${DIGEST} is not a version of the package; nothing to delete."
+            local what="$1" digest="$2" id
+            id="$(jq -r --arg name "$digest" '.[] | select(.name == $name) | .id' <<< "$VERSIONS")"
+            if [ -z "$id" ]; then
+              echo "${what} ${digest} is not a version of the package; nothing to delete."
               return 0
             fi
-            if gh api --method DELETE "${VERSIONS_API}/${ID}" > /dev/null; then
-              echo "Deleted ${WHAT} ${DIGEST} (package version ${ID})."
+            if gh api --method DELETE "${VERSIONS_API}/${id}" > /dev/null; then
+              echo "Deleted ${what} ${digest} (package version ${id})."
             else
-              echo "::warning::Could not delete ${WHAT} ${DIGEST} (package version ${ID})."
+              echo "::warning::Could not delete ${what} ${digest} (package version ${id})."
             fi
           }
           TARGETS=()
