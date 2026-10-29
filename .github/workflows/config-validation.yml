@@ -18,8 +18,8 @@
 #   * the tls-relaxation variant: no compose service runs it. BffTlsRelaxationIT mounts the shared
 #     sheriff-config directory of a one-off gateway and overlays ONLY gateway.yaml, exactly as a
 #     compose-mounted variant is mounted, so it is assembled the same way.
-#   * the three standalone sets (late-idp, jwks-egress-mismatch, enumeration): no compose service runs
-#     them. OneOffGatewayContainers.startGateway mounts the set's own gateway.yaml plus ONLY
+#   * the four standalone sets (late-idp, jwks-egress-mismatch, enumeration, threat): no compose
+#     service runs them. OneOffGatewayContainers.startGateway mounts the set's own gateway.yaml plus ONLY
 #     sheriff-config/endpoints/assets-secure.yaml, with no topology.properties and none of the other
 #     shared endpoint files — those carry proxy routes naming anchors and upstream aliases these
 #     documents do not declare. They are assembled exactly that way.
@@ -37,7 +37,7 @@
 # sample's for the compose sample. Every set therefore gets its OWN step, and that step's `env:` block
 # is the whole of its variable set — nothing is shared at job level, so no set can pass on a variable
 # another set's deployment supplies. The values are copied from the two docker-compose.yml files; they
-# are fixed test and sample values, never production material. The three standalone sets get no
+# are fixed test and sample values, never production material. The four standalone sets get no
 # variables at all: neither their gateway.yaml nor assets-secure.yaml carries a placeholder, so their
 # reports must carry no INVALID and no DEFAULTED line, and the helper asserts that.
 #
@@ -153,7 +153,7 @@ jobs:
             cp -R "$base" "$sets/$variant"
             cp "$docker_dir/sheriff-config-$variant/gateway.yaml" "$sets/$variant/gateway.yaml"
           done
-          for standalone in late-idp jwks-egress-mismatch enumeration; do
+          for standalone in late-idp jwks-egress-mismatch enumeration threat; do
             mkdir -p "$sets/$standalone/endpoints"
             cp "$docker_dir/sheriff-config-$standalone/gateway.yaml" "$sets/$standalone/gateway.yaml"
             cp "$base/endpoints/assets-secure.yaml" "$sets/$standalone/endpoints/assets-secure.yaml"
@@ -250,6 +250,10 @@ jobs:
       # EnumerationDetectionIT's one-off gateway: no placeholder variables.
       - name: Validate the enumeration standalone set
         run: '"$RUNNER_TEMP/validate-set.sh" enumeration "$RUNNER_TEMP/config-sets/enumeration" --expect-no-defaulted'
+
+      # ThreatClassificationIT's one-off gateway: no placeholder variables.
+      - name: Validate the threat standalone set
+        run: '"$RUNNER_TEMP/validate-set.sh" threat "$RUNNER_TEMP/config-sets/threat" --expect-no-defaulted'
 
       # Completeness guard: every integration-tests/src/main/docker/sheriff-config-<label> directory must
       # have been validated by a step above (validate-set.sh records each passed label), or be listed in
