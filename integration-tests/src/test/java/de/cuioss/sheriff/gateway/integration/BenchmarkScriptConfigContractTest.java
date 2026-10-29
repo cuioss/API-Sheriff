@@ -246,7 +246,7 @@ class BenchmarkScriptConfigContractTest {
             new DeclaredConstruct("health_live.js", "managementUrl()", MANAGEMENT_REASON),
             new DeclaredConstruct("bearer_proxied.js",
                     "https://keycloak:8443/realms/benchmark/protocol/openid-connect/token", "the Keycloak token "
-                            + "endpoint, not the gateway; the realm it names is bound by the token issuer realm row"),
+                    + "endpoint, not the gateway; the realm it names is bound by the token issuer realm row"),
             new DeclaredConstruct("passthrough_relay.js", "https://passthrough.test.example:8443/get", "the L4 "
                     + "passthrough relay target, whose path no HTTP route of the gateway sees; its SNI host is bound "
                     + "by the passthrough SNI host row"),
@@ -1036,14 +1036,14 @@ class BenchmarkScriptConfigContractTest {
         }
         constructsOf(text, exports).stream()
                 .filter(construct -> !declared.contains(construct))
-                .map(construct -> !construct.contains("://")
-                        ? script + " calls " + construct + ", an export of " + TARGET_MODULE + " other than the route "
-                                + "resolvers " + new TreeSet<>(RESOLVERS) + ", so a route it builds is invisible to "
-                                + "this leg - hand the route to a resolver, or declare " + construct + " for the "
-                                + "script with the reason it needs no binding"
-                        : script + " contains the literal absolute URL '" + construct + "', a gateway dependency "
-                                + "this leg cannot bind - build the URL through a resolver, or declare the literal "
-                                + "for the script with the reason it needs no binding")
+                .map(construct -> construct.contains("://")
+                        ? script + " contains the literal absolute URL '" + construct + "', a gateway dependency "
+                        + "this leg cannot bind - build the URL through a resolver, or declare the literal "
+                        + "for the script with the reason it needs no binding"
+                        : script + " calls " + construct + ", an export of " + TARGET_MODULE + " other than the route "
+                        + "resolvers " + new TreeSet<>(RESOLVERS) + ", so a route it builds is invisible to "
+                        + "this leg - hand the route to a resolver, or declare " + construct + " for the "
+                        + "script with the reason it needs no binding")
                 .forEach(refusals::add);
         return new Discovery(List.copyOf(literals), List.copyOf(refusals));
     }

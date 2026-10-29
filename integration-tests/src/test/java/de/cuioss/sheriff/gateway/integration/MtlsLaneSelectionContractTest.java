@@ -320,8 +320,8 @@ class MtlsLaneSelectionContractTest {
                         + "<includes><include>**/Mtls?andshakeIT.java</include></includes>", ""), required, published),
                         "a fully wired lane whose include is a directory-qualified .java glob using ? was refused"),
                 () -> assertEquals(List.of(), specimenViolations(profile("qualified", "<includes><include>" + IT_PATH
-                                + "</include></includes><excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>",
-                                ""), required, published),
+                        + "</include></includes><excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>",
+                        ""), required, published),
                         "a lane whose fully qualified include is excluded again was refused"));
     }
 
@@ -355,8 +355,8 @@ class MtlsLaneSelectionContractTest {
                         () -> "a root failsafe plugin carrying <inherited>, which this guard does not model, was not"
                                 + " refused naming the lane: " + inheritedFlag),
                 () -> assertEquals(List.of(), specimenViolations("<profiles><profile><id>completing</id><build><plugins>"
-                                + "<plugin><artifactId>" + FAILSAFE + "</artifactId><configuration>" + properties(wired)
-                                + "</configuration></plugin></plugins></build></profile></profiles>",
+                        + "<plugin><artifactId>" + FAILSAFE + "</artifactId><configuration>" + properties(wired)
+                        + "</configuration></plugin></plugins></build></profile></profiles>",
                         "<build><pluginManagement><plugins>"
                                 + failsafe("", "<includes><include>**/*IT.java</include></includes>")
                                 + "</plugins></pluginManagement></build>", required, published),
@@ -391,9 +391,9 @@ class MtlsLaneSelectionContractTest {
                         + profile("ref-published", properties(referenced), ""), required, published),
                         "a lane whose port is a reference resolving to a published port was rejected"),
                 () -> assertEquals(List.of(), specimenViolations(pomPropertiesElement("<mtls.port>10443</mtls.port>")
-                                + profileWithProperties("ref-nearest", "<mtls.port>10444</mtls.port>",
-                                        properties(referenced)),
-                                rootBuild("") + pomPropertiesElement("<mtls.port>9999</mtls.port>"), required, published),
+                        + profileWithProperties("ref-nearest", "<mtls.port>10444</mtls.port>",
+                        properties(referenced)),
+                        rootBuild("") + pomPropertiesElement("<mtls.port>9999</mtls.port>"), required, published),
                         "a reference the lane's profile resolves to a published port, over other values of the module"
                                 + " and the root, was rejected"),
                 () -> assertTrue(unpublished.stream().anyMatch(violation -> violation.contains("ref-unpublished/default")
