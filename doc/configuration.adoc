@@ -4682,7 +4682,9 @@ and a boot event (`configuration`) carry no weight, and the block offers no key 
 failure describes the upstream, not the caller. A blocked source is answered before admission and
 never reaches the score, and counting it would extend a block by the requests it refuses. A boot event
 is not a request. A body that stopped arriving, an unexpected internal failure before the trust
-boundary and a static resource -- an asset route or a browser-ambient fetch -- carry no weight either.
+boundary and a static resource -- an asset route or a browser-ambient fetch -- carry no weight either,
+except a security-filter violation or an exceeded parameter limit, which is scored on a static
+resource as on any other path.
 The rejections of a reserved path -- a fixed public set -- and the refusal of a streaming body after
 dispatch has begun are not scored. There is no `action` key: classification only observes.
 

@@ -512,7 +512,9 @@ event. `edge.admission.ThreatClassifier` admits it to its own `SourceLedger` wit
 
 A body that stopped arriving (`INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`), an unexpected internal
 failure (`PRE_TRUST_INTERNAL_FAILURE`, which `renderUnexpected` answers and does not feed) and a static
-resource carry no weight. A rejection weighed `0` is never admitted. The count follows the true event,
+resource carry no weight. The static-resource exclusion never covers a filter verdict on the content
+the caller sent: `SECURITY_FILTER_VIOLATION` and `PARAMETER_LIMIT_EXCEEDED` are scored on an asset
+route or a browser-ambient path as on any other. A rejection weighed `0` is never admitted. The count follows the true event,
 as the recon count does: a bearer `401` answered as the uniform `404` counts under `authentication`.
 
 *The two tiers.* The recon ledger's trip is an input to the score, not an ALERT: `SourceGate` hands

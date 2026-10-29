@@ -36,7 +36,8 @@ import org.junit.jupiter.params.provider.EnumSource;
  * The weight a rejection adds to its source's threat score, over every {@link EventType} constant: the
  * configured weight of its caller category, before and after the trust boundary alike, and {@code 0}
  * for the fixed categories, for an event without a category, for the closed exclusion set and for a
- * static resource.
+ * static resource — except the filter verdicts on the caller's content, which a static resource does
+ * not hide.
  */
 @DisplayName("ThreatWeights — the weight of a rejection in the threat score")
 class ThreatWeightsTest {
@@ -51,6 +52,10 @@ class ThreatWeightsTest {
     /** The three categorized events never scored, written out: the literal IS the contract. */
     private static final Set<EventType> EXPECTED_EXCLUSIONS = EnumSet.of(EventType.INBOUND_BODY_ABORTED,
             EventType.REQUEST_BODY_TIMEOUT, EventType.PRE_TRUST_INTERNAL_FAILURE);
+
+    /** The events scored even on a static resource, written out: the literal IS the contract. */
+    private static final Set<EventType> EXPECTED_STATIC_SCORED = EnumSet.of(EventType.SECURITY_FILTER_VIOLATION,
+            EventType.PARAMETER_LIMIT_EXCEEDED);
 
     private final ThreatWeights declared = new ThreatWeights(new ThreatClassificationConfig.Weights(
             INPUT_VALIDATION, ROUTING, AUTHENTICATION, AUTHORIZATION, RECON_TRIP));
@@ -81,15 +86,35 @@ class ThreatWeightsTest {
 
     @ParameterizedTest(name = "{0}")
     @EnumSource(EventType.class)
-    @DisplayName("a static resource weighs 0 under every event")
-    void staticResourceWeighsZero(EventType eventType) {
-        assertEquals(0, declared.weightOf(request("/favicon.ico"), eventType), eventType.name());
+    @DisplayName("a static resource weighs 0 under every event but the filter verdicts on the caller's content")
+    void staticResourceWeighsZeroButForFilterVerdicts(EventType eventType) {
+        int expected = EXPECTED_STATIC_SCORED.contains(eventType) ? expectedWeight(eventType) : 0;
+
+        assertEquals(expected, declared.weightOf(request("/favicon.ico"), eventType), eventType.name());
+    }
+
+    @Test
+    @DisplayName("an injection-shaped request aimed at a static resource is scored as on any other path")
+    void filterVerdictOnStaticResourceIsScored() {
+        PipelineRequest ambient = request("/favicon.ico");
+
+        assertAll("the static exclusion never hides a filter verdict",
+                () -> assertEquals(INPUT_VALIDATION, declared.weightOf(ambient, EventType.SECURITY_FILTER_VIOLATION)),
+                () -> assertEquals(INPUT_VALIDATION, declared.weightOf(ambient, EventType.PARAMETER_LIMIT_EXCEEDED)),
+                () -> assertEquals(0, declared.weightOf(ambient, EventType.NO_ROUTE_MATCHED),
+                        "control: a miss on the same path stays unscored"));
     }
 
     @Test
     @DisplayName("the closed exclusion set is exactly the two body conditions and the operator-side failure")
     void exclusionSetIsClosed() {
         assertEquals(EXPECTED_EXCLUSIONS, ThreatWeights.EXCLUDED_EVENTS);
+    }
+
+    @Test
+    @DisplayName("the events scored on a static resource are exactly the two filter verdicts")
+    void staticScoredSetIsClosed() {
+        assertEquals(EXPECTED_STATIC_SCORED, ThreatWeights.STATIC_SCORED_EVENTS);
     }
 
     @Test

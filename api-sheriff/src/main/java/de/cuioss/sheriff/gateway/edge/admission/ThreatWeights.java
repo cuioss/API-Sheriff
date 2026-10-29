@@ -54,10 +54,18 @@ import org.jspecify.annotations.Nullable;
  *       client condition, and {@link EventType#PRE_TRUST_INTERNAL_FAILURE}, because an operator-side
  *       failure is not caller behaviour;</li>
  *   <li>a static resource ({@link ReconEvents#isStaticResource}) — a miss there is a page's own asset
- *       reference or a browser-ambient fetch, not a probe.</li>
+ *       reference or a browser-ambient fetch, not a probe — except for the closed set
+ *       {@link #STATIC_SCORED_EVENTS}.</li>
  * </ul>
  * None of the fixed zeros is a configuration key: a weight that could never act would parse without
  * acting.
+ * <p>
+ * <strong>A filter verdict is scored on a static resource too.</strong> The static-resource exclusion
+ * covers what a page's own asset reference or a browser-ambient fetch can draw: a miss, a refused
+ * method, a missing credential. It does not cover {@link #STATIC_SCORED_EVENTS}: a security-filter
+ * verdict or an exceeded parameter limit judges the content the caller sent, which no asset reference
+ * produces. Without the carve-out, injection-shaped parameters or headers aimed at an asset route or at
+ * {@code /favicon.ico} would never be scored.
  * <p>
  * The switch over {@link EventCategory} has no default arm, so a new category does not compile until it
  * is given a weight here.
@@ -77,6 +85,14 @@ public final class ThreatWeights {
             EventType.INBOUND_BODY_ABORTED,
             EventType.REQUEST_BODY_TIMEOUT,
             EventType.PRE_TRUST_INTERNAL_FAILURE));
+
+    /**
+     * The closed set of events scored even on a static resource: the filter verdicts on the content the
+     * caller sent, which a page's own asset reference or a browser-ambient fetch never draws.
+     */
+    public static final Set<EventType> STATIC_SCORED_EVENTS = Collections.unmodifiableSet(EnumSet.of(
+            EventType.SECURITY_FILTER_VIOLATION,
+            EventType.PARAMETER_LIMIT_EXCEEDED));
 
     private final int inputValidation;
     private final int routing;
@@ -105,7 +121,8 @@ public final class ThreatWeights {
      *                  such a rejection is never a static resource
      * @param eventType the TRUE event of the rejection, never the one it is rendered as
      * @return the configured weight of the event's category, or {@code 0} when the rejection is not
-     *         scored
+     *         scored; a static resource weighs {@code 0} unless the event is one of
+     *         {@link #STATIC_SCORED_EVENTS}
      */
     public int weightOf(@Nullable PipelineRequest request, EventType eventType) {
         Objects.requireNonNull(eventType, "eventType");
@@ -123,7 +140,12 @@ public final class ThreatWeights {
             case AUTHORIZATION -> authorization;
             case UPSTREAM, RATE_LIMITING, CONFIGURATION -> 0;
         };
-        if (weight == 0 || (request != null && ReconEvents.isStaticResource(request))) {
+        if (weight == 0) {
+            return 0;
+        }
+        boolean staticExempt = request != null && !STATIC_SCORED_EVENTS.contains(eventType)
+                && ReconEvents.isStaticResource(request);
+        if (staticExempt) {
             return 0;
         }
         return weight;

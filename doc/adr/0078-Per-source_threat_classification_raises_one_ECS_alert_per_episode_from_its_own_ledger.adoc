@@ -82,7 +82,11 @@ a weight. These rejections carry weight `0` whatever their category:
 * `PRE_TRUST_INTERNAL_FAILURE` -- `renderUnexpected` answers it and does not feed it, because an
   operator-side failure is not caller behaviour;
 * a static resource (`ReconEvents.isStaticResource`) -- an asset route's miss or a browser-ambient
-  fetch is a page's own reference, not a probe.
+  fetch is a page's own reference, not a probe. The exclusion covers what such a reference can draw,
+  and no more: `SECURITY_FILTER_VIOLATION` and `PARAMETER_LIMIT_EXCEEDED`
+  (`ThreatWeights.STATIC_SCORED_EVENTS`) judge the content the caller sent, which no asset reference
+  produces, so they are scored on a static resource as on any other path. Otherwise injection-shaped
+  parameters or headers aimed at an asset route or at `/favicon.ico` would never be scored.
 
 The feed does not cover two rejections. The first is the late rejection of a streaming body after
 dispatch began (`TerminalDispatch.lateBodyRefusal`). The second is the rejections of the reserved
