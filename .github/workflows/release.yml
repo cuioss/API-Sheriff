@@ -155,7 +155,7 @@ jobs:
   # per-architecture artifact, leg-digest-<arch>, uploaded as the leg's last act.
   #
   # WHY `needs.release.outputs.released-version != ''` IS THE RUN/SKIP DISCRIMINATOR.
-  # At the pinned 7115714 (v0.42.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
+  # At the pinned 3e1ecaf (v0.43.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
   # block, so `released-version` is genuinely readable here. It is EMPTY exactly when the central
   # guard declined to release — the declared version did not move, or a tag for it already exists —
   # so an empty string proves no release was produced, never which predicate refused. The caller
