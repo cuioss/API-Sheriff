@@ -106,6 +106,9 @@ import org.jspecify.annotations.Nullable;
  * {@code ThreatWeights}). The threat feed observes only: it returns nothing,
  * so it can neither hold nor change an answer. An unexpected internal failure
  * ({@link #renderUnexpected}) is never handed to it: an operator-side failure is not caller behaviour.
+ * Nor is a rejection answered without {@link #handleGatewayRejection}: a reserved-path rejection, the
+ * late refusal of a streaming body ({@code TerminalDispatch.lateBodyRefusal}) and the {@code 405} of a
+ * request method the gateway cannot parse.
  * <p>
  * Every writer mutates the response on the request's event loop; the methods may be called from the
  * virtual thread. Thread-safe.
@@ -167,9 +170,10 @@ public final class ErrorResponseWriter {
     }
 
     /**
-     * The per-source threat feed every reported rejection is handed to — the producer side of the
-     * threat score. The writer hands each rejection over under its TRUE event; which rejections count,
-     * under which source and with what weight is the feed's decision ({@code ThreatWeights}). The feed
+     * The per-source threat feed every rejection {@link ErrorResponseWriter#handleGatewayRejection}
+     * reports is handed to — the producer side of the threat score. The writer hands each rejection over
+     * under its TRUE event; which rejections count, under which source and with what weight is the
+     * feed's decision ({@code ThreatWeights}). The feed
      * observes only: it returns nothing, so it never holds or changes an answer.
      * <p>
      * Declared here, beside {@link ReconFeed} and its one caller, so the writer depends on no
@@ -257,8 +261,9 @@ public final class ErrorResponseWriter {
      *                          a pre-trust rejection is answered as the unrouted {@code 404}
      * @param reconFeed         the per-source detection feed every reported rejection is admitted to,
      *                          {@link ReconFeed#NONE} when detection is disabled
-     * @param threatFeed        the per-source threat feed every reported rejection is handed to,
-     *                          {@link ThreatFeed#NONE} when threat classification is disabled
+     * @param threatFeed        the per-source threat feed every rejection {@link #handleGatewayRejection}
+     *                          reports is handed to, {@link ThreatFeed#NONE} when threat
+     *                          classification is disabled
      */
     public ErrorResponseWriter(PortalEndpoint portalEndpoint, GatewayJson gatewayJson,
             GrpcStatusMapper grpcStatusMapper, RejectionReporter rejectionReporter, boolean uniformNotFound,

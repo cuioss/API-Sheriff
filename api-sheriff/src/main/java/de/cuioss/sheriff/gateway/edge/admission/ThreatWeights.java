@@ -60,6 +60,13 @@ import org.jspecify.annotations.Nullable;
  * None of the fixed zeros is a configuration key: a weight that could never act would parse without
  * acting.
  * <p>
+ * <strong>Never handed to the feed.</strong> Only a rejection
+ * {@link de.cuioss.sheriff.gateway.edge.error.ErrorResponseWriter#handleGatewayRejection} answers reaches
+ * these weights. Three answered rejections are answered without it and are never scored: the
+ * reserved-path rejections ({@code ReservedPathHandler}, {@code ReservedBodyReader}), the late refusal of
+ * a streaming body ({@code TerminalDispatch.lateBodyRefusal}) and the {@code 405} of a request method
+ * the gateway cannot parse.
+ * <p>
  * <strong>A filter verdict is scored on a static resource too.</strong> The static-resource exclusion
  * covers what a page's own asset reference or a browser-ambient fetch can draw: a miss, a refused
  * method, a missing credential. It does not cover {@link #STATIC_SCORED_EVENTS}: a security-filter

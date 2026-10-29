@@ -6,7 +6,7 @@
 :source-highlighter: highlight.js
 
 // adr-metadata
-// summary: The gateway keeps a weighted threat score per source on a second ledger of the per-source detection substrate. It admits every categorized rejection the per-request flow renders, before and after the trust boundary, under its true event with the weight of its event category, plus the recon ledger's trip as one more weighted input. The first threshold crossing of an episode raises exactly one WARN ApiSheriff-143 whose last substitution is an ECS 8.17.0 JSON document, mapped to OCSF in the documentation but not emitted as OCSF. The threat ledger only observes: no answer changes. The source key is resolved by its own stage, so the score does not depend on enumeration detection being enabled. Upstream, rate-limiting and configuration events are fixed at weight 0 and have no configuration key. The state is single-node; a SIEM owns cross-node correlation.
+// summary: The gateway keeps a weighted threat score per source on a second ledger of the per-source detection substrate. It admits the rejections that ErrorResponseWriter.handleGatewayRejection renders and that carry a weight, before and after the trust boundary, under their true event with the weight of their event category, plus the recon ledger's trip as one more weighted input. Weight 0, never admitted: the upstream, rate-limiting and configuration categories, an event without a category, INBOUND_BODY_ABORTED, REQUEST_BODY_TIMEOUT, PRE_TRUST_INTERNAL_FAILURE, and on a static resource every rejection except SECURITY_FILTER_VIOLATION and PARAMETER_LIMIT_EXCEEDED. Never handed to the feed: the reserved-path rejections, the late refusal of a streaming body (TerminalDispatch.lateBodyRefusal) and the 405 of a request method the gateway cannot parse. The first threshold crossing of an episode raises exactly one WARN ApiSheriff-143 whose last substitution is an ECS 8.17.0 JSON document, mapped to OCSF in the documentation but not emitted as OCSF. The threat ledger only observes: no answer changes. The source key is resolved by its own stage, so the score does not depend on enumeration detection being enabled. None of the fixed zeros has a configuration key. The state is single-node; a SIEM owns cross-node correlation.
 // tags: edge, detection, threat-classification, ecs, siem, alerting, secure-defaults, observability
 // affects: api-sheriff, integration-tests, documentation
 // supersedes:
@@ -45,7 +45,7 @@ change no answer, status, header or timing. The substrate requires a positive bl
 classifier sets it to the window; under `observe` the ledger never reads it. Slowing or blocking a
 source stays the job of `enumeration_detection`.
 
-=== The feed: every categorized rejection, before and after the trust boundary
+=== The feed: the rejections that carry a weight, before and after the trust boundary
 
 `ErrorResponseWriter.handleGatewayRejection` hands every rejection it renders to a second seam,
 `ErrorResponseWriter.ThreatFeed`, after the recon feed and before the answer is written. It hands
@@ -75,7 +75,8 @@ still hostile, so the score also counts rejections after the trust boundary.
 |===
 
 The switch over `EventCategory` has no default arm, so a new category does not compile until it gets
-a weight. These rejections carry weight `0` whatever their category:
+a weight. An event without a category is not a rejection and weighs `0`. These rejections carry
+weight `0` whatever their category:
 
 * `INBOUND_BODY_ABORTED` and `REQUEST_BODY_TIMEOUT` -- a body that stopped arriving is a network or
   client condition;
@@ -88,11 +89,13 @@ a weight. These rejections carry weight `0` whatever their category:
   produces, so they are scored on a static resource as on any other path. Otherwise injection-shaped
   parameters or headers aimed at an asset route or at `/favicon.ico` would never be scored.
 
-The feed does not cover two rejections. The first is the late rejection of a streaming body after
-dispatch began (`TerminalDispatch.lateBodyRefusal`). The second is the rejections of the reserved
-paths, a fixed public set
+The feed does not cover three answered rejections, because none of them is answered through
+`handleGatewayRejection`. The first is the late rejection of a streaming body after dispatch began
+(`TerminalDispatch.lateBodyRefusal`). The second is the rejections of the reserved paths, a fixed
+public set
 (link:0018-BFF_session_mode_is_one_SessionBinding_seam_behind_a_fixed_reserved-path_and_CSRF_model.adoc[ADR-0018]).
-A weight `0` is never admitted.
+The third is the `405` of a request method the gateway cannot parse (`EdgeRequests.parseMethod`),
+answered before a pipeline request exists. A weight `0` is never admitted.
 
 === Source keying independent of recon
 

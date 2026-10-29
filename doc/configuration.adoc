@@ -4621,8 +4621,9 @@ sources and enumeration detection].
 === `threat_classification`
 
 Per-source threat classification, declarable only in `gateway.yaml`. The gateway keeps a weighted
-score per source over every rejection it answers, before and after the trust boundary, each under its
-true event. A source whose score reaches the threshold raises one *ALERT*: the WARN `ApiSheriff-143`
+score per source over the rejections it answers that carry a weight, before and after the trust
+boundary, each under its true event; *Fixed at zero* below lists the rejections that do not. A source
+whose score reaches the threshold raises one *ALERT*: the WARN `ApiSheriff-143`
 with an ECS-shaped JSON document a SIEM can ingest, counted on `sheriff_threat_alerts_total`.
 Classification *only observes*: an ALERT changes no answer, status, header or timing. The block and
 every key are optional, and an omitted block or key takes its default, so classification runs on
@@ -4681,12 +4682,15 @@ link:adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_
 and a boot event (`configuration`) carry no weight, and the block offers no key for them. An upstream
 failure describes the upstream, not the caller. A blocked source is answered before admission and
 never reaches the score, and counting it would extend a block by the requests it refuses. A boot event
-is not a request. A body that stopped arriving, an unexpected internal failure before the trust
-boundary and a static resource -- an asset route or a browser-ambient fetch -- carry no weight either,
-except a security-filter violation or an exceeded parameter limit, which is scored on a static
-resource as on any other path.
-The rejections of a reserved path -- a fixed public set -- and the refusal of a streaming body after
-dispatch has begun are not scored. There is no `action` key: classification only observes.
+is not a request. A body that stopped arriving (`INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`), an
+unexpected internal failure before the trust boundary (`PRE_TRUST_INTERNAL_FAILURE`), a success or
+informational event, which is no rejection, a category whose weight is set to `0`, and a static
+resource -- an asset route or a browser-ambient fetch -- carry no weight either, except a
+security-filter violation or an exceeded parameter limit (`SECURITY_FILTER_VIOLATION`,
+`PARAMETER_LIMIT_EXCEEDED`), which is scored on a static resource as on any other path.
+Three answered rejections never reach the score at all: the rejections of a reserved path (a fixed
+public set), the refusal of a streaming body after dispatch has begun, and the `405` of a request
+method the gateway cannot parse. There is no `action` key: classification only observes.
 
 *Boot refusals.* `LimitRules.validateThreatClassification` refuses, naming the key:
 

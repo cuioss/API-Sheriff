@@ -20,8 +20,9 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The operator-facing top-level {@code threat_classification} block: the tuning of the per-source
- * threat score the edge keeps on its own detection ledger, fed with every categorized rejection of the
- * per-request flow, and whose first threshold crossing per episode raises one structured ALERT record.
+ * threat score the edge keeps on its own detection ledger, fed with the rejections that carry a weight
+ * (the exact sets are listed in {@code edge.admission.ThreatWeights}), and whose first threshold
+ * crossing per episode raises one structured ALERT record.
  * <p>
  * Every member is optional and independently omissible, and an omitted block resolves to the
  * documented defaults ({@link #defaults()}): classification is on, a source alerts at a score of

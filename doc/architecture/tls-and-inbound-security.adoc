@@ -476,7 +476,7 @@ operator view.
 == Per-Source Threat Classification
 
 The gateway keeps a second per-source count beside the recon ledger: a weighted threat score. It
-counts every categorized rejection a source draws, before and after the trust boundary, and raises
+counts the rejections a source draws that carry a weight, before and after the trust boundary, and raises
 one structured ALERT when a source's score crosses the `threat_classification` threshold. It is the
 second consumer of the per-source detection substrate
 (link:../development/source-detection-substrate.adoc#_second_consumer[Substrate -- Second Consumer]),
@@ -511,10 +511,14 @@ event. `edge.admission.ThreatClassifier` admits it to its own `SourceLedger` wit
 |===
 
 A body that stopped arriving (`INBOUND_BODY_ABORTED`, `REQUEST_BODY_TIMEOUT`), an unexpected internal
-failure (`PRE_TRUST_INTERNAL_FAILURE`, which `renderUnexpected` answers and does not feed) and a static
-resource carry no weight. The static-resource exclusion never covers a filter verdict on the content
-the caller sent: `SECURITY_FILTER_VIOLATION` and `PARAMETER_LIMIT_EXCEEDED` are scored on an asset
-route or a browser-ambient path as on any other. A rejection weighed `0` is never admitted. The count follows the true event,
+failure (`PRE_TRUST_INTERNAL_FAILURE`, which `renderUnexpected` answers and does not feed), an event
+without a category and a static resource carry no weight. The static-resource exclusion never covers a
+filter verdict on the content the caller sent: `SECURITY_FILTER_VIOLATION` and `PARAMETER_LIMIT_EXCEEDED`
+are scored on an asset route or a browser-ambient path as on any other. A rejection weighed `0` is
+never admitted. Three answered rejections never reach the feed, because they are answered without
+`handleGatewayRejection`: the rejections of the reserved paths, the late refusal of a streaming body
+after dispatch began (`TerminalDispatch.lateBodyRefusal`) and the `405` of a request method the gateway
+cannot parse. The count follows the true event,
 as the recon count does: a bearer `401` answered as the uniform `404` counts under `authentication`.
 
 *The two tiers.* The recon ledger's trip is an input to the score, not an ALERT: `SourceGate` hands

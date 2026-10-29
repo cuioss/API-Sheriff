@@ -209,9 +209,12 @@ What the substrate serves it:
 * *The shared key.* `SourceKeys` resolves the key once and stashes it, and runs whenever either
   consumer is enabled. The threat score therefore does not depend on `enumeration_detection` being
   on.
-* *Weighted admission.* `ThreatWeights.weightOf` gives each categorized rejection the weight of its
-  event category, judged on the true event, before and after the trust boundary alike. It gives `0`
-  to the categories and events that are not caller behaviour, and a `0` is never admitted.
+* *Weighted admission.* `ThreatWeights.weightOf` gives each rejection the threat feed is handed the
+  weight of its event category, judged on the true event, before and after the trust boundary alike.
+  It gives `0` to the categories and events that are not caller behaviour and to a static resource,
+  except a filter verdict on the content the caller sent (`ThreatWeights.STATIC_SCORED_EVENTS`), and a
+  `0` is never admitted. The `ThreatWeights` Javadoc holds the exact sets, including the rejections
+  that are answered without reaching the feed.
 * *The recon trip as an input.* The recon ledger's `SourceTrip` is admitted to the threat ledger
   with the weight `weights.recon_trip` under the tag `SOURCE_TRIPPED`, for the tripped key. A recon
   trip raises the score; it is never an ALERT of its own.

@@ -876,7 +876,8 @@ counted on each separately
 
 Enumeration detection counts the probes of one kind. Threat classification adds them up: it keeps a
 weighted score per source over the rejections the source receives that carry a weight, before and after
-authentication, and raises one *ALERT* when the score reaches a threshold. All keys are in
+authentication, and raises one *ALERT* when the score reaches a threshold. All keys, and which
+rejections carry no weight or never reach the score, are in
 link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`].
 
 *An ALERT changes nothing a client sees.* Classification runs on every gateway, also without a

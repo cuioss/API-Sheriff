@@ -43,10 +43,12 @@ import org.jspecify.annotations.Nullable;
  * source's episode raises exactly one ALERT: the substrate trips a source at most once per
  * {@code CLEAR} period and re-arms only after its score drained to zero.
  * <p>
- * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ThreatFeed}, the classifier admits every
- * categorized rejection the writer handles, under its TRUE event as the tag and with the weight
- * {@link ThreatWeights} gives it, for the source {@link SourceKeys} stashed on the context. A rejection
- * weighed at {@code 0} is not admitted, and a request that carries no stashed source admits nothing.
+ * <strong>The feed.</strong> As the {@link ErrorResponseWriter.ThreatFeed}, the classifier admits the
+ * rejections {@link ErrorResponseWriter#handleGatewayRejection} hands it that carry a weight, under
+ * their TRUE event as the tag and with the weight {@link ThreatWeights} gives them, for the source
+ * {@link SourceKeys} stashed on the context. A rejection weighed at {@code 0} is not admitted, and a
+ * request that carries no stashed source admits nothing; {@link ThreatWeights} lists the zero-weight
+ * rejections and the ones answered without reaching the feed.
  * <p>
  * <strong>The recon trip.</strong> {@link #admitReconTrip} admits a trip of the recon ledger as one more
  * input, with the weight {@code weights.recon_trip} under the tag {@link EventType#SOURCE_TRIPPED}, for

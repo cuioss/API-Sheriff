@@ -237,8 +237,9 @@ import org.jspecify.annotations.Nullable;
  * <strong>Per-source threat classification.</strong> Unless {@code threat_classification} is disabled,
  * the constructor builds a {@link ThreatClassifier} with a threat ledger of its own, whose trip raises
  * one ALERT per episode through {@link ThreatAlerts}. The {@link ErrorResponseWriter} hands it every
- * reported rejection under its true event, and the {@link SourceGate} hands it every recon trip as one
- * more weighted input. The classifier only observes: no answer, status, header or timing changes. A
+ * rejection {@code handleGatewayRejection} reports, under its true event, and the classifier scores the
+ * ones that carry a weight ({@code ThreatWeights} lists the exact sets); the {@link SourceGate} hands it
+ * every recon trip as one more weighted input. The classifier only observes: no answer, status, header or timing changes. A
  * disabled block builds no classifier, and a recon trip then raises nothing beyond its own record.
  * <p>
  * <strong>Negotiated HTML error pages.</strong> With {@code portal.error_pages} on, the three
