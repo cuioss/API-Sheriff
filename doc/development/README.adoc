@@ -345,9 +345,12 @@ The epic ledger routed three open defects to the decision; ADR-0075 gives the re
   `BenchmarkScriptConfigContractTest`, which binds every k6 benchmark script to the shared gateway
   configuration keys it depends on, so a key changed without its script fails the build and names
   that script.
-* *(9) `K6BenchmarkLogMessages` outside the reach of `LogMessagesCatalogueTest` -- declined.* The
-  guard's reach beyond the `api-sheriff` module is a catalogue-completeness defect class in a
-  different module.
+* *(9) `K6BenchmarkLogMessages` outside the reach of `LogMessagesCatalogueTest` -- declined, since
+  guarded.* ADR-0075 declined it as a catalogue-completeness defect class in a different module, not
+  a resource-lifecycle one. `LogMessagesCatalogueTest` now reaches every reactor module carrying a
+  `LogMessages` catalogue, `K6BenchmarkLogMessages` included: it reads the catalogue sources of every
+  module the root `pom.xml` declares, so a duplicate identifier or an identifier outside its level
+  band fails the build in any module and names the module, catalogue and field.
 
 == Inbound Validation: Where the Code Lives and Why
 
