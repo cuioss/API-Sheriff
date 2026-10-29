@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -36,6 +37,7 @@ import io.vertx.core.net.NetClient;
 import io.vertx.core.net.NetClientOptions;
 import io.vertx.core.net.NetSocket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -67,13 +69,14 @@ import org.junit.jupiter.api.Test;
  *       HTTP/1.1 echo upstream with a {@code Content-Length} equal to the bytes sent, and the body
  *       whole.</li>
  *   <li><em>A Rapid-Reset flood ends its connection</em> — {@value #FLOOD_RESETS} streams, each reset
- *       by the client straight behind the {@code HEADERS} frame that opened it, go past the pinned limit
- *       of {@value #RESET_LIMIT} client resets per window: the connection is ended with
+ *       by the client straight behind the {@code HEADERS} frame that opened it, go one past the pinned
+ *       limit of {@value #RESET_LIMIT} client resets per window: the connection is ended with
  *       {@code GOAWAY ENHANCE_YOUR_CALM}, and the gateway stays ready and serves a fresh
  *       connection.</li>
  *   <li><em>A {@code CONTINUATION} flood drops its connection</em> — a header block left open across
- *       {@code CONTINUATION} frames and grown well past the 16 KiB header-list bound is never answered:
- *       the connection is ended with an error {@code GOAWAY}, and the gateway stays ready.</li>
+ *       {@code CONTINUATION} frames, grown frame by frame up to the 16 KiB header-list bound and then
+ *       taken to nearly twice it by its last frame, is never answered: the connection is ended with an
+ *       error {@code GOAWAY}, and the gateway stays ready.</li>
  * </ul>
  * The two floods are written frame by frame over a raw TLS socket ({@link RawTlsHttp2Connection}): an
  * HTTP/2 client library neither resets a stream straight behind its {@code HEADERS} frame nor leaves a
@@ -81,6 +84,31 @@ import org.junit.jupiter.api.Test;
  * {@code NO_ERROR} resets, a header block within the bound spread over {@code CONTINUATION} frames —
  * are {@code GatewayEdgeHttp2AbuseTest}; {@link Http2EarlyResponseResetIT} is the wire-level control
  * that four hundred gateway-reset uploads on one connection never trip the guard.
+ * <p>
+ * <strong>Each flood ends on the frame that trips its bound.</strong> The gateway sends its
+ * {@code GOAWAY} and closes the connection at once. A TCP connection closed while bytes its peer sent
+ * are still unread is reset rather than closed in order, and the reset can cost the client the
+ * {@code GOAWAY} in front of it: bytes not yet transmitted are discarded on the closing side, the
+ * gateway's own TLS relay and the container runtime's port proxy close their client leg the same way,
+ * and a client whose flood write is still pending fails that write on the reset and closes before it
+ * reads what had arrived. A flood written well past its bound left exactly that unread tail, so whether
+ * the {@code GOAWAY} was observed depended on timing. Each flood is therefore read whole before its bound
+ * trips: the Rapid-Reset flood stops at the reset one past the limit, and the {@code CONTINUATION} flood
+ * keeps its header block within the bound until its last frame, which alone carries as many fields as
+ * fit in 16 KiB, the frame size every HTTP/2 endpoint accepts, and so takes the block to nearly twice
+ * the bound — past the slack, a quarter of the bound, that the transport allows an open header block
+ * above the announced one. The gateway then closes a connection it has read to the end, the close is
+ * orderly on every leg, and the {@code GOAWAY} reaches the client. A transport that tripped only later
+ * than the last frame would leave the connection open, which the cases report as a connection that was
+ * not ended rather than as a lost {@code GOAWAY}.
+ * <p>
+ * <strong>Nothing of the connection preface trails a flood.</strong> Over TLS the gateway sends its
+ * {@code SETTINGS} as soon as the handshake has negotiated {@code h2}, without waiting for the client
+ * preface. The connection is therefore begun on the socket's event loop inside the connect callback —
+ * the frame handler is in place before the first frame is delivered, and the client preface is written
+ * before the acknowledgement of those {@code SETTINGS} can be, which the gateway would otherwise read as
+ * a corrupt preface and end with {@code GOAWAY PROTOCOL_ERROR} — and a case writes its flood only once
+ * that acknowledgement has been sent.
  * <p>
  * The echo upstream is go-httpbin behind {@code /proxy/forward-all}, the route with no forward block,
  * so every client header the gateway does not own crosses it.
@@ -102,14 +130,24 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
     /** The pinned per-connection Rapid-Reset limit, restated so a change to it is noticed here. */
     private static final int RESET_LIMIT = 200;
 
-    /** Client resets the flood sends on one connection: well past the limit. */
-    private static final int FLOOD_RESETS = RESET_LIMIT + 50;
+    /**
+     * Client resets the flood sends on one connection: one past the limit, so the reset that trips the
+     * guard is the last frame the client sends.
+     */
+    private static final int FLOOD_RESETS = RESET_LIMIT + 1;
 
     /** The header-list bound in bytes, restated so a change to it is noticed here. */
     private static final int HEADER_LIST_BOUND = 16 * 1024;
 
-    /** The size of the header value each {@code CONTINUATION} frame of the flood carries. */
-    private static final int FLOOD_FIELD_BYTES = 1024;
+    /**
+     * The largest frame payload every HTTP/2 endpoint accepts, whatever it announces: the initial
+     * {@code SETTINGS_MAX_FRAME_SIZE} (RFC 9113 §6.5.2). The last frame of the {@code CONTINUATION} flood
+     * fills it.
+     */
+    private static final int FRAME_PAYLOAD_BYTES = 16 * 1024;
+
+    /** The header value each field of the {@code CONTINUATION} flood carries: 1 KiB. */
+    private static final String FLOOD_FILLER = "f".repeat(1024);
 
     /** A syntactically valid {@code HTTP2-Settings} value: base64url of one SETTINGS parameter. */
     private static final String HTTP2_SETTINGS_VALUE = "AAMAAABkAAQAoAAAAAIAAAAA";
@@ -184,6 +222,7 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
     @DisplayName("a create-then-reset flood past 200 client resets ends its connection with GOAWAY ENHANCE_YOUR_CALM")
     void rapidResetFloodEndsTheConnectionWithEnhanceYourCalm() throws Exception {
         RawTlsHttp2Connection connection = RawTlsHttp2Connection.open(vertx, port);
+        // The reset one past the limit is the last frame: the gateway closes a connection it has read to the end.
         Buffer flood = Buffer.buffer();
         for (int index = 0; index < FLOOD_RESETS; index++) {
             int streamId = 2 * index + 1;
@@ -197,7 +236,8 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
 
         assertAll("a Rapid-Reset flood over TLS",
                 () -> assertEquals("h2", connection.negotiatedProtocol(), "precondition: ALPN negotiated h2"),
-                () -> assertTrue(closed, "the gateway must end the flooding connection"),
+                () -> assertTrue(closed,
+                        () -> "the gateway must end the flooding connection: " + connection.describe()),
                 () -> assertEquals(Optional.of(ENHANCE_YOUR_CALM), connection.goAwayCode(),
                         () -> "the connection past the pinned reset limit is ended with GOAWAY ENHANCE_YOUR_CALM: "
                                 + connection.describe()));
@@ -208,26 +248,45 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
     @DisplayName("a CONTINUATION flood growing the header block past 16 KiB drops the connection unanswered")
     void continuationFloodPastTheHeaderListBoundDropsTheConnection() throws Exception {
         RawTlsHttp2Connection connection = RawTlsHttp2Connection.open(vertx, port);
-        String filler = "f".repeat(FLOOD_FIELD_BYTES);
-        int floodFrames = 4 * HEADER_LIST_BOUND / FLOOD_FIELD_BYTES;
-        Buffer flood = RawTlsHttp2Connection.headersLeftOpen(1,
-                connection.requestHead("GET", rootPath + ECHO_PATH + "/continuation-flood"));
-        for (int index = 0; index < floodFrames; index++) {
-            // No frame of the flood carries END_HEADERS: the header block is never ended.
-            flood.appendBuffer(RawTlsHttp2Connection.continuation(1, List.of(Map.entry("x-flood-" + index, filler))));
+        List<Map.Entry<String, String>> head = connection.requestHead("GET",
+                rootPath + ECHO_PATH + "/continuation-flood");
+        // Every flood field encodes to the same size: the names are zero-padded to one length.
+        int fieldBytes = RawTlsHttp2Connection.hpack(List.of(floodField(0))).length;
+        int framesWithinTheBound = (HEADER_LIST_BOUND - RawTlsHttp2Connection.hpack(head).length) / fieldBytes;
+        int fieldsInTheLastFrame = FRAME_PAYLOAD_BYTES / fieldBytes;
+        // No frame of the flood carries END_HEADERS: the header block is never ended. It grows one field
+        // per frame while it stays within the bound, so nothing ahead of the last frame can trip it.
+        Buffer flood = RawTlsHttp2Connection.headersLeftOpen(1, head);
+        int field = 0;
+        for (int frame = 0; frame < framesWithinTheBound; frame++) {
+            flood.appendBuffer(RawTlsHttp2Connection.continuation(1, List.of(floodField(field++))));
         }
+        // The last frame takes the block to nearly twice the bound: the frame that trips it is the last
+        // byte the client sends, so the gateway closes a connection it has read to the end.
+        List<Map.Entry<String, String>> lastFrame = new ArrayList<>();
+        for (int index = 0; index < fieldsInTheLastFrame; index++) {
+            lastFrame.add(floodField(field++));
+        }
+        flood.appendBuffer(RawTlsHttp2Connection.continuation(1, lastFrame));
 
         connection.write(flood);
         boolean closed = connection.awaitClosed(CALL_TIMEOUT_SECONDS);
 
         assertAll("a CONTINUATION flood past the header-list bound over TLS",
                 () -> assertEquals("h2", connection.negotiatedProtocol(), "precondition: ALPN negotiated h2"),
-                () -> assertTrue(closed, "the gateway must drop the flooding connection"),
-                () -> assertTrue(connection.goAwayCode().isPresent(), "the gateway announces the drop with GOAWAY"),
+                () -> assertTrue(closed,
+                        () -> "the gateway must drop the flooding connection: " + connection.describe()),
+                () -> assertTrue(connection.goAwayCode().isPresent(),
+                        () -> "the gateway announces the drop with GOAWAY: " + connection.describe()),
                 () -> assertNotEquals(Optional.of(NO_ERROR), connection.goAwayCode(),
-                        "the GOAWAY names an error, not a graceful shutdown"),
+                        () -> "the GOAWAY names an error, not a graceful shutdown: " + connection.describe()),
                 () -> assertFalse(connection.answered(1), "the flooded stream is never answered"));
         assertGatewayStaysReady();
+    }
+
+    /** The {@code index}-th field of the {@code CONTINUATION} flood: a 1 KiB value under a zero-padded name. */
+    private static Map.Entry<String, String> floodField(int index) {
+        return Map.entry("x-flood-%03d".formatted(index), FLOOD_FILLER);
     }
 
     /** The gateway reports readiness and serves a fresh connection after a flood ended one of its connections. */
@@ -327,7 +386,17 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
         /** The last stream id and the debug data of the GOAWAY the gateway sent, as text. */
         private final CompletableFuture<String> goAwayDetail = new CompletableFuture<>();
         private final CompletableFuture<Void> closed = new CompletableFuture<>();
+        /** Completes once the acknowledgement of the gateway's {@code SETTINGS} has been written. */
+        private final Promise<Void> settingsAcknowledged = Promise.promise();
+        /** The write of the client connection preface and its empty {@code SETTINGS}. */
+        private final Future<Void> prefaceSent;
 
+        /**
+         * Installs the frame handler and writes the client connection preface. Runs on the socket's event
+         * loop inside the connect callback, so no frame of the gateway is delivered before the handler is
+         * in place, and the preface is written before the acknowledgement of the gateway's {@code SETTINGS}
+         * can be.
+         */
         private RawTlsHttp2Connection(NetSocket socket, int port) {
             this.socket = socket;
             this.port = port;
@@ -337,9 +406,14 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
             // above still settles.
             socket.exceptionHandler(cause -> {
             });
+            prefaceSent = socket.write(Buffer.buffer(PREFACE).appendBuffer(frame(SETTINGS, 0, 0, new byte[0])));
         }
 
-        /** Connects over TLS, negotiating {@code h2}, and sends the connection preface and an empty SETTINGS. */
+        /**
+         * Connects over TLS, negotiating {@code h2}, sends the connection preface and an empty
+         * {@code SETTINGS}, and returns once the gateway's {@code SETTINGS} have been acknowledged — so no
+         * byte of the preface exchange can trail what a case writes next.
+         */
         static RawTlsHttp2Connection open(Vertx vertx, int port) throws Exception {
             NetClient client = vertx.createNetClient(new NetClientOptions()
                     .setSsl(true)
@@ -348,10 +422,12 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
                     // The stack's self-signed localhost certificate; scoped to this black-box IT.
                     .setTrustAll(true)
                     .setHostnameVerificationAlgorithm(""));
-            NetSocket socket = await(client.connect(port, "localhost"), "the raw TLS HTTP/2 connection");
-            RawTlsHttp2Connection connection = new RawTlsHttp2Connection(socket, port);
-            await(connection.write(Buffer.buffer(PREFACE).appendBuffer(frame(SETTINGS, 0, 0, new byte[0]))),
-                    "the HTTP/2 connection preface to be sent");
+            // The mapping runs in the connect callback on the socket's event loop: the gateway sends its
+            // SETTINGS as soon as the handshake has negotiated h2, without waiting for the client preface.
+            RawTlsHttp2Connection connection = await(client.connect(port, "localhost")
+                    .map(socket -> new RawTlsHttp2Connection(socket, port)), "the raw TLS HTTP/2 connection");
+            await(connection.prefaceSent, "the HTTP/2 connection preface to be sent");
+            await(connection.settingsAcknowledged.future(), "the gateway's SETTINGS to be acknowledged");
             return connection;
         }
 
@@ -492,7 +568,9 @@ class Http2StreamAbuseIT extends BaseIntegrationTest {
             switch (type) {
                 case SETTINGS -> {
                     if ((flags & FLAG_ACK) == 0) {
-                        socket.write(frame(SETTINGS, FLAG_ACK, 0, new byte[0]));
+                        socket.write(frame(SETTINGS, FLAG_ACK, 0, new byte[0]))
+                                .onSuccess(written -> settingsAcknowledged.tryComplete())
+                                .onFailure(settingsAcknowledged::tryFail);
                     }
                 }
                 case PING -> {
