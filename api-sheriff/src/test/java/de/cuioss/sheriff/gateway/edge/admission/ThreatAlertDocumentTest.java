@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,7 +65,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("carries the fixed ECS event classification")
-        void carriesEventClassification() throws JsonProcessingException {
+        void carriesEventClassification() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", DECLARED_HOST));
 
@@ -86,7 +87,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("carries the MITRE ATT&CK reconnaissance tactic and active-scanning technique")
-        void carriesThreatFramework() throws JsonProcessingException {
+        void carriesThreatFramework() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", DECLARED_HOST));
 
@@ -104,7 +105,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("carries the timestamp, ECS version, log level and fixed message")
-        void carriesBaseFields() throws JsonProcessingException {
+        void carriesBaseFields() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", DECLARED_HOST));
 
@@ -126,7 +127,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("an IPv4 key is written as both source.address and source.ip")
-        void ipv4KeyCarriesSourceIp() throws JsonProcessingException {
+        void ipv4KeyCarriesSourceIp() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("203.0.113.7", DECLARED_HOST));
 
@@ -142,7 +143,7 @@ class ThreatAlertDocumentTest {
         @ParameterizedTest(name = "[{index}] {0}")
         @ValueSource(strings = {"2001:db8:1:2::/64", SourceKey.UNKNOWN_SOURCE})
         @DisplayName("an IPv6 /64 prefix or the unknown source is written as source.address only")
-        void nonIpv4KeyCarriesNoSourceIp(String sourceText) throws JsonProcessingException {
+        void nonIpv4KeyCarriesNoSourceIp(String sourceText) throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey(sourceText, DECLARED_HOST));
 
@@ -157,7 +158,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("a declared host is written as url.domain")
-        void declaredHostCarriesUrlDomain() throws JsonProcessingException {
+        void declaredHostCarriesUrlDomain() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", DECLARED_HOST));
 
@@ -170,7 +171,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("the undeclared-host sentinel writes no url member")
-        void undeclaredHostCarriesNoUrl() throws JsonProcessingException {
+        void undeclaredHostCarriesNoUrl() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", SourceKey.UNDECLARED_HOST));
 
@@ -191,7 +192,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("the per-event breakdown equals the trip's contributions")
-        void contributionsEqualTrip() throws JsonProcessingException {
+        void contributionsEqualTrip() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", DECLARED_HOST));
 
@@ -206,7 +207,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("the per-category breakdown folds the contributions by category, recon trip apart")
-        void categoriesFoldContributions() throws JsonProcessingException {
+        void categoriesFoldContributions() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", DECLARED_HOST));
 
@@ -220,7 +221,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("the score and risk score are the level at the trip, with threshold and window")
-        void scoreIsLevelAtTrip() throws JsonProcessingException {
+        void scoreIsLevelAtTrip() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("192.0.2.10", DECLARED_HOST));
 
@@ -244,7 +245,7 @@ class ThreatAlertDocumentTest {
 
         @Test
         @DisplayName("the output is a single valid JSON object without control characters")
-        void outputIsValidJsonWithoutControlCharacters() throws JsonProcessingException {
+        void outputIsValidJsonWithoutControlCharacters() throws Exception {
             // Arrange
             SourceTrip trip = trip(new SourceKey("2001:db8:1:2::/64", SourceKey.UNDECLARED_HOST));
 

@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.logging.LogRecord;
 
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.cuioss.sheriff.gateway.ApiSheriffLogMessages;
@@ -142,7 +143,7 @@ class ThreatAlertsTest {
         assertAll(
                 () -> LogAsserts.assertSingleLogMessagePresentContaining(TestLogLevel.WARN, untracked),
                 () -> assertEquals(2, TestLoggerFactory.getTestHandler()
-                        .resolveLogMessagesContaining(TestLogLevel.DEBUG, "left a further source untracked").size(),
+                                .resolveLogMessagesContaining(TestLogLevel.DEBUG, "left a further source untracked").size(),
                         "every later overflow is a DEBUG diagnostic"),
                 () -> assertEquals(3.0, counter.count(), 0.0, "every overflow is counted"),
                 () -> assertTrue(alertRecords().isEmpty(), "an overflow raises no ALERT"));
