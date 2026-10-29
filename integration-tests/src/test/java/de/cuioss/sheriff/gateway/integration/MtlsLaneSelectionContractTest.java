@@ -89,7 +89,10 @@ import org.junit.jupiter.api.Test;
  * expressions, the IT passing {@code groups} when the list is empty or any entry holds, and being
  * excluded when any {@code excludedGroups} entry holds. An entry is a plain tag name or combines them
  * with {@code !} (not), {@code &} (and) and {@code |} (or), in that precedence, with parentheses and
- * the {@code any()} / {@code none()} keywords. An entry this guard cannot parse fails the test naming
+ * the {@code any()} / {@code none()} keywords. Every {@code ${...}} reference in either element is
+ * resolved first, the way a {@code test.mtls.*} value is (below), because Maven interpolates it before
+ * failsafe reads it; one that cannot be resolved fails the test naming the lane and the reference. An
+ * entry this guard cannot parse fails the test naming
  * the lane and the expression — it is never read as "does not select". The IT's tags are read from
  * source the way JUnit resolves them: its own class-level {@code @Tag} and {@code @Tags} annotations
  * plus those of every superclass reached through its {@code extends} chain in the module's test
@@ -385,8 +388,21 @@ class MtlsLaneSelectionContractTest {
         List<String> cyclic = specimenViolations(pomPropertiesElement("<mtls.port>${mtls.alias}</mtls.port>"
                 + "<mtls.alias>${mtls.port}</mtls.alias>") + profile("ref-cyclic", properties(referenced), ""),
                 required, published);
+        List<String> unknownGroups = specimenViolations(profile("groups-unknown", "<groups>${lane.tags}</groups>", ""),
+                required, published);
 
         assertAll(
+                () -> assertTrue(unknownGroups.stream().anyMatch(violation -> violation.contains("groups-unknown/default")
+                                && violation.contains("${lane.tags}") && violation.contains("cannot be resolved")),
+                        () -> "a lane whose groups reference cannot be resolved was read as a tag name instead of"
+                                + " refused naming the lane and the reference: " + unknownGroups),
+                () -> assertEquals(List.of(), specimenViolations(pomPropertiesElement("<lane.tags>sleep-bound</lane.tags>")
+                        + profile("groups-resolved", "<groups>${lane.tags}</groups>", ""), required, published),
+                        "a lane whose groups reference resolves to a tag the IT does not carry was rejected"),
+                () -> assertFalse(specimenViolations(pomPropertiesElement("<lane.tags>!sleep-bound</lane.tags>")
+                        + profile("groups-selecting", "<groups>${lane.tags}</groups>", ""), required, published)
+                        .isEmpty(), "a lane whose groups reference resolves to an expression selecting the IT, with"
+                        + " no properties, was accepted"),
                 () -> assertEquals(List.of(), specimenViolations(pomPropertiesElement("<mtls.port>10444</mtls.port>")
                         + profile("ref-published", properties(referenced), ""), required, published),
                         "a lane whose port is a reference resolving to a published port was rejected"),
@@ -1039,7 +1055,8 @@ class MtlsLaneSelectionContractTest {
         refuseUnreadablePatterns("include", includes, unreadable);
         refuseUnreadablePatterns("exclude", excludes, unreadable);
         return new Lane(name, includes.isEmpty() ? DEFAULT_INCLUDES : includes, excludes,
-                tagExpressions(effective, "groups", unreadable), tagExpressions(effective, "excludedGroups", unreadable),
+                tagExpressions(effective, "groups", pomProperties, unreadable),
+                tagExpressions(effective, "excludedGroups", pomProperties, unreadable),
                 List.copyOf(unreadable), properties, List.copyOf(unresolved));
     }
 
@@ -1058,12 +1075,28 @@ class MtlsLaneSelectionContractTest {
 
     /**
      * The tag expressions of a {@code groups} or {@code excludedGroups} element: one per
-     * comma-separated entry. An entry that does not parse is recorded in {@code unreadable}, naming the
-     * element and the entry, and contributes no expression.
+     * comma-separated entry, after every {@code ${...}} reference in the element is resolved the way
+     * {@link #resolve} resolves a {@code test.mtls.*} value — Maven interpolates the element before
+     * failsafe reads it, so a reference read as a literal tag name would turn a lane that runs the IT
+     * into one this guard passes over. An element whose references cannot be resolved, and an entry
+     * that does not parse, is recorded in {@code unreadable}, naming the element and the text, and
+     * contributes no expression.
      */
-    private static List<TagExpression> tagExpressions(Conf effective, String name, List<String> unreadable) {
+    private static List<TagExpression> tagExpressions(Conf effective, String name, Map<String, String> pomProperties,
+            List<String> unreadable) {
         List<TagExpression> expressions = new ArrayList<>();
-        for (String entry : commaSeparated(effective, name)) {
+        Optional<String> declared = child(effective, name).map(Conf::value);
+        if (declared.isEmpty()) {
+            return expressions;
+        }
+        String value;
+        try {
+            value = resolve(declared.get(), pomProperties, List.of());
+        } catch (IllegalArgumentException e) {
+            unreadable.add(name + " '" + declared.get() + "' cannot be resolved: " + e.getMessage());
+            return expressions;
+        }
+        for (String entry : commaSeparated(value)) {
             try {
                 expressions.add(TagExpression.parse(entry));
             } catch (IllegalArgumentException e) {
@@ -1078,15 +1111,13 @@ class MtlsLaneSelectionContractTest {
                 .orElse(List.of());
     }
 
-    private static List<String> commaSeparated(Conf effective, String name) {
+    private static List<String> commaSeparated(String value) {
         List<String> entries = new ArrayList<>();
-        child(effective, name).ifPresent(conf -> {
-            for (String entry : conf.value().split(",")) {
-                if (!entry.isBlank()) {
-                    entries.add(entry.strip());
-                }
+        for (String entry : value.split(",")) {
+            if (!entry.isBlank()) {
+                entries.add(entry.strip());
             }
-        });
+        }
         return entries;
     }
 
