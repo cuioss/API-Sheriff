@@ -30,6 +30,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -66,6 +67,7 @@ import io.vertx.core.Promise;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.streams.ReadStream;
 import io.vertx.ext.web.RoutingContext;
@@ -196,19 +198,21 @@ class InboundBodyDepartureTest {
             GatewayException departed = dispatchAfterDeparture(stage, route, departureCause(), bodyless());
             GatewayException bodyFailed = dispatchAfterDeparture(stage, route, departureCause(), streamed());
             Map<String, Boolean> verdicts = new LinkedHashMap<>();
+            StreamAwareRetryGate retryGate = new StreamAwareRetryGate(true);
 
             // The verdicts are read inside a guarded call, where the dispatch's retry state is bound; outside
             // one the predicate refuses everything, so a refusal there would prove nothing.
+            Callable<HttpClientResponse> readVerdicts = () -> {
+                verdicts.put("transport failure", DispatchStage.allowsRetryAfter(
+                        new IllegalStateException(Generators.letterStrings(8, 16).next())));
+                verdicts.put("client-left", DispatchStage.allowsRetryAfter(departed));
+                verdicts.put("client-left, wrapped", DispatchStage.allowsRetryAfter(
+                        new ExecutionException(departed)));
+                verdicts.put("body-stream-failed", DispatchStage.allowsRetryAfter(bodyFailed));
+                throw departed;
+            };
             GatewayException thrown = assertThrows(GatewayException.class, () -> stage.guardedDispatch(guard,
-                    new StreamAwareRetryGate(true), HttpMethod.GET, () -> 0L, () -> false, () -> {
-                        verdicts.put("transport failure", DispatchStage.allowsRetryAfter(
-                                new IllegalStateException(Generators.letterStrings(8, 16).next())));
-                        verdicts.put("client-left", DispatchStage.allowsRetryAfter(departed));
-                        verdicts.put("client-left, wrapped", DispatchStage.allowsRetryAfter(
-                                new ExecutionException(departed)));
-                        verdicts.put("body-stream-failed", DispatchStage.allowsRetryAfter(bodyFailed));
-                        throw departed;
-                    }));
+                    retryGate, HttpMethod.GET, () -> 0L, () -> false, readVerdicts));
 
             assertAll("the retry verdicts on an idempotent request that sent no body byte",
                     () -> assertEquals(Boolean.TRUE, verdicts.get("transport failure"),
@@ -422,8 +426,10 @@ class InboundBodyDepartureTest {
         DispatchStage.InboundBody body = DispatchStage.InboundBody.arm(new SilentStream());
         body.clientDeparted(cause);
         HttpMethod method = framing.bodyless() ? HttpMethod.GET : HttpMethod.POST;
+        String requestUri = "/" + route.id();
+        Map<String, String> noForwardHeaders = Map.of();
         return assertThrows(GatewayException.class,
-                () -> stage.dispatch(route, method, "/" + route.id(), Map.of(), body, framing));
+                () -> stage.dispatch(route, method, requestUri, noForwardHeaders, body, framing));
     }
 
     private static DispatchStage.BodyFraming bodyless() {

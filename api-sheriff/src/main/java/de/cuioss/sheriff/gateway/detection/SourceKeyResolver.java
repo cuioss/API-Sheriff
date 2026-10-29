@@ -117,7 +117,7 @@ public final class SourceKeyResolver {
         InetAddress parsed;
         try {
             parsed = InetAddress.ofLiteral(literal);
-        } catch (IllegalArgumentException notALiteral) {
+        } catch (IllegalArgumentException _) {
             return SourceKey.UNKNOWN_SOURCE;
         }
         if (parsed instanceof Inet4Address) {

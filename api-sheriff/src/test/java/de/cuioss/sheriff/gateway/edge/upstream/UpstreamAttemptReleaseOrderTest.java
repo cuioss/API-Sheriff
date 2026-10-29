@@ -38,6 +38,7 @@ import io.vertx.core.VertxOptions;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerRequest;
@@ -170,7 +171,7 @@ class UpstreamAttemptReleaseOrderTest {
     private int statusOfARequestFrom(Context context) throws Exception {
         CompletableFuture<Integer> status = new CompletableFuture<>();
         context.runOnContext(onContext -> client.request(options("/ok"))
-                .compose(request -> request.send().map(response -> response.statusCode()))
+                .compose(request -> request.send().map(HttpClientResponse::statusCode))
                 .onComplete(answered -> {
                     if (answered.succeeded()) {
                         status.complete(answered.result());
@@ -209,7 +210,7 @@ class UpstreamAttemptReleaseOrderTest {
     private static void awaitOnTheLoop(CountDownLatch latch) {
         try {
             latch.await(Awaits.TEARDOWN_CEILING_SECONDS, TimeUnit.SECONDS);
-        } catch (InterruptedException interrupted) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
         }
     }

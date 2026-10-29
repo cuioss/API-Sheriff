@@ -100,7 +100,7 @@ CONFIRMED = doc claim of a limitation confirmed accurate.
 
 |GW-12: rejections are problem+json category-only; secrets redacted in `toString()`
 |FULLY
-|`GatewayEdgeRoute.java:1102-1116`; `OidcConfig.java:90-91`; unexpected exceptions → opaque 500, except before the trust boundary on a routed address, where they are the floored unrouted 404 (GW-16)
+|`GatewayEdgeRoute.java:727-731`; `ErrorResponseWriter.java:261-272`; `OidcConfig.java:90-91`; unexpected exceptions → opaque 500, except before the trust boundary on a routed address, where they are the floored unrouted 404 (GW-16)
 
 |Inbound-filter floor non-skippable; omitted profile → `strict`; `minimal` refused on authenticated/BFF routes (ADR-0024)
 |FULLY

@@ -361,6 +361,8 @@ class SourceLedgerTest {
     @DisplayName("settings and admission refuse values that cannot mean anything")
     void refusesMeaninglessValues() {
         SourceLedger ledger = ledger(1, Action.OBSERVE, WINDOW);
+        Duration negativeBlock = Duration.ofSeconds(-1);
+        SourceKey source = key(1);
 
         assertAll("each bound is enforced",
                 () -> assertThrows(IllegalArgumentException.class,
@@ -368,7 +370,7 @@ class SourceLedgerTest {
                 () -> assertThrows(IllegalArgumentException.class,
                         () -> new Settings(1, Duration.ZERO, Action.OBSERVE, WINDOW)),
                 () -> assertThrows(IllegalArgumentException.class,
-                        () -> new Settings(1, WINDOW, Action.BLOCK, Duration.ofSeconds(-1))),
-                () -> assertThrows(IllegalArgumentException.class, () -> ledger.admit(key(1), 0, Tag.PROBE)));
+                        () -> new Settings(1, WINDOW, Action.BLOCK, negativeBlock)),
+                () -> assertThrows(IllegalArgumentException.class, () -> ledger.admit(source, 0, Tag.PROBE)));
     }
 }

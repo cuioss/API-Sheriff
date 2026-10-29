@@ -260,7 +260,7 @@ class GatewayEdgeHeldAnswerBudgetTest {
                 return true;
             }
             return false;
-        } catch (TimeoutException held) {
+        } catch (TimeoutException _) {
             return false;
         }
     }

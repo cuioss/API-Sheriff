@@ -99,7 +99,7 @@ class EnumerationDetectionActivationWiringTest {
                         "the scan must not reach the default threshold, or a deleted threshold would stay green"),
                 () -> assertTrue(EnumerationDetectionIT.HONEST_STATIC_MISSES > EnumerationDetectionIT.THRESHOLD,
                         "the browser-ambient misses must be enough to trip if they were counted"),
-                () -> assertTrue(EnumerationDetectionIT.HONEST_TOKENLESS_ASSET_FETCHES >= EnumerationDetectionIT.THRESHOLD,
+                () -> assertTrue(EnumerationDetectionIT.HONEST_TOKENLESS_ASSET_FETCHES > EnumerationDetectionIT.THRESHOLD,
                         "the tokenless asset fetches must be enough to trip if they were counted"),
                 () -> assertTrue(EnumerationDetectionIT.BLOCK_SECONDS < EnumerationDetectionIT.BLOCK_EXPIRY_BOUND_SECONDS,
                         "the expiry wait must outlast the declared block"),

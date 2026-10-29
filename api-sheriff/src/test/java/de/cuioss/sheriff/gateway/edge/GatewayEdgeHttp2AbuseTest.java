@@ -48,6 +48,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpClientResponse;
 import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
@@ -341,7 +342,7 @@ class GatewayEdgeHttp2AbuseTest {
         }
         int afterStatus = Awaits.connect(http2Client.request(io.vertx.core.http.HttpMethod.GET, frontPort,
                         LoopbackHost.ADDRESS, "/echo/after").compose(request -> request.send()
-                        .map(response -> response.statusCode())),
+                        .map(HttpClientResponse::statusCode)),
                 "a further stream on the connection to be answered");
 
         List<Object> notResetByGateway = outcomes.stream().filter(outcome -> !Boolean.TRUE.equals(outcome)).toList();
@@ -517,7 +518,7 @@ class GatewayEdgeHttp2AbuseTest {
     /** Sends a {@code GET} over a fresh HTTP/2 connection and returns the status it was answered with. */
     private int statusOfAFreshConnection() throws Exception {
         return Awaits.connect(client().request(io.vertx.core.http.HttpMethod.GET, frontPort, LoopbackHost.ADDRESS,
-                        "/echo/after").compose(request -> request.send().map(response -> response.statusCode())),
+                        "/echo/after").compose(request -> request.send().map(HttpClientResponse::statusCode)),
                 "a fresh connection to be served");
     }
 

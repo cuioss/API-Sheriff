@@ -578,7 +578,7 @@ public final class DispatchStage {
             // failure stays the upstream's. A send that never started (the connection itself failed)
             // leaves no snapshot and is the upstream's failure as well. An attempt released before its
             // request was sent arrives here too, as an AttemptReleasedUnsent: never a cancellation,
-            // which get() would throw past this catch (see AttemptReleasedUnsent).
+            // which get() would throw past this catch (see AttemptReleasedUnsent). NOSONAR java:S125 - explanatory prose, not commented-out code
             GatewayException clientAbort = clientAbortAtFailure.get();
             if (clientAbort != null) {
                 throw clientAbort;

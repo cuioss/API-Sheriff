@@ -1657,8 +1657,9 @@ over-limit connections; re-derive Content-Length on any downgrade; never forward
 proxies gRPC over upstream h2 -- both the terminated and forced-h2-upstream sides
 inherit this requirement.
 
-API Sheriff holds these bounds on the inbound HTTP/2 transport, set by `EdgeHardeningOptions` on every
-listener as fixed gateway constants that no configuration key reaches:
+API Sheriff holds these bounds on the inbound HTTP/2 transport. `EdgeHardeningOptions` sets the first
+three on every listener as fixed gateway constants that no configuration key reaches; the last two
+follow from the never-forward set and from dispatch:
 
 * *Concurrent streams.* A connection announces at most 100 concurrent streams; a listener announcing
   more, or no limit, is lowered to that bound.
@@ -1669,6 +1670,9 @@ listener as fixed gateway constants that no configuration key reaches:
 * *Header block.* A connection announces a `SETTINGS_MAX_HEADER_LIST_SIZE` of at most 16 KiB, the
   bound the HTTP/1.1 header block has. It covers the whole decoded header block, `CONTINUATION`
   frames included, so a header block grown past it over any number of frames ends the connection.
+  Zero-length `CONTINUATION` frames add nothing to the block, so this bound cannot end a flood of
+  them; the transport ends that connection before the stream is answered. That is the transport's
+  default behaviour, not a gateway constant; `GatewayEdgeHttp2AbuseTest` pins the outcome.
 * *h2c and connection-specific headers.* A client's `Upgrade`, `Connection` and `HTTP2-Settings`
   headers are members of the request-direction never-forward set (<<gw-03>>), so no forward mode
   relays them; the gateway itself never performs an `h2c` upgrade towards an upstream.

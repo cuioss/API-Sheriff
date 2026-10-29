@@ -313,7 +313,7 @@ final class RawHttp2Connection {
     private @Nullable Http2Headers decode(int streamId, Buffer block) {
         try {
             return decoder.decodeHeaders(streamId, Unpooled.wrappedBuffer(block.getBytes()));
-        } catch (Http2Exception e) {
+        } catch (Http2Exception _) {
             // A response block this client cannot decode leaves its stream without a status; the
             // cases then fail on the missing status rather than here.
             return null;

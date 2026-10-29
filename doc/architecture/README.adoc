@@ -272,7 +272,7 @@ on the root:
 | `assembly`, `request` | no edge package
 | `upstream` | `assembly`
 | `end` | `upstream`
-| `admission` | `end`
+| `admission` | `end`, `error`, `request`
 | `relay` | `end`, `upstream`
 | `error` | `end`, `upstream`, `relay`, `request`
 | `reserved` | `error`, `end`, `request`

@@ -44,6 +44,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -216,8 +217,10 @@ class ReconEventsTest {
         @Test
         @DisplayName("the closed browser-ambient set is exactly the four root fetches")
         void browserAmbientSetIsClosed() {
+            Set<String> ambientPaths = ReconEvents.BROWSER_AMBIENT_PATHS;
+
             assertEquals(Set.of("/favicon.ico", "/robots.txt", "/apple-touch-icon.png",
-                    "/apple-touch-icon-precomposed.png"), ReconEvents.BROWSER_AMBIENT_PATHS);
+                    "/apple-touch-icon-precomposed.png"), ambientPaths);
         }
 
         @ParameterizedTest(name = "{0}")
@@ -233,26 +236,24 @@ class ReconEventsTest {
                     () -> assertEquals(0, ReconEvents.weightOf(request, EventType.NO_ROUTE_MATCHED)));
         }
 
-        @ParameterizedTest(name = "{0}")
-        @ValueSource(strings = {"/admin/favicon.ico", "/robots.txt.bak", "/apple-touch-icon-x.png",
-                "/apple-touch-icon-180x180.png.js", "/static/apple-touch-icon.png"})
-        @DisplayName("a path that only resembles a browser-ambient fetch is counted")
-        void lookalikeOfAnAmbientFetchIsCounted(String path) {
+        @ParameterizedTest(name = "{0}: {1}")
+        @CsvSource({
+                "only resembles a browser-ambient fetch, /admin/favicon.ico",
+                "only resembles a browser-ambient fetch, /robots.txt.bak",
+                "only resembles a browser-ambient fetch, /apple-touch-icon-x.png",
+                "only resembles a browser-ambient fetch, /apple-touch-icon-180x180.png.js",
+                "only resembles a browser-ambient fetch, /static/apple-touch-icon.png",
+                "outside the browser-ambient set, /admin",
+                "outside the browser-ambient set, /admin.php",
+                "outside the browser-ambient set, /.env",
+                "outside the browser-ambient set, /wp-login.php",
+                "outside the browser-ambient set, /css/admin",
+                "outside the browser-ambient set, /backup.js.bak"})
+        @DisplayName("a path outside the browser-ambient set on a non-asset route is counted, a lookalike of one included")
+        void pathOutsideTheAmbientSetIsCounted(String kind, String path) {
             PipelineRequest request = routedRequest(path, null);
 
-            assertAll(path,
-                    () -> assertFalse(ReconEvents.isStaticResource(request)),
-                    () -> assertEquals(ReconEvents.RECON_WEIGHT,
-                            ReconEvents.weightOf(request, EventType.NO_ROUTE_MATCHED)));
-        }
-
-        @ParameterizedTest(name = "{0}")
-        @ValueSource(strings = {"/admin", "/admin.php", "/.env", "/wp-login.php", "/css/admin", "/backup.js.bak"})
-        @DisplayName("a path outside the browser-ambient set on a non-asset route is counted")
-        void nonStaticPathIsCounted(String path) {
-            PipelineRequest request = routedRequest(path, null);
-
-            assertAll(path,
+            assertAll(kind + ": " + path,
                     () -> assertFalse(ReconEvents.isStaticResource(request)),
                     () -> assertEquals(ReconEvents.RECON_WEIGHT,
                             ReconEvents.weightOf(request, EventType.NO_ROUTE_MATCHED)));

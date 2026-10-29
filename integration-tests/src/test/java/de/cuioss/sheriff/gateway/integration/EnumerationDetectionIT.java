@@ -118,8 +118,11 @@ class EnumerationDetectionIT extends BaseIntegrationTest {
     /** Browser-ambient misses the honest leg sends: twice the threshold, so a counted miss would trip. */
     static final int HONEST_STATIC_MISSES = 2 * THRESHOLD;
 
-    /** Tokenless fetches of the bearer-gated asset route the honest leg sends: one threshold's worth. */
-    static final int HONEST_TOKENLESS_ASSET_FETCHES = THRESHOLD;
+    /**
+     * Tokenless fetches of the bearer-gated asset route the honest leg sends: twice the threshold, so a
+     * counted fetch would trip.
+     */
+    static final int HONEST_TOKENLESS_ASSET_FETCHES = 2 * THRESHOLD;
 
     /**
      * The most requests the scan sends before it must have been refused: well past the declared
