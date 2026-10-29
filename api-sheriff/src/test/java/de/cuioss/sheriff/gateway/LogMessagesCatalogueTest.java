@@ -38,6 +38,7 @@ import java.util.stream.Stream;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 
+
 import de.cuioss.tools.logging.LogRecord;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -288,10 +289,10 @@ class LogMessagesCatalogueTest {
 
             assertAll(
                     () -> assertEquals(List.of(
-                            new Catalogued(MODULE, "SpecimenLogMessages", "", "DIRECT", "Direct", 7),
-                            new Catalogued(MODULE, "SpecimenLogMessages", "INFO", "STARTED", "Specimen", 1),
-                            new Catalogued(MODULE, "SpecimenLogMessages", "WARN", "SLOW", "Specimen", 100),
-                            new Catalogued(MODULE, "SpecimenLogMessages", "ERROR", "BROKEN", "Specimen", 299)),
+                                    new Catalogued(MODULE, "SpecimenLogMessages", "", "DIRECT", "Direct", 7),
+                                    new Catalogued(MODULE, "SpecimenLogMessages", "INFO", "STARTED", "Specimen", 1),
+                                    new Catalogued(MODULE, "SpecimenLogMessages", "WARN", "SLOW", "Specimen", 100),
+                                    new Catalogued(MODULE, "SpecimenLogMessages", "ERROR", "BROKEN", "Specimen", 299)),
                             records, "the reader must read every record with its holder, prefix and identifier"),
                     () -> assertEquals(List.of(), collisions(records), "a well-formed specimen has no collision"),
                     () -> assertEquals(List.of(), strays(records), "a well-formed specimen has no stray"));

@@ -240,7 +240,7 @@ class BenchmarkScriptConfigContractTest {
 
     @Test
     @DisplayName("every file the k6 directory walk finds has a row, and every row names a file the walk finds")
-    void everyWalkedFileHasARowAndNoRowIsStale() throws IOException {
+    void everyWalkedFileHasARowAndNoRowIsStale() throws Exception {
         SortedSet<String> walked = walkedPopulation();
         Set<String> tabled = TABLE.stream().map(Row::script).collect(Collectors.toCollection(TreeSet::new));
 
@@ -270,7 +270,7 @@ class BenchmarkScriptConfigContractTest {
 
     @TestFactory
     @DisplayName("every binding: the literal is in the script and it resolves against the mounted configuration")
-    Stream<DynamicTest> everyBindingResolvesAgainstTheMountedConfiguration() throws IOException {
+    Stream<DynamicTest> everyBindingResolvesAgainstTheMountedConfiguration() throws Exception {
         MountedConfig config = MountedConfig.parse(diskSources());
 
         return bindings().map(binding -> DynamicTest.dynamicTest(binding.toString(), () -> {
@@ -282,7 +282,7 @@ class BenchmarkScriptConfigContractTest {
 
     @Test
     @DisplayName("every route literal a script hands to a target resolver is discovered and covered by a binding")
-    void everyDiscoveredRouteLiteralIsCoveredByABinding() throws IOException {
+    void everyDiscoveredRouteLiteralIsCoveredByABinding() throws Exception {
         Map<String, List<String>> discovered = new LinkedHashMap<>();
         for (String script : walkedPopulation()) {
             List<String> literals = allGroups(RESOLVER_CALL, scriptText(script));
@@ -315,7 +315,7 @@ class BenchmarkScriptConfigContractTest {
 
     @Test
     @DisplayName("every configuration file the table reads exists and parses, and every row names one of them")
-    void everyConfigurationFileExistsAndParses() throws IOException {
+    void everyConfigurationFileExistsAndParses() throws Exception {
         Map<String, String> sources = diskSources();
 
         MountedConfig config = MountedConfig.parse(sources);
@@ -397,7 +397,7 @@ class BenchmarkScriptConfigContractTest {
 
         @Test
         @DisplayName("a renamed route prefix is rejected, naming the script that must follow")
-        void aRenamedRoutePrefixIsRejected() throws IOException {
+        void aRenamedRoutePrefixIsRejected() throws Exception {
             MountedConfig specimen = specimenConfig(HTTPBIN, RENAMED_UPLOAD_PREFIX);
 
             Optional<String> failure = failureOf(binding("upload_small.js", ROUTE), scriptText("upload_small.js"),
@@ -410,7 +410,7 @@ class BenchmarkScriptConfigContractTest {
 
         @Test
         @DisplayName("a renamed passthrough SNI host is rejected, naming the script that must follow")
-        void aRenamedSniHostIsRejected() throws IOException {
+        void aRenamedSniHostIsRejected() throws Exception {
             MountedConfig specimen = specimenConfig(GATEWAY, RENAMED_SNI_HOST);
 
             Optional<String> failure = failureOf(binding("passthrough_relay.js", SNI),
@@ -423,7 +423,7 @@ class BenchmarkScriptConfigContractTest {
 
         @Test
         @DisplayName("a dropped WebSocket Origin is rejected while the route it rides still resolves")
-        void aDroppedOriginIsRejected() throws IOException {
+        void aDroppedOriginIsRejected() throws Exception {
             MountedConfig specimen = specimenConfig(WEBSOCKET, DROPPED_ORIGIN);
             String script = scriptText("websocket_echo.js");
 
@@ -440,7 +440,7 @@ class BenchmarkScriptConfigContractTest {
 
         @Test
         @DisplayName("a reshaped document that keeps the key is accepted")
-        void aReshapedDocumentThatKeepsTheKeyIsAccepted() throws IOException {
+        void aReshapedDocumentThatKeepsTheKeyIsAccepted() throws Exception {
             MountedConfig specimen = specimenConfig(HTTPBIN, RESHAPED_UPLOAD_ROUTE);
             String script = scriptText("upload_small.js");
 
@@ -547,7 +547,7 @@ class BenchmarkScriptConfigContractTest {
             List<?> advertised = listAt(config.yaml(GATEWAY), "tls", "alpn");
             return advertised.contains(id) ? Optional.empty()
                     : Optional.of("tls.alpn " + advertised + " does not advertise " + id
-                            + ", so the run would silently measure another protocol");
+                    + ", so the run would silently measure another protocol");
         };
     }
 
@@ -559,7 +559,7 @@ class BenchmarkScriptConfigContractTest {
             }
             return config.properties(TOPOLOGY).getProperty(target) != null ? Optional.empty()
                     : Optional.of("tls.passthrough_sni maps " + host + " to alias " + target + ", which "
-                            + TOPOLOGY + " does not declare");
+                    + TOPOLOGY + " does not declare");
         };
     }
 
@@ -571,7 +571,7 @@ class BenchmarkScriptConfigContractTest {
                     .anyMatch(issuer -> issuer.endsWith("/realms/" + realm));
             return declared ? Optional.empty()
                     : Optional.of("no token_validation issuer is the realm " + realm
-                            + ", so every minted token would be rejected");
+                    + ", so every minted token would be rejected");
         };
     }
 
@@ -611,7 +611,7 @@ class BenchmarkScriptConfigContractTest {
             }
             return declared.doubleValue() > Double.parseDouble(bodyBytes) ? Optional.empty()
                     : Optional.of("the declared max_body_bytes " + declared + " does not exceed the " + bodyBytes
-                            + "-byte body, so the run would measure the rejection path");
+                    + "-byte body, so the run would measure the rejection path");
         };
     }
 
@@ -628,7 +628,7 @@ class BenchmarkScriptConfigContractTest {
             List<?> origins = listAt(hit.get().route(), "websocket", "allowed_origins");
             return origins.contains(origin) ? Optional.empty()
                     : Optional.of("route " + hit.get().id() + " allow-lists " + origins
-                            + ", which does not admit the Origin the handshake sends");
+                    + ", which does not admit the Origin the handshake sends");
         };
     }
 
@@ -839,7 +839,7 @@ class BenchmarkScriptConfigContractTest {
      * @param resolver   the resolution itself
      */
     private record Binding(String script, String key, Pattern extraction, String configFile, String resolution,
-            KeyResolver resolver) implements Row {
+    KeyResolver resolver) implements Row {
 
         @Override
         public String toString() {

@@ -155,7 +155,7 @@ class MtlsLaneSelectionContractTest {
                 () -> assertEquals(List.of(), specimenViolations(profile("wired", properties(wired), ""),
                         required, published), "a fully wired lane was rejected"),
                 () -> assertEquals(List.of(), specimenViolations(profile("excluding", "",
-                                "<excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>"), required, published),
+                        "<excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>"), required, published),
                         "a lane that excludes the IT was rejected"),
                 () -> assertFalse(specimenViolations(profile("bare", "", ""), required, published).isEmpty(),
                         "a lane selecting the IT with no properties was accepted"),
