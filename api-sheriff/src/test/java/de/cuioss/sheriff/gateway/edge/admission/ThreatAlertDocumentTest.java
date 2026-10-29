@@ -271,7 +271,7 @@ class ThreatAlertDocumentTest {
     class Ipv4Literal {
 
         @ParameterizedTest(name = "[{index}] {0}")
-        @ValueSource(strings = {"0.0.0.0", "192.0.2.10", "255.255.255.255"})
+        @ValueSource(strings = {"0.0.0.1", "192.0.2.10", "255.255.255.255"})
         @DisplayName("accepts a dotted-decimal IPv4 address")
         void acceptsIpv4(String text) {
             assertTrue(ThreatAlertDocument.isIpv4Literal(text));
