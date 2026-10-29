@@ -270,7 +270,7 @@ class ThreatClassificationIT extends BaseIntegrationTest {
                         "the declared threshold"),
                 () -> assertEquals(WINDOW_SECONDS, document.getInt("api_sheriff.threat.window_seconds"),
                         "the declared window"),
-                () -> assertTrue(document.getInt("api_sheriff.threat.score") >= THRESHOLD,
+                () -> assertTrue(document.getDouble("api_sheriff.threat.score") >= THRESHOLD,
                         () -> "the score at the trip reached the threshold: " + alertLine),
                 () -> assertNotNull(categories.get(EventCategory.INPUT_VALIDATION.slug()),
                         () -> "the malformed requests are folded under input-validation: " + categories),
