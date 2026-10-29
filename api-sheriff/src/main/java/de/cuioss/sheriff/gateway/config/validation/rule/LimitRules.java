@@ -38,6 +38,7 @@ import de.cuioss.sheriff.gateway.config.model.GatewayConfig;
 import de.cuioss.sheriff.gateway.config.model.RouteConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityDefaultsConfig;
 import de.cuioss.sheriff.gateway.config.model.SecurityProfile;
+import de.cuioss.sheriff.gateway.config.model.ThreatClassificationConfig;
 import de.cuioss.tools.logging.CuiLogger;
 import lombok.experimental.UtilityClass;
 import org.jspecify.annotations.Nullable;
@@ -45,8 +46,8 @@ import org.jspecify.annotations.Nullable;
 /**
  * The boot-time {@link ValidationRule}s that bound the gateway's inbound limits: the inbound-filter
  * profile a route may run under, the edge admission budget, the per-source enumeration detection, the
- * {@code Authorization} header-value carve-out, and the per-route {@code rate_limit} block the gateway
- * does not enforce.
+ * per-source threat classification, the {@code Authorization} header-value carve-out, and the
+ * per-route {@code rate_limit} block the gateway does not enforce.
  * <p>
  * The inbound-filter mode refusal ({@link #validateSecurityProfileMinimal}, ADR-0024): a route whose
  * effective {@code profile} resolves to {@code minimal} must be neither effectively authenticated nor
@@ -61,6 +62,12 @@ import org.jspecify.annotations.Nullable;
  * {@code enumeration_detection} block: the threshold, the window and the block duration must each be
  * at least {@code 1}, and the answer hold must lie within {@code 1..}{@value #MAX_DELAY_MILLIS}
  * milliseconds.
+ * <p>
+ * The threat-classification rule ({@link #validateThreatClassification}) bounds the
+ * {@code threat_classification} block: the threshold and the window must each be at least {@code 1},
+ * every declared weight at least {@code 0}, an enabled block must carry a weight that can act, and a
+ * declared {@code weights.recon_trip} is refused while {@code enumeration_detection} is disabled,
+ * because no recon trip could then feed it.
  * <p>
  * The carve-out rule ({@link #validateAuthorizationHeaderValueLength}) refuses a declared
  * {@code security_defaults.max_authorization_header_value_length} below the resolved gateway-wide
@@ -92,6 +99,9 @@ public class LimitRules {
     private static final String EDGE_HARDENING_ADMISSION_POINTER = "/edge_hardening/admission_cap";
     private static final String EDGE_HARDENING_WEBSOCKET_POINTER = "/edge_hardening/websocket_relay_cap";
     private static final String ENUMERATION_DETECTION_POINTER = "/enumeration_detection/";
+    private static final String THREAT_CLASSIFICATION_POINTER = "/threat_classification/";
+    private static final String THREAT_WEIGHTS_BLOCK_POINTER = THREAT_CLASSIFICATION_POINTER + "weights";
+    private static final String THREAT_WEIGHTS_POINTER = THREAT_WEIGHTS_BLOCK_POINTER + "/";
     private static final String SECURITY_DEFAULTS_AUTHORIZATION_POINTER =
             "/security_defaults/max_authorization_header_value_length";
 
@@ -218,9 +228,9 @@ public class LimitRules {
         if (detection == null) {
             return;
         }
-        refuseBelowOne("threshold", detection.threshold(), errors);
-        refuseBelowOne("window_seconds", detection.windowSeconds(), errors);
-        refuseBelowOne("block_seconds", detection.blockSeconds(), errors);
+        refuseBelowOne(ENUMERATION_DETECTION_POINTER, "threshold", detection.threshold(), errors);
+        refuseBelowOne(ENUMERATION_DETECTION_POINTER, "window_seconds", detection.windowSeconds(), errors);
+        refuseBelowOne(ENUMERATION_DETECTION_POINTER, "block_seconds", detection.blockSeconds(), errors);
         Integer delayMillis = detection.delayMillis();
         if (delayMillis != null && (delayMillis < 1 || delayMillis > MAX_DELAY_MILLIS)) {
             errors.add(new ConfigError(GATEWAY_FILE, ENUMERATION_DETECTION_POINTER + "delay_millis",
@@ -228,9 +238,91 @@ public class LimitRules {
         }
     }
 
-    private static void refuseBelowOne(String member, @Nullable Integer declared, List<ConfigError> errors) {
+    /**
+     * Bounds the operator-facing {@code threat_classification} block and refuses the declarations that
+     * could never act:
+     * <ul>
+     *   <li>{@code threshold} and {@code window_seconds} must each be at least {@code 1}: a threshold of
+     *       zero would alert on every source's first rejection, and a zero window has no duration to
+     *       drain over;</li>
+     *   <li>every declared weight must be at least {@code 0}: a negative weight would lower a source's
+     *       score for being rejected;</li>
+     *   <li>an enabled block must carry at least one weight above {@code 0} that can act — the four
+     *       caller-category weights, and {@code recon_trip} only while {@code enumeration_detection}
+     *       resolves enabled, because only a running recon ledger can trip. A block in which no weight
+     *       can add to a score can never alert; the remedy is {@code enabled: false};</li>
+     *   <li>a declared {@code weights.recon_trip} is refused while {@code enumeration_detection}
+     *       resolves disabled: no recon trip can then occur, so the key could never act. The remedy is to
+     *       remove the key or enable recon detection. An omitted {@code recon_trip} is never refused.</li>
+     * </ul>
+     * <p>
+     * The schema owns the {@code minimum} of each member as well; the rule restates the lower bounds so
+     * that a document bound without the schema is held to them too, and it alone owns the two
+     * cross-member refusals. An omitted member is never refused: it resolves to its documented default.
+     * Each refusal names the member's pointer and, where it has one, the declared integer value.
+     *
+     * @param gateway the bound gateway document
+     * @param errors  the shared error accumulator
+     */
+    public static void validateThreatClassification(GatewayConfig gateway, List<ConfigError> errors) {
+        ThreatClassificationConfig classification = gateway.threatClassification();
+        if (classification == null) {
+            return;
+        }
+        refuseBelowOne(THREAT_CLASSIFICATION_POINTER, "threshold", classification.threshold(), errors);
+        refuseBelowOne(THREAT_CLASSIFICATION_POINTER, "window_seconds", classification.windowSeconds(), errors);
+        ThreatClassificationConfig.Weights declared = classification.weights();
+        if (declared != null) {
+            refuseNegativeWeight("input_validation", declared.inputValidation(), errors);
+            refuseNegativeWeight("routing", declared.routing(), errors);
+            refuseNegativeWeight("authentication", declared.authentication(), errors);
+            refuseNegativeWeight("authorization", declared.authorization(), errors);
+            refuseNegativeWeight("recon_trip", declared.reconTrip(), errors);
+        }
+        boolean reconEnabled = reconDetectionEnabled(gateway);
+        Integer declaredReconTrip = declared == null ? null : declared.reconTrip();
+        if (declaredReconTrip != null && !reconEnabled) {
+            errors.add(new ConfigError(GATEWAY_FILE, THREAT_WEIGHTS_POINTER + "recon_trip",
+                    ("weights.recon_trip %d can never act because enumeration_detection is disabled — remove "
+                            + "the key or enable enumeration_detection").formatted(declaredReconTrip)));
+        }
+        if (classification.effectiveEnabled() && !anyWeightCanAct(classification.effectiveWeights(), reconEnabled)) {
+            errors.add(new ConfigError(GATEWAY_FILE, THREAT_WEIGHTS_BLOCK_POINTER,
+                    "threat_classification is enabled but no weight above 0 can act, so it can never alert — "
+                            + "declare a weight above 0 or set enabled: false"));
+        }
+    }
+
+    /**
+     * Whether the recon ledger runs: an omitted {@code enumeration_detection} block resolves to its
+     * defaults, which enable it.
+     */
+    private static boolean reconDetectionEnabled(GatewayConfig gateway) {
+        EnumerationDetectionConfig detection = gateway.enumerationDetection();
+        return detection == null ? EnumerationDetectionConfig.DEFAULT_ENABLED : detection.effectiveEnabled();
+    }
+
+    /**
+     * Whether at least one effective weight above {@code 0} can add to a score; {@code recon_trip} counts
+     * only while the recon ledger runs.
+     */
+    private static boolean anyWeightCanAct(ThreatClassificationConfig.Weights weights, boolean reconEnabled) {
+        return weights.effectiveInputValidation() > 0 || weights.effectiveRouting() > 0
+                || weights.effectiveAuthentication() > 0 || weights.effectiveAuthorization() > 0
+                || (reconEnabled && weights.effectiveReconTrip() > 0);
+    }
+
+    private static void refuseNegativeWeight(String member, @Nullable Integer declared, List<ConfigError> errors) {
+        if (declared != null && declared < 0) {
+            errors.add(new ConfigError(GATEWAY_FILE, THREAT_WEIGHTS_POINTER + member,
+                    "weights.%s must be at least 0 (was %d)".formatted(member, declared)));
+        }
+    }
+
+    private static void refuseBelowOne(String pointerPrefix, String member, @Nullable Integer declared,
+            List<ConfigError> errors) {
         if (declared != null && declared < 1) {
-            errors.add(new ConfigError(GATEWAY_FILE, ENUMERATION_DETECTION_POINTER + member,
+            errors.add(new ConfigError(GATEWAY_FILE, pointerPrefix + member,
                     "%s must be at least 1 (was %d)".formatted(member, declared)));
         }
     }

@@ -93,9 +93,10 @@ rule that `DEFAULT_RULES` does not register through that row's class.
 
 | `LimitRules`
 | `validateSecurityProfileMinimal`, `validateEdgeHardening`, `validateEnumerationDetection`,
-  `validateAuthorizationHeaderValueLength`, `validateRateLimitNotEnforced`
-| `security_filter.profile`, `security_defaults`, `edge_hardening`, `enumeration_detection`, route
-  `rate_limit` (boot WARN only, never a refusal)
+  `validateThreatClassification`, `validateAuthorizationHeaderValueLength`,
+  `validateRateLimitNotEnforced`
+| `security_filter.profile`, `security_defaults`, `edge_hardening`, `enumeration_detection`,
+  `threat_classification`, route `rate_limit` (boot WARN only, never a refusal)
 | extracted
 
 | `TerminalActionRules`
