@@ -180,8 +180,7 @@ class MtlsLaneSelectionContractTest {
     @Test
     @DisplayName("the detector accepts a fully wired or excluding lane and rejects each partly wired one")
     void detectorRejectsPartlyWiredLanes() throws Exception {
-        Set<String> required = requiredProperties(
-                Files.readString(existing(MODULE.resolve("src/test/java").resolve(IT_PATH))));
+        Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
         Set<String> published = Set.of("10444");
         Map<String, String> wired = new LinkedHashMap<>();
         required.forEach(key -> wired.put(key, "declared"));

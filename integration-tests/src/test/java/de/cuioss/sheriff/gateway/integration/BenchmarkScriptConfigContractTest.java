@@ -658,7 +658,7 @@ class BenchmarkScriptConfigContractTest {
         @Test
         @DisplayName("a longer prefix in another endpoint file takes over the script's path and is rejected")
         void aLongerPrefixInAnotherEndpointFileIsRejected() throws Exception {
-            MountedConfig specimen = specimenConfig(CONFIG_DIR + "endpoints/static-shadow.yaml", SHADOWING_STATIC);
+            MountedConfig specimen = specimenConfig(ENDPOINTS + "static-shadow.yaml", SHADOWING_STATIC);
             String script = scriptText("proxied_static.js");
 
             Optional<String> routeFailure = failureOf(binding("proxied_static.js", ROUTE), script, specimen);
@@ -676,7 +676,7 @@ class BenchmarkScriptConfigContractTest {
         @Test
         @DisplayName("an unrelated second endpoint file changes nothing and the binding is accepted")
         void anUnrelatedSecondEndpointFileIsAccepted() throws Exception {
-            MountedConfig specimen = specimenConfig(CONFIG_DIR + "endpoints/unrelated.yaml", UNRELATED_ENDPOINT);
+            MountedConfig specimen = specimenConfig(ENDPOINTS + "unrelated.yaml", UNRELATED_ENDPOINT);
             String script = scriptText("proxied_static.js");
 
             Optional<String> routeFailure = failureOf(binding("proxied_static.js", ROUTE), script, specimen);
