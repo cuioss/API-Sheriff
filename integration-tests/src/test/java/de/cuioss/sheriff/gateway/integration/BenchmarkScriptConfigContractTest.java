@@ -120,7 +120,7 @@ import org.junit.jupiter.api.TestFactory;
  * non-empty and fully covered as a property — never as equality with a file count; the discovered
  * literal set is asserted non-empty; every configuration file the table reads is asserted to exist
  * and parse; and the {@link Controls} drive the same resolvers over in-memory configuration
- * specimens that must be rejected, and one that must be accepted.
+ * specimens that must be rejected, and others that must be accepted.
  *
  * @author API Sheriff Team
  * @since 1.0
@@ -321,7 +321,10 @@ class BenchmarkScriptConfigContractTest {
                     "const KEYCLOAK_TOKEN_URL = __ENV\\.KEYCLOAK_TOKEN_URL\\s*\\|\\|\\s*'[^']*/realms/([^/']+)/",
                     GATEWAY, "YAML key path token_validation.issuers[].issuer ending in /realms/<realm>", issuer()),
             bind("bearer_proxied.js", SCOPES, "\\bscope: '([^']+)'", GATEWAY,
-                    "YAML key path oidc.scopes, every member requested by the script", oidcScopes()),
+                    "the needed scope set of the route serving the script's TARGET_URL - YAML key path oidc.scopes "
+                            + "united with the serving endpoint's scopes, as RouteTableBuilder.neededScopes "
+                            + "derives it - every member requested by the script",
+                    neededScopes(SECURE, GET)),
             bind("bearer_proxied.js", UPSTREAM, TARGET_ROUTE, TOPOLOGY, UPSTREAM_RESOLUTION,
                     upstreamRepointed(SECURE, GET, "api-sheriff")),
 
@@ -504,7 +507,7 @@ class BenchmarkScriptConfigContractTest {
     /**
      * ADR-0030 controls: the resolvers above, driven over in-memory configuration specimens. Each
      * rejection specimen changes ONE key a script depends on and must be refused naming that script;
-     * the acceptance specimen reshapes a document without breaking the key and must pass, so the
+     * each acceptance specimen reshapes a document without breaking the key and must pass, so the
      * resolvers are shown to judge the key rather than the committed file's exact text.
      */
     @Nested
@@ -706,6 +709,53 @@ class BenchmarkScriptConfigContractTest {
                         idle_timeout_seconds: 30
                 """;
 
+        /**
+         * The endpoint serving /secure/get with an endpoint-level {@code scopes} entry the token
+         * request of bearer_proxied.js does not ask for, the route itself intact.
+         */
+        private static final String ENDPOINT_SCOPE_NOT_REQUESTED = """
+                endpoint:
+                  id: secure
+                  enabled: true
+                  base_url: UPSTREAM
+                  anchor: secure
+                  scopes: ["benchmark_extra"]
+                  routes:
+                    - id: secure-proxy
+                      match:
+                        path_prefix: /secure
+                """;
+
+        /**
+         * The endpoint serving /secure/get with an endpoint-level {@code scopes} entry the token
+         * request of bearer_proxied.js does ask for.
+         */
+        private static final String ENDPOINT_SCOPE_REQUESTED = """
+                endpoint:
+                  id: secure
+                  enabled: true
+                  base_url: UPSTREAM
+                  anchor: secure
+                  scopes: ["profile"]
+                  routes:
+                    - id: secure-proxy
+                      match:
+                        path_prefix: /secure
+                """;
+
+        /** The endpoint serving /secure/get with no endpoint-level {@code scopes}, so only oidc.scopes is needed. */
+        private static final String GATEWAY_SCOPES_ONLY = """
+                endpoint:
+                  id: secure
+                  enabled: true
+                  base_url: UPSTREAM
+                  anchor: secure
+                  routes:
+                    - id: secure-proxy
+                      match:
+                        path_prefix: /secure
+                """;
+
         @Test
         @DisplayName("a renamed route prefix is rejected, naming the script that must follow")
         void aRenamedRoutePrefixIsRejected() throws Exception {
@@ -855,6 +905,52 @@ class BenchmarkScriptConfigContractTest {
 
             Optional<String> failure = failureOf(binding("proxied_static.js", ROUTE),
                     scriptText("proxied_static.js"), specimen);
+
+            assertFalse(failure.isPresent(), () -> failure.orElse(""));
+        }
+
+        @Test
+        @DisplayName("an endpoint-level scope the token request omits is rejected, naming script, route and scope")
+        void anEndpointScopeNotRequestedIsRejected() throws Exception {
+            MountedConfig specimen = specimenConfig(SECURE, ENDPOINT_SCOPE_NOT_REQUESTED);
+            String script = scriptText("bearer_proxied.js");
+
+            Optional<String> scopeFailure = failureOf(binding("bearer_proxied.js", SCOPES), script, specimen);
+            Optional<String> routeFailure = failureOf(binding("bearer_proxied.js", ROUTE), script, specimen);
+
+            assertAll(
+                    () -> assertTrue(scopeFailure.isPresent(),
+                            "the serving endpoint's scopes join the needed set, so a scope the token request "
+                                    + "does not ask for must be rejected"),
+                    () -> assertTrue(scopeFailure.orElse("").startsWith("bearer_proxied.js "),
+                            () -> "the rejection must name the script that must follow: " + scopeFailure.orElse("")),
+                    () -> assertTrue(scopeFailure.orElse("").contains("secure-proxy"),
+                            () -> "the rejection must name the serving route: " + scopeFailure.orElse("")),
+                    () -> assertTrue(scopeFailure.orElse("").contains("benchmark_extra"),
+                            () -> "the rejection must name the missing scope: " + scopeFailure.orElse("")),
+                    () -> assertFalse(routeFailure.isPresent(),
+                            () -> "the specimen keeps the route, so the rejection must come from the scope alone: "
+                                    + routeFailure.orElse("")));
+        }
+
+        @Test
+        @DisplayName("an endpoint-level scope the token request asks for is accepted")
+        void anEndpointScopeRequestedIsAccepted() throws Exception {
+            MountedConfig specimen = specimenConfig(SECURE, ENDPOINT_SCOPE_REQUESTED);
+
+            Optional<String> failure = failureOf(binding("bearer_proxied.js", SCOPES),
+                    scriptText("bearer_proxied.js"), specimen);
+
+            assertFalse(failure.isPresent(), () -> failure.orElse(""));
+        }
+
+        @Test
+        @DisplayName("a serving endpoint adding no scope needs only the gateway-level oidc.scopes and is accepted")
+        void gatewayScopesOnlyAreAccepted() throws Exception {
+            MountedConfig specimen = specimenConfig(SECURE, GATEWAY_SCOPES_ONLY);
+
+            Optional<String> failure = failureOf(binding("bearer_proxied.js", SCOPES),
+                    scriptText("bearer_proxied.js"), specimen);
 
             assertFalse(failure.isPresent(), () -> failure.orElse(""));
         }
@@ -1333,19 +1429,42 @@ class BenchmarkScriptConfigContractTest {
         };
     }
 
-    private static KeyResolver oidcScopes() {
+    /**
+     * Binds the scopes a script's token request asks for to the scope set the route serving the
+     * script's {@code TARGET_URL} needs. The needed set mirrors {@code RouteTableBuilder.neededScopes},
+     * which is private and so cannot be called from here: {@code oidc.scopes} united with the serving
+     * endpoint's additive {@code scopes} (ADR-0049), the endpoint's {@code scopes} alone when no
+     * {@code oidc} block declares any. The binding holds only when the request covers that whole set;
+     * an empty needed set fails too, because the script's explicit request would then state a
+     * dependency the gateway no longer has.
+     *
+     * @param endpointFile the endpoint file expected to serve the script's route
+     * @param method       the request method the script sends on that route
+     */
+    private static KeyResolver neededScopes(String endpointFile, String method) {
         return (config, script, requestedScopes) -> {
-            List<String> required = listAt(config.yaml(GATEWAY), "oidc", "scopes").stream()
-                    .map(String::valueOf)
-                    .toList();
-            if (required.isEmpty()) {
-                return Optional.of("oidc.scopes is no longer declared, so the script's explicit scope request "
-                        + "states a dependency the gateway no longer has");
+            Optional<String> path = firstGroup(TARGET_ROUTE_PATTERN, script);
+            if (path.isEmpty()) {
+                return Optional.of("the script names its route through no TARGET_URL declaration");
+            }
+            Lookup lookup = serving(config, endpointFile, path.get(), method);
+            if (!(lookup instanceof Served(RouteHit route))) {
+                return Optional.of(((Refused) lookup).reason());
+            }
+            Set<String> needed = new LinkedHashSet<>();
+            listAt(config.yaml(GATEWAY), "oidc", "scopes").stream().map(String::valueOf).forEach(needed::add);
+            listAt(route.endpoint(), "scopes").stream().map(String::valueOf).forEach(needed::add);
+            if (needed.isEmpty()) {
+                return Optional.of("route " + route.id() + " of " + route.file() + " needs no scope - neither "
+                        + "oidc.scopes nor its endpoint's scopes declares one - so the script's explicit scope "
+                        + "request states a dependency the gateway no longer has");
             }
             Set<String> requested = Stream.of(requestedScopes.trim().split("\\s+")).collect(Collectors.toSet());
-            List<String> missing = required.stream().filter(scope -> !requested.contains(scope)).toList();
+            List<String> missing = needed.stream().filter(scope -> !requested.contains(scope)).toList();
             return missing.isEmpty() ? Optional.empty()
-                    : Optional.of("oidc.scopes requires " + missing + ", which the token request does not ask for");
+                    : Optional.of("route " + route.id() + " of " + route.file() + " needs " + needed
+                    + " (oidc.scopes united with its endpoint's scopes), and the token request does not ask for "
+                    + missing);
         };
     }
 
