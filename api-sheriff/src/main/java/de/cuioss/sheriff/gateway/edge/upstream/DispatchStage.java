@@ -166,7 +166,10 @@ import org.jspecify.annotations.Nullable;
  * response back, the next attempt begins, or the dispatch itself fails — that attempt's upstream
  * request is reset: one still waiting for a pooled connection is reset as soon as it obtains one and
  * is never sent late, one in flight is reset, and a response it already received and paused is
- * released with it. Only a response actually handed to the caller is exempt.
+ * released with it. Only a response actually handed to the caller is exempt. A bodyless request already
+ * sent is reset on the context it was sent from, after the send, so the reset never overtakes its head
+ * write and never returns the upstream connection to the pool with the request still to be written (see
+ * {@link UpstreamAttempt}).
  * <p>
  * <strong>A client that leaves releases the attempt it was waiting on.</strong> When the client resets
  * its stream or closes its connection before the response is handed over for relay, the edge reports
@@ -531,7 +534,9 @@ public final class DispatchStage {
                     // Registered before the request is published, so every reset of it the gateway
                     // makes — the unsent release below included — finds a handler (see the class javadoc).
                     request.exceptionHandler(DispatchStage::onUpstreamRequestFailure);
-                    if (!attempt.publish(request)) {
+                    // A bodyless request's head is written by the send below, from this callback; a body is
+                    // written by the inbound side as it arrives (see UpstreamAttempt).
+                    if (!attempt.publish(request, body.bodyless())) {
                         // The dispatch stopped waiting for this attempt before its request obtained a
                         // connection: the request was reset unsent, and no late upstream execution follows.
                         // When the client's departure released it, that is what the dispatch reports.
@@ -805,6 +810,11 @@ public final class DispatchStage {
             abandonCurrentAttempt();
         }
 
+        /** @return {@code true} for a bodyless request: it is sent upstream with no body */
+        boolean bodyless() {
+            return bodylessWatch != null;
+        }
+
         /**
          * @return {@code true} when the request carries a body whose end has not reached the current
          *         attempt's body stream — or no attempt has subscribed the body yet
@@ -986,6 +996,17 @@ public final class DispatchStage {
      * them stopped at once, before they could start. A stopped clock has no timer pending and reports
      * nothing: it neither refuses the body, nor resets the request, nor reaches the late-violation callback.
      * <p>
+     * <strong>A bodyless request is reset after its own head write.</strong> A bodyless attempt sends its
+     * request from the callback that publishes it, on the request's own context, and Vert.x may queue that
+     * head write on the event loop of the upstream connection. A reset run on that event loop while the
+     * write is still queued is applied first: the HTTP/1.1 connection goes back to the pool, and the queued
+     * write then puts the request on it all the same, so the next request handed that connection waits
+     * behind a request nobody reads the answer to, until the guard's timeout. The client's departure is
+     * reported on the inbound connection's event loop, which can be that very loop. A reset of a published
+     * bodyless request asked for from any thread other than the one that published it is therefore handed
+     * to the publishing context and runs there, after the send. A body-carrying request has its head
+     * written with the first body chunk, on the inbound side, and is reset on the thread that asks for it.
+     * <p>
      * Thread-safe: the request and the body are published on the request's event loop while the
      * dispatching thread may abandon the attempt at the same moment. Each side writes its own field before
      * it reads the other's — the publisher sets the request or the body, then reads the flag;
@@ -998,7 +1019,7 @@ public final class DispatchStage {
         /** When the attempt began, the moment the guard's timeout for it starts too. */
         private final long startNanos = System.nanoTime();
         private final AtomicBoolean abandoned = new AtomicBoolean();
-        private final AtomicReference<@Nullable HttpClientRequest> request = new AtomicReference<>();
+        private final AtomicReference<@Nullable PublishedRequest> request = new AtomicReference<>();
         private final AtomicReference<@Nullable ByteCappedBodyStream> body = new AtomicReference<>();
 
         /**
@@ -1028,12 +1049,16 @@ public final class DispatchStage {
         /**
          * Publishes the request this attempt obtained.
          *
-         * @param obtained the attempt's upstream request, not yet sent
+         * @param obtained          the attempt's upstream request, not yet sent
+         * @param sentFromPublisher whether the request's head is written by a send made from the calling
+         *                          context once this returns, as a bodyless request's is: a reset asked
+         *                          for from another thread then runs on this context, after that send
          * @return {@code true} when the attempt is still waited for and the request may be sent;
          *         {@code false} when it was already abandoned — the request has then been reset
          */
-        boolean publish(HttpClientRequest obtained) {
-            request.set(obtained);
+        boolean publish(HttpClientRequest obtained, boolean sentFromPublisher) {
+            @Nullable Context publisher = sentFromPublisher ? Vertx.currentContext() : null;
+            request.set(new PublishedRequest(obtained, publisher, Thread.currentThread()));
             if (abandoned.get()) {
                 obtained.reset();
                 return false;
@@ -1054,11 +1079,38 @@ public final class DispatchStage {
             }
         }
 
-        /** Resets this attempt's request, if it obtained one. */
+        /**
+         * Resets this attempt's request, if it obtained one: at once, or — for a request sent from its
+         * publishing context, asked for from another thread — on that context, after the send.
+         */
         void resetRequest() {
-            HttpClientRequest published = request.get();
+            PublishedRequest published = request.get();
             if (published != null) {
                 published.reset();
+            }
+        }
+    }
+
+    /**
+     * An attempt's upstream request together with where its head is written from.
+     *
+     * @param request         the upstream request
+     * @param publisher       the context the request's head is sent from, after publication, or
+     *                        {@code null} when it is written elsewhere
+     * @param publisherThread the thread that published the request
+     */
+    private record PublishedRequest(HttpClientRequest request, @Nullable Context publisher, Thread publisherThread) {
+
+        /**
+         * Resets the request. On the publishing thread, and for a request whose head is written elsewhere,
+         * the reset is made at once; otherwise it is handed to the publishing context, so it runs after the
+         * send made there and can never overtake that send's queued head write (see {@link UpstreamAttempt}).
+         */
+        void reset() {
+            if (publisher == null || Thread.currentThread() == publisherThread) {
+                request.reset();
+            } else {
+                publisher.runOnContext(_ -> request.reset());
             }
         }
     }
