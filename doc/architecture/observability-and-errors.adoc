@@ -365,6 +365,17 @@ which downgrades both health and metrics on that single port and logs `WARN ApiS
   at its bound of 65,536 sources. Such a source can neither trip nor be blocked; the first overflow
   of a process is also logged once as WARN `ApiSheriff-142`.
 
+| `sheriff_threat_alerts_total` (no labels)
+| Counter of per-source threat-classification ALERTs -- one per threat-ledger trip, so at most one
+  per source and episode (link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat
+  Classification]). Each count has one WARN `ApiSheriff-143` carrying the ALERT document
+  (<<_threat_alert_document>>). The source an ALERT concerns is never a label value.
+
+| `sheriff_threat_untracked_total` (no labels)
+| Counter of rejections threat classification could not score because its ledger was at its bound of
+  65,536 sources. Such a source cannot raise an ALERT; the first overflow of a process is also logged
+  once as WARN `ApiSheriff-144`.
+
 | `sheriff_uniform_not_found_overruns_total` (no labels)
 | Counter of uniform `404` answers released on a step of the response-timing floor above the first
   -- answers whose processing ran past the floor (<<_trust_boundary_rejections>>). It should stay at
@@ -421,3 +432,78 @@ verdict.
 Health payloads report *state tokens only, never cause* (never exposing issuer URLs, internal
 hostnames, TLS paths, or exception messages); full failure details are logged via `WARN
 ApiSheriff-116`.
+
+[[_threat_alert_document]]
+== The Threat ALERT Document
+
+A source that crosses the `threat_classification` threshold raises one WARN `ApiSheriff-143` per
+episode (link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat
+Classification]). The record's last substitution is a compact JSON object, the ALERT document.
+`edge.admission.ThreatAlertDocument` renders it through the gateway's own `GatewayJson`, so no
+further JSON library is needed. Its field names are those of the Elastic Common Schema (ECS) `8.17.0`,
+except the `api_sheriff.threat` namespace, which is the gateway's own. A SIEM can therefore parse the
+JSON tail of the record and index it without a mapping of its own.
+
+[cols="2,3", options="header"]
+|===
+| Field | Value
+
+| `@timestamp` | The wall-clock instant of the trip, ISO-8601.
+| `ecs.version` | `8.17.0`.
+| `log.level` | `warn`.
+| `message` | The fixed text `A source reached the threat classification threshold`.
+| `event.kind` | `alert`.
+| `event.category` | `["intrusion_detection", "web"]`.
+| `event.type` | `["info"]` -- not `denied`, because the ALERT refuses nothing.
+| `event.action` | `threat-classification-threshold-reached`.
+| `event.dataset` | `api_sheriff.threat`.
+| `event.module` | `api_sheriff`.
+| `event.severity` | `47`, fixed: medium on the 0 to 100 scale.
+| `event.risk_score` | The source's score right after the admission that tripped it.
+| `source.address` | The canonical source text, always: an IPv4 address, an IPv6 `/64` prefix
+  (`a:b:c:d::/64`) or `unknown`.
+| `source.ip` | The same text, *only* when it is a whole IPv4 address.
+| `url.domain` | The folded host, *only* when it is a declared `match.host`; absent for `*`.
+| `threat.framework` | `MITRE ATT&CK`.
+| `threat.tactic.id` / `threat.tactic.name` | `["TA0043"]` / `["Reconnaissance"]`.
+| `threat.technique.id` / `threat.technique.name` | `["T1595"]` / `["Active Scanning"]`.
+| `api_sheriff.threat.score` | The score at the trip, as in `event.risk_score`.
+| `api_sheriff.threat.threshold` | The configured threshold.
+| `api_sheriff.threat.window_seconds` | The configured window.
+| `api_sheriff.threat.host` | The folded host, `*` included.
+| `api_sheriff.threat.contributions` | The weight each event type contributed during the episode,
+  keyed by the `EventType` name; a recon trip appears as `SOURCE_TRIPPED`.
+| `api_sheriff.threat.categories` | The same weights folded by event category slug, with
+  `recon_trip` for the recon trip.
+|===
+
+*The `source.ip` trap.* ECS types `source.ip` as an IP address. An IPv6 source is keyed on its `/64`
+prefix and an unresolvable one on `unknown`; neither is a valid `ip` value, and a SIEM would reject
+the document or drop the field. Both therefore appear in `source.address` only.
+
+*No request byte.* Every value is gateway-derived: the canonical key texts, enum names, the ledger's
+numbers and fixed constants. No path, raw `Host` or header can reach the document, so the record
+cannot carry log-injection text. Should the document fail to render, the ALERT is still logged at
+the same identifier with the marker `<document unavailable>`, and it is still counted.
+
+*The OCSF mapping.* The gateway emits ECS only. A pipeline that normalizes to the Open Cybersecurity
+Schema Framework maps the document as follows:
+
+[cols="2,3", options="header"]
+|===
+| OCSF | From the ALERT document
+
+| class: Detection Finding (`class_uid` 2004), activity Create | `event.kind: alert`
+| `severity_id` 3 (Medium) | `event.severity: 47`
+| `finding_info.title` | `message`
+| `finding_info.analytic.name` | `event.action`
+| `src_endpoint.ip` | `source.ip`, when present
+| `risk_score` | `event.risk_score`
+| `attacks[].tactic`, `attacks[].technique` | `threat.tactic.*`, `threat.technique.*`
+| `time` | `@timestamp`
+| `unmapped` | `api_sheriff.threat.*`
+|===
+
+*Volume.* The substrate trips a source at most once per `CLEAR` period, and the threat ledger tracks
+at most 65,536 sources. The ALERT volume is therefore at most one per tracked source per episode,
+bounded by 65,536 within one window. `sheriff_threat_alerts_total` carries the rate.

@@ -88,8 +88,8 @@ to *run* the finished gateway).
   to its `/64`) and folded host, the soft 65,536-key bound, weighted admission with caller tags, the
   leaky bucket that approximates a sliding window, the `enumeration_detection` configuration and why
   `observe` is its default, the `CLEAR -> TRIPPED -> BLOCKED` state machine and query API, the raw
-  `SourceTrip` emit shape, threading, the single-node in-memory decision, and what it serves
-  `PLAN-V02-07` and deliberately does not.
+  `SourceTrip` emit shape, threading, the single-node in-memory decision, and its second consumer,
+  the per-source threat classification, with what the substrate serves it and deliberately does not.
 
 | link:tls-edge.adoc[TLS Edge -- Front Listener and the Accept-Time SNI Split]
 | The Vert.x `NetServer` front architecture, the accept-time L4/L7 split, the internal-handoff

@@ -240,9 +240,13 @@ Every delegated responsibility lives in a sub-package:
   general permit it was admitted with; one source tripped under `delay` holds at most its share of
   the sub-budget -- an eighth of it, and at least one permit -- and the gate answers it `429` before
   admission while its share is used up. The request stays counted in flight while its answer is held,
-  so the drain waits for it. The per-source gate answers a blocked source `429` before admission
-  (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]).
-| `EdgeHardeningOptions`, `EdgeAdmission`, `SourceGate`
+  so the drain waits for it. The source-key stage resolves each request's per-source key once, the
+  per-source gate answers a blocked source `429` before admission
+  (link:tls-and-inbound-security.adoc#_per_source_detection[Per-Source Detection]), and the threat
+  classifier scores every categorized rejection and raises one ALERT per episode, changing no answer
+  (link:tls-and-inbound-security.adoc#_threat_classification[Per-Source Threat Classification]).
+| `EdgeHardeningOptions`, `EdgeAdmission`, `SourceKeys`, `SourceGate`, `ThreatClassifier`,
+  `ThreatWeights`, `ThreatAlerts`, `ThreatAlertDocument`
 
 | `request`
 | Converting the Vert.x request into the pipeline request.
@@ -308,7 +312,7 @@ restarting nodes.
 * *link:tls-and-inbound-security.adoc[TLS Edge & Inbound Security]* -- Accept-time SNI split,
   server-TLS policy binding, pre-route and post-route inbound security filters, framing gate, HTTP/2
   post-response resets, connection windows and transport bounds, request-body framing and timeouts,
-  and per-source enumeration detection.
+  per-source enumeration detection, and per-source threat classification.
 
 * *link:routing-and-forwarding.adoc[Routing, Forwarding & Header Policies]* -- Route matching,
   policy-block resolution, forward header/query modes, gateway-owned header sets, cookie policy and

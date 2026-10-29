@@ -7,8 +7,8 @@ The written contract of the gateway's one per-source detection substrate, the fr
 `de.cuioss.sheriff.gateway.detection`. It states what the substrate keys on, how it counts, when a
 source trips, what it emits and what it deliberately does not do -- the terms a consumer builds on.
 The first consumer is the edge's reconnaissance detection, configured by the `enumeration_detection`
-block; `PLAN-V02-07` is the first consumer designed against it from outside the edge
-(<<_plan_v02_07>>).
+block. The second is the per-source threat classification, configured by the `threat_classification`
+block (<<_second_consumer>>).
 
 == Shape
 
@@ -44,11 +44,13 @@ A key is `(source, host)`, compared character for character. `SourceKeyResolver`
 canonicalizes both parts.
 
 *The source* is the forwarded client address when the caller hands one over, otherwise the TCP peer
-address. The resolver does not judge trust: the edge hands over a forwarded address only for a peer
-`forwarded.trusted_proxies` trusts, resolved by the same resolver the forward stage regenerates
-`X-Forwarded-For` from. A trusted peer's request whose forwarding headers resolve to no client -- an
-absent or malformed header -- is keyed on the `unknown` source, never on the trusted peer's own
-address (`SourceGateTest`). The chosen address is canonicalized:
+address. The resolver does not judge trust: the edge's source-key stage, `SourceKeys`, hands over a
+forwarded address only for a peer `forwarded.trusted_proxies` trusts, resolved by the same resolver
+the forward stage regenerates `X-Forwarded-For` from. A trusted peer's request whose forwarding
+headers resolve to no client -- an absent or malformed header -- is keyed on the `unknown` source,
+never on the trusted peer's own address (`SourceKeysTest`). `SourceKeys` resolves the key once per
+request, on the event loop before admission, and stashes it on the request context for every
+consumer, so both consumers key a request on the same source. The chosen address is canonicalized:
 
 * an IPv4 address is kept whole, in dotted-decimal form;
 * an IPv6 address is reduced to its `/64` prefix, written `a:b:c:d::/64`. An end site is routinely
@@ -80,13 +82,14 @@ bound by at most the number of threads inserting new keys at the same moment.
 `admit(key, weight, tag)` adds one event of `weight` (at least `1`) to the key's bucket and returns
 the post-admission `SourceState`. `tag` is a constant of an enum the consumer supplies, so the tag set
 is bounded by construction. Per key the ledger keeps the weight each tag contributed since the bucket
-was last empty and reports it in the state and the trip. The recon consumer tags each event with its
+was last empty and reports it in the state and the trip. Both consumers tag each event with its
 `EventType`.
 
-Which events the recon consumer admits, and with what weight, is the consumer's decision, not the
+Which events a consumer admits, and with what weight, is the consumer's decision, not the
 substrate's: `ReconEvents.weightOf` admits a pre-trust rejection of its closed recon set with weight
 `1` and everything else with weight `0`, which is never admitted. `PRE_TRUST_INTERNAL_FAILURE` is
 outside that set: an operator-side failure is not caller behaviour and carries no detection weight.
+The threat consumer's weights are `ThreatWeights.weightOf` (<<_second_consumer>>).
 
 == Bucket Semantics
 
@@ -127,6 +130,11 @@ address and cannot tell at boot whether one address stands for one client or for
 a NAT or an untrusted load balancer; a default `block` or `delay` would refuse or slow all of them for
 the probing of one. `block` and `delay` are operator opt-ins. `LimitRules.validateEnumerationDetection`
 refuses an out-of-range value at boot.
+
+The threat consumer reads its settings from the `threat_classification` block
+(link:../configuration.adoc#_threat_classification[Configuration -- `threat_classification`]). Its
+action is fixed to `observe`, and its block duration, which the substrate requires to be positive, is
+set to the window and never used.
 
 == State Machine and Query API
 
@@ -187,22 +195,43 @@ cluster spreads its count across the instances it reaches -- and it does not sur
 are deliberate: a shared store is a new dependency and a new failure mode on the request path, and
 the substrate's job is to bound what one instance spends on one source.
 
-[[_plan_v02_07]]
-== Designed Against `PLAN-V02-07`
+[[_second_consumer]]
+== Second Consumer: Threat Classification
 
-`PLAN-V02-07` builds a per-source abuse score from several signals. What the substrate serves it:
+The per-source threat classification builds a weighted anomaly score per source from several kinds
+of rejection, and raises one structured ALERT when a source's score crosses its threshold
+(link:../adr/0078-Per-source_threat_classification_raises_one_ECS_alert_per_episode_from_its_own_ledger.adoc[ADR-0078]).
+What the substrate serves it:
 
-* *Per-consumer instances.* A consumer builds its own `SourceLedger` with its own weights, window,
-  threshold and action; nothing is shared with the recon ledger except the key derivation.
-* *The recon trip as a score input.* The recon ledger's `SourceTrip` -- and its state through
-  `state(key)` -- is an input a score can read, keyed by the same `SourceKey`.
-* *Dedup.* A trip is emitted once per `CLEAR` period, so a consumer counting trips counts episodes,
-  not events.
-* *The per-tag breakdown.* The contributions say which kinds of event made a source trip.
+* *Its own ledger.* `ThreatClassifier` builds a `SourceLedger` of its own, with the threshold and
+  window of the `threat_classification` block and the action `observe`. Nothing is shared with the
+  recon ledger except the key derivation.
+* *The shared key.* `SourceKeys` resolves the key once and stashes it, and runs whenever either
+  consumer is enabled. The threat score therefore does not depend on `enumeration_detection` being
+  on.
+* *Weighted admission.* `ThreatWeights.weightOf` gives each categorized rejection the weight of its
+  event category, judged on the true event, before and after the trust boundary alike. It gives `0`
+  to the categories and events that are not caller behaviour, and a `0` is never admitted.
+* *The recon trip as an input.* The recon ledger's `SourceTrip` is admitted to the threat ledger
+  with the weight `weights.recon_trip` under the tag `SOURCE_TRIPPED`, for the tripped key. A recon
+  trip raises the score; it is never an ALERT of its own.
+* *Dedup.* A trip is emitted once per `CLEAR` period, so the ALERT tier, `ThreatAlerts`, raises one
+  ALERT per episode, not per event.
+* *The per-tag breakdown.* The trip's contributions become the `contributions` and `categories`
+  breakdown of the ALERT document.
+* *The overflow count.* An admission that returns `UNTRACKED` is reported to the ALERT tier, which
+  counts it and logs the first one per process.
 
-What it deliberately does not serve:
+What the consumer does itself, because the substrate deliberately does not serve it:
 
-* *ECS or OCSF formatting* -- the `SourceTrip` is raw; formatting it is `PLAN-V02-07`'s.
-* *Cross-node correlation* -- the state is per process.
+* *ECS formatting* -- the `SourceTrip` is raw. `ThreatAlertDocument` renders it as the ECS-shaped
+  ALERT document
+  (link:../architecture/observability-and-errors.adoc#_threat_alert_document[Observability -- the
+  threat ALERT document]). The OCSF mapping is documented, not emitted.
+* *Cross-node correlation* -- the state is per process; a SIEM that receives every node's ALERTs
+  owns it.
+
+What neither the substrate nor the consumer serves:
+
 * *An exact sliding window* -- the bucket approximates one.
 * *Persistence across restarts* -- a restart clears every bucket.
