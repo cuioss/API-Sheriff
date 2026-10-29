@@ -743,6 +743,23 @@ class BenchmarkScriptConfigContractTest {
                         path_prefix: /secure
                 """;
 
+        /**
+         * The endpoint serving /secure/get with an endpoint-level {@code scopes} written as a scalar
+         * rather than a list, naming a scope the token request of bearer_proxied.js does not ask for.
+         */
+        private static final String ENDPOINT_SCOPES_NOT_A_LIST = """
+                endpoint:
+                  id: secure
+                  enabled: true
+                  base_url: UPSTREAM
+                  anchor: secure
+                  scopes: benchmark_extra
+                  routes:
+                    - id: secure-proxy
+                      match:
+                        path_prefix: /secure
+                """;
+
         /** The endpoint serving /secure/get with no endpoint-level {@code scopes}, so only oidc.scopes is needed. */
         private static final String GATEWAY_SCOPES_ONLY = """
                 endpoint:
@@ -931,6 +948,23 @@ class BenchmarkScriptConfigContractTest {
                     () -> assertFalse(routeFailure.isPresent(),
                             () -> "the specimen keeps the route, so the rejection must come from the scope alone: "
                                     + routeFailure.orElse("")));
+        }
+
+        @Test
+        @DisplayName("an endpoint-level scopes key that is not a list is rejected, never read as no scope")
+        void anEndpointScopesKeyThatIsNotAListIsRejected() throws Exception {
+            MountedConfig specimen = specimenConfig(SECURE, ENDPOINT_SCOPES_NOT_A_LIST);
+
+            Optional<String> failure = failureOf(binding("bearer_proxied.js", SCOPES),
+                    scriptText("bearer_proxied.js"), specimen);
+
+            assertAll(
+                    () -> assertTrue(failure.isPresent(),
+                            "a scalar endpoint scopes key must be refused, not dropped from the needed set"),
+                    () -> assertTrue(failure.orElse("").startsWith("bearer_proxied.js "),
+                            () -> "the rejection must name the script that must follow: " + failure.orElse("")),
+                    () -> assertTrue(failure.orElse("").contains("not a list"),
+                            () -> "the rejection must name the unreadable scopes key: " + failure.orElse("")));
         }
 
         @Test
@@ -1436,7 +1470,9 @@ class BenchmarkScriptConfigContractTest {
      * endpoint's additive {@code scopes} (ADR-0049), the endpoint's {@code scopes} alone when no
      * {@code oidc} block declares any. The binding holds only when the request covers that whole set;
      * an empty needed set fails too, because the script's explicit request would then state a
-     * dependency the gateway no longer has.
+     * dependency the gateway no longer has. A {@code scopes} key declared at either level with a value
+     * that is not a list fails as well, naming the level: read as empty it would drop that level's
+     * scopes from the needed set and pass a request the gateway answers 403.
      *
      * @param endpointFile the endpoint file expected to serve the script's route
      * @param method       the request method the script sends on that route
@@ -1451,9 +1487,17 @@ class BenchmarkScriptConfigContractTest {
             if (!(lookup instanceof Served(RouteHit route))) {
                 return Optional.of(((Refused) lookup).reason());
             }
+            List<ScopedBlock> declared = List.of(
+                    new ScopedBlock("oidc.scopes of " + GATEWAY, at(config.yaml(GATEWAY), "oidc", "scopes")),
+                    new ScopedBlock("the scopes of the endpoint of " + route.file(), at(route.endpoint(), "scopes")));
             Set<String> needed = new LinkedHashSet<>();
-            listAt(config.yaml(GATEWAY), "oidc", "scopes").stream().map(String::valueOf).forEach(needed::add);
-            listAt(route.endpoint(), "scopes").stream().map(String::valueOf).forEach(needed::add);
+            for (ScopedBlock level : declared) {
+                if (level.block() != null && !(level.block() instanceof List<?>)) {
+                    return Optional.of(level.scope() + " is '" + level.block() + "', not a list, so the needed "
+                            + "scope set of route " + route.id() + " cannot be read from it");
+                }
+                listOf(level.block()).stream().map(String::valueOf).forEach(needed::add);
+            }
             if (needed.isEmpty()) {
                 return Optional.of("route " + route.id() + " of " + route.file() + " needs no scope - neither "
                         + "oidc.scopes nor its endpoint's scopes declares one - so the script's explicit scope "
