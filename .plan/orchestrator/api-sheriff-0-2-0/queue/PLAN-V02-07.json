@@ -2,8 +2,8 @@
   "id": "PLAN-V02-07",
   "slug": "threat-classification",
   "workstream": "WS-03",
-  "status": "staged",
-  "plan_marshall_plan_id": "",
+  "status": "running",
+  "plan_marshall_plan_id": "plan-v02-07-threat-classification",
   "pr": "",
   "landing": "",
   "seq": 7

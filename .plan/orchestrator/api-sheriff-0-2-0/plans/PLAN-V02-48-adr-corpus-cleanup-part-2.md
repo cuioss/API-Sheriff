@@ -76,13 +76,15 @@ filename is a lead: enumerate `doc/adr/` at outline and resolve records by curre
 11. **Report.** Before and after line count per record, plus corpus total and mean before and after, as
     `PLAN-V02-04` did. The ceiling stays enforced by `AdrRecordLengthContractTest`; the plan changes no ceiling.
     The corpus stood at 65 records, 15,289 lines and a mean of 235 per file on `main` at `f5826465`; `0072` (new in
-    #527, Accepted, 226 lines) and `0073` (new in #528, Accepted) are outside the 52 and and `0074` (new in #530, Accepted) are outside the 52 and make it 68 records on `main`
-    at `0114065c`. Measure the before figure from the branch base, count all three in both totals, and say so. The early records average about 136. Say where the
+    #527, Accepted, 226 lines), `0073` (new in #528, Accepted; amended in place by #532, Amendment A1), `0074` (new in #530),
+    `0075` (new in #534) and `0076` and `0077` (new in #532, 306 and 128 lines), all Accepted, are outside the 52 and make it
+    71 records on `main` at `9794fa41`. Measure the before figure from the branch base, count all six in both totals, and say so. The early records average about 136. Say where the
     result lands against that and why.
 12. **Documentation residue of `PLAN-V02-04`.** Four statements outside `doc/adr/` that the WebSocket pre-upgrade
     end-rule fix or the rebase left untrue. Re-read each at outline; one that no longer holds is dropped. (The two
     overstated offline-check statements #527 left were fixed by #529, `c9c8479c`, and are no longer owed.)
-    `doc/architecture.adoc` (near line 587) says the end rule leaves the WebSocket path unaffected and omits the
+    `doc/architecture.adoc` was split into `doc/architecture/` by #533, so locate each such statement in the sub-document that
+    now holds it. The first (near line 587 before the split) says the end rule leaves the WebSocket path unaffected and omits the
     pre-upgrade answer from its list of end-rule writers. `benchmarks/README.adoc` (near line 514) says Methodology
     lists every parity condition, but the list omits the shared auth realm and tokens. `doc/development/bff-session.adoc`
     (near line 302) credits the native-image residual verdict to entry 3 only; its EC key-generation part is verified
@@ -134,9 +136,9 @@ there, ship the rest, and report the remainder to the orchestrator as a finding 
   - verdict: corroborated | checked_at: e087e5cec0ac2a48443e5df02882163bd38ecd53 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: adr-writing.adoc is 385 lines on main; AdrRecordLengthContractTest has MAX_BODY_LINES = 500 and a fixture control at 500 and 501
 - HYPOTHESIS: the verdict table of `PLAN-V02-04` deliverable 2 holds for every record named above — read it in the
   #521 body; refutation per record re-scopes that record (verify-at-outline)
-- OBSERVED: `doc/adr/` holds 68 records on `main` at `0114065c` (the 65 left by #521 plus `0072`, `0073` and `0074`, all Accepted), and
+- OBSERVED: `doc/adr/` holds 71 records on `main` at `9794fa41` (the 65 left by #521 plus `0072`, `0073`, `0074`, `0075`, `0076` and `0077`, all Accepted), and
   `0027-*` is Superseded by `0074` — `git ls-tree --name-only origin/main doc/adr/`
-  - verdict: corroborated | checked_at: 0114065c3f9c75cbc85f2f7772e7dec8b5a1ec71 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: git ls-tree on origin/main doc/adr/ lists 68 records; 0027 is Superseded by 0074; 0058 0072 0073 0074 Accepted
+  - verdict: corroborated | checked_at: 9794fa41bba2d25a02add5457ece54e92a570512 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: git ls-tree on origin/main doc/adr/ lists 71 records (no duplicate ordinal); 0073 0074 0075 0076 0077 Accepted; 0027 is Superseded by 0074
 - OBSERVED: the destinations `doc/technical_aspects.adoc`, `doc/configuration.adoc`,
   `doc/development/README.adoc`, `doc/development/test-corpus-integrity.adoc` and `doc/user/tls-edge.adoc` exist on
   `main` at `6b8d88f4`

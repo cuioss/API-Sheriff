@@ -2,10 +2,10 @@
   "id": "PLAN-V02-50",
   "slug": "enumeration-detection-substrate",
   "workstream": "WS-03",
-  "status": "running",
+  "status": "shipped",
   "lane": "plan-marshall",
   "plan_marshall_plan_id": "plan-v02-50-enumeration-detection-substrate",
-  "pr": "",
-  "landing": "",
+  "pr": "532",
+  "landing": "landings/PLAN-V02-50.md",
   "seq": 50
 }
