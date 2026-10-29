@@ -30,6 +30,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -100,9 +101,19 @@ import org.junit.jupiter.api.TestFactory;
  * template literal without a substitution. Every other argument — a concatenation, a template
  * substitution, a bare identifier, any other expression — is <em>refused</em> naming the script and
  * the call, never skipped: this leg does not evaluate expressions, so a call it cannot read fails the
- * build until the route is passed as a literal. The leg reads only the {@code .js} files, because the
- * resolvers are JavaScript functions; the shell pre-flight names its probed route through its own
- * binding. The resolvers' declarations in {@code lib/target.js} are not calls.
+ * build until the route is passed as a literal. A script can also build a gateway URL without those
+ * three resolvers, so the leg reads {@code lib/target.js} to learn every function and variable it
+ * exports — from its {@code export function} and {@code export const|let|var} statements, any other
+ * export statement being refused naming it — and refuses, naming the script and the construct, every
+ * call of an export other than the three resolvers (such as {@code baseUrl()}) and every string literal
+ * opening with an absolute {@code http://}, {@code https://}, {@code ws://} or {@code wss://} URL,
+ * unless a {@link DeclaredConstruct} states for that script why the construct needs no binding. A
+ * declaration its script no longer uses fails the build as stale. The leg reads the whole text of
+ * every {@code .js} file, comments included, and no other file, because the resolvers are JavaScript
+ * functions; the shell pre-flight names its probed route through its own binding. What it does not
+ * see: a URL a script assembles from fragments none of which opens with a scheme, and a call made
+ * through an alias of an export (an import renamed with {@code as}, or the function stored in a
+ * variable). Function declarations are not calls.
  * <p>
  * <strong>This test must never pass quietly</strong> (ADR-0030). The walked population is asserted
  * non-empty and fully covered as a property — never as equality with a file count; the discovered
@@ -180,6 +191,67 @@ class BenchmarkScriptConfigContractTest {
 
     /** The text in front of a resolver name that makes it the function's declaration, not a call. */
     private static final Pattern DECLARATION_PREFIX = Pattern.compile("\\bfunction\\s+$");
+
+    /** The module whose exports the discovery leg watches, relative to the k6 directory. */
+    private static final String TARGET_MODULE = "lib/target.js";
+
+    /** The exports of {@link #TARGET_MODULE} whose route literal a binding extracts. */
+    private static final Set<String> RESOLVERS = Set.of("targetUrl", "wsUrl", "passthroughEmptyUrl");
+
+    /** An export statement of {@link #TARGET_MODULE}, from the keyword to the end of its line. */
+    private static final Pattern EXPORT_STATEMENT = Pattern.compile("(?m)^[ \\t]*export\\b.*$");
+
+    /** An export form the discovery leg reads a name from: group 1 the exported function or variable. */
+    private static final Pattern READABLE_EXPORT = Pattern.compile(
+            "[ \\t]*export\\s+(?:(?:async\\s+)?function\\s*\\*?\\s*|(?:const|let|var)\\s+)([A-Za-z_$][\\w$]*)\\b.*");
+
+    /**
+     * A string literal opening with an absolute http, https, ws or wss URL: group 1 the URL, up to
+     * the end of the literal or the first whitespace.
+     */
+    private static final Pattern LITERAL_URL = Pattern.compile("(?i)['\"`]((?:https?|wss?)://[^'\"`\\s]+)");
+
+    private static final String BASE_URL_LITERAL_REASON = "a gateway base URL - scheme, host and port, no route - "
+            + "of the resolver module's own mapping; the resolvers append the routes, which are bound where the "
+            + "scripts hand them over";
+    private static final String MANAGEMENT_REASON = "addresses the Quarkus management interface, which no mounted "
+            + "gateway key addresses (see the script's zero-key row)";
+
+    /**
+     * Every construct a script uses that builds or names a gateway URL without one of the
+     * {@link #RESOLVERS}, with the reason it needs no binding. The discovery leg refuses every such
+     * construct not declared here, and a declaration whose construct its script no longer uses is stale.
+     */
+    private static final List<DeclaredConstruct> DECLARED_CONSTRUCTS = List.of(
+            new DeclaredConstruct(TARGET_MODULE, "baseUrl()", "the resolver module composes its own resolvers "
+                    + "from it; the routes are bound where the scripts hand them to the resolvers"),
+            new DeclaredConstruct(TARGET_MODULE, "gatewayTarget()", "the resolver module selects the per-target "
+                    + "base URL with it; it names no route"),
+            new DeclaredConstruct(TARGET_MODULE, "https://api-sheriff:8443", BASE_URL_LITERAL_REASON),
+            new DeclaredConstruct(TARGET_MODULE, "https://apisix:8443", BASE_URL_LITERAL_REASON),
+            new DeclaredConstruct(TARGET_MODULE, "https://api-sheriff-passthrough-empty:8443",
+                    BASE_URL_LITERAL_REASON),
+            new DeclaredConstruct(TARGET_MODULE, "https://api-sheriff:9000", BASE_URL_LITERAL_REASON),
+            new DeclaredConstruct("lib/summary.js", "gatewayTarget()", "labels the run summary with the gateway "
+                    + "target; it builds no URL"),
+            new DeclaredConstruct("session_mediated.js", "baseUrl()", "the cookie-jar lookup scopes the session "
+                    + "cookie by the gateway's origin, not by a route; every route the script requests goes "
+                    + "through targetUrl and is bound above"),
+            new DeclaredConstruct("grpc_unary.js", "grpcAddress()", "dials the gateway's host:port only; the gRPC "
+                    + "method path is bound through SERVICE_METHOD above"),
+            new DeclaredConstruct("gateway_health.js", "managementUrl()", MANAGEMENT_REASON),
+            new DeclaredConstruct("gateway_health.js", "https://api-sheriff:8443/api/health", "named only in the "
+                    + "file's comment recording that the deleted /api/health route must not be restored; the "
+                    + "script requests nothing there"),
+            new DeclaredConstruct("health_live.js", "managementUrl()", MANAGEMENT_REASON),
+            new DeclaredConstruct("bearer_proxied.js",
+                    "https://keycloak:8443/realms/benchmark/protocol/openid-connect/token", "the Keycloak token "
+                            + "endpoint, not the gateway; the realm it names is bound by the token issuer realm row"),
+            new DeclaredConstruct("passthrough_relay.js", "https://passthrough.test.example:8443/get", "the L4 "
+                    + "passthrough relay target, whose path no HTTP route of the gateway sees; its SNI host is bound "
+                    + "by the passthrough SNI host row"),
+            new DeclaredConstruct("websocket_echo.js", "https://sheriff.test", "the Origin header the handshake "
+                    + "sends, not a request URL; it is bound by the WebSocket Origin row"));
 
     /**
      * A whole resolver argument that is a route literal: a single- or double-quoted string, or a
@@ -375,6 +447,35 @@ class BenchmarkScriptConfigContractTest {
                 () -> assertTrue(uncovered.isEmpty(),
                         () -> "these route literals are handed to a target resolver but no binding of their "
                                 + "script extracts them, so their configuration key is unguarded: " + uncovered));
+    }
+
+    @Test
+    @DisplayName("lib/target.js exports the route resolvers, and every declared construct is still used by its script")
+    void everyDeclaredConstructIsStillUsed() throws Exception {
+        Exports exports = exportsOf(scriptText(TARGET_MODULE));
+        Set<String> tabled = TABLE.stream().map(Row::script).collect(Collectors.toSet());
+        List<String> stale = new ArrayList<>();
+        for (DeclaredConstruct declaration : DECLARED_CONSTRUCTS) {
+            if (!tabled.contains(declaration.script())
+                    || !constructsOf(scriptText(declaration.script()), exports).contains(declaration.construct())) {
+                stale.add(declaration.script() + " -> " + declaration.construct());
+            }
+        }
+
+        assertAll(
+                () -> assertTrue(exports.names().containsAll(RESOLVERS),
+                        () -> TARGET_MODULE + " no longer exports every route resolver " + RESOLVERS
+                                + ", so the exports read from it cannot be trusted; read " + exports.names()),
+                () -> assertTrue(exports.names().stream().anyMatch(name -> !RESOLVERS.contains(name)),
+                        () -> TARGET_MODULE + " exports nothing beyond the route resolvers, so the non-resolver call"
+                                + " check watches nothing; read " + exports.names()),
+                () -> assertAll(DECLARED_CONSTRUCTS.stream().map(declaration -> () -> assertFalse(
+                        declaration.reason().isBlank(),
+                        () -> "the declaration of " + declaration.construct() + " for " + declaration.script()
+                                + " states no reason"))),
+                () -> assertTrue(stale.isEmpty(),
+                        () -> "these declared constructs name a file without a row or are no longer used by their "
+                                + "script, so they would admit a future use unexamined: " + stale));
     }
 
     @Test
@@ -795,6 +896,66 @@ class BenchmarkScriptConfigContractTest {
                     () -> assertTrue(discovery.refusals().isEmpty(), () -> String.valueOf(discovery.refusals())));
         }
 
+        @Test
+        @DisplayName("an undeclared baseUrl() call is refused, naming the script and the call")
+        void anUndeclaredBaseUrlCallIsRefused() {
+            Discovery discovery = discover("specimen.js", "const TARGET = baseUrl() + '/proxy/new';\n");
+
+            assertTrue(discovery.refusals().stream()
+                            .anyMatch(refusal -> refusal.startsWith("specimen.js ") && refusal.contains("baseUrl()")),
+                    () -> "a route built through baseUrl() must be refused naming the script and the call: "
+                            + discovery.refusals());
+        }
+
+        @Test
+        @DisplayName("an undeclared literal absolute URL is refused, naming the script and the literal")
+        void anUndeclaredLiteralUrlIsRefused() {
+            Discovery discovery = discover("specimen.js", "const TARGET = 'https://api-sheriff:8443/proxy/new';\n");
+
+            assertTrue(discovery.refusals().stream()
+                            .anyMatch(refusal -> refusal.startsWith("specimen.js ")
+                                    && refusal.contains("https://api-sheriff:8443/proxy/new")),
+                    () -> "a route written as a literal absolute URL must be refused naming the script and the "
+                            + "literal: " + discovery.refusals());
+        }
+
+        @Test
+        @DisplayName("a call of a function newly exported by lib/target.js is refused, naming the script and the call")
+        void aCallOfANewlyExportedFunctionIsRefused() {
+            Exports exports = exportsOf("export function targetUrl(path) {\n}\nexport function freshUrl(path) {\n}\n");
+
+            Discovery discovery = discover("specimen.js", "const TARGET = freshUrl('/proxy/new');\n", exports, Set.of());
+
+            assertTrue(discovery.refusals().stream()
+                            .anyMatch(refusal -> refusal.startsWith("specimen.js ") && refusal.contains("freshUrl()")),
+                    () -> "a call of a function the target module newly exports must be refused naming the script "
+                            + "and the call: " + discovery.refusals());
+        }
+
+        @Test
+        @DisplayName("an export statement lib/target.js reads no name from is refused, naming the statement")
+        void anUnreadableExportStatementIsRefused() {
+            Exports exports = exportsOf("function hiddenUrl(path) {\n}\nexport { hiddenUrl };\n");
+
+            Discovery discovery = discover(TARGET_MODULE, "", exports, Set.of());
+
+            assertTrue(discovery.refusals().stream().anyMatch(refusal -> refusal.contains("export { hiddenUrl };")),
+                    () -> "an export statement no name can be read from must be refused naming it: "
+                            + discovery.refusals());
+        }
+
+        @Test
+        @DisplayName("declared non-resolver calls and literal URLs are accepted")
+        void declaredConstructsAreAccepted() {
+            Exports exports = exportsOf("export function baseUrl() {\n}\nexport function freshUrl(path) {\n}\n");
+
+            Discovery discovery = discover("specimen.js", "const A = baseUrl() + '/proxy/a';\n"
+                    + "const B = 'https://api-sheriff:8443/proxy/new';\nconst C = freshUrl('/proxy/c');\n", exports,
+                    Set.of("baseUrl()", "https://api-sheriff:8443/proxy/new", "freshUrl()"));
+
+            assertTrue(discovery.refusals().isEmpty(), () -> String.valueOf(discovery.refusals()));
+        }
+
         private static void assertRefusedNaming(Discovery discovery, String call) {
             assertAll(
                     () -> assertTrue(discovery.literals().isEmpty(), () -> String.valueOf(discovery.literals())),
@@ -830,28 +991,120 @@ class BenchmarkScriptConfigContractTest {
     }
 
     /**
-     * Reads every target resolver call of one script. A call whose argument is a route literal
-     * contributes that literal; every other call — a concatenation, a template substitution, a bare
-     * identifier, any other expression, or an argument list that never closes — is refused by name,
-     * never skipped, because a call this leg cannot read is a dependency no row can be required for.
-     * The resolvers' own declarations in {@code lib/target.js} are not calls and contribute nothing.
-     *
-     * @param script the file the text was read from, named in every refusal
-     * @param text   the script text
-     * @return the discovered literals and the refused calls
+     * Reads one script against the committed {@link #TARGET_MODULE} and the script's
+     * {@link #DECLARED_CONSTRUCTS}; see {@link #discover(String, String, Exports, Set)}.
      */
     private static Discovery discover(String script, String text) {
+        String module;
+        try {
+            module = scriptText(TARGET_MODULE);
+        } catch (IOException e) {
+            throw new UncheckedIOException("cannot read " + TARGET_MODULE + ", whose exports the discovery leg watches",
+                    e);
+        }
+        return discover(script, text, exportsOf(module), declaredConstructs(script));
+    }
+
+    /**
+     * Reads every gateway URL a script builds. A target resolver call whose argument is a route
+     * literal contributes that literal; every other resolver call — a concatenation, a template
+     * substitution, a bare identifier, any other expression, or an argument list that never closes —
+     * is refused by name, never skipped, because a call this leg cannot read is a dependency no row
+     * can be required for. A call of any other export of {@link #TARGET_MODULE}, and a string literal
+     * opening with an absolute http, https, ws or wss URL, is refused naming the script and the call
+     * or the literal unless the script declares that construct. The module's export statements this
+     * leg cannot read a name from are refused when the module itself is read. Function declarations
+     * are not calls and contribute nothing.
+     *
+     * @param script   the file the text was read from, named in every refusal
+     * @param text     the script text
+     * @param exports  what {@link #TARGET_MODULE} exports
+     * @param declared the constructs the script declares, as {@link #constructsOf} names them
+     * @return the discovered literals and the refusals
+     */
+    private static Discovery discover(String script, String text, Exports exports, Set<String> declared) {
         List<String> literals = new ArrayList<>();
         List<String> refusals = new ArrayList<>();
         Matcher call = RESOLVER_CALL.matcher(text);
         while (call.find()) {
-            int lineStart = text.lastIndexOf('\n', call.start()) + 1;
-            boolean declaration = DECLARATION_PREFIX.matcher(text.substring(lineStart, call.start())).find();
-            if (!declaration) {
+            if (!isDeclaration(text, call.start())) {
                 readCall(script, call.group(1), argumentOf(text, call.end()), literals, refusals);
             }
         }
+        if (TARGET_MODULE.equals(script)) {
+            refusals.addAll(exports.unreadable());
+        }
+        constructsOf(text, exports).stream()
+                .filter(construct -> !declared.contains(construct))
+                .map(construct -> !construct.contains("://")
+                        ? script + " calls " + construct + ", an export of " + TARGET_MODULE + " other than the route "
+                                + "resolvers " + new TreeSet<>(RESOLVERS) + ", so a route it builds is invisible to "
+                                + "this leg - hand the route to a resolver, or declare " + construct + " for the "
+                                + "script with the reason it needs no binding"
+                        : script + " contains the literal absolute URL '" + construct + "', a gateway dependency "
+                                + "this leg cannot bind - build the URL through a resolver, or declare the literal "
+                                + "for the script with the reason it needs no binding")
+                .forEach(refusals::add);
         return new Discovery(List.copyOf(literals), List.copyOf(refusals));
+    }
+
+    /**
+     * Every construct of a script that builds or names a gateway URL without a route resolver, in
+     * script order and each once: a call of an export of {@link #TARGET_MODULE} other than the
+     * {@link #RESOLVERS}, named {@code name()}, and a string literal opening with an absolute http,
+     * https, ws or wss URL, named by the URL.
+     */
+    private static Set<String> constructsOf(String text, Exports exports) {
+        Set<String> constructs = new LinkedHashSet<>();
+        List<String> watched = exports.names().stream().filter(name -> !RESOLVERS.contains(name)).sorted().toList();
+        if (!watched.isEmpty()) {
+            Matcher call = Pattern.compile("\\b(" + watched.stream().map(Pattern::quote).collect(Collectors.joining("|"))
+                    + ")\\s*\\(").matcher(text);
+            while (call.find()) {
+                if (!isDeclaration(text, call.start())) {
+                    constructs.add(call.group(1) + "()");
+                }
+            }
+        }
+        Matcher literal = LITERAL_URL.matcher(text);
+        while (literal.find()) {
+            constructs.add(literal.group(1));
+        }
+        return constructs;
+    }
+
+    /** Whether the name at {@code index} is the name of a function declaration rather than a call. */
+    private static boolean isDeclaration(String text, int index) {
+        int lineStart = text.lastIndexOf('\n', index) + 1;
+        return DECLARATION_PREFIX.matcher(text.substring(lineStart, index)).find();
+    }
+
+    /**
+     * The names {@link #TARGET_MODULE} exports, read from its {@code export function} and
+     * {@code export const|let|var} statements; any other export statement is recorded as unreadable,
+     * naming it, because a name this leg cannot read is an export it cannot watch.
+     */
+    private static Exports exportsOf(String module) {
+        Set<String> names = new TreeSet<>();
+        List<String> unreadable = new ArrayList<>();
+        Matcher statement = EXPORT_STATEMENT.matcher(module);
+        while (statement.find()) {
+            Matcher readable = READABLE_EXPORT.matcher(statement.group());
+            if (readable.matches()) {
+                names.add(readable.group(1));
+            } else {
+                unreadable.add(TARGET_MODULE + " exports through '" + statement.group().strip() + "', a form the "
+                        + "discovery leg cannot read an exported name from");
+            }
+        }
+        return new Exports(Set.copyOf(names), List.copyOf(unreadable));
+    }
+
+    private static Set<String> declaredConstructs(String script) {
+        return DECLARED_CONSTRUCTS.stream()
+                .filter(declaration -> declaration.script().equals(script))
+                .map(DeclaredConstruct::construct)
+                .collect(Collectors.toSet());
     }
 
     private static void readCall(String script, String resolver, Optional<String> argument, List<String> literals,
@@ -1405,13 +1658,35 @@ class BenchmarkScriptConfigContractTest {
     }
 
     /**
-     * What the discovery leg read from one script's target resolver calls.
+     * What the discovery leg read from one script.
      *
      * @param literals the route literals handed to a resolver, in script order
-     * @param refusals one message per resolver call whose argument is not a route literal, each
-     *                 naming the script and the call
+     * @param refusals one message per resolver call whose argument is not a route literal, per
+     *                 undeclared non-resolver export call or literal absolute URL, and per unreadable
+     *                 export statement of the target module, each naming the script and the construct
      */
     private record Discovery(List<String> literals, List<String> refusals) {
+    }
+
+    /**
+     * What {@link #TARGET_MODULE} exports.
+     *
+     * @param names      the exported function and variable names
+     * @param unreadable one message per export statement no name could be read from
+     */
+    private record Exports(Set<String> names, List<String> unreadable) {
+    }
+
+    /**
+     * Declares one construct a script uses that builds or names a gateway URL without a route
+     * resolver, so the discovery leg accepts it.
+     *
+     * @param script    the file, relative to the k6 directory
+     * @param construct the construct as {@link #constructsOf} names it: {@code name()} for a call of
+     *                  an export, the URL for a literal
+     * @param reason    why the construct needs no binding
+     */
+    private record DeclaredConstruct(String script, String construct, String reason) {
     }
 
     /** Resolves one extracted literal against the parsed configuration. */
