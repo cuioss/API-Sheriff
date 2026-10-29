@@ -101,8 +101,9 @@ import org.jspecify.annotations.Nullable;
  * <p>
  * <strong>The threat feed.</strong> After the recon feed and before rendering, every rejection
  * {@link #handleGatewayRejection} handles is also handed to the {@link ThreatFeed}, under its TRUE
- * event — the per-source threat score, which counts every categorized rejection before and after the
- * trust boundary with a weight per event category. The threat feed observes only: it returns nothing,
+ * event — the per-source threat score, which adds up the rejections that carry a weight before and
+ * after the trust boundary (the excluded events and categories weigh 0 and are never admitted, see
+ * {@code ThreatWeights}). The threat feed observes only: it returns nothing,
  * so it can neither hold nor change an answer. An unexpected internal failure
  * ({@link #renderUnexpected}) is never handed to it: an operator-side failure is not caller behaviour.
  * <p>
