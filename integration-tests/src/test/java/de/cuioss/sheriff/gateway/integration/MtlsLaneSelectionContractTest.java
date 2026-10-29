@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.io.UncheckedIOException;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -117,14 +116,19 @@ import org.junit.jupiter.api.Test;
  * references one fails; and how a profile is activated — {@code activeByDefault} and activation by property, JDK, OS or
  * file are not read, so each profile is judged as its own lane, alone, and two profiles activated
  * together are not judged as one. An include or exclude is evaluated only
- * in the one form this guard reads exactly as surefire does: a path with a directory part (it contains
- * a {@code /}) that ends in {@code .java} and uses no wildcard but {@code *}, {@code **} and {@code ?},
- * such as {@code **}{@code /*IT.java}. Every other form surefire accepts — no directory part
- * ({@code MtlsHandshakeIT.java}, {@code *IT.java}), no extension ({@code **}{@code /*IT}), a
- * {@code .class} extension, a bare class name, {@code %regex[...]}, {@code %ant[...]}, a comma-separated
- * list, a {@code !} negation, a {@code #} method filter, or anything else it cannot prove it reads like
- * surefire — fails the test naming the lane and the pattern rather than being read as "does not
- * select". On the tag side: method-level {@code @Tag} annotations,
+ * in the one form this guard reads exactly as surefire does: {@code **}{@code /} followed by a single
+ * file name that ends in {@code .java}, contains no {@code /} and uses no wildcard but {@code *} and
+ * {@code ?}, such as {@code **}{@code /*IT.java} or {@code **}{@code /MtlsHandshakeIT.java}. Its leading
+ * {@code **}{@code /} spans zero or more directories and a {@code *} or {@code ?} never crosses a
+ * {@code /}, as in surefire. Every other form fails the test naming the lane and the pattern rather
+ * than being read as "does not select" — a directory after the leading {@code **}{@code /}
+ * ({@code **}{@code /de/cuioss/.../MtlsHandshakeIT.java}, {@code **}{@code /integration/**}{@code /*IT.java}),
+ * a {@code **} anywhere but the leading segment, no leading {@code **}{@code /}
+ * ({@code de/cuioss/.../MtlsHandshakeIT.java}, {@code MtlsHandshakeIT.java}, {@code *IT.java}), no
+ * extension ({@code **}{@code /*IT}), a {@code .class} extension, a bare class name, {@code %regex[...]},
+ * {@code %ant[...]}, a comma-separated list, a {@code !} negation, a {@code #} method filter, or anything
+ * else. Surefire accepts these too; this guard does not claim to read them as it does. On the tag side:
+ * method-level {@code @Tag} annotations,
  * tags declared on implemented interfaces, and a superclass outside the module's test sources or
  * named through a wildcard import — the {@code extends} chain stops there.
  * <p>
@@ -132,7 +136,9 @@ import org.junit.jupiter.api.Test;
  * IT reads at least one property and among them the port, at least one lane selects the IT today and
  * at least one leaves it out. The detector is driven with POM specimens it must reject — a selecting
  * lane with no properties, with only the port, with the primary port, a lane with an include or exclude
- * outside the evaluated form, a lane the root's {@code plugins} or a root profile passes down, a port
+ * outside the evaluated form (among them a directory after the leading {@code **}{@code /}), a lane
+ * selecting the IT through {@code **}{@code /MtlsHandshakeIT.java}, a lane the root's {@code plugins} or a
+ * root profile passes down, a port
  * reference that resolves to an unpublished port, cannot be resolved or is cyclic — and ones it must
  * accept. The specimens are strings in this file only.
  *
@@ -189,16 +195,22 @@ class MtlsLaneSelectionContractTest {
     /** A {@code @Tag} inside a {@code @Tags} container, up to its '('. */
     private static final Pattern INNER_TAG = Pattern.compile("@(?:org\\.junit\\.jupiter\\.api\\.)?Tag\\s*\\(");
 
+    /** The leading segment of every evaluated pattern: any number of directories, none included. */
+    private static final String ANY_DIRECTORIES = "**/";
+
     /**
-     * The one include/exclude form {@link Lane#matches} reads exactly as surefire does: a path with a
-     * directory part, every segment non-empty and made of Java identifier characters and the wildcards
-     * {@code *}, {@code **} and {@code ?}, ending in {@code .java}. Surefire also accepts other forms — no
-     * directory part, no extension, a {@code .class} extension, a bare class name, {@code %regex[...]},
-     * {@code %ant[...]}, a comma-separated list, a {@code !} negation, a {@code #} method filter — which a
-     * glob reading would judge differently or match nothing with, so a lane carrying any pattern outside
-     * this form is refused instead.
+     * The one include/exclude form {@link Lane#matches} reads exactly as surefire does: {@code **}{@code /}
+     * followed by a single file name of Java identifier characters and the wildcards {@code *} and
+     * {@code ?}, with no {@code /} and no {@code **} in it, ending in {@code .java} — such as
+     * {@code **}{@code /*IT.java} or {@code **}{@code /MtlsHandshakeIT.java}, the form the real POMs use.
+     * Every other form is refused instead of evaluated: a directory after the leading {@code **}{@code /}
+     * ({@code **}{@code /integration/*IT.java}), a {@code **} anywhere else, no leading
+     * {@code **}{@code /} ({@code de/.../MtlsHandshakeIT.java}, {@code *IT.java}), no extension, a
+     * {@code .class} extension, a bare class name, {@code %regex[...]}, {@code %ant[...]}, a comma-separated
+     * list, a {@code !} negation, a {@code #} method filter. Surefire accepts those too, but this guard
+     * cannot show that it reads them as surefire does.
      */
-    private static final Pattern EVALUABLE_PATTERN = Pattern.compile("[\\w$*?]+(?:/[\\w$*?]+)*/[\\w$*?]+\\.java");
+    private static final Pattern EVALUABLE_PATTERN = Pattern.compile("\\*\\*/(?!.*\\*\\*)[\\w$*?]+\\.java");
 
     private static final Pattern NAMED_VALUE = Pattern.compile("^value\\s*=\\s*");
     private static final Pattern STRING_LITERAL = Pattern.compile("\"([^\"\\\\]*)\"");
@@ -322,10 +334,38 @@ class MtlsLaneSelectionContractTest {
                 () -> assertEquals(List.of(), specimenViolations(profile("single-wildcard", properties(wired)
                         + "<includes><include>**/Mtls?andshakeIT.java</include></includes>", ""), required, published),
                         "a fully wired lane whose include is a directory-qualified .java glob using ? was refused"),
-                () -> assertEquals(List.of(), specimenViolations(profile("qualified", "<includes><include>" + IT_PATH
+                () -> assertRefused("qualified", "<includes><include>" + IT_PATH
                         + "</include></includes><excludes><exclude>**/MtlsHandshakeIT.java</exclude></excludes>",
-                        ""), required, published),
-                        "a lane whose fully qualified include is excluded again was refused"));
+                        IT_PATH, required, published));
+    }
+
+    @Test
+    @DisplayName("the detector evaluates only a leading **/ before one .java file name and refuses a directory after it")
+    void detectorEvaluatesOnlyLeadingDoubleStarBeforeAFileName() throws Exception {
+        Set<String> required = requiredProperties(Files.readString(existing(TEST_SOURCES.resolve(IT_PATH))));
+        Set<String> published = Set.of("10444");
+        Map<String, String> wired = new LinkedHashMap<>();
+        required.forEach(key -> wired.put(key, "declared"));
+        wired.put(PORT_KEY, "10444");
+        String byFileName = "<includes><include>**/MtlsHandshakeIT.java</include></includes>";
+
+        List<String> unwiredByFileName = specimenViolations(profile("file-name", byFileName, ""), required,
+                published);
+
+        assertAll(
+                () -> assertRefused("leading-directories",
+                        "<includes><include>**/" + IT_PATH + "</include></includes>", "**/" + IT_PATH, required,
+                        published),
+                () -> assertRefused("inner-double-star",
+                        "<includes><include>**/integration/**/*IT.java</include></includes>",
+                        "**/integration/**/*IT.java", required, published),
+                () -> assertTrue(unwiredByFileName.stream().anyMatch(violation -> violation.contains("file-name/default")
+                                && violation.contains("does not declare")),
+                        () -> "a lane selecting the IT through **/MtlsHandshakeIT.java with no properties was not"
+                                + " rejected naming the lane: " + unwiredByFileName),
+                () -> assertEquals(List.of(), specimenViolations(profile("file-name-wired", properties(wired)
+                        + byFileName, ""), required, published),
+                        "a fully wired lane selecting the IT through **/MtlsHandshakeIT.java was rejected"));
     }
 
     @Test
@@ -849,8 +889,28 @@ class MtlsLaneSelectionContractTest {
                     && excludedGroups.stream().noneMatch(expression -> expression.test(tags));
         }
 
+        /**
+         * Whether an {@link #EVALUABLE_PATTERN} selects the path, read as surefire's
+         * {@code SelectorUtils.matchPath} reads it: the leading {@code **}{@code /} spans zero or more whole
+         * directories, and in the file name a {@code *} stands for any run and a {@code ?} for any one
+         * character, neither crossing a {@code /}.
+         *
+         * @throws IllegalStateException when the pattern is not of the evaluated form, which
+         *                               {@link #refuseUnreadablePatterns} refuses before any lane is matched
+         */
         private static boolean matches(String pattern, String path) {
-            return FileSystems.getDefault().getPathMatcher("glob:" + pattern).matches(Path.of(path));
+            if (!EVALUABLE_PATTERN.matcher(pattern).matches()) {
+                throw new IllegalStateException("pattern '" + pattern + "' is not of the evaluated form");
+            }
+            StringBuilder regex = new StringBuilder("(?:.*/)?");
+            for (char c : pattern.substring(ANY_DIRECTORIES.length()).toCharArray()) {
+                switch (c) {
+                    case '*' -> regex.append("[^/]*");
+                    case '?' -> regex.append("[^/]");
+                    default -> regex.append(Pattern.quote(String.valueOf(c)));
+                }
+            }
+            return Pattern.compile(regex.toString()).matcher(path).matches();
         }
     }
 
@@ -1062,15 +1122,15 @@ class MtlsLaneSelectionContractTest {
 
     /**
      * Records every include or exclude pattern outside {@link #EVALUABLE_PATTERN}, naming the kind and
-     * the pattern: read as a glob it could match nothing where surefire matches the IT, which would turn a
-     * lane that runs the IT into one this guard passes over.
+     * the pattern: read any other way it could match nothing where surefire matches the IT, which would
+     * turn a lane that runs the IT into one this guard passes over.
      */
     private static void refuseUnreadablePatterns(String kind, List<String> patterns, List<String> unreadable) {
         patterns.stream()
                 .filter(pattern -> !EVALUABLE_PATTERN.matcher(pattern).matches())
                 .forEach(pattern -> unreadable.add(kind + " pattern '" + pattern
-                        + "' is not a directory-qualified .java path using only the wildcards *, ** and ?, the one"
-                        + " form this guard reads exactly as surefire does"));
+                        + "' is not '" + ANY_DIRECTORIES + "' followed by one .java file name using only the"
+                        + " wildcards * and ?, the one form this guard reads exactly as surefire does"));
     }
 
     /**
