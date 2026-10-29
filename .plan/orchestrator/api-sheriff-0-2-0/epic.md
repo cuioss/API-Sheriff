@@ -163,6 +163,16 @@ needs no translation.
 
 ## Decisions
 
+- **2026-10-29 — `PLAN-V02-50` landed (#532, `9794fa41`), nine of nine deliverables (seven met, two with residuals).** The
+  per-source detection substrate (`detection/`), its trip response, the HTTP/2 abuse bounds (`gw-08` is `COVERED`; `gw-02` stays
+  `PARTIAL`, upstream reset pinned against HTTP/1.1 only), ADR-0076, ADR-0077, ADR-0073 Amendment A1 and the #528 residue are on
+  `main`; 91 files; the post-merge `main` runs and the PR benchmark are green. **The shipped default action is `observe`**, so
+  detection records a trip and changes nothing on the wire unless an operator opts into `block` or `delay`. `PLAN-V02-07` is now
+  eligible; its spec was corrected in place (substrate claim corroborated, dedup is per `CLEAR` episode, `doc/architecture/`,
+  next ordinal `0078`). `PLAN-V02-48` (71 records) and `PLAN-V02-51` (ordinal, dependency note) were corrected the same way. Of
+  nine candidate lessons: three promoted, four folded or discarded as recurrences, two routed to `lessons-routing`; the owed
+  `architecture enrich` hint from `-009` was declined (it would record a tolerance for load flakes that contradicts the standing
+  rule that a CI-red integration test is a suspected production defect).
 - **2026-10-28 — `PLAN-V02-11` landed (#534, `c1ded6c1`); Open Defects 14, 7 and 9 staged as `PLAN-V02-51`.** ADR-0075 adopted
   Open Defect 6 (narrowed, now resolved) and declined 14 (#201), 7 and 9, so the ledger's routing of them to V02-11 left them
   ownerless. Asked the operator; answer: **stage one plan for all three** (options were a #201-only plan, record-only, close 14
@@ -512,10 +522,21 @@ doc-only or build-light plan for the second and third slots.
 
 ## Watches
 
-- **POST-MERGE RUNS FOR `PLAN-V02-11` UNVERIFIED** (added 2026-10-28, landing `PLAN-V02-11`). At 20:49 UTC the `main` Integration
-  Tests run (40764480569) and the PR-attached Performance Benchmark run (40764486714) for `c1ded6c1` were still `in_progress`;
-  Maven Build (incl. `deploy-snapshot`), Demo Client E2E and Scorecard were green. Retire this Watch once both finish green; a red
-  Integration Tests run is a defect against #534.
+- **`Http2StreamAbuseIT` RAPID-RESET `PROTOCOL_ERROR` CAUSE INFERRED, NOT REPRODUCED** (added 2026-10-29, `PLAN-V02-50` landing,
+  residual D4.R2). CI once saw `rapidResetFloodEndsTheConnectionWithEnhanceYourCalm` end with `GOAWAY PROTOCOL_ERROR` instead of
+  `ENHANCE_YOUR_CALM` (run at `4f69c4ef`). The plan fixed the raw test client (`3cc695db`: the `SETTINGS` acknowledgement could
+  precede the client preface); that cause is inferred from RFC 9113 ordering. Later runs, including the `main` run at `9794fa41`,
+  are green. If this IT recurs red, treat it as a suspected production defect and reproduce under `-XX:ActiveProcessorCount=1`
+  before classifying it as a flake; the plan's local notes hold a second candidate cause.
+- **UNIFORM-404 FLOOR MEASURED ON EIGHT PATHS ONLY** (added 2026-10-29, `PLAN-V02-50` landing, residual D8.R1). The declared-length
+  fast-reject, a route-scoped filter violation, the cookie-forwarding same-origin refusal and the `protocol: grpc` route are
+  caller-drivable pre-trust paths outside `EnumerationOracleIT`'s measurement. ADR-0073 A1 and `gw-16` state the scope as eight.
+  No owner; fold into the next plan that touches `edge/error/` or the oracle IT (`PLAN-V02-07` is the likely one).
+- **FINAL-TREE INTEGRATION SUITE NOT RUN LOCALLY FOR #532** (added 2026-10-29, `PLAN-V02-50` landing, residual D4.R1). CI's
+  integration lane (JDK 25 and 26, native image) and the post-merge `main` run are green, so this is informational; it is the
+  same environmental block `PLAN-V02-11` reported. Retire it with the first plan that runs `-Pintegration-tests` locally to green.
+- **`gw-02` PARTIAL: UPSTREAM RESET PINNED AGAINST AN HTTP/1.1 UPSTREAM ONLY** (added 2026-10-29, `PLAN-V02-50` landing). The
+  threat model names the open clause. No owner; a later hardening plan, not `PLAN-V02-07`.
 - **LOW-BUDGET FIXTURE HEADER OVERSTATES ITS FIDELITY** (added 2026-10-28, inbox
   `plan-v02-11-resource-exhaustion-test-home-001` item 1). `integration-tests/src/main/docker/sheriff-config-ws-admission/gateway.yaml`
   says the overlay differs from the primary `gateway.yaml` in "exactly two" things; it also lacks
@@ -530,17 +551,19 @@ doc-only or build-light plan for the second and third slots.
   `plan-v02-09-token-sheriff-integration-fidelity-002`). The memory records the churn as fixed by #415; `PLAN-V02-09` saw it on
   every `verify -Ppre-commit` run in its worktree and reverted it each time, and OpenRewrite also put a `TODO` marker on a
   catch block that records an error and rethrows it. Not reproduced by the orchestrator. Check it on a clean `main` worktree
-  before the next plan that runs the gate; if it reproduces, stage a fix plan.
+  before the next plan that runs the gate; if it reproduces, stage a fix plan. **Recurrence 2026-10-29:** `PLAN-V02-50` (candidate
+  `-001`) reported the same unauthored-file rewrites on every gate round and reverted them each time; two plans in a row now.
 - **HAND-MAINTAINED INVENTORIES NOT BOUND BY A TEST — NO OWNER** (added 2026-10-27, inbox
   `plan-v02-05-response-hygiene-012`). `DocumentedHeaderSetsContractTest` binds the identity set and both protocol tiers to
   their constants. The route-field inventory (`doc/configuration.adoc`, `endpoint.schema.json`) and the never-forward and
   response-strip sets are still hand-maintained, and the repository's review bot re-raises such lists until a test binds
   them. Bind them in whichever plan next touches those sets.
-- **FLAKY `GatewayEdgeRouteTest$RelayStartFailure.relayThatFailsToStartReleasesTheUpstreamResponse` — OWNED BY `PLAN-V02-50` D8**
-  (added 2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`). Failed once in the CI sonar-build isolated fork (run
-  40504680597) and passed on rerun; the branch did not touch the test. Make it deterministic and confirm it under
-  `-XX:ActiveProcessorCount=1`. Do not answer a red run with a retry. If it recurs before that plan runs, fix it as a side
-  fix the way #522 did. Other open flakes: `GatewayEdgeFramingCorpusTest` and `Http2EarlyResponseResetIT`.
+- **FLAKY `GatewayEdgeRouteTest$RelayStartFailure.relayThatFailsToStartReleasesTheUpstreamResponse` — FIXED BY `PLAN-V02-50` (#532), WATCH 1 MORE RUN** (added
+  2026-10-27, inbox `plan-v02-06-enumeration-hardening-007`; fixed 2026-10-29). The test is rewritten to a deterministic shape
+  (a 4 MiB unread upstream body, an awaited condition) and the relay release path it exposed was fixed
+  (`UpstreamAttemptReleaseOrderTest`). The `ActiveProcessorCount=1` confirmation is the plan's claim, not the orchestrator's;
+  `main` CI at `9794fa41` is green. Retire at the next green `main` run after a load-sensitive CI job. Other open flakes:
+  `GatewayEdgeFramingCorpusTest` and `Http2EarlyResponseResetIT`.
 
 - > ↪ Relocated to `settled.md` § "Watch — superseded reviewer cuioss-review-bot (closed 2026-10-22 by #505)" — PR-Agent prose retired by #505 (PLAN-V02-43), guarded by ReviewerRosterDocsContractTest
 

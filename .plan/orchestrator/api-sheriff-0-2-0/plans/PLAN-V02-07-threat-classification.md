@@ -11,8 +11,8 @@ workstream: WS-03
 Separate a genuine attack campaign from benign-but-malformed traffic, and surface a loud, SIEM-ready
 signal. The shipped per-event taxonomy classifies by HTTP category but has no cross-request judgement —
 one clumsy client and a systematic scanner look identical. This plan adds a **weighted anomaly score**
-over the `EventCategory` set, accumulated per client in a sliding window (reusing `PLAN-V02-50`'s
-per-client substrate), with a **two-tier signal**: per-request violations stay low-severity
+over the `EventCategory` set, accumulated per client in a leaky-bucket window (reusing `PLAN-V02-50`'s
+per-client substrate, `detection/SourceLedger`, on `main` since #532), with a **two-tier signal**: per-request violations stay low-severity
 (WARN + metric, as today), while a window crossing the campaign threshold emits a single **ALERT** in an
 **ECS/OCSF-shaped** structured record — loud but naturally deduplicated per client-window.
 
@@ -22,12 +22,15 @@ State is in-process and single-node; a SIEM owns cross-node correlation.
 
 1. **Weighted anomaly score** — assign severity weights to the existing `EventType`/`EventCategory`
    set (mirroring OWASP CRS anomaly scoring: per-category points), accumulated **per client per window**
-   over `PLAN-V02-50`'s substrate (not per-request). The set includes the `ROUTING` category
+   over `PLAN-V02-50`'s substrate (not per-request): this plan builds its own `SourceLedger` instance with its own weights,
+   window, threshold and action, keyed by the same `SourceKey`. The set includes the `ROUTING` category
    `PLAN-V02-13` added — see Dependencies.
 2. **Two-tier signal / campaign threshold.** Per-request violation → WARN + Micrometer counter
    (existing behaviour, unchanged). Window score ≥ configurable threshold → a single **ALERT** event.
    **Stated as its own line item** — the dedup-per-client-window is what prevents alert fatigue and is
-   exactly what an outline abstracts away. **One scan raises one alert:** `PLAN-V02-50`'s recon-bucket
+   exactly what an outline abstracts away. The substrate dedups per **episode**, not per fixed window: a trip is emitted once
+   per `CLEAR` period and re-arms only after the level drained back to zero, so "one ALERT per window" is not what it gives.
+   State at outline which dedup the ALERT promises and test that one. **One scan raises one alert:** `PLAN-V02-50`'s recon-bucket
    trip event (its D1/D2) is an *input* to this score, not a second alert beside it. State in the
    outline how the two relate, and test that a scanner tripping both produces exactly one ALERT.
 3. **ECS/OCSF-shaped structured emission** for the ALERT: a stable field set (`event.category`,
@@ -38,12 +41,17 @@ State is in-process and single-node; a SIEM owns cross-node correlation.
    single-malformed does not; ECS/OCSF field shape).
 6. **Architecture documentation + ADR** — **stated as its own named line item**. Document the NEW
    threat-classification subsystem (the anomaly-score model, the per-client window over `PLAN-V02-50`'s
-   substrate, the two-tier signal flow) in `doc/architecture.adoc`, and record an **ADR** for the
+   substrate, the two-tier signal flow) in the matching `doc/architecture/` sub-document (`doc/architecture.adoc` was split
+   into `doc/architecture/` by #533; `observability-and-errors.adoc` and `tls-and-inbound-security.adoc` already carry
+   `PLAN-V02-50`'s detection material), and record an **ADR** for the
    scoring/threshold model + the **ECS/OCSF signal architecture** + the single-node-state decision
    (SIEM owns cross-node correlation). Plus **three-layer documentation** (`configuration.adoc` weights/
    window/threshold, `doc/user/` on consuming the ALERT signal, `doc/development/`) and the `LogRecord`
    registration in `doc/LogMessages.adoc`, including the single-node caveat. Derive the ADR ordinal
-   from `doc/adr/` on the branch at write time; a duplicate ordinal fails the build.
+   from `doc/adr/` on the branch at write time and again against `origin/main` before the push (next free at `9794fa41` is
+   `0078`; `0076` and `0077` are `PLAN-V02-50`'s); a duplicate ordinal fails the build, and a record body over 500 lines
+   fails `AdrRecordLengthContractTest` (`doc/development/adr-writing.adoc`). Update `doc/development/source-detection-substrate.adoc`
+   where this plan becomes the second consumer.
 
 **Split-guard.** Six deliverables, proceeding unsplit: the score, the threshold and the emission are
 one signal and deliver nothing separately. If the ECS/OCSF emit (D3) and the scoring engine (D1) both
@@ -62,12 +70,14 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
   not per-client-windowed. (CRS itself scores per-request only; the cross-request accumulation is the
   net-new value here.)
   - verdict: corroborated | checked_at: 00293178dd8772344f5a908878719b78d67b6524 | by: api-sheriff-0-2-0/cleanup | rescoped: n/a | evidence: no anomaly, campaign, ECS or OCSF construct in api-sheriff/src/main/java
-- HYPOTHESIS: `PLAN-V02-50`'s per-client substrate is reusable as the accumulation window for the score
-  rather than a second parallel per-client store. Confirm/refute at the substrate `PLAN-V02-50` actually
-  ships § its per-client state API (verify-at-outline) — **central risk**: if that substrate is
-  bucket-only (recon codes) and not general-purpose, the gap is a finding against `PLAN-V02-50`'s
-  substrate contract, not work to absorb here and not a reason to build a second store.
-  - verdict: unverifiable | checked_at: c957ee513126fe929dd5b3266212fdb3159f7a3b | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: PLAN-V02-50 is staged and not shipped; the substrate reuse cannot be checked yet
+- OBSERVED: `PLAN-V02-50`'s per-client substrate is general-purpose and reusable as the accumulation window for the score:
+  `detection/SourceLedger.admit(key, weight, tag)` admits an arbitrary weighted event under an enum tag the consumer supplies,
+  keyed by `SourceKey`, with a query API (`state`, `isBlocked`) and a raw `SourceTrip`; the written contract
+  `doc/development/source-detection-substrate.adoc` has a section "Designed Against `PLAN-V02-50`" naming this plan. Its limits,
+  which this plan must design around and not generalise: the window is a leaky bucket that approximates a sliding window, a
+  trip is once per `CLEAR` period, and there is no ECS/OCSF shape, no cross-node state and no persistence. Read the contract
+  first at outline.
+  - verdict: corroborated | checked_at: 9794fa41bba2d25a02add5457ece54e92a570512 | by: api-sheriff-0-2-0/analyze | rescoped: n/a | evidence: PLAN-V02-50 landed as #532 (9794fa41); detection/SourceLedger admits arbitrary weighted tagged events per SourceKey, with state/isBlocked and a raw SourceTrip; doc/development/source-detection-substrate.adoc has a section naming PLAN-V02-07 and lists its limits (leaky bucket, once per CLEAR period, no ECS/OCSF, no cross-node state)
 - Verify-first clause: scope the ECS/OCSF field set against the actual schema (Elastic Common Schema /
   OCSF event classes), not against this spec's field list, before emitting — the shape must validate
   against a real consumer.
@@ -81,21 +91,24 @@ prove large at outline, split the emit into its own follow-on rather than bloat.
 - OBSERVED absence → NEW: an ECS/OCSF structured-emit formatter + a new `LogRecord` ALERT constant (`doc/LogMessages.adoc`)
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/model/**` — weights / window / threshold config; `doc/**`; `api-sheriff/src/test/**`
 - OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/RejectionReporter.java` (`reportRejection`, the WARN dispatch site), `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/ApiSheriffLogMessages.java` (the ALERT record)
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/detection/**` (read: `SourceLedger`, `SourceKey`, `SourceTrip`), `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/error/ReconEvents.java` and `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/edge/admission/SourceGate.java` (the recon consumer whose trip is this plan's input) — shipped by #532
+- OBSERVED: `api-sheriff/src/main/java/de/cuioss/sheriff/gateway/config/validation/rule/LimitRules.java` (boot validation of the new block, beside `validateEnumerationDetection`), `api-sheriff/src/main/resources/schema/gateway.schema.json`, `doc/architecture/**`, `doc/development/source-detection-substrate.adoc`, `integration-tests/src/test/**`
 
 ## Dependencies and Sequencing
 
-- Depends on **`PLAN-V02-50` (enumeration-detection-substrate)**, a hard predecessor: this plan cannot be
-  scoped before it lands. `PLAN-V02-06` shipped the uniform `404` for untrusted callers (#528, ADR-0073) and did
+- Depends on **`PLAN-V02-50` (enumeration-detection-substrate)**, a hard predecessor, **landed as #532 (`9794fa41`)**:
+  the substrate and its contract are on `main`. `PLAN-V02-06` shipped the uniform `404` for untrusted callers (#528, ADR-0073) and did
   not ship the substrate; its remaining deliverables moved to `PLAN-V02-50`. The taxonomy D1 weights is final: `PLAN-V02-13` landed (#383, ADR-0059) and
   moved `NO_ROUTE_MATCHED`, `PASSTHROUGH_HOST_SMUGGLED` and `METHOD_NOT_ALLOWED` into the new `ROUTING`
   category. Routing misses are operationally ordinary while filter violations are a security signal,
   so weight the two categories apart.
   - **`PLAN-V02-50`.** Its per-client substrate and its written,
      general-purpose substrate contract — which names this plan as first consumer — are what D1's
-     accumulation runs on. Read the shipped contract first at outline.
+     accumulation runs on. The recon ledger's `SourceTrip` (and its state through `state(key)`) is an input to the score; the
+     default recon action is `observe`, so a trip changes nothing on the wire unless an operator opted into `block` or `delay`.
 - This is the most downstream plan of WS-03; emit it last among them.
-- Overlaps with: `PLAN-V02-50`, and `PLAN-V03-01` (honeypot) in the `api-sheriff-0-3-0` epic — all
-  touch the event system and the substrate. Never concurrent with either.
+- Overlaps with: `PLAN-V03-01` (honeypot) in the `api-sheriff-0-3-0` epic — both touch the event system and the substrate.
+  Never concurrent with it. `PLAN-V02-50` has landed, so its half of the old overlap is gone.
 - `RejectionReporter.reportRejection` (`edge/error/`) is the WARN dispatch site, and `PASSTHROUGH_HOST_SMUGGLED` is a
   second WARN case beside `SECURITY_FILTER_VIOLATION`; both are in the Expected Surface.
 - ADR-0062 (platform-first, landed by `PLAN-V02-01`): the ECS/OCSF formatter serialises through

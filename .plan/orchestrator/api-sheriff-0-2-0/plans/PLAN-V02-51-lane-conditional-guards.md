@@ -65,7 +65,7 @@ is not coverage) and nothing else.
   through the plan-less transition verb. The merge gate reads the open-issue count at the head: `0` confirmed, or every
   remaining issue dismissed. An `undecidable` read blocks.
 - PRs over 100 files or 150,000 diff characters are refused by the review bots; this plan is expected to stay far under.
-- Next free ADR ordinal at `c1ded6c1` is `0076`; this plan is not expected to write one. Derive it again against
+- Next free ADR ordinal at `9794fa41` is `0078` (`PLAN-V02-50` took `0076` and `0077`); this plan is not expected to write one. Derive it again against
   `origin/main` before any push if it does.
 
 ## Claim Labels
@@ -105,9 +105,10 @@ is not coverage) and nothing else.
 
 ## Dependencies and Sequencing
 
-- Depends on: none. `PLAN-V02-11` has landed and its `integration-tests/` edits are on `main`.
-- Overlaps with: `PLAN-V02-50` on `integration-tests/**` and, on the fail-open branch only, the TLS wiring. The
-  disjointness gate decides at emit time; the overlap prompt applies.
+- Depends on: none. `PLAN-V02-11` (#534) and `PLAN-V02-50` (#532) have landed; their `integration-tests/` edits are on `main`.
+- Overlaps with: `PLAN-V02-07` on `integration-tests/**` and `doc/**` once it runs; the disjointness gate decides at emit
+  time. `PLAN-V02-50` added `EnumerationDetectionIT`, `Http2StreamAbuseIT` and the `sheriff-config-enumeration` overlay next to
+  the lanes D1 reads; none of them is in D1's path.
 - Does not run beside an ADR-authoring plan unless D1 writes none (it is not expected to).
 - Adjacent to: `PLAN-V02-49` (test simplification, `config/` and `edge/` tests) — this plan touches none of them.
 - Adjacent to: `integration-tests/src/main/docker/sheriff-config-ws-admission/gateway.yaml`, whose header comment
