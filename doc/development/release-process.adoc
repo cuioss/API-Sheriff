@@ -454,10 +454,10 @@ version comparison.
 
 *What this section says about the guard holds for two pins, and must be re-checked when either
 moves.* The `uses:` of `release.yml`'s `release` job (currently line 132) pins
-`cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@7115714` (v0.42.0), and
-that workflow's `guard` job runs `cuioss/cuioss-organization/.github/actions/release-guard@ecd94a9`
-(v0.42.0). The check order and the reason lines quoted above are those of that action's
-`release-guard.py` at `ecd94a9`. A moved pin does not go unnoticed: `ReleaseGuardPinDocsContractTest`
+`cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@3e1ecaf` (v0.43.0), and
+that workflow's `guard` job runs `cuioss/cuioss-organization/.github/actions/release-guard@9e09a1f`
+(v0.43.0). The check order and the reason lines quoted above are those of that action's
+`release-guard.py` at `9e09a1f`. A moved pin does not go unnoticed: `ReleaseGuardPinDocsContractTest`
 fails the build when the workflow pin cited here is not the one the `release` job uses, and
 link:../../.github/workflows/release-guard-docs.yml[`release-guard-docs.yml`] fetches the
 cuioss-organization sources at both pins on every pull request into `main` that touches `release.yml`
@@ -560,7 +560,7 @@ before "already tagged", so a guard stuck on "changed" would have passed the fir
 the tag reason -- `release.current-version changed to 0.1.1, but a tag for 0.1.1 already exists` --
 instead. On that line the control proves the guard *refused*, and refused on the version check.
 The run executed the guard at the earlier action pin `b94a4a9`; `decide`'s check order and both
-reason strings are unchanged at the current pin `ecd94a9`, and the diff between the two is
+reason strings are unchanged at the current pin `9e09a1f`, and the diff between the two is
 formatting only.
 
 *The caveat, undiminished:* a guard permanently stuck on "unchanged" logs exactly the same line and

@@ -129,7 +129,7 @@ jobs:
       && (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
     permissions:
       contents: write
-    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
+    uses: cuioss/cuioss-organization/.github/workflows/reusable-maven-release.yml@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
     secrets:
       RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -155,7 +155,7 @@ jobs:
   # per-architecture artifact, leg-digest-<arch>, uploaded as the leg's last act.
   #
   # WHY `needs.release.outputs.released-version != ''` IS THE RUN/SKIP DISCRIMINATOR.
-  # At the pinned 7115714 (v0.42.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
+  # At the pinned 3e1ecaf (v0.43.0) the reusable workflow DOES declare an `on.workflow_call.outputs`
   # block, so `released-version` is genuinely readable here. It is EMPTY exactly when the central
   # guard declined to release — the declared version did not move, or a tag for it already exists —
   # so an empty string proves no release was produced, never which predicate refused. The caller
@@ -253,7 +253,7 @@ jobs:
 
       - name: Read the released version
         id: config
-        uses: cuioss/cuioss-organization/.github/actions/read-project-config@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
         with:
           config-path: .release-config/.github/project.yml
 
@@ -408,6 +408,9 @@ jobs:
             \$\{*:*\})
               EFFECTIVE="${DECLARED#*:}"
               EFFECTIVE="${EFFECTIVE%\}}"
+              ;;
+            *)
+              # A plain literal is accepted unchanged: EFFECTIVE already equals DECLARED.
               ;;
           esac
           if [ "$EFFECTIVE" != "$MANAGEMENT_CONTEXT_PATH" ]; then
@@ -886,7 +889,7 @@ jobs:
 
       - name: Read the released version
         id: config
-        uses: cuioss/cuioss-organization/.github/actions/read-project-config@711571432df351d3c5b08d5d50cb6c331f61abb1 # v0.42.0
+        uses: cuioss/cuioss-organization/.github/actions/read-project-config@3e1ecafb6a194fe22fc6a9bfdc2a41c81584f989 # v0.43.0
         with:
           config-path: .release-config/.github/project.yml
 
@@ -1496,16 +1499,16 @@ jobs:
 
           # 3. Delete: signatures first, then the index, then the platform manifests it lists.
           delete_version() {
-            local WHAT="$1" DIGEST="$2" ID
-            ID="$(jq -r --arg name "$DIGEST" '.[] | select(.name == $name) | .id' <<< "$VERSIONS")"
-            if [ -z "$ID" ]; then
-              echo "${WHAT} ${DIGEST} is not a version of the package; nothing to delete."
+            local what="$1" digest="$2" id
+            id="$(jq -r --arg name "$digest" '.[] | select(.name == $name) | .id' <<< "$VERSIONS")"
+            if [ -z "$id" ]; then
+              echo "${what} ${digest} is not a version of the package; nothing to delete."
               return 0
             fi
-            if gh api --method DELETE "${VERSIONS_API}/${ID}" > /dev/null; then
-              echo "Deleted ${WHAT} ${DIGEST} (package version ${ID})."
+            if gh api --method DELETE "${VERSIONS_API}/${id}" > /dev/null; then
+              echo "Deleted ${what} ${digest} (package version ${id})."
             else
-              echo "::warning::Could not delete ${WHAT} ${DIGEST} (package version ${ID})."
+              echo "::warning::Could not delete ${what} ${digest} (package version ${id})."
             fi
           }
           TARGETS=()
