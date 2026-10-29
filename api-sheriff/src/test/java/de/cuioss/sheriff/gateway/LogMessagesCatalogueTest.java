@@ -32,6 +32,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -99,11 +100,16 @@ class LogMessagesCatalogueTest {
     private static final Pattern BUILDER_CALL = Pattern.compile("\\bLogRecordModel\\s*\\.\\s*builder\\s*\\(");
     private static final Pattern RECORD_DECLARATION = Pattern.compile("\\bstatic\\s+final\\s+LogRecord\\s+("
             + NAME + ")\\s*=\\s*LogRecordModel\\s*\\.\\s*builder\\s*\\(\\s*\\)([^;]*);");
-    private static final Pattern PREFIX_CALL = Pattern.compile("\\.\\s*prefix\\s*\\(\\s*([^()]*?)\\s*\\)");
-    private static final Pattern IDENTIFIER_CALL = Pattern.compile("\\.\\s*identifier\\s*\\(\\s*([^()]*?)\\s*\\)");
+    /** A {@code .prefix(..)} call; group 1 the whole argument, surrounding whitespace included. */
+    private static final Pattern PREFIX_CALL = Pattern.compile("\\.\\s*prefix\\s*\\(([^()]*)\\)");
+    /** A {@code .identifier(..)} call; group 1 the whole argument, surrounding whitespace included. */
+    private static final Pattern IDENTIFIER_CALL = Pattern.compile("\\.\\s*identifier\\s*\\(([^()]*)\\)");
     private static final Pattern INTEGER_LITERAL = Pattern.compile("\\d+");
 
-    /** The identifier band each level holder owns, as documented on every catalogue. */
+    /**
+     * The identifier band each level holder owns, as documented on every catalogue. A nested holder
+     * named here is a level holder; a record in any other nested holder fails the band rule.
+     */
     private static final Map<String, int[]> BANDS = Map.of(
             "INFO", new int[]{1, 99},
             "WARN", new int[]{100, 199},
@@ -302,7 +308,7 @@ class LogMessagesCatalogueTest {
         @DisplayName("Should reject a duplicate identifier within one prefix, naming the prefix and both fields")
         void shouldRejectADuplicateIdentifier() {
             List<Catalogued> records = readCatalogue(MODULE, FILE, specimen(holder("ERROR",
-                    record("FIRST", "PREFIX", "210"), record("SECOND", "PREFIX", "210"))));
+                    recordDeclaration("FIRST", "PREFIX", "210"), recordDeclaration("SECOND", "PREFIX", "210"))));
 
             List<String> collisions = collisions(records);
 
@@ -319,10 +325,12 @@ class LogMessagesCatalogueTest {
         @DisplayName("Should check two modules sharing a prefix together, and keep distinct prefixes apart")
         void shouldCheckModulesSharingAPrefixTogether() {
             List<Catalogued> records = new ArrayList<>();
-            records.addAll(readCatalogue("module-a", FILE, specimen(holder("INFO", record("ALPHA", "PREFIX", "5")))));
-            records.addAll(readCatalogue("module-b", FILE, specimen(holder("INFO", record("BETA", "PREFIX", "5"),
-                    record("GAMMA", "\"Other\"", "6")))));
-            records.addAll(readCatalogue("module-c", FILE, specimen(holder("INFO", record("DELTA", "\"Other\"", "5")))));
+            records.addAll(readCatalogue("module-a", FILE, specimen(holder("INFO",
+                    recordDeclaration("ALPHA", "PREFIX", "5")))));
+            records.addAll(readCatalogue("module-b", FILE, specimen(holder("INFO",
+                    recordDeclaration("BETA", "PREFIX", "5"), recordDeclaration("GAMMA", "\"Other\"", "6")))));
+            records.addAll(readCatalogue("module-c", FILE, specimen(holder("INFO",
+                    recordDeclaration("DELTA", "\"Other\"", "5")))));
 
             List<String> collisions = collisions(records);
 
@@ -338,7 +346,7 @@ class LogMessagesCatalogueTest {
         @DisplayName("Should reject an identifier outside its holder's band, naming the field and the band")
         void shouldRejectAnIdentifierOutsideItsBand() {
             List<Catalogued> records = readCatalogue(MODULE, FILE,
-                    specimen(holder("WARN", record("MISPLACED", "PREFIX", "99"))));
+                    specimen(holder("WARN", recordDeclaration("MISPLACED", "PREFIX", "99"))));
 
             List<String> strays = strays(records);
 
@@ -346,9 +354,20 @@ class LogMessagesCatalogueTest {
         }
 
         @Test
+        @DisplayName("Should reject a record in a nested holder that owns no band, naming the module, holder and record")
+        void shouldRejectARecordInAHolderWithoutABand() {
+            List<Catalogued> records = readCatalogue(MODULE, FILE,
+                    specimen(holder("DEBUG", recordDeclaration("TRACED", "PREFIX", "5"))));
+
+            List<String> strays = strays(records);
+
+            assertEquals(List.of(MODULE + ":SpecimenLogMessages.DEBUG.TRACED = 5 (holder DEBUG owns no band)"), strays);
+        }
+
+        @Test
         @DisplayName("Should fail on a non-literal identifier, naming the file and the field")
         void shouldRejectANonLiteralIdentifier() {
-            String source = specimen(holder("ERROR", record("COMPUTED", "PREFIX", "BASE + 1")));
+            String source = specimen(holder("ERROR", recordDeclaration("COMPUTED", "PREFIX", "BASE + 1")));
 
             var thrown = assertThrows(IllegalArgumentException.class, () -> readCatalogue(MODULE, FILE, source));
 
@@ -360,7 +379,7 @@ class LogMessagesCatalogueTest {
         @Test
         @DisplayName("Should fail on a prefix that does not resolve to a literal, naming the file and the field")
         void shouldRejectANonLiteralPrefix() {
-            String source = specimen(holder("INFO", record("DERIVED", "prefixFor(\"x\")", "3")));
+            String source = specimen(holder("INFO", recordDeclaration("DERIVED", "prefixFor(\"x\")", "3")));
 
             var thrown = assertThrows(IllegalArgumentException.class, () -> readCatalogue(MODULE, FILE, source));
 
@@ -372,8 +391,8 @@ class LogMessagesCatalogueTest {
         @Test
         @DisplayName("Should fail on a builder call outside the supported declaration form rather than skip it")
         void shouldRejectAnUnsupportedForm() {
-            String source = specimen(holder("INFO", record("READ", "PREFIX", "3"),
-                    record("LOOSE", "PREFIX", "4").replace("static final", "static")));
+            String source = specimen(holder("INFO", recordDeclaration("READ", "PREFIX", "3"),
+                    recordDeclaration("LOOSE", "PREFIX", "4").replace("static final", "static")));
 
             var thrown = assertThrows(IllegalArgumentException.class, () -> readCatalogue(MODULE, FILE, source));
 
@@ -398,7 +417,7 @@ class LogMessagesCatalogueTest {
             return "public static final class " + name + " {\n" + String.join("\n", records) + "}\n";
         }
 
-        private static String record(String field, String prefixArgument, String identifierArgument) {
+        private static String recordDeclaration(String field, String prefixArgument, String identifierArgument) {
             return """
                     public static final LogRecord %s = LogRecordModel.builder()
                             .prefix(%s)
@@ -428,19 +447,31 @@ class LogMessagesCatalogueTest {
     }
 
     /**
+     * Checks every record of a nested holder against {@link #BANDS}. A record in a nested holder that
+     * is no key of {@link #BANDS} is a stray too: its level cannot be read from its number, so it is
+     * reported rather than skipped. A record on the catalogue itself (empty holder) belongs to no level
+     * and is not banded.
+     *
      * @param catalogued the records to check
-     * @return one entry per record of a level holder whose identifier lies outside the holder's band
+     * @return one entry per record of a nested holder that owns no band, or whose identifier lies
+     *         outside the holder's band
      */
     private static List<String> strays(List<Catalogued> catalogued) {
-        return catalogued.stream()
-                .filter(entry -> BANDS.containsKey(entry.holder()))
-                .filter(entry -> {
-                    int[] band = BANDS.get(entry.holder());
-                    return entry.identifier() < band[0] || entry.identifier() > band[1];
-                })
-                .map(entry -> entry.qualifiedName() + " = " + entry.identifier()
-                        + " (band " + BANDS.get(entry.holder())[0] + "-" + BANDS.get(entry.holder())[1] + ")")
-                .toList();
+        List<String> strays = new ArrayList<>();
+        for (Catalogued entry : catalogued) {
+            if (entry.holder().isEmpty()) {
+                continue;
+            }
+            int[] band = BANDS.get(entry.holder());
+            if (band == null) {
+                strays.add(entry.qualifiedName() + " = " + entry.identifier() + " (holder " + entry.holder()
+                        + " owns no band)");
+            } else if (entry.identifier() < band[0] || entry.identifier() > band[1]) {
+                strays.add(entry.qualifiedName() + " = " + entry.identifier() + " (band " + band[0] + "-" + band[1]
+                        + ")");
+            }
+        }
+        return strays;
     }
 
     // --- the reactor -----------------------------------------------------------------------------
@@ -573,7 +604,7 @@ class LogMessagesCatalogueTest {
     }
 
     private static String argumentOf(Pattern call, String chain, String name, String where) {
-        List<String> arguments = call.matcher(chain).results().map(match -> match.group(1)).toList();
+        List<String> arguments = call.matcher(chain).results().map(match -> match.group(1).strip()).toList();
         if (arguments.size() != 1) {
             throw new IllegalArgumentException(where + ": expected exactly one ." + name
                     + "(..) call with a plain argument, found " + arguments.size());
@@ -614,7 +645,7 @@ class LogMessagesCatalogueTest {
         int depth = 0;
         for (int index = 0; index < position; index++) {
             if (index == nextType) {
-                pending = type.group(1) != null ? type.group(1) : type.group(2);
+                pending = Objects.requireNonNullElse(type.group(1), type.group(2));
                 nextType = type.find() ? type.start() : -1;
             }
             char current = code.charAt(index);
